@@ -7,6 +7,8 @@ part (prompting, not prompting, rejecting) so every sudo mode is exercised.
 import asyncio
 import shlex
 import sys
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -359,14 +361,52 @@ async def test_sink_may_return_any_awaitable(server):
 
 async def test_sudo_n_refusal_is_reported(server):
     server.target.sudo_n_refuses = True
-    with pytest.raises(SudoError, match="a password is required"):
+    with pytest.raises(SudoError, match="a password is required") as info:
         await run(server, host(server))
+    # The failed run still left traces on the host: its record is kept.
+    session = info.value.session
+    assert session.exit_status == 1
+    assert session.client_key_fingerprint == server.client_key.get_fingerprint("sha256")
+    assert "password is required" in session.stderr
+    assert session.ended_at is not None
 
 
 async def test_timeout(server):
     server.target.hang = True
-    with pytest.raises(TransportError, match="timed out"):
+    with pytest.raises(TransportError, match="timed out") as info:
         await run(server, host(server), timeout=0.5)
+    assert info.value.session.error == "timed out after 0.5 seconds"
+    assert info.value.session.ended_at is not None
+
+
+async def test_password_prompts_run_off_the_loop_one_at_a_time():
+    loop_thread = threading.get_ident()
+    active, peak, threads = 0, 0, set()
+
+    def provider(h: Host) -> str:
+        nonlocal active, peak
+        threads.add(threading.get_ident())
+        active += 1
+        peak = max(peak, active)
+        time.sleep(0.2)  # someone typing
+        active -= 1
+        return PASSWORD
+
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        for _ in range(10):
+            await asyncio.sleep(0.03)
+            ticks += 1
+
+    h = Host(name="h", address="a", user="u", sudo="password")
+    await asyncio.gather(
+        transport._ask_password(provider, h), transport._ask_password(provider, h), ticker()
+    )
+    assert peak == 1  # prompts never interleave
+    assert loop_thread not in threads  # and never block the event loop
+    assert ticks == 10  # other work kept running meanwhile
 
 
 def test_remote_command_for_sudo_password_mode():

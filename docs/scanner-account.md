@@ -11,17 +11,24 @@ root, with a program it supplies. **That is equivalent to full root access.**
 It has to be: the collector reads files only root can read, such as the
 authentication log.
 
-It is acceptable here because:
+What limits the risk:
 
-- the program run is the published collector, and its SHA-256 fingerprint is
-  stored with every collection, so you can check exactly what ran;
-- the key can only be used from the controller's address and only to start
-  that one command (the `authorized_keys` options below);
+- when the tool runs, the program is the published collector, and its
+  SHA-256 fingerprint is stored with every collection, so you can check what
+  the tool ran;
+- the key works only from the controller's address, and can't open a shell,
+  forward ports or run any other command (the `authorized_keys` options
+  below);
 - every use is logged by sshd and sudo, and the tool never removes those
   records.
 
-Your security team should still know about the account and decide. Treat the
-controller and its key like any other administrator credential.
+What does **not** limit it: none of this restricts *what Python* the root
+interpreter runs. Whoever holds the controller's key, connecting from the
+controller's address, can run any code as root on every server set up this
+way. The protection is keeping that key and that machine safe.
+
+Your security team should know about the account and decide. Treat the
+controller and its key as root credentials for the servers it checks.
 
 ## On each server (as an administrator)
 
@@ -52,8 +59,11 @@ What the `authorized_keys` options do:
 - `restrict` — no terminal, no port, agent or X11 forwarding.
 - `from="…"` — the key works only from the controller's address.
 - `command="…"` — whatever the client asks for, this is what runs. It is
-  exactly the command the tool sends in its `nopasswd` sudo mode, so nothing
-  else is possible with this key.
+  exactly the command the tool sends in its `nopasswd` sudo mode, so the key
+  can't open a shell or run any other command. **It does not limit the
+  program:** that interpreter runs as root whatever Python it is given on
+  its input. Anyone holding this key, from the allowed address, can run any
+  code as root. Protect it like a root credential.
 
 `python3` is `/usr/bin/python3` on RHEL 9 and 10, Rocky, AlmaLinux and
 Ubuntu 22.04 and later. If `visudo` reports a problem, fix it before logging

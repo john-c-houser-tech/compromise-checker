@@ -10,6 +10,7 @@ import asyncio
 import json
 import secrets
 import shlex
+import weakref
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -30,7 +31,15 @@ PasswordProvider = Callable[[Host], str]
 
 
 class TransportError(Exception):
-    """A collection could not be carried out; the message says why."""
+    """A collection could not be carried out; the message says why.
+
+    `session` is set when the failure came after login: the run still left
+    traces on the host (sshd, sudo), and the self-session filter needs the
+    record of it."""
+
+    def __init__(self, message: str, session: "Session | None" = None):
+        super().__init__(message)
+        self.session = session
 
 
 class UnknownHostKey(TransportError):
@@ -93,6 +102,21 @@ def remote_command(host: Host, prompt: str | None = None, ready: str | None = No
         bootstrap = _BOOTSTRAP.format(ready=json.dumps(ready))
         argv = ["sudo", "-k", "-S", "-p", prompt, "--", host.python, "-I", "-B", "-c", bootstrap]
     return " ".join(shlex.quote(part) for part in argv)
+
+
+# One credential prompt at a time per event loop: prompts on a shared
+# terminal must not interleave, and they run off the loop so other hosts'
+# SSH traffic and time limits keep going while someone types.
+_prompt_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+async def _ask_password(provider: PasswordProvider, host: Host) -> str:
+    loop = asyncio.get_running_loop()
+    lock = _prompt_locks.setdefault(loop, asyncio.Lock())
+    async with lock:
+        return await asyncio.to_thread(provider, host)
 
 
 class _Client(asyncssh.SSHClient):
@@ -185,7 +209,10 @@ async def collect(
     if host.needs_password():
         if password_provider is None:
             raise TransportError(f"{host.name}: a password is needed but none can be asked for")
-        password = password_provider(host)
+        try:
+            password = await _ask_password(password_provider, host)
+        except Exception as exc:
+            raise TransportError(f"{host.name}: cannot get a password: {exc}") from exc
 
     keys, agent = await _client_keys(host, agent_path)
     client = _Client(keys, password if host.auth == "password" else None)
@@ -231,7 +258,14 @@ async def collect(
             )
     except TimeoutError as exc:
         session.error = f"timed out after {timeout:g} seconds"
-        raise TransportError(f"{host.name}: {session.error}") from exc
+        raise TransportError(f"{host.name}: {session.error}", session) from exc
+    except TransportError as exc:
+        session.error = str(exc)
+        exc.session = session
+        raise
+    except (OSError, asyncssh.Error) as exc:
+        session.error = f"{type(exc).__name__}: {exc}"
+        raise TransportError(f"{host.name}: {session.error}", session) from exc
     finally:
         session.ended_at = datetime.now(UTC)
     return session

@@ -9,6 +9,11 @@ without blocking on pipes or devices, and without updating its access time
 where the kernel allows. Anything that is not a regular file is described
 (type, owner, link target) instead of read. Text is masked for secrets before
 it leaves the server (masking rules version 1, listed in the policy §7).
+Masking works on whole lines, so a secret can never be split across two
+reads. Two cases fail closed — nothing is sent rather than risk an unmasked
+secret: a line longer than 1 MiB is replaced by a marker giving its length,
+and a compressed file in a format the server's Python cannot open (for
+example `.zst`) is described as unreadable instead of being sent raw.
 
 ## `host_facts`
 
@@ -41,8 +46,10 @@ per-source size limit.
 **Sends:** one source per file (name, size, times, mode, owner, inode,
 compression), its masked content in chunks, and a `summary` record (files
 found, sent, and skipped as older than the window). Unreadable entries — for
-example the log replaced by a link to `/dev/null` — become `unreadable_file`
-records, which are themselves evidence.
+example the log replaced by a link to `/dev/null`, however old — become
+`unreadable_file` records, which are themselves evidence. The look-back
+window only ever skips regular files. If `/var/log` itself cannot be listed,
+the module ends with status `error`.
 
 **Not yet:** systems that log authentication only to the systemd journal
 (no `secure` or `auth.log`) send an empty summary here; reading the journal

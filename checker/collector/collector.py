@@ -53,6 +53,10 @@ MASKING_VERSION = 1
 ROOT = "/"
 
 CHUNK_BYTES = 64 * 1024
+# Lines are masked whole, never in pieces, so a secret can't straddle a read.
+# A line longer than this is not sent at all (fail closed): it is replaced by
+# a marker saying how long it was.
+MAX_LINE = 1024 * 1024
 
 
 def path(absolute):
@@ -134,6 +138,10 @@ def _rule(kind, context, secret):
     return kind, re.compile(context + rb"(?!\[MASKED:)(" + secret + rb")")
 
 
+# A whole quoted value, escaped quotes included, so `password="two words"`
+# can't leave its second word behind.
+_QUOTED = rb'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\''
+
 # Specific formats first, so the generic key=value rule doesn't relabel a
 # value that is already masked.
 MASKING_RULES = [
@@ -147,15 +155,19 @@ MASKING_RULES = [
     _rule("auth_header", rb"(?i)authorization:\s*(?:bearer|basic|token)?\s*", rb"[^\s\"']+"),
     _rule("bearer_token", rb"(?i)\bbearer\s+", rb"[A-Za-z0-9._~+/=-]{8,}"),
     _rule("mysql_password", rb"\b(?:mysql|mariadb|mysqldump|mysqladmin)\b[^\n]*?\s-p", rb"\S+"),
-    _rule("password", rb"(?i)--?(?:password|passwd|pass|token|secret|api-?key)[= ]", rb"\S+"),
+    _rule(
+        "password",
+        rb"(?i)--?(?:password|passwd|pass|token|secret|api-?key)[= ]",
+        _QUOTED + rb"|\S+",
+    ),
     _rule(
         "password",
         # The key starts a word that isn't inside a PAM "(service:type)" label,
         # and "pwd" counts only in lower case, so sudo's "PWD=" (its working
         # directory) is kept.
         rb"(?<![(\w.-])[A-Za-z0-9_.-]*(?:(?i:password|passwd|secret|token|api[_-]?key|apikey|"
-        rb"access[_-]?key|auth(?!orization))|pwd)[A-Za-z0-9_.-]*[\"']?\s*[=:]\s*[\"']?",
-        rb"[^\s\"'&,;]+",
+        rb"access[_-]?key|auth(?!orization))|pwd)[A-Za-z0-9_.-]*[\"']?\s*[=:]\s*",
+        _QUOTED + rb"|[^\s\"'&,;]+",
     ),
 ]
 
@@ -173,19 +185,32 @@ class Masker:
     def _count(self, kind, n=1):
         self.counts[kind] = self.counts.get(kind, 0) + n
 
+    def oversized(self, length):
+        """Stand-in for a line too long to mask safely."""
+        self._count("oversized_line")
+        return b"[MASKED:oversized_line %d bytes]\n" % length
+
     def line(self, data):
-        """Mask one line (bytes, with its newline). Returns the masked bytes."""
+        """Mask one whole line (bytes, with its newline). Returns the masked bytes."""
         if self._in_key_block:
-            if _PEM_END.search(data):
-                self._in_key_block = False
-            return b""
+            end = _PEM_END.search(data)
+            if not end:
+                return b""
+            self._in_key_block = False
+            data = data[end.end() :]  # whatever follows the block on this line
+            if not data.strip():
+                return b""
         begin = _PEM_BEGIN.search(data)
         if begin:
             self._count("private_key")
-            if not _PEM_END.search(data, begin.end()):
+            end = _PEM_END.search(data, begin.end())
+            if end:
+                rest = data[end.end() :]
+            else:
                 self._in_key_block = True
-            newline = b"\n" if data.endswith(b"\n") else b""
-            return data[: begin.start()] + MASK % b"private_key" + newline
+                rest = b"\n" if data.endswith(b"\n") else b""
+            # The text before the key still goes through every rule below.
+            data = data[: begin.start()] + MASK % b"private_key" + rest
         for kind, pattern in MASKING_RULES:
             marker = MASK % kind.encode("ascii")
             pieces, last, hits = [], 0, 0
@@ -240,6 +265,16 @@ if lzma is not None:
     _OPENERS[".xz"] = ("xz", lzma.LZMAFile)
 if bz2 is not None:
     _OPENERS[".bz2"] = ("bzip2", bz2.BZ2File)
+# Compressed formats this collector recognises. One it can't open is never
+# sent raw: compressed bytes would slip past masking.
+_COMPRESSED = {
+    ".gz": "gzip",
+    ".xz": "xz",
+    ".bz2": "bzip2",
+    ".zst": "zstd",
+    ".lz4": "lz4",
+    ".Z": "compress",
+}
 _DECOMPRESS_ERRORS = (OSError, EOFError, zlib.error) + ((lzma.LZMAError,) if lzma else ())
 
 
@@ -303,6 +338,15 @@ def send_file(run, module, absolute):
     """Send one file as a source: decompressed, masked, chunked, capped.
     Returns True if sent, False if it could not be read (recorded instead).
     Raises ModuleTimeout after closing the source cleanly if time runs out."""
+    suffix = os.path.splitext(absolute)[1]
+    if suffix in _COMPRESSED and suffix not in _OPENERS:
+        details = describe_unreadable(absolute)
+        details["reason"] = (
+            f"{_COMPRESSED[suffix]}-compressed and this server's Python cannot decompress it;"
+            " not sent, because compressed bytes would bypass secret masking"
+        )
+        run.stream.record(module, "unreadable_file", details)
+        return False
     try:
         raw, info = open_regular_file(absolute)
     except (OSError, ValueError) as exc:
@@ -362,19 +406,29 @@ def send_file(run, module, absolute):
                     if run.out_of_time():
                         truncated_reason, timed_out = "time", True
                         break
-                    room = run.source_bytes - total
-                    if room <= 0:
-                        if reader.read(1):
-                            truncated_reason = "size"
-                        break
-                    line = reader.readline(min(room, CHUNK_BYTES))
+                    line = reader.readline(MAX_LINE + 1)
                     if not line:
                         break
-                    total += len(line)
-                    if pending_original + len(line) > CHUNK_BYTES:
+                    length = len(line)
+                    if length > MAX_LINE:
+                        # Too long to mask safely: skip to its end, send a marker.
+                        while not line.endswith(b"\n") and not run.out_of_time():
+                            line = reader.readline(MAX_LINE)
+                            if not line:
+                                break
+                            length += len(line)
+                        masked = masker.oversized(length)
+                    else:
+                        masked = masker.line(line)
+                    if total + length > run.source_bytes:
+                        # Whole lines only: stop before one that doesn't fit.
+                        truncated_reason = "size"
+                        break
+                    total += length
+                    if pending_original + length > CHUNK_BYTES:
                         flush_pending()
-                    pending.append(masker.line(line))
-                    pending_original += len(line)
+                    pending.append(masked)
+                    pending_original += length
     except _DECOMPRESS_ERRORS as exc:
         error = f"{type(exc).__name__}: {exc}"
     flush_pending()
@@ -473,8 +527,13 @@ def host_identity():
 
 def module_host_facts(run):
     """Who and what this host is, its clock, and its basic security settings."""
-    record = run.stream.record
     module = "host_facts"
+
+    def record(module, name, data):
+        run.check_time()  # between facts, so the deadline holds here too
+        run.stream.record(module, name, data)
+
+    run.check_time()
     uname = platform.uname()
 
     record(module, "os_release", read_os_release())
@@ -549,11 +608,9 @@ _AUTH_LOG = re.compile(r"^(?:secure|auth\.log)(?:[-.][\w.-]+)?$")
 def module_auth_log(run):
     """The authentication log and its rotated copies, within the look-back window."""
     module = "auth_log"
-    try:
-        names = os.listdir(path("/var/log"))
-    except OSError as exc:
-        run.stream.error(module, f"cannot list /var/log: {exc}")
-        return
+    # If /var/log can't be listed, let the error end the module: main() then
+    # marks it "error" and the run "partial", rather than "ok" with no logs.
+    names = os.listdir(path("/var/log"))
     candidates = []
     for name in names:
         if not _AUTH_LOG.match(name):
@@ -563,13 +620,15 @@ def module_auth_log(run):
             info = os.lstat(path(absolute))
         except OSError:
             continue
-        candidates.append((info.st_mtime, absolute))
+        candidates.append((info.st_mtime, absolute, stat.S_ISREG(info.st_mode)))
 
     since = run.since.timestamp()
     sent = skipped = 0
-    for mtime, absolute in sorted(candidates):
+    for mtime, absolute, regular in sorted(candidates):
         run.check_time()
-        if mtime < since:
+        # Only a regular file can be "old news". Anything else (a link to
+        # /dev/null, a pipe) is always described: the replacement is evidence.
+        if regular and mtime < since:
             skipped += 1  # last written before the window: nothing in it is new
             continue
         if send_file(run, module, absolute):

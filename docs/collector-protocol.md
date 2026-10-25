@@ -137,12 +137,15 @@ chunks.
 - `meta` — for files: size, modification time, mode, owner, inode, and the
   compression the collector undid, if any. For commands: `exit_code`.
 - `chunk.seq` — 0, 1, 2… with no gaps. `encoding` is `utf-8` when the bytes
-  are valid UTF-8, otherwise `base64`. A chunk holds at most 64 KiB of the
-  original bytes.
+  are valid UTF-8, otherwise `base64`. Chunks hold whole lines, masked whole,
+  up to 64 KiB of original bytes; a single longer line (up to 1 MiB) travels
+  alone in its own chunk. A line longer than 1 MiB is not sent: it is
+  replaced by `[MASKED:oversized_line N bytes]` and counted under `masked`.
 - `source_end.bytes` — total original bytes sent (after decompression, before
-  masking). `truncated` is true when the source hit the byte cap or a time
-  limit; `truncated_reason` then says which. `masked` counts masked secrets
-  by kind (DESIGN.md §3.4). `error` is set if reading failed part-way.
+  masking). `truncated` is true when the source hit the byte cap (the last
+  line that would not fit whole is left out) or a time limit;
+  `truncated_reason` then says which. `masked` counts masked secrets by kind
+  (DESIGN.md §3.4). `error` is set if reading failed part-way.
 
 ### 3.4 `error`
 

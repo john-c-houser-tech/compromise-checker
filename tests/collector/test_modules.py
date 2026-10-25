@@ -238,6 +238,55 @@ class AuthLogTests(FixtureRoot):
         )
 
 
+class AuthLogReviewTests(FixtureRoot):
+    """Cases from the Copilot review of PR #5."""
+
+    def test_secret_in_a_line_longer_than_a_chunk_is_masked(self):
+        self.write("var/log/secure", b" " * 65532 + b"password=hunter2\n")
+        _, content, end = sources(collect(self.root, ["auth_log"]))["/var/log/secure"]
+        self.assertNotIn(b"hunter2", content)
+        self.assertEqual(end["masked"], {"password": 1})
+
+    def test_oversized_lines_are_withheld_not_sent_unmasked(self):
+        collector = load_collector(self.root)
+        collector.MAX_LINE = 50
+        self.write("var/log/secure", b"short\n" + b"x" * 120 + b" password=hunter2\nnext\n")
+        out = io.BytesIO()
+        collector.main(settings(["auth_log"]), out=out)
+        records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+        _, content, end = sources(records)["/var/log/secure"]
+        self.assertEqual(content, b"short\n[MASKED:oversized_line 138 bytes]\nnext\n")
+        self.assertEqual(end["bytes"], 6 + 138 + 5)
+        self.assertEqual(end["masked"], {"oversized_line": 1})
+
+    def test_compressed_logs_that_cannot_be_opened_are_not_sent_raw(self):
+        collector = load_collector(self.root)
+        collector._OPENERS.pop(".xz", None)  # as on a Python built without lzma
+        self.write("var/log/auth.log.2.xz", b"\xfd7zXZ\x00 compressed bytes")
+        self.write("var/log/auth.log.3.zst", b"\x28\xb5\x2f\xfd compressed bytes")
+        out = io.BytesIO()
+        collector.main(settings(["auth_log"]), out=out)
+        records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+        self.assertEqual(sources(records), {})
+        unreadable = {r["data"]["path"]: r["data"] for r in named(records, "unreadable_file")}
+        self.assertIn("bypass secret masking", unreadable["/var/log/auth.log.2.xz"]["reason"])
+        self.assertIn("zstd", unreadable["/var/log/auth.log.3.zst"]["reason"])
+
+    def test_old_symlink_replacing_the_log_is_still_reported(self):
+        Path(self.root, "var/log").mkdir(parents=True)
+        link = Path(self.root, "var/log/auth.log")
+        os.symlink("/dev/null", link)
+        old = NOW - 90 * DAY
+        os.utime(link, (old, old), follow_symlinks=False)
+        records = collect(self.root, ["auth_log"])
+        self.assertEqual(named(records, "unreadable_file")[0]["data"]["link_target"], "/dev/null")
+
+    def test_unlistable_log_directory_is_an_error_not_ok(self):
+        records = collect(self.root, ["auth_log"])  # no var/log at all
+        self.assertEqual(records[-1]["modules"]["auth_log"]["status"], "error")
+        self.assertEqual(records[-1]["status"], "partial")
+
+
 class HostFactsTests(FixtureRoot):
     def test_records_from_fixture_files(self):
         self.write(
@@ -262,6 +311,10 @@ class HostFactsTests(FixtureRoot):
         self.assertEqual(facts["mandatory_access_control"]["selinux"], "enforcing")
         self.assertIsNone(facts["mandatory_access_control"]["apparmor_enabled"])
         self.assertEqual(records[0]["host"]["os_id"], "rocky")
+
+    def test_time_limit_stops_the_module(self):
+        records = collect(self.root, ["host_facts"], module_seconds=1e-9)
+        self.assertEqual(records[-1]["modules"]["host_facts"]["status"], "timeout")
 
     def test_missing_files_give_nulls_not_failures(self):
         records = collect(self.root, ["host_facts"])
@@ -322,6 +375,28 @@ class MaskingTests(unittest.TestCase):
         masked, counts = self.mask(text)
         self.assertEqual(masked, b"before\n[MASKED:private_key]\nafter\n")
         self.assertEqual(counts, {"private_key": 1})
+
+    def test_quoted_values_are_masked_whole(self):
+        for text in (
+            b'password="first second" x\n',
+            b"tool --password 'first second' y\n",
+            b'secret: "with \\" escaped quote" z\n',
+        ):
+            masked, counts = self.mask(text)
+            self.assertNotIn(b"first", masked, text)
+            self.assertNotIn(b"second", masked, text)
+            self.assertNotIn(b"escaped", masked, text)
+            self.assertEqual(counts, {"password": 1}, text)
+
+    def test_secrets_beside_a_key_block_are_masked(self):
+        masked, counts = self.mask(
+            b"token=hunter2 -----BEGIN PRIVATE KEY-----\nMII\n"
+            b"-----END PRIVATE KEY----- password=zz9\n"
+        )
+        self.assertNotIn(b"hunter2", masked)
+        self.assertNotIn(b"zz9", masked)
+        self.assertNotIn(b"MII", masked)
+        self.assertEqual(counts, {"private_key": 1, "password": 2})
 
     def test_masked_values_are_not_masked_twice(self):
         masked, counts = self.mask(b"token=ghp_" + b"d" * 36 + b"\n")

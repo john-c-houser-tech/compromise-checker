@@ -13,7 +13,9 @@ test runs the real collector and validates its output against them.
 The controller runs `python3 -I -B -` on the target (under `sudo` unless it
 logs in as root) and writes to its stdin, in order:
 
-1. the sudo password and a newline, only when sudo asks for one;
+1. the sudo password and a newline, only after sudo's prompt appears (in
+   sudo-password mode Python then starts with a one-line bootstrap that
+   prints a ready marker to stderr; the program is sent only after it);
 2. the collector program text;
 3. one final line, `main(<settings>)`, where `<settings>` is the settings
    object (section 2) encoded as JSON and then encoded again as a JSON string

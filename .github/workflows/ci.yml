@@ -1,0 +1,62 @@
+# CI: lint and tests for the controller, and the collector's tests run with
+# the targets' own python3 inside the target distributions' container images.
+# No network beyond package installs, no secrets, nothing spent.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, dev]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  controller:
+    name: Controller (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.15"]  # floor, and what the dev machine runs
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev]"
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Tests
+        run: pytest -q
+
+  collector:
+    name: Collector on ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - rockylinux/rockylinux:9   # python3 3.9 — the floor
+          - rockylinux/rockylinux:10
+          - ubuntu:22.04              # python3 3.10
+          - ubuntu:24.04
+    steps:
+      - name: Install python3 (Ubuntu images ship without it)
+        if: startsWith(matrix.image, 'ubuntu')
+        run: apt-get update -qq && apt-get install -y -qq python3 > /dev/null
+      - uses: actions/checkout@v7
+      - name: Collector tests with the system python3
+        run: |
+          python3 --version
+          python3 -m unittest discover -s tests/collector -v

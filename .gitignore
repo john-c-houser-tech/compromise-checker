@@ -1,2 +1,11 @@
 # Obsidian vault settings (per person, not part of the project)
 .obsidian/
+
+# Python
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/

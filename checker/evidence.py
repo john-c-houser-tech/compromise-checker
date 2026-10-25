@@ -305,6 +305,23 @@ class BundleWriter:
         )
 
 
+def judge(
+    content_status: str, manifest: dict[str, Any] | None, run_id: str, exit_status: int | None
+) -> tuple[str, str | None]:
+    """The final status of a collection, from its content and how it ended.
+    Used both when it is stored and when it is verified, so they agree."""
+    if content_status not in ("complete", "partial", "refused"):
+        return content_status, None
+    echoed = (manifest or {}).get("run_id")
+    if echoed != run_id and not (echoed is None and content_status == "refused"):
+        # The echo exists so a stream can't be filed under the wrong run (protocol §2).
+        return "broken", "the stream's run id is not this run's"
+    if exit_status != 0:
+        # Protocol §1: anything but a clean exit means the stream may be incomplete.
+        return "incomplete", f"the collector's exit status was {exit_status}"
+    return content_status, None
+
+
 def open_bundle(path: Path, identity: x25519.Identity) -> _Observer:
     """Decrypt a bundle straight into the checker (never to disk)."""
     observer = _Observer()
@@ -315,6 +332,23 @@ def open_bundle(path: Path, identity: x25519.Identity) -> _Observer:
         # A damaged file surfaces as an OSError ("decryption error") mid-stream.
         raise EvidenceError(f"cannot decrypt {path}: {exc}") from exc
     return observer
+
+
+def seal_text(text: str | None, recipients: list[str]) -> bytes | None:
+    """Encrypt a small piece of text (an index column) to the evidence key."""
+    if text is None:
+        return None
+    keys = [x25519.Recipient.from_str(r) for r in recipients]
+    return pyrage.encrypt(text.encode("utf-8"), keys)
+
+
+def open_text(blob: bytes | None, identity: x25519.Identity) -> str | None:
+    if blob is None:
+        return None
+    try:
+        return pyrage.decrypt(blob, [identity]).decode("utf-8")
+    except (pyrage.DecryptError, OSError) as exc:
+        raise EvidenceError(f"cannot decrypt a stored detail: {exc}") from exc
 
 
 def file_sha256(path: Path) -> str:
@@ -343,9 +377,11 @@ CREATE TABLE IF NOT EXISTS bundles (
     ciphertext_sha256 TEXT NOT NULL,
     ciphertext_bytes INTEGER NOT NULL,
     recipients TEXT NOT NULL,
-    session TEXT,
-    summary TEXT,
-    problem TEXT
+    -- age-encrypted to the evidence key, like the bundle itself: what was
+    -- collected, connection details and error text are evidence too.
+    session BLOB,
+    summary BLOB,
+    problem BLOB
 );
 CREATE TABLE IF NOT EXISTS custody (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -405,6 +441,8 @@ class Store:
             os.chmod(path, 0o600)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
+        # So INSERT OR REPLACE's implicit delete fires the append-only triggers.
+        self._db.execute("PRAGMA recursive_triggers = ON")
         self._db.executescript(_SCHEMA)
 
     def close(self) -> None:

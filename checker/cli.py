@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -18,9 +19,11 @@ from checker.evidence import (
     database_file,
     file_sha256,
     initialise,
+    judge,
     load_config,
     load_identity,
     open_bundle,
+    open_text,
 )
 from checker.inventory import Host, home, inventory_transaction, load_inventory
 from checker.transport import TransportError, fetch_host_key, trust_host_key
@@ -173,7 +176,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         note = f"  ({outcome.error})" if outcome.error else ""
         print(f"{outcome.host:20} {outcome.status:12} {outcome.bundle_id or '-'}{note}")
     succeeded = len(outcomes) == len(hosts) and all(
-        outcome.status in ("complete", "partial") for outcome in outcomes
+        outcome.status in ("complete", "partial") and outcome.error is None for outcome in outcomes
     )
     return 0 if succeeded else 1
 
@@ -244,8 +247,15 @@ def cmd_bundle_verify(args: argparse.Namespace) -> int:
         return 1
     path = Path(row["path"])
     checks: list[tuple[str, bool]] = []
-    actual = file_sha256(path) if path.exists() else None
-    checks.append(("encrypted file matches its recorded hash", actual == row["ciphertext_sha256"]))
+    try:
+        actual = file_sha256(path)
+    except OSError as exc:  # missing, unreadable, a directory: a failed check, not a crash
+        actual = None
+        checks.append((f"encrypted file readable ({type(exc).__name__})", False))
+    else:
+        checks.append(
+            ("encrypted file matches its recorded hash", actual == row["ciphertext_sha256"])
+        )
     checks.extend(check_sidecar(path.with_suffix(".json"), row))
     try:
         identity = _identity(args, base)
@@ -255,7 +265,13 @@ def cmd_bundle_verify(args: argparse.Namespace) -> int:
     if identity is not None and actual is not None:
         try:
             observer = open_bundle(path, identity)
-            status = observer.status()
+            session = json.loads(open_text(row["session"], identity) or "{}")
+            status, _ = judge(
+                observer.status(),
+                observer.summary.manifest,
+                row["run_id"],
+                session.get("exit_status"),
+            )
             checks.append(
                 (
                     "decrypted content matches its recorded hash",

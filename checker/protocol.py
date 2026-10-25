@@ -24,6 +24,7 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 PROTOCOL = 1
 
@@ -114,8 +115,10 @@ class Chunk(_Model):
         if self.encoding == "base64":
             try:
                 base64.b64decode(self.data, validate=True)
-            except binascii.Error as exc:
-                raise ValueError(f"chunk data is not valid base64: {exc}") from exc
+            except binascii.Error:
+                raise PydanticCustomError(
+                    "invalid_base64", "chunk data is not valid base64"
+                ) from None
         return self
 
 
@@ -201,12 +204,24 @@ class IncompleteStream(ProtocolError):
     """The stream ended without a trailer."""
 
 
+def _known_field_names() -> frozenset[str]:
+    models = (Manifest, Host, PythonInfo, Record, SourceStart, Chunk, SourceEnd, Error, Trailer)
+    names = {name for model in (*models, Counts, ModuleResult) for name in model.model_fields}
+    return frozenset(names)
+
+
 def _describe(exc: ValidationError) -> str:
-    """A validation failure in words, without any of the offending input."""
+    """A validation failure without any of the offending input: only field
+    names this protocol defines, and Pydantic's error *codes*. Its messages
+    and anything else in a location (dictionary keys, an invalid type tag)
+    can quote the input, and this text is stored unencrypted."""
+    known = _known_field_names()
     problems = []
     for error in exc.errors(include_input=False, include_url=False, include_context=False):
-        where = ".".join(str(part) for part in error["loc"]) or "record"
-        problems.append(f"{where}: {error['msg']}")
+        parts = [
+            str(part) if isinstance(part, int) or part in known else "?" for part in error["loc"]
+        ]
+        problems.append(f"{'.'.join(parts) or 'record'}: {error['type']}")
     return "; ".join(problems[:5])
 
 
@@ -320,8 +335,9 @@ class StreamReader:
         self._inflate = zlib.decompressobj(wbits=31)  # gzip
         self._partial = b""
 
-    def feed(self, data: bytes) -> list[StreamRecord]:
-        records: list[StreamRecord] = []
+    def feed(self, data: bytes) -> Iterator[StreamRecord]:
+        """Yields records as each bounded step is decoded, so a read packed
+        with many small records is never held in memory all at once."""
         pending = data
         while pending:
             if self._inflate.eof:
@@ -335,20 +351,17 @@ class StreamReader:
             pending = self._inflate.unconsumed_tail
             if self._inflate.eof and self._inflate.unused_data:
                 raise ProtocolError("data after the end of the gzip stream")
-            records.extend(self._lines(text))
-        return records
+            yield from self._lines(text)
 
-    def _lines(self, text: bytes) -> list[StreamRecord]:
+    def _lines(self, text: bytes) -> Iterator[StreamRecord]:
         *lines, partial = (self._partial + text).split(b"\n")
         if len(partial) > MAX_RECORD:
             raise ProtocolError(f"a record longer than {MAX_RECORD} bytes")
         self._partial = partial
-        records = []
         for raw in lines:
             record = self.checker.feed_line(raw)
             if record is not None:
-                records.append(record)
-        return records
+                yield record
 
     def finish(self) -> list[StreamRecord]:
         # A cut-off stream is incomplete, whatever its half-received last line says.
@@ -369,5 +382,5 @@ def read_stream(compressed: bytes) -> list[StreamRecord]:
     if compressed[:2] != b"\x1f\x8b":
         raise ProtocolError("not a valid gzip stream: no gzip header")
     reader = StreamReader()
-    records = reader.feed(compressed)
+    records = list(reader.feed(compressed))
     return records + reader.finish()

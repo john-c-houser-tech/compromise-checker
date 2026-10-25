@@ -154,7 +154,9 @@ sometimes secrets typed into shell commands.
   style arguments, bearer tokens, and cloud access keys. The masking rules
   are published, and the report says that masking ran.
 - **Encrypted at rest.** Evidence bundles are encrypted on the controller
-  (age, to a key the organization holds).
+  (age, to a key the organization holds). The database index keeps only
+  identifiers, times, status, sizes and hashes readable; what a run collected,
+  its connection details and its error text are encrypted to the same key.
 - **Integrity.** Each bundle carries a SHA-256 hash, the collector's own hash
   and version, and a chain-of-custody record (who, when, from where, to
   where). Bundles are append-only once written.

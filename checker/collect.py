@@ -13,6 +13,8 @@ from checker.evidence import (
     bundle_id,
     bundle_path,
     database_file,
+    judge,
+    seal_text,
     write_sidecar,
 )
 from checker.inventory import Host
@@ -76,6 +78,13 @@ async def collect_hosts(
         finally:
             sealed = writer.seal()
         manifest = sealed.summary.manifest or {}
+        status, verdict = judge(
+            sealed.status,
+            sealed.summary.manifest,
+            settings.run_id,
+            session.exit_status if session else None,
+        )
+        problem = str(error) if error else (sealed.problem or verdict)
         row = {
             "id": identifier,
             "host": host.name,
@@ -83,7 +92,7 @@ async def collect_hosts(
             "path": str(sealed.path),
             "started_at": run_started.isoformat(),
             "ended_at": datetime.now(UTC).isoformat(),
-            "status": sealed.status,
+            "status": status,
             "collector_version": manifest.get("collector_version"),
             "collector_sha256": fingerprint,
             "plaintext_sha256": sealed.plaintext_sha256,
@@ -91,15 +100,17 @@ async def collect_hosts(
             "ciphertext_sha256": sealed.ciphertext_sha256,
             "ciphertext_bytes": sealed.ciphertext_bytes,
             "recipients": json.dumps(config.recipients),
-            "session": json.dumps(asdict(session), default=str) if session else None,
-            "summary": json.dumps(sealed.summary.as_dict()),
-            "problem": str(error) if error else sealed.problem,
+            # Only identifiers, times, status, sizes and hashes stay readable
+            # without the key (security and privacy policy §8).
+            "session": seal_text(
+                json.dumps(asdict(session), default=str) if session else None, config.recipients
+            ),
+            "summary": seal_text(json.dumps(sealed.summary.as_dict()), config.recipients),
+            "problem": seal_text(problem, config.recipients),
         }
         store.record_bundle(row)
         write_sidecar(sealed, row)
-        outcomes.append(
-            Outcome(host.name, identifier, sealed.status, row["problem"], sealed.plaintext_bytes)
-        )
+        outcomes.append(Outcome(host.name, identifier, status, problem, sealed.plaintext_bytes))
         if error is not None:
             raise error
         return session

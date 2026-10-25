@@ -10,23 +10,27 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
+import asyncssh
 import pytest
 
 from checker import cli
 from checker import collect as collect_module
 from checker.collect import collect_hosts
 from checker.evidence import (
+    BUNDLE_COLUMNS,
     BundleWriter,
     EvidenceError,
     Store,
     database_file,
     initialise,
+    judge,
     load_config,
     load_identity,
     open_bundle,
+    open_text,
 )
 from checker.inventory import Host
-from checker.protocol import MAX_RECORD, Limits, Settings, build_program
+from checker.protocol import MAX_RECORD, Limits, Settings, StreamReader, build_program
 
 LIMITS = Limits(overall_seconds=60, module_seconds=30, source_bytes=1 << 20)
 
@@ -181,7 +185,8 @@ async def test_collect_store_show_verify_and_detect_tampering(server, checker_ho
 
     store = Store(database_file(checker_home))
     row = store.bundle(outcome.bundle_id)
-    session = json.loads(row["session"])
+    identity = load_identity(checker_home / "keys/evidence-identity.txt")
+    session = json.loads(open_text(row["session"], identity))
     assert session["client_key_fingerprint"] == server.client_key.get_fingerprint("sha256")
     sidecar = json.loads((checker_home / "evidence/web01" / f"{row['id']}.json").read_text())
     assert sidecar["ciphertext_sha256"] == row["ciphertext_sha256"]
@@ -232,7 +237,29 @@ async def test_failed_runs_are_recorded_with_their_session(server, checker_home)
     assert "a password is required" in outcome.error
     store = Store(database_file(checker_home))
     row = store.bundle(outcome.bundle_id)
-    assert json.loads(row["session"])["exit_status"] == 1  # traces were left: keep the record
+    identity = load_identity(checker_home / "keys/evidence-identity.txt")
+    session = json.loads(open_text(row["session"], identity))
+    assert session["exit_status"] == 1  # traces were left: keep the record
+    assert "a password is required" in open_text(row["problem"], identity)
+
+
+async def test_the_index_holds_no_readable_details(server, checker_home):
+    config, _ = initialise(checker_home)
+    await collect_hosts(
+        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+    )
+    database = database_file(checker_home).read_bytes()
+    # (The custody log names the controller's own host, as the policy says; the
+    # fake target is this machine, so its hostname can't be used as a probe here.)
+    machine_id = Path("/etc/machine-id").read_bytes().strip()
+    for detail in (
+        machine_id,  # collected by host_facts from the target
+        b"127.0.0.1",  # the target's address
+        b"scanner",  # the login account
+        server.client_key.get_fingerprint("sha256").encode(),
+        b"host_facts",  # what was collected
+    ):
+        assert detail not in database, detail
 
 
 async def test_one_unreachable_host_does_not_stop_the_others(server, checker_home):
@@ -352,3 +379,98 @@ async def test_hosts_whose_bundle_cannot_be_recorded_are_reported(
     )
     assert outcome.status == "not_recorded"
     assert "disk full" in outcome.error
+
+
+# --- Copilot's second review of PR #8 -------------------------------------------------
+
+
+def test_judge_uses_the_run_id_echo_and_the_exit_status():
+    manifest = {"run_id": "mine"}
+    assert judge("complete", manifest, "mine", 0) == ("complete", None)
+    assert judge("complete", {"run_id": "other"}, "mine", 0)[0] == "broken"
+    assert judge("complete", manifest, "mine", 1)[0] == "incomplete"
+    assert judge("complete", manifest, "mine", None)[0] == "incomplete"
+    assert judge("refused", {"run_id": None}, "mine", 0) == ("refused", None)
+    assert judge("broken", None, "mine", 0) == ("broken", None)
+
+
+def test_insert_or_replace_cannot_bypass_append_only(checker_home):
+    initialise(checker_home)
+    store = Store(database_file(checker_home))
+    row = dict.fromkeys(BUNDLE_COLUMNS, "x")
+    store.record_bundle(row)
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        columns = ", ".join(BUNDLE_COLUMNS)
+        marks = ", ".join("?" for _ in BUNDLE_COLUMNS)
+        store._db.execute(
+            f"INSERT OR REPLACE INTO bundles ({columns}) VALUES ({marks})",  # noqa: S608
+            ["x"] + ["forged"] * (len(BUNDLE_COLUMNS) - 1),
+        )
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        store._db.execute(
+            "INSERT OR REPLACE INTO custody (seq, bundle_id, at, action, operator, controller)"
+            " VALUES (1, 'x', 'now', 'forged', 'me', 'here')"
+        )
+
+
+def test_errors_quote_neither_type_tags_nor_dictionary_keys(checker_home):
+    manifest = json.loads(gzip.decompress(real_stream()).splitlines()[0])
+    secret = "SECRET-TAG-91b2"
+    bad_type = {"type": secret}
+    sealed, _ = seal(checker_home, stream_of(manifest, bad_type))
+    assert sealed.status == "broken" and secret not in sealed.problem
+    trailer_with_bad_key = {
+        "type": "trailer",
+        "finished_at": "2026-10-25T00:00:00+00:00",
+        "duration_seconds": 1,
+        "status": "complete",
+        "counts": {"records": 0, "sources": 0, "chunks": 0, "errors": 0},
+        "modules": {secret: {"status": "nonsense", "seconds": 1}},
+    }
+    sealed, _ = seal(checker_home / "again", stream_of(manifest, trailer_with_bad_key))
+    assert sealed.status == "broken"
+    assert secret not in sealed.problem
+    assert "modules.?.status" in sealed.problem
+
+
+def test_records_are_streamed_not_accumulated():
+    data = real_stream()
+    reader = StreamReader()
+    stream = reader.feed(data)
+    first = next(stream)  # available before the rest of the input is decoded
+    assert first.type == "manifest"
+    assert list(stream)[-1].type == "trailer"
+
+
+async def test_refused_login_keeps_what_was_tried(server, checker_home):
+    config, _ = initialise(checker_home)
+    stranger_key = checker_home.parent / "stranger_key"
+    asyncssh.generate_private_key("ssh-ed25519").write_private_key(stranger_key)
+    [outcome] = await collect_hosts(
+        checker_home,
+        config,
+        [target_host(server, key_path=str(stranger_key))],
+        known_hosts=server.known,
+        limits=LIMITS,
+    )
+    assert "login refused" in outcome.error
+    store = Store(database_file(checker_home))
+    identity = load_identity(checker_home / "keys/evidence-identity.txt")
+    session = json.loads(open_text(store.bundle(outcome.bundle_id)["session"], identity))
+    assert session["offered_key_fingerprints"]  # sshd logged this attempt; so do we
+    assert session["error"].endswith("login refused for scanner")
+
+
+async def test_verify_reports_an_unreadable_bundle_instead_of_crashing(
+    server, checker_home, capsys
+):
+    config, _ = initialise(checker_home)
+    [outcome] = await collect_hosts(
+        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+    )
+    path = checker_home / "evidence/web01" / f"{outcome.bundle_id}.age"
+    path.unlink()
+    path.mkdir()  # now a directory: reading it raises IsADirectoryError
+    args = cli.build_parser().parse_args(["bundle", "verify", outcome.bundle_id])
+    assert cli.cmd_bundle_verify(args) == 1
+    assert "FAIL  encrypted file readable (IsADirectoryError)" in capsys.readouterr().out

@@ -261,9 +261,11 @@ collector's output format and the parsers can share one schema definition.
 
 1. Controller opens an SSH session (key via agent, or password) with strict
    host-key checking.
-2. It runs `sudo -S -p '' -- nice -n 19 ionice -c3 python3 -I -B -` (or
+2. It runs `sudo -S -p '' -- python3 -I -B -` (or
    `/usr/libexec/platform-python` where `python3` is absent; no `sudo` when
-   the account is root).
+   the account is root). The collector lowers its own CPU and I/O priority as
+   its first action, so the scanner account's sudo rule can be exactly
+   `python3 -I -B -` with nothing in front of it.
 3. On stdin it sends: the sudo password line (only if needed), then the
    collector program, then end-of-file. Python runs the program once stdin
    closes.

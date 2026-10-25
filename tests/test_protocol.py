@@ -242,3 +242,29 @@ def test_corrupt_deflate_data_is_a_protocol_error():
     with pytest.raises(ProtocolError, match="not a valid gzip stream") as info:
         read_stream(bytes(data))
     assert not isinstance(info.value, IncompleteStream)
+
+
+# --- Contract with real modules, against a fixture server ---------------------
+
+
+def test_modules_output_matches_the_models(tmp_path):
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc/os-release").write_text('ID="ubuntu"\nVERSION_ID="24.04"\n')
+    log = tmp_path / "var/log"
+    log.mkdir(parents=True)
+    (log / "auth.log").write_bytes(
+        b"2026-10-25T09:00:00+00:00 h sudo[1]: jch : COMMAND=/usr/bin/mysql -pSecret1\n"
+    )
+    (log / "auth.log.2.gz").write_bytes(gzip.compress(b"\xff\xfe not utf-8\n"))
+    program = build_program(make_settings(modules=["host_facts", "auth_log"]))
+    # Test-only: point the collector at the fixture directory (protocol.py never does).
+    program = program.replace("\n\nmain(", f"\nROOT = {str(tmp_path)!r}\n\nmain(", 1)
+    records = read_stream(run_program(program))
+
+    assert records[0].host.os_id == "ubuntu"
+    assert records[0].masking_version == 1
+    assert records[-1].status == "complete"
+    assert set(records[-1].modules) == {"host_facts", "auth_log"}
+    chunks = [r for r in records if isinstance(r, Chunk)]
+    assert {c.encoding for c in chunks} == {"utf-8", "base64"}
+    assert all("Secret1" not in c.data for c in chunks)

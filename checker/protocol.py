@@ -75,6 +75,8 @@ class Manifest(_Model):
     effective_uid: int
     settings: dict[str, Any] | None
     modules_planned: list[str]
+    masking_version: int | None = None
+    priority: dict[str, Any] | None = None
 
 
 class Record(_Model):

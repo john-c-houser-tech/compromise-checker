@@ -89,8 +89,15 @@ says so in the report.
  "python": {"version": "3.9.25", "executable": "/usr/bin/python3"},
  "effective_uid": 0,
  "settings": { … as received … },
- "modules_planned": ["host_facts", "auth_log"]}
+ "modules_planned": ["host_facts", "auth_log"],
+ "masking_version": 1,
+ "priority": {"nice": 19, "io": "idle"}}
 ```
+
+- `masking_version` — version of the secret-masking rules applied to every
+  text chunk (DESIGN.md §3.4); reports cite it.
+- `priority` — what the collector achieved when lowering its own priority:
+  the resulting nice value, and `idle` or `unchanged` for disk I/O.
 
 The collector flushes the stream right after the manifest, so it reaches the
 controller before any module runs. `started_at` is the **target's** clock. The controller records its own clock

@@ -74,9 +74,14 @@ Use `--auth key --key PATH` instead of `--auth agent` to name a key file.
 - **Logging in as root** (`--sudo root`): works, but most organisations
   forbid direct root login over SSH, and it gives up the separate audit trail.
 - **sudo with a password** (`--sudo password`): for accounts without a
-  `NOPASSWD` rule. The tool waits for sudo's own prompt before sending the
-  password, so a password is never sent unless sudo asks for it. The forced
-  `command=` option above can't be used in this mode.
+  `NOPASSWD` rule, typically administrators with a general sudo rule. The
+  tool waits for sudo's own prompt before sending the password, so a password
+  is never sent unless sudo asks for it. Python then starts with a one-line
+  bootstrap (`python3 -I -B -c '…'`) that announces itself before reading the
+  collector, and the collector is sent only after that announcement — proof
+  that sudo accepted the password. The account's sudo rule must therefore
+  allow `python3` with those arguments, and the forced `command=` option
+  above can't be used in this mode.
 - **Password SSH login** (`--auth password`): supported, not recommended.
 
 ## Removing access

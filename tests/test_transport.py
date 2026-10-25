@@ -36,6 +36,7 @@ class Target:
     """What the fake target does, and what it saw."""
 
     sudo_prompts: bool = True
+    sudo_stalls_after_password: bool = False
     sudo_accepts: bool = True
     sudo_n_refuses: bool = False
     hang: bool = False
@@ -54,20 +55,32 @@ class _Server(asyncssh.SSHServer):
         return password == PASSWORD
 
 
-async def _run_python(process, program: bytes):
+async def _run_command(process, argv: list[str], first_input: bytes = b""):
+    """Run argv locally (python3 → this interpreter), passing the SSH channel's
+    streams through live, as a real target would."""
+    argv = [sys.executable if part == "python3" else part for part in argv]
     child = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-I",
-        "-B",
-        "-",
+        *argv,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    out, err = await child.communicate(program)
-    process.stdout.write(out)
-    process.stderr.write(err)
-    process.exit(child.returncode)
+
+    async def feed():
+        child.stdin.write(first_input)
+        while data := await process.stdin.read(65536):
+            child.stdin.write(data)
+            await child.stdin.drain()
+        child.stdin.close()
+
+    async def pump(source, write):
+        while data := await source.read(65536):
+            write(data)
+
+    await asyncio.gather(
+        feed(), pump(child.stdout, process.stdout.write), pump(child.stderr, process.stderr.write)
+    )
+    process.exit(await child.wait())
 
 
 def _handler(target: Target):
@@ -96,9 +109,13 @@ def _handler(target: Target):
                 await asyncio.sleep(0.5)
                 process.exit(1)
                 return
-        program = await process.stdin.read()
-        target.stdin_seen += program
-        await _run_python(process, program)
+            if target.sudo_stalls_after_password:
+                # Accepted or not, sudo says nothing for longer than we wait.
+                target.stdin_seen += await process.stdin.read(1 << 20)
+                process.exit(1)
+                return
+        command = argv[argv.index("--") + 1 :] if argv[0] == "sudo" else argv
+        await _run_command(process, command)
 
     return handle
 
@@ -241,6 +258,19 @@ async def test_missing_known_hosts_file(server, tmp_path):
         await run(server, host(server), known_hosts=tmp_path / "nope")
 
 
+async def test_trust_ignores_the_operators_ssh_config(server, monkeypatch, tmp_path):
+    seen = {}
+    real = transport.asyncssh.get_server_host_key
+
+    async def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(transport.asyncssh, "get_server_host_key", spy)
+    await fetch_host_key(host(server), tmp_path / "k")
+    assert seen.get("config", ()) is None
+
+
 async def test_trust_new_then_same_then_changed(server, tmp_path):
     known = tmp_path / "trusted"
     h = host(server)
@@ -266,15 +296,15 @@ async def test_trust_new_then_same_then_changed(server, tmp_path):
 
 async def test_sudo_password_is_sent_only_after_the_prompt(server):
     h = host(server, sudo="password")
-    session, data = await run(
-        server, h, password_provider=lambda _: PASSWORD, sudo_check_seconds=0.3
-    )
+    session, data = await run(server, h, password_provider=lambda _: PASSWORD)
     assert read_stream(data)[-1].status == "complete"
     command = server.target.commands[0]
     assert command.startswith("sudo -k -S -p '[checker-sudo-")
     assert PASSWORD not in command
     assert server.target.stdin_seen.startswith(PASSWORD.encode() + b"\n")
     assert "[checker-sudo-" not in session.stderr
+    assert "[checker-ready-" not in session.stderr
+    assert " -c " in command  # the bootstrap that signals readiness
 
 
 async def test_password_is_never_sent_if_sudo_does_not_ask(server):
@@ -297,9 +327,34 @@ async def test_rejected_sudo_password_sends_no_program(server):
             server,
             host(server, sudo="password"),
             password_provider=lambda _: "wrong",
-            sudo_check_seconds=3,
         )
     assert server.target.stdin_seen == b"wrong\n"
+
+
+async def test_no_ready_signal_means_no_program(server):
+    server.target.sudo_stalls_after_password = True
+    with pytest.raises(SudoError, match="no sign that sudo accepted"):
+        await run(
+            server,
+            host(server, sudo="password"),
+            password_provider=lambda _: PASSWORD,
+            prompt_timeout=0.5,
+        )
+    assert server.target.stdin_seen == PASSWORD.encode() + b"\n"
+
+
+async def test_sink_may_return_any_awaitable(server):
+    loop = asyncio.get_running_loop()
+    written = bytearray()
+
+    def sink(data: bytes):
+        future = loop.create_future()
+        loop.call_soon(lambda: (written.extend(data), future.set_result(None)))
+        return future
+
+    session = await collect(host(server), program(), sink, timeout=30, known_hosts=server.known)
+    assert len(written) == session.bytes_received > 0
+    assert read_stream(bytes(written))[-1].status == "complete"
 
 
 async def test_sudo_n_refusal_is_reported(server):
@@ -314,11 +369,13 @@ async def test_timeout(server):
         await run(server, host(server), timeout=0.5)
 
 
-def test_remote_command_quotes_the_prompt():
+def test_remote_command_for_sudo_password_mode():
     h = Host(name="h", address="a", user="u", sudo="password")
-    assert remote_command(h, "[checker-sudo-ab12]") == (
-        "sudo -k -S -p '[checker-sudo-ab12]' -- python3 -I -B -"
-    )
+    command = remote_command(h, "[checker-sudo-ab12]", "[checker-ready-ab12]")
+    argv = shlex.split(command)
+    assert argv[:6] == ["sudo", "-k", "-S", "-p", "[checker-sudo-ab12]", "--"]
+    assert argv[6:10] == ["python3", "-I", "-B", "-c"]
+    assert '"[checker-ready-ab12]"' in argv[10]
     assert remote_command(Host(name="h", address="a", user="u", sudo="root")) == ("python3 -I -B -")
 
 
@@ -342,10 +399,14 @@ async def test_collect_many_limits_parallelism_and_isolates_failures():
         running -= 1
         if h.name == "bad":
             raise TransportError("bad: cannot connect")
+        if h.name == "odd":
+            raise RuntimeError("no password in the keyring")
         return Session(h.name, h.address, h.port, h.user, h.sudo, datetime.now(UTC))
 
-    hosts = [Host(name=n, address="a", user="u") for n in ("a", "b", "bad", "c", "d")]
+    hosts = [Host(name=n, address="a", user="u") for n in ("a", "b", "bad", "odd", "c", "d")]
     results = await collect_many(hosts, fake_run, parallel=2)
     assert peak == 2
     assert isinstance(results["bad"], TransportError)
+    assert isinstance(results["odd"], TransportError)
+    assert "no password in the keyring" in str(results["odd"])
     assert all(isinstance(results[n], Session) for n in ("a", "b", "c", "d"))

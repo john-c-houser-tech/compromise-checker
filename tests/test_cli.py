@@ -113,6 +113,14 @@ def test_changed_key_needs_replace(checker_home, monkeypatch, capsys):
     assert trust(monkeypatch, key, "y", known, "--replace") == 0
 
 
+def test_expect_is_checked_even_for_an_already_trusted_key(checker_home, monkeypatch):
+    add_web01()
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    known = [key.get_fingerprint("sha256")]
+    assert trust(monkeypatch, key, "", known, "--expect", "SHA256:wrong") == 1
+    assert trust(monkeypatch, key, "", known, "--expect", known[0]) == 0
+
+
 def test_same_key_is_a_no_op(checker_home, monkeypatch, capsys):
     add_web01()
     key = asyncssh.generate_private_key("ssh-ed25519")

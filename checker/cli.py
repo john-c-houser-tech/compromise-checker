@@ -77,7 +77,7 @@ def cmd_trust(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
 
     print(f"{host.name} ({host.address}:{host.port}) offers a {check.key_type} host key:")
     print(f"  {check.fingerprint}")
-    if check.status == "same":
+    if check.status == "same" and args.expect in (None, check.fingerprint):
         print("This key is already trusted. Nothing to do.")
         return 0
     if check.status == "changed":

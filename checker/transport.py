@@ -7,6 +7,7 @@ a command line.
 """
 
 import asyncio
+import json
 import secrets
 import shlex
 from collections.abc import Awaitable, Callable, Iterable
@@ -65,20 +66,32 @@ class Session:
     error: str | None = None
 
 
-def remote_command(host: Host, prompt: str | None = None) -> str:
+# In sudo-password mode Python starts with this tiny program instead of `-`:
+# it announces itself on stderr, then reads and runs the collector from stdin.
+# The announcement can only appear once sudo has accepted the password, so it
+# is the positive signal that it is safe to send the program (Python 3.9 safe).
+_BOOTSTRAP = (
+    'import sys;sys.stderr.write({ready}+"\\n");sys.stderr.flush();'
+    'exec(compile(sys.stdin.read(),"<collector>","exec"))'
+)
+
+
+def remote_command(host: Host, prompt: str | None = None, ready: str | None = None) -> str:
     """The command run on the target. Nothing secret is ever part of it."""
     python = [host.python, "-I", "-B", "-"]
     if host.sudo == "root":
         argv = python
     elif host.sudo == "nopasswd":
-        # -n: fail rather than ask, so no password can be expected.
+        # -n: fail rather than ask, so no password can be expected. This is
+        # exactly the command the scanner account's sudo rule allows.
         argv = ["sudo", "-n", "--", *python]
     else:
         # -k: always ask, so the prompt we wait for really comes; -S: read
         # the password from stdin; -p: a prompt unique to this run.
-        if prompt is None:
-            raise ValueError("sudo mode 'password' needs a prompt marker")
-        argv = ["sudo", "-k", "-S", "-p", prompt, "--", *python]
+        if prompt is None or ready is None:
+            raise ValueError("sudo mode 'password' needs prompt and ready markers")
+        bootstrap = _BOOTSTRAP.format(ready=json.dumps(ready))
+        argv = ["sudo", "-k", "-S", "-p", prompt, "--", host.python, "-I", "-B", "-c", bootstrap]
     return " ".join(shlex.quote(part) for part in argv)
 
 
@@ -149,7 +162,6 @@ async def collect(
     known_hosts: Path | None = None,
     connect_timeout: float = 15.0,
     prompt_timeout: float = 15.0,
-    sudo_check_seconds: float = 5.0,
     agent_path: str | None = None,
 ) -> Session:
     """Run `program` (collector text plus its main(...) line) on `host`,
@@ -214,9 +226,7 @@ async def collect(
             session.local_address, session.local_port = conn.get_extra_info("sockname")[:2]
             session.remote_address, session.remote_port = conn.get_extra_info("peername")[:2]
             await asyncio.wait_for(
-                _run(
-                    conn, host, program, sink, session, password, prompt_timeout, sudo_check_seconds
-                ),
+                _run(conn, host, program, sink, session, password, prompt_timeout),
                 timeout,
             )
     except TimeoutError as exc:
@@ -227,14 +237,16 @@ async def collect(
     return session
 
 
-async def _run(
-    conn, host, program, sink, session, password, prompt_timeout, sudo_check_seconds
-) -> None:
-    prompt = f"[checker-sudo-{secrets.token_hex(8)}]" if host.sudo == "password" else None
-    process = await conn.create_process(remote_command(host, prompt), encoding=None)
+async def _run(conn, host, program, sink, session, password, prompt_timeout) -> None:
+    prompt = ready = None
+    if host.sudo == "password":
+        token = secrets.token_hex(8)
+        prompt, ready = f"[checker-sudo-{token}]", f"[checker-ready-{token}]"
+    process = await conn.create_process(remote_command(host, prompt, ready), encoding=None)
     stderr = bytearray()
     prompt_seen = asyncio.Event()
     password_rejected = asyncio.Event()
+    ready_seen = asyncio.Event()
 
     async def read_stderr():
         while data := await process.stderr.read(READ_SIZE):
@@ -246,12 +258,14 @@ async def _run(
                     prompt_seen.set()
                 if prompts >= 2 or b"Sorry, try again" in stderr:
                     password_rejected.set()
+                if ready.encode() in stderr:
+                    ready_seen.set()
 
     async def read_stdout():
         while data := await process.stdout.read(READ_SIZE):
             session.bytes_received += len(data)
             result = sink(data)
-            if asyncio.iscoroutine(result):
+            if result is not None:  # any awaitable: keep backpressure, surface errors
                 await result
 
     stderr_task = asyncio.create_task(read_stderr())
@@ -269,16 +283,25 @@ async def _run(
                     " NOPASSWD rule, set its sudo mode to 'nopasswd'"
                 ) from exc
             process.stdin.write(password.encode("utf-8") + b"\n")
-            # A wrong password makes sudo ask again, and it would then read the
-            # program's first lines as further attempts. Wait long enough for
-            # PAM's failure delay before sending the program.
-            try:
-                await asyncio.wait_for(password_rejected.wait(), sudo_check_seconds)
-            except TimeoutError:
-                pass
-            else:
+            # Send the program only on a positive signal that sudo accepted the
+            # password: otherwise sudo, asking again, would read program lines
+            # as further password attempts.
+            accepted = asyncio.ensure_future(ready_seen.wait())
+            rejected = asyncio.ensure_future(password_rejected.wait())
+            done, pending = await asyncio.wait(
+                {accepted, rejected}, timeout=prompt_timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+            for waiter in pending:
+                waiter.cancel()
+            if rejected in done:
                 process.close()
                 raise SudoError(f"{host.name}: sudo rejected the password")
+            if accepted not in done:
+                process.close()
+                raise SudoError(
+                    f"{host.name}: no sign that sudo accepted the password within"
+                    f" {prompt_timeout:g} seconds; the collector was not sent"
+                )
         try:
             process.stdin.write(program.encode("utf-8"))
             process.stdin.write_eof()
@@ -291,8 +314,9 @@ async def _run(
         for task in (stdout_task, stderr_task):
             task.cancel()
         text = bytes(stderr)
-        if prompt:
-            text = text.replace(prompt.encode(), b"")
+        for marker in (prompt, ready):
+            if marker:
+                text = text.replace(marker.encode() + b"\n", b"").replace(marker.encode(), b"")
         session.stderr = text.decode("utf-8", errors="replace")
 
     if host.sudo != "root" and session.exit_status == 1 and "sudo" in session.stderr.lower():
@@ -316,6 +340,10 @@ async def collect_many(
                 results[host.name] = await run(host)
             except TransportError as exc:
                 results[host.name] = exc
+            except Exception as exc:  # anything else is still this host's failure only
+                error = TransportError(f"{host.name}: {type(exc).__name__}: {exc}")
+                error.__cause__ = exc
+                results[host.name] = error
 
     await asyncio.gather(*(one(host) for host in hosts))
     return results
@@ -350,7 +378,10 @@ async def fetch_host_key(host: Host, known_hosts: Path | None = None) -> HostKey
     """Ask the server for its host key, and compare it with what we know."""
     try:
         key = await asyncio.wait_for(
-            asyncssh.get_server_host_key(host.address, host.port), timeout=15
+            # Same connection behaviour as collect(): the operator's
+            # ~/.ssh/config must not redirect us to a different endpoint.
+            asyncssh.get_server_host_key(host.address, host.port, config=None),
+            timeout=15,
         )
     except (OSError, TimeoutError, asyncssh.Error) as exc:
         raise TransportError(f"{host.name}: cannot fetch the host key: {exc}") from exc

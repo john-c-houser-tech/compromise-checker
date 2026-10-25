@@ -56,7 +56,8 @@ stores it with the evidence; the manifest carries the version string only.
 - `run_id` — chosen by the controller; echoed in the manifest so a stream
   can't be attached to the wrong run.
 - `since` — start of the look-back window, UTC.
-- `modules` — which modules to run, in order; `null` means all.
+- `modules` — which modules to run, in order; `null` or omitted means all,
+  and an empty list means none.
 - `limits` — time limits and the per-source byte cap. A source that reaches
   its cap is cut off and marked truncated.
 
@@ -91,7 +92,8 @@ says so in the report.
  "modules_planned": ["host_facts", "auth_log"]}
 ```
 
-`started_at` is the **target's** clock. The controller records its own clock
+The collector flushes the stream right after the manifest, so it reaches the
+controller before any module runs. `started_at` is the **target's** clock. The controller records its own clock
 when the manifest arrives; the difference (less half the connection's round
 trip) is the clock offset used to correct timelines (DESIGN.md §5.3).
 
@@ -164,8 +166,9 @@ such as a refusal.
 ### 3.6 Refusal
 
 If the settings are invalid or the protocol version differs, the collector
-writes a manifest, one `error` explaining why, and a trailer with status
-`refused`, and exits 0. It never guesses.
+writes a manifest, one `error` per problem, and a trailer with status
+`refused`, and exits 0. It never guesses. In a refused manifest, `run_id` and
+`settings` are `null` when what was received had the wrong type.
 
 ## 4. Versioning
 

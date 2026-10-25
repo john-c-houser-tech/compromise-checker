@@ -39,6 +39,7 @@ class Stream:
     """The result stream: gzip-compressed JSON Lines on a binary file."""
 
     def __init__(self, out):
+        self._out = out
         self._gzip = gzip.GzipFile(fileobj=out, mode="wb")
         self.counts = {"records": 0, "sources": 0, "chunks": 0, "errors": 0}
 
@@ -54,6 +55,11 @@ class Stream:
             self.counts["chunks"] += 1
         elif kind == "error":
             self.counts["errors"] += 1
+
+    def flush(self):
+        """Push everything emitted so far to the controller now."""
+        self._gzip.flush()
+        self._out.flush()
 
     def error(self, module, message):
         self.emit({"type": "error", "module": module, "message": message})
@@ -157,24 +163,29 @@ def main(settings_json, out=None):
     else:
         problems = settings_problems(settings)
 
+    run_id = settings.get("run_id") if isinstance(settings, dict) else None
     planned = []
     if not problems:
-        planned = settings["modules"] if settings["modules"] is not None else list(MODULES)
+        requested = settings.get("modules")  # omitted or null: all; []: none
+        planned = list(MODULES) if requested is None else requested
 
     stream.emit(
         {
             "type": "manifest",
             "protocol": PROTOCOL,
             "collector_version": COLLECTOR_VERSION,
-            "run_id": settings.get("run_id") if isinstance(settings, dict) else None,
+            "run_id": run_id if isinstance(run_id, str) else None,
             "started_at": now_iso(),
             "host": host_identity(),
             "python": {"version": platform.python_version(), "executable": sys.executable},
             "effective_uid": os.geteuid(),
-            "settings": settings,
+            "settings": settings if isinstance(settings, dict) else None,
             "modules_planned": planned,
         }
     )
+    # The controller timestamps the manifest's arrival to measure clock offset
+    # (protocol §3.1), and an interrupted run should still leave a manifest.
+    stream.flush()
 
     results = {}
     if problems:

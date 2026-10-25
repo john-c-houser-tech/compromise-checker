@@ -5,15 +5,18 @@ collector and of every record in the stream it returns. A contract test runs
 the real collector and validates its output against them.
 """
 
+import base64
+import binascii
 import gzip
 import hashlib
 import json
+import zlib
 from collections.abc import Iterable, Iterator
 from datetime import datetime
 from importlib.resources import files
 from typing import Annotated, Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 PROTOCOL = 1
 
@@ -97,6 +100,15 @@ class Chunk(_Model):
     encoding: Literal["utf-8", "base64"]
     data: str
 
+    @model_validator(mode="after")
+    def _payload_matches_encoding(self) -> "Chunk":
+        if self.encoding == "base64":
+            try:
+                base64.b64decode(self.data, validate=True)
+            except binascii.Error as exc:
+                raise ValueError(f"chunk data is not valid base64: {exc}") from exc
+        return self
+
 
 class SourceEnd(_Model):
     type: Literal["source_end"]
@@ -160,9 +172,11 @@ def collector_sha256(source: str | None = None) -> str:
 def build_program(settings: Settings, source: str | None = None) -> str:
     """Collector text plus the final `main(...)` call carrying the settings."""
     text = collector_source() if source is None else source
-    settings_json = settings.model_dump_json()
-    # A JSON string literal with only ASCII is also a valid Python string
-    # literal, so nothing inside the settings can break out of the call.
+    # Both layers ASCII-only: the inner JSON escapes non-ASCII characters
+    # (a Python literal would turn an outer \U escape pair into two lone
+    # surrogates), and an ASCII JSON string literal is also a valid Python
+    # string literal, so nothing inside the settings can break out of the call.
+    settings_json = json.dumps(settings.model_dump(mode="json"), ensure_ascii=True)
     call = "main(" + json.dumps(settings_json, ensure_ascii=True) + ")"
     return text.rstrip("\n") + "\n\n" + call + "\n"
 
@@ -235,10 +249,10 @@ def parse_lines(lines: Iterable[bytes]) -> Iterator[StreamRecord]:
             open_source = None
         elif isinstance(record, Trailer):
             trailer = record
-            if record.counts.model_dump() != counts:
-                raise ProtocolError(
-                    f"trailer counts {record.counts.model_dump()} do not match stream {counts}"
-                )
+            # Only the counters this reader knows; newer ones are allowed (doc §4).
+            declared = {key: getattr(record.counts, key) for key in counts}
+            if declared != counts:
+                raise ProtocolError(f"trailer counts {declared} do not match stream {counts}")
         yield record
 
     if trailer is None:
@@ -251,6 +265,6 @@ def read_stream(compressed: bytes) -> list[StreamRecord]:
         text = gzip.decompress(compressed)
     except EOFError as exc:  # cut off part-way: the session died
         raise IncompleteStream(f"gzip stream cut off: {exc}") from exc
-    except OSError as exc:
-        raise ProtocolError(f"not a gzip stream: {exc}") from exc
+    except (OSError, zlib.error) as exc:
+        raise ProtocolError(f"not a valid gzip stream: {exc}") from exc
     return list(parse_lines(text.splitlines()))

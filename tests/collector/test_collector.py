@@ -9,10 +9,13 @@ tests/test_protocol.py.
 
 import ast
 import gzip
+import importlib.util
+import io
 import json
 import subprocess
 import sys
 import unittest
+import zlib
 from pathlib import Path
 
 COLLECTOR = Path(__file__).resolve().parents[2] / "checker" / "collector" / "collector.py"
@@ -77,6 +80,34 @@ class StreamTests(unittest.TestCase):
         _, records = run_collector("{not json")
         self.assertEqual(records[0]["type"], "manifest")
         self.assertEqual(records[-1]["status"], "refused")
+
+    def test_omitted_modules_means_all(self):
+        settings = {k: v for k, v in GOOD_SETTINGS.items() if k != "modules"}
+        _, records = run_collector(settings)
+        self.assertEqual(records[-1]["status"], "complete")
+
+    def test_empty_module_list_runs_nothing(self):
+        _, records = run_collector(dict(GOOD_SETTINGS, modules=[]))
+        self.assertEqual(records[0]["modules_planned"], [])
+        self.assertEqual(records[-1]["status"], "complete")
+
+    def test_refused_manifest_drops_wrongly_typed_echoes(self):
+        _, records = run_collector("[]")
+        self.assertIsNone(records[0]["settings"])
+        _, records = run_collector(dict(GOOD_SETTINGS, run_id=5))
+        self.assertIsNone(records[0]["run_id"])
+        self.assertEqual(records[-1]["status"], "refused")
+
+    def test_manifest_is_readable_before_the_run_ends(self):
+        spec = importlib.util.spec_from_file_location("collector", COLLECTOR)
+        collector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(collector)
+        out = io.BytesIO()
+        stream = collector.Stream(out)
+        stream.emit({"type": "manifest", "run_id": "r"})
+        stream.flush()
+        partial = zlib.decompressobj(wbits=31).decompress(out.getvalue())
+        self.assertEqual(json.loads(partial.splitlines()[0])["run_id"], "r")
 
     def test_writes_only_to_stdout(self):
         result, _ = run_collector(GOOD_SETTINGS)

@@ -67,10 +67,31 @@ def test_settings_cannot_break_out_of_the_call():
     assert records[-1].status == "complete"
 
 
+def test_non_ascii_settings_survive_the_trip():
+    run_id = "réseau-😀-运行"
+    records = read_stream(run_program(build_program(make_settings(run_id=run_id))))
+    assert records[0].run_id == run_id
+    assert records[-1].status == "complete"
+
+
+def raw_program(settings_json: str) -> str:
+    """A program carrying settings the Settings model would never produce."""
+    return collector_source() + "\nmain(" + json.dumps(settings_json) + ")\n"
+
+
+@pytest.mark.parametrize(
+    "settings_json",
+    ["[]", '{"protocol": 1, "run_id": 5}', '"just a string"', "{not json"],
+)
+def test_refusals_of_malformed_settings_are_valid_streams(settings_json):
+    records = read_stream(run_program(raw_program(settings_json)))
+    assert records[-1].status == "refused"
+    assert any(isinstance(r, Error) for r in records)
+
+
 def test_refusal_is_a_valid_stream():
-    program = build_program(make_settings()).replace('\\"protocol\\":1', '\\"protocol\\":2')
-    assert '\\"protocol\\":2' in program
-    records = read_stream(run_program(program))
+    settings = make_settings().model_dump(mode="json") | {"protocol": 2}
+    records = read_stream(run_program(raw_program(json.dumps(settings))))
     assert records[-1].status == "refused"
     assert any(isinstance(r, Error) and "protocol" in r.message for r in records)
 
@@ -181,6 +202,24 @@ def test_broken_streams_are_rejected(stream, message):
         list(parse_lines(lines(*stream)))
 
 
+def test_invalid_base64_chunk_is_rejected():
+    bad = dict(chunk(0), encoding="base64", data="!!!")
+    with pytest.raises(ProtocolError, match="base64"):
+        list(parse_lines(lines(MANIFEST, START, bad, end(1), trailer(chunks=1))))
+
+
+def test_valid_base64_chunk_is_accepted():
+    good = dict(chunk(0), encoding="base64", data="AAEC/w==")
+    assert len(list(parse_lines(lines(MANIFEST, START, good, end(1), trailer(chunks=1))))) == 5
+
+
+def test_newer_trailer_counters_are_ignored():
+    newer = trailer(chunks=1)
+    newer["counts"]["future_counter"] = 7
+    records = list(parse_lines(lines(MANIFEST, START, chunk(0), end(1), newer)))
+    assert records[-1].status == "complete"
+
+
 def test_missing_trailer_is_incomplete():
     with pytest.raises(IncompleteStream):
         list(parse_lines(lines(MANIFEST, START, chunk(0), end(1))))
@@ -193,5 +232,13 @@ def test_cut_off_gzip_is_incomplete():
 
 
 def test_not_gzip_is_a_protocol_error():
-    with pytest.raises(ProtocolError, match="not a gzip stream"):
+    with pytest.raises(ProtocolError, match="not a valid gzip stream"):
         read_stream(b"plain text")
+
+
+def test_corrupt_deflate_data_is_a_protocol_error():
+    data = bytearray(gzip.compress(b"x" * 1000))
+    data[10:14] = b"\xff\xff\xff\xff"  # first bytes after the 10-byte gzip header
+    with pytest.raises(ProtocolError, match="not a valid gzip stream") as info:
+        read_stream(bytes(data))
+    assert not isinstance(info.value, IncompleteStream)

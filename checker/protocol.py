@@ -1,0 +1,270 @@
+"""The collector protocol, controller side (docs/collector-protocol.md).
+
+These models are the authoritative definition of the settings sent to the
+collector and of every record in the stream it returns. A contract test runs
+the real collector and validates its output against them.
+"""
+
+import base64
+import binascii
+import gzip
+import hashlib
+import json
+import zlib
+from collections.abc import Iterable, Iterator
+from datetime import datetime
+from importlib.resources import files
+from typing import Annotated, Any, Literal
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+
+PROTOCOL = 1
+
+
+class _Model(BaseModel):
+    # Unknown fields are allowed so a newer collector can add optional fields
+    # without breaking an older controller (protocol doc §4).
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+
+# --- Settings (controller → collector) ---------------------------------------
+
+
+class Limits(_Model):
+    overall_seconds: float = Field(gt=0)
+    module_seconds: float = Field(gt=0)
+    source_bytes: int = Field(gt=0)
+
+
+class Settings(_Model):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    protocol: Literal[1] = PROTOCOL
+    run_id: str = Field(min_length=1)
+    since: AwareDatetime
+    modules: list[str] | None = None
+    limits: Limits
+
+
+# --- Stream records (collector → controller) ----------------------------------
+
+
+class Host(_Model):
+    hostname: str
+    os_id: str | None
+    os_version_id: str | None
+    os_pretty_name: str | None
+    kernel: str
+    machine: str
+    boot_id: str | None
+
+
+class PythonInfo(_Model):
+    version: str
+    executable: str
+
+
+class Manifest(_Model):
+    type: Literal["manifest"]
+    protocol: int
+    collector_version: str
+    run_id: str | None
+    started_at: datetime
+    host: Host
+    python: PythonInfo
+    effective_uid: int
+    settings: dict[str, Any] | None
+    modules_planned: list[str]
+
+
+class Record(_Model):
+    type: Literal["record"]
+    module: str
+    name: str
+    data: dict[str, Any]
+
+
+class SourceStart(_Model):
+    type: Literal["source_start"]
+    source_id: int = Field(ge=1)
+    module: str
+    kind: Literal["file", "command", "proc"]
+    name: str
+    meta: dict[str, Any] = {}
+
+
+class Chunk(_Model):
+    type: Literal["chunk"]
+    source_id: int = Field(ge=1)
+    seq: int = Field(ge=0)
+    encoding: Literal["utf-8", "base64"]
+    data: str
+
+    @model_validator(mode="after")
+    def _payload_matches_encoding(self) -> "Chunk":
+        if self.encoding == "base64":
+            try:
+                base64.b64decode(self.data, validate=True)
+            except binascii.Error as exc:
+                raise ValueError(f"chunk data is not valid base64: {exc}") from exc
+        return self
+
+
+class SourceEnd(_Model):
+    type: Literal["source_end"]
+    source_id: int = Field(ge=1)
+    chunks: int = Field(ge=0)
+    bytes: int = Field(ge=0)
+    truncated: bool
+    truncated_reason: str | None = None
+    masked: dict[str, int] = {}
+    error: str | None = None
+
+
+class Error(_Model):
+    type: Literal["error"]
+    module: str | None
+    message: str
+
+
+class Counts(_Model):
+    records: int
+    sources: int
+    chunks: int
+    errors: int
+
+
+class ModuleResult(_Model):
+    status: Literal["ok", "error", "timeout", "skipped"]
+    seconds: float
+
+
+class Trailer(_Model):
+    type: Literal["trailer"]
+    finished_at: datetime
+    duration_seconds: float
+    status: Literal["complete", "partial", "refused"]
+    counts: Counts
+    modules: dict[str, ModuleResult]
+
+
+StreamRecord = Annotated[
+    Manifest | Record | SourceStart | Chunk | SourceEnd | Error | Trailer,
+    Field(discriminator="type"),
+]
+_record_adapter: TypeAdapter[StreamRecord] = TypeAdapter(StreamRecord)
+
+
+# --- Building the program sent to the target ----------------------------------
+
+
+def collector_source() -> str:
+    """The collector program text, exactly as shipped."""
+    return (files("checker") / "collector" / "collector.py").read_text(encoding="utf-8")
+
+
+def collector_sha256(source: str | None = None) -> str:
+    """The collector's fingerprint: SHA-256 of the program text sent (doc §1)."""
+    text = collector_source() if source is None else source
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def build_program(settings: Settings, source: str | None = None) -> str:
+    """Collector text plus the final `main(...)` call carrying the settings."""
+    text = collector_source() if source is None else source
+    # Both layers ASCII-only: the inner JSON escapes non-ASCII characters
+    # (a Python literal would turn an outer \U escape pair into two lone
+    # surrogates), and an ASCII JSON string literal is also a valid Python
+    # string literal, so nothing inside the settings can break out of the call.
+    settings_json = json.dumps(settings.model_dump(mode="json"), ensure_ascii=True)
+    call = "main(" + json.dumps(settings_json, ensure_ascii=True) + ")"
+    return text.rstrip("\n") + "\n\n" + call + "\n"
+
+
+# --- Reading the stream --------------------------------------------------------
+
+
+class ProtocolError(ValueError):
+    """The stream breaks the protocol: malformed, out of order, or inconsistent."""
+
+
+class IncompleteStream(ProtocolError):
+    """The stream ended without a trailer."""
+
+
+def parse_lines(lines: Iterable[bytes]) -> Iterator[StreamRecord]:
+    """Validate decompressed JSON Lines, checking order and consistency."""
+    seen_manifest = False
+    trailer: Trailer | None = None
+    open_source: SourceStart | None = None
+    next_seq = 0
+    seen_source_ids: set[int] = set()
+    counts = {"records": 0, "sources": 0, "chunks": 0, "errors": 0}
+
+    for number, raw in enumerate(lines, start=1):
+        if not raw.strip():
+            continue
+        if trailer is not None:
+            raise ProtocolError(f"line {number}: data after the trailer")
+        try:
+            record = _record_adapter.validate_python(json.loads(raw))
+        except ValueError as exc:
+            raise ProtocolError(f"line {number}: {exc}") from exc
+
+        if not seen_manifest:
+            if not isinstance(record, Manifest):
+                raise ProtocolError(f"line {number}: first record must be the manifest")
+            if record.protocol != PROTOCOL:
+                raise ProtocolError(f"unsupported protocol version {record.protocol}")
+            seen_manifest = True
+        elif isinstance(record, Manifest):
+            raise ProtocolError(f"line {number}: second manifest")
+        elif open_source is not None and not isinstance(record, Chunk | SourceEnd):
+            raise ProtocolError(f"line {number}: source {open_source.source_id} not ended")
+        elif isinstance(record, Record):
+            counts["records"] += 1
+        elif isinstance(record, Error):
+            counts["errors"] += 1
+        elif isinstance(record, SourceStart):
+            if record.source_id in seen_source_ids:
+                raise ProtocolError(f"line {number}: source_id {record.source_id} reused")
+            seen_source_ids.add(record.source_id)
+            open_source, next_seq = record, 0
+            counts["sources"] += 1
+        elif isinstance(record, Chunk):
+            if open_source is None or record.source_id != open_source.source_id:
+                raise ProtocolError(f"line {number}: chunk for a source that is not open")
+            if record.seq != next_seq:
+                raise ProtocolError(f"line {number}: chunk seq {record.seq}, expected {next_seq}")
+            next_seq += 1
+            counts["chunks"] += 1
+        elif isinstance(record, SourceEnd):
+            if open_source is None or record.source_id != open_source.source_id:
+                raise ProtocolError(f"line {number}: end of a source that is not open")
+            if record.chunks != next_seq:
+                raise ProtocolError(
+                    f"line {number}: source {record.source_id} says {record.chunks} chunks, "
+                    f"stream had {next_seq}"
+                )
+            open_source = None
+        elif isinstance(record, Trailer):
+            trailer = record
+            # Only the counters this reader knows; newer ones are allowed (doc §4).
+            declared = {key: getattr(record.counts, key) for key in counts}
+            if declared != counts:
+                raise ProtocolError(f"trailer counts {declared} do not match stream {counts}")
+        yield record
+
+    if trailer is None:
+        raise IncompleteStream("stream ended without a trailer")
+
+
+def read_stream(compressed: bytes) -> list[StreamRecord]:
+    """Decompress and validate a whole stream held in memory."""
+    try:
+        text = gzip.decompress(compressed)
+    except EOFError as exc:  # cut off part-way: the session died
+        raise IncompleteStream(f"gzip stream cut off: {exc}") from exc
+    except (OSError, zlib.error) as exc:
+        raise ProtocolError(f"not a valid gzip stream: {exc}") from exc
+    return list(parse_lines(text.splitlines()))

@@ -15,7 +15,15 @@ from datetime import datetime
 from importlib.resources import files
 from typing import Annotated, Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 PROTOCOL = 1
 
@@ -193,6 +201,22 @@ class IncompleteStream(ProtocolError):
     """The stream ended without a trailer."""
 
 
+def _describe(exc: ValidationError) -> str:
+    """A validation failure in words, without any of the offending input."""
+    problems = []
+    for error in exc.errors(include_input=False, include_url=False, include_context=False):
+        where = ".".join(str(part) for part in error["loc"]) or "record"
+        problems.append(f"{where}: {error['msg']}")
+    return "; ".join(problems[:5])
+
+
+# The largest single record the reader will hold while waiting for its end.
+# Real records are far smaller (a chunk carries at most a 1 MiB line, about
+# 6 MiB once JSON-escaped); anything bigger is refused, not buffered.
+MAX_RECORD = 16 * 1024 * 1024
+_INFLATE_STEP = 1024 * 1024
+
+
 class StreamChecker:
     """Validates decompressed JSON Lines one line at a time, checking order
     and consistency, so a stream can be checked as it arrives."""
@@ -215,9 +239,15 @@ class StreamChecker:
         if self.trailer is not None:
             raise ProtocolError(f"line {number}: data after the trailer")
         try:
-            record = _record_adapter.validate_python(json.loads(raw))
-        except ValueError as exc:
-            raise ProtocolError(f"line {number}: {exc}") from exc
+            data = json.loads(raw)
+        except ValueError as exc:  # JSONDecodeError messages carry positions, not content
+            raise ProtocolError(f"line {number}: not valid JSON ({exc})") from None
+        try:
+            record = _record_adapter.validate_python(data)
+        except ValidationError as exc:
+            # Never quote the input: it can be evidence, and this message is
+            # stored unencrypted.
+            raise ProtocolError(f"line {number}: {_describe(exc)}") from None
 
         counts, open_source = self.counts, self._open_source
         if self.manifest is None:
@@ -291,15 +321,28 @@ class StreamReader:
         self._partial = b""
 
     def feed(self, data: bytes) -> list[StreamRecord]:
-        if self._inflate.eof:
-            if data:
+        records: list[StreamRecord] = []
+        pending = data
+        while pending:
+            if self._inflate.eof:
                 raise ProtocolError("data after the end of the gzip stream")
-            return []
-        try:
-            text = self._partial + self._inflate.decompress(data)
-        except zlib.error as exc:
-            raise ProtocolError(f"not a valid gzip stream: {exc}") from exc
-        *lines, self._partial = text.split(b"\n")
+            try:
+                # Inflate in bounded steps: a small, highly compressed input
+                # must not be able to expand all at once.
+                text = self._inflate.decompress(pending, _INFLATE_STEP)
+            except zlib.error as exc:
+                raise ProtocolError(f"not a valid gzip stream: {exc}") from exc
+            pending = self._inflate.unconsumed_tail
+            if self._inflate.eof and self._inflate.unused_data:
+                raise ProtocolError("data after the end of the gzip stream")
+            records.extend(self._lines(text))
+        return records
+
+    def _lines(self, text: bytes) -> list[StreamRecord]:
+        *lines, partial = (self._partial + text).split(b"\n")
+        if len(partial) > MAX_RECORD:
+            raise ProtocolError(f"a record longer than {MAX_RECORD} bytes")
+        self._partial = partial
         records = []
         for raw in lines:
             record = self.checker.feed_line(raw)

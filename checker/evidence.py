@@ -25,7 +25,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict
 from pyrage import x25519
 
-from checker.files import atomic_write
+from checker.files import atomic_write, locked
 from checker.protocol import (
     Error,
     IncompleteStream,
@@ -73,9 +73,16 @@ def initialise(home: Path, recipient: str | None = None) -> tuple[Config, Path |
     """Create the tool's directory, evidence key and database. With
     `recipient`, bundles are encrypted to that key and its private half stays
     wherever the organization keeps it; otherwise a key pair is made here."""
-    if config_file(home).exists():
-        raise EvidenceError(f"already set up ({config_file(home)}); nothing changed")
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # One init at a time: two interleaved could publish a key in the config
+    # whose private half the other had just replaced, leaving evidence unreadable.
+    with locked(config_file(home)):
+        if config_file(home).exists():
+            raise EvidenceError(f"already set up ({config_file(home)}); nothing changed")
+        return _initialise(home, recipient)
+
+
+def _initialise(home: Path, recipient: str | None) -> tuple[Config, Path | None]:
     identity_path = None
     if recipient:
         try:
@@ -352,6 +359,8 @@ CREATE TABLE IF NOT EXISTS custody (
 -- Append-only, enforced by the database itself (DESIGN.md §3.4).
 CREATE TRIGGER IF NOT EXISTS bundles_no_update BEFORE UPDATE ON bundles
     BEGIN SELECT RAISE(ABORT, 'bundles are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS bundles_no_delete BEFORE DELETE ON bundles
+    BEGIN SELECT RAISE(ABORT, 'bundles are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS custody_no_update BEFORE UPDATE ON custody
     BEGIN SELECT RAISE(ABORT, 'custody is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS custody_no_delete BEFORE DELETE ON custody
@@ -395,6 +404,7 @@ class Store:
         if fresh:
             os.chmod(path, 0o600)
         self._db.row_factory = sqlite3.Row
+        self._db.execute("PRAGMA foreign_keys = ON")
         self._db.executescript(_SCHEMA)
 
     def close(self) -> None:
@@ -453,19 +463,38 @@ def bundle_path(home: Path, host: str, identifier: str) -> Path:
     return home / "evidence" / host / f"{identifier}.age"
 
 
+SIDECAR_FIELDS = (
+    "id",
+    "host",
+    "run_id",
+    "started_at",
+    "ended_at",
+    "collector_sha256",
+    "plaintext_sha256",
+    "ciphertext_sha256",
+)
+
+
 def write_sidecar(sealed: Sealed, row: dict[str, Any]) -> Path:
     """A small unencrypted note beside the bundle: only identifiers, times and
     hashes, so a bundle can be checked without the database or the key."""
     sidecar = sealed.path.with_suffix(".json")
-    keep = (
-        "id",
-        "host",
-        "run_id",
-        "started_at",
-        "ended_at",
-        "collector_sha256",
-        "plaintext_sha256",
-        "ciphertext_sha256",
-    )
-    atomic_write(sidecar, json.dumps({key: row[key] for key in keep}, indent=2) + "\n")
+    atomic_write(sidecar, json.dumps({key: row[key] for key in SIDECAR_FIELDS}, indent=2) + "\n")
     return sidecar
+
+
+def check_sidecar(path: Path, row: sqlite3.Row) -> list[tuple[str, bool]]:
+    """Compare a bundle's sidecar with its database row, field by field.
+    Never raises: a missing or damaged sidecar is a failed check."""
+    try:
+        note = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return [("sidecar present", False)]
+    except (OSError, ValueError) as exc:
+        return [(f"sidecar readable ({type(exc).__name__})", False)]
+    if not isinstance(note, dict):
+        return [("sidecar is a JSON object", False)]
+    return [
+        (f"sidecar {key} agrees with the database", note.get(key) == row[key])
+        for key in SIDECAR_FIELDS
+    ]

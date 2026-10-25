@@ -6,11 +6,14 @@ import json
 import sqlite3
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
 from checker import cli
+from checker import collect as collect_module
 from checker.collect import collect_hosts
 from checker.evidence import (
     BundleWriter,
@@ -23,7 +26,7 @@ from checker.evidence import (
     open_bundle,
 )
 from checker.inventory import Host
-from checker.protocol import Limits, Settings, build_program
+from checker.protocol import MAX_RECORD, Limits, Settings, build_program
 
 LIMITS = Limits(overall_seconds=60, module_seconds=30, source_bytes=1 << 20)
 
@@ -146,6 +149,8 @@ def test_store_is_append_only(checker_home):
         store._db.execute("UPDATE bundles SET status = 'complete'")
     with pytest.raises(sqlite3.DatabaseError, match="append-only"):
         store._db.execute("DELETE FROM custody")
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        store._db.execute("DELETE FROM bundles")
     assert [r["action"] for r in store.custody_of("x")] == ["collected"]
 
 
@@ -244,3 +249,106 @@ async def test_one_unreachable_host_does_not_stop_the_others(server, checker_hom
     assert by_host["web01"].status == "complete"
     assert by_host["stranger"].status == "empty"
     assert by_host["stranger"].error.startswith("stranger: ")
+
+
+# --- Review fixes (Copilot on PR #8) ------------------------------------------------
+
+
+def stream_of(*records) -> bytes:
+    return gzip.compress(b"".join(json.dumps(r).encode() + b"\n" for r in records))
+
+
+def test_errors_never_quote_the_evidence(checker_home):
+    manifest = json.loads(gzip.decompress(real_stream()).splitlines()[0])
+    secret = "SECRET-PAYLOAD-7f3a"
+    bad_chunk = {
+        "type": "chunk",
+        "source_id": 1,
+        "seq": secret,
+        "encoding": "utf-8",
+        "data": secret,
+    }
+    start = {"type": "source_start", "source_id": 1, "module": "m", "kind": "file", "name": "/x"}
+    sealed, _ = seal(checker_home, stream_of(manifest, start, bad_chunk))
+    assert sealed.status == "broken"
+    assert "seq" in sealed.problem
+    assert secret not in sealed.problem
+    not_json = gzip.compress(json.dumps(manifest).encode() + b"\n{" + secret.encode() + b"\n")
+    sealed, _ = seal(checker_home / "again", not_json)
+    assert secret not in sealed.problem
+
+
+def test_a_decompression_bomb_is_refused_not_buffered(checker_home):
+    bomb = gzip.compress(b"A" * (MAX_RECORD + 1024 * 1024))  # no newline, tiny when compressed
+    assert len(bomb) < 100_000
+    sealed, _ = seal(checker_home, bomb, pieces=1)
+    assert sealed.status == "broken"
+    assert "longer than" in sealed.problem
+
+
+@pytest.mark.parametrize("pieces", [1, 50])
+def test_data_after_the_gzip_stream_is_rejected_however_it_arrives(checker_home, pieces):
+    sealed, _ = seal(checker_home, real_stream() + b"appended junk", pieces=pieces)
+    assert sealed.status == "broken"
+    assert "after the end of the gzip stream" in sealed.problem
+
+
+def test_concurrent_inits_leave_a_readable_setup(tmp_path):
+    home = tmp_path / "home"
+    code = (
+        "import sys; from pathlib import Path; from checker.evidence import initialise;"
+        " initialise(Path(sys.argv[1]))"
+    )
+
+    def init(_):
+        return subprocess.run(
+            [sys.executable, "-c", code, str(home)], capture_output=True, timeout=60
+        ).returncode
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        codes = list(pool.map(init, range(8)))
+    assert codes.count(0) == 1
+    config = load_config(home)
+    identity = load_identity(Path(config.identity_file))
+    assert str(identity.to_public()) == config.recipients[0]
+
+
+async def test_verify_checks_every_sidecar_field_and_survives_a_damaged_one(
+    server, checker_home, capsys
+):
+    config, _ = initialise(checker_home)
+    [outcome] = await collect_hosts(
+        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+    )
+    sidecar = checker_home / "evidence/web01" / f"{outcome.bundle_id}.json"
+    original = json.loads(sidecar.read_text())
+
+    def verify():
+        args = cli.build_parser().parse_args(["bundle", "verify", outcome.bundle_id])
+        return cli.cmd_bundle_verify(args)
+
+    sidecar.write_text(json.dumps(dict(original, run_id="someone-else")))
+    assert verify() == 1
+    assert "FAIL  sidecar run_id agrees with the database" in capsys.readouterr().out
+    for damaged in ("{not json", "[1, 2]"):
+        sidecar.write_text(damaged)
+        assert verify() == 1
+    store = Store(database_file(checker_home))
+    verdicts = [r["action"] for r in store.custody_of(outcome.bundle_id)]
+    assert verdicts.count("verified") == 3  # every attempt logged, none crashed
+
+
+async def test_hosts_whose_bundle_cannot_be_recorded_are_reported(
+    server, checker_home, monkeypatch
+):
+    config, _ = initialise(checker_home)
+
+    def broken_writer(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(collect_module, "BundleWriter", broken_writer)
+    [outcome] = await collect_hosts(
+        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+    )
+    assert outcome.status == "not_recorded"
+    assert "disk full" in outcome.error

@@ -26,7 +26,7 @@ DEFAULT_LIMITS = Limits(overall_seconds=600, module_seconds=120, source_bytes=25
 class Outcome:
     host: str
     bundle_id: str
-    status: str  # complete / partial / refused / incomplete / broken / empty
+    status: str  # complete / partial / refused / incomplete / broken / empty / not_recorded
     error: str | None
     bytes: int
 
@@ -105,7 +105,13 @@ async def collect_hosts(
         return session
 
     try:
-        await collect_many(hosts, one, parallel=parallel)
+        results = await collect_many(hosts, one, parallel=parallel)
     finally:
         store.close()
+    # A host whose bundle couldn't even be created or recorded must still be
+    # reported, never silently dropped.
+    recorded = {outcome.host for outcome in outcomes}
+    for name, result in results.items():
+        if name not in recorded:
+            outcomes.append(Outcome(name, "", "not_recorded", str(result), 0))
     return sorted(outcomes, key=lambda outcome: outcome.host)

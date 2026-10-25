@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -15,6 +14,7 @@ from checker.credentials import password_for
 from checker.evidence import (
     EvidenceError,
     Store,
+    check_sidecar,
     database_file,
     file_sha256,
     initialise,
@@ -171,8 +171,11 @@ def cmd_collect(args: argparse.Namespace) -> int:
     )
     for outcome in outcomes:
         note = f"  ({outcome.error})" if outcome.error else ""
-        print(f"{outcome.host:20} {outcome.status:10} {outcome.bundle_id}{note}")
-    return 0 if all(o.status in ("complete", "partial") for o in outcomes) else 1
+        print(f"{outcome.host:20} {outcome.status:12} {outcome.bundle_id or '-'}{note}")
+    succeeded = len(outcomes) == len(hosts) and all(
+        outcome.status in ("complete", "partial") for outcome in outcomes
+    )
+    return 0 if succeeded else 1
 
 
 def _identity(args: argparse.Namespace, base: Path):
@@ -243,18 +246,7 @@ def cmd_bundle_verify(args: argparse.Namespace) -> int:
     checks: list[tuple[str, bool]] = []
     actual = file_sha256(path) if path.exists() else None
     checks.append(("encrypted file matches its recorded hash", actual == row["ciphertext_sha256"]))
-    sidecar = path.with_suffix(".json")
-    if sidecar.exists():
-        note = json.loads(sidecar.read_text(encoding="utf-8"))
-        checks.append(
-            (
-                "sidecar agrees with the database",
-                note.get("ciphertext_sha256") == row["ciphertext_sha256"]
-                and note.get("plaintext_sha256") == row["plaintext_sha256"],
-            )
-        )
-    else:
-        checks.append(("sidecar present", False))
+    checks.extend(check_sidecar(path.with_suffix(".json"), row))
     try:
         identity = _identity(args, base)
     except EvidenceError as exc:

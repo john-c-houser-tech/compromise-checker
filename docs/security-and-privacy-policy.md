@@ -219,13 +219,37 @@ The tool gives you control of the data it collects, so these remain yours:
 - keeping the evidence encryption key and reports safe, and setting a
   retention period that meets your own obligations.
 
-## 14. Changes to this policy
+## 14. Limits of the tool, and responsibility for its use
+
+- **No guarantee.** The software is provided under the AGPL-3.0 licence "as
+  is", without warranty of any kind, and NouriLoop LLC's liability is limited
+  as set out in sections 15 and 16 of that licence. Those licence terms are
+  the binding ones; this section explains them in plain words.
+- **Findings are estimates.** A probability of compromise is an informed
+  estimate from the evidence available, not a certainty. A report with no
+  findings does not prove a server is clean: attackers can avoid or remove
+  evidence, logs may be missing, and no set of checks covers every technique.
+  A high score is a reason to investigate, not proof of an intrusion.
+- **Advice is advice.** Remediation guidance, whether from the tool's rules or
+  the AI advisor, must be judged by qualified people against your own systems
+  before anyone acts on it.
+- **Use is the user's responsibility.** NouriLoop LLC does not control who runs
+  the software or against which systems. Anyone who uses it, or a modified
+  version of it, is responsible for having the authority to do so and for
+  complying with the law. NouriLoop LLC is not responsible for unauthorized or
+  unlawful use.
+- **Modified versions.** This policy describes the software as NouriLoop LLC
+  publishes it. A modified version may behave differently; the collector
+  fingerprint stored with each collection shows whether the published
+  collector was the one that ran.
+
+## 15. Changes to this policy
 
 Each release includes the policy that applies to it. Changes are listed in the
 release notes, and any change that sends more data anywhere, or collects a new
 kind of data by default, is called out at the top of those notes.
 
-## 15. Contact
+## 16. Contact
 
 NouriLoop LLC, Astoria, Oregon. Security reports: security@nouriloop.com
 (see `SECURITY.md`). Other questions: info@nouriloop.com.

@@ -33,3 +33,7 @@ compatible and standard-library only; CI runs its tests with the system
 
 AGPL-3.0 (see [LICENSE](LICENSE)). Threat packs, when they exist, are
 published separately under CC BY 4.0.
+
+Provided as is, without warranty. Findings are estimates, and a clean report
+is not proof that a server is clean; see section 14 of the
+[security and privacy policy](docs/security-and-privacy-policy.md).

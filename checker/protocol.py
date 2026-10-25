@@ -7,7 +7,6 @@ the real collector and validates its output against them.
 
 import base64
 import binascii
-import gzip
 import hashlib
 import json
 import zlib
@@ -194,31 +193,39 @@ class IncompleteStream(ProtocolError):
     """The stream ended without a trailer."""
 
 
-def parse_lines(lines: Iterable[bytes]) -> Iterator[StreamRecord]:
-    """Validate decompressed JSON Lines, checking order and consistency."""
-    seen_manifest = False
-    trailer: Trailer | None = None
-    open_source: SourceStart | None = None
-    next_seq = 0
-    seen_source_ids: set[int] = set()
-    counts = {"records": 0, "sources": 0, "chunks": 0, "errors": 0}
+class StreamChecker:
+    """Validates decompressed JSON Lines one line at a time, checking order
+    and consistency, so a stream can be checked as it arrives."""
 
-    for number, raw in enumerate(lines, start=1):
+    def __init__(self) -> None:
+        self.manifest: Manifest | None = None
+        self.trailer: Trailer | None = None
+        self._open_source: SourceStart | None = None
+        self._next_seq = 0
+        self._seen_source_ids: set[int] = set()
+        self._number = 0
+        self.counts = {"records": 0, "sources": 0, "chunks": 0, "errors": 0}
+
+    def feed_line(self, raw: bytes) -> StreamRecord | None:
+        """Check one line; returns its record (None for a blank line)."""
+        self._number += 1
+        number = self._number
         if not raw.strip():
-            continue
-        if trailer is not None:
+            return None
+        if self.trailer is not None:
             raise ProtocolError(f"line {number}: data after the trailer")
         try:
             record = _record_adapter.validate_python(json.loads(raw))
         except ValueError as exc:
             raise ProtocolError(f"line {number}: {exc}") from exc
 
-        if not seen_manifest:
+        counts, open_source = self.counts, self._open_source
+        if self.manifest is None:
             if not isinstance(record, Manifest):
                 raise ProtocolError(f"line {number}: first record must be the manifest")
             if record.protocol != PROTOCOL:
                 raise ProtocolError(f"unsupported protocol version {record.protocol}")
-            seen_manifest = True
+            self.manifest = record
         elif isinstance(record, Manifest):
             raise ProtocolError(f"line {number}: second manifest")
         elif open_source is not None and not isinstance(record, Chunk | SourceEnd):
@@ -228,45 +235,96 @@ def parse_lines(lines: Iterable[bytes]) -> Iterator[StreamRecord]:
         elif isinstance(record, Error):
             counts["errors"] += 1
         elif isinstance(record, SourceStart):
-            if record.source_id in seen_source_ids:
+            if record.source_id in self._seen_source_ids:
                 raise ProtocolError(f"line {number}: source_id {record.source_id} reused")
-            seen_source_ids.add(record.source_id)
-            open_source, next_seq = record, 0
+            self._seen_source_ids.add(record.source_id)
+            self._open_source, self._next_seq = record, 0
             counts["sources"] += 1
         elif isinstance(record, Chunk):
             if open_source is None or record.source_id != open_source.source_id:
                 raise ProtocolError(f"line {number}: chunk for a source that is not open")
-            if record.seq != next_seq:
-                raise ProtocolError(f"line {number}: chunk seq {record.seq}, expected {next_seq}")
-            next_seq += 1
+            if record.seq != self._next_seq:
+                raise ProtocolError(
+                    f"line {number}: chunk seq {record.seq}, expected {self._next_seq}"
+                )
+            self._next_seq += 1
             counts["chunks"] += 1
         elif isinstance(record, SourceEnd):
             if open_source is None or record.source_id != open_source.source_id:
                 raise ProtocolError(f"line {number}: end of a source that is not open")
-            if record.chunks != next_seq:
+            if record.chunks != self._next_seq:
                 raise ProtocolError(
                     f"line {number}: source {record.source_id} says {record.chunks} chunks, "
-                    f"stream had {next_seq}"
+                    f"stream had {self._next_seq}"
                 )
-            open_source = None
+            self._open_source = None
         elif isinstance(record, Trailer):
-            trailer = record
+            self.trailer = record
             # Only the counters this reader knows; newer ones are allowed (doc §4).
             declared = {key: getattr(record.counts, key) for key in counts}
             if declared != counts:
                 raise ProtocolError(f"trailer counts {declared} do not match stream {counts}")
-        yield record
+        return record
 
-    if trailer is None:
-        raise IncompleteStream("stream ended without a trailer")
+    def finish(self) -> None:
+        if self.trailer is None:
+            raise IncompleteStream("stream ended without a trailer")
+
+
+def parse_lines(lines: Iterable[bytes]) -> Iterator[StreamRecord]:
+    """Validate decompressed JSON Lines, checking order and consistency."""
+    checker = StreamChecker()
+    for raw in lines:
+        record = checker.feed_line(raw)
+        if record is not None:
+            yield record
+    checker.finish()
+
+
+class StreamReader:
+    """Decompresses and checks a stream fed in arbitrary pieces, as it
+    arrives over SSH or out of a decrypting bundle."""
+
+    def __init__(self) -> None:
+        self.checker = StreamChecker()
+        self._inflate = zlib.decompressobj(wbits=31)  # gzip
+        self._partial = b""
+
+    def feed(self, data: bytes) -> list[StreamRecord]:
+        if self._inflate.eof:
+            if data:
+                raise ProtocolError("data after the end of the gzip stream")
+            return []
+        try:
+            text = self._partial + self._inflate.decompress(data)
+        except zlib.error as exc:
+            raise ProtocolError(f"not a valid gzip stream: {exc}") from exc
+        *lines, self._partial = text.split(b"\n")
+        records = []
+        for raw in lines:
+            record = self.checker.feed_line(raw)
+            if record is not None:
+                records.append(record)
+        return records
+
+    def finish(self) -> list[StreamRecord]:
+        # A cut-off stream is incomplete, whatever its half-received last line says.
+        if not self._inflate.eof:
+            raise IncompleteStream("gzip stream cut off before its end")
+        records = []
+        if self._partial:
+            record = self.checker.feed_line(self._partial)
+            self._partial = b""
+            if record is not None:
+                records.append(record)
+        self.checker.finish()
+        return records
 
 
 def read_stream(compressed: bytes) -> list[StreamRecord]:
     """Decompress and validate a whole stream held in memory."""
-    try:
-        text = gzip.decompress(compressed)
-    except EOFError as exc:  # cut off part-way: the session died
-        raise IncompleteStream(f"gzip stream cut off: {exc}") from exc
-    except (OSError, zlib.error) as exc:
-        raise ProtocolError(f"not a valid gzip stream: {exc}") from exc
-    return list(parse_lines(text.splitlines()))
+    if compressed[:2] != b"\x1f\x8b":
+        raise ProtocolError("not a valid gzip stream: no gzip header")
+    reader = StreamReader()
+    records = reader.feed(compressed)
+    return records + reader.finish()

@@ -15,6 +15,7 @@ requires-python = ">=3.12"
 dependencies = [
     "asyncssh>=2.24.1",
     "pydantic>=2.14.1",
+    "pyrage>=1.4.0",
     "PyYAML>=6.0.3",
 ]
 

@@ -13,6 +13,9 @@ is written to the server.
 - [DESIGN.md](DESIGN.md) — architecture, security and privacy policy, checks,
   scoring, and the decisions made so far.
 - [plans/](plans/) — build plans for each phase.
+- [Security and privacy policy](docs/security-and-privacy-policy.md) — what the
+  tool does on your servers and with your data. [SECURITY.md](SECURITY.md) —
+  reporting a vulnerability.
 
 ## Development
 

@@ -89,8 +89,15 @@ says so in the report.
  "python": {"version": "3.9.25", "executable": "/usr/bin/python3"},
  "effective_uid": 0,
  "settings": { … as received … },
- "modules_planned": ["host_facts", "auth_log"]}
+ "modules_planned": ["host_facts", "auth_log"],
+ "masking_version": 1,
+ "priority": {"nice": 19, "io": "idle"}}
 ```
+
+- `masking_version` — version of the secret-masking rules applied to every
+  text chunk (DESIGN.md §3.4); reports cite it.
+- `priority` — what the collector achieved when lowering its own priority:
+  the resulting nice value, and `idle` or `unchanged` for disk I/O.
 
 The collector flushes the stream right after the manifest, so it reaches the
 controller before any module runs. `started_at` is the **target's** clock. The controller records its own clock
@@ -130,12 +137,15 @@ chunks.
 - `meta` — for files: size, modification time, mode, owner, inode, and the
   compression the collector undid, if any. For commands: `exit_code`.
 - `chunk.seq` — 0, 1, 2… with no gaps. `encoding` is `utf-8` when the bytes
-  are valid UTF-8, otherwise `base64`. A chunk holds at most 64 KiB of the
-  original bytes.
+  are valid UTF-8, otherwise `base64`. Chunks hold whole lines, masked whole,
+  up to 64 KiB of original bytes; a single longer line (up to 1 MiB) travels
+  alone in its own chunk. A line longer than 1 MiB is not sent: it is
+  replaced by `[MASKED:oversized_line N bytes]` and counted under `masked`.
 - `source_end.bytes` — total original bytes sent (after decompression, before
-  masking). `truncated` is true when the source hit the byte cap or a time
-  limit; `truncated_reason` then says which. `masked` counts masked secrets
-  by kind (DESIGN.md §3.4). `error` is set if reading failed part-way.
+  masking). `truncated` is true when the source hit the byte cap (the last
+  line that would not fit whole is left out) or a time limit;
+  `truncated_reason` then says which. `masked` counts masked secrets by kind
+  (DESIGN.md §3.4). `error` is set if reading failed part-way.
 
 ### 3.4 `error`
 

@@ -9,7 +9,7 @@ and servers left behind by a crashed run are swept up next time.
 
 Run by hand, not in CI: it spends money (a Nanode is $0.0075 an hour) and
 needs a Linode API token with Linodes: Read/Write only, from $LINODE_TOKEN or
-the 1Password item "Linode API token compromise-checker-tests".
+1Password (item "Linode Personal Access Token" in vault "Linode" by default).
 
     python tests/integration/readonly_proof.py [--distro ubuntu24.04 rocky9] [--keep]
 """
@@ -50,7 +50,9 @@ IMAGES = {
     "alma9": "linode/almalinux9",
     "alma10": "linode/almalinux10",
 }
-OP_ITEM = "Linode API token compromise-checker-tests"
+# Where the token lives in 1Password (override with $CC_LINODE_OP_ITEM / $CC_LINODE_OP_VAULT).
+OP_ITEM = os.environ.get("CC_LINODE_OP_ITEM", "Linode Personal Access Token")
+OP_VAULT = os.environ.get("CC_LINODE_OP_VAULT", "Linode")
 SWEEP_AFTER = timedelta(hours=2)
 
 # Writes a login (sshd, PAM, sudo) is allowed to cause: the traces the policy
@@ -72,12 +74,10 @@ def linode_token() -> str:
     token = os.environ.get("LINODE_TOKEN")
     if token:
         return token
-    for field_name in ("credential", "password"):
-        result = subprocess.run(  # noqa: S603 - fixed arguments
-            ["op", "item", "get", OP_ITEM, "--fields", f"label={field_name}", "--reveal"],  # noqa: S607
-            capture_output=True,
-            text=True,
-        )
+    for field_name in ("token", "credential", "password"):
+        command = ["op", "item", "get", OP_ITEM, "--vault", OP_VAULT]
+        command += ["--fields", f"label={field_name}", "--reveal"]
+        result = subprocess.run(command, capture_output=True, text=True)  # noqa: S603
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
     sys.exit(f"No LINODE_TOKEN and no 1Password item {OP_ITEM!r} readable with `op`.")

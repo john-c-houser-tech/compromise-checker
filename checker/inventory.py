@@ -5,11 +5,15 @@ Only hosts listed here are ever contacted (security and privacy policy §3).
 
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from checker.files import atomic_write, locked
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
 
@@ -74,6 +78,16 @@ class Inventory(BaseModel):
 
     hosts: list[Host] = []
 
+    @model_validator(mode="after")
+    def _unique_names(self) -> "Inventory":
+        # Results are keyed by host name; a duplicate would silently lose one.
+        seen: set[str] = set()
+        for host in self.hosts:
+            if host.name in seen:
+                raise ValueError(f"host name {host.name!r} appears more than once")
+            seen.add(host.name)
+        return self
+
     def get(self, name: str) -> Host:
         for host in self.hosts:
             if host.name == name:
@@ -100,11 +114,18 @@ def load_inventory(path: Path | None = None) -> Inventory:
 
 def save_inventory(inventory: Inventory, path: Path | None = None) -> None:
     path = path or hosts_file()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     data = inventory.model_dump(mode="json", exclude_defaults=True)
     data.setdefault("hosts", [])
-    text = yaml.safe_dump(data, sort_keys=False)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.replace(path)
+    atomic_write(path, yaml.safe_dump(data, sort_keys=False))
+
+
+@contextmanager
+def inventory_transaction(path: Path | None = None) -> Iterator[Inventory]:
+    """Load, change and save the inventory under one lock, so concurrent
+    commands can't overwrite each other's changes. Nothing is saved if the
+    block raises."""
+    path = path or hosts_file()
+    with locked(path):
+        inventory = load_inventory(path)
+        yield inventory
+        save_inventory(inventory, path)

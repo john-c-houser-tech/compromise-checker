@@ -345,6 +345,21 @@ async def test_no_ready_signal_means_no_program(server):
     assert server.target.stdin_seen == PASSWORD.encode() + b"\n"
 
 
+async def test_a_cancelled_run_leaves_no_waiters_behind(server):
+    server.target.sudo_stalls_after_password = True
+    with pytest.raises(TransportError, match="timed out"):
+        await run(
+            server,
+            host(server, sudo="password"),
+            password_provider=lambda _: PASSWORD,
+            prompt_timeout=10,
+            timeout=0.5,
+        )
+    await asyncio.sleep(0)
+    leftovers = [t for t in asyncio.all_tasks() if "Event.wait" in repr(t.get_coro())]
+    assert leftovers == []
+
+
 async def test_sink_may_return_any_awaitable(server):
     loop = asyncio.get_running_loop()
     written = bytearray()
@@ -377,6 +392,35 @@ async def test_timeout(server):
         await run(server, host(server), timeout=0.5)
     assert info.value.session.error == "timed out after 0.5 seconds"
     assert info.value.session.ended_at is not None
+
+
+async def test_cancelling_a_waiting_run_keeps_the_prompt_lock_until_the_prompt_ends():
+    first_on_screen, release_first = threading.Event(), threading.Event()
+    active, peak = 0, 0
+
+    def provider(h: Host) -> str:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if h.name == "first":
+            first_on_screen.set()
+            release_first.wait(5)  # the person is still typing
+        active -= 1
+        return PASSWORD
+
+    first = asyncio.create_task(
+        transport._ask_password(provider, Host(name="first", address="a", user="u"))
+    )
+    await asyncio.to_thread(first_on_screen.wait, 5)
+    first.cancel()  # e.g. its run hit a time limit
+    second = asyncio.create_task(
+        transport._ask_password(provider, Host(name="second", address="a", user="u"))
+    )
+    await asyncio.sleep(0.2)
+    assert not second.done()  # still waiting: the first prompt holds the terminal
+    release_first.set()
+    assert await second == PASSWORD
+    assert peak == 1
 
 
 async def test_password_prompts_run_off_the_loop_one_at_a_time():

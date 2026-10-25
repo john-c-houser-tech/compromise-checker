@@ -10,7 +10,7 @@ import asyncio
 import json
 import secrets
 import shlex
-import weakref
+import threading
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -19,6 +19,7 @@ from pathlib import Path
 import asyncssh
 from asyncssh.public_key import decode_ssh_public_key
 
+from checker.files import atomic_write, locked
 from checker.inventory import Host, known_hosts_file
 
 STDERR_LIMIT = 64 * 1024
@@ -104,19 +105,21 @@ def remote_command(host: Host, prompt: str | None = None, ready: str | None = No
     return " ".join(shlex.quote(part) for part in argv)
 
 
-# One credential prompt at a time per event loop: prompts on a shared
-# terminal must not interleave, and they run off the loop so other hosts'
-# SSH traffic and time limits keep going while someone types.
-_prompt_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
-    weakref.WeakKeyDictionary()
-)
+# Credential prompts run off the event loop, so other hosts' SSH traffic and
+# time limits keep going while someone types, and one at a time, so prompts
+# on a shared terminal never interleave. The lock is taken inside the worker
+# thread: if the waiting coroutine is cancelled, the prompt already on screen
+# still holds it until it really finishes.
+_prompt_lock = threading.Lock()
+
+
+def _prompt_serially(provider: PasswordProvider, host: Host) -> str:
+    with _prompt_lock:
+        return provider(host)
 
 
 async def _ask_password(provider: PasswordProvider, host: Host) -> str:
-    loop = asyncio.get_running_loop()
-    lock = _prompt_locks.setdefault(loop, asyncio.Lock())
-    async with lock:
-        return await asyncio.to_thread(provider, host)
+    return await asyncio.to_thread(_prompt_serially, provider, host)
 
 
 class _Client(asyncssh.SSHClient):
@@ -322,11 +325,15 @@ async def _run(conn, host, program, sink, session, password, prompt_timeout) -> 
             # as further password attempts.
             accepted = asyncio.ensure_future(ready_seen.wait())
             rejected = asyncio.ensure_future(password_rejected.wait())
-            done, pending = await asyncio.wait(
-                {accepted, rejected}, timeout=prompt_timeout, return_when=asyncio.FIRST_COMPLETED
-            )
-            for waiter in pending:
-                waiter.cancel()
+            try:
+                done, _ = await asyncio.wait(
+                    {accepted, rejected},
+                    timeout=prompt_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:  # also when this run is cancelled (e.g. its time limit)
+                for waiter in (accepted, rejected):
+                    waiter.cancel()
             if rejected in done:
                 process.close()
                 raise SudoError(f"{host.name}: sudo rejected the password")
@@ -436,14 +443,13 @@ async def fetch_host_key(host: Host, known_hosts: Path | None = None) -> HostKey
 
 
 def trust_host_key(host: Host, check: HostKeyCheck, known_hosts: Path | None = None) -> None:
-    """Record `check.key` as the only trusted key for this host."""
+    """Record `check.key` as the only trusted key for this host. The whole
+    read-modify-write holds a lock, so concurrent `trust` commands can't
+    lose each other's entries."""
     path = known_hosts or known_hosts_file()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     name = _known_hosts_name(host)
-    kept = [line for line in _read_known(path) if line.split()[:1] != [name]]
     entry = check.key.export_public_key("openssh").decode("ascii").split()
-    kept.append(f"{name} {entry[0]} {entry[1]}")
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.replace(path)
+    with locked(path):
+        kept = [line for line in _read_known(path) if line.split()[:1] != [name]]
+        kept.append(f"{name} {entry[0]} {entry[1]}")
+        atomic_write(path, "\n".join(kept) + "\n")

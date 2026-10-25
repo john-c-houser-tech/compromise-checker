@@ -51,4 +51,4 @@ per-file-target-version = { "checker/collector/*.py" = "py39", "tests/collector/
 select = ["E", "F", "W", "I", "UP", "B", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106"]  # asserts; made-up test passwords
+"tests/**" = ["S101", "S105", "S106", "S603"]  # asserts; made-up passwords; own commands

@@ -8,12 +8,11 @@ from collections.abc import Callable
 from pydantic import ValidationError
 
 from checker import __version__
-from checker.inventory import Host, load_inventory, save_inventory
+from checker.inventory import Host, inventory_transaction, load_inventory
 from checker.transport import TransportError, fetch_host_key, trust_host_key
 
 
 def cmd_hosts_add(args: argparse.Namespace) -> int:
-    inventory = load_inventory()
     try:
         host = Host(
             name=args.name,
@@ -27,11 +26,11 @@ def cmd_hosts_add(args: argparse.Namespace) -> int:
             group=args.group,
             python=args.python,
         )
-        inventory.add(host)
+        with inventory_transaction() as inventory:
+            inventory.add(host)
     except (ValidationError, ValueError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 2
-    save_inventory(inventory)
     print(f"Added {host.name} ({host.user}@{host.address}:{host.port}).")
     print(f"Next: `checker trust {host.name}` to check and accept its host key.")
     return 0
@@ -52,13 +51,12 @@ def cmd_hosts_list(args: argparse.Namespace) -> int:
 
 
 def cmd_hosts_remove(args: argparse.Namespace) -> int:
-    inventory = load_inventory()
     try:
-        inventory.remove(args.name)
+        with inventory_transaction() as inventory:
+            inventory.remove(args.name)
     except KeyError as exc:
         print(f"checker: {exc.args[0]}", file=sys.stderr)
         return 2
-    save_inventory(inventory)
     print(f"Removed {args.name}.")
     return 0
 

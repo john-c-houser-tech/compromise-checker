@@ -388,6 +388,17 @@ class MaskingTests(unittest.TestCase):
             self.assertNotIn(b"escaped", masked, text)
             self.assertEqual(counts, {"password": 1}, text)
 
+    def test_quoted_mysql_passwords_are_masked_whole(self):
+        cases = [
+            (
+                b"mysql -u root -p'first second' db\n",
+                b"mysql -u root -p[MASKED:mysql_password] db\n",
+            ),
+            (b'mysqldump -p"a b" x\n', b"mysqldump -p[MASKED:mysql_password] x\n"),
+        ]
+        for text, expected in cases:
+            self.assertEqual(self.mask(text), (expected, {"mysql_password": 1}), text)
+
     def test_secrets_beside_a_key_block_are_masked(self):
         masked, counts = self.mask(
             b"token=hunter2 -----BEGIN PRIVATE KEY-----\nMII\n"
@@ -402,6 +413,19 @@ class MaskingTests(unittest.TestCase):
         masked, counts = self.mask(b"token=ghp_" + b"d" * 36 + b"\n")
         self.assertEqual(masked, b"token=[MASKED:github_token]\n")
         self.assertEqual(counts, {"github_token": 1})
+
+
+class ReadSmallTests(unittest.TestCase):
+    def test_read_errors_after_opening_count_as_missing(self):
+        collector = load_collector("/")
+
+        class Failing(io.BytesIO):
+            def read(self, *args):
+                raise OSError(5, "Input/output error")
+
+        collector.open_regular_file = lambda absolute: (Failing(), None)
+        self.assertIsNone(collector.read_small("/etc/os-release"))
+        self.assertEqual(collector.read_os_release(), {})
 
 
 class PriorityTests(unittest.TestCase):

@@ -154,7 +154,11 @@ MASKING_RULES = [
     _rule("url_password", rb"[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]+:", rb"[^\s@/]+(?=@)"),
     _rule("auth_header", rb"(?i)authorization:\s*(?:bearer|basic|token)?\s*", rb"[^\s\"']+"),
     _rule("bearer_token", rb"(?i)\bbearer\s+", rb"[A-Za-z0-9._~+/=-]{8,}"),
-    _rule("mysql_password", rb"\b(?:mysql|mariadb|mysqldump|mysqladmin)\b[^\n]*?\s-p", rb"\S+"),
+    _rule(
+        "mysql_password",
+        rb"\b(?:mysql|mariadb|mysqldump|mysqladmin)\b[^\n]*?\s-p",
+        _QUOTED + rb"|\S+",
+    ),
     _rule(
         "password",
         rb"(?i)--?(?:password|passwd|pass|token|secret|api-?key)[= ]",
@@ -457,8 +461,11 @@ def read_small(absolute, limit=65536):
         raw, _ = open_regular_file(absolute)
     except (OSError, ValueError):
         return None
-    with raw:
-        return raw.read(limit).decode("utf-8", errors="replace")
+    try:
+        with raw:
+            return raw.read(limit).decode("utf-8", errors="replace")
+    except OSError:  # opened but unreadable (I/O error): treat as missing
+        return None
 
 
 # --- Priority ---------------------------------------------------------------------

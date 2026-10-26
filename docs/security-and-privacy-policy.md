@@ -71,7 +71,11 @@ Any login leaves records. The tool's runs leave these:
   timestamp record (held in memory under `/run`) and, the first time an
   account uses sudo, sudo's one-time notice marker;
 - records of the commands run, if the server's audit system is configured to
-  keep them.
+  keep them;
+- the system's ordinary session setup for the account: a per-login runtime
+  area in memory (`/run/user/…`) and, on Ubuntu, its login-message files,
+  including one small marker file (`.cache/motd.legal-displayed`) in the
+  scanner account's home directory on its first login.
 
 **The tool never removes, edits or suppresses any of these.** On a server
 that may be compromised, changing logs destroys evidence, and it is exactly

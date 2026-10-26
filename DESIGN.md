@@ -107,6 +107,11 @@ first.
   disk) and, on first use by that account, its "lecture" marker.
 - auditd records of the commands run, where auditd is configured to record
   them.
+- The system's ordinary session setup for the account: a per-login runtime
+  area in memory (`/run/user/…`, control groups) and, on Ubuntu, its
+  login-message files, including one small marker file
+  (`.cache/motd.legal-displayed`) in the scanner account's home on its first
+  login. Measured by the read-only proof (PR 0.7) on Ubuntu 24.04 and Rocky 9.
 
 **Never done:** removing, editing, or suppressing any of those traces.
 Changing logs on a system that may be compromised destroys evidence, and it

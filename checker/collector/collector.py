@@ -435,6 +435,8 @@ def pump_lines(run, writer, reader, transform=None):
         if length > MAX_LINE:
             # Too long to mask safely: skip to its end, send a marker.
             while not line.endswith(b"\n") and not run.out_of_time():
+                if writer.total + length > writer.cap:
+                    return "size"  # nothing of it is sent either way
                 line = reader.readline(MAX_LINE)
                 if not line:
                     break
@@ -609,6 +611,14 @@ class Walk:
             return True
         return self.hash_files == "executable" and bool(info.st_mode & 0o111)
 
+    def _stop(self):
+        """True, with the reason recorded, once a limit is reached."""
+        if self.run.out_of_time():
+            self.truncated_reason = "time"
+        elif self.entries >= self.max_entries:
+            self.truncated_reason = "entries"
+        return self.truncated_reason is not None
+
     def _counted(self, entry):
         self.entries += 1
         if "error" in entry:
@@ -628,8 +638,12 @@ class Walk:
             except OSError as exc:
                 yield self._counted({"path": self.top, "error": str(exc)})
                 return
-        yield self._counted(self._entry(self.top, top_info, link_target))
-        if not stat.S_ISDIR(top_info.st_mode):
+        top_entry = self._entry(self.top, top_info, link_target)
+        if stat.S_ISDIR(top_info.st_mode) and self.max_depth <= 0:
+            top_entry["not_descended"] = "depth"
+            self.not_descended["depth"] += 1
+        yield self._counted(top_entry)
+        if "not_descended" in top_entry or not stat.S_ISDIR(top_info.st_mode):
             return
         device = top_info.st_dev
         # Each directory is opened by path, so it must still be the directory
@@ -638,6 +652,8 @@ class Walk:
         # walk records that instead of following it.
         pending = [(self.top, 0, (top_info.st_dev, top_info.st_ino))]
         while pending:
+            if self._stop():
+                return
             directory, depth, identity = pending.pop()
             try:
                 fd = _open_directory(directory)
@@ -651,11 +667,7 @@ class Walk:
                     continue
                 with os.scandir(fd) as listing:
                     for item in listing:
-                        if self.run.out_of_time():
-                            self.truncated_reason = "time"
-                            return
-                        if self.entries >= self.max_entries:
-                            self.truncated_reason = "entries"
+                        if self._stop():
                             return
                         absolute = _join(directory, item.name)
                         try:
@@ -811,6 +823,8 @@ def run_command(run, module, name, args, transform=None):
     if killed["time"]:
         truncated_reason = "time"
     stderr = errors["kept"]
+    if (errors["more"] or truncated_reason) and not stderr.endswith(b"\n"):
+        errors["more"] = True
     if errors["more"]:
         # Cut at the cap: withhold the partial last line, which masking might
         # not recognise once cut.
@@ -1051,25 +1065,38 @@ JOURNAL_FIELDS = (
 JOURNAL_AUTH_MATCHES = ("SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10")
 
 
-def _merge_counts(masker, counts):
-    for kind, count in counts.items():
-        masker.counts[kind] = masker.counts.get(kind, 0) + count
+def _field_masker(masker, field):
+    """One Masker per journal field for the whole source, so a private key
+    logged across several entries' MESSAGE stays masked to its end, while
+    one field's state never affects another's."""
+    fields = masker.__dict__.setdefault("journal_fields", {})
+    if field not in fields:
+        fields[field] = Masker()
+    return fields[field]
 
 
-def _mask_journal_value(value, masker):
+def _mask_bytes(masker, field, data):
+    field_masker = _field_masker(masker, field)
+    before = dict(field_masker.counts)
+    masked = b"".join(field_masker.line(line) for line in data.splitlines(keepends=True))
+    for kind, count in field_masker.counts.items():
+        added = count - before.get(kind, 0)
+        if added:
+            masker.counts[kind] = masker.counts.get(kind, 0) + added
+    return masked
+
+
+def _mask_journal_value(value, masker, field):
     """Mask one decoded journal field. journalctl writes a field that is not
     valid UTF-8 as an array of byte values, and a field that occurs more than
     once as an array of values; both are masked item by item."""
     if isinstance(value, str):
-        masked, counts = mask_text(value.encode("utf-8", errors="surrogatepass"))
-        _merge_counts(masker, counts)
+        masked = _mask_bytes(masker, field, value.encode("utf-8", errors="surrogatepass"))
         return masked.decode("utf-8", errors="replace")
     if isinstance(value, list):
         if value and all(isinstance(b, int) and 0 <= b <= 255 for b in value):
-            masked, counts = mask_text(bytes(value))
-            _merge_counts(masker, counts)
-            return list(masked)
-        return [_mask_journal_value(item, masker) for item in value]
+            return list(_mask_bytes(masker, field, bytes(value)))
+        return [_mask_journal_value(item, masker, field) for item in value]
     return value
 
 
@@ -1085,7 +1112,7 @@ def mask_journal_line(line, masker):
     if not isinstance(entry, dict):
         masker.counts["unparsed_line"] = masker.counts.get("unparsed_line", 0) + 1
         return b"[MASKED:unparsed_line %d bytes]\n" % len(line)
-    entry = {key: _mask_journal_value(value, masker) for key, value in entry.items()}
+    entry = {key: _mask_journal_value(value, masker, key) for key, value in entry.items()}
     try:
         return (json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
     except UnicodeEncodeError:  # a lone surrogate in a field name
@@ -1099,6 +1126,9 @@ def module_auth_journal(run):
         "--output=json",
         "--no-pager",
         "--quiet",
+        # Without --all, JSON output replaces any field over 4 KiB with null,
+        # silently; the collector's own line limit handles long ones instead.
+        "--all",
         f"--since=@{int(run.since.timestamp())}",
         "--output-fields=" + ",".join(JOURNAL_FIELDS),
     ]

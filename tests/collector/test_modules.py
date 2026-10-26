@@ -522,6 +522,17 @@ class WalkTests(FixtureRoot):
         self.assertNotIn("/etc/app/deep/a/b", entries)
         self.assertEqual(summary["not_descended"]["depth"], 1)
 
+    def test_depth_zero_lists_only_the_top(self):
+        entries, summary = self.walk(max_depth=0)
+        self.assertEqual(list(entries), ["/etc/app"])
+        self.assertEqual(entries["/etc/app"]["not_descended"], "depth")
+        self.assertFalse(summary["truncated"])
+
+    def test_entry_limit_checked_before_opening_a_directory(self):
+        entries, summary = self.walk(max_entries=1)
+        self.assertEqual(list(entries), ["/etc/app"])
+        self.assertEqual(summary["truncated_reason"], "entries")
+
     def test_entry_limit_truncates(self):
         entries, summary = self.walk(max_entries=3)
         self.assertEqual(len(entries), 3)
@@ -645,6 +656,23 @@ class CommandTests(FixtureRoot):
         self.assertLessEqual(len(end["stderr"]), 4096)
         self.assertNotIn("hunter2", end["stderr"])
 
+    def test_error_line_cut_by_a_kill_is_withheld(self):
+        self.install(b"#!/bin/sh\nprintf 'ok\\nurl https://u:hunter2-partial' >&2\nexec sleep 30\n")
+        _, timed_out, records = self.run_command(seconds=1)
+        self.assertTrue(timed_out)
+        ((_, _, end),) = sources(records).values()
+        self.assertEqual(end["stderr"], "ok\n")
+        self.assertTrue(end["stderr_truncated"])
+
+    def test_endless_line_stops_at_the_byte_cap(self):
+        self.install(b"#!/bin/sh\nexec head -c 5000000 /dev/zero\n")
+        began = time.monotonic()
+        _, timed_out, records = self.run_command(source_bytes=1 << 20, seconds=30)
+        self.assertLess(time.monotonic() - began, 10)
+        self.assertFalse(timed_out)
+        ((_, content, end),) = sources(records).values()
+        self.assertEqual((content, end["truncated_reason"]), (b"", "size"))
+
     def test_child_holding_the_pipes_is_killed_at_the_deadline(self):
         # The command exits at once, leaving a child with its output open.
         self.install(b"#!/bin/sh\nsleep 30 &\necho done\n")
@@ -705,6 +733,7 @@ class JournalTests(FixtureRoot):
         self.assertEqual(argv[-2:], ["SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10"])
         since = [a for a in argv if a.startswith("--since=@")][0]
         self.assertAlmostEqual(int(since[len("--since=@") :]), NOW - DAY, delta=60)
+        self.assertIn("--all", argv)  # else fields over 4 KiB become null
         fields = [a for a in argv if a.startswith("--output-fields=")][0]
         self.assertNotIn("_CMDLINE", fields)
         self.assertEqual(records[-1]["modules"]["auth_journal"]["status"], "ok")
@@ -737,6 +766,22 @@ class JournalTests(FixtureRoot):
         line = b'{"MESSAGE":"mysql -pS3cret","_PID":"7"}\n'
         out = json.loads(self.collector.mask_journal_line(line, self.collector.Masker()))
         self.assertEqual(out, {"MESSAGE": "mysql -p[MASKED:mysql_password]", "_PID": "7"})
+
+    def test_key_logged_across_entries_stays_masked(self):
+        masker = self.collector.Masker()
+        lines = [
+            {"MESSAGE": "-----BEGIN OPENSSH PRIVATE KEY-----", "_PID": "1"},
+            {"MESSAGE": "b3BlbnNzaC1rZXktdjEAAAAA", "_PID": "1"},
+            {"MESSAGE": "-----END OPENSSH PRIVATE KEY-----", "_PID": "1"},
+            {"MESSAGE": "after", "_PID": "1"},
+        ]
+        out = [
+            json.loads(self.collector.mask_journal_line(json.dumps(e).encode() + b"\n", masker))
+            for e in lines
+        ]
+        self.assertEqual([e["MESSAGE"] for e in out], ["[MASKED:private_key]", "", "", "after"])
+        self.assertEqual([e["_PID"] for e in out], ["1"] * 4)  # other fields unaffected
+        self.assertEqual(masker.counts, {"private_key": 1})
 
     def test_any_unparseable_line_is_withheld(self):
         out = self.collector.mask_journal_line(b"not json password=x\n", self.collector.Masker())

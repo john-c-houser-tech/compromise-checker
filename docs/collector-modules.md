@@ -61,9 +61,12 @@ journal. On hosts without a syslog daemon the journal is the only copy, and
 where both exist, comparing the two shows a log edited in one place only
 (DESIGN.md §8.2).
 
-**Runs:** `journalctl --output=json --no-pager --quiet --since=@<window start>
---output-fields=<list> SYSLOG_FACILITY=4 SYSLOG_FACILITY=10` — only the auth
-and authpriv facilities, which are what `secure` and `auth.log` hold.
+**Runs:** `journalctl --output=json --no-pager --quiet --all
+--since=@<window start> --output-fields=<list> SYSLOG_FACILITY=4
+SYSLOG_FACILITY=10` — only the auth and authpriv facilities, which are what
+`secure` and `auth.log` hold. `--all` stops journalctl from silently
+replacing fields over 4 KiB with `null`; the collector's own line limit
+applies instead, and is recorded.
 
 **Sends:** one `command` source of journal entries, one JSON object per
 line, with only these fields: `MESSAGE`, `PRIORITY`, `SYSLOG_FACILITY`,
@@ -73,7 +76,9 @@ line, with only these fields: `MESSAGE`, `PRIORITY`, `SYSLOG_FACILITY`,
 times, sequence numbers and boot id journalctl always adds. The process
 command line (`_CMDLINE`) is never requested. Each entry is decoded and
 every field value masked on its own — never the JSON text, where escaped
-quotes would hide a quoted secret's end from the rules. journalctl writes a
+quotes would hide a quoted secret's end from the rules. Masking state is
+kept per field across the whole source, so a private key logged over several
+entries is masked to its end. journalctl writes a
 field that is not valid UTF-8 as an array of byte values, and those bytes
 are masked too. A line that can't be parsed is not sent (fail closed) and is
 counted as `unparsed_line`.
@@ -95,8 +100,9 @@ runs out or its output reaches the size cap (the source says which), and
 again when the command ends, so nothing it started outlives it. Its output is masked line by line exactly
 like a file. The source records the command line, the executable's owner,
 mode, times and SHA-256, the exit status, and the first 4 KiB of its error
-output, masked; if that output was longer, the line cut by the limit is left
-out (`stderr_truncated`). A command that fails on its own (non-zero exit
+output, masked; if that output was longer, or the command was stopped
+part-way through a line, that unfinished line is left out
+(`stderr_truncated`). A command that fails on its own (non-zero exit
 status) ends its module with status `error`.
 
 ## Directory walks

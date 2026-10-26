@@ -2,7 +2,8 @@
 
 ## Reporting a vulnerability
 
-Email **security@nouriloop.com**. Please include:
+Use GitHub's private reporting — **Security → Report a vulnerability** on this
+repository — or email **security@nouriloop.com**. Please include:
 
 - what you found and where (file, command, or part of the collection
   process);

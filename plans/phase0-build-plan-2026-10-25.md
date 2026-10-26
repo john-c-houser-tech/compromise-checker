@@ -1,6 +1,8 @@
 # Phase 0 build plan — 2026-10-25
 
-> **Status: PROPOSED** — waiting for John's review. Nothing built yet.
+> **Status: COMPLETE (2026-10-26).** All seven pull requests merged (#2–#9;
+> #7 was a follow-up to #5), with Copilot review on every code PR. Results of
+> the read-only proof are [at the end](#results).
 
 **Goal (DESIGN.md §18, Phase 0):** the tool can log into a real server,
 collect a first small set of evidence read-only, bring it back, and store it
@@ -119,3 +121,33 @@ worth the time.
 Phase 1 (parsers, snapshots, baselines, core checks 8.1–8.7, HTML report)
 gets its own plan once Phase 0 is merged and we have seen real collector
 output from both families.
+
+## Results
+
+The read-only proof (`tests/integration/readonly_proof.py`, PR #9) on
+2026-10-26, final run after all review fixes:
+
+| | Ubuntu 24.04 | Rocky Linux 9 |
+|---|---|---|
+| Writes by the collector | **none** | **none** |
+| Bundle | complete; `/var/log/auth.log` 3,127 bytes | complete; `/var/log/secure` 1,873 bytes |
+| Writes by login machinery, all disclosed | 106 — control groups 51, `/run/user` 40, devices 5, process settings 4, login message 3, first-login marker on disk 2, session-manager permissions 1 | 77 — control groups 43, `/run/user` 23, process settings 7, SELinux 4 |
+
+What the proof changed along the way:
+
+- The first run showed that the operating system's own login machinery
+  (systemd's per-user session, Ubuntu's login messages and a first-login
+  marker file in the scanner's home, SELinux and control-group bookkeeping)
+  writes things the policy's list of traces didn't name. Policy §5 and
+  DESIGN.md §3.2 now disclose them.
+- The proof itself was made to fail closed: it reads raw audit records, so
+  names with spaces can't hide, treats `..` in a path as undisclosed, fails
+  if the audit query errors or returns nothing, and always deletes its
+  servers, including on Ctrl-C, SIGTERM and mid-creation cancellation.
+
+Not measured reliably: the collector's peak memory (it finishes in about
+3 ms, faster than the 0.2 s sampler). Phase 1 has the collector report its
+own peak memory instead.
+
+Cost of all proof runs on 2026-10-25/26: a few cents (Linode Nanodes, hourly).
+

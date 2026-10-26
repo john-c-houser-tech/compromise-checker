@@ -251,6 +251,8 @@ def parse_audit(text: str, syscalls: dict[tuple[str, str], str] | None = None) -
         if not match:
             continue
         kind, serial, rest = match.groups()
+        if kind not in ("SYSCALL", "PATH", "CWD"):
+            continue  # e.g. CONFIG_CHANGE from adding the audit rules, PROCTITLE, EOE
         fields = {key: _value(key, raw) for key, raw in _FIELD.findall(rest)}
         if serial not in records:
             records[serial] = {"syscall": None, "paths": [], "cwd": None}
@@ -323,7 +325,12 @@ def classify(events: list[dict]) -> Verdict:
                 verdict.unexpected.append(f"{who} (no path)")
             continue
         for path in targets:
-            reason = next((why for pattern, why in DISCLOSED if pattern.search(path)), None)
+            # A ".." could climb out of a disclosed prefix (/run/user/1000/../../etc):
+            # never match those against the list.
+            if ".." in path.split("/"):
+                reason = None
+            else:
+                reason = next((why for pattern, why in DISCLOSED if pattern.search(path)), None)
             if reason:
                 verdict.disclosed.append(f"{who} {path}  — {reason}")
             else:
@@ -516,13 +523,11 @@ def report(results: list[Result]) -> bool:
     return all(r.passed for r in results)
 
 
-def _stop_on_sigterm() -> None:
-    """Treat SIGTERM like Ctrl-C, so the servers are always deleted."""
-
-    def handler(signum, frame):
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, handler)
+def _cancel_on_sigterm() -> None:
+    """Treat SIGTERM like Ctrl-C: cancel the running task, so every cleanup
+    (deleting servers, finishing a creation already sent) runs before the
+    event loop stops."""
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, asyncio.current_task().cancel)
 
 
 async def main() -> int:
@@ -531,7 +536,7 @@ async def main() -> int:
     parser.add_argument("--region", default="us-sea")
     parser.add_argument("--keep", action="store_true", help="don't delete the servers")
     args = parser.parse_args()
-    _stop_on_sigterm()
+    _cancel_on_sigterm()
 
     api = Linode(linode_token())
     await asyncio.to_thread(sweep, api)

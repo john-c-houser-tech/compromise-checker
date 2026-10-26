@@ -6,6 +6,8 @@ Records are in `ausearch --raw` form, shaped like the real runs on Ubuntu
 
 import asyncio
 import importlib.util
+import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -126,6 +128,40 @@ def test_relative_symlink_destinations_are_resolved_and_judged():
 def test_pathless_permission_changes_count_only_from_the_session_manager():
     verdict = judge(SESSION + event("sshd", SSHD, "fchmod"))
     assert verdict.unexpected == ["sshd (/usr/sbin/sshd) fchmod (no path)"]
+
+
+def test_dot_dot_cannot_climb_out_of_a_disclosed_prefix():
+    escape = event("sshd", SSHD, "openat", ("../../../etc/passwd", "CREATE"), cwd="/run/user/1000")
+    assert judge(escape).unexpected == [
+        "sshd (/usr/sbin/sshd) openat /run/user/1000/../../../etc/passwd"
+    ]
+
+
+def test_audit_rule_changes_are_not_events():
+    rule_added = (
+        "type=CONFIG_CHANGE msg=audit(1792968000.500:500): auid=0 ses=1 op=add_rule"
+        ' key="cc-write" list=4 res=1\n'
+    )
+    assert judge(rule_added + SESSION).unexpected == []
+
+
+def test_sigterm_cancels_the_task_so_cleanup_runs():
+    cleaned = []
+
+    async def job():
+        proof._cancel_on_sigterm()
+        try:
+            os.kill(os.getpid(), signal.SIGTERM)
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cleaned.append(True)
+            raise
+        finally:
+            asyncio.get_running_loop().remove_signal_handler(signal.SIGTERM)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(job())
+    assert cleaned == [True]
 
 
 def test_an_event_without_its_syscall_record_is_an_error():

@@ -8,6 +8,7 @@ temporary directory laid out like a server (its ROOT), which only tests can do.
 import base64
 import datetime
 import gzip
+import hashlib
 import importlib.util
 import io
 import json
@@ -444,6 +445,247 @@ class PriorityTests(unittest.TestCase):
         if os.uname().machine == "x86_64":
             self.assertEqual(manifest["priority"]["io"], "idle")
         self.assertEqual(manifest["masking_version"], 1)
+
+
+# --- PR 1.1 groundwork: walks, commands, the journal, resource use ------------------
+
+
+def direct_run(collector, seconds=60, source_bytes=1 << 20):
+    """A Run outside main(), for calling helpers directly. Returns (run, read),
+    where read() closes the stream and returns its records."""
+    out = io.BytesIO()
+    stream = collector.Stream(out)
+    run = collector.Run(
+        stream, json.loads(settings([], source_bytes=source_bytes)), time.monotonic() + seconds
+    )
+
+    def read():
+        stream.close()
+        return [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+
+    return run, read
+
+
+FAKE_JOURNALCTL = b"""#!/bin/sh
+printf '{"MESSAGE":"args %s"}\\n' "$*"
+printf '{"MESSAGE":"sudo: COMMAND=/usr/bin/mysql -pS3cret"}\\n'
+echo 'warning: token=abc123def' >&2
+exit 0
+"""
+
+
+class WalkTests(FixtureRoot):
+    def setUp(self):
+        super().setUp()
+        self.collector = load_collector(self.root)
+        self.write("etc/app/conf", b"setting = 1\n")
+        tool = self.write("etc/app/bin/tool", b"#!/bin/sh\necho hi\n")
+        tool.chmod(0o4755)
+        big = self.write("etc/app/bin/big", b"x" * 4096)
+        big.chmod(0o755)
+        self.write("etc/app/deep/a/b/c/file", b"deep\n")
+        os.symlink("/etc/shadow", Path(self.root, "etc/app/shadow-link"))
+        os.symlink("/", Path(self.root, "etc/app/root-link"))
+
+    def walk(self, **kwargs):
+        run, _ = direct_run(self.collector)
+        walk = self.collector.Walk(run, "/etc/app", **kwargs)
+        return {entry["path"]: entry for entry in walk}, walk.summary()
+
+    def test_records_entries_and_hashes_small_executables(self):
+        entries, summary = self.walk(hash_bytes=1024)
+        self.assertEqual(entries["/etc/app"]["type"], "d")
+        tool = entries["/etc/app/bin/tool"]
+        self.assertEqual(tool["mode"], "4755")
+        expected = hashlib.sha256(b"#!/bin/sh\necho hi\n").hexdigest()
+        self.assertEqual(tool["sha256"], expected)
+        self.assertNotIn("sha256", entries["/etc/app/conf"])  # not executable
+        self.assertEqual(entries["/etc/app/bin/big"]["hash_skipped"], "larger than 1024 bytes")
+        self.assertIn("/etc/app/deep/a/b/c/file", entries)
+        self.assertFalse(summary["truncated"])
+        self.assertEqual(summary["entries"], len(entries))
+
+    def test_hash_all_files(self):
+        entries, _ = self.walk(hash_files="all")
+        self.assertIn("sha256", entries["/etc/app/conf"])
+
+    def test_never_follows_links(self):
+        entries, _ = self.walk()
+        self.assertEqual(entries["/etc/app/shadow-link"]["type"], "l")
+        self.assertEqual(entries["/etc/app/shadow-link"]["link_target"], "/etc/shadow")
+        self.assertEqual(entries["/etc/app/root-link"]["link_target"], "/")
+        self.assertFalse(any(p.startswith("/etc/app/root-link/") for p in entries))
+
+    def test_depth_limit_is_a_recorded_gap(self):
+        entries, summary = self.walk(max_depth=2)
+        self.assertEqual(entries["/etc/app/deep/a"]["not_descended"], "depth")
+        self.assertNotIn("/etc/app/deep/a/b", entries)
+        self.assertEqual(summary["not_descended"]["depth"], 1)
+
+    def test_entry_limit_truncates(self):
+        entries, summary = self.walk(max_entries=3)
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(summary["truncated_reason"], "entries")
+
+    def test_out_of_time_stops_the_walk(self):
+        run, _ = direct_run(self.collector, seconds=-1)
+        walk = self.collector.Walk(run, "/etc/app")
+        self.assertEqual(len(list(walk)), 1)  # the top only
+        self.assertEqual(walk.summary()["truncated_reason"], "time")
+
+    def test_missing_top_is_an_error_entry(self):
+        run, _ = direct_run(self.collector)
+        walk = self.collector.Walk(run, "/nowhere")
+        self.assertIn("error", list(walk)[0])
+        self.assertEqual(walk.summary()["errors"], 1)
+
+    def test_walking_changes_no_access_times(self):
+        conf = Path(self.root, "etc/app/conf")
+        before = conf.stat().st_atime_ns
+        self.walk(hash_files="all")
+        self.assertEqual(conf.stat().st_atime_ns, before)
+
+
+class CommandTests(FixtureRoot):
+    def install(self, script, mode=0o755):
+        target = self.write("usr/bin/journalctl", script)
+        target.chmod(mode)
+        return target
+
+    def run_command(self, args=("--x",), seconds=60, source_bytes=1 << 20, transform=None):
+        collector = load_collector(self.root)
+        run, read = direct_run(collector, seconds=seconds, source_bytes=source_bytes)
+        timed_out = False
+        try:
+            code = collector.run_command(run, "test", "journalctl", list(args), transform)
+        except collector.ModuleTimeout:
+            code, timed_out = None, True
+        return code, timed_out, read()
+
+    def test_output_is_a_masked_command_source(self):
+        self.install(FAKE_JOURNALCTL)
+        code, _, records = self.run_command(args=["--a", "b c"])
+        self.assertEqual(code, 0)
+        ((name, (start, content, end)),) = sources(records).items()
+        self.assertEqual(start["kind"], "command")
+        self.assertEqual(start["meta"]["argv"], ["/usr/bin/journalctl", "--a", "b c"])
+        self.assertEqual(name, "/usr/bin/journalctl --a 'b c'")
+        expected = hashlib.sha256(FAKE_JOURNALCTL).hexdigest()
+        self.assertEqual(start["meta"]["executable_sha256"], expected)
+        self.assertIn(b'"args --a b c"', content)
+        self.assertNotIn(b"S3cret", content)
+        self.assertEqual(end["exit_code"], 0)
+        self.assertEqual(end["stderr"], "warning: token=[MASKED:password]\n")
+        self.assertEqual(end["masked"], {"mysql_password": 1, "password": 1})
+
+    def test_gets_no_input_and_a_fixed_environment(self):
+        self.install(b"#!/bin/sh\nread x && echo got-input\nenv | sort\n")
+        _, _, records = self.run_command()
+        ((_, content, _),) = sources(records).values()
+        self.assertNotIn(b"got-input", content)
+        names = {line.split("=")[0] for line in content.decode().split()}
+        # The shell adds PWD, SHLVL and _ itself.
+        self.assertEqual(names - {"PWD", "SHLVL", "_"}, {"LC_ALL", "PATH"})
+        self.assertIn("PATH=/usr/sbin:/usr/bin:/sbin:/bin", content.decode())
+
+    def test_failure_is_recorded(self):
+        self.install(b"#!/bin/sh\necho 'no journal files' >&2\nexit 3\n")
+        code, _, records = self.run_command()
+        self.assertEqual(code, 3)
+        errors = [r["message"] for r in records if r["type"] == "error"]
+        self.assertEqual(errors, ["journalctl exited with status 3"])
+
+    def test_size_cap_stops_the_command(self):
+        self.install(b"#!/bin/sh\nwhile :; do echo 0123456789; done\n")
+        code, timed_out, records = self.run_command(source_bytes=1000)
+        self.assertFalse(timed_out)
+        self.assertLess(code, 0)  # killed
+        ((_, content, end),) = sources(records).values()
+        self.assertEqual(end["truncated_reason"], "size")
+        self.assertEqual(len(content), 990)  # whole lines only
+
+    def test_time_limit_kills_a_silent_command(self):
+        self.install(b"#!/bin/sh\necho started\nexec sleep 30\n")
+        began = time.monotonic()
+        code, timed_out, records = self.run_command(seconds=1)
+        self.assertLess(time.monotonic() - began, 10)
+        self.assertTrue(timed_out)
+        ((_, content, end),) = sources(records).values()
+        self.assertEqual(content, b"started\n")
+        self.assertEqual(end["truncated_reason"], "time")
+
+    def test_missing_command_is_recorded(self):
+        code, _, records = self.run_command()
+        self.assertIsNone(code)
+        self.assertEqual(
+            named(records, "command_unavailable")[0]["data"]["reason"], "not installed"
+        )
+
+    def test_refuses_an_executable_others_can_change(self):
+        self.install(FAKE_JOURNALCTL, mode=0o775)
+        code, _, records = self.run_command()
+        self.assertIsNone(code)
+        reason = named(records, "command_unavailable")[0]["data"]["reason"]
+        self.assertIn("writable by group or others", reason)
+        self.assertEqual(sources(records), {})
+
+
+class JournalTests(FixtureRoot):
+    def setUp(self):
+        super().setUp()
+        self.collector = load_collector(self.root)
+
+    def test_auth_journal_asks_for_auth_facilities_in_the_window(self):
+        target = self.write("usr/bin/journalctl", FAKE_JOURNALCTL)
+        target.chmod(0o755)
+        records = collect(self.root, ["auth_journal"], days=1)
+        ((start, content, _),) = sources(records).values()
+        argv = start["meta"]["argv"]
+        self.assertIn("--output=json", argv)
+        self.assertEqual(argv[-2:], ["SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10"])
+        since = [a for a in argv if a.startswith("--since=@")][0]
+        self.assertAlmostEqual(int(since[len("--since=@") :]), NOW - DAY, delta=60)
+        fields = [a for a in argv if a.startswith("--output-fields=")][0]
+        self.assertNotIn("_CMDLINE", fields)
+        self.assertEqual(records[-1]["modules"]["auth_journal"]["status"], "ok")
+
+    def test_byte_array_fields_are_masked(self):
+        message = list(b"login password=hunter2 \xff")
+        line = json.dumps({"MESSAGE": message, "_PID": "1"}).encode() + b"\n"
+        masker = self.collector.Masker()
+        out = json.loads(self.collector.mask_journal_line(line, masker))
+        self.assertEqual(bytes(out["MESSAGE"]), b"login password=[MASKED:password] \xff")
+        self.assertEqual(masker.counts, {"password": 1})
+
+    def test_repeated_fields_are_masked_too(self):
+        line = json.dumps({"X": [list(b"token=abc"), "secret=xyz"]}).encode() + b"\n"
+        masker = self.collector.Masker()
+        out = json.loads(self.collector.mask_journal_line(line, masker))
+        self.assertEqual(bytes(out["X"][0]), b"token=[MASKED:password]")
+        self.assertEqual(out["X"][1], "secret=[MASKED:password]")
+
+    def test_unparseable_line_with_arrays_is_withheld(self):
+        masker = self.collector.Masker()
+        out = self.collector.mask_journal_line(b'{"M":[104,105], broken\n', masker)
+        self.assertEqual(out, b"[MASKED:unparsed_line 23 bytes]\n")
+
+    def test_plain_lines_pass_through(self):
+        line = b'{"MESSAGE":"Accepted publickey for jch","_AUDIT_SESSION":"5"}\n'
+        self.assertEqual(self.collector.mask_journal_line(line, self.collector.Masker()), line)
+
+
+class ResourceTests(FixtureRoot):
+    def test_trailer_reports_peak_memory(self):
+        records = collect(self.root, [])
+        resources = records[-1]["resources"]
+        self.assertGreater(resources["peak_rss_kb"], 0)
+        self.assertIn("commands_peak_rss_kb", resources)
+
+    def test_manifest_lists_the_allowed_commands(self):
+        manifest = collect(self.root, [])[0]
+        self.assertEqual(
+            manifest["commands_allowed"], {"journalctl": ["/usr/bin/journalctl", "/bin/journalctl"]}
+        )
 
 
 if __name__ == "__main__":

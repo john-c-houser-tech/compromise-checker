@@ -85,6 +85,7 @@ class Manifest(_Model):
     modules_planned: list[str]
     masking_version: int | None = None
     priority: dict[str, Any] | None = None
+    commands_allowed: dict[str, list[str]] | None = None
 
 
 class Record(_Model):
@@ -131,6 +132,10 @@ class SourceEnd(_Model):
     truncated_reason: str | None = None
     masked: dict[str, int] = {}
     error: str | None = None
+    # Commands only: how the command ended (negative: killed by that signal)
+    # and the start of its error output, masked.
+    exit_code: int | None = None
+    stderr: str | None = None
 
 
 class Error(_Model):
@@ -158,6 +163,7 @@ class Trailer(_Model):
     status: Literal["complete", "partial", "refused"]
     counts: Counts
     modules: dict[str, ModuleResult]
+    resources: dict[str, Any] | None = None
 
 
 StreamRecord = Annotated[

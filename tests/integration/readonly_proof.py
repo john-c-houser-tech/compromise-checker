@@ -206,9 +206,6 @@ for arch in b64 b32; do
 done
 # Something for the collector to find in the authentication log.
 logger -p authpriv.notice "compromise-checker read-only proof: marker" || true
-# Sample the collector's memory while it runs.
-nohup sh -c 'while :; do ps -eo rss=,comm= | awk "\$2 ~ /^python/ {print \$1}"; sleep 0.2; done' \
-    < /dev/null > /root/cc-rss.log 2>/dev/null &
 """
 
 
@@ -454,8 +451,6 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 # A login always causes some writes; none means no usable evidence.
                 raise RuntimeError("the audit log holds no events for the scanner's session")
             result.audit = classify(events)
-            rss = await conn.run("sort -n /root/cc-rss.log | tail -1", timeout=60)
-            result.peak_rss_kb = int(rss.stdout.strip() or 0) or None
 
         bundle = home / "evidence" / distro / f"{outcome.bundle_id}.age"
         if bundle.exists():
@@ -463,6 +458,8 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             opened.status()
             trailer = opened.summary.trailer or {}
             result.seconds = trailer.get("duration_seconds")
+            # The collector reports its own peak memory (getrusage) in the trailer.
+            result.peak_rss_kb = (trailer.get("resources") or {}).get("peak_rss_kb")
             result.sources = [
                 f"{s['name']} ({s['bytes']:,} bytes, masked {s['masked'] or 'nothing'})"
                 for s in opened.summary.sources

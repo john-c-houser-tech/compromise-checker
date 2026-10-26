@@ -51,6 +51,59 @@ example the log replaced by a link to `/dev/null`, however old — become
 window only ever skips regular files. If `/var/log` itself cannot be listed,
 the module ends with status `error`.
 
-**Not yet:** systems that log authentication only to the systemd journal
-(no `secure` or `auth.log`) send an empty summary here; reading the journal
-comes in Phase 1.
+Systems that log authentication only to the systemd journal (no `secure`
+or `auth.log`) send an empty summary here; `auth_journal` covers them.
+
+## `auth_journal`
+
+**Why:** the same authentication messages as `auth_log`, from the systemd
+journal. On hosts without a syslog daemon the journal is the only copy, and
+where both exist, comparing the two shows a log edited in one place only
+(DESIGN.md §8.2).
+
+**Runs:** `journalctl --output=json --no-pager --quiet --since=@<window start>
+--output-fields=<list> SYSLOG_FACILITY=4 SYSLOG_FACILITY=10` — only the auth
+and authpriv facilities, which are what `secure` and `auth.log` hold.
+
+**Sends:** one `command` source of journal entries, one JSON object per
+line, with only these fields: `MESSAGE`, `PRIORITY`, `SYSLOG_FACILITY`,
+`SYSLOG_IDENTIFIER`, `SYSLOG_PID`, `_SOURCE_REALTIME_TIMESTAMP`,
+`_HOSTNAME`, `_TRANSPORT`, `_PID`, `_UID`, `_GID`, `_COMM`, `_EXE`,
+`_SYSTEMD_UNIT`, `_AUDIT_SESSION`, `_AUDIT_LOGINUID`, plus the cursor,
+times, sequence numbers and boot id journalctl always adds. The process
+command line (`_CMDLINE`) is never requested. Each line is masked like file
+text; journalctl writes a field that is not valid UTF-8 as an array of byte
+values, and those bytes are masked too. A line with an array that can't be
+parsed is not sent (fail closed) and is counted as `unparsed_line`.
+
+## Commands
+
+Where a file can't practically be read directly, a module runs a command
+from the collector's fixed allow-list (DESIGN.md §5.4). The settings can't
+add to the list or change a command's arguments. Today the list is
+`journalctl`; the manifest carries the list as `commands_allowed`.
+
+A command runs only from its absolute path (`/usr/bin/…` or `/bin/…`, never
+a search of `PATH`), and only if that file is owned by root and writable by
+no one else; otherwise a `command_unavailable` record says why. It gets no
+input (`/dev/null`), a fixed environment (`PATH` and `LC_ALL=C.UTF-8`
+only), `/` as its working directory, and the collector's lowered priority.
+It is killed when the module's time runs out or its output reaches the size
+cap, and the source says which. Its output is masked line by line exactly
+like a file. The source records the command line, the executable's owner,
+mode, times and SHA-256, the exit status, and the first 4 KiB of its error
+output, masked. A non-zero exit status is also reported as an `error`.
+
+## Directory walks
+
+Modules that list directories (from Phase 1's accounts, persistence and
+file-system modules on) share one bounded walk. It never follows a symbolic
+link (it records the link's target instead), never descends into another
+file system, and opens directories without updating their access times.
+For each entry it sends the path, type, mode (including set-user-ID and
+set-group-ID bits), owner, group, size, link count, inode and change and
+modification times; regular files under a size limit — executables, or
+every file where the module says so — also get a SHA-256. Each walk has a
+depth limit, an entry limit and the module's time limit, and its summary
+says whether any of them cut it short, so a gap is never read as "nothing
+there".

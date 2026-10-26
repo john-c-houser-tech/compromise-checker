@@ -9,7 +9,7 @@ and servers left behind by a crashed run are swept up next time.
 
 Run by hand, not in CI: it spends money (a Nanode is $0.0075 an hour) and
 needs a Linode API token with Linodes: Read/Write only, from $LINODE_TOKEN or
-1Password (item "Linode Personal Access Token" in vault "Linode" by default).
+1Password: name the item and vault in $CC_LINODE_OP_ITEM and $CC_LINODE_OP_VAULT.
 
     python tests/integration/readonly_proof.py [--distro ubuntu24.04 rocky9] [--keep]
 """
@@ -51,9 +51,9 @@ IMAGES = {
     "alma9": "linode/almalinux9",
     "alma10": "linode/almalinux10",
 }
-# Where the token lives in 1Password (override with $CC_LINODE_OP_ITEM / $CC_LINODE_OP_VAULT).
-OP_ITEM = os.environ.get("CC_LINODE_OP_ITEM", "Linode Personal Access Token")
-OP_VAULT = os.environ.get("CC_LINODE_OP_VAULT", "Linode")
+# Where the token lives in 1Password, if $LINODE_TOKEN isn't set.
+OP_ITEM = os.environ.get("CC_LINODE_OP_ITEM")
+OP_VAULT = os.environ.get("CC_LINODE_OP_VAULT")
 SWEEP_AFTER = timedelta(hours=2)
 
 # Writes a login (sshd, PAM, systemd, sudo) is allowed to cause: the traces
@@ -93,6 +93,8 @@ def linode_token() -> str:
     token = os.environ.get("LINODE_TOKEN")
     if token:
         return token
+    if not (OP_ITEM and OP_VAULT):
+        sys.exit("Set LINODE_TOKEN, or CC_LINODE_OP_ITEM and CC_LINODE_OP_VAULT for 1Password.")
     for field_name in ("token", "credential", "password"):
         command = ["op", "item", "get", OP_ITEM, "--vault", OP_VAULT]
         command += ["--fields", f"label={field_name}", "--reveal"]

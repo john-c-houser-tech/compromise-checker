@@ -718,9 +718,16 @@ def run_command(run, module, name, args, transform=None):
     del meta["compressed"]
     meta.update({"argv": [executable] + list(args), "executable_sha256": digest})
     try:
+        # Not subprocess.DEVNULL: that opens /dev/null read-write, which is an
+        # open-for-write on the target (the read-only proof flags it).
+        no_input = os.open(os.devnull, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        run.stream.record(module, "command_unavailable", {"command": name, "reason": str(exc)})
+        return None
+    try:
         process = subprocess.Popen(  # noqa: S603 - allow-listed executable, fixed arguments
             [path(executable)] + list(args),
-            stdin=subprocess.DEVNULL,
+            stdin=no_input,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=_COMMAND_ENV,
@@ -731,6 +738,8 @@ def run_command(run, module, name, args, transform=None):
     except OSError as exc:
         run.stream.record(module, "command_unavailable", {"command": name, "reason": str(exc)})
         return None
+    finally:
+        os.close(no_input)
 
     killed = {"time": False}
 

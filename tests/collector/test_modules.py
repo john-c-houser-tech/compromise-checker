@@ -588,6 +588,13 @@ class CommandTests(FixtureRoot):
         self.assertEqual(names - {"PWD", "SHLVL", "_"}, {"LC_ALL", "PATH"})
         self.assertIn("PATH=/usr/sbin:/usr/bin:/sbin:/bin", content.decode())
 
+    def test_input_is_opened_read_only(self):
+        # Access mode 0 (O_RDONLY) in the low bits of the flags of stdin.
+        self.install(b"#!/bin/sh\nexec grep '^flags' /proc/self/fdinfo/0\n")
+        _, _, records = self.run_command()
+        ((_, content, _),) = sources(records).values()
+        self.assertEqual(int(content.split()[1], 8) & 3, 0)
+
     def test_failure_is_recorded(self):
         self.install(b"#!/bin/sh\necho 'no journal files' >&2\nexit 3\n")
         code, _, records = self.run_command()

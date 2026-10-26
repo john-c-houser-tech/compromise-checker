@@ -222,23 +222,66 @@ async def wait_for_ssh(host: Host, known: Path, deadline: float) -> None:
             await asyncio.sleep(5)
 
 
-def parse_audit(text: str) -> list[dict]:
-    """Events from `ausearch -i`: each with comm, exe, syscall and the paths it
-    changed (a PATH record's PARENT entries only name the directory looked in)."""
-    events = []
-    for block in text.split("----"):
-        syscall = re.search(r"type=SYSCALL .*?syscall=(\S+).*? comm=(\S+) exe=(\S+)", block)
-        if not syscall:
+_RECORD = re.compile(r"^type=(\w+) msg=audit\(([\d.]+:\d+)\):\s*(.*)$")
+_FIELD = re.compile(r'(\w+)=("[^"]*"|\S+)')
+# Fields audit hex-encodes when the value has spaces or unusual characters.
+_ENCODED = {"name", "comm", "exe", "cwd", "proctitle"}
+
+
+def _value(key: str, raw: str) -> str | None:
+    if raw.startswith('"') and raw.endswith('"'):
+        return raw[1:-1]
+    if raw == "(null)":
+        return None
+    if key in _ENCODED and re.fullmatch(r"(?:[0-9A-F]{2})+", raw):
+        return bytes.fromhex(raw).decode("utf-8", errors="replace")
+    return raw
+
+
+def parse_audit(text: str, syscalls: dict[tuple[str, str], str] | None = None) -> list[dict]:
+    """Events from `ausearch --raw`, which keeps every value intact: names with
+    spaces or odd characters arrive hex-encoded instead of split. Each event
+    has comm, exe, syscall (named via `syscalls`, keyed by arch and number)
+    and its PATH records with their types, made absolute against the event's
+    working directory."""
+    records: dict[str, dict] = {}
+    order: list[str] = []
+    for line in text.splitlines():
+        match = _RECORD.match(line.strip())
+        if not match:
             continue
+        kind, serial, rest = match.groups()
+        fields = {key: _value(key, raw) for key, raw in _FIELD.findall(rest)}
+        if serial not in records:
+            records[serial] = {"syscall": None, "paths": [], "cwd": None}
+            order.append(serial)
+        event = records[serial]
+        if kind == "SYSCALL":
+            number = fields.get("syscall", "?")
+            event["syscall"] = (syscalls or {}).get((fields.get("arch", ""), number), number)
+            event["comm"] = fields.get("comm") or "?"
+            event["exe"] = fields.get("exe") or "?"
+        elif kind == "CWD":
+            event["cwd"] = fields.get("cwd")
+        elif kind == "PATH":
+            event["paths"].append((fields.get("name"), fields.get("nametype")))
+    events = []
+    for serial in order:
+        event = records[serial]
+        if event["syscall"] is None:
+            raise ValueError(f"audit event {serial} has no SYSCALL record")
         paths = []
-        for name, kind in re.findall(r"type=PATH .*?name=(\S+)(?: .*?nametype=(\S+))?", block):
-            if kind != "PARENT" and name != "(null)":
-                paths.append(name.strip('"'))
+        for name, kind in event["paths"]:
+            if name is None:
+                continue
+            if not name.startswith("/") and kind != "UNKNOWN" and event["cwd"]:
+                name = event["cwd"].rstrip("/") + "/" + name
+            paths.append((name, kind))
         events.append(
             {
-                "syscall": syscall.group(1),
-                "comm": syscall.group(2).strip('"'),
-                "exe": syscall.group(3).strip('"'),
+                "syscall": event["syscall"],
+                "comm": event["comm"],
+                "exe": event["exe"],
                 "paths": paths,
             }
         )
@@ -254,14 +297,22 @@ class Verdict:
 
 
 def classify(events: list[dict]) -> Verdict:
+    """Every event lands in exactly one place; nothing is silently dropped."""
     verdict = Verdict()
     for event in events:
         who = f"{event['comm']} ({event['exe']}) {event['syscall']}"
         if event["comm"].startswith("python") or "python" in event["exe"]:
             # The collector itself must write nothing at all.
-            verdict.collector.extend(f"{who} {path}" for path in event["paths"] or ["-"])
+            paths = [path for path, _ in event["paths"]] or ["-"]
+            verdict.collector.extend(f"{who} {path}" for path in paths)
             continue
-        if not event["paths"]:
+        targets = [
+            path
+            for path, kind in event["paths"]
+            if kind != "PARENT"  # only names the directory looked in
+            and not (kind == "UNKNOWN" and event["syscall"].startswith("symlink"))  # link content
+        ]
+        if not targets:
             if event["syscall"] in _SOCKET_CALLS:
                 verdict.sockets.append(who)
             elif event["syscall"] in _FD_ATTRIBUTE_CALLS and event["exe"] == _SESSION_MANAGER:
@@ -271,9 +322,7 @@ def classify(events: list[dict]) -> Verdict:
             else:
                 verdict.unexpected.append(f"{who} (no path)")
             continue
-        for path in event["paths"]:
-            if not path.startswith("/") and event["syscall"].startswith("symlink"):
-                continue  # a symbolic link's content, not a location
+        for path in targets:
             reason = next((why for pattern, why in DISCLOSED if pattern.search(path)), None)
             if reason:
                 verdict.disclosed.append(f"{who} {path}  — {reason}")
@@ -284,6 +333,39 @@ def classify(events: list[dict]) -> Verdict:
     return verdict
 
 
+# Audit arch codes for the syscall tables `ausyscall` knows.
+_ARCHES = {"c000003e": "x86_64", "40000003": "i386", "c00000b7": "aarch64"}
+
+
+async def _syscall_names(conn) -> dict[tuple[str, str], str]:
+    names = {}
+    for code, arch in _ARCHES.items():
+        dump = await conn.run(f"ausyscall {arch} --dump", timeout=60)
+        for line in dump.stdout.splitlines():
+            number, _, name = line.partition("\t")
+            if number.isdigit() and name:
+                names[(code, number)] = name.strip()
+    return names
+
+
+async def _create_server(api: Linode, *args) -> dict:
+    """Create a server even if this run is cancelled meanwhile: the API call
+    can't be stopped once sent, so wait for its answer and delete what it
+    made before letting the cancellation through."""
+    creating = asyncio.ensure_future(asyncio.to_thread(api.create, *args))
+    try:
+        return await asyncio.shield(creating)
+    except asyncio.CancelledError:
+        try:
+            node = await creating
+        except Exception:
+            raise  # nothing was created
+        else:
+            await asyncio.to_thread(api.delete, node["id"])
+            print(f"cancelled: deleted {node['label']} just after creating it")
+        raise
+
+
 async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -> Result:
     result = Result(distro)
     root_key = asyncssh.generate_private_key("ssh-ed25519")
@@ -291,8 +373,8 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
     scanner_key_file = work / f"{distro}-scanner"
     scanner_key.write_private_key(scanner_key_file)
     label = f"{LABEL_PREFIX}{distro.replace('.', '')}-{secrets.token_hex(3)}"
-    node = await asyncio.to_thread(
-        api.create, label, IMAGES[distro], region, root_key.export_public_key().decode().strip()
+    node = await _create_server(
+        api, label, IMAGES[distro], region, root_key.export_public_key().decode().strip()
     )
     print(f"{distro}: created {label} (id {node['id']})")
     try:
@@ -349,12 +431,20 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             await asyncio.sleep(2)  # let auditd flush
 
             # --input-logs: without a terminal, ausearch would otherwise wait
-            # to read audit records from stdin.
+            # to read audit records from stdin. --raw keeps every value intact.
             audit = await conn.run(
-                "ausearch --input-logs -k cc-write -i < /dev/null 2>/dev/null || true",
-                timeout=120,
+                "ausearch --input-logs -k cc-write --raw < /dev/null", timeout=120
             )
-            result.audit = classify(parse_audit(audit.stdout))
+            if audit.exit_status not in (0, 1) or (
+                audit.exit_status == 1 and "no matches" not in audit.stderr
+            ):
+                raise RuntimeError(f"ausearch failed ({audit.exit_status}): {audit.stderr.strip()}")
+            syscalls = await _syscall_names(conn)
+            events = parse_audit(audit.stdout, syscalls)
+            if not events:
+                # A login always causes some writes; none means no usable evidence.
+                raise RuntimeError("the audit log holds no events for the scanner's session")
+            result.audit = classify(events)
             rss = await conn.run("sort -n /root/cc-rss.log | tail -1", timeout=60)
             result.peak_rss_kb = int(rss.stdout.strip() or 0) or None
 

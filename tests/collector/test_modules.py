@@ -533,6 +533,27 @@ class WalkTests(FixtureRoot):
         self.assertEqual(len(list(walk)), 1)  # the top only
         self.assertEqual(walk.summary()["truncated_reason"], "time")
 
+    def test_top_link_records_its_target(self):
+        os.symlink("/etc/app", Path(self.root, "etc/app-link"))
+        run, _ = direct_run(self.collector)
+        entries = list(self.collector.Walk(run, "/etc/app-link"))
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["link_target"], "/etc/app")
+
+    def test_parent_swapped_for_a_link_is_not_followed(self):
+        os.makedirs(Path(self.root, "elsewhere/a/secret-dir"))
+        run, _ = direct_run(self.collector)
+        seen = []
+        for entry in self.collector.Walk(run, "/etc/app"):
+            seen.append(entry)
+            if entry.get("path") == "/etc/app/deep/a" and "error" not in entry:
+                # /etc/app/deep/a is queued; now make its parent a link elsewhere.
+                os.rename(Path(self.root, "etc/app/deep"), Path(self.root, "etc/app/deep-old"))
+                os.symlink(Path(self.root, "elsewhere"), Path(self.root, "etc/app/deep"))
+        paths = [e["path"] for e in seen]
+        self.assertNotIn("/etc/app/deep/a/secret-dir", paths)
+        self.assertIn({"path": "/etc/app/deep/a", "error": "replaced during the walk"}, seen)
+
     def test_missing_top_is_an_error_entry(self):
         run, _ = direct_run(self.collector)
         walk = self.collector.Walk(run, "/nowhere")
@@ -556,10 +577,13 @@ class CommandTests(FixtureRoot):
         collector = load_collector(self.root)
         run, read = direct_run(collector, seconds=seconds, source_bytes=source_bytes)
         timed_out = False
+        self.failure = None
         try:
             code = collector.run_command(run, "test", "journalctl", list(args), transform)
         except collector.ModuleTimeout:
             code, timed_out = None, True
+        except collector.CommandFailed as exc:
+            code, self.failure = None, str(exc)
         return code, timed_out, read()
 
     def test_output_is_a_masked_command_source(self):
@@ -595,12 +619,41 @@ class CommandTests(FixtureRoot):
         ((_, content, _),) = sources(records).values()
         self.assertEqual(int(content.split()[1], 8) & 3, 0)
 
-    def test_failure_is_recorded(self):
+    def test_failure_ends_the_source_then_fails_the_module(self):
         self.install(b"#!/bin/sh\necho 'no journal files' >&2\nexit 3\n")
-        code, _, records = self.run_command()
-        self.assertEqual(code, 3)
-        errors = [r["message"] for r in records if r["type"] == "error"]
-        self.assertEqual(errors, ["journalctl exited with status 3"])
+        _, _, records = self.run_command()
+        self.assertEqual(self.failure, "journalctl exited with status 3")
+        ((_, _, end),) = sources(records).values()
+        self.assertEqual((end["exit_code"], end["stderr"]), (3, "no journal files\n"))
+
+    def test_failed_command_marks_the_module_and_run(self):
+        self.install(b"#!/bin/sh\nexit 3\n")
+        trailer = collect(self.root, ["auth_journal"])[-1]
+        self.assertEqual(trailer["modules"]["auth_journal"]["status"], "error")
+        self.assertEqual(trailer["status"], "partial")
+
+    def test_long_error_output_withholds_the_cut_line(self):
+        # 4,000 bytes of filler, so the 4 KiB cap falls inside a URL password.
+        filler = b"line of forty characters, padding....."
+        script = b"#!/bin/sh\nfor i in $(seq 1 100); do echo '%s' >&2; done\n" % filler
+        script += b"echo 'url https://u:hunter2-very-long-password@example.com' >&2\n" * 10
+        self.install(script)
+        _, _, records = self.run_command()
+        ((_, _, end),) = sources(records).values()
+        self.assertTrue(end["stderr_truncated"])
+        self.assertTrue(end["stderr"].endswith("\n"))
+        self.assertLessEqual(len(end["stderr"]), 4096)
+        self.assertNotIn("hunter2", end["stderr"])
+
+    def test_child_holding_the_pipes_is_killed_at_the_deadline(self):
+        # The command exits at once, leaving a child with its output open.
+        self.install(b"#!/bin/sh\nsleep 30 &\necho done\n")
+        began = time.monotonic()
+        _, timed_out, records = self.run_command(seconds=1)
+        self.assertLess(time.monotonic() - began, 10)
+        self.assertTrue(timed_out)
+        ((_, content, _),) = sources(records).values()
+        self.assertEqual(content, b"done\n")
 
     def test_size_cap_stops_the_command(self):
         self.install(b"#!/bin/sh\nwhile :; do echo 0123456789; done\n")
@@ -670,6 +723,24 @@ class JournalTests(FixtureRoot):
         out = json.loads(self.collector.mask_journal_line(line, masker))
         self.assertEqual(bytes(out["X"][0]), b"token=[MASKED:password]")
         self.assertEqual(out["X"][1], "secret=[MASKED:password]")
+
+    def test_masks_values_not_json_text(self):
+        message = 'sudo: COMMAND=/usr/bin/mysql -p"two words" -e "select 1"'
+        line = json.dumps({"MESSAGE": message, "_PID": "7"}).encode() + b"\n"
+        out = json.loads(self.collector.mask_journal_line(line, self.collector.Masker()))
+        self.assertEqual(
+            out["MESSAGE"], 'sudo: COMMAND=/usr/bin/mysql -p[MASKED:mysql_password] -e "select 1"'
+        )
+        self.assertEqual(out["_PID"], "7")
+
+    def test_unquoted_secret_cannot_swallow_json(self):
+        line = b'{"MESSAGE":"mysql -pS3cret","_PID":"7"}\n'
+        out = json.loads(self.collector.mask_journal_line(line, self.collector.Masker()))
+        self.assertEqual(out, {"MESSAGE": "mysql -p[MASKED:mysql_password]", "_PID": "7"})
+
+    def test_any_unparseable_line_is_withheld(self):
+        out = self.collector.mask_journal_line(b"not json password=x\n", self.collector.Masker())
+        self.assertEqual(out, b"[MASKED:unparsed_line 20 bytes]\n")
 
     def test_unparseable_line_with_arrays_is_withheld(self):
         masker = self.collector.Masker()

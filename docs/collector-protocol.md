@@ -155,7 +155,8 @@ chunks.
   (DESIGN.md §3.4). `error` is set if reading failed part-way. For
   commands, `exit_code` is the exit status (negative: killed by that signal,
   as when the collector stops it at a limit) and `stderr` the first 4 KiB of
-  its error output, masked.
+  its error output, masked, with `stderr_truncated: true` when there was
+  more (the line the limit cut is left out).
 
 ### 3.4 `error`
 

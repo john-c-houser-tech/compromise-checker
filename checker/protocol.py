@@ -136,6 +136,7 @@ class SourceEnd(_Model):
     # and the start of its error output, masked.
     exit_code: int | None = None
     stderr: str | None = None
+    stderr_truncated: bool = False
 
 
 class Error(_Model):

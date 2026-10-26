@@ -621,19 +621,34 @@ class Walk:
         except OSError as exc:
             yield self._counted({"path": self.top, "error": str(exc)})
             return
-        yield self._counted(self._entry(self.top, top_info))
+        link_target = None
+        if stat.S_ISLNK(top_info.st_mode):
+            try:
+                link_target = os.readlink(path(self.top))
+            except OSError as exc:
+                yield self._counted({"path": self.top, "error": str(exc)})
+                return
+        yield self._counted(self._entry(self.top, top_info, link_target))
         if not stat.S_ISDIR(top_info.st_mode):
             return
         device = top_info.st_dev
-        pending = [(self.top, 0)]
+        # Each directory is opened by path, so it must still be the directory
+        # that was listed (same device and inode): if a parent was swapped for
+        # a symbolic link meanwhile, the path leads somewhere else, and the
+        # walk records that instead of following it.
+        pending = [(self.top, 0, (top_info.st_dev, top_info.st_ino))]
         while pending:
-            directory, depth = pending.pop()
+            directory, depth, identity = pending.pop()
             try:
                 fd = _open_directory(directory)
             except OSError as exc:
                 yield self._counted({"path": directory, "error": str(exc)})
                 continue
             try:
+                opened = os.fstat(fd)
+                if (opened.st_dev, opened.st_ino) != identity:
+                    yield self._counted({"path": directory, "error": "replaced during the walk"})
+                    continue
                 with os.scandir(fd) as listing:
                     for item in listing:
                         if self.run.out_of_time():
@@ -660,7 +675,7 @@ class Walk:
                                 entry["not_descended"] = "depth"
                                 self.not_descended["depth"] += 1
                             else:
-                                pending.append((absolute, depth + 1))
+                                pending.append((absolute, depth + 1, (info.st_dev, info.st_ino)))
                         yield self._counted(entry)
             except OSError as exc:  # the listing failed part-way
                 yield self._counted({"path": directory, "error": str(exc)})
@@ -679,6 +694,10 @@ COMMANDS = {
 # A fixed, minimal environment: nothing from the login session reaches a command.
 _COMMAND_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C.UTF-8"}
 _STDERR_KEEP = 4096
+
+
+class CommandFailed(Exception):
+    """A command ran but failed: the module's collection is incomplete."""
 
 
 def find_command(name):
@@ -707,8 +726,9 @@ def run_command(run, module, name, args, transform=None):
     """Run an allow-listed command and send its output as a source, masked
     line by line like a file. The command is killed when the module's time
     runs out or its output reaches the size cap. Returns its exit code, or
-    None if it could not be run (recorded instead). Raises ModuleTimeout
-    after closing the source if time ran out."""
+    None if it could not be run (recorded instead). After closing the
+    source, raises ModuleTimeout if time ran out, or CommandFailed if the
+    command exited with a non-zero status of its own accord."""
     executable, info, problem = find_command(name)
     if executable is None:
         run.stream.record(module, "command_unavailable", {"command": name, "reason": problem})
@@ -741,28 +761,34 @@ def run_command(run, module, name, args, transform=None):
     finally:
         os.close(no_input)
 
+    finished_reading = threading.Event()
     killed = {"time": False}
 
-    def kill(on_time=False):
-        if process.poll() is None:
-            killed["time"] = killed["time"] or on_time
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except OSError:
-                pass
+    def kill_group():
+        # The whole process group, even after its leader has exited: a child
+        # still holding the pipes would otherwise keep the readers waiting.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
 
-    watchdog = threading.Timer(max(0.0, run.deadline - time.monotonic()), kill, (True,))
+    def on_deadline():
+        if not finished_reading.is_set():
+            killed["time"] = True
+        kill_group()
+
+    watchdog = threading.Timer(max(0.0, run.deadline - time.monotonic()), on_deadline)
     watchdog.daemon = True
     watchdog.start()
     # Drain error output alongside, so a full pipe can't stall the command.
-    errors = []
+    errors = {"kept": b"", "more": False}
 
     def drain():
-        kept = 0
         for block in iter(lambda: process.stderr.read(CHUNK_BYTES), b""):
-            if kept < _STDERR_KEEP:
-                errors.append(block[: _STDERR_KEEP - kept])
-                kept += len(errors[-1])
+            room = _STDERR_KEEP - len(errors["kept"])
+            if len(block) > room:
+                errors["more"] = True
+            errors["kept"] += block[: max(room, 0)]
 
     drainer = threading.Thread(target=drain, daemon=True)
     drainer.start()
@@ -772,25 +798,34 @@ def run_command(run, module, name, args, transform=None):
         with process.stdout:
             truncated_reason = pump_lines(run, writer, process.stdout, transform)
             if truncated_reason is not None:
-                kill(on_time=truncated_reason == "time")
+                kill_group()
     finally:
         exit_code = process.wait()
+        # Error output can stay open after stdout closes; the watchdog still
+        # ends it at the deadline.
+        drainer.join(timeout=max(0.0, run.deadline - time.monotonic()) + 5)
+        finished_reading.set()
         watchdog.cancel()
-        drainer.join(timeout=5)
+        kill_group()  # nothing the command started outlives it
         process.stderr.close()
     if killed["time"]:
         truncated_reason = "time"
-    stderr, stderr_masked = mask_text(b"".join(errors))
+    stderr = errors["kept"]
+    if errors["more"]:
+        # Cut at the cap: withhold the partial last line, which masking might
+        # not recognise once cut.
+        stderr = stderr[: stderr.rfind(b"\n") + 1]
+    stderr, stderr_masked = mask_text(stderr)
     for kind, count in stderr_masked.items():
         writer.masker.counts[kind] = writer.masker.counts.get(kind, 0) + count
-    writer.finish(
-        truncated_reason,
-        extra={"exit_code": exit_code, "stderr": stderr.decode("utf-8", errors="replace")},
-    )
-    if truncated_reason is None and exit_code != 0:
-        run.stream.error(module, f"{name} exited with status {exit_code}")
+    extra = {"exit_code": exit_code, "stderr": stderr.decode("utf-8", errors="replace")}
+    if errors["more"]:
+        extra["stderr_truncated"] = True
+    writer.finish(truncated_reason, extra=extra)
     if truncated_reason == "time":
         raise ModuleTimeout()
+    if truncated_reason is None and exit_code != 0:
+        raise CommandFailed(f"{name} exited with status {exit_code}")
     return exit_code
 
 
@@ -1016,34 +1051,46 @@ JOURNAL_FIELDS = (
 JOURNAL_AUTH_MATCHES = ("SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10")
 
 
-def _mask_byte_arrays(value, masker):
-    """journalctl writes a field that is not valid UTF-8 as an array of byte
-    values, which text masking can't see. Mask those bytes too (recursing
-    into fields that occur more than once)."""
-    if not isinstance(value, list):
-        return value
-    if value and all(isinstance(b, int) and 0 <= b <= 255 for b in value):
-        masked, counts = mask_text(bytes(value))
-        for kind, count in counts.items():
-            masker.counts[kind] = masker.counts.get(kind, 0) + count
-        return list(masked)
-    return [_mask_byte_arrays(item, masker) for item in value]
+def _merge_counts(masker, counts):
+    for kind, count in counts.items():
+        masker.counts[kind] = masker.counts.get(kind, 0) + count
+
+
+def _mask_journal_value(value, masker):
+    """Mask one decoded journal field. journalctl writes a field that is not
+    valid UTF-8 as an array of byte values, and a field that occurs more than
+    once as an array of values; both are masked item by item."""
+    if isinstance(value, str):
+        masked, counts = mask_text(value.encode("utf-8", errors="surrogatepass"))
+        _merge_counts(masker, counts)
+        return masked.decode("utf-8", errors="replace")
+    if isinstance(value, list):
+        if value and all(isinstance(b, int) and 0 <= b <= 255 for b in value):
+            masked, counts = mask_text(bytes(value))
+            _merge_counts(masker, counts)
+            return list(masked)
+        return [_mask_journal_value(item, masker) for item in value]
+    return value
 
 
 def mask_journal_line(line, masker):
-    """Mask one line of `journalctl --output=json`, byte-array fields included."""
-    if b"[" in line:  # any spacing journalctl uses; parsing more lines is harmless
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            entry = None
-        if not isinstance(entry, dict):
-            # Can't see inside it, so it isn't sent (fail closed).
-            masker.counts["unparsed_line"] = masker.counts.get("unparsed_line", 0) + 1
-            return b"[MASKED:unparsed_line %d bytes]\n" % len(line)
-        entry = {key: _mask_byte_arrays(value, masker) for key, value in entry.items()}
-        line = (json.dumps(entry, separators=(",", ":")) + "\n").encode("ascii")
-    return masker.line(line)
+    """Mask one line of `journalctl --output=json`. Masking works on the
+    decoded values, never on the JSON text, where escaping would hide quotes
+    from the rules and a rule could swallow JSON delimiters. A line that
+    can't be parsed is not sent (fail closed)."""
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        entry = None
+    if not isinstance(entry, dict):
+        masker.counts["unparsed_line"] = masker.counts.get("unparsed_line", 0) + 1
+        return b"[MASKED:unparsed_line %d bytes]\n" % len(line)
+    entry = {key: _mask_journal_value(value, masker) for key, value in entry.items()}
+    try:
+        return (json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+    except UnicodeEncodeError:  # a lone surrogate in a field name
+        masker.counts["unparsed_line"] = masker.counts.get("unparsed_line", 0) + 1
+        return b"[MASKED:unparsed_line %d bytes]\n" % len(line)
 
 
 def module_auth_journal(run):

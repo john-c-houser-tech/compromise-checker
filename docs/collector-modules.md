@@ -71,10 +71,12 @@ line, with only these fields: `MESSAGE`, `PRIORITY`, `SYSLOG_FACILITY`,
 `_HOSTNAME`, `_TRANSPORT`, `_PID`, `_UID`, `_GID`, `_COMM`, `_EXE`,
 `_SYSTEMD_UNIT`, `_AUDIT_SESSION`, `_AUDIT_LOGINUID`, plus the cursor,
 times, sequence numbers and boot id journalctl always adds. The process
-command line (`_CMDLINE`) is never requested. Each line is masked like file
-text; journalctl writes a field that is not valid UTF-8 as an array of byte
-values, and those bytes are masked too. A line with an array that can't be
-parsed is not sent (fail closed) and is counted as `unparsed_line`.
+command line (`_CMDLINE`) is never requested. Each entry is decoded and
+every field value masked on its own — never the JSON text, where escaped
+quotes would hide a quoted secret's end from the rules. journalctl writes a
+field that is not valid UTF-8 as an array of byte values, and those bytes
+are masked too. A line that can't be parsed is not sent (fail closed) and is
+counted as `unparsed_line`.
 
 ## Commands
 
@@ -88,11 +90,14 @@ a search of `PATH`), and only if that file is owned by root and writable by
 no one else; otherwise a `command_unavailable` record says why. It gets no
 input (`/dev/null`), a fixed environment (`PATH` and `LC_ALL=C.UTF-8`
 only), `/` as its working directory, and the collector's lowered priority.
-It is killed when the module's time runs out or its output reaches the size
-cap, and the source says which. Its output is masked line by line exactly
+It runs in its own process group, which is killed when the module's time
+runs out or its output reaches the size cap (the source says which), and
+again when the command ends, so nothing it started outlives it. Its output is masked line by line exactly
 like a file. The source records the command line, the executable's owner,
 mode, times and SHA-256, the exit status, and the first 4 KiB of its error
-output, masked. A non-zero exit status is also reported as an `error`.
+output, masked; if that output was longer, the line cut by the limit is left
+out (`stderr_truncated`). A command that fails on its own (non-zero exit
+status) ends its module with status `error`.
 
 ## Directory walks
 
@@ -100,6 +105,10 @@ Modules that list directories (from Phase 1's accounts, persistence and
 file-system modules on) share one bounded walk. It never follows a symbolic
 link (it records the link's target instead), never descends into another
 file system, and opens directories without updating their access times.
+Each directory it opens must still be the one it listed (same device and
+inode); one replaced meanwhile — say a parent swapped for a link — is
+recorded as replaced, not followed. A top path that is itself a link is
+recorded with its target and not followed.
 For each entry it sends the path, type, mode (including set-user-ID and
 set-group-ID bits), owner, group, size, link count, inode and change and
 modification times; regular files under a size limit — executables, or

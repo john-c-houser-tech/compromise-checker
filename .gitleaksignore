@@ -1,0 +1,2 @@
+# Made-up AWS key in the secret-masking tests (not a credential).
+02dbc08fe21817efb98ada8a04359c919642381b:tests/collector/test_modules.py:aws-access-token:304

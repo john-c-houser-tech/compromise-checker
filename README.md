@@ -8,7 +8,30 @@ It logs in over SSH, streams a small collector to the server's own Python,
 brings the evidence back, and analyses it on the operator's machine. Nothing
 is written to the server.
 
-**Status:** Phase 0 is being built — nothing is usable yet.
+**Status: Phase 0 complete (2026-10-26).** The tool collects and stores
+evidence; it does not analyse it yet. Checks, baselines, scoring and reports
+come in Phase 1, the AI advisor in Phase 3 (see [DESIGN.md §18](DESIGN.md)).
+
+What works today:
+
+- `checker init` — sets up the evidence key, database and configuration.
+- `checker hosts add|list|remove` and `checker trust` — the inventory, and
+  verified SSH host keys (no way to switch verification off).
+- `checker collect` — logs in (key, agent or password; sudo with or without a
+  password, or root), runs the collector read-only, and stores the result as
+  an `age`-encrypted, hashed bundle with a chain of custody. Collects host
+  facts and the authentication log, with secrets masked before they leave
+  the server.
+- `checker bundle list|show|verify` — inspect and re-check stored evidence.
+
+**Read-only, proven:** on throwaway Ubuntu 24.04 and Rocky Linux 9 servers,
+with auditd recording every write by the scanner's session, the collector
+wrote nothing at all, and every write by the system's own login machinery
+matched the traces disclosed in the policy
+([proof script](tests/integration/readonly_proof.py),
+[results](plans/phase0-build-plan-2026-10-25.md#results)).
+
+Set up a server for it with [docs/scanner-account.md](docs/scanner-account.md).
 
 - [DESIGN.md](DESIGN.md) — architecture, security and privacy policy, checks,
   scoring, and the decisions made so far.
@@ -18,6 +41,8 @@ is written to the server.
   reporting a vulnerability.
 
 ## Development
+
+Runs on Python 3.12 or later on the controller.
 
 ```
 python3 -m venv .venv && . .venv/bin/activate

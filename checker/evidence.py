@@ -135,7 +135,19 @@ class Summary:
     sources: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
     records: dict[str, int] = field(default_factory=dict)
+    dropped: dict[str, int] = field(default_factory=dict)
     _open: dict[int, dict[str, Any]] = field(default_factory=dict, repr=False)
+
+    # Bounded: a target controls how many sources, errors and record names it
+    # sends, so beyond these limits entries are counted, not kept. The bundle
+    # itself still holds everything.
+    MAX_SOURCES = 10_000
+    MAX_ERRORS = 1_000
+    MAX_RECORD_NAMES = 1_000
+    MAX_MESSAGE = 500
+
+    def _drop(self, kind: str) -> None:
+        self.dropped[kind] = self.dropped.get(kind, 0) + 1
 
     def add(self, record: StreamRecord) -> None:
         if isinstance(record, Manifest):
@@ -158,20 +170,36 @@ class Summary:
                 masked=record.masked,
                 error=record.error,
             )
-            self.sources.append(source)
+            if len(self.sources) < self.MAX_SOURCES:
+                self.sources.append(source)
+            else:
+                self._drop("sources")
         elif isinstance(record, Error):
-            self.errors.append({"module": record.module, "message": record.message})
+            if len(self.errors) < self.MAX_ERRORS:
+                message = record.message[: self.MAX_MESSAGE]
+                self.errors.append({"module": record.module, "message": message})
+            else:
+                self._drop("errors")
         elif record.type == "record":
-            key = f"{record.module}.{record.name}"
-            self.records[key] = self.records.get(key, 0) + 1
+            key = f"{record.module}.{record.name}"[:200]
+            if key in self.records or len(self.records) < self.MAX_RECORD_NAMES:
+                self.records[key] = self.records.get(key, 0) + 1
+            else:
+                self._drop("record_names")
 
     def as_dict(self) -> dict[str, Any]:
+        # A source cut off before its end still belongs in the summary.
+        unfinished = [
+            dict(source, bytes=None, masked=None, truncated=True, truncated_reason="unfinished")
+            for source in self._open.values()
+        ]
         return {
             "manifest": self.manifest,
             "trailer": self.trailer,
-            "sources": self.sources,
+            "sources": self.sources + unfinished,
             "errors": self.errors,
             "records": self.records,
+            "dropped": self.dropped,
         }
 
 

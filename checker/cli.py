@@ -204,7 +204,8 @@ def cmd_bundle_show(args: argparse.Namespace) -> int:
     store = Store(database_file(base))
     try:
         row = store.bundle(args.bundle)
-        observer = open_bundle(Path(row["path"]), _identity(args, base))
+        identity = _identity(args, base)
+        observer = open_bundle(Path(row["path"]), identity)
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
@@ -216,12 +217,15 @@ def cmd_bundle_show(args: argparse.Namespace) -> int:
     host = manifest.get("host", {})
     print(f"Bundle     {row['id']}")
     print(f"Status     {row['status']}")
+    problem = open_text(row["problem"], identity)
+    if problem:
+        print(f"Problem    {problem}")
     print(f"Host       {host.get('hostname')}  {host.get('os_pretty_name')}  {host.get('kernel')}")
     print(f"Collector  {manifest.get('collector_version')}  sha256 {row['collector_sha256']}")
     print(f"Started    {manifest.get('started_at')}  ({trailer.get('duration_seconds')} s)")
     for name, result in (trailer.get("modules") or {}).items():
         print(f"  module {name:16} {result['status']:8} {result['seconds']} s")
-    for source in summary.sources:
+    for source in summary.as_dict()["sources"]:
         flags = []
         if source.get("truncated"):
             flags.append(f"truncated ({source.get('truncated_reason')})")
@@ -231,9 +235,12 @@ def cmd_bundle_show(args: argparse.Namespace) -> int:
         if source.get("error"):
             flags.append(f"error: {source['error']}")
         extra = f"  [{'; '.join(flags)}]" if flags else ""
-        print(f"  source {source.get('name')}  {source.get('bytes'):,} bytes{extra}")
+        size = "unknown size" if source.get("bytes") is None else f"{source['bytes']:,} bytes"
+        print(f"  source {source.get('name')}  {size}{extra}")
     for error in summary.errors:
         print(f"  error  {error['module']}: {error['message']}")
+    for kind, count in summary.dropped.items():
+        print(f"  ({count} more {kind.replace('_', ' ')} not listed)")
     return 0
 
 
@@ -257,11 +264,16 @@ def cmd_bundle_verify(args: argparse.Namespace) -> int:
             ("encrypted file matches its recorded hash", actual == row["ciphertext_sha256"])
         )
     checks.extend(check_sidecar(path.with_suffix(".json"), row))
-    try:
-        identity = _identity(args, base)
-    except EvidenceError as exc:
-        print(f"note: content not checked: {exc}")
-        identity = None
+    identity = None
+    if args.identity or load_config(base).identity_file:
+        try:
+            identity = _identity(args, base)
+        except EvidenceError as exc:
+            # A key was asked for but couldn't be used: that's a failure, not
+            # a quiet downgrade to checking hashes only.
+            checks.append((f"evidence key loaded ({exc})", False))
+    else:
+        print("note: no evidence key here, so the content was not checked")
     if identity is not None and actual is not None:
         try:
             observer = open_bundle(path, identity)

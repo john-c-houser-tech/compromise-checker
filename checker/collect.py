@@ -1,5 +1,6 @@
 """One collection run across hosts: transport → encrypted bundle → store."""
 
+import asyncio
 import json
 import uuid
 from dataclasses import asdict, dataclass
@@ -76,7 +77,8 @@ async def collect_hosts(
         except TransportError as exc:
             error, session = exc, exc.session
         finally:
-            sealed = writer.seal()
+            # Joining the encryptor and fsync can be slow: keep other hosts moving.
+            sealed = await asyncio.to_thread(writer.seal)
         manifest = sealed.summary.manifest or {}
         status, verdict = judge(
             sealed.status,

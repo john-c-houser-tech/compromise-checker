@@ -134,6 +134,13 @@ class _Client(asyncssh.SSHClient):
         self.method: str | None = None
         self.key_fingerprint: str | None = None
         self.offered: list[str] = []
+        self.sockname: tuple | None = None
+        self.peername: tuple | None = None
+
+    def connection_made(self, conn):
+        # Before authentication, so even a refused login records its endpoints.
+        self.sockname = conn.get_extra_info("sockname")
+        self.peername = conn.get_extra_info("peername")
 
     def public_key_auth_requested(self):
         if not self._keys:
@@ -283,6 +290,10 @@ async def collect(
 def _failed(session: Session, client: _Client, message: str) -> TransportError:
     session.auth_method = client.method
     session.offered_key_fingerprints = list(client.offered)
+    if client.sockname:
+        session.local_address, session.local_port = client.sockname[:2]
+    if client.peername:
+        session.remote_address, session.remote_port = client.peername[:2]
     session.error = message
     session.ended_at = datetime.now(UTC)
     return TransportError(message, session)

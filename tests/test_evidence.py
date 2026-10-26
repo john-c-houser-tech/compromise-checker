@@ -6,6 +6,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from checker.evidence import (
     BundleWriter,
     EvidenceError,
     Store,
+    Summary,
     database_file,
     initialise,
     judge,
@@ -474,3 +476,113 @@ async def test_verify_reports_an_unreadable_bundle_instead_of_crashing(
     args = cli.build_parser().parse_args(["bundle", "verify", outcome.bundle_id])
     assert cli.cmd_bundle_verify(args) == 1
     assert "FAIL  encrypted file readable (IsADirectoryError)" in capsys.readouterr().out
+
+
+# --- Copilot's third review of PR #8 (requested by John) ----------------------------
+
+
+def test_summary_is_bounded_however_many_errors_a_target_sends(checker_home):
+    manifest = json.loads(gzip.decompress(real_stream()).splitlines()[0])
+    flood = Summary.MAX_ERRORS + 500
+    errors = [{"type": "error", "module": "m", "message": "x" * 2000}] * flood
+    trailer = {
+        "type": "trailer",
+        "finished_at": "2026-10-25T00:00:00+00:00",
+        "duration_seconds": 1,
+        "status": "complete",
+        "counts": {"records": 0, "sources": 0, "chunks": 0, "errors": flood},
+        "modules": {},
+    }
+    sealed, _ = seal(checker_home, stream_of(manifest, *errors, trailer), pieces=3)
+    summary = sealed.summary.as_dict()
+    assert len(summary["errors"]) == Summary.MAX_ERRORS
+    assert summary["dropped"] == {"errors": 500}
+    assert all(len(e["message"]) == Summary.MAX_MESSAGE for e in summary["errors"])
+    assert sealed.status == "complete"  # the bundle itself still holds everything
+
+
+def test_a_source_cut_off_midway_stays_in_the_summary(checker_home):
+    manifest = json.loads(gzip.decompress(real_stream()).splitlines()[0])
+    start = {
+        "type": "source_start",
+        "source_id": 1,
+        "module": "auth_log",
+        "kind": "file",
+        "name": "/var/log/secure",
+        "meta": {"size": 10},
+    }
+    chunk = {"type": "chunk", "source_id": 1, "seq": 0, "encoding": "utf-8", "data": "abc"}
+    sealed, _ = seal(checker_home, stream_of(manifest, start, chunk))  # no end, no trailer
+    [source] = sealed.summary.as_dict()["sources"]
+    assert source["name"] == "/var/log/secure"
+    assert source["truncated_reason"] == "unfinished" and source["bytes"] is None
+
+
+async def test_show_displays_why_a_run_failed(server, checker_home, capsys):
+    config, _ = initialise(checker_home)
+    server.target.sudo_n_refuses = True
+    [outcome] = await collect_hosts(
+        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+    )
+    args = cli.build_parser().parse_args(["bundle", "show", outcome.bundle_id])
+    assert cli.cmd_bundle_show(args) == 0
+    assert "Problem    web01: sudo refused" in capsys.readouterr().out
+
+
+async def test_verify_fails_when_the_named_key_cannot_be_loaded(server, checker_home, capsys):
+    config, _ = initialise(checker_home)
+    [outcome] = await collect_hosts(
+        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+    )
+    missing = checker_home / "no-such-key.txt"
+    args = cli.build_parser().parse_args(
+        ["bundle", "verify", outcome.bundle_id, "--identity", str(missing)]
+    )
+    assert cli.cmd_bundle_verify(args) == 1
+    out = capsys.readouterr().out
+    assert "FAIL  evidence key loaded" in out and "Verified." not in out
+
+
+async def test_refused_login_records_both_endpoints(server, checker_home):
+    config, _ = initialise(checker_home)
+    stranger_key = checker_home.parent / "stranger_key2"
+    asyncssh.generate_private_key("ssh-ed25519").write_private_key(stranger_key)
+    [outcome] = await collect_hosts(
+        checker_home,
+        config,
+        [target_host(server, key_path=str(stranger_key))],
+        known_hosts=server.known,
+        limits=LIMITS,
+    )
+    store = Store(database_file(checker_home))
+    identity = load_identity(checker_home / "keys/evidence-identity.txt")
+    session = json.loads(open_text(store.bundle(outcome.bundle_id)["session"], identity))
+    assert session["remote_address"] == "127.0.0.1" and session["remote_port"] == server.port
+    assert session["local_address"] == "127.0.0.1" and session["local_port"]
+
+
+async def test_sealing_does_not_block_other_hosts(server, checker_home, monkeypatch):
+    config, _ = initialise(checker_home)
+    real_seal = collect_module.BundleWriter.seal
+    gaps = []
+
+    def slow_seal(self):
+        time.sleep(0.5)  # a slow evidence disk
+        return real_seal(self)
+
+    async def ticker():
+        last = time.monotonic()
+        for _ in range(40):
+            await asyncio.sleep(0.03)
+            now = time.monotonic()
+            gaps.append(now - last)
+            last = now
+
+    monkeypatch.setattr(collect_module.BundleWriter, "seal", slow_seal)
+    await asyncio.gather(
+        collect_hosts(
+            checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+        ),
+        ticker(),
+    )
+    assert max(gaps) < 0.3  # the loop kept turning while the bundle was sealed

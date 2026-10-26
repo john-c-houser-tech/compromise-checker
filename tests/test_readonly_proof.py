@@ -50,6 +50,7 @@ SESSION = (
         ("/home/scanner/.cache/motd.legal-displayed", "CREATE"),
     )
     + event("sudo", "/usr/bin/sudo", "bind")
+    + event("systemd", "/usr/lib/systemd/systemd", "fchmod")
 )
 
 
@@ -57,7 +58,7 @@ def test_ordinary_login_and_session_setup_is_disclosed():
     verdict = proof.classify(proof.parse_audit(SESSION))
     assert verdict.collector == []
     assert verdict.unexpected == []
-    assert len(verdict.disclosed) == 5  # PARENT entries and the link's content don't count
+    assert len(verdict.disclosed) == 6  # PARENT entries and the link's content don't count
     assert verdict.sockets == ["sudo (/usr/bin/sudo) bind"]
 
 
@@ -71,6 +72,12 @@ def test_an_undisclosed_write_by_login_machinery_fails():
     text = SESSION + event("sshd", "/usr/sbin/sshd", "openat", ("/etc/passwd", "NORMAL"))
     verdict = proof.classify(proof.parse_audit(text))
     assert verdict.unexpected == ["sshd (/usr/sbin/sshd) openat /etc/passwd"]
+
+
+def test_pathless_permission_changes_count_only_from_the_session_manager():
+    text = SESSION + event("sshd", "/usr/sbin/sshd", "fchmod")
+    verdict = proof.classify(proof.parse_audit(text))
+    assert verdict.unexpected == ["sshd (/usr/sbin/sshd) fchmod (no path)"]
 
 
 def test_no_events_means_no_writes():

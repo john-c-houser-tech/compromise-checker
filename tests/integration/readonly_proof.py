@@ -79,6 +79,11 @@ DISCLOSED = [
 ]
 # Socket calls the audit rule also catches; they create no file.
 _SOCKET_CALLS = {"bind", "connect", "sendto", "sendmsg"}
+# Attribute changes on an already-open file carry no path in the audit log.
+# Accepted only from systemd's per-user session manager, which creates and
+# then locks down its own runtime sockets and directories at login.
+_FD_ATTRIBUTE_CALLS = {"fchmod", "fchown", "fsetxattr"}
+_SESSION_MANAGER = "/usr/lib/systemd/systemd"
 
 
 # --- Linode API ------------------------------------------------------------------
@@ -200,7 +205,7 @@ done
 # Something for the collector to find in the authentication log.
 logger -p authpriv.notice "compromise-checker read-only proof: marker" || true
 # Sample the collector's memory while it runs.
-nohup sh -c 'while :; do ps -o rss= -C python3 -C python3.9 -C python3.12; sleep 0.2; done' \
+nohup sh -c 'while :; do ps -eo rss=,comm= | awk "\$2 ~ /^python/ {print \$1}"; sleep 0.2; done' \
     < /dev/null > /root/cc-rss.log 2>/dev/null &
 """
 
@@ -259,6 +264,10 @@ def classify(events: list[dict]) -> Verdict:
         if not event["paths"]:
             if event["syscall"] in _SOCKET_CALLS:
                 verdict.sockets.append(who)
+            elif event["syscall"] in _FD_ATTRIBUTE_CALLS and event["exe"] == _SESSION_MANAGER:
+                verdict.disclosed.append(
+                    f"{who} (open file)  — session setup: permissions on its own runtime files"
+                )
             else:
                 verdict.unexpected.append(f"{who} (no path)")
             continue

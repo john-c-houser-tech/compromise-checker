@@ -136,6 +136,8 @@ include access tokens, and sometimes secrets typed into commands.
 - **Encrypted.** Each collection is encrypted as it arrives, using the `age`
   encryption format, to a key created for your organization at setup. Keep
   that key's backup safe: without it, stored evidence cannot be read.
+- **Index.** An index records each collection's identifiers, times, status,
+  size and fingerprints — never its content.
 - **Tamper-evident.** Each collection carries fingerprints (SHA-256) of its
   contents and of the encrypted file, and a chain-of-custody record of who
   collected it, when, from which machine and from which server. Stored

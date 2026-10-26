@@ -70,6 +70,8 @@ class Session:
     local_port: int | None = None
     remote_address: str | None = None
     remote_port: int | None = None
+    # Every key offered, in order: sshd logs refused ones too.
+    offered_key_fingerprints: list[str] = field(default_factory=list)
     exit_status: int | None = None
     bytes_received: int = 0
     stderr: str = ""
@@ -131,11 +133,20 @@ class _Client(asyncssh.SSHClient):
         self._offered_key = None
         self.method: str | None = None
         self.key_fingerprint: str | None = None
+        self.offered: list[str] = []
+        self.sockname: tuple | None = None
+        self.peername: tuple | None = None
+
+    def connection_made(self, conn):
+        # Before authentication, so even a refused login records its endpoints.
+        self.sockname = conn.get_extra_info("sockname")
+        self.peername = conn.get_extra_info("peername")
 
     def public_key_auth_requested(self):
         if not self._keys:
             return None
         self._offered_key = self._keys.pop(0)
+        self.offered.append(_fingerprint(self._offered_key))
         self.method = "publickey"
         return self._offered_key
 
@@ -241,9 +252,10 @@ async def collect(
             f" new key and run `checker trust {host.name} --replace`."
         ) from exc
     except asyncssh.PermissionDenied as exc:
-        raise TransportError(f"{host.name}: login refused for {host.user}") from exc
+        # A refused login still leaves sshd records: keep what was tried.
+        raise _failed(session, client, f"{host.name}: login refused for {host.user}") from exc
     except (OSError, TimeoutError, asyncssh.Error) as exc:
-        raise TransportError(f"{host.name}: cannot connect: {exc}") from exc
+        raise _failed(session, client, f"{host.name}: cannot connect: {exc}") from exc
     finally:
         if agent is not None:  # only needed to sign during authentication
             agent.close()
@@ -252,6 +264,7 @@ async def collect(
         async with conn:
             session.auth_method = client.method
             session.client_key_fingerprint = client.key_fingerprint
+            session.offered_key_fingerprints = list(client.offered)
             session.server_key_fingerprint = conn.get_server_host_key().get_fingerprint("sha256")
             session.local_address, session.local_port = conn.get_extra_info("sockname")[:2]
             session.remote_address, session.remote_port = conn.get_extra_info("peername")[:2]
@@ -272,6 +285,18 @@ async def collect(
     finally:
         session.ended_at = datetime.now(UTC)
     return session
+
+
+def _failed(session: Session, client: _Client, message: str) -> TransportError:
+    session.auth_method = client.method
+    session.offered_key_fingerprints = list(client.offered)
+    if client.sockname:
+        session.local_address, session.local_port = client.sockname[:2]
+    if client.peername:
+        session.remote_address, session.remote_port = client.peername[:2]
+    session.error = message
+    session.ended_at = datetime.now(UTC)
+    return TransportError(message, session)
 
 
 async def _run(conn, host, program, sink, session, password, prompt_timeout) -> None:

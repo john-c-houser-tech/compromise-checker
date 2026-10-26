@@ -20,6 +20,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import tempfile
@@ -186,7 +187,7 @@ auditctl -a always,exit -F arch=b32 -F perm=wa -F auid="$uid" -k cc-write >/dev/
 logger -p authpriv.notice "compromise-checker read-only proof: marker" || true
 # Sample the collector's memory while it runs.
 nohup sh -c 'while :; do ps -o rss= -C python3 -C python3.9 -C python3.12; sleep 0.2; done' \
-    > /root/cc-rss.log 2>/dev/null &
+    < /dev/null > /root/cc-rss.log 2>/dev/null &
 """
 
 
@@ -269,12 +270,13 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             gss_host=None,
             config=None,
         ) as conn:
-            controller = (await conn.run("echo $SSH_CLIENT", check=True)).stdout.split()[0]
+            controller = (await conn.run("echo $SSH_CLIENT", check=True, timeout=60)).stdout
+            controller = controller.split()[0]
             scanner_public = scanner_key.export_public_key().decode().strip()
             setup = SETUP.replace("{controller}", controller).replace(
                 "{scanner_key}", scanner_public
             )
-            await conn.run(setup, check=True)
+            await conn.run(setup, check=True, timeout=600)
             print(f"{distro}: scanner account and audit rules in place")
 
             home = work / f"{distro}-home"
@@ -299,9 +301,14 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 result.error = outcome.error
             await asyncio.sleep(2)  # let auditd flush
 
-            audit = await conn.run("ausearch -k cc-write -i 2>/dev/null || true")
+            # --input-logs: without a terminal, ausearch would otherwise wait
+            # to read audit records from stdin.
+            audit = await conn.run(
+                "ausearch --input-logs -k cc-write -i < /dev/null 2>/dev/null || true",
+                timeout=120,
+            )
             result.disclosed, result.unexpected = classify(parse_audit(audit.stdout))
-            rss = await conn.run("sort -n /root/cc-rss.log | tail -1")
+            rss = await conn.run("sort -n /root/cc-rss.log | tail -1", timeout=60)
             result.peak_rss_kb = int(rss.stdout.strip() or 0) or None
 
         bundle = home / "evidence" / distro / f"{outcome.bundle_id}.age"
@@ -349,12 +356,22 @@ def report(results: list[Result]) -> bool:
     return all(r.passed for r in results)
 
 
+def _stop_on_sigterm() -> None:
+    """Treat SIGTERM like Ctrl-C, so the servers are always deleted."""
+
+    def handler(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, handler)
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--distro", nargs="+", default=["ubuntu24.04", "rocky9"], choices=IMAGES)
     parser.add_argument("--region", default="us-sea")
     parser.add_argument("--keep", action="store_true", help="don't delete the servers")
     args = parser.parse_args()
+    _stop_on_sigterm()
 
     api = Linode(linode_token())
     await asyncio.to_thread(sweep, api)
@@ -366,4 +383,5 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(line_buffering=True)  # progress shows up as it happens
     raise SystemExit(asyncio.run(main()))

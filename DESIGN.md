@@ -107,6 +107,11 @@ first.
   disk) and, on first use by that account, its "lecture" marker.
 - auditd records of the commands run, where auditd is configured to record
   them.
+- The system's ordinary session setup for the account: a per-login runtime
+  area in memory (`/run/user/…`, control groups) and, on Ubuntu, its
+  login-message files, including one small marker file
+  (`.cache/motd.legal-displayed`) in the scanner account's home on its first
+  login. Measured by the read-only proof (PR 0.7) on Ubuntu 24.04 and Rocky 9.
 
 **Never done:** removing, editing, or suppressing any of those traces.
 Changing logs on a system that may be compromised destroys evidence, and it
@@ -154,7 +159,9 @@ sometimes secrets typed into shell commands.
   style arguments, bearer tokens, and cloud access keys. The masking rules
   are published, and the report says that masking ran.
 - **Encrypted at rest.** Evidence bundles are encrypted on the controller
-  (age, to a key the organization holds).
+  (age, to a key the organization holds). The database index keeps only
+  identifiers, times, status, sizes and hashes readable; what a run collected,
+  its connection details and its error text are encrypted to the same key.
 - **Integrity.** Each bundle carries a SHA-256 hash, the collector's own hash
   and version, and a chain-of-custody record (who, when, from where, to
   where). Bundles are append-only once written.
@@ -261,19 +268,31 @@ collector's output format and the parsers can share one schema definition.
 
 1. Controller opens an SSH session (key via agent, or password) with strict
    host-key checking.
-2. It runs `sudo -S -p '' -- nice -n 19 ionice -c3 python3 -I -B -` (or
-   `/usr/libexec/platform-python` where `python3` is absent; no `sudo` when
-   the account is root).
-3. On stdin it sends: the sudo password line (only if needed), then the
-   collector program, then end-of-file. Python runs the program once stdin
-   closes.
+2. It runs the interpreter in one of three ways, set per host:
+   - `nopasswd` (recommended): `sudo -n -- python3 -I -B -` — `-n` makes sudo
+     fail rather than ask, so no password is ever sent. This is exactly the
+     command the scanner account's sudo rule and forced `authorized_keys`
+     command allow (docs/scanner-account.md).
+   - `password`: `sudo -k -S -p <unique prompt> -- python3 -I -B -c <bootstrap>`.
+     The password is sent only after sudo's own prompt appears; the one-line
+     bootstrap then prints a per-run ready marker, and the collector is sent
+     only after it — proof that sudo accepted the password.
+   - `root`: `python3 -I -B -`, no sudo.
+
+   The collector lowers its own CPU and I/O priority as its first action, so
+   nothing (`nice`, `ionice`) has to sit in front of the interpreter.
+3. On stdin it sends the collector program, then end-of-file (in `password`
+   mode, the password line first, as above). Python runs the program once
+   stdin closes.
 4. The collector writes a **gzip stream of JSON lines** to stdout: a manifest
    first (collector hash and version, host facts, clock, which modules ran),
    then one record per source chunk, then a trailer with counts and any
    errors. Diagnostics go to stderr.
-5. The controller writes the stream to an encrypted bundle as it arrives,
-   checks the trailer, hashes the bundle, and records the session details
-   (time, source address, key fingerprint) used later to filter out our own
+5. The controller checks the stream as it arrives and writes it straight into
+   an `age`-encrypted bundle (plaintext never touches the controller's disk),
+   hashes it before and after encryption, and records the session details
+   (times, both addresses, the key fingerprint that logged in) used later to
+   filter out our own traces — for failed runs too, since they also leave
    traces.
 6. The session closes. Nothing remains on the target.
 

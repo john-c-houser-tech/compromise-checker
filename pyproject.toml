@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Internal package name only — the product name is undecided and appears in
+# configuration and docs, never in code (DESIGN.md §19, decision 1).
+name = "checker"
+dynamic = ["version"]
+description = "Agentless, read-only compromise checker for RHEL and Ubuntu servers"
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "asyncssh>=2.24.1",
+    "pydantic>=2.14.1",
+    "pyrage>=1.4.0",
+    "PyYAML>=6.0.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9", "pytest-asyncio>=1.3", "ruff>=0.14"]
+# Passwords from the OS keyring instead of a prompt (--password-source keyring).
+keyring = ["keyring>=25"]
+
+[project.scripts]
+checker = "checker.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "checker.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["checker*"]
+
+[tool.setuptools.package-data]
+# The collector is shipped as a data file and streamed to targets as text;
+# the controller never imports it (DESIGN.md §5.1).
+checker = ["collector/collector.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# The collector runs on the targets' own python3: 3.9 on RHEL 9 is the floor.
+per-file-target-version = { "checker/collector/*.py" = "py39", "tests/collector/*.py" = "py39" }
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S603"]  # asserts; made-up passwords; own commands

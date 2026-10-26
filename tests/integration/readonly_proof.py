@@ -56,16 +56,29 @@ OP_ITEM = os.environ.get("CC_LINODE_OP_ITEM", "Linode Personal Access Token")
 OP_VAULT = os.environ.get("CC_LINODE_OP_VAULT", "Linode")
 SWEEP_AFTER = timedelta(hours=2)
 
-# Writes a login (sshd, PAM, sudo) is allowed to cause: the traces the policy
-# §5 discloses. Anything else written by the scanner's session fails the run.
+# Writes a login (sshd, PAM, systemd, sudo) is allowed to cause: the traces
+# the security and privacy policy §5 discloses. The collector itself must
+# write nothing at all; anything else is a failure.
 DISCLOSED = [
     (re.compile(r"^/run/sudo/ts/"), "sudo's timestamp record (memory)"),
     (re.compile(r"^/var/(db|lib)/sudo/lectured/"), "sudo's one-time notice marker"),
     (re.compile(r"^/(var/)?run/utmp$"), "login records"),
     (re.compile(r"^/var/log/(wtmp|btmp|lastlog)$"), "login records"),
     (re.compile(r"^/var/lib/(wtmpdb|lastlog)/"), "login records"),
-    (re.compile(r"^/dev/null$"), "the null device (nothing stored)"),
+    (re.compile(r"^/dev/kmsg$"), "a kernel log record"),
+    (re.compile(r"^/dev/(null|tty|console)$"), "a device (nothing stored)"),
+    (re.compile(r"^/run/user/\d+(/|$)"), "session setup: per-login runtime area (memory)"),
+    (re.compile(r"^/sys/fs/cgroup/"), "session setup: control groups (kernel memory)"),
+    (re.compile(r"^/proc/(self|thread-self|\d+)/"), "session setup: process settings (memory)"),
+    (re.compile(r"^/sys/fs/selinux/"), "session setup: SELinux checks (kernel memory)"),
+    (re.compile(r"^/run/motd\.dynamic(\.new)?$"), "Ubuntu login message (memory)"),
+    (
+        re.compile(r"^/home/[^/]+/\.cache(/motd\.legal-displayed)?$"),
+        "Ubuntu login-message marker, first login only (disk)",
+    ),
 ]
+# Socket calls the audit rule also catches; they create no file.
+_SOCKET_CALLS = {"bind", "connect", "sendto", "sendmsg"}
 
 
 # --- Linode API ------------------------------------------------------------------
@@ -153,8 +166,7 @@ class Result:
     passed: bool = False
     status: str = ""
     sources: list[str] = field(default_factory=list)
-    disclosed: list[str] = field(default_factory=list)
-    unexpected: list[str] = field(default_factory=list)
+    audit: "Verdict | None" = None
     seconds: float | None = None
     peak_rss_kb: int | None = None
     error: str | None = None
@@ -181,8 +193,10 @@ chmod 440 /etc/sudoers.d/compromise-checker
 visudo -cf /etc/sudoers.d/compromise-checker >/dev/null
 # Record every write, rename, delete or attribute change by the scanner's session.
 uid=$(id -u scanner)
-auditctl -a always,exit -F arch=b64 -F perm=wa -F auid="$uid" -k cc-write >/dev/null
-auditctl -a always,exit -F arch=b32 -F perm=wa -F auid="$uid" -k cc-write >/dev/null
+for arch in b64 b32; do
+    auditctl -a always,exit -F arch=$arch -F perm=wa -F auid="$uid" -F success=1 -k cc-write \
+        >/dev/null
+done
 # Something for the collector to find in the authentication log.
 logger -p authpriv.notice "compromise-checker read-only proof: marker" || true
 # Sample the collector's memory while it runs.
@@ -204,37 +218,61 @@ async def wait_for_ssh(host: Host, known: Path, deadline: float) -> None:
 
 
 def parse_audit(text: str) -> list[dict]:
-    """Events from `ausearch -i`: each with comm, exe, syscall and paths."""
+    """Events from `ausearch -i`: each with comm, exe, syscall and the paths it
+    changed (a PATH record's PARENT entries only name the directory looked in)."""
     events = []
     for block in text.split("----"):
         syscall = re.search(r"type=SYSCALL .*?syscall=(\S+).*? comm=(\S+) exe=(\S+)", block)
         if not syscall:
             continue
-        paths = re.findall(r"type=PATH .*?name=(\S+)", block)
+        paths = []
+        for name, kind in re.findall(r"type=PATH .*?name=(\S+)(?: .*?nametype=(\S+))?", block):
+            if kind != "PARENT" and name != "(null)":
+                paths.append(name.strip('"'))
         events.append(
             {
                 "syscall": syscall.group(1),
                 "comm": syscall.group(2).strip('"'),
                 "exe": syscall.group(3).strip('"'),
-                "paths": [p.strip('"') for p in paths if p not in ("(null)",)],
+                "paths": paths,
             }
         )
     return events
 
 
-def classify(events: list[dict]) -> tuple[list[str], list[str]]:
-    disclosed, unexpected = [], []
+@dataclass
+class Verdict:
+    collector: list[str] = field(default_factory=list)  # must stay empty
+    unexpected: list[str] = field(default_factory=list)  # must stay empty
+    disclosed: list[str] = field(default_factory=list)
+    sockets: list[str] = field(default_factory=list)  # informational
+
+
+def classify(events: list[dict]) -> Verdict:
+    verdict = Verdict()
     for event in events:
-        targets = event["paths"] or ["(no path)"]
-        for target in targets:
-            line = f"{event['comm']} ({event['exe']}) {event['syscall']} {target}"
-            reason = next((why for pattern, why in DISCLOSED if pattern.search(target)), None)
+        who = f"{event['comm']} ({event['exe']}) {event['syscall']}"
+        if event["comm"].startswith("python") or "python" in event["exe"]:
             # The collector itself must write nothing at all.
-            if reason and not event["comm"].startswith("python"):
-                disclosed.append(f"{line}  — {reason}")
+            verdict.collector.extend(f"{who} {path}" for path in event["paths"] or ["-"])
+            continue
+        if not event["paths"]:
+            if event["syscall"] in _SOCKET_CALLS:
+                verdict.sockets.append(who)
             else:
-                unexpected.append(line)
-    return sorted(set(disclosed)), sorted(set(unexpected))
+                verdict.unexpected.append(f"{who} (no path)")
+            continue
+        for path in event["paths"]:
+            if not path.startswith("/") and event["syscall"].startswith("symlink"):
+                continue  # a symbolic link's content, not a location
+            reason = next((why for pattern, why in DISCLOSED if pattern.search(path)), None)
+            if reason:
+                verdict.disclosed.append(f"{who} {path}  — {reason}")
+            else:
+                verdict.unexpected.append(f"{who} {path}")
+    for name in ("collector", "unexpected", "disclosed", "sockets"):
+        setattr(verdict, name, sorted(set(getattr(verdict, name))))
+    return verdict
 
 
 async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -> Result:
@@ -307,7 +345,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 "ausearch --input-logs -k cc-write -i < /dev/null 2>/dev/null || true",
                 timeout=120,
             )
-            result.disclosed, result.unexpected = classify(parse_audit(audit.stdout))
+            result.audit = classify(parse_audit(audit.stdout))
             rss = await conn.run("sort -n /root/cc-rss.log | tail -1", timeout=60)
             result.peak_rss_kb = int(rss.stdout.strip() or 0) or None
 
@@ -321,7 +359,13 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 f"{s['name']} ({s['bytes']:,} bytes, masked {s['masked'] or 'nothing'})"
                 for s in opened.summary.sources
             ]
-        result.passed = result.status == "complete" and not result.unexpected
+        audit = result.audit
+        result.passed = (
+            result.status == "complete"
+            and audit is not None
+            and not audit.collector
+            and not audit.unexpected
+        )
     except Exception as exc:  # report it; the server is still deleted below
         result.error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -333,6 +377,14 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             await asyncio.to_thread(api.delete, node["id"])
             print(f"{distro}: deleted {label}")
     return result
+
+
+def _count_reasons(lines: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for line in lines:
+        reason = line.rsplit("  — ", 1)[-1]
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
 
 
 def report(results: list[Result]) -> bool:
@@ -347,12 +399,21 @@ def report(results: list[Result]) -> bool:
             print(f"  collector ran {r.seconds} s, peak memory {r.peak_rss_kb or '?'} KB")
         for source in r.sources:
             print(f"  collected {source}")
-        for line in r.disclosed:
-            print(f"  disclosed write: {line}")
-        for line in r.unexpected:
+        audit = r.audit
+        if audit is None:
+            continue
+        if audit.collector:
+            for line in audit.collector:
+                print(f"  COLLECTOR WROTE: {line}")
+        else:
+            print("  the collector wrote nothing")
+        for line in audit.unexpected:
             print(f"  UNEXPECTED write: {line}")
-        if not r.disclosed and not r.unexpected:
-            print("  no writes at all by the scanner's session")
+        print(f"  {len(audit.disclosed)} disclosed login/session writes:")
+        for reason, count in _count_reasons(audit.disclosed).items():
+            print(f"    {count:4} × {reason}")
+        if audit.sockets:
+            print(f"  ({len(audit.sockets)} socket calls by login machinery, not file writes)")
     return all(r.passed for r in results)
 
 

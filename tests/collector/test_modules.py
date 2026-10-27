@@ -14,6 +14,8 @@ import io
 import json
 import os
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -330,13 +332,15 @@ class HostFactsTests(FixtureRoot):
 class MaskingTests(unittest.TestCase):
     def setUp(self):
         self.collector = load_collector("/")
+        # The local accounts the unknown_user rule keeps (not this machine's).
+        self.collector._LOCAL_ACCOUNT_NAMES = frozenset({b"root", b"jch"})
 
     def mask(self, text):
         return self.collector.mask_text(text)
 
     def test_ordinary_log_lines_are_untouched(self):
         for line in (
-            b"sshd[1]: Failed password for invalid user admin from 192.0.2.9 port 22 ssh2\n",
+            b"sshd[1]: Failed password for invalid user jch from 192.0.2.9 port 22 ssh2\n",
             b"sudo: pam_unix(sudo:auth): auth could not identify password for [jch]\n",
             b"sudo: jch : TTY=pts/0 ; PWD=/srv/app ; USER=root ; COMMAND=/usr/bin/systemctl\n",
             b"sshd[2]: Accepted publickey for jch from 192.0.2.9 port 5 ssh2: ED25519 SHA256:x\n",
@@ -345,6 +349,40 @@ class MaskingTests(unittest.TestCase):
             b"sshd[5]: Postponed keyboard-interactive/pam for jch from 192.0.2.9 port 5\n",
         ):
             self.assertEqual(self.mask(line), (line, {}), line)
+
+    def test_failed_login_names_are_kept_only_for_local_accounts(self):
+        cases = {
+            b"sshd[1]: Invalid user Summer2026! from 192.0.2.9 port 22\n": (
+                b"sshd[1]: Invalid user [MASKED:unknown_user] from 192.0.2.9 port 22\n"
+            ),
+            b"sshd[1]: Failed password for invalid user two words from 192.0.2.9 port 22 ssh2\n": (
+                b"sshd[1]: Failed password for invalid user [MASKED:unknown_user] from"
+                b" 192.0.2.9 port 22 ssh2\n"
+            ),
+            b"sshd[1]: Connection closed by invalid user hunter2 192.0.2.9 port 22 [preauth]\n": (
+                b"sshd[1]: Connection closed by invalid user [MASKED:unknown_user] 192.0.2.9"
+                b" port 22 [preauth]\n"
+            ),
+            b"sshd[1]: Invalid user root from 192.0.2.9 port 22\n": (
+                b"sshd[1]: Invalid user root from 192.0.2.9 port 22\n"
+            ),
+            b"login[2]: FAILED LOGIN 1 FROM tty1 FOR 'Pa ss', User not known to the module\n": (
+                b"login[2]: FAILED LOGIN 1 FROM tty1 FOR [MASKED:unknown_user], User not known"
+                b" to the module\n"
+            ),
+            b"login[2]: FAILED LOGIN 1 FROM tty1 FOR 'jch', Authentication failure\n": (
+                b"login[2]: FAILED LOGIN 1 FROM tty1 FOR 'jch', Authentication failure\n"
+            ),
+            b"su[3]: user Secret99 does not exist\n": (
+                b"su[3]: user [MASKED:unknown_user] does not exist\n"
+            ),
+            b"sshd[4]: pam_sss(sshd:auth): received for user Xyz123: 10 (User not known)\n": (
+                b"sshd[4]: pam_sss(sshd:auth): received for user [MASKED:unknown_user]: 10"
+                b" (User not known)\n"
+            ),
+        }
+        for line, expected in cases.items():
+            self.assertEqual(self.mask(line)[0], expected, line)
 
     def test_each_rule(self):
         cases = [
@@ -633,7 +671,7 @@ class PriorityTests(unittest.TestCase):
         self.assertIn(manifest["priority"]["io"], ("idle", "unchanged"))
         if os.uname().machine == "x86_64":
             self.assertEqual(manifest["priority"]["io"], "idle")
-        self.assertEqual(manifest["masking_version"], 4)
+        self.assertEqual(manifest["masking_version"], 5)
 
 
 # --- PR 1.1 groundwork: walks, commands, the journal, resource use ------------------
@@ -2382,6 +2420,185 @@ class PersistenceTests(FixtureRoot):
         self.assertEqual(files["/etc/cron.d/hist"]["link_target"], "/home/jch/.bash_history")
 
 
+UTMP = struct.Struct("=hxxi32s4s32s256shhiIi16s20s")
+
+
+def utmp(kind, user=b"", host=b"", line=b"", when=None, address=b"", pid=1):
+    when = int(NOW if when is None else when)
+    return UTMP.pack(
+        kind, pid, line, b"", user, host, 0, 0, 0, when, 0, address.ljust(16, b"\0"), b""
+    )
+
+
+class SystemJournalTests(FixtureRoot):
+    def test_system_journal_asks_for_kernel_systemd_and_logind(self):
+        self.write("usr/bin/journalctl", FAKE_JOURNALCTL).chmod(0o755)
+        records = collect(self.root, ["system_journal"], days=1)
+        ((start, content, _),) = sources(records).values()
+        argv = start["meta"]["argv"]
+        self.assertEqual(
+            argv[-7:],
+            [
+                "_TRANSPORT=kernel",
+                "+",
+                "_PID=1",
+                "+",
+                "SYSLOG_IDENTIFIER=systemd-logind",
+                "SYSLOG_IDENTIFIER=systemd-coredump",
+                "SYSLOG_IDENTIFIER=systemd-shutdown",
+            ],
+        )
+        fields = [a for a in argv if a.startswith("--output-fields=")][0]
+        self.assertIn("_BOOT_ID", fields)
+        self.assertIn(b"[MASKED", content)  # the fake's -pS3cret line
+        self.assertEqual(records[-1]["modules"]["system_journal"]["status"], "ok")
+
+    def test_boot_list(self):
+        self.write(
+            "usr/bin/journalctl",
+            b"#!/bin/sh\necho \"args $*\"\necho ' -1 abc Mon 2026-10-26 Tue 2026-10-27'\n",
+        ).chmod(0o755)
+        records = collect(self.root, ["boots"])
+        ((start, content, _),) = sources(records).values()
+        self.assertEqual(start["meta"]["argv"][1:], ["--list-boots", "--no-pager"])
+        self.assertIn(b" -1 abc", content)
+
+
+class LoginRecordTests(FixtureRoot):
+    def test_records_in_the_window_masked_and_summarised(self):
+        self.write(
+            "var/log/wtmp",
+            utmp(2, user=b"reboot", line=b"~", host=b"6.8.0")
+            + utmp(
+                7, user=b"jch", line=b"pts/0", host=b"203.0.113.5", address=bytes([203, 0, 113, 5])
+            )
+            + bytes(UTMP.size)  # a zeroed record, as cleaners leave
+            + utmp(7, user=b"old", when=NOW - 90 * DAY)
+            + utmp(8, line=b"pts/0", address=socket.inet_pton(socket.AF_INET6, "2001:db8::1"))
+            + b"\x01\x02",  # a partial record at the end
+        )
+        self.write(
+            "var/log/btmp",
+            utmp(6, user=b"password=Hunter2x", host=b"https://u:pw123@x.example"),
+        )
+        records = collect(self.root, ["login_records"])
+        login = records_named(records, "login_record")
+        # btmp sorts first; in wtmp, the record before the window is left out.
+        self.assertEqual(
+            [r["type"] for r in login],
+            ["login_process", "boot_time", "user_process", "dead_process"],
+        )
+        by_path = {}
+        for r in login:
+            by_path.setdefault(r["path"], []).append(r)
+        jch = by_path["/var/log/wtmp"][1]
+        self.assertEqual(
+            (jch["user"], jch["line"], jch["address"]), ("jch", "pts/0", "203.0.113.5")
+        )
+        self.assertEqual(by_path["/var/log/wtmp"][2]["address"], "2001:db8::1")
+        failed = by_path["/var/log/btmp"][0]
+        self.assertNotIn("Hunter2x", json.dumps(records))
+        self.assertNotIn("pw123", json.dumps(records))
+        self.assertEqual(failed["user"], "[MASKED:unknown_user]")  # not a local account
+        files = {f["path"]: f for f in records_named(records, "login_file")}
+        wtmp = files["/var/log/wtmp"]
+        self.assertEqual(
+            (
+                wtmp["records"],
+                wtmp["blank"],
+                wtmp["before_window"],
+                wtmp["sent"],
+                wtmp["partial_bytes"],
+            ),
+            (5, 1, 1, 3, 2),
+        )
+        self.assertEqual(sources(records), {})  # nothing of the files is sent raw
+        self.assertEqual(records[-1]["modules"]["login_records"]["status"], "ok")
+
+    def test_failed_logins_keep_only_local_account_names(self):
+        self.write("etc/passwd", b"root:x:0:0::/root:/bin/bash\n")
+        self.write(
+            "var/log/btmp",
+            utmp(6, user=b"root") + utmp(6, user=b"Summer2026!") + utmp(6, user=b""),
+        )
+        self.write("var/log/wtmp", utmp(7, user=b"someone"))  # a real login: kept
+        records = collect(self.root, ["login_records"])
+        users = [(r["path"], r["user"]) for r in records_named(records, "login_record")]
+        self.assertEqual(
+            users,
+            [
+                ("/var/log/btmp", "root"),
+                ("/var/log/btmp", "[MASKED:unknown_user]"),
+                ("/var/log/btmp", ""),
+                ("/var/log/wtmp", "someone"),
+            ],
+        )
+        btmp = [f for f in records_named(records, "login_file") if f["path"] == "/var/log/btmp"]
+        self.assertEqual(btmp[0]["masked"], {"unknown_user": 1})
+
+    def test_rotations_compressed_and_refused(self):
+        self.write("etc/passwd", b"b:x:1000:1000::/home/b:/bin/bash\n")
+        self.write("var/log/wtmp.1", utmp(7, user=b"a"))
+        self.write("var/log/btmp-20261001.gz", gzip.compress(utmp(6, user=b"b")))
+        self.write("etc/shadow", b"root:*:1::::::\n")
+        os.link(Path(self.root, "etc/shadow"), Path(self.root, "var/log/btmp"))
+        records = collect(self.root, ["login_records"])
+        users = sorted(r["user"] for r in records_named(records, "login_record"))
+        self.assertIn("a", users)
+        self.assertIn("b", users)
+        refused = [r["path"] for r in records_named(records, "unreadable_file")]
+        self.assertIn("/var/log/btmp", refused)
+
+    def test_login_databases_are_described(self):
+        self.write("var/log/wtmp", b"")
+        self.write("var/lib/wtmpdb/wtmp.db", b"SQLite format 3\0")
+        records = collect(self.root, ["login_records"])
+        self.assertEqual(
+            [r["path"] for r in records_named(records, "login_database")],
+            ["/var/lib/wtmpdb/wtmp.db"],
+        )
+
+
+class CrashDumpTests(FixtureRoot):
+    def test_listed_never_read_or_hashed(self):
+        self.write("var/lib/systemd/coredump/core.sshd.0.abc.123.zst", b"CanaryCoreMemory")
+        self.write("var/crash/_usr_sbin_nginx.0.crash", b"CanaryApportReport")
+        records = collect(self.root, ["crash_dumps"])
+        files = {f["path"]: f for f in records_named(records, "file")}
+        self.assertIn("/var/lib/systemd/coredump/core.sshd.0.abc.123.zst", files)
+        self.assertIn("/var/crash/_usr_sbin_nginx.0.crash", files)
+        raw = json.dumps(records)
+        self.assertNotIn("Canary", raw)
+        self.assertNotIn("sha256", raw)
+
+
+class KernelModuleTests(FixtureRoot):
+    def test_modules_taint_and_policy(self):
+        self.write(
+            "proc/modules",
+            b"rootkit 16384 0 - Live 0xffffffffc0a00000 (OE)\n"
+            b"ext4 1000000 2 jbd2,mbcache, Live 0xffffffffc0b00000\n"
+            b"garbage line\n",
+        )
+        self.write("sys/module/rootkit/taint", b"OE\n")
+        self.write("sys/module/module/parameters/sig_enforce", b"N\n")
+        self.write("proc/sys/kernel/modules_disabled", b"0\n")
+        records = collect(self.root, ["kernel_modules"])
+        mods = {m["name"]: m for m in records_named(records, "kernel_module")}
+        self.assertEqual(mods["rootkit"]["taint"], "OE")
+        self.assertEqual(mods["rootkit"]["sys_taint"], "OE")
+        self.assertEqual(mods["ext4"]["used_by"], ["jbd2", "mbcache"])
+        self.assertNotIn("0xffff", json.dumps(records))  # load addresses are left out
+        self.assertEqual(len(records_named(records, "unparsed_line")), 1)
+        policy = records_named(records, "module_policy")[0]
+        self.assertEqual((policy["sig_enforce"], policy["modules_disabled"]), ("N", "0"))
+        self.assertIsNone(policy["lockdown"])
+
+    def test_missing_proc_modules_is_an_error(self):
+        records = collect(self.root, ["kernel_modules"])
+        self.assertEqual(records[-1]["modules"]["kernel_modules"]["status"], "error")
+
+
 CANARIES = {
     "hash": "$6$CanarySalt$" + "H" * 86,
     "gecos": "CanaryGecosName",
@@ -2403,6 +2620,9 @@ CANARIES = {
     "homestartup": "CanaryHomeStartupLine",
     "userunit": "CanaryUserUnitLine",
     "homeenv": "CanaryHomeEnvironmentValue",
+    "btmp": "CanaryBtmpPass",
+    "core": "CanaryCoreMemory",
+    "typed": "CanaryTypedPass1",  # a bare password typed as a user name
 }
 
 
@@ -2744,6 +2964,22 @@ class CanaryTests(FixtureRoot):
             self.write(f"{home}/.ssh/authorized_keys", ("\n".join(lines) + "\n").encode())
         self.write("etc/ssh/keys/bob", ("\n".join(lines) + "\n").encode())
         self.write("var/log/secure", f"Oct 26 sshd[1]: password={c['log']} x\n".encode())
+        self.write("proc/modules", b"ext4 1 2 - Live 0x0000000000000000\n")
+        # Login records: a password typed as a user name, and a URL password
+        # as the host; a wtmp rotation hard-linked to a history file; core
+        # dumps and crash reports, which hold memory.
+        self.write(
+            "var/log/btmp",
+            utmp(6, user=f"password={c['btmp']}".encode(), host=b"https://u:CanaryBtmpPass@h")
+            + utmp(6, user=c["typed"].encode()),
+        )
+        self.write(
+            "var/log/secure-typed",
+            f"Oct 26 sshd[9]: Invalid user {c['typed']} from 192.0.2.9 port 22\n".encode(),
+        )
+        os.link(Path(self.root, "home/jch/.bash_history"), Path(self.root, "var/log/wtmp.1"))
+        self.write("var/lib/systemd/coredump/core.x.zst", c["core"].encode())
+        self.write("var/crash/_usr_bin_x.crash", c["core"].encode())
         # Persistence: an at job's environment and output, crontab and unit
         # secrets, and start-up files and units in homes (hashes only).
         job = AT_JOB.replace(b"PATH=/usr/bin:/bin", f"API={c['atenv']}".encode())

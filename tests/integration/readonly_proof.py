@@ -177,10 +177,19 @@ class Result:
     seconds: float | None = None
     peak_rss_kb: int | None = None
     home_text_files: int = 0
+    missing: list[str] = field(default_factory=list)
     error: str | None = None
 
 
 HOME_PATHS = ("/home/", "/root/")
+# Evidence every real server must yield, so a pass also shows these reads
+# happened: (module, record name) counts, and modules that must send a source.
+EXPECTED_RECORDS = (
+    ("login_records", "login_record"),
+    ("kernel_modules", "kernel_module"),
+    ("startup", "home_startup_file"),
+)
+EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal")
 
 SETUP = r"""
 set -eu
@@ -489,6 +498,10 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 for s in opened.summary.sources
                 if s.get("module") == "startup" and s["name"].startswith(HOME_PATHS)
             )
+            counts = opened.summary.records
+            result.missing = [f"{m}.{n}" for m, n in EXPECTED_RECORDS if not counts.get(f"{m}.{n}")]
+            with_sources = {s.get("module") for s in opened.summary.sources if s.get("bytes")}
+            result.missing += [f"{m} (source)" for m in EXPECTED_SOURCES if m not in with_sources]
         audit = result.audit
         result.passed = (
             result.status == "complete"
@@ -496,6 +509,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             and not audit.collector
             and not audit.unexpected
             and result.home_text_files > 0
+            and not result.missing
         )
     except Exception as exc:  # report it; the server is still deleted below
         result.error = f"{type(exc).__name__}: {exc}"
@@ -531,6 +545,8 @@ def report(results: list[Result]) -> bool:
             print(f"  home start-up files read as text (home_text=all): {r.home_text_files}")
             if not r.home_text_files:
                 print("  FAIL: no home start-up text was read, so those reads went unproven")
+            for what in r.missing:
+                print(f"  FAIL: no {what} collected, so that read went unproven")
         for source in r.sources:
             print(f"  collected {source}")
         audit = r.audit

@@ -273,6 +273,15 @@ a home is sent as text: files there are listed and hashed only, so a changed
 `.bashrc` or a new user unit shows against the baseline without anything a
 user wrote leaving the server.
 
+**Limit: the first check.** A hash shows change, not content. On a server's
+first check there is no baseline, so a backdoor already in a home start-up
+file or a user unit before that check is not recognised from its text. What
+the first check still has: a home start-up file whose hash differs from the
+`/etc/skel` file of the same name is reported as customised (one that
+matches is known to be unchanged), and any user unit or user autostart entry
+is reported by name, owner and times, since servers rarely have one. Their
+contents are left for a person on the server to read.
+
 **`at` jobs.** `at` stores a copy of the submitting user's whole environment
 in each job, as `NAME=value; export NAME` lines between the `umask` line and
 `cd <directory> || {`. Those lines are replaced, before masking, by one

@@ -1,0 +1,488 @@
+"""Snapshots and baselines (PR 1.6b): a host's state from a bundle, what
+changed between two, and the baseline later ones are compared with."""
+
+import base64
+import gzip
+import hashlib
+import json
+import sqlite3
+from datetime import UTC, datetime, timedelta
+
+import pyrage
+import pytest
+from pyrage import x25519
+
+from checker import cli
+from checker.analysis import load_snapshot, parse_bundle, store_parsed
+from checker.baseline import accept, changes, current_baseline
+from checker.bundle import walk_bundle
+from checker.evidence import (
+    EvidenceError,
+    Store,
+    database_file,
+    initialise,
+    load_identity,
+    open_text,
+)
+from checker.snapshot import SnapshotBuilder, compare, sshd_lines, sudoers_lines
+
+START = datetime(2027, 1, 2, 12, 0, tzinfo=UTC)
+ALL_MODULES = [
+    "host_facts",
+    "accounts",
+    "sudoers",
+    "ssh",
+    "kernel_modules",
+    "processes",
+    "systemd",
+]
+
+
+def stream(records):
+    return gzip.compress(b"".join(json.dumps(r, default=str).encode() + b"\n" for r in records))
+
+
+def text_source(source_id, module, name, text, cut=False):
+    data = text.encode()
+    out = [
+        {
+            "type": "source_start",
+            "source_id": source_id,
+            "module": module,
+            "kind": "file",
+            "name": name,
+            "meta": {"size": len(data), "mode": "0440", "uid": 0, "gid": 0, "mtime": "x"},
+        },
+        {
+            "type": "chunk",
+            "source_id": source_id,
+            "seq": 0,
+            "encoding": "base64",
+            "data": base64.b64encode(data).decode(),
+        },
+    ]
+    if not cut:
+        out.append(
+            {
+                "type": "source_end",
+                "source_id": source_id,
+                "chunks": 1,
+                "bytes": len(data),
+                "truncated": False,
+            }
+        )
+    return out
+
+
+def rec(module, name, /, **data):
+    return {"type": "record", "module": module, "name": name, "data": data}
+
+
+def host_records(
+    *,
+    accounts=(("root", 0), ("jch", 1000)),
+    sudoers="root ALL=(ALL) ALL\n",
+    keys=(("jch", "SHA256:jchkey"),),
+    listening=(("tcp", ["0.0.0.0", 22], "LISTEN", 700),),
+    extra=(),
+    statuses=None,
+    planned=ALL_MODULES,
+    trailer=True,
+    masking=6,
+):
+    records = [
+        {
+            "type": "manifest",
+            "protocol": 1,
+            "collector_version": "t",
+            "run_id": "r",
+            "started_at": START.isoformat(),
+            "host": {
+                "hostname": "web01",
+                "os_id": "ubuntu",
+                "os_version_id": "24.04",
+                "os_pretty_name": "Ubuntu",
+                "kernel": "6.8",
+                "machine": "x86_64",
+                "boot_id": None,
+            },
+            "python": {"version": "3.12", "executable": "/usr/bin/python3"},
+            "effective_uid": 0,
+            "settings": {},
+            "modules_planned": list(planned),
+            "masking_version": masking,
+        },
+        rec("host_facts", "os_release", ID="ubuntu", VERSION_ID="24.04"),
+        rec("host_facts", "uname", release="6.8.0", machine="x86_64"),
+        rec("host_facts", "kernel_taint", value=0),
+    ]
+    for name, uid in accounts:
+        records.append(
+            rec(
+                "accounts",
+                "account",
+                name=name,
+                uid=uid,
+                gid=uid,
+                home=f"/home/{name}",
+                shell="/bin/bash",
+                password="shadowed",
+                line=1,
+            )
+        )
+        records.append(rec("accounts", "password_status", name=name, line=1, status="set"))
+    records.append(rec("accounts", "group", name="sudo", gid=27, members=["jch"], line=1))
+    records += text_source(1, "sudoers", "/etc/sudoers", sudoers)
+    records += text_source(
+        2,
+        "ssh",
+        "/etc/ssh/sshd_config",
+        "# comment\nPermitRootLogin no\nMatch User backup\n  PasswordAuthentication yes\n",
+    )
+    for account, fingerprint in keys:
+        records.append(
+            rec(
+                "ssh",
+                "authorized_key",
+                account=account,
+                path=f"/home/{account}/.ssh/authorized_keys",
+                line=1,
+                type="ssh-ed25519",
+                fingerprint=fingerprint,
+            )
+        )
+    records.append(
+        rec("kernel_modules", "kernel_module", name="ext4", size=1, taint="", used_by=[])
+    )
+    records.append(rec("processes", "process", pid=700, comm="sshd"))
+    records.append(rec("processes", "process", pid=800, comm="nc"))
+    for protocol, local, state, pid in listening:
+        records.append(
+            rec(
+                "processes",
+                "socket",
+                protocol=protocol,
+                netns="host",
+                local=local,
+                remote=["0.0.0.0", 0],
+                state=state,
+                uid=0,
+                inode="1",
+                pids=[pid],
+            )
+        )
+    records.append(
+        rec(
+            "processes",
+            "socket",
+            protocol="tcp",
+            netns="host",
+            local=["10.0.0.5", 22],
+            remote=["198.51.100.1", 5000],
+            state="ESTABLISHED",
+            uid=0,
+            inode="2",
+            pids=[700],
+        )
+    )
+    records += list(extra)
+    if trailer:
+        records.append(
+            {
+                "type": "trailer",
+                "finished_at": START.isoformat(),
+                "duration_seconds": 1,
+                "status": "complete",
+                "counts": {
+                    "records": sum(r["type"] == "record" for r in records),
+                    "sources": sum(r["type"] == "source_start" for r in records),
+                    "chunks": sum(r["type"] == "chunk" for r in records),
+                    "errors": sum(r["type"] == "error" for r in records),
+                },
+                "modules": {
+                    m: {"status": (statuses or {}).get(m, "ok"), "seconds": 0} for m in planned
+                },
+            }
+        )
+    return records
+
+
+def snapshot_of_records(records, tmp_path):
+    identity = x25519.Identity.generate()
+    path = tmp_path / "b.age"
+    path.write_bytes(pyrage.encrypt(stream(records), [identity.to_public()]))
+    builder = SnapshotBuilder()
+    walk_bundle(path, identity, builder)
+    return builder.finish()
+
+
+# --- Reading text -----------------------------------------------------------------------
+
+
+def test_sudoers_lines():
+    text = [
+        "# a comment",
+        "",
+        "Defaults   env_reset",
+        "#includedir /etc/sudoers.d",
+        "jch ALL=(ALL) \\",
+        "    NOPASSWD: ALL",
+    ]
+    assert sudoers_lines(text) == [
+        "Defaults env_reset",
+        "#includedir /etc/sudoers.d",
+        "jch ALL=(ALL) NOPASSWD: ALL",
+    ]
+
+
+def test_sshd_lines_keep_their_match_block():
+    lines = ["Port 22", "Match User backup", " PasswordAuthentication=yes", "Match all", "X11 no"]
+    assert sshd_lines(lines) == [
+        ("", "port", "22"),
+        ("User backup", "match", "User backup"),
+        ("User backup", "passwordauthentication", "yes"),
+        ("", "match", "all"),
+        ("", "x11", "no"),
+    ]
+
+
+# --- One snapshot -----------------------------------------------------------------------------
+
+
+def test_a_snapshot_holds_the_host_state(tmp_path):
+    snap = snapshot_of_records(host_records(), tmp_path)
+    s = snap.sections
+    assert s["accounts"].items["jch"]["uid"] == 1000
+    assert s["accounts"].items["jch"]["shadow_status"] == "set"
+    assert s["groups"].items["sudo"] == {"gid": 27, "members": ["jch"]}
+    assert "/etc/sudoers: root ALL=(ALL) ALL" in s["sudo_rules"].items
+    assert len(s["sudo_files"].items["/etc/sudoers"]["content_sha256"]) == 64
+    assert "/etc/ssh/sshd_config [Match User backup]: passwordauthentication yes" in (
+        s["sshd_config"].items
+    )
+    [key] = s["authorized_keys"].items.values()
+    assert key["fingerprint"] == "SHA256:jchkey" and "line" not in key
+    # Listening sockets only, with their programs.
+    assert s["listeners"].items == {"tcp 0.0.0.0:22 netns=host": {"uid": 0, "programs": ["sshd"]}}
+    assert s["host"].items["os"] == {"id": "ubuntu", "version_id": "24.04"}
+    assert all(section.complete for section in s.values())
+    assert snap.meta["masking_version"] == 6
+
+
+def test_password_status_before_its_account_still_merges(tmp_path):
+    records = host_records(accounts=())
+    records.insert(-1, rec("accounts", "password_status", name="late", line=1, status="locked"))
+    records.insert(
+        -1, rec("accounts", "account", name="late", uid=5, gid=5, home="/", shell="/x", line=1)
+    )
+    snap = snapshot_of_records(records, tmp_path)
+    assert snap.sections["accounts"].items["late"]["shadow_status"] == "locked"
+
+
+def test_gaps_mark_only_the_sections_they_touch(tmp_path):
+    shadow = rec("accounts", "unreadable_file", path="/etc/shadow", reason="denied")
+    snap = snapshot_of_records(host_records(extra=[shadow]), tmp_path)
+    assert not snap.sections["accounts"].complete
+    assert snap.sections["accounts"].gaps == ["unreadable_file: /etc/shadow"]
+    assert snap.sections["groups"].complete
+
+
+def test_a_failed_or_missing_module_leaves_its_sections_incomplete(tmp_path):
+    snap = snapshot_of_records(host_records(statuses={"ssh": "timeout"}), tmp_path)
+    assert not snap.sections["authorized_keys"].complete
+    assert snap.sections["authorized_keys"].gaps == ["ssh: timeout"]
+    assert snap.sections["accounts"].complete
+    # Not collected at all: no section, so nothing to compare.
+    snap = snapshot_of_records(host_records(planned=["host_facts", "accounts"]), tmp_path)
+    assert "authorized_keys" not in snap.sections
+    # No trailer: every section is in doubt.
+    snap = snapshot_of_records(host_records(trailer=False), tmp_path)
+    assert not any(s.complete for s in snap.sections.values())
+
+
+def test_a_file_cut_off_is_a_gap(tmp_path):
+    records = host_records()[:-1] + text_source(9, "sudoers", "/etc/sudoers.d/x", "a b\n", cut=True)
+    snap = snapshot_of_records(records, tmp_path)
+    assert snap.sections["sudo_files"].items["/etc/sudoers.d/x"]["content_cut"]
+    assert not snap.sections["sudo_rules"].complete
+
+
+# --- Comparing ------------------------------------------------------------------------------
+
+
+def test_compare_reports_added_removed_and_changed(tmp_path):
+    old = snapshot_of_records(host_records(), tmp_path)
+    new = snapshot_of_records(
+        host_records(
+            accounts=(("root", 0), ("jch", 1000), ("backdoor", 0)),
+            sudoers="root ALL=(ALL) ALL\nbackdoor ALL=(ALL) NOPASSWD: ALL\n",
+            keys=(("jch", "SHA256:jchkey"), ("root", "SHA256:newkey")),
+            listening=(
+                ("tcp", ["0.0.0.0", 22], "LISTEN", 700),
+                ("tcp", ["0.0.0.0", 4444], "LISTEN", 800),
+            ),
+        ),
+        tmp_path,
+    )
+    diff = compare(old, new)
+    assert list(diff["accounts"]["added"]) == ["backdoor"]
+    assert list(diff["sudo_rules"]["added"]) == ["/etc/sudoers: backdoor ALL=(ALL) NOPASSWD: ALL"]
+    assert "content_sha256" in diff["sudo_files"]["changed"]["/etc/sudoers"]
+    assert [k.split()[1] for k in diff["authorized_keys"]["added"]] == ["SHA256:newkey"]
+    assert list(diff["listeners"]["added"]) == ["tcp 0.0.0.0:4444 netns=host"]
+    assert all(d["comparable"] for d in diff.values())
+    assert "host" not in diff  # unchanged sections are left out
+    assert compare(new, old)["accounts"]["removed"] == {
+        "backdoor": diff["accounts"]["added"]["backdoor"]
+    }
+
+
+def test_an_incomplete_side_is_not_comparable(tmp_path):
+    old = snapshot_of_records(host_records(), tmp_path)
+    new = snapshot_of_records(host_records(keys=(), statuses={"ssh": "error"}), tmp_path)
+    diff = compare(old, new)["authorized_keys"]
+    assert list(diff["removed"]) and not diff["comparable"]
+    assert diff["notes"] == ["later incomplete: ssh: error"]
+
+
+def test_a_new_masking_version_is_noted(tmp_path):
+    old = snapshot_of_records(host_records(masking=5), tmp_path)
+    new = snapshot_of_records(host_records(masking=6, sudoers="root ALL=(ALL) ALL\n#x\n"), tmp_path)
+    notes = compare(old, new)["sudo_files"]["notes"]
+    assert notes == ["masking changed between the two; text may differ without a change"]
+
+
+# --- Stored, and baselines ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    config, identity_path = initialise(tmp_path)
+    store = Store(database_file(tmp_path))
+    yield tmp_path, store, load_identity(identity_path), config
+    store.close()
+
+
+def add_bundle(home, name, minutes, records, status="complete", host="web01"):
+    base, store, _, config = home
+    keys = [x25519.Recipient.from_str(r) for r in config.recipients]
+    plain = stream(records)
+    cipher = pyrage.encrypt(plain, keys)
+    path = base / f"{name}.age"
+    path.write_bytes(cipher)
+    store.record_bundle(
+        {
+            "id": name,
+            "host": host,
+            "run_id": name,
+            "path": str(path),
+            "started_at": (START + timedelta(minutes=minutes)).isoformat(),
+            "ended_at": (START + timedelta(minutes=minutes)).isoformat(),
+            "status": status,
+            "collector_version": "t",
+            "collector_sha256": "x",
+            "plaintext_sha256": hashlib.sha256(plain).hexdigest(),
+            "plaintext_bytes": len(plain),
+            "ciphertext_sha256": hashlib.sha256(cipher).hexdigest(),
+            "ciphertext_bytes": len(cipher),
+            "recipients": json.dumps(config.recipients),
+            "session": None,
+            "summary": None,
+            "problem": None,
+        }
+    )
+
+
+def test_the_snapshot_is_stored_encrypted(home):
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    row = store.bundle("b1")
+    store_parsed(store, row, config.recipients, parse_bundle(row, identity))
+    derived = store.derived("b1", "snapshot")
+    assert b"jchkey" not in open(derived["path"], "rb").read()
+    assert load_snapshot(store, row, identity).sections["accounts"].items["jch"]["uid"] == 1000
+    detail = json.loads(store.custody_of("b1")[-1]["detail"])
+    assert detail["snapshot_items"] == derived["items"] > 0
+
+
+def test_the_first_analysis_becomes_the_baseline(home):
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    found = changes(store, "web01", identity, config.recipients)
+    assert found.first and found.baseline_id == "b1" and found.comparisons == []
+    assert current_baseline(store, "web01")["how"] == "first"
+    assert [r["action"] for r in store.custody_of("b1")][-1] == "baseline"
+
+
+def test_later_bundles_compare_with_the_previous_and_the_baseline(home):
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    add_bundle(home, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("tmp", 2000))))
+    add_bundle(home, "b3", 20, host_records(accounts=(("root", 0), ("jch", 1000), ("tmp", 2000))))
+    add_bundle(home, "broken", 25, [], status="broken")  # never compared with
+    found = changes(store, "web01", identity, config.recipients)
+    assert found.bundle_id == "b3" and not found.first
+    assert [(c.label, c.bundle_id) for c in found.comparisons] == [
+        ("previous", "b2"),
+        ("baseline", "b1"),
+    ]
+    assert found.comparisons[0].differences == {}  # nothing changed since b2
+    assert list(found.comparisons[1].differences["accounts"]["added"]) == ["tmp"]
+
+
+def test_accepting_moves_the_baseline_with_who_and_why(home):
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    add_bundle(home, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("tmp", 2000))))
+    changes(store, "web01", identity, config.recipients)
+    accept(store, "web01", "Planned: tmp account for the migration", identity, config.recipients)
+    rows = store.baselines("web01")
+    assert [(r["how"], r["bundle_id"]) for r in rows] == [("first", "b1"), ("accepted", "b2")]
+    assert b"migration" not in rows[-1]["reason"]  # encrypted
+    assert open_text(rows[-1]["reason"], identity) == "Planned: tmp account for the migration"
+    add_bundle(home, "b3", 20, host_records(accounts=(("root", 0), ("jch", 1000), ("tmp", 2000))))
+    found = changes(store, "web01", identity, config.recipients)
+    # The baseline is now the previous bundle too: one comparison, no change.
+    assert [(c.label, c.bundle_id, c.differences) for c in found.comparisons] == [
+        ("previous", "b2", {})
+    ]
+
+
+def test_accepting_needs_a_reason_and_the_hosts_own_usable_bundle(home):
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    add_bundle(home, "other", 0, host_records(), host="db01")
+    add_bundle(home, "bad", 5, [], status="broken")
+    with pytest.raises(EvidenceError, match="reason"):
+        accept(store, "web01", "  ", identity, config.recipients)
+    with pytest.raises(EvidenceError, match="from db01"):
+        accept(store, "web01", "x", identity, config.recipients, bundle_id="other")
+    with pytest.raises(EvidenceError, match="broken"):
+        accept(store, "web01", "x", identity, config.recipients, bundle_id="bad")
+    with pytest.raises(EvidenceError, match="no usable bundle"):
+        changes(store, "nowhere", identity, config.recipients)
+
+
+def test_baselines_are_append_only(home):
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    changes(store, "web01", identity, config.recipients)
+    for statement in ("UPDATE baselines SET how = 'x'", "DELETE FROM baselines"):
+        with pytest.raises(sqlite3.DatabaseError, match="append-only"), store._db:
+            store._db.execute(statement)
+
+
+def test_cli_changes_and_baseline(home, capsys):
+    add_bundle(home, "b1", 0, host_records())
+    assert cli.main(["changes", "web01"]) == 0
+    assert "first analysis" in capsys.readouterr().out
+    add_bundle(home, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("evil", 0))))
+    assert cli.main(["changes", "web01"]) == 0
+    out = capsys.readouterr().out
+    assert "Since the previous bundle, b1:" in out and "+ evil  uid=0" in out
+    assert cli.main(["baseline", "accept", "web01", "--reason", "known"]) == 0
+    assert "baseline is now b2" in capsys.readouterr().out
+    assert cli.main(["baseline", "show", "web01"]) == 0
+    out = capsys.readouterr().out
+    assert "first" in out and "accepted" in out and "— known" in out

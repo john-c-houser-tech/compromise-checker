@@ -33,8 +33,9 @@ from pathlib import Path
 
 import asyncssh
 
+from checker.analysis import parse_bundle
 from checker.collect import collect_hosts
-from checker.evidence import initialise, load_identity, open_bundle
+from checker.evidence import Store, database_file, initialise, load_identity, open_bundle
 from checker.inventory import Host
 from checker.protocol import Limits
 from checker.transport import fetch_host_key, trust_host_key
@@ -178,6 +179,14 @@ class Result:
     peak_rss_kb: int | None = None
     home_text_files: int = 0
     missing: list[str] = field(default_factory=list)
+    # The controller's own parse of the bundle (1.6): what a snapshot must
+    # hold on any server, and (informational) whether the tool's own login
+    # was recognised — behind NAT it can't be, by design.
+    snapshot: list[str] = field(default_factory=list)  # must stay empty
+    snapshot_incomplete: list[str] = field(default_factory=list)
+    own_login_found: bool | None = None
+    own_events: int = 0
+    events: int = 0
     error: str | None = None
 
 
@@ -507,6 +516,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             result.missing = [f"{m}.{n}" for m, n in EXPECTED_RECORDS if not counts.get(f"{m}.{n}")]
             with_sources = {s.get("module") for s in opened.summary.sources if s.get("bytes")}
             result.missing += [f"{m} (source)" for m in EXPECTED_SOURCES if m not in with_sources]
+            check_parse(result, home, outcome.bundle_id, Path(config.identity_file), scanner_key)
         audit = result.audit
         result.passed = (
             result.status == "complete"
@@ -515,6 +525,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             and not audit.unexpected
             and result.home_text_files > 0
             and not result.missing
+            and not result.snapshot
         )
     except Exception as exc:  # report it; the server is still deleted below
         result.error = f"{type(exc).__name__}: {exc}"
@@ -527,6 +538,61 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             await asyncio.to_thread(api.delete, node["id"])
             print(f"{distro}: deleted {label}")
     return result
+
+
+# Sections every server's snapshot must have, complete, when collected as root.
+COMPLETE_SECTIONS = (
+    "host",
+    "accounts",
+    "groups",
+    "sudo_rules",
+    "sudo_files",
+    "authorized_keys",
+    "sshd_config",
+    "kernel_modules",
+    "listeners",
+    "privileged_files",
+)
+
+
+def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path, key) -> None:
+    """Parse the bundle as the controller does and check its snapshot holds
+    what the setup put on the server."""
+    store = Store(database_file(home))
+    try:
+        parsed = parse_bundle(store.bundle(bundle_id), load_identity(identity_file))
+    finally:
+        store.close()
+    result.events = len(parsed.events)
+    result.own_events = parsed.summary.get("own_session") or 0
+    result.own_login_found = parsed.summary.get("own_login_found")
+    sections = parsed.snapshot.sections
+    result.snapshot_incomplete = [
+        f"{name}: {'; '.join(s.gaps[:2])}" for name, s in sections.items() if not s.complete
+    ]
+    problems = result.snapshot
+    for name in COMPLETE_SECTIONS:
+        if name not in sections:
+            problems.append(f"no {name} section")
+        elif not sections[name].complete:
+            problems.append(f"{name} incomplete: {'; '.join(sections[name].gaps[:2])}")
+    if sections.get("accounts") and not {"root", "scanner"} <= set(sections["accounts"].items):
+        problems.append("accounts lack root or scanner")
+    rules = sections.get("sudo_rules")
+    if rules and not any("scanner ALL=(root) NOPASSWD" in k for k in rules.items):
+        problems.append("the scanner's sudoers rule is not among the sudo rules")
+    fingerprint = key.get_fingerprint("sha256")
+    keys = sections.get("authorized_keys")
+    if keys and not any(
+        i.get("account") == "scanner" and i.get("fingerprint") == fingerprint
+        for i in keys.items.values()
+    ):
+        problems.append("the scanner's key is not among the authorized keys")
+    if sections.get("sshd_config") is not None and not sections["sshd_config"].items:
+        problems.append("no sshd settings")
+    listeners = sections.get("listeners")
+    if listeners and not any(":22 " in k + " " for k in listeners.items):
+        problems.append("nothing listening on port 22")
 
 
 def _count_reasons(lines: list[str]) -> dict[str, int]:
@@ -552,6 +618,19 @@ def report(results: list[Result]) -> bool:
                 print("  FAIL: no home start-up text was read, so those reads went unproven")
             for what in r.missing:
                 print(f"  FAIL: no {what} collected, so that read went unproven")
+            print(
+                f"  parsed: {r.events} events, {r.own_events} from this tool's own session;"
+                f" own login recognised: {r.own_login_found}"
+                + (
+                    " (NAT on the way changes the source port)"
+                    if r.own_login_found is False
+                    else ""
+                )
+            )
+            for problem in r.snapshot:
+                print(f"  FAIL: snapshot: {problem}")
+            for gap in r.snapshot_incomplete:
+                print(f"  snapshot section incomplete: {gap}")
         for source in r.sources:
             print(f"  collected {source}")
         audit = r.audit

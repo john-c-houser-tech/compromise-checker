@@ -29,6 +29,11 @@ What works today:
 - `checker events BUNDLE` — parse a bundle into events (logins, sudo, account
   changes, kernel and systemd messages, login records), with the tool's own
   session recognised and left out ([how](docs/events.md)).
+- `checker changes HOST` — what changed on a host since its previous bundle
+  and since its baseline: accounts, sudo rules, authorized keys, sshd
+  settings, persistence files, listening sockets, kernel modules and more.
+  The host's first analysis is its baseline; `checker baseline accept HOST
+  --reason …` moves it after a reviewed change ([how](docs/snapshots.md)).
 
 **Read-only, proven:** on throwaway Ubuntu 24.04 and Rocky Linux 9 servers,
 with auditd recording every write by the scanner's session, the collector

@@ -443,6 +443,19 @@ CREATE TABLE IF NOT EXISTS derived (
     summary BLOB,
     PRIMARY KEY (bundle_id, kind)
 );
+-- Each host's baseline over time: the snapshot later ones are compared
+-- with (DESIGN.md §7). The first is set automatically; each later one is an
+-- operator's accepted change, with who, where and (encrypted) why.
+CREATE TABLE IF NOT EXISTS baselines (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    host TEXT NOT NULL,
+    bundle_id TEXT NOT NULL REFERENCES bundles(id),
+    at TEXT NOT NULL,
+    how TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    controller TEXT NOT NULL,
+    reason BLOB
+);
 -- Append-only, enforced by the database itself (DESIGN.md §3.4).
 CREATE TRIGGER IF NOT EXISTS bundles_no_update BEFORE UPDATE ON bundles
     BEGIN SELECT RAISE(ABORT, 'bundles are append-only'); END;
@@ -452,6 +465,10 @@ CREATE TRIGGER IF NOT EXISTS custody_no_update BEFORE UPDATE ON custody
     BEGIN SELECT RAISE(ABORT, 'custody is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS custody_no_delete BEFORE DELETE ON custody
     BEGIN SELECT RAISE(ABORT, 'custody is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS baselines_no_update BEFORE UPDATE ON baselines
+    BEGIN SELECT RAISE(ABORT, 'baselines are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS baselines_no_delete BEFORE DELETE ON baselines
+    BEGIN SELECT RAISE(ABORT, 'baselines are append-only'); END;
 """
 
 
@@ -551,6 +568,23 @@ class Store:
         return self._db.execute(
             "SELECT * FROM derived WHERE bundle_id = ? AND kind = ?", (bundle_id, kind)
         ).fetchone()
+
+    def record_baseline(self, host: str, bundle_id: str, how: str, reason: bytes | None) -> None:
+        """A new baseline for `host` (how: first or accepted), with its
+        custody entry, in one transaction."""
+        operator, controller = who_and_where()
+        with self._db:
+            self._db.execute(
+                "INSERT INTO baselines (host, bundle_id, at, how, operator, controller, reason)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (host, bundle_id, datetime.now(UTC).isoformat(), how, operator, controller, reason),
+            )
+            self._custody(bundle_id, "baseline", operator, controller, {"how": how})
+
+    def baselines(self, host: str) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM baselines WHERE host = ? ORDER BY seq", (host,)
+        ).fetchall()
 
     def custody_of(self, bundle_id: str) -> list[sqlite3.Row]:
         return self._db.execute(

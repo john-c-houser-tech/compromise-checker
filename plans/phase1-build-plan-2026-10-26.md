@@ -120,6 +120,14 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
 - The self-session filter: the tool's own logins, sudo calls and session
   writes are recognised from the stored session records and left out of
   findings.
+  *As built:* split into 1.6a (#25: the bundle reader, events, the
+  self-session filter) and 1.6b (snapshots, comparisons, baselines; see
+  docs/snapshots.md). There is no `rpm -Va` output to parse: since 1.4b the
+  collector checks rpm's database itself. The "oldest retained snapshot" is
+  the baseline: the host's oldest analysed bundle until an operator accepts
+  a later one. Comparisons go section by section, and a section the
+  collection left incomplete is marked not comparable rather than read as
+  removals.
 
 **1.7 — Controller: checks 8.1–8.7 and `checker analyze`.**
 - Each check is a small rule over events and snapshots that produces

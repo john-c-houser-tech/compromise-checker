@@ -10,7 +10,8 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from checker import __version__
-from checker.analysis import load_events, parse_bundle, store_events
+from checker.analysis import load_events, parse_bundle, store_parsed
+from checker.baseline import accept, changes
 from checker.collect import collect_hosts
 from checker.credentials import password_for
 from checker.evidence import (
@@ -411,7 +412,144 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--reparse", action="store_true", help="parse again even if stored")
     events.add_argument("--identity", help="the evidence private key file")
     events.set_defaults(handler=cmd_events)
+    changed = commands.add_parser(
+        "changes", help="what changed on a host since its previous bundle and its baseline"
+    )
+    changed.add_argument("host")
+    changed.add_argument("--bundle", help="this bundle rather than the host's latest")
+    changed.add_argument("--all", action="store_true", help="list every item, not the first 20")
+    changed.add_argument("--identity", help="the evidence private key file")
+    changed.set_defaults(handler=cmd_changes)
+    baseline = commands.add_parser("baseline", help="show or accept a host's baseline")
+    baseline_commands = baseline.add_subparsers(
+        dest="baseline_command", metavar="ACTION", required=True
+    )
+    show = baseline_commands.add_parser("show", help="a host's baselines, oldest first")
+    show.add_argument("host")
+    show.add_argument("--identity", help="the evidence private key file (to show reasons)")
+    show.set_defaults(handler=cmd_baseline_show)
+    accepting = baseline_commands.add_parser(
+        "accept", help="make a reviewed bundle (by default the latest) the host's baseline"
+    )
+    accepting.add_argument("host")
+    accepting.add_argument("--reason", required=True, help="why the change is accepted")
+    accepting.add_argument("--bundle", help="this bundle rather than the host's latest")
+    accepting.add_argument("--identity", help="the evidence private key file")
+    accepting.set_defaults(handler=cmd_baseline_accept)
     return parser
+
+
+SHOWN = 20  # items listed per kind and section without --all
+
+
+def _brief(item: dict) -> str:
+    text = " ".join(f"{k}={v}" for k, v in item.items() if v not in (None, "", [], {}))
+    return text if len(text) <= 100 else text[:99] + "…"
+
+
+def cmd_changes(args: argparse.Namespace) -> int:
+    """What changed on a host: its latest (or a given) bundle's snapshot
+    against the previous bundle's and the baseline's."""
+    base = home()
+    store = Store(database_file(base))
+    try:
+        found = changes(
+            store,
+            args.host,
+            _identity(args, base),
+            load_config(base).recipients,
+            args.bundle,
+        )
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print(f"Host       {found.host}")
+    print(f"Bundle     {found.bundle_id}")
+    if found.first:
+        print(
+            f"Baseline   {found.baseline_id}: this is the host's first analysis, so it is the"
+            " baseline; change-based checks start from here"
+        )
+    else:
+        print(f"Baseline   {found.baseline_id}")
+    if not found.comparisons:
+        print("Nothing earlier to compare with.")
+    for comparison in found.comparisons:
+        print(f"\nSince the {comparison.label} bundle, {comparison.bundle_id}:")
+        if not comparison.differences:
+            print("  no changes")
+        for name, diff in comparison.differences.items():
+            counts = ", ".join(
+                f"{len(diff[k])} {k}" for k in ("added", "removed", "changed") if diff[k]
+            )
+            print(f"  {name}: {counts or 'no changes'}")
+            for note in diff["notes"]:
+                print(f"    not comparable: {note}")
+            limit = None if args.all else SHOWN
+            for mark, kind in (("+", "added"), ("-", "removed")):
+                keys = list(diff[kind])
+                for key in keys[:limit]:
+                    print(f"    {mark} {key}  {_brief(diff[kind][key])}".rstrip())
+                if limit is not None and len(keys) > limit:
+                    print(f"    … {len(keys) - limit} more {kind} (--all lists them)")
+            keys = list(diff["changed"])
+            for key in keys[:limit]:
+                fields = "; ".join(
+                    f"{f}: {old} → {new}" for f, (old, new) in diff["changed"][key].items()
+                )
+                print(f"    ~ {key}  {fields[:200]}")
+            if limit is not None and len(keys) > limit:
+                print(f"    … {len(keys) - limit} more changed (--all lists them)")
+    return 0
+
+
+def cmd_baseline_show(args: argparse.Namespace) -> int:
+    base = home()
+    store = Store(database_file(base))
+    try:
+        rows = store.baselines(args.host)
+        identity = (
+            _identity(args, base) if args.identity or load_config(base).identity_file else None
+        )
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    if not rows:
+        print(f"No baseline for {args.host} yet: `checker changes {args.host}` sets the first.")
+        return 0
+    for row in rows:
+        reason = open_text(row["reason"], identity) if identity and row["reason"] else None
+        who = f"{row['operator']}@{row['controller']}"
+        line = f"{row['at']}  {row['how']:8}  {row['bundle_id']}  by {who}"
+        print(line + (f"  — {reason}" if reason else ""))
+    return 0
+
+
+def cmd_baseline_accept(args: argparse.Namespace) -> int:
+    base = home()
+    store = Store(database_file(base))
+    try:
+        row = accept(
+            store,
+            args.host,
+            args.reason,
+            _identity(args, base),
+            load_config(base).recipients,
+            args.bundle,
+        )
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print(f"{args.host}: baseline is now {row['id']}; later changes are compared with it.")
+    if row["status"] != "complete":
+        print(f"Note: that bundle is {row['status']}; its incomplete sections compare as such.")
+    return 0
 
 
 def cmd_events(args: argparse.Namespace) -> int:
@@ -424,7 +562,7 @@ def cmd_events(args: argparse.Namespace) -> int:
         parsed = None if args.reparse else load_events(store, row, identity)
         if parsed is None:
             parsed = parse_bundle(row, identity)
-            store_events(store, row, load_config(base).recipients, parsed)
+            store_parsed(store, row, load_config(base).recipients, parsed)
         else:
             store.custody(row["id"], "viewed", {"events": True})
     except EvidenceError as exc:

@@ -458,6 +458,56 @@ class MaskingTests(unittest.TestCase):
         )
         self.assertEqual(counts["password"], 1)
 
+    def test_sudo_tags_and_pam_flags_are_kept(self):
+        # Evidence the sudo and PAM checks compare; none of it can be a secret.
+        for line in (
+            b"%wheel\tALL=(ALL)\tNOPASSWD: ALL\n",
+            b"scanner ALL=(root) NOPASSWD: /usr/bin/python3 -I -B -\n",
+            b"deploy ALL=(root) PASSWD: /usr/bin/systemctl\n",
+            b"account [success=ok new_authtok_reqd=ok user_unknown=bad default=die] pam_sss.so\n",
+            b"auth [success=done authinfo_unavail=ignore auth_err=die default=bad] pam_sss.so\n",
+            b"auth [success=2 default=ignore] pam_unix.so\n",
+            b"auth required pam_debug.so auth=authinfo_unavail cred=success\n",
+        ):
+            masked, counts = self.mask(line)
+            self.assertEqual((masked, counts), (line, {}), line)
+
+    def test_sudo_tags_are_kept_only_in_sudo_rules(self):
+        for kept in (
+            b"jch ALL = (root) NOPASSWD:SETENV: /bin/a, PASSWD: /bin/b\n",
+            b"#1000 ALL=(ALL) NOPASSWD: ALL\n",
+            b"%#27 ALL=(ALL) NOPASSWD: ALL\n",
+            b"%:admins ALL = NOPASSWD: ALL\n",
+            b"jch 10.0.0.0/8 = (root) NOPASSWD: ALL\n",
+        ):
+            self.assertEqual(self.mask(kept), (kept, {}), kept)
+        for line in (
+            b"root ALL=(ALL) ALL # note=PASSWD: hunter2\n",  # in the comment
+            b"root ALL=(ALL) /bin/run --x=PASSWD: hunter2\n",  # in the command
+            b"app: PASSWD: hunter2\n",
+            b"Oct 26 10:00:00 web01 app[7]: NOPASSWD: hunter2\n",
+            b"user=bob PASSWD: hunter2\n",
+            b"# %wheel ALL=(ALL) NOPASSWD: hunter2\n",
+        ):
+            masked, counts = self.mask(line)
+            self.assertNotIn(b"hunter2", masked, line)
+            self.assertEqual(counts, {"password": 1}, line)
+
+    def test_secrets_near_the_exceptions_are_still_masked(self):
+        cases = {
+            b"auth required pam_debug.so auth=success/S3cret\n": 1,
+            b"auth [auth_err=die:S3cret default=bad] pam_sss.so\n": 1,
+            b"session optional pam_exec.so /x password=hunter2\n": 1,
+            b"auth_err=hunter2 auth=letmein\n": 2,
+            b"NOPASSWD=secret passwd: hunter2\n": 2,
+            b"new_authtok_reqd=okay2 auth_err=dieXYZ\n": 2,
+        }
+        for line, hits in cases.items():
+            masked, counts = self.mask(line)
+            self.assertEqual(counts, {"password": hits}, line)
+            for secret in (b"hunter2", b"letmein", b"secret", b"okay2", b"dieXYZ", b"S3cret"):
+                self.assertNotIn(secret, masked, line)
+
     def test_quoted_values_are_masked_whole(self):
         for text in (
             b'password="first second" x\n',
@@ -525,7 +575,7 @@ class PriorityTests(unittest.TestCase):
         self.assertIn(manifest["priority"]["io"], ("idle", "unchanged"))
         if os.uname().machine == "x86_64":
             self.assertEqual(manifest["priority"]["io"], "idle")
-        self.assertEqual(manifest["masking_version"], 2)
+        self.assertEqual(manifest["masking_version"], 3)
 
 
 # --- PR 1.1 groundwork: walks, commands, the journal, resource use ------------------
@@ -911,6 +961,1117 @@ class ResourceTests(FixtureRoot):
         self.assertEqual(
             manifest["commands_allowed"], {"journalctl": ["/usr/bin/journalctl", "/bin/journalctl"]}
         )
+
+
+# --- PR 1.2: accounts and access -----------------------------------------------------
+
+ED25519 = "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+ED25519_FP = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"  # ssh-keygen -lf
+SHA512_HASH = "$6$saltsalt$" + "x" * 86
+# Real OpenSSH certificates (ssh-keygen -s); a certificate's fingerprint is
+# its plain key's: ssh-keygen -lf gives the same for the key and the cert.
+ED25519_CERT = (
+    "AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAAII/S9Q/WcHPzQr5Kav/ZZkd8qYw8"
+    "byOdqsOFnwOgBFSHAAAAINQeF0lVFvOIeCp1UHjzXXSeCwwAdD32kn8IZPe0Wn+yAAAAAAAAAAAAAAAB"
+    "AAAAA2lkMQAAAAcAAAADamNoAAAAAAAAAAD//////////wAAAAAAAACCAAAAFXBlcm1pdC1YMTEtZm9y"
+    "d2FyZGluZwAAAAAAAAAXcGVybWl0LWFnZW50LWZvcndhcmRpbmcAAAAAAAAAFnBlcm1pdC1wb3J0LWZv"
+    "cndhcmRpbmcAAAAAAAAACnBlcm1pdC1wdHkAAAAAAAAADnBlcm1pdC11c2VyLXJjAAAAAAAAAAAAAAAz"
+    "AAAAC3NzaC1lZDI1NTE5AAAAIGGWE5avKjZdK2uynAxWWzQ1QB0AwlBn1KzXLGMZaSMxAAAAUwAAAAtz"
+    "c2gtZWQyNTUxOQAAAEBqKcbKX3xw0HA4syd233vGiiuJv2XJ+4cuJEwG3gVcA6P5Ch51QrG8dk04oS4h"
+    "C1tN2F6AMq9WTshjDB4NXy0P"
+)
+ED25519_CERT_FP = "SHA256:WZRADrLxX2iLOFnHtOMdDEqFIh4HHjby+TFXwyjKpu8"
+RSA_CERT = (
+    "AAAAHHNzaC1yc2EtY2VydC12MDFAb3BlbnNzaC5jb20AAAAgLi/4clNkpYv4AS3n1RimDkLkbDf3jkmA"
+    "qeETQOZhehUAAAADAQABAAABAQDLmyLxu/CpCPMq7RgAbFuokEpOqcgw3zwvlFdo2gc5z4wE/odHwZR2"
+    "mDXNJusgviOjP6J8sh+N2azAjFQHP3D7clw926AxBh+hXUPXbBk52OJZxWk/C6UYh4ZXENleWRJQ5s1l"
+    "MJUuW+5S1OUf09olSsmNkt5OLBLBp58Y/O0Ntqogt6HIEOxx28u0p7IK5z2IjK0OCWOBYaIry9oNlcly"
+    "0cB4s1Je2EDEUzoE9EMujrwGpw1XKY3BbtSbG3B0McJB1xRsDvn4xfWgTgUzIPFUZ+253xhoBYV6fUqJ"
+    "DxOhllRIj4AHq3UFvQZVLJTPt5oiYsN9Qq+6U9lZnVKQylDDAAAAAAAAAAAAAAABAAAAA2lkMgAAAAcA"
+    "AAADamNoAAAAAAAAAAD//////////wAAAAAAAACCAAAAFXBlcm1pdC1YMTEtZm9yd2FyZGluZwAAAAAA"
+    "AAAXcGVybWl0LWFnZW50LWZvcndhcmRpbmcAAAAAAAAAFnBlcm1pdC1wb3J0LWZvcndhcmRpbmcAAAAA"
+    "AAAACnBlcm1pdC1wdHkAAAAAAAAADnBlcm1pdC11c2VyLXJjAAAAAAAAAAAAAAAzAAAAC3NzaC1lZDI1"
+    "NTE5AAAAIGGWE5avKjZdK2uynAxWWzQ1QB0AwlBn1KzXLGMZaSMxAAAAUwAAAAtzc2gtZWQyNTUxOQAA"
+    "AEDLi95VbgDXTQ8bfiVAQGuGEATTDT+aAOSS7wbzBOAxBzwepm+bn293LuqRbtYnFYW+YPTVgRPg3TUU"
+    "sB1nAqME"
+)
+RSA_CERT_FP = "SHA256:ctvaWHlPTcyYqK1Yu3famfZeo6pfp2KLhXJ0kuSKIGE"
+YESCRYPT_HASH = "$y$j9T$salt$" + "y" * 43
+
+PASSWD = (
+    "root:x:0:0:root:/root:/bin/bash\n"
+    "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+    "jch:x:1000:1000:John Example,,,:/home/jch:/bin/bash\n"
+    "toor:" + SHA512_HASH + ":0:0::/root:/bin/sh\n"
+    "broken line with no fields\n"
+)
+SHADOW = (
+    "root:*:19820:0:99999:7:::\n"
+    "daemon:!!:19820::::::\n"
+    "jch:" + YESCRYPT_HASH + ":20000:0:99999:7::20500:\n"
+    "toor::20001:0:99999:7:::\n"
+    "locked:!" + SHA512_HASH + ":20002:0:99999:7:::\n"
+)
+GROUP = "root:x:0:\nsudo:x:27:jch,toor\ndocker:x:999:\n"
+
+
+def records_named(records, name):
+    return [r["data"] for r in named(records, name)]
+
+
+class PasswordStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.collector = load_collector("/")
+
+    def test_statuses_and_algorithms(self):
+        cases = {
+            "": {"status": "empty"},
+            "*": {"status": "no_password"},
+            "!!": {"status": "no_password"},
+            "!*": {"status": "no_password"},
+            "*LK*": {"status": "no_password"},
+            SHA512_HASH: {"status": "set", "algorithm": "sha512"},
+            "!" + SHA512_HASH: {"status": "locked", "algorithm": "sha512"},
+            YESCRYPT_HASH: {"status": "set", "algorithm": "yescrypt"},
+            "$1$salt$hash": {"status": "set", "algorithm": "md5"},
+            "$2b$12$" + "z" * 53: {"status": "set", "algorithm": "bcrypt"},
+            "abcdefghijklm": {"status": "set", "algorithm": "des"},
+            "something-else": {"status": "set", "algorithm": "unknown"},
+        }
+        for field, expected in cases.items():
+            self.assertEqual(self.collector.password_status(field), expected, field)
+
+
+class AccountsTests(FixtureRoot):
+    def setUp(self):
+        super().setUp()
+        self.write("etc/passwd", PASSWD.encode())
+        self.write("etc/shadow", SHADOW.encode())
+        self.write("etc/group", GROUP.encode())
+
+    def test_accounts_without_gecos_and_password_field_as_status(self):
+        records = collect(self.root, ["accounts"])
+        accounts = {a["name"]: a for a in records_named(records, "account")}
+        self.assertEqual(
+            accounts["jch"],
+            {
+                "name": "jch",
+                "uid": 1000,
+                "gid": 1000,
+                "home": "/home/jch",
+                "shell": "/bin/bash",
+                "line": 3,
+                "password": {"status": "shadowed"},
+            },
+        )
+        # A hash in /etc/passwd itself is reduced to its status too.
+        self.assertEqual(accounts["toor"]["password"], {"status": "set", "algorithm": "sha512"})
+        malformed = records_named(records, "malformed_lines")
+        self.assertEqual(malformed, [{"path": "/etc/passwd", "lines": [5]}])
+        self.assertEqual(records[-1]["modules"]["accounts"]["status"], "ok")
+
+    def test_shadow_sends_status_and_dates_never_hashes(self):
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["accounts"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        for secret in (b"saltsalt", b"xxxxxxxx", b"yyyyyyyy", b"$6$", b"$y$", b"John Example"):
+            self.assertNotIn(secret, raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        status = {s["name"]: s for s in records_named(records, "password_status")}
+        self.assertEqual(status["root"]["status"], "no_password")
+        self.assertEqual(status["daemon"]["status"], "no_password")
+        self.assertEqual(status["toor"]["status"], "empty")
+        self.assertEqual(status["locked"]["status"], "locked")
+        jch = status["jch"]
+        self.assertEqual((jch["status"], jch["algorithm"]), ("set", "yescrypt"))
+        self.assertEqual(jch["last_change"], "2024-10-04")
+        self.assertEqual(jch["expire"], "2026-02-16")
+        self.assertIsNone(jch["inactive_days"])
+
+    def test_account_files_and_groups(self):
+        records = collect(self.root, ["accounts"])
+        paths = [f["path"] for f in records_named(records, "account_file")]
+        self.assertEqual(paths, ["/etc/passwd", "/etc/group", "/etc/shadow"])
+        groups = {g["name"]: g["members"] for g in records_named(records, "group")}
+        self.assertEqual(groups["sudo"], ["jch", "toor"])
+
+    def test_unreadable_shadow_is_recorded(self):
+        os.remove(Path(self.root, "etc/shadow"))
+        records = collect(self.root, ["accounts"])
+        self.assertEqual(records_named(records, "unreadable_file")[0]["path"], "/etc/shadow")
+
+    def test_oversized_account_file_is_read_to_whole_lines(self):
+        collector = load_collector(self.root)
+        collector.ACCOUNT_FILE_BYTES = len(PASSWD.splitlines(keepends=True)[0]) + 10
+        out = io.BytesIO()
+        collector.main(settings(["accounts"]), out=out)
+        records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+        self.assertEqual([a["name"] for a in records_named(records, "account")], ["root"])
+        gaps = {g["path"] for g in records_named(records, "incomplete_file")}
+        self.assertIn("/etc/passwd", gaps)
+
+    def test_unreadable_group_file_is_recorded(self):
+        os.remove(Path(self.root, "etc/group"))
+        records = collect(self.root, ["accounts"])
+        self.assertEqual(records_named(records, "unreadable_file")[0]["path"], "/etc/group")
+
+    def test_shell_history_metadata_only(self):
+        self.write("home/jch/.bash_history", b"mysql -pS3cret\n")
+        Path(self.root, "root").mkdir()
+        os.symlink("/dev/null", Path(self.root, "root/.bash_history"))
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["accounts"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"mysql", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        history = {h["path"]: h for h in records_named(records, "shell_history")}
+        self.assertEqual(history["/root/.bash_history"]["link_target"], "/dev/null")
+        self.assertEqual(history["/root/.bash_history"]["accounts"], ["root", "toor"])
+        self.assertEqual(history["/home/jch/.bash_history"]["size"], 15)
+
+
+class SudoersTests(FixtureRoot):
+    def test_follows_includes_and_marks_what_sudo_reads(self):
+        self.write(
+            "etc/sudoers", b"root ALL=(ALL) ALL\n@includedir /etc/sudoers.d\n#include extra\n"
+        )
+        self.write("etc/extra", b"jch ALL=(ALL) NOPASSWD: ALL\n")
+        self.write("etc/sudoers.d/deploy", b"deploy ALL=(root) /usr/bin/systemctl\n")
+        self.write("etc/sudoers.d/old.bak", b"evil ALL=(ALL) NOPASSWD: ALL\n")
+        records = collect(self.root, ["sudoers"])
+        self.assertEqual(
+            sorted(sources(records)),
+            ["/etc/extra", "/etc/sudoers", "/etc/sudoers.d/deploy", "/etc/sudoers.d/old.bak"],
+        )
+        (included,) = records_named(records, "include_dir")
+        self.assertEqual(
+            included["files"],
+            [{"name": "deploy", "sudo_reads": True}, {"name": "old.bak", "sudo_reads": False}],
+        )
+
+    def test_config_links_are_followed_inside_the_system(self):
+        self.write("etc/authselect/sudoers", b"root ALL=(ALL) ALL\n")
+        os.symlink("authselect/sudoers", Path(self.root, "etc/sudoers"))
+        records = collect(self.root, ["sudoers"])
+        (link,) = records_named(records, "config_link")
+        self.assertEqual(link["resolved"], "/etc/authselect/sudoers")
+        self.assertEqual(sorted(sources(records)), ["/etc/authselect/sudoers"])
+
+    def test_escaped_include_paths(self):
+        self.write("etc/sudoers", b"@include /etc/sudoers\\ local\n")
+        self.write("etc/sudoers local", b"jch ALL=(ALL) NOPASSWD: ALL\n")
+        records = collect(self.root, ["sudoers"])
+        self.assertEqual(sorted(sources(records)), ["/etc/sudoers", "/etc/sudoers local"])
+
+    def test_config_text_only_from_system_locations(self):
+        self.write("etc/sudoers", b"#include /opt/app/sudoers\n@includedir /etc/sudoers.d\n")
+        self.write("opt/app/sudoers", b"app ALL=(ALL) NOPASSWD: ALL\n")
+        self.write("etc/sudoers.d/linked-src", b"x ALL=(ALL) ALL\n")
+        os.link(
+            Path(self.root, "etc/sudoers.d/linked-src"), Path(self.root, "etc/sudoers.d/linked")
+        )
+        records = collect(self.root, ["sudoers"])
+        self.assertEqual(sorted(sources(records)), ["/etc/sudoers"])
+        reasons = {r["path"]: r["reason"] for r in records_named(records, "unreadable_file")}
+        self.assertIn("outside the system locations", reasons["/opt/app/sudoers"])
+        self.assertIn("hard-linked", reasons["/etc/sudoers.d/linked"])
+
+    def test_hard_links_from_packages_under_usr_are_read(self):
+        self.write("usr/share/crypto-policies/DEFAULT/opensshserver.txt", b"Ciphers aes256-gcm\n")
+        os.link(
+            Path(self.root, "usr/share/crypto-policies/DEFAULT/opensshserver.txt"),
+            Path(self.root, "usr/share/crypto-policies/FUTURE-opensshserver.txt"),
+        )
+        self.write("etc/ssh/sshd_config", b"Include /usr/share/crypto-policies/DEFAULT/*.txt\n")
+        records = collect(self.root, ["ssh"])
+        self.assertIn("/usr/share/crypto-policies/DEFAULT/opensshserver.txt", sources(records))
+
+    def test_large_included_directory_is_read_incrementally(self):
+        self.write("etc/sudoers", b"@includedir /etc/sudoers.d\n")
+        for index in range(5):
+            self.write(f"etc/sudoers.d/f{index}", b"x ALL=(ALL) ALL\n")
+        collector = load_collector(self.root)
+        collector.MAX_DIR_FILES = 2
+        out = io.BytesIO()
+        collector.main(settings(["sudoers"]), out=out)
+        records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+        (listing,) = records_named(records, "include_dir")
+        self.assertEqual((len(listing["files"]), listing["truncated"]), (2, True))
+
+    def test_include_loop_ends(self):
+        self.write("etc/sudoers", b"#include /etc/sudoers\n")
+        records = collect(self.root, ["sudoers"])
+        self.assertEqual(sorted(sources(records)), ["/etc/sudoers"])
+        self.assertEqual(records[-1]["status"], "complete")
+
+
+class SshTests(FixtureRoot):
+    def setUp(self):
+        super().setUp()
+        self.write("etc/passwd", PASSWD.encode())
+
+    def keys(self, records):
+        return records_named(records, "authorized_key")
+
+    def test_includes_and_default_key_locations(self):
+        self.write("etc/ssh/sshd_config", b"Include sshd_config.d/*.conf\nPermitRootLogin no\n")
+        self.write("etc/ssh/sshd_config.d/10-a.conf", b"PasswordAuthentication no\n")
+        self.write("home/jch/.ssh/authorized_keys", f"ssh-ed25519 {ED25519} jch@laptop\n".encode())
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(
+            sorted(sources(records)), ["/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/10-a.conf"]
+        )
+        locations = records_named(records, "authorized_keys_locations")[0]["patterns"]
+        self.assertEqual(locations, [".ssh/authorized_keys", ".ssh/authorized_keys2"])
+        (key,) = self.keys(records)
+        self.assertEqual(key["fingerprint"], ED25519_FP)
+        self.assertEqual((key["account"], key["comment"], key["line"]), ("jch", "jch@laptop", 1))
+
+    def test_custom_key_file_locations(self):
+        self.write("etc/ssh/sshd_config", b"AuthorizedKeysFile /etc/ssh/keys/%u .ssh/extra_keys\n")
+        self.write("etc/ssh/keys/root", f"ssh-ed25519 {ED25519}\n".encode())
+        self.write("home/jch/.ssh/extra_keys", f"ssh-ed25519 {ED25519}\n".encode())
+        self.write("home/jch/.ssh/authorized_keys", f"ssh-ed25519 {ED25519}\n".encode())
+        records = collect(self.root, ["ssh"])
+        found = sorted((k["account"], k["path"]) for k in self.keys(records))
+        # Not the default file: sshd wouldn't read it with this configuration.
+        self.assertEqual(
+            found, [("jch", "/home/jch/.ssh/extra_keys"), ("root", "/etc/ssh/keys/root")]
+        )
+
+    def test_options_comment_and_non_key_lines(self):
+        self.write("etc/ssh/sshd_config", b"")
+        lines = (
+            f'from="10.0.0.0/8",command="backup --token=abc123 now",no-pty ssh-ed25519 {ED25519}'
+            f" deploy key\n"
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+            f"ssh-rsa {ED25519} mislabelled\n"
+        )
+        self.write("root/.ssh/authorized_keys", lines.encode())
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["ssh"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(ED25519.encode(), raw)
+        self.assertNotIn(b"abc123", raw)
+        self.assertNotIn(b"BEGIN", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        # root and toor share /root, so each key is reported for both accounts.
+        first, second = [k for k in self.keys(records) if k["account"] == "root"]
+        self.assertEqual(
+            first["options"],
+            [
+                {"name": "from", "value": "10.0.0.0/8"},
+                {"name": "command", "value": "backup --token=[MASKED:password] now"},
+                {"name": "no-pty"},
+            ],
+        )
+        self.assertEqual(first["comment"], "deploy key")
+        self.assertEqual(second["embedded_type"], "ssh-ed25519")  # the line says ssh-rsa
+        facts = records_named(records, "authorized_keys_file")
+        self.assertEqual([f["account"] for f in facts], ["root", "toor"])
+        self.assertEqual((facts[0]["keys"], facts[0]["lines_not_keys"]), (2, [2]))
+
+    def test_global_none_disables_default_key_files(self):
+        self.write("etc/ssh/sshd_config", b"AuthorizedKeysFile none\n")
+        self.write("home/jch/.ssh/authorized_keys", f"ssh-ed25519 {ED25519}\n".encode())
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(self.keys(records), [])
+        locations = records_named(records, "authorized_keys_locations")[0]
+        self.assertEqual((locations["patterns"], locations["global_set"]), ([], True))
+
+    def test_match_location_adds_to_the_defaults(self):
+        self.write(
+            "etc/ssh/sshd_config",
+            b"PermitRootLogin no\nMatch User deploy\n    AuthorizedKeysFile /etc/ssh/deploy_keys\n",
+        )
+        self.write("home/jch/.ssh/authorized_keys", f"ssh-ed25519 {ED25519}\n".encode())
+        records = collect(self.root, ["ssh"])
+        locations = records_named(records, "authorized_keys_locations")[0]
+        self.assertEqual(
+            locations["patterns"],
+            [".ssh/authorized_keys", ".ssh/authorized_keys2", "/etc/ssh/deploy_keys"],
+        )
+        self.assertEqual(locations["match"], ["/etc/ssh/deploy_keys"])
+        self.assertEqual([k["account"] for k in self.keys(records)], ["jch"])
+
+    def test_first_global_value_wins_through_includes(self):
+        self.write(
+            "etc/ssh/sshd_config",
+            b"Include /etc/ssh/sshd_config.d/*.conf\nAuthorizedKeysFile .ssh/later\n",
+        )
+        self.write("etc/ssh/sshd_config.d/10.conf", b"AuthorizedKeysFile .ssh/first\n")
+        records = collect(self.root, ["ssh"])
+        locations = records_named(records, "authorized_keys_locations")[0]
+        self.assertEqual(locations["patterns"], [".ssh/first"])
+
+    def test_tab_before_the_comment(self):
+        self.write("etc/ssh/sshd_config", b"")
+        self.write(
+            "home/jch/.ssh/authorized_keys", f"ssh-ed25519\t{ED25519}\tjch@laptop\n".encode()
+        )
+        (key,) = self.keys(collect(self.root, ["ssh"]))
+        self.assertEqual((key["fingerprint"], key["comment"]), (ED25519_FP, "jch@laptop"))
+
+    def test_option_values_are_decoded_before_masking(self):
+        collector = load_collector(self.root)
+        options = collector.ssh_key_options(
+            'command="backup --password=\\"first TAILSECRET\\"",'
+            'environment="APP_PASSWORD=first TAILSECRET",environment="LANG=C.UTF-8",'
+            "ghp_" + "a" * 36 + "=x,"
+            'environment="MYSQL_PWD=hunter2",environment="mysql_pwd=hunter2",'
+            'environment="PWD=/srv/app",environment="hunter2-no-equals",'
+            'environment="LD_PRELOAD=/opt/evil/x.so",'
+            'unknown-option="backup --password=\\"first TAILSECRET\\""'
+        )
+        self.assertNotIn("TAILSECRET", json.dumps(options))
+        self.assertNotIn("a" * 36, json.dumps(options))
+        self.assertEqual(options[0]["value"], "backup --password=[MASKED:password]")
+        self.assertEqual(
+            options[1], {"name": "environment", "variable": "APP_PASSWORD", "value_length": 16}
+        )
+        self.assertEqual(
+            options[2], {"name": "environment", "variable": "LANG", "value": "C.UTF-8"}
+        )
+        self.assertEqual(options[3], {"known": False, "length": 42})
+        self.assertNotIn("hunter2", json.dumps(options))
+        # Only allow-listed variables' values are sent; the rest, length only.
+        self.assertEqual(
+            options[4], {"name": "environment", "variable": "MYSQL_PWD", "value_length": 7}
+        )
+        self.assertEqual(options[5]["value_length"], 7)
+        self.assertEqual(options[6], {"name": "environment", "variable": "PWD", "value_length": 8})
+        self.assertEqual(options[7], {"name": "environment", "variable": None, "value_length": 17})
+        self.assertEqual(options[8]["value"], "/opt/evil/x.so")
+        self.assertEqual(options[9]["known"], False)
+
+    def test_certificates_fingerprint_their_key_like_openssh(self):
+        collector = load_collector(self.root)
+        for line, fingerprint in (
+            ("ssh-ed25519-cert-v01@openssh.com " + ED25519_CERT, ED25519_CERT_FP),
+            ("ssh-rsa-cert-v01@openssh.com " + RSA_CERT, RSA_CERT_FP),
+        ):
+            key = collector.parse_authorized_key(line)
+            self.assertEqual((key["fingerprint"], key["certificate"]), (fingerprint, True))
+
+    def test_security_key_certificate_types(self):
+        collector = load_collector(self.root)
+
+        def string(data):
+            return len(data).to_bytes(4, "big") + data
+
+        cert_type = "sk-ssh-ed25519-cert-v01@openssh.com"
+        fields = string(b"\x01" * 32) + string(b"ssh:")
+        blob = string(cert_type.encode()) + string(b"nonce") + fields + string(b"rest")
+        line = cert_type + " " + base64.b64encode(blob).decode()
+        key = collector.parse_authorized_key(line)
+        plain = string(b"sk-ssh-ed25519@openssh.com") + fields
+        expected = base64.b64encode(hashlib.sha256(plain).digest()).decode().rstrip("=")
+        self.assertEqual(key["fingerprint"], "SHA256:" + expected)
+        self.assertTrue(
+            collector._SSH_KEY_TYPE.match("sk-ecdsa-sha2-nistp256-cert-v01@openssh.com")
+        )
+
+    def test_blob_with_no_key_inside_is_not_a_key(self):
+        collector = load_collector(self.root)
+        self.assertIsNone(collector.parse_authorized_key("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 x"))
+        self.assertIsNotNone(collector.parse_authorized_key(f"ssh-ed25519 {ED25519} x"))
+
+    def test_blob_that_is_not_a_key_is_not_echoed(self):
+        self.write("etc/ssh/sshd_config", b"")
+        inner = b"password=example-secret"
+        blob = base64.b64encode(len(inner).to_bytes(4, "big") + inner + b"rest").decode()
+        self.write("home/jch/.ssh/authorized_keys", f"ssh-ed25519 {blob}\n".encode())
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["ssh"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"example-secret", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(self.keys(records), [])
+        (facts,) = records_named(records, "authorized_keys_file")
+        self.assertEqual(facts["lines_not_keys"], [1])
+
+    def test_keys_through_a_linked_ssh_directory_are_listed(self):
+        # sshd follows the link, so these keys grant access: they must show.
+        self.write("etc/ssh/sshd_config", b"")
+        self.write("srv/elsewhere/authorized_keys", f"ssh-ed25519 {ED25519}\n".encode())
+        Path(self.root, "home/jch").mkdir(parents=True)
+        os.symlink("../../srv/elsewhere", Path(self.root, "home/jch/.ssh"))
+        records = collect(self.root, ["ssh"])
+        (key,) = self.keys(records)
+        self.assertEqual(key["path"], "/home/jch/.ssh/authorized_keys")
+        self.assertEqual(key["resolved"], "/srv/elsewhere/authorized_keys")
+        self.assertEqual(key["fingerprint"], ED25519_FP)
+        (link,) = records_named(records, "authorized_keys_link")
+        self.assertEqual(
+            link["links"], [{"path": "/home/jch/.ssh", "target": "../../srv/elsewhere"}]
+        )
+        (ssh_dir,) = [d for d in records_named(records, "ssh_dir") if d["path"] == "/home/jch/.ssh"]
+        self.assertEqual(ssh_dir["type"], "l")
+
+    def test_keys_in_a_linked_key_file_are_listed(self):
+        self.write("etc/ssh/sshd_config", b"")
+        self.write("srv/keys", f"ssh-ed25519 {ED25519} planted\n".encode())
+        Path(self.root, "home/jch/.ssh").mkdir(parents=True)
+        os.symlink("../../../srv/keys", Path(self.root, "home/jch/.ssh/authorized_keys"))
+        records = collect(self.root, ["ssh"])
+        (key,) = self.keys(records)
+        self.assertEqual((key["resolved"], key["comment"]), ("/srv/keys", "planted"))
+        (facts,) = records_named(records, "authorized_keys_file")
+        self.assertEqual(facts["resolved"], "/srv/keys")
+
+    def test_key_file_linked_to_a_protected_file_is_refused(self):
+        self.write("etc/ssh/sshd_config", b"")
+        self.write("etc/shadow", ("jch:" + SHA512_HASH + ":20000:0:99999:7:::\n").encode())
+        history = f'command="mysql -pS3cret" ssh-ed25519 {ED25519} from history\n'
+        self.write("home/jch/.bash_history", history.encode())
+        os.makedirs(Path(self.root, "root/.ssh"))
+        os.symlink("../../etc/shadow", Path(self.root, "root/.ssh/authorized_keys"))
+        os.makedirs(Path(self.root, "home/jch/.ssh"))
+        os.symlink("../.bash_history", Path(self.root, "home/jch/.ssh/authorized_keys"))
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["ssh"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        for secret in (b"saltsalt", b"from history", b"mysql"):
+            self.assertNotIn(secret, raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(self.keys(records), [])
+        refused = {r["path"] for r in records_named(records, "unreadable_file")}
+        self.assertEqual(refused, {"/etc/shadow", "/home/jch/.bash_history"})
+
+    def test_cut_off_key_file_drops_its_unfinished_line(self):
+        self.write("etc/ssh/sshd_config", b"")
+        first = f"ssh-ed25519 {ED25519} first\n".encode()
+        second = f'ssh-ed25519 {ED25519} password="two words"\n'.encode()
+        self.write("home/jch/.ssh/authorized_keys", first + second)
+        collector = load_collector(self.root)
+        collector.MAX_KEY_FILE_BYTES = len(first) + len(second) - 8  # inside the quotes
+        out = io.BytesIO()
+        collector.main(settings(["ssh"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"two", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual([k["comment"] for k in self.keys(records)], ["first"])
+        self.assertTrue(records_named(records, "authorized_keys_file")[0]["truncated"])
+
+    def test_directives_past_the_search_limit_are_a_recorded_gap(self):
+        self.write("etc/ssh/sshd_config", b"# padding\n" * 20 + b"AuthorizedKeysFile none\n")
+        collector = load_collector(self.root)
+        collector.CONFIG_FILE_BYTES = 50
+        out = io.BytesIO()
+        collector.main(settings(["ssh"]), out=out)
+        records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+        (gap,) = records_named(records, "directives_incomplete")
+        self.assertEqual((gap["path"], gap["searched_bytes"]), ("/etc/ssh/sshd_config", 50))
+
+    def test_dangling_link_is_described(self):
+        self.write("etc/ssh/sshd_config", b"")
+        Path(self.root, "home/jch/.ssh").mkdir(parents=True)
+        os.symlink("../../../nowhere", Path(self.root, "home/jch/.ssh/authorized_keys"))
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(self.keys(records), [])
+        (unreadable,) = records_named(records, "unreadable_file")
+        self.assertEqual(unreadable["path"], "/nowhere")
+
+
+class PamTests(FixtureRoot):
+    def test_config_and_module_directories(self):
+        self.write("etc/pam.d/sshd", b"auth include password-auth\n")
+        self.write("etc/authselect/password-auth", b"auth required pam_unix.so\n")
+        os.symlink("../authselect/password-auth", Path(self.root, "etc/pam.d/password-auth"))
+        module = self.write("usr/lib64/security/pam_unix.so", b"\x7fELF fake module")
+        self.write("usr/lib64/security/pam_evil.so", b"\x7fELF added")
+        os.symlink("usr/lib64", Path(self.root, "lib64"))  # merged /usr: one directory
+        records = collect(self.root, ["pam"])
+        self.assertEqual(
+            sorted(sources(records)), ["/etc/authselect/password-auth", "/etc/pam.d/sshd"]
+        )
+        files = {f["path"]: f for f in records_named(records, "module_file")}
+        self.assertEqual(
+            sorted(files),
+            [
+                "/usr/lib64/security",
+                "/usr/lib64/security/pam_evil.so",
+                "/usr/lib64/security/pam_unix.so",
+            ],
+        )
+        expected = hashlib.sha256(module.read_bytes()).hexdigest()
+        self.assertEqual(files["/usr/lib64/security/pam_unix.so"]["sha256"], expected)
+        self.assertEqual(len(records_named(records, "walk_summary")), 1)
+
+    def test_linked_module_directory_is_walked_once_at_its_target(self):
+        self.write("usr/lib/security/pam_unix.so", b"\x7fELF")
+        Path(self.root, "usr/lib64").mkdir(parents=True)
+        os.symlink("../lib/security", Path(self.root, "usr/lib64/security"))
+        records = collect(self.root, ["pam"])
+        files = [f["path"] for f in records_named(records, "module_file")]
+        self.assertEqual(files, ["/usr/lib/security", "/usr/lib/security/pam_unix.so"])
+
+    def test_config_links_never_carry_protected_files(self):
+        self.write("etc/passwd", PASSWD.encode())
+        self.write("etc/shadow", ("jch:" + SHA512_HASH + ":20000:0:99999:7:::\n").encode())
+        self.write("home/jch/.bash_history", b"mysql -uroot -phunter2\n")
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.symlink("../passwd", Path(self.root, "etc/pam.d/accounts"))
+        os.symlink("../shadow", Path(self.root, "etc/pam.d/leak"))
+        os.link(Path(self.root, "etc/shadow"), Path(self.root, "etc/pam.d/hardlink"))
+        os.symlink("../../home/jch/.bash_history", Path(self.root, "etc/pam.d/history"))
+        self.write("etc/pam.d/sshd", b"auth required pam_unix.so\n")
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["pam"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        for secret in (b"saltsalt", b"hunter2"):
+            self.assertNotIn(secret, raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(sorted(sources(records)), ["/etc/pam.d/sshd"])
+        refused = [r["path"] for r in records_named(records, "unreadable_file")]
+        self.assertEqual(
+            sorted(refused),
+            ["/etc/pam.d/hardlink", "/etc/passwd", "/etc/shadow", "/home/jch/.bash_history"],
+        )
+        self.assertNotIn(b"John Example", raw)
+
+    def test_history_in_service_homes_and_aliases_is_refused(self):
+        # Apache's home is inside /usr; a hard link under /usr to a user's
+        # history, under another name, is refused by inode.
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0:root:/root:/bin/bash\n"
+            b"apache:x:48:48::/usr/share/httpd:/sbin/nologin\n"
+            b"jch:x:1000:1000::/home/jch:/bin/bash\n",
+        )
+        self.write("usr/share/httpd/.bash_history", b"CanaryHistory\n")
+        self.write("usr/share/httpd/notes", b"CanaryHistory\n")
+        self.write("home/jch/.bash_history", b"CanaryHistory\n")
+        os.makedirs(Path(self.root, "usr/share/crypto-policies"))
+        os.link(
+            Path(self.root, "home/jch/.bash_history"),
+            Path(self.root, "usr/share/crypto-policies/alias"),
+        )
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        for name, target in (
+            ("a", "../../usr/share/httpd/.bash_history"),
+            ("b", "../../usr/share/httpd/notes"),
+            ("c", "../../usr/share/crypto-policies/alias"),
+        ):
+            os.symlink(target, Path(self.root, "etc/pam.d", name))
+        self.write("etc/pam.d/sshd", b"auth required pam_unix.so\n")
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["pam"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"CanaryHistory", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(sorted(sources(records)), ["/etc/pam.d/sshd"])
+
+    def test_too_many_pam_files_is_a_recorded_gap(self):
+        for name in ("a", "b", "c"):
+            self.write("etc/pam.d/" + name, b"auth required pam_unix.so\n")
+        collector = load_collector(self.root)
+        collector.MAX_DIR_FILES = 2
+        out = io.BytesIO()
+        collector.main(settings(["pam"]), out=out)
+        records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+        (listing,) = records_named(records, "config_dir")
+        # Read incrementally: it stops at the limit and says so.
+        self.assertEqual((listing["entries"], listing["truncated"]), (2, True))
+        self.assertEqual(len(sources(records)), 2)  # the directory's order, cut at the limit
+
+
+class DomainHomeTests(FixtureRoot):
+    """Accounts that log in through NSS (SSSD, LDAP, AD) aren't in /etc/passwd;
+    their homes are found on disk."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("etc/passwd", PASSWD.encode())
+        self.write("etc/ssh/sshd_config", b"")
+        self.key = f"ssh-ed25519 {ED25519} planted\n".encode()
+
+    def test_keys_in_domain_user_homes_are_listed(self):
+        self.write("home/CORP/alice/.ssh/authorized_keys", self.key)  # /home/%d/%u
+        self.write("home/bob@corp.example/.ssh/authorized_keys", self.key)  # /home/%u@%d
+        self.write("home/CORP/carol/notes.txt", b"not a home\n")
+        records = collect(self.root, ["ssh"])
+        keys = {k["home"]: k for k in records_named(records, "authorized_key")}
+        self.assertEqual(sorted(keys), ["/home/CORP/alice", "/home/bob@corp.example"])
+        alice = keys["/home/CORP/alice"]
+        self.assertEqual(alice["account"], None)
+        self.assertEqual(alice["home_source"], "directory")
+        self.assertEqual(alice["owner_uid"], os.getuid())
+        self.assertEqual(alice["fingerprint"], ED25519_FP)
+        self.assertEqual(records[-1]["modules"]["ssh"]["status"], "ok")
+
+    def test_history_of_unlisted_homes_is_described_and_protected(self):
+        self.write("home/CORP/alice/.bash_history", b"mysql -pS3cret\n")
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.symlink("../../home/CORP/alice/.bash_history", Path(self.root, "etc/pam.d/x"))
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["accounts", "pam"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"S3cret", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        (history,) = [
+            h for h in records_named(records, "shell_history") if h["path"].startswith("/home/CORP")
+        ]
+        self.assertEqual(history["home_source"], "directory")
+        (homes,) = records_named(records, "homes")
+        self.assertEqual(homes["unlisted"], ["/home/CORP/alice"])
+        self.assertFalse(homes["truncated"])
+
+    def test_sssd_home_templates_add_roots_and_nothing_else(self):
+        self.write(
+            "etc/sssd/sssd.conf",
+            b"[domain/corp]\noverride_homedir = /srv/homes/%u\n"
+            b"ldap_default_authtok = BindPassw0rd\n",
+        )
+        self.write("srv/homes/dave/.ssh/authorized_keys", self.key)
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["accounts", "ssh"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"BindPassw0rd", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertIn("/srv/homes", records_named(records, "homes")[0]["roots"])
+        self.assertEqual(
+            [k["home"] for k in records_named(records, "authorized_key")], ["/srv/homes/dave"]
+        )
+
+    def test_per_user_key_files_without_a_local_account(self):
+        self.write("etc/ssh/sshd_config", b"AuthorizedKeysFile /etc/ssh/keys/%u\n")
+        self.write("etc/ssh/keys/root", self.key)
+        self.write("etc/ssh/keys/alice", self.key)
+        records = collect(self.root, ["ssh"])
+        keys = records_named(records, "authorized_key")
+        by_path = {k["path"]: k for k in keys if k["account"] in (None, "root")}
+        self.assertEqual(by_path["/etc/ssh/keys/root"]["account"], "root")
+        self.assertTrue(by_path["/etc/ssh/keys/alice"]["unattributed"])
+        self.assertIsNone(by_path["/etc/ssh/keys/alice"]["account"])
+
+    def test_home_search_is_bounded(self):
+        for name in ("a", "b", "c", "d"):
+            self.write(f"home/{name}/.ssh/authorized_keys", self.key)
+        collector = load_collector(self.root)
+        collector.MAX_HOME_ENTRIES = 2
+        out = io.BytesIO()
+        collector.main(settings(["accounts"]), out=out)
+        records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+        (homes,) = records_named(records, "homes")
+        self.assertTrue(homes["truncated"])
+        self.assertEqual(len(homes["unlisted"]), 2)  # the directory's order, cut at the cap
+
+    def test_linked_home_root_is_searched_and_protected(self):
+        # /home -> /srv/homes: the domain user's keys are found there, and a
+        # hard link to their history from pam.d is refused.
+        self.write("srv/homes/alice/.ssh/authorized_keys", self.key)
+        self.write("srv/homes/alice/.bash_history", b"CanaryHistory\n")
+        os.symlink("srv/homes", Path(self.root, "home"))
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.link(Path(self.root, "srv/homes/alice/.bash_history"), Path(self.root, "etc/pam.d/leak"))
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["ssh", "pam"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"CanaryHistory", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        (key,) = records_named(records, "authorized_key")
+        self.assertEqual(key["home"], "/home/alice")
+
+    def test_cut_short_search_reads_config_only_from_system_locations(self):
+        for name in ("a", "b", "c"):
+            self.write(f"home/{name}/.bash_history", b"CanaryHistory\n")
+        self.write("srv/elsewhere/.bash_history", b"CanaryHistory\n")
+        self.write("srv/elsewhere/keys", self.key)
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.symlink("../../srv/elsewhere/.bash_history", Path(self.root, "etc/pam.d/x"))
+        self.write("etc/pam.d/sshd", b"auth required pam_unix.so\n")
+        self.write("etc/ssh/sshd_config", b"AuthorizedKeysFile /srv/elsewhere/keys .bash_history\n")
+        collector = load_collector(self.root)
+        collector.MAX_HOME_ENTRIES = 1
+        out = io.BytesIO()
+        collector.main(settings(["pam", "ssh"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"CanaryHistory", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(sorted(sources(records)), ["/etc/pam.d/sshd", "/etc/ssh/sshd_config"])
+        # A key file is still read from wherever sshd reads it.
+        keys = [k["path"] for k in records_named(records, "authorized_key")]
+        self.assertIn("/srv/elsewhere/keys", keys)
+
+    def test_unreadable_account_list_fails_closed(self):
+        self.write("root/.bash_history", b"CanaryHistory\n")
+        os.remove(Path(self.root, "etc/passwd"))
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.symlink("../../root/.bash_history", Path(self.root, "etc/pam.d/x"))
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["pam"]), out=out)
+        self.assertNotIn(b"CanaryHistory", gzip.decompress(out.getvalue()))
+
+    def test_home_like_parent_is_still_searched_below(self):
+        self.write("home/CORP/.ssh/authorized_keys", self.key)
+        self.write("home/CORP/alice/.ssh/authorized_keys", self.key)
+        records = collect(self.root, ["ssh"])
+        homes = sorted(k["home"] for k in records_named(records, "authorized_key"))
+        self.assertEqual(homes, ["/home/CORP", "/home/CORP/alice"])
+
+    def test_linked_unlisted_home_is_followed(self):
+        self.write("srv/alice/.ssh/authorized_keys", self.key)
+        Path(self.root, "home").mkdir(exist_ok=True)
+        os.symlink("../srv/alice", Path(self.root, "home/alice"))
+        records = collect(self.root, ["ssh"])
+        (key,) = records_named(records, "authorized_key")
+        self.assertEqual((key["home"], key["fingerprint"]), ("/home/alice", ED25519_FP))
+        self.assertEqual(key["resolved"], "/srv/alice/.ssh/authorized_keys")
+
+    def test_ssh_records_the_home_search(self):
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(len(records_named(records, "homes")), 1)
+
+    def test_cut_short_search_fails_closed_for_hard_links(self):
+        for name in ("a", "b", "c"):
+            self.write(f"home/{name}/.bash_history", b"CanaryHistory\n")
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        for name in ("a", "b", "c"):
+            os.link(
+                Path(self.root, f"home/{name}/.bash_history"), Path(self.root, f"etc/pam.d/{name}")
+            )
+        self.write("etc/pam.d/sshd", b"auth required pam_unix.so\n")
+        collector = load_collector(self.root)
+        collector.MAX_HOME_ENTRIES = 1
+        out = io.BytesIO()
+        collector.main(settings(["pam"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"CanaryHistory", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(sorted(sources(records)), ["/etc/pam.d/sshd"])
+
+
+MOUNTINFO = (
+    "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
+    "40 22 0:40 / /home rw - autofs auto.home rw\n"
+    "41 22 0:41 / /mnt/team rw - nfs4 files:/team rw\n"
+    "42 40 0:42 / /home/mounted rw - nfs4 files:/home/mounted rw\n"
+)
+
+
+class MountTests(FixtureRoot):
+    """Nothing under an automount point or on a network file system is
+    looked inside: that would mount network drives, or could hang."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("proc/self/mountinfo", MOUNTINFO.encode())
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0:root:/root:/bin/bash\nteam:x:1001:1001::/mnt/team/u:/bin/bash\n",
+        )
+        self.write("etc/ssh/sshd_config", b"")
+        self.key = f"ssh-ed25519 {ED25519}\n".encode()
+
+    def test_risk_classification(self):
+        collector = load_collector(self.root)
+        self.assertIsNone(collector.mount_risk("/home"))  # listing autofs itself is safe
+        self.assertEqual(collector.mount_risk("/home/alice"), "automount")
+        self.assertEqual(collector.mount_risk("/home/mounted/.ssh"), "network_filesystem")
+        self.assertEqual(collector.mount_risk("/mnt/team/u"), "network_filesystem")
+        self.assertIsNone(collector.mount_risk("/etc/pam.d"))
+
+    def test_homes_on_automount_and_network_mounts_are_not_examined(self):
+        self.write("home/alice/.ssh/authorized_keys", self.key)
+        self.write("mnt/team/u/.ssh/authorized_keys", self.key)
+        records = collect(self.root, ["accounts", "ssh"])
+        self.assertEqual(records_named(records, "authorized_key"), [])
+        homes = records_named(records, "homes")[0]
+        skipped = {(n["path"], n["reason"]) for n in homes["not_examined"]}
+        self.assertIn(("/home/alice", "automount"), skipped)
+        self.assertIn(("/mnt/team/u", "network_filesystem"), skipped)
+        self.assertEqual(records[-1]["status"], "complete")
+
+    def test_every_file_system_access_is_guarded(self):
+        # path() is where every lookup goes: it refuses anything that would
+        # look inside an automounted folder or a network drive, however the
+        # path is spelled, and leaves everything else alone.
+        os.makedirs(Path(self.root, "srv"))
+        os.symlink("../home", Path(self.root, "srv/homes"))
+        os.symlink("../mnt/team", Path(self.root, "srv/team"))
+        collector = load_collector(self.root)
+        for unsafe, reason in (
+            ("/home/alice/.ssh", "automount"),
+            ("/srv/homes/alice/.ssh", "automount"),
+            ("/srv/team/x", "network_filesystem"),
+            ("/mnt/team", "network_filesystem"),
+        ):
+            with self.assertRaises(collector.UnsafePath) as caught:
+                collector.path(unsafe)
+            self.assertEqual(caught.exception.reason, reason, unsafe)
+        for safe in ("/home", "/srv/homes", "/etc/pam.d/sshd", "/proc/self/mountinfo"):
+            self.assertEqual(collector.path(safe), os.path.join(self.root, safe.lstrip("/")))
+
+    def test_final_link_onto_a_network_drive_is_refused(self):
+        os.makedirs(Path(self.root, "srv"))
+        os.symlink("../mnt/team", Path(self.root, "srv/conf"))
+        self.write("mnt/team/x.conf", b"PermitRootLogin yes\n")
+        collector = load_collector(self.root)
+        with self.assertRaises(collector.UnsafePath):
+            collector.path("/srv/conf")  # listing it would follow the link
+        self.write("etc/ssh/sshd_config", b"Include /srv/conf/*.conf\n")
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(sorted(sources(records)), ["/etc/ssh/sshd_config"])
+        self.assertIn(("/srv/conf", "network_filesystem"), self.gaps(records))
+
+    def test_one_refused_include_does_not_cost_its_siblings(self):
+        self.write(
+            "proc/self/mountinfo",
+            (
+                MOUNTINFO + "50 22 0:50 / /etc/ssh/sshd_config.d/10-remote.conf rw - nfs4 f:/x rw\n"
+            ).encode(),
+        )
+        self.write("etc/ssh/sshd_config", b"Include /etc/ssh/sshd_config.d/*.conf\n")
+        self.write("etc/ssh/sshd_config.d/10-remote.conf", b"PermitRootLogin yes\n")
+        self.write("etc/ssh/sshd_config.d/20-local.conf", b"PasswordAuthentication no\n")
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(
+            sorted(sources(records)),
+            ["/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/20-local.conf"],
+        )
+        self.assertIn(
+            ("/etc/ssh/sshd_config.d/10-remote.conf", "network_filesystem"), self.gaps(records)
+        )
+
+    def test_mounts_inside_a_walked_directory_are_not_probed(self):
+        self.write(
+            "proc/self/mountinfo",
+            (MOUNTINFO + "60 22 0:60 / /usr/lib64/security/remote rw - nfs4 f:/x rw\n").encode(),
+        )
+        self.write("usr/lib64/security/pam_unix.so", b"\x7fELF")
+        self.write("usr/lib64/security/remote/pam_x.so", b"\x7fELF")
+        records = collect(self.root, ["pam"])
+        files = {f["path"]: f for f in records_named(records, "module_file")}
+        self.assertEqual(
+            files["/usr/lib64/security/remote"],
+            {"path": "/usr/lib64/security/remote", "not_examined": "network_filesystem"},
+        )
+        self.assertNotIn("/usr/lib64/security/remote/pam_x.so", files)
+        self.assertIn("sha256", files["/usr/lib64/security/pam_unix.so"])
+
+    def test_direct_automount_points_are_never_touched(self):
+        self.write(
+            "proc/self/mountinfo",
+            (MOUNTINFO + "61 22 0:61 / /srv/homes rw - autofs map rw,fd=5,direct\n").encode(),
+        )
+        collector = load_collector(self.root)
+        self.assertEqual(collector.mount_risk("/srv/homes"), "automount")
+        self.assertIsNone(collector.mount_risk("/home"))  # indirect: listing is safe
+
+    def test_glob_limit_never_returns_partial_matches(self):
+        self.write("etc/inc/stray.conf", b"PermitRootLogin yes\n")
+        self.write("etc/inc/a/sshd.conf", b"\n")
+        collector = load_collector(self.root)
+        skipped = []
+        # Budgets that run out at each step of the expansion, including just
+        # after /etc/inc/a (a prefix, not a match) has been found.
+        for budget in range(1, 8):
+            collector.MAX_GLOB_ENTRIES = budget
+            found = collector.glob_absolute("/etc/inc/*/sshd.conf", skipped)
+            self.assertIn(found, ([], ["/etc/inc/a/sshd.conf"]), budget)
+        self.assertEqual(skipped[-1]["reason"], "limit")
+
+    def test_glob_expansion_is_bounded(self):
+        for index in range(30):
+            self.write(f"etc/ssh/sshd_config.d/{index:02}.conf", b"\n")
+        collector = load_collector(self.root)
+        collector.MAX_GLOB_ENTRIES = 10
+        skipped = []
+        found = collector.glob_absolute("/etc/ssh/sshd_config.d/*.conf", skipped)
+        self.assertEqual(found, [])  # cut short: fail closed
+        self.assertIn({"path": "/etc/ssh/sshd_config.d/*.conf", "reason": "limit"}, skipped)
+
+    def gaps(self, records):
+        return {(g["path"], g["reason"]) for g in records_named(records, "not_examined")}
+
+    def test_linked_parent_onto_a_network_drive_is_not_probed(self):
+        # A passwd home /srv/alice that is a link onto NFS: its history and
+        # .ssh must not be looked at through the link.
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0:root:/root:/bin/bash\nalice:x:1002:1002::/srv/alice/home:/bin/bash\n",
+        )
+        self.write("mnt/team/alice/home/.bash_history", b"x\n")
+        os.makedirs(Path(self.root, "srv"))
+        os.symlink("../mnt/team/alice", Path(self.root, "srv/alice"))
+        records = collect(self.root, ["accounts"])
+        history = [h for h in records_named(records, "shell_history") if "alice" in h["path"]]
+        self.assertEqual(history, [])
+        homes = records_named(records, "homes")[0]
+        self.assertIn(
+            ("/srv/alice/home", "network_filesystem"),
+            {(n["path"], n["reason"]) for n in homes["not_examined"]},
+        )
+
+    def test_include_globs_never_look_inside_automounted_folders(self):
+        self.write("etc/ssh/sshd_config", b"Include /home/*/sshd.conf\n")
+        self.write("home/alice/sshd.conf", b"PermitRootLogin yes\n")
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(sorted(sources(records)), ["/etc/ssh/sshd_config"])
+
+    def test_refused_link_is_not_probed_afterwards(self):
+        os.makedirs(Path(self.root, "etc"), exist_ok=True)
+        os.symlink("../home/alice", Path(self.root, "etc/sudo-links"))
+        self.write("home/alice/rules", b"alice ALL=(ALL) NOPASSWD: ALL\n")
+        self.write("etc/sudoers", b"#include /etc/sudo-links/rules\n")
+        records = collect(self.root, ["sudoers"])
+        self.assertEqual(sorted(sources(records)), ["/etc/sudoers"])
+        self.assertIn(("/etc/sudo-links/rules", "automount"), self.gaps(records))
+        self.assertEqual(records_named(records, "config_link"), [])
+
+    def test_included_directory_on_an_automount_is_not_listed(self):
+        self.write("home/alice/sudoers.d/x", b"alice ALL=(ALL) ALL\n")
+        self.write("etc/sudoers", b"@includedir /home/alice/sudoers.d\n")
+        records = collect(self.root, ["sudoers"])
+        self.assertIn(("/home/alice/sudoers.d", "automount"), self.gaps(records))
+        self.assertEqual(records_named(records, "include_dir"), [])
+
+    def test_unattributed_keys_on_a_network_drive_are_not_read(self):
+        self.write("etc/ssh/sshd_config", b"AuthorizedKeysFile /mnt/team/keys/%u\n")
+        self.write("mnt/team/keys/bob", self.key)
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(records_named(records, "authorized_key"), [])
+        self.assertIn(("/mnt/team", "network_filesystem"), self.gaps(records))
+
+    def test_linked_pam_directory_on_an_automount_is_not_listed(self):
+        self.write("home/alice/pam.d/sshd", b"auth required pam_unix.so\n")
+        os.makedirs(Path(self.root, "etc"), exist_ok=True)
+        os.symlink("../home/alice/pam.d", Path(self.root, "etc/pam.d"))
+        records = collect(self.root, ["pam"])
+        self.assertEqual(sources(records), {})
+        self.assertIn(("/etc/pam.d", "automount"), self.gaps(records))
+
+    def test_links_into_risky_mounts_are_not_followed(self):
+        self.write("home/alice/x.conf", b"auth required pam_unix.so\n")
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.symlink("../../home/alice/x.conf", Path(self.root, "etc/pam.d/alice"))
+        records = collect(self.root, ["pam"])
+        self.assertEqual(sources(records), {})
+        (gap,) = records_named(records, "not_examined")
+        self.assertEqual((gap["path"], gap["reason"]), ("/etc/pam.d/alice", "automount"))
+
+
+# --- Canary test: no planted secret may leave the server, through any module ----------
+
+CANARIES = {
+    "hash": "$6$CanarySalt$" + "H" * 86,
+    "gecos": "CanaryGecosName",
+    "history": "CanaryHistoryCommand",
+    "option": "CanaryOptionSecret",
+    "env": "CanaryEnvSecret",
+    "comment": "CanaryCommentSecret",
+    "sssd": "CanarySssdBindPassword",
+    "private": "CanaryPrivateKeyBody",
+    "log": "CanaryLogPassword",
+    "pam": "CanaryPamSecret",
+    "sudo": "CanarySudoSecret",
+    "opasswd": "CanaryOldHash",
+    "envname": "CanaryEnvNameTokenAbcdefghijklmnop12",  # makes ghp_ + 36 characters
+}
+
+
+class CanaryTests(FixtureRoot):
+    """Plant secrets in every channel the collector touches, run every
+    module, and require that none of them appears anywhere in the output."""
+
+    def plant(self):
+        c = CANARIES
+        h = c["hash"]
+        self.write(
+            "etc/passwd",
+            (
+                f"root:x:0:0:root:/root:/bin/bash\n"
+                f"jch:{h}:1000:1000:{c['gecos']}:/home/jch:/bin/bash\n"
+            ).encode(),
+        )
+        self.write("etc/shadow", f"root:{h}:20000:0:99999:7:::\njch:!{h}:20000::::::\n".encode())
+        self.write("etc/gshadow", f"root:{h}::\n".encode())
+        self.write("etc/security/opasswd", f"jch:1000:1:{c['opasswd']}\n".encode())
+        self.write("etc/group", f"root:{h}:0:\nsudo:x:27:jch\n".encode())
+        for home in ("root", "home/jch", "home/CORP/alice"):
+            self.write(
+                f"{home}/.bash_history", f"mysql -p{c['history']}\n{c['history']}\n".encode()
+            )
+        # Configuration links and hard links to every protected file.
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.makedirs(Path(self.root, "etc/sudoers.d"))
+        os.makedirs(Path(self.root, "etc/ssh/sshd_config.d"))
+        targets = {
+            "shadow": "etc/shadow",
+            "gshadow": "etc/gshadow",
+            "passwd": "etc/passwd",
+            "opasswd": "etc/security/opasswd",
+            "group": "etc/group",
+            "hist": "home/jch/.bash_history",
+            "domainhist": "home/CORP/alice/.bash_history",
+        }
+        for directory in ("etc/pam.d", "etc/sudoers.d", "etc/ssh/sshd_config.d"):
+            for name, target in targets.items():
+                link = Path(self.root, directory, name + ".conf")
+                os.symlink(os.path.relpath(Path(self.root, target), link.parent), link)
+                os.link(Path(self.root, target), Path(self.root, directory, name + "-hard.conf"))
+        # A history file reached only by a symbolic link (no hard link), so
+        # the location rule alone must stop it.
+        self.write("home/CORP/bob/.zsh_history", f"{c['history']}\n".encode())
+        os.symlink("../../home/CORP/bob/.zsh_history", Path(self.root, "etc/pam.d/bob.conf"))
+        os.symlink(
+            "../../../home/CORP/bob/.zsh_history", Path(self.root, "etc/ssh/sshd_config.d/bob.conf")
+        )
+        self.write("etc/pam.d/sshd", f"auth optional pam_exec.so /x password={c['pam']}\n".encode())
+        self.write("etc/sudoers", b"@includedir /etc/sudoers.d\n#include /etc/shadow\n")
+        self.write("etc/sudoers.d/app", f"Defaults env_keep+=TOKEN\n# token={c['sudo']}\n".encode())
+        self.write(
+            "etc/ssh/sshd_config",
+            b"Include /etc/ssh/sshd_config.d/*.conf\n"
+            b"AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/keys/%u\n",
+        )
+        self.write(
+            "etc/sssd/sssd.conf",
+            (
+                "[domain/corp]\noverride_homedir = /home/%d/%u\n"
+                f"ldap_default_authtok = {c['sssd']}\n"
+            ).encode(),
+        )
+        key = f"ssh-ed25519 {ED25519}"
+        lines = [
+            f'command="run --password=\\"a {c["option"]}\\"",'
+            f'environment="DB_PWD={c["env"]}" {key} ok',
+            f'environment="X={c["env"]} y" {key} ok2',
+            f'environment="ghp_{c["envname"]}=1" {key} ok3',
+            f'bogus-option="{c["option"]}" {key} bad',
+            f"{key} password={c['comment']}",
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            c["private"],
+            "-----END OPENSSH PRIVATE KEY-----",
+            f"ssh-ed25519 {base64.b64encode(c['private'].encode()).decode()} junk",
+        ]
+        for home in ("root", "home/jch", "home/CORP/alice"):
+            self.write(f"{home}/.ssh/authorized_keys", ("\n".join(lines) + "\n").encode())
+        self.write("etc/ssh/keys/bob", ("\n".join(lines) + "\n").encode())
+        os.makedirs(Path(self.root, "var/log"))
+        self.write("var/log/secure", f"Oct 26 sshd[1]: password={c['log']} x\n".encode())
+        self.write(
+            "var/log/auth.log",
+            f"Oct 26 sudo: -----BEGIN RSA PRIVATE KEY-----\n{c['private']}\n".encode(),
+        )
+
+    def test_no_canary_leaves_through_any_module(self):
+        self.plant()
+        collector = load_collector(self.root)
+        collector.COMMANDS = {"journalctl": ()}  # no real journal in a fixture
+        out = io.BytesIO()
+        collector.main(settings(None), out=out)
+        raw = gzip.decompress(out.getvalue())
+        text = raw.decode("utf-8", "replace")
+        leaks = {}
+        for name, canary in CANARIES.items():
+            for form in {canary, canary[:16], base64.b64encode(canary.encode()).decode()[:16]}:
+                if form in text:
+                    leaks[name] = form
+        self.assertEqual(leaks, {})
+        trailer = json.loads(raw.splitlines()[-1])
+        self.assertEqual(trailer["status"], "complete", trailer["modules"])
 
 
 if __name__ == "__main__":

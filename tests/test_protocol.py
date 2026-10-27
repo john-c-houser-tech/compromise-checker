@@ -262,7 +262,7 @@ def test_modules_output_matches_the_models(tmp_path):
     records = read_stream(run_program(program))
 
     assert records[0].host.os_id == "ubuntu"
-    assert records[0].masking_version == 2
+    assert records[0].masking_version == 3
     assert records[-1].status == "complete"
     assert set(records[-1].modules) == {"host_facts", "auth_log"}
     chunks = [r for r in records if isinstance(r, Chunk)]

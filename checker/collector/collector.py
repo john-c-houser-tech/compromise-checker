@@ -16,7 +16,10 @@ what each module reads, and why, is in docs/collector-modules.md.
 """
 
 import base64
+import binascii
 import datetime
+import fnmatch
+import glob
 import gzip
 import hashlib
 import json
@@ -54,7 +57,7 @@ except ImportError:
 
 COLLECTOR_VERSION = "0.1.0.dev0"
 PROTOCOL = 1
-MASKING_VERSION = 2
+MASKING_VERSION = 3
 
 # Every path the collector reads goes through path(). Only the test suite
 # changes ROOT, to point the collector at a directory of fixture files; the
@@ -68,10 +71,51 @@ CHUNK_BYTES = 64 * 1024
 MAX_LINE = 1024 * 1024
 
 
-def path(absolute):
+def _raw_path(absolute):
     if ROOT == "/":
         return absolute
     return os.path.join(ROOT, absolute.lstrip("/"))
+
+
+class UnsafePath(OSError):
+    """A path the collector must not look at: reaching it would mean looking
+    inside an automounted folder or a network file system (see mount_risk)."""
+
+    def __init__(self, absolute, reason):
+        super().__init__(f"not examined ({reason}): {absolute}")
+        self.reason = reason
+        self.target = absolute
+
+
+def path(absolute):
+    """The OS path for a path on the target. Every file-system access goes
+    through here, so this is where the mount guard sits: on a server with
+    automounted or network mounts, the parent directories are resolved one
+    step at a time and checked first, and UnsafePath is raised for anything
+    that would lead onto such a mount. The final component itself is never
+    followed here, so lstat and O_NOFOLLOW keep their meaning, but where it is
+    a link, its destination is checked too, since listing or opening may
+    follow it. On a server with no such mounts at all, this costs nothing."""
+    if absolute.startswith("/") and has_risky_mounts():
+        parent, _, name = absolute.rstrip("/").rpartition("/")
+        resolved, risk = resolve_links(parent or "/")
+        if risk:
+            raise UnsafePath(absolute, risk)
+        if name:
+            absolute = resolved.rstrip("/") + "/" + name
+        risk = mount_risk(absolute)
+        if not risk:
+            # Not followed here, but listing, stat or opening it may follow
+            # it: a final link must lead somewhere safe too.
+            try:
+                linked = stat.S_ISLNK(os.lstat(_raw_path(absolute)).st_mode)
+            except OSError:
+                linked = False
+            if linked:
+                _, risk = resolve_links(absolute)
+        if risk:
+            raise UnsafePath(absolute, risk)
+    return _raw_path(absolute)
 
 
 def now_iso():
@@ -151,6 +195,41 @@ def _rule(kind, context, secret):
 # can't leave its second word behind.
 _QUOTED = rb'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\''
 
+# Fixed vocabularies that look like key=value secrets but never hold one: sudo's
+# NOPASSWD:/PASSWD: tags in a sudo rule (what follows is the command; see
+# _SUDO_RULE), and PAM's control
+# flags and pam_debug arguments, where both the key and the value come from
+# PAM's own word list. Masking them would hide exactly what the sudo and PAM
+# checks compare — `auth_err=die` changed to `auth_err=ignore` would look the
+# same before and after.
+_PAM_RETURN = (
+    rb"success|open_err|symbol_err|service_err|system_err|buf_err|perm_denied|auth_err"
+    rb"|cred_insufficient|authinfo_unavail|user_unknown|maxtries|new_authtok_reqd"
+    rb"|acct_expired|session_err|cred_unavail|cred_expired|cred_err|no_module_data"
+    rb"|conv_err|authtok_err|authtok_recover_err|authtok_lock_busy|authtok_disable_aging"
+    rb"|try_again|ignore|abort|authtok_expired|module_unknown|bad_item|conv_again"
+    rb"|incomplete|default"
+)
+_PAM_ACTION = rb"ignore|bad|die|ok|done|reset|[0-9]+"
+_PAM_DEBUG_ARG = rb"auth|cred|acct|prechauthtok|chauthtok|open_session|close_session"
+# The vocabulary word must be the whole value: `auth_err=die:S3cret` is masked.
+_VALUE_ENDS = rb"(?=[\s\],]|$)"
+_NOT_A_SECRET = (
+    rb"(?!(?:"
+    + _PAM_RETURN
+    + rb")=(?:"
+    + _PAM_ACTION
+    + rb")"
+    + _VALUE_ENDS
+    + rb"|(?:"
+    + _PAM_DEBUG_ARG
+    + rb")=(?:"
+    + _PAM_RETURN
+    + rb")"
+    + _VALUE_ENDS
+    + rb")"
+)
+
 # Specific formats first, so the generic key=value rule doesn't relabel a
 # value that is already masked.
 MASKING_RULES = [
@@ -177,8 +256,10 @@ MASKING_RULES = [
         "password",
         # The key starts a word that isn't inside a PAM "(service:type)" label,
         # and "pwd" counts only in lower case, so sudo's "PWD=" (its working
-        # directory) is kept.
-        rb"(?<![(\w.-])[A-Za-z0-9_.-]*(?:(?i:password|passwd|secret|token|api[_-]?key|apikey|"
+        # directory) is kept. Sudo tags and PAM's own flags are not secrets.
+        rb"(?<![(\w.-])"
+        + _NOT_A_SECRET
+        + rb"[A-Za-z0-9_.-]*(?:(?i:password|passwd|secret|token|api[_-]?key|apikey|"
         rb"access[_-]?key|auth(?!orization))|pwd)[A-Za-z0-9_.-]*[\"']?\s*[=:]\s*",
         _QUOTED + rb"|[^\s\"'&,;]+",
     ),
@@ -197,6 +278,26 @@ _KEY_LINE = re.compile(rb"^(\s*)" + _BASE64 + rb"(\s*)$")
 _KEY_HEADER = re.compile(rb"(?:^|\s)(?:Proc-Type|DEK-Info):\s")
 # Longer than any real PEM private key (a 16384-bit RSA key is under 200).
 MAX_KEY_LINES = 256
+
+
+# A sudoers rule — "user[,user] host[,host] = …" — is the only place sudo's
+# NOPASSWD:/PASSWD: tags are kept. Log lines begin with a timestamp and can't
+# match; inside a rule, a tag counts only right after ")", "=", "," or another
+# tag. Anywhere else "PASSWD: x" is masked like any password label.
+_SUDO_USER = rb"!?[%+]?(?:#[0-9]+|:?[\w.@$\\-]+)"  # name, #uid, %#gid, %:group
+_SUDO_RULE = re.compile(
+    rb"^\s*" + _SUDO_USER + rb"(?:\s*,\s*" + _SUDO_USER + rb")*\s+[\w.@!*,/\s-]+?="
+)
+# A command spec starts right after the rule's "=" and after each unescaped
+# ",": an optional "(runas)", then tags ("NOPASSWD:", "SETENV:" …) right
+# before the command. Only tags there are held; text in a command (where a
+# "," or "=" would be escaped or an argument) or in a comment never is.
+_SUDO_SPEC = re.compile(rb"\s*(?:\([^)\n]*\)\s*)?((?:[A-Z_]+:\s*)+)")
+_SUDO_SPEC_SEPARATOR = re.compile(rb"(?<!\\),")
+_SUDO_TAG = re.compile(rb"(?:NO)?PASSWD:")
+# A comment: "#" not starting a numeric uid ("#1000") or an include.
+_SUDO_COMMENT = re.compile(rb"#(?![0-9]|include)")
+_TAG_HOLD = b"\x00sudo-tag-%d\x00"
 
 
 class Masker:
@@ -275,7 +376,34 @@ class Masker:
                 rest = b"\n" if data.endswith(b"\n") else b""
             # The text before the key still goes through every rule below.
             data = data[: begin.start()] + MASK % b"private_key" + rest
-        return self._apply_rules(data)
+        rule_start = _SUDO_RULE.match(data)
+        if not rule_start:
+            return self._apply_rules(data)
+        # A sudo rule: hold the tags of its command specs aside (never in the
+        # comment) so the rules can't take them for password labels, then put
+        # them back.
+        comment = _SUDO_COMMENT.search(data)
+        rule, rest = (data[: comment.start()], data[comment.start() :]) if comment else (data, b"")
+        tags = []
+
+        def hold_tag(match):
+            tags.append(match.group(0))
+            return _TAG_HOLD % (len(tags) - 1)
+
+        starts = [rule_start.end()]
+        starts += [m.end() for m in _SUDO_SPEC_SEPARATOR.finditer(rule, rule_start.end())]
+        pieces, last = [], 0
+        for start in starts:
+            spec = _SUDO_SPEC.match(rule, start)
+            if spec:
+                pieces.append(rule[last : spec.start(1)])
+                pieces.append(_SUDO_TAG.sub(hold_tag, spec.group(1)))
+                last = spec.end(1)
+        pieces.append(rule[last:])
+        data = self._apply_rules(b"".join(pieces) + rest)
+        for index, tag in enumerate(tags):
+            data = data.replace(_TAG_HOLD % index, tag, 1)
+        return data
 
     def _apply_rules(self, data):
         for kind, pattern in MASKING_RULES:
@@ -316,6 +444,39 @@ class Run:
         self.since = parse_time(settings["since"])
         self.source_bytes = int(settings["limits"]["source_bytes"])
         self.deadline = deadline
+        self._protected = None
+
+    def refusal(self, opened, info, key_file=False):
+        """Why the contents of a file just opened (its path after links, its
+        fstat) must not be read, or None. These rules don't depend on knowing
+        every history file on the server:
+
+        - a protected file (PROTECTED_FILES) is refused however it was reached;
+        - nothing hard-linked is read, except distribution content under /usr
+          (packages ship hard links, e.g. RHEL's crypto policies): elsewhere
+          a hard link could be any file;
+        - configuration and logs are read only from system locations, so a
+          link can't carry a history file or anything else out;
+        - nothing named like a shell history file is read, and the history
+          files of /etc/passwd accounts are refused by inode, under any name;
+        - nothing inside an account's home is read as configuration, even
+          where that home lies in a system location."""
+        if self._protected is None:
+            self._protected = protected_inodes()
+        inodes, homes = self._protected
+        if (info.st_dev, info.st_ino) in inodes:
+            return "is (or links to) a protected file; its contents are never read"
+        if opened.rsplit("/", 1)[-1] in _HISTORY_NAMES:
+            return "is a shell history file; its contents are never read"
+        if info.st_nlink > 1 and not opened.startswith("/usr/"):
+            return "is hard-linked, so it could be a protected file; its contents are never read"
+        if key_file:
+            return None
+        if not opened.startswith(SYSTEM_LOCATIONS):
+            return "is outside the system locations configuration and logs are read from"
+        if opened.startswith(homes):
+            return "is inside an account's home directory; its contents are never read"
+        return None
 
     def out_of_time(self):
         return time.monotonic() >= self.deadline
@@ -528,6 +689,15 @@ def send_file(run, module, absolute):
         details["reason"] = str(exc)
         run.stream.record(module, "unreadable_file", details)
         return False
+    refusal = run.refusal(absolute, info)
+    if refusal:
+        # The file actually opened — through any link or hard link — is one
+        # collected as status or metadata only: never send its text.
+        raw.close()
+        details = describe_unreadable(absolute)
+        details["reason"] = refusal
+        run.stream.record(module, "unreadable_file", details)
+        return False
 
     compression, opener = None, None
     for suffix, (name, cls) in _OPENERS.items():
@@ -559,6 +729,37 @@ def read_small(absolute, limit=65536):
             return raw.read(limit).decode("utf-8", errors="replace")
     except OSError:  # opened but unreadable (I/O error): treat as missing
         return None
+
+
+def list_directory(absolute, limit, run=None):
+    """Up to `limit` names in a directory, read incrementally (a huge one is
+    never read whole) and sorted. Returns (names, truncated). Raises OSError."""
+    names, truncated = [], False
+    with os.scandir(path(absolute)) as listing:
+        for item in listing:
+            if len(names) >= limit or (run is not None and run.out_of_time()):
+                truncated = True
+                break
+            names.append(item.name)
+    return sorted(names), truncated
+
+
+def read_whole_lines(absolute, limit):
+    """Up to `limit` bytes of a text file, cut back to its last whole line if
+    longer. Returns (text, truncated), or (None, False) if unreadable."""
+    try:
+        raw, _ = open_regular_file(absolute)
+    except (OSError, ValueError):
+        return None, False
+    try:
+        with raw:
+            data = raw.read(limit + 1)
+    except OSError:
+        return None, False
+    truncated = len(data) > limit
+    if truncated:
+        data = data[: data.rfind(b"\n", 0, limit) + 1]
+    return data.decode("utf-8", errors="replace"), truncated
 
 
 def hash_file(run, absolute, expect=None):
@@ -728,6 +929,10 @@ class Walk:
                         if self._stop():
                             return
                         absolute = _join(directory, item.name)
+                        risk = mount_risk(absolute)
+                        if risk:  # e.g. an NFS mount inside the directory
+                            yield self._counted({"path": absolute, "not_examined": risk})
+                            continue
                         try:
                             info = item.stat(follow_symlinks=False)
                             link_target = None
@@ -1199,11 +1404,1288 @@ def module_auth_journal(run):
     )
 
 
+# --- Accounts and access (DESIGN.md §8.3) ------------------------------------------
+
+ACCOUNT_FILE_BYTES = 8 * 1024 * 1024
+ACCOUNTS_TRUNCATED = False
+CONFIG_FILE_BYTES = 1024 * 1024
+MAX_INCLUDE_DEPTH = 8
+MAX_DIR_FILES = 1024
+
+
+def path_facts(absolute):
+    """Type, owner, mode, size and times of a path, without following a final
+    symbolic link (its target is recorded instead). None if it doesn't exist."""
+    try:
+        info = os.lstat(path(absolute))
+    except FileNotFoundError:
+        return None
+    except UnsafePath as exc:
+        return {"path": absolute, "not_examined": exc.reason}
+    except OSError as exc:
+        return {"path": absolute, "error": str(exc)}
+    facts = {
+        "path": absolute,
+        "type": stat.filemode(info.st_mode)[0],
+        "mode": format(stat.S_IMODE(info.st_mode), "04o"),
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+        "size": info.st_size,
+        "inode": info.st_ino,
+        "mtime": iso_from_timestamp(info.st_mtime),
+        "ctime": iso_from_timestamp(info.st_ctime),
+    }
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            facts["link_target"] = os.readlink(path(absolute))
+        except OSError as exc:
+            facts["error"] = str(exc)
+    return facts
+
+
+MAX_GLOB_ENTRIES = 10000
+
+
+def glob_absolute(pattern, skipped=None, run=None):
+    """Paths matching a glob pattern, as absolute paths on the target,
+    expanded one directory at a time so that nothing is looked inside before
+    the mount guard has passed it. Paths it won't look at are appended to
+    `skipped` as {"path", "reason"}; so is the pattern, with reason "limit",
+    if expansion stops at MAX_GLOB_ENTRIES entries or the run's deadline."""
+    found, budget = ["/"], [MAX_GLOB_ENTRIES]
+
+    def spent():
+        budget[0] -= 1
+        if budget[0] < 0 or (run is not None and run.out_of_time()):
+            if skipped is not None:
+                skipped.append({"path": pattern, "reason": "limit"})
+            return True
+        return False
+
+    for part in [p for p in pattern.split("/") if p]:
+        following = []
+        for base in found:
+            names = [part]
+            if glob.has_magic(part):
+                try:
+                    names = []
+                    with os.scandir(path(base)) as listing:
+                        for item in listing:
+                            if spent():
+                                return []  # fail closed: never a partial match
+                            names.append(item.name)
+                    names.sort()
+                except UnsafePath as exc:
+                    if skipped is not None:
+                        skipped.append({"path": exc.target, "reason": exc.reason})
+                    continue
+                except OSError:
+                    continue
+                hidden = part.startswith(".")
+                names = [
+                    n for n in names if fnmatch.fnmatchcase(n, part) and (hidden or n[0] != ".")
+                ]
+            for name in names:
+                if spent():
+                    return []
+                candidate = _join(base, name)
+                try:  # one refused candidate never costs its siblings
+                    if os.path.lexists(path(candidate)):
+                        following.append(candidate)
+                except UnsafePath as exc:
+                    if skipped is not None:
+                        skipped.append({"path": exc.target, "reason": exc.reason})
+        found = following
+    return found
+
+
+def _hash_algorithm(value):
+    """Name the password hash scheme from its prefix. Never returns any part
+    of the hash itself."""
+    if value.startswith("$"):
+        ident = value.split("$")[1] if value.count("$") >= 2 else ""
+        return {
+            "1": "md5",
+            "2a": "bcrypt",
+            "2b": "bcrypt",
+            "2x": "bcrypt",
+            "2y": "bcrypt",
+            "5": "sha256",
+            "6": "sha512",
+            "7": "scrypt",
+            "y": "yescrypt",
+            "gy": "gost-yescrypt",
+            "sha1": "sha1",
+            "md5": "sun-md5",
+        }.get(ident, "unknown")
+    if len(value) == 13 and re.match(r"^[./0-9A-Za-z]{13}$", value):
+        return "des"
+    if len(value) == 20 and value.startswith("_"):
+        return "bsdi-des"
+    return "unknown"
+
+
+def password_status(field):
+    """What a password field says, never what it holds: "empty" (anyone can
+    log in), "no_password" (none set, e.g. "*" or "!!"), "locked" (a hash
+    behind "!"), or "set"; with the hash algorithm where there is one."""
+    if field == "":
+        return {"status": "empty"}
+    locked = field.startswith("!")
+    value = field.lstrip("!")
+    if value == "" or value.startswith("*"):
+        return {"status": "no_password"}
+    return {"status": "locked" if locked else "set", "algorithm": _hash_algorithm(value)}
+
+
+def _days(value):
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _date_from_days(days):
+    if days is None or days < 0:
+        return None
+    try:
+        return (datetime.date(1970, 1, 1) + datetime.timedelta(days=days)).isoformat()
+    except OverflowError:
+        return None
+
+
+def read_accounts():
+    """Accounts from /etc/passwd as dicts (name, uid, gid, home, shell, and
+    the password field's status), plus the numbers of malformed lines.
+    None if the file can't be read. A file larger than ACCOUNT_FILE_BYTES is
+    read to its last whole line; ACCOUNTS_TRUNCATED then says so."""
+    global ACCOUNTS_TRUNCATED
+    text, ACCOUNTS_TRUNCATED = read_whole_lines("/etc/passwd", ACCOUNT_FILE_BYTES)
+    if text is None:
+        return None, []
+    accounts, malformed = [], []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split(":")
+        if len(fields) != 7 or not fields[0]:
+            malformed.append(number)
+            continue
+        name, password_field, uid, gid, _gecos, home, shell = fields
+        account = {
+            "name": name,
+            "uid": _days(uid),
+            "gid": _days(gid),
+            "home": home,
+            "shell": shell,
+            "line": number,
+        }
+        # "x": the password is in /etc/shadow. Anything else is the password
+        # field itself (a hash in /etc/passwd is a finding), reduced to its status.
+        shadowed = password_field == "x"  # noqa: S105 - the marker, not a password
+        account["password"] = (
+            {"status": "shadowed"} if shadowed else password_status(password_field)
+        )
+        accounts.append(account)
+    return accounts, malformed
+
+
+# Files collected only as records, status or metadata (policy §7): the account
+# files, which can hold password hashes, and old hashes. They sit in /etc, a
+# system location, so Run.refusal refuses them by inode however reached.
+PROTECTED_FILES = (
+    "/etc/passwd",  # can hold hashes too; read only through read_accounts()
+    "/etc/passwd-",
+    "/etc/group",  # its password field can hold a hash; read only as records
+    "/etc/group-",
+    "/etc/shadow",
+    "/etc/shadow-",
+    "/etc/gshadow",
+    "/etc/gshadow-",
+    "/etc/security/opasswd",
+)
+
+
+# The only places configuration and log text is sent from (see Run.refusal).
+SYSTEM_LOCATIONS = ("/etc/", "/usr/", "/lib/", "/lib64/", "/var/log/", "/run/")
+
+
+def protected_inodes():
+    """(inodes of PROTECTED_FILES and of the history files in /etc/passwd
+    accounts' homes, those homes). The history inodes catch aliases under
+    any name — a hard link under /usr, say; the homes let Run.refusal keep
+    out a service account's home that lies inside a system location
+    (Apache's /usr/share/httpd)."""
+    candidates = list(PROTECTED_FILES)
+    accounts, _ = read_accounts()
+    homes = sorted(
+        {a["home"].rstrip("/") for a in accounts or () if a["home"].rstrip("/")}
+        - {r.rstrip("/") for r in SYSTEM_LOCATIONS}
+    )
+    for home in homes:
+        candidates.extend(_join(home, name) for name in HISTORY_FILES)
+    inodes = set()
+    for absolute in candidates:
+        resolved, risk = resolve_links(absolute)
+        if risk:
+            continue
+        try:
+            info = os.stat(path(resolved))
+        except OSError:
+            continue
+        if stat.S_ISREG(info.st_mode):
+            inodes.add((info.st_dev, info.st_ino))
+    return inodes, tuple(home + "/" for home in homes)
+
+
+HISTORY_FILES = (
+    ".bash_history",
+    ".zsh_history",
+    ".histfile",
+    ".sh_history",
+    ".ash_history",
+    ".history",
+    ".local/share/fish/fish_history",
+    ".mysql_history",
+    ".psql_history",
+    ".python_history",
+    ".sqlite_history",
+)
+
+
+# Home directories are found on disk as well as in /etc/passwd: domain
+# accounts (SSSD, LDAP, Active Directory, winbind) log in through NSS without
+# appearing there, and their keys and history count just the same. NSS itself
+# is not asked: with SSSD's defaults it lists no domain users, and a lookup
+# can reach the directory server and write SSSD's cache on the target.
+HOME_ROOTS = ("/home",)
+MAX_HOME_ENTRIES = 20000
+_SSSD_HOMEDIR = re.compile(
+    r"^\s*(override_homedir|fallback_homedir|homedir_substring)\s*=\s*(.+?)\s*$", re.I
+)
+
+
+def sssd_home_roots():
+    """Fixed leading part of SSSD's home directory templates, e.g. /home for
+    /home/%d/%u. Only these settings are read; nothing of sssd.conf, which
+    can hold a bind password, is ever sent."""
+    roots = []
+    for absolute in ["/etc/sssd/sssd.conf"] + glob_absolute("/etc/sssd/conf.d/*.conf"):
+        for line in (read_small(absolute, CONFIG_FILE_BYTES) or "").splitlines():
+            match = _SSSD_HOMEDIR.match(line)
+            if not match:
+                continue
+            value = match.group(2).replace("%H", "/home")
+            fixed = []
+            for part in value.split("/")[1:]:
+                if "%" in part or not part:
+                    break
+                fixed.append(part)
+            root = "/" + "/".join(fixed)
+            if value.startswith("/") and root != "/" and root not in roots:
+                roots.append(root)
+    return roots
+
+
+def _looks_like_home(directory):
+    return any(os.path.lexists(path(_join(directory, name))) for name in (".ssh",) + HISTORY_FILES)
+
+
+def discover_homes(accounts, run=None):
+    """Every home directory: each /etc/passwd account's, plus unlisted ones
+    found on disk — a directory one or two levels below a home root (/home,
+    the parents of regular users' homes, SSSD's templates) holding .ssh or a
+    shell history file. Returns (homes, summary): each home is {"home",
+    "accounts", "source"}, with "owner_uid" for an unlisted one and
+    "skipped" (the reason) for one on a mount it must not touch."""
+    homes, not_examined = {}, []
+
+    def skip(directory, reason):
+        if len(not_examined) < 1000:
+            not_examined.append({"path": directory, "reason": reason})
+
+    for account in accounts or ():
+        if account["home"]:
+            entry = homes.setdefault(
+                account["home"], {"home": account["home"], "accounts": [], "source": "passwd"}
+            )
+            entry["accounts"].append(account["name"])
+    for home, entry in homes.items():
+        _, risk = resolve_links(home)  # its parents too: /srv/alice -> NFS
+        if risk:
+            entry["skipped"] = risk
+            skip(home, risk)
+    roots = list(HOME_ROOTS)
+    for account in accounts or ():
+        parent = os.path.dirname(account["home"].rstrip("/"))
+        if (account["uid"] or 0) >= 1000 and parent not in ("", "/") and parent not in roots:
+            roots.append(parent)
+    roots.extend(root for root in sssd_home_roots() if root not in roots)
+
+    examined, truncated, unsearched = 0, False, []
+    pending = [(root, 1) for root in roots]
+    while pending and not truncated:
+        directory, depth = pending.pop(0)
+        # A linked root (/home -> /srv/homes) is searched at its target; the
+        # homes found keep the path sshd and the templates use.
+        listed, risk = resolve_links(directory)
+        if risk:
+            skip(directory, risk)
+            continue
+        try:
+            fd = _open_directory(listed)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            # Couldn't be searched: protection can't assume it has no homes.
+            unsearched.append({"path": directory, "error": str(exc)})
+            continue
+        entries = []
+        try:
+            with os.scandir(fd) as listing:
+                for item in listing:
+                    # Limits are checked while reading: a huge directory is
+                    # never read, held or sorted whole.
+                    examined += 1
+                    if examined > MAX_HOME_ENTRIES or (run is not None and run.out_of_time()):
+                        truncated = True
+                        break
+                    if item.is_dir(follow_symlinks=False):
+                        entries.append((item.name, False))
+                    elif item.is_symlink():
+                        entries.append((item.name, True))
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+        for name, linked in sorted(entries):
+            child = _join(directory, name)
+            if child in homes:
+                continue
+            risk = mount_risk(child)
+            if risk:
+                skip(child, risk)  # looking inside would mount it, or could hang
+                continue
+            if linked:
+                # A linked home (/home/alice -> /srv/alice): sshd follows it,
+                # so look at the directory it leads to; never descend further.
+                target, risk = resolve_links(child)
+                if risk:
+                    skip(child, risk)
+                    continue
+                try:
+                    info = os.stat(path(target))
+                except OSError:
+                    continue
+                try:
+                    looks = stat.S_ISDIR(info.st_mode) and _looks_like_home(target)
+                except UnsafePath as exc:
+                    skip(child, exc.reason)
+                    continue
+                if looks:
+                    homes[child] = {
+                        "home": child,
+                        "accounts": [],
+                        "source": "directory",
+                        "owner_uid": info.st_uid,
+                        "resolved": target,
+                    }
+                continue
+            try:
+                looks = _looks_like_home(child)
+            except UnsafePath as exc:  # e.g. a linked .local leading onto a network drive
+                skip(child, exc.reason)
+                continue
+            if looks:
+                try:
+                    owner = os.lstat(path(child)).st_uid
+                except OSError:
+                    continue
+                homes[child] = {
+                    "home": child,
+                    "accounts": [],
+                    "source": "directory",
+                    "owner_uid": owner,
+                }
+            if depth < 2:  # even a home-like parent: /home/CORP/.ssh and /home/CORP/alice
+                pending.append((child, depth + 1))  # e.g. /home/<domain>/<user>
+    summary = {
+        "roots": roots,
+        "examined": examined,
+        "truncated": truncated,
+        "unsearched": unsearched,
+        # False when a history file could exist that the search didn't reach.
+        "complete": not truncated and not unsearched,
+        "unlisted": sorted(h for h, e in homes.items() if e["source"] == "directory"),
+        "not_examined": not_examined,
+    }
+    return [homes[h] for h in sorted(homes)], summary
+
+
+_HISTORY_NAMES = frozenset(name.rsplit("/", 1)[-1] for name in HISTORY_FILES)
+
+
+def module_accounts(run):
+    """Local accounts, groups and password status (never hashes), and facts
+    about shell history files (never their contents)."""
+    module = "accounts"
+    record = run.stream.record
+    for absolute in ("/etc/passwd", "/etc/group", "/etc/shadow"):
+        facts = path_facts(absolute)
+        if facts is not None:
+            record(module, "account_file", facts)
+
+    accounts, malformed = read_accounts()
+    if accounts is None:
+        raise OSError("/etc/passwd could not be read")
+    if ACCOUNTS_TRUNCATED:
+        record(module, "incomplete_file", {"path": "/etc/passwd", "read_bytes": ACCOUNT_FILE_BYTES})
+    for account in accounts:
+        record(module, "account", account)
+    if malformed:
+        # Line numbers only: a malformed line could hold anything.
+        record(module, "malformed_lines", {"path": "/etc/passwd", "lines": malformed})
+    run.check_time()
+
+    text, truncated = read_whole_lines("/etc/group", ACCOUNT_FILE_BYTES)
+    if truncated:
+        record(module, "incomplete_file", {"path": "/etc/group", "read_bytes": ACCOUNT_FILE_BYTES})
+    if text is None:
+        details = describe_unreadable("/etc/group")
+        details["reason"] = "could not be read"
+        record(module, "unreadable_file", details)
+    bad = []
+    for number, line in enumerate((text or "").splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split(":")
+        if len(fields) != 4 or not fields[0]:
+            bad.append(number)
+            continue
+        members = [m for m in fields[3].split(",") if m]
+        record(
+            module,
+            "group",
+            {"name": fields[0], "gid": _days(fields[2]), "members": members, "line": number},
+        )
+    if bad:
+        record(module, "malformed_lines", {"path": "/etc/group", "lines": bad})
+    run.check_time()
+
+    # /etc/shadow is reduced to status here, on the server: the hashes are
+    # never sent (policy §7; decision 1 of the Phase 1 plan).
+    text, truncated = read_whole_lines("/etc/shadow", ACCOUNT_FILE_BYTES)
+    if truncated:
+        record(module, "incomplete_file", {"path": "/etc/shadow", "read_bytes": ACCOUNT_FILE_BYTES})
+    if text is None:
+        details = describe_unreadable("/etc/shadow")
+        details["reason"] = "could not be read"
+        record(module, "unreadable_file", details)
+    else:
+        bad = []
+        for number, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            fields = line.split(":")
+            if len(fields) != 9 or not fields[0]:
+                bad.append(number)
+                continue
+            last_change, expire = _days(fields[2]), _days(fields[7])
+            data = {"name": fields[0], "line": number}
+            data.update(password_status(fields[1]))
+            data.update(
+                {
+                    "last_change_days": last_change,
+                    "last_change": _date_from_days(last_change),
+                    "min_days": _days(fields[3]),
+                    "max_days": _days(fields[4]),
+                    "warn_days": _days(fields[5]),
+                    "inactive_days": _days(fields[6]),
+                    "expire_days": expire,
+                    "expire": _date_from_days(expire),
+                }
+            )
+            record(module, "password_status", data)
+        if bad:
+            record(module, "malformed_lines", {"path": "/etc/shadow", "lines": bad})
+    run.check_time()
+
+    homes, summary = discover_homes(accounts, run)
+    record(module, "homes", summary)
+    for home in homes:
+        run.check_time()
+        if home.get("skipped"):
+            continue
+        for name in HISTORY_FILES:
+            facts = path_facts(_join(home["home"], name))
+            if facts is not None:
+                facts["accounts"] = home["accounts"]
+                if home["source"] == "directory":
+                    facts.update({"home_source": "directory", "owner_uid": home["owner_uid"]})
+                record(module, "shell_history", facts)
+
+
+_SUDO_INCLUDE = re.compile(r"^\s*[#@](include|includedir)\s+(.+?)\s*$")
+
+
+# --- Mounts that must not be touched ---------------------------------------------
+#
+# On a server joined to a domain, home folders are often network drives that
+# the automounter connects the first time anything looks inside them. That is
+# a change to the server, and a lookup on a slow or unreachable file server
+# can block in the kernel, past any time limit. So before the collector looks
+# inside a path it checks the mount table (/proc/self/mountinfo, which is
+# kernel memory) and leaves alone anything under an autofs mount point or on
+# a network file system, recording it as not examined.
+
+NETWORK_FILESYSTEMS = frozenset(
+    "nfs nfs4 cifs smb3 smbfs ncpfs ceph glusterfs fuse.glusterfs lustre gpfs afs openafs"
+    " 9p fuse.sshfs sshfs davfs fuse.davfs2 fuse.s3fs fuse.rclone beegfs fuse.cephfs".split()
+)
+_MOUNTS = None
+
+
+def mount_table():
+    """(mount point, file system type), deepest and most recent first."""
+    global _MOUNTS
+    if _MOUNTS is None:
+        mounts = []
+        try:  # raw: path() itself consults this table
+            with open(_raw_path("/proc/self/mountinfo"), "rb") as table:
+                text = table.read(4 * 1024 * 1024).decode("utf-8", "replace")
+        except OSError:
+            text = ""
+        for index, line in enumerate(text.splitlines()):
+            left, separator, right = line.partition(" - ")
+            fields, rest = left.split(), right.split()
+            if not separator or len(fields) < 5 or not rest:
+                continue
+            point = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[4])
+            fstype = rest[0]
+            options = rest[2].split(",") if len(rest) > 2 else []
+            if fstype == "autofs" and ("direct" in options or "offset" in options):
+                fstype = "autofs-direct"  # the mount point itself is the trigger
+            mounts.append((len(point.rstrip("/")), index, point, fstype))
+        mounts.sort(reverse=True)
+        _MOUNTS = [(point, fstype) for _, _, point, fstype in mounts]
+    return _MOUNTS
+
+
+def has_risky_mounts():
+    return any(
+        fstype.startswith("autofs") or fstype in NETWORK_FILESYSTEMS for _, fstype in mount_table()
+    )
+
+
+def mount_risk(target):
+    """Why looking at `target` could connect a network drive or hang:
+    "automount", "network_filesystem", or None if it is safe."""
+    for point, fstype in mount_table():
+        if target == point or target.startswith(point.rstrip("/") + "/"):
+            if fstype in NETWORK_FILESYSTEMS:
+                return "network_filesystem"
+            if fstype == "autofs-direct":
+                return "automount"  # a direct map mounts on any access to the point itself
+            if fstype == "autofs" and target != point:
+                return "automount"  # listing an indirect map's directory is safe
+            return None
+    return None
+
+
+def resolve_links(absolute):
+    """`absolute` with every symbolic link resolved, one component at a
+    time, checking each against the mount table before stepping into it.
+    Returns (path, None), or (None, reason) for a path it won't follow: one
+    into an automounted or network file system, or a link loop."""
+    parts = [p for p in absolute.split("/") if p]
+    resolved, hops = "", 0
+    while parts:
+        part = parts.pop(0)
+        if part == ".":
+            continue
+        if part == "..":
+            resolved = resolved.rsplit("/", 1)[0]
+            continue
+        candidate = resolved + "/" + part
+        risk = mount_risk(candidate)
+        if risk:
+            return None, risk
+        try:
+            info = os.lstat(_raw_path(candidate))
+        except OSError:
+            # Missing: the rest is joined as written, as realpath does.
+            return "/".join([candidate] + parts), None
+        if not stat.S_ISLNK(info.st_mode):
+            resolved = candidate
+            continue
+        hops += 1
+        if hops > 40:
+            return None, "too many symbolic links"
+        try:
+            target = os.readlink(_raw_path(candidate))
+        except OSError:
+            return None, "unreadable symbolic link"
+        if target.startswith("/"):
+            resolved = ""
+        parts = [p for p in target.split("/") if p] + parts
+    return resolved or "/", None
+
+
+def send_config_file(run, module, absolute):
+    """Send a configuration file the way its program reads it: through
+    symbolic links (RHEL's authselect and crypto-policies use them by
+    design). A link is recorded, then its resolved target is sent, still only
+    if that is a regular file. Returns the path sent, or None."""
+    resolved, risk = resolve_links(absolute)
+    if risk:  # before any probe of the path: probing could follow the link
+        run.stream.record(module, "not_examined", {"path": absolute, "reason": risk})
+        return None
+    facts = path_facts(absolute)
+    if facts is not None and facts.get("type") == "l":
+        facts["resolved"] = resolved
+        run.stream.record(module, "config_link", facts)
+    absolute = resolved
+    return absolute if send_file(run, module, absolute) else None
+
+
+def read_config_text(run, module, absolute):
+    """A configuration file's text, for finding its directives. Only the
+    first CONFIG_FILE_BYTES are searched; a longer file gets a record saying
+    its directives may be incomplete."""
+    text = read_small(absolute, CONFIG_FILE_BYTES) or ""
+    try:
+        size = os.stat(path(absolute)).st_size
+    except OSError:
+        size = 0
+    if size > CONFIG_FILE_BYTES:
+        run.stream.record(
+            module,
+            "directives_incomplete",
+            {"path": absolute, "size": size, "searched_bytes": CONFIG_FILE_BYTES},
+        )
+    return text
+
+
+def _sudo_include_path(target, including):
+    target = target.strip()
+    if len(target) >= 2 and target[0] == target[-1] == '"':
+        target = target[1:-1]
+    target = re.sub(r"\\(.)", r"\1", target)  # sudo's escapes: "\ " is a space, "\\" a backslash
+    target = target.replace("%h", socket.gethostname().split(".")[0])
+    if not target.startswith("/"):  # relative to the including file (sudo 1.9.1+)
+        target = _join(os.path.dirname(including), target)
+    return target
+
+
+def _sudo_reads(name):
+    """Whether sudo reads a file of this name from an included directory: it
+    skips names ending in "~" or containing a "."."""
+    return not name.endswith("~") and "." not in name
+
+
+def module_sudoers(run):
+    """/etc/sudoers and everything it includes, masked."""
+    module = "sudoers"
+    seen = set()
+    pending = [("/etc/sudoers", 0)]
+    while pending:
+        run.check_time()
+        absolute, depth = pending.pop(0)
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        sent = send_config_file(run, module, absolute)
+        if sent is None:
+            continue
+        text = read_config_text(run, module, sent)
+        for line in text.splitlines():
+            match = _SUDO_INCLUDE.match(line)
+            if not match:
+                continue
+            target = _sudo_include_path(match.group(2), absolute)
+            if depth + 1 > MAX_INCLUDE_DEPTH:
+                run.stream.record(
+                    module, "include_not_followed", {"path": target, "reason": "depth"}
+                )
+                continue
+            if match.group(1) == "include":
+                pending.append((target, depth + 1))
+                continue
+            directory, risk = resolve_links(target)
+            if risk:
+                run.stream.record(module, "not_examined", {"path": target, "reason": risk})
+                continue
+            try:
+                names, listing_cut = list_directory(directory, MAX_DIR_FILES, run)
+            except OSError as exc:
+                run.stream.record(
+                    module, "include_dir", {"path": target, "from": absolute, "error": str(exc)}
+                )
+                continue
+            run.stream.record(
+                module,
+                "include_dir",
+                {
+                    "path": target,
+                    "from": absolute,
+                    "files": [{"name": n, "sudo_reads": _sudo_reads(n)} for n in names],
+                    "truncated": listing_cut,
+                },
+            )
+            # Every file is sent, including those sudo skips: evidence either way.
+            pending.extend((_join(target, n), depth + 1) for n in names[:MAX_DIR_FILES])
+
+
+# --- SSH ------------------------------------------------------------------------------
+
+_SSH_KEY_TYPE = re.compile(
+    r"^(?:(?:ssh-(?:rsa|dss|ed25519|ed448)|ecdsa-sha2-nistp(?:256|384|521))"
+    r"(?:-cert-v01@openssh\.com)?"
+    r"|sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)(?:-cert-v01)?@openssh\.com)$"
+)
+# Public-key fields after the nonce in a certificate, by plain key type
+# (OpenSSH PROTOCOL.certkeys): what the plain key's blob is rebuilt from.
+_CERT_KEY_FIELDS = {
+    "ssh-rsa": 2,
+    "ssh-dss": 4,
+    "ecdsa-sha2-nistp256": 2,
+    "ecdsa-sha2-nistp384": 2,
+    "ecdsa-sha2-nistp521": 2,
+    "ssh-ed25519": 1,
+    "sk-ecdsa-sha2-nistp256@openssh.com": 3,
+    "sk-ssh-ed25519@openssh.com": 2,
+}
+# Options sshd accepts in authorized_keys; a line with any other is ignored.
+SSH_KEY_OPTIONS = frozenset(
+    "agent-forwarding cert-authority command environment expiry-time from"
+    " no-agent-forwarding no-port-forwarding no-pty no-touch-required no-user-rc"
+    " no-x11-forwarding permitlisten permitopen port-forwarding principals pty restrict"
+    " tunnel user-rc verify-required x11-forwarding".split()
+)
+# environment= variables whose values a check needs: loader and interpreter
+# hooks an attacker would set, and a few harmless ones. Any other variable
+# is sent as its name and value length only — its value could be anything,
+# a secret included, and no pattern can tell.
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+SSH_ENV_VALUES_SENT = frozenset(
+    "LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PATH PYTHONPATH PYTHONSTARTUP PERL5LIB PERL5OPT"
+    " RUBYOPT RUBYLIB NODE_OPTIONS BASH_ENV ENV PROMPT_COMMAND HOME SHELL LANG LC_ALL TZ".split()
+)
+DEFAULT_AUTHORIZED_KEYS = (".ssh/authorized_keys", ".ssh/authorized_keys2")
+MAX_KEY_FILE_BYTES = 1024 * 1024
+
+
+def _split_token(text):
+    """The first whitespace-delimited token, treating "quoted strings" (with
+    backslash escapes) as part of it, and the rest of the text."""
+    quoted, escaped = False, False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quoted:
+            escaped = True
+        elif char == '"':
+            quoted = not quoted
+        elif char in " \t" and not quoted:
+            return text[:index], text[index:].lstrip(" \t")
+    return text, ""
+
+
+def _mask_str(text):
+    return mask_text(text.encode("utf-8"))[0].decode("utf-8", "replace")
+
+
+def ssh_key_options(options):
+    """authorized_keys options as a list of {"name", "value"}, each value
+    decoded as sshd decodes it and only then masked, so a quoted secret
+    can't leave a fragment behind. An option sshd doesn't know (which makes
+    it ignore the line) is masked and marked "known": false."""
+    items, current, quoted, escaped = [], "", False, False
+    for char in options + ",":
+        if escaped:
+            escaped = False
+        elif char == "\\" and quoted:
+            escaped = True
+        elif char == '"':
+            quoted = not quoted
+        elif char == "," and not quoted:
+            items.append(current)
+            current = ""
+            continue
+        current += char
+    result = []
+    for item in items:
+        if not item:
+            continue
+        name, has_value, value = item.partition("=")
+        name = name.strip().lower()
+        if name not in SSH_KEY_OPTIONS:
+            # sshd ignores the line; nothing of an unknown option is sent.
+            result.append({"known": False, "length": len(item)})
+            continue
+        option = {"name": name}
+        if has_value:
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = value[1:-1].replace('\\"', '"')  # sshd's only escape
+            if name != "environment":
+                option["value"] = _mask_str(value)
+            else:
+                variable, _, setting = value.partition("=")
+                if not _ENV_NAME.match(variable):
+                    variable, setting = None, value  # malformed: send nothing of it
+                option["variable"] = _mask_str(variable) if variable else None
+                if variable in SSH_ENV_VALUES_SENT:
+                    option["value"] = _mask_str(setting)
+                else:
+                    option["value_length"] = len(setting)
+        result.append(option)
+    return result
+
+
+def _ssh_string_end(blob, start):
+    """End of the length-prefixed string at `start`; ValueError if it overruns."""
+    if start + 4 > len(blob):
+        raise ValueError("truncated")
+    end = start + 4 + int.from_bytes(blob[start : start + 4], "big")
+    if end > len(blob):
+        raise ValueError("truncated")
+    return end
+
+
+def _plain_key_complete(blob, key_type):
+    """Whether a plain key blob holds exactly its type's public-key fields."""
+    count = dict(_CERT_KEY_FIELDS, **{"ssh-ed448": 1}).get(key_type)
+    if count is None:
+        return False
+    try:
+        position = _ssh_string_end(blob, 0)
+        for _ in range(count):
+            position = _ssh_string_end(blob, position)
+    except ValueError:
+        return False
+    return position == len(blob)
+
+
+def plain_key_blob(blob, cert_type):
+    """The plain public key inside a certificate, which is what OpenSSH
+    fingerprints (`ssh-keygen -l`, sshd's logs). None if it can't be read."""
+    if cert_type.startswith("sk-"):  # the plain type keeps its @openssh.com
+        plain = cert_type.replace("-cert-v01", "")
+    else:
+        plain = cert_type.replace("-cert-v01@openssh.com", "")
+    count = _CERT_KEY_FIELDS.get(plain)
+    if count is None:
+        return None
+    try:
+        position = _ssh_string_end(blob, 0)  # the certificate type
+        position = _ssh_string_end(blob, position)  # the nonce
+        start = position
+        for _ in range(count):
+            position = _ssh_string_end(blob, position)
+    except ValueError:
+        return None
+    name = plain.encode("ascii")
+    return len(name).to_bytes(4, "big") + name + blob[start:position]
+
+
+def parse_authorized_key(line):
+    """One authorized_keys line as facts: key type, SHA-256 fingerprint (as
+    sshd logs it), options and comment. None if it isn't a public key line.
+    The key itself is never returned."""
+    first, rest = _split_token(line.strip())
+    options = None
+    if not _SSH_KEY_TYPE.match(first):
+        options = first
+        first, rest = _split_token(rest)
+        if not _SSH_KEY_TYPE.match(first):
+            return None
+    blob_text, comment = _split_token(rest)
+    try:
+        blob = base64.b64decode(blob_text, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if len(blob) < 4:
+        return None
+    length = int.from_bytes(blob[:4], "big")
+    if length > len(blob) - 4:
+        return None
+    embedded = blob[4 : 4 + length].decode("ascii", errors="replace")
+    if not _SSH_KEY_TYPE.match(embedded):
+        return None  # not a key inside: never echo what it holds
+    certificate = "-cert-v01" in embedded
+    key_blob = plain_key_blob(blob, embedded) if certificate else blob
+    if key_blob is None or (not certificate and not _plain_key_complete(blob, embedded)):
+        return None
+    fingerprint = base64.b64encode(hashlib.sha256(key_blob).digest()).decode("ascii").rstrip("=")
+    key = {"type": first, "fingerprint": "SHA256:" + fingerprint, "key_bytes": len(blob)}
+    if certificate:
+        key["certificate"] = True  # fingerprint of the key inside, as OpenSSH gives it
+    if embedded != first:
+        key["embedded_type"] = embedded  # the line's type and the key's disagree
+    if options is not None:
+        key["options"] = ssh_key_options(options)
+    comment = comment.strip()
+    if comment:
+        key["comment"] = _mask_str(comment)
+    return key
+
+
+def _expand_key_path(pattern, account):
+    """An AuthorizedKeysFile pattern for one account, or None if it uses a
+    token this collector doesn't know."""
+    out, index = [], 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "%" and index + 1 < len(pattern):
+            letter = pattern[index + 1]
+            value = {"%": "%", "h": account["home"], "u": account["name"]}.get(letter)
+            if letter == "h" and not account["home"]:
+                return None
+            if letter == "U":
+                value = str(account["uid"])
+            if value is None:
+                return None
+            out.append(value)
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    expanded = "".join(out)
+    if expanded.startswith("~/"):
+        expanded = _join(account["home"], expanded[2:])
+    if not expanded.startswith("/"):
+        expanded = _join(account["home"], expanded)
+    return expanded
+
+
+def links_on_path(absolute):
+    """Every symbolic link among the components of `absolute`, the last one
+    included, as {"path", "target"} dicts in order from the root."""
+    links, current = [], ""
+    for part in absolute.strip("/").split("/"):
+        current += "/" + part
+        try:
+            if stat.S_ISLNK(os.lstat(path(current)).st_mode):
+                links.append({"path": current, "target": os.readlink(path(current))})
+        except OSError:
+            break
+    return links
+
+
+def send_authorized_keys(run, module, account, absolute, extra=None):
+    """Facts about one authorized_keys file: the file, then one record per key.
+
+    Symbolic links are followed, as sshd follows them: a key reached through
+    a link grants access like any other, so it must be listed. The links are
+    recorded. Following them is safe because nothing but public keys'
+    fingerprints, options and comments is ever taken from the file."""
+    record = run.stream.record
+    # Every candidate is resolved and mount-checked first, link or not: a
+    # plain file on a network file system must not be opened either.
+    target, risk = resolve_links(absolute)
+    if risk:
+        record(
+            module, "not_examined", {"account": account["name"], "path": absolute, "reason": risk}
+        )
+        return
+    links = links_on_path(absolute)
+    if links:
+        record(
+            module,
+            "authorized_keys_link",
+            {"account": account["name"], "path": absolute, "resolved": target, "links": links},
+        )
+        if target is None:
+            return
+    try:
+        raw, info = open_regular_file(target)
+    except (OSError, ValueError) as exc:
+        details = describe_unreadable(target)
+        details.update({"account": account["name"], "reason": str(exc)})
+        record(module, "unreadable_file", details)
+        return
+    with raw:
+        refusal = run.refusal(target, info, key_file=True)
+        if refusal:
+            details = describe_unreadable(target)
+            details.update({"account": account["name"], "reason": refusal})
+            record(module, "unreadable_file", details)
+            return
+        try:
+            data = raw.read(MAX_KEY_FILE_BYTES + 1)
+        except OSError as exc:
+            record(module, "unreadable_file", {"path": absolute, "reason": str(exc)})
+            return
+    truncated = len(data) > MAX_KEY_FILE_BYTES
+    if truncated:
+        # Whole lines only: an unfinished one might not mask correctly.
+        data = data[: data.rfind(b"\n", 0, MAX_KEY_FILE_BYTES) + 1]
+    keys, not_keys = 0, []
+    for number, line in enumerate(data.splitlines(), 1):
+        text = line.decode("utf-8", errors="replace")
+        if not text.strip() or text.lstrip().startswith("#"):
+            continue
+        key = parse_authorized_key(text)
+        if key is None:
+            not_keys.append(number)  # line numbers only: it could be anything
+            continue
+        key.update({"account": account["name"], "path": absolute, "line": number})
+        key.update(extra or {})
+        if target != absolute:
+            key["resolved"] = target
+        record(module, "authorized_key", key)
+        keys += 1
+    facts = file_meta(info, None)
+    del facts["compressed"]
+    facts.update(
+        {
+            "account": account["name"],
+            "path": absolute,
+            "resolved": target,
+            "keys": keys,
+            "lines_not_keys": not_keys,
+            "truncated": truncated,
+        }
+    )
+    facts.update(extra or {})
+    record(module, "authorized_keys_file", facts)
+
+
+class SshdConfig:
+    """Reads sshd_config as sshd does: Include lines are expanded in place,
+    the first global AuthorizedKeysFile wins, and a Match block lasts to the
+    next Match line or the end of its file. Every file read is sent."""
+
+    def __init__(self, run, module):
+        self.run, self.module = run, module
+        self.sent = {}  # path → the path actually sent (links resolved), or None
+        self.global_keys = None  # None: not set, so sshd's defaults apply
+        self.match_keys = []
+
+    def read(self, absolute, depth, in_match):
+        self.run.check_time()
+        if depth > MAX_INCLUDE_DEPTH:
+            self.run.stream.record(
+                self.module, "include_not_followed", {"path": absolute, "reason": "depth"}
+            )
+            return
+        # Each file is sent once; one included twice is still read again in
+        # its new place, as sshd would.
+        if absolute not in self.sent:
+            self.sent[absolute] = send_config_file(self.run, self.module, absolute)
+        if self.sent[absolute] is None:
+            return
+        text = read_config_text(self.run, self.module, self.sent[absolute])
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = re.split(r"[\s=]+", stripped, maxsplit=1)
+            keyword = parts[0].lower()
+            try:
+                args = shlex.split(parts[1], comments=True) if len(parts) == 2 else []
+            except ValueError:
+                args = parts[1].split()
+            if keyword == "match":
+                in_match = True
+            elif keyword == "include":
+                for pattern in args:
+                    if not pattern.startswith("/"):
+                        pattern = "/etc/ssh/" + pattern
+                    skipped = []
+                    for match in glob_absolute(pattern, skipped, self.run):
+                        self.read(match, depth + 1, in_match)
+                    for gap in skipped:
+                        self.run.stream.record(self.module, "not_examined", gap)
+            elif keyword == "authorizedkeysfile" and args:
+                if in_match:
+                    self.match_keys.extend(a for a in args if a not in self.match_keys)
+                elif self.global_keys is None:
+                    self.global_keys = args
+
+
+def module_ssh(run):
+    """sshd_config and its includes (masked), and every account's authorized
+    keys as fingerprints, options and comments — never the keys themselves."""
+    module = "ssh"
+    config = SshdConfig(run, module)
+    config.read("/etc/ssh/sshd_config", 0, False)
+    if config.global_keys is None:
+        global_patterns = list(DEFAULT_AUTHORIZED_KEYS)
+    else:
+        global_patterns = [p for p in config.global_keys if p.lower() != "none"]
+    patterns = list(global_patterns)
+    for value in config.match_keys:
+        if value.lower() != "none" and value not in patterns:
+            patterns.append(value)
+    run.stream.record(
+        module,
+        "authorized_keys_locations",
+        {
+            "patterns": patterns,
+            "global": global_patterns,
+            "global_set": config.global_keys is not None,
+            # Locations set inside Match blocks apply only to some logins;
+            # their keys are collected too, since any of them may be used.
+            "match": config.match_keys,
+        },
+    )
+
+    accounts, _ = read_accounts()
+    if accounts is None:
+        raise OSError("/etc/passwd could not be read")
+    if ACCOUNTS_TRUNCATED:  # some accounts' keys may not have been looked at
+        run.stream.record(
+            module, "incomplete_file", {"path": "/etc/passwd", "read_bytes": ACCOUNT_FILE_BYTES}
+        )
+    homes, summary = discover_homes(accounts, run)
+    # The search's coverage matters here too: a cut-short search means some
+    # domain users' keys may not have been looked at.
+    run.stream.record(module, "homes", summary)
+    owners = []  # (account-like dict, extra fields for its records)
+    owners.extend((account, None) for account in accounts)
+    for home in homes:
+        if home.get("skipped"):
+            continue
+        ssh_dir = path_facts(_join(home["home"], ".ssh"))
+        if ssh_dir is not None:
+            ssh_dir["accounts"] = home["accounts"]
+            if home["source"] == "directory":
+                ssh_dir.update({"home_source": "directory", "owner_uid": home["owner_uid"]})
+            run.stream.record(module, "ssh_dir", ssh_dir)
+        if home["source"] == "directory":
+            # A home with no local account (a domain user's): its name is
+            # unknown, so only locations that don't need one apply.
+            unlisted = {"name": None, "home": home["home"], "uid": home["owner_uid"]}
+            extra = {
+                "home_source": "directory",
+                "home": home["home"],
+                "owner_uid": home["owner_uid"],
+            }
+            owners.append((unlisted, extra))
+
+    read = set()
+    for account, extra in owners:
+        run.check_time()
+        candidates = []
+        for pattern in patterns:
+            expanded = _expand_key_path(pattern, account)
+            if expanded is not None and expanded not in candidates:
+                candidates.append(expanded)
+        for candidate in candidates:
+            _, risk = resolve_links(candidate)
+            if risk:
+                run.stream.record(
+                    module,
+                    "not_examined",
+                    {"account": account["name"], "path": candidate, "reason": risk},
+                )
+                continue
+            if not os.path.lexists(path(candidate)):  # safe: resolution passed the checks
+                continue
+            read.add(candidate)
+            send_authorized_keys(run, module, account, candidate, extra)
+
+    # Absolute per-user locations (/etc/ssh/keys/%u): files there that no
+    # local account accounts for may belong to domain users; list them too.
+    for pattern in patterns:
+        if not pattern.startswith("/") or not re.search(r"%[uU]", pattern):
+            continue
+        template = pattern.replace("%%", "\0")
+        if re.search(r"%[^uU]", template):
+            continue
+        wildcard = re.sub(r"%[uU]", "*", template).replace("\0", "%")
+        skipped = []
+        matches = glob_absolute(wildcard, skipped, run)
+        for gap in skipped:
+            run.stream.record(module, "not_examined", gap)
+        for candidate in matches:
+            if candidate not in read:
+                run.check_time()
+                read.add(candidate)
+                nobody = {"name": None, "home": "", "uid": None}
+                send_authorized_keys(run, module, nobody, candidate, {"unattributed": True})
+
+
+# --- PAM ----------------------------------------------------------------------------
+
+PAM_MODULE_DIRS = (
+    "/usr/lib64/security",
+    "/usr/lib/security",
+    "/usr/lib/*/security",
+    "/lib64/security",
+    "/lib/security",
+    "/lib/*/security",
+)
+
+
+def module_pam(run):
+    """PAM configuration (masked) and a hashed listing of the PAM module
+    directories, so an added or replaced module shows."""
+    module = "pam"
+    names = []
+    if path_facts("/etc/pam.conf") is not None:
+        names.append("/etc/pam.conf")
+    pam_dir, risk = resolve_links("/etc/pam.d")
+    listing_cut = False
+    try:
+        if risk:
+            raise UnsafePath("/etc/pam.d", risk)
+        entries, listing_cut = list_directory(pam_dir, MAX_DIR_FILES, run)
+    except UnsafePath as exc:
+        run.stream.record(module, "not_examined", {"path": "/etc/pam.d", "reason": exc.reason})
+        entries = []
+    except OSError as exc:
+        run.stream.record(module, "unreadable_file", {"path": "/etc/pam.d", "reason": str(exc)})
+        entries = []
+    names.extend("/etc/pam.d/" + name for name in entries[:MAX_DIR_FILES])
+    run.stream.record(
+        module,
+        "config_dir",
+        {"path": "/etc/pam.d", "entries": len(entries), "truncated": listing_cut},
+    )
+    for absolute in names:
+        run.check_time()
+        send_config_file(run, module, absolute)
+
+    seen = set()
+    for pattern in PAM_MODULE_DIRS:
+        skipped = []
+        matches = glob_absolute(pattern, skipped, run)
+        for gap in skipped:
+            run.stream.record(module, "not_examined", gap)
+        for found in matches:
+            # Walk the real directory: Walk never follows a link at its top,
+            # and the inode seen must be the one walked.
+            directory, risk = resolve_links(found)
+            if risk:
+                run.stream.record(module, "not_examined", {"path": found, "reason": risk})
+                continue
+            try:
+                info = os.lstat(path(directory))
+            except OSError:
+                continue
+            if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) in seen:
+                continue  # /lib is often a link to /usr/lib: list each directory once
+            seen.add((info.st_dev, info.st_ino))
+            walk = Walk(
+                run, directory, max_depth=2, max_entries=5000, hash_bytes=8 << 20, hash_files="all"
+            )
+            for entry in walk:
+                run.stream.record(module, "module_file", entry)
+            run.stream.record(module, "walk_summary", walk.summary())
+            run.check_time()
+
+
 # Collection modules, by name, in their default order.
 MODULES = {
     "host_facts": module_host_facts,
     "auth_log": module_auth_log,
     "auth_journal": module_auth_journal,
+    "accounts": module_accounts,
+    "sudoers": module_sudoers,
+    "ssh": module_ssh,
+    "pam": module_pam,
 }
 
 

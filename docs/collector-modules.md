@@ -460,9 +460,10 @@ SQLite's write-ahead log aren't seen by an immutable read, so the summary
 says when that log is not empty (`wal_pending`): recently changed packages
 may then look changed. The database directory is listed first
 (`checksum_store`: names, sizes, times; the database is large and changes
-on every install, so it isn't hashed). Not compared yet: file
-capabilities (rpm -V's `P`), which come with the capability decoding of
-the filesystem pass (Phase 1 plan, 1.4c).
+on every install, so it isn't hashed). File capabilities (rpm -V's `P`)
+are compared too: the file's `security.capability` attribute, decoded (see
+`system_files`), against the capabilities rpm recorded; an attribute that
+can't be decoded is reported as a difference.
 
 **Ubuntu** (dpkg's status file is present): lists `/var/lib/dpkg/info` with
 the SHA-256 of every file in it, and dpkg's status file (which holds the
@@ -502,6 +503,43 @@ not "proven untouched". The `checksum_store` listing makes a rewrite visible
 against the baseline (a changed hash or change time), and on a first check
 a list changed long after its package's other files stands out. Comparing
 against the vendor's signed packages is planned for a later version.
+
+## `system_files`
+
+**Why:** set-user-ID and set-group-ID files, file capabilities such as
+`cap_setuid`, and executables in system directories that no package
+installed (DESIGN.md §8.5).
+
+**Walks** (see "Directory walks") `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`,
+`/opt`, `/etc` and `/boot`, each once: a top-level directory that links into
+`/usr` (merged `/usr`) is already inside the `/usr` walk. For every regular
+file it reads the `security.capability` extended attribute (kernel
+metadata, read with `getxattr`; no `getcap` is run) and decodes it —
+revisions 1 to 3, with a revision-3 attribute's user-namespace root id —
+into `cap_to_text`'s form, e.g. `cap_net_admin,cap_net_raw=ep`. Which
+package installed each file comes from dpkg's `.list` files (and its
+diversions' targets) or rpm's database, read as `package_verify` reads it;
+on merged-`/usr` systems a package's `/bin/ls` and the walk's
+`/usr/bin/ls` are the same file.
+
+**Sends**, for interesting files only — ordinary ones are counted, not
+listed:
+- `privileged_file`: a set-user-ID or set-group-ID file, a file with
+  capabilities, or one whose capability attribute can't be decoded;
+- `unowned_executable`: an executable (any execute bit) that no package
+  installed, in a program or library directory (`bin`, `sbin`, `lib*`,
+  `libexec`, under `/` or `/usr`) or in `/usr/local` or `/opt` (marked
+  `local`: administrators' own software lives there, so it is reported
+  apart);
+
+each with the walk's metadata, the owning package (or none), the
+set-user-ID and set-group-ID bits, the capabilities, and the SHA-256 of
+files up to 8 MiB, hashed under the protection rules. At most 10,000 of
+each kind are sent (a flood of one kind can't crowd out the other); a
+`system_files_summary` gives the counts, which package manager said who
+owns what and whether its lists were complete, the merged directories, and
+whether a limit cut the pass short. With no package manager, nothing is
+called unowned.
 
 ## Protected files
 

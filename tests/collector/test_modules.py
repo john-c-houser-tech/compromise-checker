@@ -3016,12 +3016,14 @@ def rpm_package(name, files):
             (5011, 4, [8]),
             (1039, 8, [f[6] if len(f) > 6 else "root" for f in files]),  # owners
             (1040, 8, ["root"] * len(files)),  # groups
+            (5010, 8, [f[7] if len(f) > 7 else "" for f in files]),  # capabilities
         ]
     )
 
 
 class RpmVerifyTests(FixtureRoot):
     def rpm_fixture(self, wal=b""):
+        # ping should have cap_net_raw but has none: rpm -V's "P".
         import sqlite3
 
         good = b"\x7fELF sshd"
@@ -3034,19 +3036,27 @@ class RpmVerifyTests(FixtureRoot):
         self.write("etc/ssh/sshd_config", b"edited\n")
         Path(self.root, "etc/ssh/sshd_config").chmod(0o600)
         os.symlink("/opt/evil", Path(self.root, "usr/bin/vi"))
-        files = [
-            ("/usr/sbin/sshd", good, 0o100755, 0, ""),
-            ("/usr/bin/ps", b"\x7fELF ps", 0o100755, 0, ""),
-            ("/usr/bin/passwd", b"\x7fELF passwd", 0o100755, 0, ""),
-            ("/usr/bin/gone", b"x", 0o100755, 0, ""),
-            ("/usr/bin/optional", b"x", 0o100644, 8, ""),  # %missingok
-            ("/var/cache/ghost", b"x", 0o100644, 64, ""),  # %ghost
-            ("/etc/ssh/sshd_config", b"original\n", 0o100600, 1, ""),  # %config
-            ("/usr/bin/vi", None, 0o120777, 0, "vim"),
-            ("/usr/share/doc/x/README", b"x", 0o100644, 2, "", 2),  # not installed (nodocs)
-            ("/usr/bin/su", b"\x7fELF su", 0o100755, 0, "", 0, "daemon"),  # owner changed
-            ("/usr/share/man/man1/ps.1.gz", b"original man", 0o100644, 0, ""),  # data
-        ]
+        files = (
+            [
+                ("/usr/sbin/sshd", good, 0o100755, 0, ""),
+                ("/usr/bin/ps", b"\x7fELF ps", 0o100755, 0, ""),
+                ("/usr/bin/passwd", b"\x7fELF passwd", 0o100755, 0, ""),
+                ("/usr/bin/gone", b"x", 0o100755, 0, ""),
+                ("/usr/bin/optional", b"x", 0o100644, 8, ""),  # %missingok
+                ("/var/cache/ghost", b"x", 0o100644, 64, ""),  # %ghost
+                ("/etc/ssh/sshd_config", b"original\n", 0o100600, 1, ""),  # %config
+                ("/usr/bin/vi", None, 0o120777, 0, "vim"),
+                ("/usr/share/doc/x/README", b"x", 0o100644, 2, "", 2),  # not installed (nodocs)
+                ("/usr/bin/su", b"\x7fELF su", 0o100755, 0, "", 0, "daemon"),  # owner changed
+                ("/usr/share/man/man1/ps.1.gz", b"original man", 0o100644, 0, ""),  # data
+                ("/usr/sbin/sshd", good, 0o100755, 0, "", 0, "root", ""),
+            ][:-1]
+            + [
+                ("/usr/bin/ping", b"\x7fELF ping", 0o100755, 0, "", 0, "root", "cap_net_raw=ep"),
+            ]
+        )
+        self.write("usr/bin/ping", b"\x7fELF ping")
+        Path(self.root, "usr/bin/ping").chmod(0o755)
         self.write("usr/share/man/man1/ps.1.gz", b"different man page")
         self.write("usr/bin/su", b"\x7fELF su")
         Path(self.root, "usr/bin/su").chmod(0o755)
@@ -3086,6 +3096,7 @@ class RpmVerifyTests(FixtureRoot):
                 ("/usr/bin/passwd", "mode"),
                 ("/usr/bin/vi", "link"),
                 ("/usr/bin/su", "owner"),
+                ("/usr/bin/ping", "capabilities"),
             },
         )
         owner = [
@@ -3135,6 +3146,151 @@ class RpmVerifyTests(FixtureRoot):
             header.get(1117)
         with self.assertRaises(ValueError):
             collector.RpmHeader(struct.pack(">II", 5, 99))
+
+
+def vfs_cap(permitted, inheritable=0, effective=True, revision=2, root=None):
+    """A security.capability value, built independently of the collector."""
+    magic = {1: 0x01000000, 2: 0x02000000, 3: 0x03000000}[revision] | (1 if effective else 0)
+    data = magic.to_bytes(4, "little")
+    for half in range(1 if revision == 1 else 2):
+        data += ((permitted >> (32 * half)) & 0xFFFFFFFF).to_bytes(4, "little")
+        data += ((inheritable >> (32 * half)) & 0xFFFFFFFF).to_bytes(4, "little")
+    if revision == 3:
+        data += (root or 0).to_bytes(4, "little")
+    return data
+
+
+class CapabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.collector = load_collector("/nonexistent")
+
+    def test_decode_each_revision(self):
+        decode = self.collector.decode_capabilities
+        self.assertEqual(decode(vfs_cap(1 << 13)), ({"cap_net_raw": "ep"}, None))
+        self.assertEqual(
+            decode(vfs_cap(1 << 7, revision=1, effective=False)), ({"cap_setuid": "p"}, None)
+        )
+        caps, root = decode(vfs_cap(1 << 21, inheritable=1 << 21, revision=3, root=100000))
+        self.assertEqual((caps, root), ({"cap_sys_admin": "eip"}, 100000))
+        self.assertEqual(decode(vfs_cap(1 << 40))[0], {"cap_checkpoint_restore": "ep"})
+        self.assertEqual(decode(vfs_cap(1 << 50))[0], {"cap_50": "ep"})
+
+    def test_malformed_values_are_rejected(self):
+        for raw in (b"", b"\0\0\0\x09" + b"\0" * 16, vfs_cap(1)[:-1], vfs_cap(1) + b"x"):
+            with self.assertRaises(ValueError, msg=raw):
+                self.collector.decode_capabilities(raw)
+
+    def test_text_round_trip(self):
+        text = self.collector.capabilities_text(
+            {"cap_net_raw": "ep", "cap_net_admin": "ep", "cap_sys_time": "p"}
+        )
+        self.assertEqual(text, "cap_net_admin,cap_net_raw=ep cap_sys_time=p")
+        parse = self.collector.parse_capabilities_text
+        self.assertEqual(
+            parse(text), {"cap_net_admin": "ep", "cap_net_raw": "ep", "cap_sys_time": "p"}
+        )
+        self.assertEqual(parse("cap_net_raw+ep"), {"cap_net_raw": "ep"})
+        self.assertEqual(parse("cap_net_raw=ep cap_net_raw-e"), {"cap_net_raw": "p"})
+        self.assertEqual(parse(""), {})
+        self.assertEqual(len(parse("=ep")), len(self.collector.CAP_NAMES))
+        with self.assertRaises(ValueError):
+            parse("cap net raw")
+
+
+class SystemFilesTests(FixtureRoot):
+    def fixture(self):
+        self.write("var/lib/dpkg/status", b"Package: coreutils\n")
+        self.write(
+            "var/lib/dpkg/info/coreutils.list",
+            b"/.\n/bin\n/bin/ls\n/usr/bin/passwd\n/usr/bin/ping\n",
+        )
+        os.symlink("usr/bin", Path(self.root, "bin"))
+        for name, mode in (
+            ("usr/bin/ls", 0o755),
+            ("usr/bin/passwd", 0o4755),
+            ("usr/bin/ping", 0o755),
+            ("usr/bin/evil", 0o755),
+            ("usr/bin/rootshell", 0o4755),
+            ("usr/lib/x86_64-linux-gnu/libhide.so", 0o755),
+            ("usr/local/bin/tool", 0o755),
+            ("usr/share/doc/x/README", 0o644),
+            ("opt/app/run", 0o755),
+            ("etc/cron.daily/job", 0o755),
+        ):
+            self.write(name, b"\x7fELF " + name.encode()).chmod(mode)
+
+    def run_with(self, caps=None, **attributes):
+        collector = load_collector(self.root)
+        if caps is not None:
+            collector.file_capabilities = lambda absolute: (caps.get(absolute, {}), None)
+        for name, value in attributes.items():
+            setattr(collector, name, value)
+        out = io.BytesIO()
+        collector.main(settings(["system_files"]), out=out)
+        return [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+
+    def test_privileged_capable_and_unowned_files(self):
+        self.fixture()
+        records = self.run_with(caps={"/usr/bin/ping": {"cap_net_raw": "ep"}})
+        privileged = {r["path"]: r for r in records_named(records, "privileged_file")}
+        unowned = {r["path"]: r for r in records_named(records, "unowned_executable")}
+        # /bin links into /usr: each file is reported once.
+        self.assertEqual(len(records_named(records, "privileged_file")), len(privileged))
+        self.assertEqual(len(records_named(records, "unowned_executable")), len(unowned))
+        self.assertEqual(
+            sorted(privileged), ["/usr/bin/passwd", "/usr/bin/ping", "/usr/bin/rootshell"]
+        )
+        self.assertEqual(privileged["/usr/bin/passwd"]["package"], "coreutils")  # via merged /bin
+        self.assertTrue(privileged["/usr/bin/rootshell"]["setuid"])
+        self.assertIsNone(privileged["/usr/bin/rootshell"]["package"])
+        self.assertEqual(privileged["/usr/bin/ping"]["capabilities"], "cap_net_raw=ep")
+        self.assertEqual(
+            sorted(unowned),
+            [
+                "/opt/app/run",
+                "/usr/bin/evil",
+                "/usr/lib/x86_64-linux-gnu/libhide.so",
+                "/usr/local/bin/tool",
+            ],
+        )
+        self.assertTrue(unowned["/usr/local/bin/tool"]["local"])
+        self.assertFalse(unowned["/usr/bin/evil"]["local"])
+        self.assertEqual(
+            unowned["/usr/bin/evil"]["sha256"],
+            hashlib.sha256(b"\x7fELF usr/bin/evil").hexdigest(),
+        )
+        summary = records_named(records, "system_files_summary")[0]
+        self.assertEqual(summary["owners"], "dpkg")
+        self.assertEqual(summary["merged_dirs"], {"/bin": "/usr/bin"})
+        self.assertEqual(sources(records), {})
+        self.assertEqual(records[-1]["modules"]["system_files"]["status"], "ok")
+
+    def test_each_kind_has_its_own_limit(self):
+        self.fixture()
+        records = self.run_with(caps={}, MAX_FILE_FINDINGS=1)
+        self.assertEqual(len(records_named(records, "privileged_file")), 1)
+        self.assertEqual(len(records_named(records, "unowned_executable")), 1)
+        self.assertEqual(
+            records_named(records, "system_files_summary")[0]["truncated_reason"], "findings"
+        )
+
+    def test_without_a_package_manager_nothing_is_called_unowned(self):
+        self.fixture()
+        os.remove(Path(self.root, "var/lib/dpkg/status"))
+        records = self.run_with(caps={})
+        self.assertEqual(records_named(records, "unowned_executable"), [])
+        self.assertEqual(len(records_named(records, "privileged_file")), 2)
+        self.assertIsNone(records_named(records, "system_files_summary")[0]["owners"])
+
+    def test_real_capability_attribute(self):
+        target = self.write("usr/bin/capped", b"x")
+        try:
+            os.setxattr(target, "security.capability", vfs_cap(1 << 7))
+        except OSError:
+            self.skipTest("setting security.capability needs root (CAP_SETFCAP)")
+        records = self.run_with()
+        found = {r["path"]: r for r in records_named(records, "privileged_file")}
+        self.assertEqual(found["/usr/bin/capped"]["capabilities"], "cap_setuid=ep")
 
 
 CANARIES = {

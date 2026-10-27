@@ -4301,6 +4301,7 @@ RPMTAG_FILEVERIFYFLAGS = 1045
 RPMTAG_DIRINDEXES = 1116
 RPMTAG_BASENAMES = 1117
 RPMTAG_DIRNAMES = 1118
+RPMTAG_FILECAPS = 5010
 RPMTAG_FILEDIGESTALGO = 5011
 RPMFILE_CONFIG = 1 << 0
 RPMFILE_MISSINGOK = 1 << 3
@@ -4310,6 +4311,7 @@ RPMVERIFY_LINKTO = 1 << 2
 RPMVERIFY_USER = 1 << 3
 RPMVERIFY_GROUP = 1 << 4
 RPMVERIFY_MODE = 1 << 6
+RPMVERIFY_CAPS = 1 << 8
 RPM_DIGESTS = {1: "md5", 2: "sha1", 8: "sha256", 9: "sha384", 10: "sha512", 11: "sha224"}
 
 
@@ -4365,8 +4367,9 @@ def rpm_entries(run, module, database):
     (running rpm itself as root does both). Returns (entries, packages,
     malformed headers, truncated); each entry is (package, path, expected
     digest, algorithm, mode, file flags, verify flags, link target, owner,
-    group). Reading stops at MAX_PACKAGE_FILES entries (truncated is then
-    True) and at the module's deadline (ModuleTimeout)."""
+    group, capabilities as cap_to_text writes them). Reading stops at
+    MAX_PACKAGE_FILES entries (truncated is then True) and at the module's
+    deadline (ModuleTimeout)."""
     import sqlite3  # standard library; only needed on rpm systems
     from urllib.parse import quote
 
@@ -4403,6 +4406,7 @@ def _rpm_entries(run, rows):
             links = header.get(RPMTAG_FILELINKTOS) or [""] * len(names)
             users = header.get(RPMTAG_FILEUSERNAME) or [None] * len(names)
             groups = header.get(RPMTAG_FILEGROUPNAME) or [None] * len(names)
+            capabilities = header.get(RPMTAG_FILECAPS) or [""] * len(names)
             algorithm = RPM_DIGESTS.get((header.get(RPMTAG_FILEDIGESTALGO) or [1])[0])
             for i, name in enumerate(names):
                 if states[i] != 0:  # not installed (excluded docs, other arch)
@@ -4419,6 +4423,7 @@ def _rpm_entries(run, rows):
                         links[i],
                         users[i],
                         groups[i],
+                        capabilities[i],
                     )
                 )
         except (ValueError, IndexError, TypeError, struct.error):
@@ -4429,8 +4434,8 @@ def _rpm_entries(run, rows):
 def verify_rpm(run, module, database):
     """rpm -V's checks, done here from rpm's own database: digest, symlink
     target, mode, owner and group of every installed file (owners compared
-    by name, as rpm does, through /etc/passwd and /etc/group), critical
-    paths first. File capabilities are not compared yet. %ghost
+    by name, as rpm does, through /etc/passwd and /etc/group) and file
+    capabilities, critical paths first. %ghost
     files are skipped, a missing %missingok file is fine, and each file's
     verify flags are honoured. Sends only the differences and a summary."""
     try:
@@ -4447,6 +4452,7 @@ def verify_rpm(run, module, database):
         "mode": 0,
         "owner": 0,
         "group": 0,
+        "capabilities": 0,
         "link": 0,
         "unreadable": 0,
         "refused": 0,
@@ -4467,6 +4473,7 @@ def verify_rpm(run, module, database):
         link,
         user,
         group,
+        recorded_caps,
     ) in entries:
         if run.out_of_time():
             cut = "time"
@@ -4529,6 +4536,29 @@ def verify_rpm(run, module, database):
                 expected_mode=format(mode, "o"),
                 mode=format(info.st_mode, "o"),
             )
+        if stat.S_ISREG(mode) and verify & RPMVERIFY_CAPS:
+            try:
+                expected_caps = parse_capabilities_text(recorded_caps)
+            except ValueError:
+                expected_caps = None  # rpm's text unreadable: compared as unknown
+            try:
+                actual_caps = file_capabilities(absolute)[0]
+            except ValueError:
+                actual_caps = {"(unreadable)": "?"}  # a damaged attribute is a finding
+            except UnsafePath:
+                actual_caps = expected_caps
+            if expected_caps is not None and expected_caps != actual_caps:
+                counts["capabilities"] += 1
+                report_package_change(
+                    run,
+                    module,
+                    package,
+                    absolute,
+                    "capabilities",
+                    is_config,
+                    expected_capabilities=recorded_caps or None,
+                    capabilities=capabilities_text(actual_caps) if actual_caps else None,
+                )
         if stat.S_ISLNK(mode):
             if verify & RPMVERIFY_LINKTO:
                 try:
@@ -4628,6 +4658,284 @@ def module_package_verify(run):
         verify_rpm(run, module, database)
 
 
+# --- Privileged and unowned files (DESIGN.md §8.5) ---------------------------------
+
+# Capability names by bit number (linux/capability.h); later bits as cap_<n>.
+CAP_NAMES = (
+    "cap_chown cap_dac_override cap_dac_read_search cap_fowner cap_fsetid cap_kill"
+    " cap_setgid cap_setuid cap_setpcap cap_linux_immutable cap_net_bind_service"
+    " cap_net_broadcast cap_net_admin cap_net_raw cap_ipc_lock cap_ipc_owner cap_sys_module"
+    " cap_sys_rawio cap_sys_chroot cap_sys_ptrace cap_sys_pacct cap_sys_admin cap_sys_boot"
+    " cap_sys_nice cap_sys_resource cap_sys_time cap_sys_tty_config cap_mknod cap_lease"
+    " cap_audit_write cap_audit_control cap_setfcap cap_mac_override cap_mac_admin cap_syslog"
+    " cap_wake_alarm cap_block_suspend cap_audit_read cap_perfmon cap_bpf"
+    " cap_checkpoint_restore"
+).split()
+# The security.capability attribute (struct vfs_cap_data): a little-endian
+# word holding the revision and the effective flag, then (permitted,
+# inheritable) pairs — one for revision 1, two for 2 and 3 — and, for 3,
+# the user namespace's root id.
+_CAP_REVISIONS = {0x01000000: (1, 12), 0x02000000: (2, 20), 0x03000000: (2, 24)}
+_CAP_FLAG_ORDER = "eip"
+
+
+def decode_capabilities(raw):
+    """{capability name: flags} from a security.capability value, flags in
+    cap_to_text's letters (e effective, i inheritable, p permitted), plus
+    the root id of a revision-3 value. Raises ValueError on a malformed one."""
+    if len(raw) < 4:
+        raise ValueError("too short")
+    magic = int.from_bytes(raw[:4], "little")
+    pairs, size = _CAP_REVISIONS.get(magic & 0xFF000000, (None, None))
+    if pairs is None or len(raw) != size:
+        raise ValueError("unknown revision or size")
+    effective = bool(magic & 0x000001)
+    permitted = inheritable = 0
+    for i in range(pairs):
+        at = 4 + 8 * i
+        permitted |= int.from_bytes(raw[at : at + 4], "little") << (32 * i)
+        inheritable |= int.from_bytes(raw[at + 4 : at + 8], "little") << (32 * i)
+    caps = {}
+    for bit in range(64):
+        flags = ""
+        if permitted >> bit & 1:
+            flags += "p"
+        if inheritable >> bit & 1:
+            flags += "i"
+        if flags:
+            if effective:
+                flags += "e"
+            name = CAP_NAMES[bit] if bit < len(CAP_NAMES) else f"cap_{bit}"
+            caps[name] = "".join(f for f in _CAP_FLAG_ORDER if f in flags)
+    root = int.from_bytes(raw[20:24], "little") if size == 24 else None
+    return caps, root
+
+
+def capabilities_text(caps):
+    """cap_to_text's form: names sharing flags grouped, e.g.
+    "cap_net_admin,cap_net_raw=ep cap_sys_time=p"."""
+    groups = {}
+    for name, flags in caps.items():
+        groups.setdefault(flags, []).append(name)
+    return " ".join(
+        ",".join(sorted(names)) + "=" + flags for flags, names in sorted(groups.items())
+    )
+
+
+_CAP_CLAUSE = re.compile(r"^([a-z0-9_,]*)((?:[=+-][eip]*)+)$")
+_CAP_OP = re.compile(r"([=+-])([eip]*)")
+
+
+def parse_capabilities_text(text):
+    """{name: flags} from cap_to_text's form, as rpm records it ("" for
+    none). Raises ValueError on text it can't read."""
+    caps = {}
+    for clause in (text or "").split():
+        match = _CAP_CLAUSE.match(clause.lower())
+        if not match:
+            raise ValueError(f"unreadable capabilities: {clause!r}")
+        names = [n for n in match.group(1).split(",") if n] or list(CAP_NAMES)
+        for op, flags in _CAP_OP.findall(match.group(2)):
+            for name in names:
+                current = set(caps.get(name, ""))
+                if op == "=":
+                    current = set(flags)
+                elif op == "+":
+                    current |= set(flags)
+                else:
+                    current -= set(flags)
+                caps[name] = "".join(f for f in _CAP_FLAG_ORDER if f in current)
+    return {name: flags for name, flags in caps.items() if flags}
+
+
+def file_capabilities(absolute):
+    """(capabilities dict, root id) of a file, ({}, None) if it has none.
+    Raises ValueError for an attribute that can't be decoded."""
+    try:
+        raw = os.getxattr(path(absolute), "security.capability", follow_symlinks=False)
+    except OSError:
+        return {}, None  # none set, or extended attributes unsupported here
+    return decode_capabilities(raw)
+
+
+# Where the system's programs and libraries live: an executable here that no
+# package installed is a finding (DESIGN.md §8.5). /usr/local and /opt are
+# administrators' own places; their files are reported apart.
+SYSTEM_FILE_ROOTS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/etc", "/boot")
+PROGRAM_DIRS = re.compile(r"^/(?:usr/)?(?:s?bin|lib(?:32|64|x32|exec)?)/")
+LOCAL_DIRS = re.compile(r"^/(?:usr/local|opt)/")
+# Top-level directories that are links into /usr on merged-/usr systems.
+MERGED_DIRS = ("/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32")
+MAX_SYSTEM_ENTRIES = 2000000
+MAX_FILE_FINDINGS = 10000
+
+
+def merged_dirs():
+    """{"/bin": "/usr/bin", ...} for the top-level directories that are
+    links, so a package's "/bin/ls" and the walk's "/usr/bin/ls" match."""
+    links = {}
+    for directory in MERGED_DIRS:
+        try:
+            if not os.path.islink(path(directory)):
+                continue
+        except UnsafePath:
+            continue
+        resolved, risk = resolve_links(directory)
+        if not risk and resolved != directory:
+            links[directory] = resolved
+    return links
+
+
+def canonical_path(absolute, links):
+    for directory, resolved in links.items():
+        if absolute == directory or absolute.startswith(directory + "/"):
+            return resolved + absolute[len(directory) :]
+    return absolute
+
+
+def package_owners(run, module, links):
+    """({canonical path: package}, which manager, complete) for every
+    file a package installed: dpkg's .list files (and the targets of its
+    diversions), or rpm's database. (None, None, False) when there is
+    neither; complete is False when a list was unreadable or cut short."""
+    owners, complete = {}, True
+    if os.path.lexists(path(DPKG_STATUS)):
+        try:
+            names, cut = list_directory(DPKG_INFO, MAX_PACKAGE_FILES, run)
+        except OSError:
+            return None, None, False
+        complete = not cut
+        for name in names:
+            if not name.endswith(".list"):
+                continue
+            run.check_time()
+            absolute = _join(DPKG_INFO, name)
+            if store_refusal(run, absolute):
+                complete = False
+                continue
+            text, truncated = read_whole_lines(absolute, 16 * 1024 * 1024)
+            if text is None or truncated:
+                complete = False
+            package = name[: -len(".list")].split(":", 1)[0]
+            for line in (text or "").splitlines():
+                if line.startswith("/"):
+                    owners.setdefault(canonical_path(line, links), package)
+        for original, (diverted, package) in dpkg_diversions().items():
+            owner = owners.get(canonical_path(original, links), package)
+            owners.setdefault(canonical_path(diverted, links), owner)
+        return owners, "dpkg", complete
+    for candidate in RPM_DATABASES:
+        resolved, risk = resolve_links(candidate)
+        if risk or not os.path.isfile(path(resolved)):
+            continue
+        entries, _, malformed, truncated = rpm_entries(run, module, resolved)
+        for entry in entries:
+            owners.setdefault(canonical_path(entry[1], links), entry[0])
+        return owners, "rpm", not (malformed or truncated)
+    return None, None, False
+
+
+def module_system_files(run):
+    """A bounded walk of the system directories, reporting set-user-ID and
+    set-group-ID files, files with capabilities, and executables in the
+    program and library directories that no package installed — each with
+    its SHA-256 (under the protection rules) and owning package. Ordinary
+    files are counted, not listed."""
+    module = "system_files"
+    links = merged_dirs()
+    owners, manager, owners_complete = package_owners(run, module, links)
+    counts = {"files": 0, "privileged": 0, "capabilities": 0, "unowned": 0, "bad_capabilities": 0}
+    findings, seen, cut = {"privileged_file": 0, "unowned_executable": 0}, set(), None
+    walked = []
+    for root in SYSTEM_FILE_ROOTS:
+        directory, risk = resolve_links(root)
+        if risk:
+            run.stream.record(module, "not_examined", {"path": root, "reason": risk})
+            continue
+        try:
+            info = os.lstat(path(directory))
+        except OSError:
+            continue
+        if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) in seen:
+            continue
+        if any(directory.startswith(done.rstrip("/") + "/") for done in walked):
+            continue  # /bin -> /usr/bin: already inside the /usr walk
+        seen.add((info.st_dev, info.st_ino))
+        walked.append(directory)
+        walk = Walk(run, directory, max_depth=32, max_entries=MAX_SYSTEM_ENTRIES, hash_files=None)
+        for entry in walk:
+            if entry.get("type") != "-":
+                continue
+            counts["files"] += 1
+            mode = int(entry["mode"], 8)
+            absolute = entry["path"]
+            try:
+                caps, root_id = file_capabilities(absolute)
+            except ValueError:
+                caps, root_id = {}, None
+                counts["bad_capabilities"] += 1
+                entry["capabilities_unreadable"] = True
+            except UnsafePath as exc:
+                caps, root_id = {}, None
+                entry["not_examined"] = exc.reason
+            canonical = canonical_path(absolute, links)
+            package = owners.get(canonical) if owners is not None else None
+            special = bool(mode & 0o6000)
+            unowned = (
+                owners is not None
+                and package is None
+                and bool(mode & 0o111)
+                and bool(PROGRAM_DIRS.match(canonical) or LOCAL_DIRS.match(canonical))
+            )
+            if not (special or caps or unowned or entry.get("capabilities_unreadable")):
+                continue
+            # Each kind has its own limit: a flood of unowned files under
+            # /opt can't crowd out set-user-ID ones.
+            name = "unowned_executable" if unowned and not (special or caps) else "privileged_file"
+            if findings[name] >= MAX_FILE_FINDINGS:
+                cut = "findings"
+                continue
+            findings[name] += 1
+            counts["privileged"] += special
+            counts["capabilities"] += bool(caps)
+            counts["unowned"] += unowned
+            entry.update(
+                {
+                    "package": package,
+                    "setuid": bool(mode & 0o4000),
+                    "setgid": bool(mode & 0o2000),
+                    "capabilities": capabilities_text(caps) if caps else None,
+                    "local": bool(LOCAL_DIRS.match(canonical)),
+                }
+            )
+            if root_id:
+                entry["capabilities_root_id"] = root_id
+            if entry["size"] <= 8 << 20:
+                digest, problem = digest_of(run, absolute, "sha256")
+                if digest:
+                    entry["sha256"] = digest
+                else:
+                    entry["hash_skipped"] = problem
+            run.stream.record(module, name, entry)
+        run.stream.record(module, "walk_summary", walk.summary())
+        if walk.truncated_reason == "time":
+            cut = "time"
+            break
+    run.stream.record(
+        module,
+        "system_files_summary",
+        {
+            "owners": manager,
+            "owners_complete": owners_complete,
+            "merged_dirs": links,
+            "counts": counts,
+            "truncated": cut is not None,
+            "truncated_reason": cut,
+        },
+    )
+    run.check_time()
+
+
 # Collection modules, by name, in their default order.
 MODULES = {
     "host_facts": module_host_facts,
@@ -4647,6 +4955,7 @@ MODULES = {
     "crash_dumps": module_crash_dumps,
     "kernel_modules": module_kernel_modules,
     "package_verify": module_package_verify,
+    "system_files": module_system_files,
 }
 
 

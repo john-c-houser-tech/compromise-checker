@@ -320,11 +320,22 @@ class Run:
         self.deadline = deadline
         self._protected = None
 
-    def protected(self):
-        """Inodes of files whose contents are never sent (see protected_inodes)."""
+    def refusal(self, opened, info):
+        """Why the contents of a file just opened (its path after links, its
+        fstat) must not be read, or None. A protected file is refused however
+        it was reached. If the protected set may be incomplete (the home
+        search was cut short), anything hard-linked or inside a home root is
+        refused too: it could be a history file the search didn't reach."""
         if self._protected is None:
-            self._protected = protected_inodes()
-        return self._protected
+            self._protected = protected_inodes(self)
+        inodes, complete, roots = self._protected
+        if (info.st_dev, info.st_ino) in inodes:
+            return "is (or links to) a protected file; its contents are never read"
+        if not complete:
+            inside = any(opened.startswith(r.rstrip("/") + "/") for r in roots)
+            if info.st_nlink > 1 or inside:
+                return "the home search was cut short, so this could be a protected file"
+        return None
 
     def out_of_time(self):
         return time.monotonic() >= self.deadline
@@ -537,12 +548,13 @@ def send_file(run, module, absolute):
         details["reason"] = str(exc)
         run.stream.record(module, "unreadable_file", details)
         return False
-    if (info.st_dev, info.st_ino) in run.protected():
+    refusal = run.refusal(absolute, info)
+    if refusal:
         # The file actually opened — through any link or hard link — is one
         # collected as status or metadata only: never send its text.
         raw.close()
         details = describe_unreadable(absolute)
-        details["reason"] = "is (or links to) a protected file; its contents are never sent"
+        details["reason"] = refusal
         run.stream.record(module, "unreadable_file", details)
         return False
 
@@ -1356,6 +1368,8 @@ def read_accounts():
 PROTECTED_FILES = (
     "/etc/passwd",  # can hold hashes too; read only through read_accounts()
     "/etc/passwd-",
+    "/etc/group",  # its password field can hold a hash; read only as records
+    "/etc/group-",
     "/etc/shadow",
     "/etc/shadow-",
     "/etc/gshadow",
@@ -1364,20 +1378,28 @@ PROTECTED_FILES = (
 )
 
 
-def protected_inodes():
+def protected_inodes(run=None):
+    """(inodes of the protected files, whether every home was searched, the
+    home roots). If the home search was cut short, a history file may be
+    missing from the set, and callers must fail closed."""
     candidates = list(PROTECTED_FILES)
     accounts, _ = read_accounts()
-    for home in discover_homes(accounts)[0]:
-        candidates.extend(_join(home["home"], name) for name in HISTORY_FILES)
+    homes, summary = discover_homes(accounts, run)
+    for home in homes:
+        if not home.get("skipped"):
+            candidates.extend(_join(home["home"], name) for name in HISTORY_FILES)
     inodes = set()
     for absolute in candidates:
+        resolved, risk = resolve_links(absolute)
+        if risk:
+            continue
         try:
-            info = os.stat(path(absolute))
+            info = os.stat(path(resolved))
         except OSError:
             continue
         if stat.S_ISREG(info.st_mode):
             inodes.add((info.st_dev, info.st_ino))
-    return inodes
+    return inodes, not summary["truncated"], summary["roots"]
 
 
 HISTORY_FILES = (
@@ -1438,14 +1460,25 @@ def discover_homes(accounts, run=None):
     found on disk — a directory one or two levels below a home root (/home,
     the parents of regular users' homes, SSSD's templates) holding .ssh or a
     shell history file. Returns (homes, summary): each home is {"home",
-    "accounts", "source"}, with "owner_uid" for an unlisted one."""
-    homes = {}
+    "accounts", "source"}, with "owner_uid" for an unlisted one and
+    "skipped" (the reason) for one on a mount it must not touch."""
+    homes, not_examined = {}, []
+
+    def skip(directory, reason):
+        if len(not_examined) < 1000:
+            not_examined.append({"path": directory, "reason": reason})
+
     for account in accounts or ():
         if account["home"]:
             entry = homes.setdefault(
                 account["home"], {"home": account["home"], "accounts": [], "source": "passwd"}
             )
             entry["accounts"].append(account["name"])
+    for home, entry in homes.items():
+        risk = mount_risk(home)
+        if risk:
+            entry["skipped"] = risk
+            skip(home, risk)
     roots = list(HOME_ROOTS)
     for account in accounts or ():
         parent = os.path.dirname(account["home"].rstrip("/"))
@@ -1457,24 +1490,59 @@ def discover_homes(accounts, run=None):
     pending = [(root, 1) for root in roots]
     while pending and not truncated:
         directory, depth = pending.pop(0)
+        risk = mount_risk(directory)
+        if risk:
+            skip(directory, risk)
+            continue
         try:
             fd = _open_directory(directory)
         except OSError:
             continue
+        entries = []
         try:
             with os.scandir(fd) as listing:
-                names = sorted(e.name for e in listing if e.is_dir(follow_symlinks=False))
+                for item in listing:
+                    # Limits are checked while reading: a huge directory is
+                    # never read, held or sorted whole.
+                    examined += 1
+                    if examined > MAX_HOME_ENTRIES or (run is not None and run.out_of_time()):
+                        truncated = True
+                        break
+                    if item.is_dir(follow_symlinks=False):
+                        entries.append((item.name, False))
+                    elif item.is_symlink():
+                        entries.append((item.name, True))
         except OSError:
-            names = []
+            pass
         finally:
             os.close(fd)
-        for name in names:
-            examined += 1
-            if examined > MAX_HOME_ENTRIES or (run is not None and run.out_of_time()):
-                truncated = True
-                break
+        for name, linked in sorted(entries):
             child = _join(directory, name)
             if child in homes:
+                continue
+            risk = mount_risk(child)
+            if risk:
+                skip(child, risk)  # looking inside would mount it, or could hang
+                continue
+            if linked:
+                # A linked home (/home/alice -> /srv/alice): sshd follows it,
+                # so look at the directory it leads to; never descend further.
+                target, risk = resolve_links(child)
+                if risk:
+                    skip(child, risk)
+                    continue
+                try:
+                    info = os.stat(path(target))
+                except OSError:
+                    continue
+                if stat.S_ISDIR(info.st_mode) and _looks_like_home(target):
+                    homes[child] = {
+                        "home": child,
+                        "accounts": [],
+                        "source": "directory",
+                        "owner_uid": info.st_uid,
+                        "resolved": target,
+                    }
                 continue
             if _looks_like_home(child):
                 try:
@@ -1494,6 +1562,7 @@ def discover_homes(accounts, run=None):
         "examined": examined,
         "truncated": truncated,
         "unlisted": sorted(h for h, e in homes.items() if e["source"] == "directory"),
+        "not_examined": not_examined,
     }
     return [homes[h] for h in sorted(homes)], summary
 
@@ -1581,6 +1650,8 @@ def module_accounts(run):
     record(module, "homes", summary)
     for home in homes:
         run.check_time()
+        if home.get("skipped"):
+            continue
         for name in HISTORY_FILES:
             facts = path_facts(_join(home["home"], name))
             if facts is not None:
@@ -1593,16 +1664,91 @@ def module_accounts(run):
 _SUDO_INCLUDE = re.compile(r"^\s*[#@](include|includedir)\s+(.+?)\s*$")
 
 
+# --- Mounts that must not be touched ---------------------------------------------
+#
+# On a server joined to a domain, home folders are often network drives that
+# the automounter connects the first time anything looks inside them. That is
+# a change to the server, and a lookup on a slow or unreachable file server
+# can block in the kernel, past any time limit. So before the collector looks
+# inside a path it checks the mount table (/proc/self/mountinfo, which is
+# kernel memory) and leaves alone anything under an autofs mount point or on
+# a network file system, recording it as not examined.
+
+NETWORK_FILESYSTEMS = frozenset(
+    "nfs nfs4 cifs smb3 smbfs ncpfs ceph glusterfs fuse.glusterfs lustre gpfs afs openafs"
+    " 9p fuse.sshfs sshfs davfs fuse.davfs2 fuse.s3fs fuse.rclone beegfs fuse.cephfs".split()
+)
+_MOUNTS = None
+
+
+def mount_table():
+    """(mount point, file system type), deepest and most recent first."""
+    global _MOUNTS
+    if _MOUNTS is None:
+        mounts = []
+        text = read_small("/proc/self/mountinfo", 4 * 1024 * 1024) or ""
+        for index, line in enumerate(text.splitlines()):
+            left, separator, right = line.partition(" - ")
+            fields, rest = left.split(), right.split()
+            if not separator or len(fields) < 5 or not rest:
+                continue
+            point = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[4])
+            mounts.append((len(point.rstrip("/")), index, point, rest[0]))
+        mounts.sort(reverse=True)
+        _MOUNTS = [(point, fstype) for _, _, point, fstype in mounts]
+    return _MOUNTS
+
+
+def mount_risk(target):
+    """Why looking at `target` could connect a network drive or hang:
+    "automount", "network_filesystem", or None if it is safe."""
+    for point, fstype in mount_table():
+        if target == point or target.startswith(point.rstrip("/") + "/"):
+            if fstype in NETWORK_FILESYSTEMS:
+                return "network_filesystem"
+            if fstype == "autofs" and target != point:
+                return "automount"  # listing the autofs directory itself is safe
+            return None
+    return None
+
+
 def resolve_links(absolute):
-    """`absolute` with every symbolic link resolved, as a path on the
-    target; None if it leads outside the test fixture root."""
-    resolved = os.path.realpath(path(absolute))
-    if ROOT == "/":
-        return resolved
-    root = ROOT.rstrip("/")
-    if not resolved.startswith(root + "/"):
-        return None
-    return resolved[len(root) :]
+    """`absolute` with every symbolic link resolved, one component at a
+    time, checking each against the mount table before stepping into it.
+    Returns (path, None), or (None, reason) for a path it won't follow: one
+    into an automounted or network file system, or a link loop."""
+    parts = [p for p in absolute.split("/") if p]
+    resolved, hops = "", 0
+    while parts:
+        part = parts.pop(0)
+        if part == ".":
+            continue
+        if part == "..":
+            resolved = resolved.rsplit("/", 1)[0]
+            continue
+        candidate = resolved + "/" + part
+        risk = mount_risk(candidate)
+        if risk:
+            return None, risk
+        try:
+            info = os.lstat(path(candidate))
+        except OSError:
+            # Missing: the rest is joined as written, as realpath does.
+            return "/".join([candidate] + parts), None
+        if not stat.S_ISLNK(info.st_mode):
+            resolved = candidate
+            continue
+        hops += 1
+        if hops > 40:
+            return None, "too many symbolic links"
+        try:
+            target = os.readlink(path(candidate))
+        except OSError:
+            return None, "unreadable symbolic link"
+        if target.startswith("/"):
+            resolved = ""
+        parts = [p for p in target.split("/") if p] + parts
+    return resolved or "/", None
 
 
 def send_config_file(run, module, absolute):
@@ -1610,14 +1756,15 @@ def send_config_file(run, module, absolute):
     symbolic links (RHEL's authselect and crypto-policies use them by
     design). A link is recorded, then its resolved target is sent, still only
     if that is a regular file. Returns the path sent, or None."""
-    facts = path_facts(absolute)
+    resolved, risk = resolve_links(absolute)
+    facts = path_facts(absolute) if not mount_risk(absolute) else None
     if facts is not None and facts.get("type") == "l":
-        resolved = resolve_links(absolute)
         facts["resolved"] = resolved
         run.stream.record(module, "config_link", facts)
-        if resolved is None:
-            return None
-        absolute = resolved
+    if risk:
+        run.stream.record(module, "not_examined", {"path": absolute, "reason": risk})
+        return None
+    absolute = resolved
     return absolute if send_file(run, module, absolute) else None
 
 
@@ -1802,7 +1949,7 @@ def ssh_key_options(options):
                 variable, _, setting = value.partition("=")
                 if not _ENV_NAME.match(variable):
                     variable, setting = None, value  # malformed: send nothing of it
-                option["variable"] = variable
+                option["variable"] = _mask_str(variable) if variable else None
                 if variable in SSH_ENV_VALUES_SENT:
                     option["value"] = _mask_str(setting)
                 else:
@@ -1938,7 +2085,14 @@ def send_authorized_keys(run, module, account, absolute, extra=None):
     target = absolute
     links = links_on_path(absolute)
     if links:
-        target = resolve_links(absolute)
+        target, risk = resolve_links(absolute)
+        if risk:
+            record(
+                module,
+                "not_examined",
+                {"account": account["name"], "path": absolute, "reason": risk},
+            )
+            return
         record(
             module,
             "authorized_keys_link",
@@ -1954,14 +2108,10 @@ def send_authorized_keys(run, module, account, absolute, extra=None):
         record(module, "unreadable_file", details)
         return
     with raw:
-        if (info.st_dev, info.st_ino) in run.protected():
+        refusal = run.refusal(target, info)
+        if refusal:
             details = describe_unreadable(target)
-            details.update(
-                {
-                    "account": account["name"],
-                    "reason": "is (or links to) a protected file; its contents are never read",
-                }
-            )
+            details.update({"account": account["name"], "reason": refusal})
             record(module, "unreadable_file", details)
             return
         try:
@@ -2084,10 +2234,15 @@ def module_ssh(run):
     accounts, _ = read_accounts()
     if accounts is None:
         raise OSError("/etc/passwd could not be read")
-    homes, _ = discover_homes(accounts, run)
+    homes, summary = discover_homes(accounts, run)
+    # The search's coverage matters here too: a cut-short search means some
+    # domain users' keys may not have been looked at.
+    run.stream.record(module, "homes", summary)
     owners = []  # (account-like dict, extra fields for its records)
     owners.extend((account, None) for account in accounts)
     for home in homes:
+        if home.get("skipped"):
+            continue
         ssh_dir = path_facts(_join(home["home"], ".ssh"))
         if ssh_dir is not None:
             ssh_dir["accounts"] = home["accounts"]
@@ -2114,12 +2269,16 @@ def module_ssh(run):
             if expanded is not None and expanded not in candidates:
                 candidates.append(expanded)
         for candidate in candidates:
-            try:
-                os.lstat(path(candidate))
-            except FileNotFoundError:
+            _, risk = resolve_links(candidate)
+            if risk:
+                run.stream.record(
+                    module,
+                    "not_examined",
+                    {"account": account["name"], "path": candidate, "reason": risk},
+                )
                 continue
-            except OSError:
-                pass  # described as unreadable below
+            if not os.path.lexists(path(candidate)):  # safe: resolution passed the checks
+                continue
             read.add(candidate)
             send_authorized_keys(run, module, account, candidate, extra)
 
@@ -2179,8 +2338,9 @@ def module_pam(run):
         for found in glob_absolute(pattern):
             # Walk the real directory: Walk never follows a link at its top,
             # and the inode seen must be the one walked.
-            directory = resolve_links(found)
-            if directory is None:
+            directory, risk = resolve_links(found)
+            if risk:
+                run.stream.record(module, "not_examined", {"path": found, "reason": risk})
                 continue
             try:
                 info = os.lstat(path(directory))

@@ -1522,7 +1522,89 @@ class DomainHomeTests(FixtureRoot):
         records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
         (homes,) = records_named(records, "homes")
         self.assertTrue(homes["truncated"])
-        self.assertEqual(homes["unlisted"], ["/home/a", "/home/b"])
+        self.assertEqual(len(homes["unlisted"]), 2)  # the directory's order, cut at the cap
+
+    def test_linked_unlisted_home_is_followed(self):
+        self.write("srv/alice/.ssh/authorized_keys", self.key)
+        Path(self.root, "home").mkdir(exist_ok=True)
+        os.symlink("../srv/alice", Path(self.root, "home/alice"))
+        records = collect(self.root, ["ssh"])
+        (key,) = records_named(records, "authorized_key")
+        self.assertEqual((key["home"], key["fingerprint"]), ("/home/alice", ED25519_FP))
+        self.assertEqual(key["resolved"], "/srv/alice/.ssh/authorized_keys")
+
+    def test_ssh_records_the_home_search(self):
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(len(records_named(records, "homes")), 1)
+
+    def test_cut_short_search_fails_closed_for_hard_links(self):
+        for name in ("a", "b", "c"):
+            self.write(f"home/{name}/.bash_history", b"CanaryHistory\n")
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        for name in ("a", "b", "c"):
+            os.link(
+                Path(self.root, f"home/{name}/.bash_history"), Path(self.root, f"etc/pam.d/{name}")
+            )
+        self.write("etc/pam.d/sshd", b"auth required pam_unix.so\n")
+        collector = load_collector(self.root)
+        collector.MAX_HOME_ENTRIES = 1
+        out = io.BytesIO()
+        collector.main(settings(["pam"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"CanaryHistory", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(sorted(sources(records)), ["/etc/pam.d/sshd"])
+
+
+MOUNTINFO = (
+    "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
+    "40 22 0:40 / /home rw - autofs auto.home rw\n"
+    "41 22 0:41 / /mnt/team rw - nfs4 files:/team rw\n"
+    "42 40 0:42 / /home/mounted rw - nfs4 files:/home/mounted rw\n"
+)
+
+
+class MountTests(FixtureRoot):
+    """Nothing under an automount point or on a network file system is
+    looked inside: that would mount network drives, or could hang."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("proc/self/mountinfo", MOUNTINFO.encode())
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0:root:/root:/bin/bash\nteam:x:1001:1001::/mnt/team/u:/bin/bash\n",
+        )
+        self.write("etc/ssh/sshd_config", b"")
+        self.key = f"ssh-ed25519 {ED25519}\n".encode()
+
+    def test_risk_classification(self):
+        collector = load_collector(self.root)
+        self.assertIsNone(collector.mount_risk("/home"))  # listing autofs itself is safe
+        self.assertEqual(collector.mount_risk("/home/alice"), "automount")
+        self.assertEqual(collector.mount_risk("/home/mounted/.ssh"), "network_filesystem")
+        self.assertEqual(collector.mount_risk("/mnt/team/u"), "network_filesystem")
+        self.assertIsNone(collector.mount_risk("/etc/pam.d"))
+
+    def test_homes_on_automount_and_network_mounts_are_not_examined(self):
+        self.write("home/alice/.ssh/authorized_keys", self.key)
+        self.write("mnt/team/u/.ssh/authorized_keys", self.key)
+        records = collect(self.root, ["accounts", "ssh"])
+        self.assertEqual(records_named(records, "authorized_key"), [])
+        homes = records_named(records, "homes")[0]
+        skipped = {(n["path"], n["reason"]) for n in homes["not_examined"]}
+        self.assertIn(("/home/alice", "automount"), skipped)
+        self.assertIn(("/mnt/team/u", "network_filesystem"), skipped)
+        self.assertEqual(records[-1]["status"], "complete")
+
+    def test_links_into_risky_mounts_are_not_followed(self):
+        self.write("home/alice/x.conf", b"auth required pam_unix.so\n")
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.symlink("../../home/alice/x.conf", Path(self.root, "etc/pam.d/alice"))
+        records = collect(self.root, ["pam"])
+        self.assertEqual(sources(records), {})
+        (gap,) = records_named(records, "not_examined")
+        self.assertEqual((gap["path"], gap["reason"]), ("/etc/pam.d/alice", "automount"))
 
 
 # --- Canary test: no planted secret may leave the server, through any module ----------
@@ -1540,6 +1622,7 @@ CANARIES = {
     "pam": "CanaryPamSecret",
     "sudo": "CanarySudoSecret",
     "opasswd": "CanaryOldHash",
+    "envname": "CanaryEnvNameTokenAbcdefghijklmnop12",  # makes ghp_ + 36 characters
 }
 
 
@@ -1560,7 +1643,7 @@ class CanaryTests(FixtureRoot):
         self.write("etc/shadow", f"root:{h}:20000:0:99999:7:::\njch:!{h}:20000::::::\n".encode())
         self.write("etc/gshadow", f"root:{h}::\n".encode())
         self.write("etc/security/opasswd", f"jch:1000:1:{c['opasswd']}\n".encode())
-        self.write("etc/group", b"root:x:0:\nsudo:x:27:jch\n")
+        self.write("etc/group", f"root:{h}:0:\nsudo:x:27:jch\n".encode())
         for home in ("root", "home/jch", "home/CORP/alice"):
             self.write(
                 f"{home}/.bash_history", f"mysql -p{c['history']}\n{c['history']}\n".encode()
@@ -1574,6 +1657,7 @@ class CanaryTests(FixtureRoot):
             "gshadow": "etc/gshadow",
             "passwd": "etc/passwd",
             "opasswd": "etc/security/opasswd",
+            "group": "etc/group",
             "hist": "home/jch/.bash_history",
             "domainhist": "home/CORP/alice/.bash_history",
         }
@@ -1602,6 +1686,7 @@ class CanaryTests(FixtureRoot):
             f'command="run --password=\\"a {c["option"]}\\"",'
             f'environment="DB_PWD={c["env"]}" {key} ok',
             f'environment="X={c["env"]} y" {key} ok2',
+            f'environment="ghp_{c["envname"]}=1" {key} ok3',
             f'bogus-option="{c["option"]}" {key} bad',
             f"{key} password={c['comment']}",
             "-----BEGIN OPENSSH PRIVATE KEY-----",

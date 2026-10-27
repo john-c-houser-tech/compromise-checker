@@ -120,14 +120,18 @@ same. So homes are also found on disk: a directory one or two levels below
 a home root (`/home`, the parent directories of regular users' homes, and
 the fixed part of SSSD's `override_homedir`, `fallback_homedir` and
 `homedir_substring` settings) that holds `.ssh` or a history file and
-belongs to no `/etc/passwd` account is an *unlisted home*. Only those three
+belongs to no `/etc/passwd` account is an *unlisted home*. A home that is a
+symbolic link (`/home/alice` → `/srv/alice`) is followed to its target, as
+sshd follows it, but never descended through. Only those three
 SSSD settings are read from `sssd.conf`; nothing from it is sent. NSS itself
 is not asked: with SSSD's defaults it lists no domain users, and a lookup
 can reach the directory server and write SSSD's cache on the target.
 
-A `homes` record gives the roots searched, how many directories were
-examined, whether the search was cut short (at 20,000 directories or the
-module's time limit), and the unlisted homes. Their history files are
+A `homes` record — from `accounts` and from `ssh` — gives the roots
+searched, how many directory entries were examined, whether the search was
+cut short (at 20,000 entries or the module's time limit, checked while each
+directory is read), the unlisted homes, and the homes not examined because
+of their mounts (see "Network drives and automounted folders"). Their history files are
 described (with `home_source: directory` and the owner's UID), protected
 like any other, and their keys listed by the `ssh` module.
 
@@ -163,7 +167,7 @@ expanded for every account (`%h`, `%u`, `%U`, `~`). For each key file found:
   (for a certificate, the fingerprint of the key inside it, as OpenSSH
   gives it, with `certificate: true`), the key's size in bytes, its options
   as a list of names and values — each value decoded as sshd decodes it and
-  then masked; for `environment`, the variable's name, and its value only
+  then masked; for `environment`, the variable's name (masked), and its value only
   for the loader and interpreter variables a check needs (`LD_PRELOAD`,
   `LD_LIBRARY_PATH`, `LD_AUDIT`, `PATH`, `PYTHONPATH`, `PYTHONSTARTUP`,
   `PERL5LIB`, `PERL5OPT`, `RUBYOPT`, `RUBYLIB`, `NODE_OPTIONS`, `BASH_ENV`,
@@ -215,14 +219,33 @@ the SHA-256 of every file up to 8 MiB.
 
 ## Protected files
 
-`/etc/passwd`, `/etc/shadow`, `/etc/gshadow` and their `-` backups,
+`/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow` and their `-`
+backups,
 `/etc/security/opasswd` (old password hashes) and every account's shell
 history files are collected only as structured records, status or metadata.
 Any file the collector would send — and any authorized_keys file it reads —
 is checked against them *after* it is opened, by device and inode, so no
 configuration link or hard link can carry their contents out: such a file
 is described (`unreadable_file`, "is (or links to) a protected file")
-instead.
+instead. If the home search was cut short (so a history file might be
+missing from the protected set), the collector fails closed: anything
+hard-linked, or reached inside a home root, is refused the same way.
+
+## Network drives and automounted folders
+
+On a server joined to a domain, home folders are often network drives that
+the automounter connects the first time anything looks inside them. That
+would be a change to the server, and a lookup on a slow or unreachable file
+server can block in the kernel, past any time limit. So before looking
+inside any path — a home, a configuration link's target, a key file — the
+collector checks the mount table (`/proc/self/mountinfo`, kernel memory).
+Anything under an `autofs` mount point (except listing the autofs directory
+itself, which mounts nothing) or on a network file system (NFS, CIFS/SMB,
+Ceph, GlusterFS, Lustre, GPFS, AFS, 9p, sshfs, WebDAV and similar) is left
+alone and recorded as `not_examined` with the reason (`automount` or
+`network_filesystem`). Links are resolved one component at a time, checking
+the mount table before each step, so a link can't lead the collector onto
+such a mount either.
 
 Directives (includes, `AuthorizedKeysFile`) are looked for in the first
 1 MiB of each sudo and sshd configuration file; a longer file gets a

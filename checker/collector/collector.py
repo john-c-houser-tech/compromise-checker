@@ -17,6 +17,7 @@ what each module reads, and why, is in docs/collector-modules.md.
 
 import base64
 import binascii
+import contextlib
 import datetime
 import errno
 import fnmatch
@@ -126,7 +127,13 @@ def now_iso():
 
 
 def iso_from_timestamp(seconds):
-    return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).isoformat()
+    """ISO 8601 UTC, or None for a time no date can show (before year 1
+    or after 9999): anyone can set such a time on a file in /tmp, and it
+    must never stop a walk."""
+    try:
+        return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).isoformat()
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def parse_time(value):
@@ -995,7 +1002,14 @@ class Walk:
     then calls run.check_time()."""
 
     def __init__(
-        self, run, top, max_depth=8, max_entries=20000, hash_bytes=1 << 20, hash_files="executable"
+        self,
+        run,
+        top,
+        max_depth=8,
+        max_entries=20000,
+        hash_bytes=1 << 20,
+        hash_files="executable",
+        prune=None,
     ):
         self.run = run
         self.top = top
@@ -1003,9 +1017,10 @@ class Walk:
         self.max_entries = max_entries
         self.hash_bytes = hash_bytes
         self.hash_files = hash_files
+        self.prune = prune  # prune(path) -> a reason not to descend, or None
         self.entries = 0
         self.errors = 0
-        self.not_descended = {"depth": 0, "other_filesystem": 0}
+        self.not_descended = {"depth": 0, "other_filesystem": 0, "pruned": 0}
         self.truncated_reason = None
 
     def summary(self):
@@ -1031,6 +1046,9 @@ class Walk:
             "mtime": iso_from_timestamp(info.st_mtime),
             "ctime": iso_from_timestamp(info.st_ctime),
         }
+        if entry["mtime"] is None or entry["ctime"] is None:
+            # Kept as raw seconds: a time out of any date's range is a finding.
+            entry["time_out_of_range"] = {"mtime": info.st_mtime, "ctime": info.st_ctime}
         if link_target is not None:
             entry["link_target"] = link_target
         if stat.S_ISREG(info.st_mode) and self._wants_hash(info):
@@ -1133,6 +1151,9 @@ class Walk:
                             elif depth + 1 >= self.max_depth:
                                 entry["not_descended"] = "depth"
                                 self.not_descended["depth"] += 1
+                            elif self.prune is not None and self.prune(absolute):
+                                entry["not_descended"] = self.prune(absolute)
+                                self.not_descended["pruned"] += 1
                             else:
                                 pending.append((absolute, depth + 1, (info.st_dev, info.st_ino)))
                         yield self._counted(entry)
@@ -4766,8 +4787,8 @@ def file_capabilities(absolute):
     try:
         raw = os.getxattr(target, "security.capability", follow_symlinks=False)
     except OSError as exc:
-        if exc.errno in _NO_ATTRIBUTE:
-            return {}, None  # none set, or extended attributes unsupported here
+        if exc.errno in _NO_ATTRIBUTE or exc.errno == errno.ENOENT:
+            return {}, None  # none set, unsupported here, or the file is gone
         raise ValueError(f"capability attribute unreadable: {exc}") from exc
     return decode_capabilities(raw)
 
@@ -5059,6 +5080,399 @@ def module_system_files(run):
     run.check_time()
 
 
+# --- Files in unusual places (DESIGN.md §8.6) ---------------------------------------
+
+# Where intruders drop tools: every entry is listed.
+SCRATCH_DIRS = ("/tmp", "/var/tmp", "/dev/shm")  # noqa: S108 - inspected, not used
+# /dev holds device nodes; anything else there (a regular file, a hidden
+# directory) is out of place.
+DEV_DIR = "/dev"
+# Web roots listed when the host has none of its own (Phase 1 decision 3).
+DEFAULT_WEB_ROOTS = ("/var/www", "/srv/www", "/srv/http", "/usr/share/nginx/html")
+# Files a web server could run; in web roots only these, executables and
+# hidden files are listed — not every upload, whose names can be personal.
+# Matched anywhere in the name, not only at its end: Apache runs
+# "shell.php.jpg" when a handler maps .php (AddHandler).
+WEB_SCRIPT = re.compile(
+    r"\.(?:php[0-9]?|phtml|phar|pht|phps|inc|shtml?|cfm|jsp|jspx|jspf|war|asp|aspx|ashx|asmx"
+    r"|cgi|pl|py|sh|rb|lua)(?:\.|$)",
+    re.I,
+)
+# Set-user-ID and capability files outside the system directories (which
+# system_files walks): every other top-level directory is searched, the
+# kernel's own file systems excepted.
+NOT_SEARCHED_TOP = frozenset(("/proc", "/sys", "/dev"))
+# Container runtimes whose storage is skipped — only when one is installed;
+# without one, those directories are just directories.
+CONTAINER_RUNTIMES = (
+    "/usr/bin/dockerd",
+    "/usr/bin/podman",
+    "/usr/bin/containerd",
+    "/usr/bin/lxc-start",
+    "/usr/bin/lxd",
+    "/snap/bin/lxd",
+    "/usr/sbin/lxd",
+)
+CONTAINER_STORES = (
+    "/var/lib/docker",
+    "/var/lib/containers",
+    "/var/lib/containerd",
+    "/var/lib/lxc",
+    "/var/lib/lxd",
+    "/var/snap/lxd",
+)
+# Names that pass for system ones at a glance.
+SYSTEM_LOOKALIKES = frozenset(
+    "sshd bash sh crond cron systemd init kworker kthreadd ksoftirqd dbus-daemon"
+    " rsyslogd syslogd ps ls netstat top httpd nginx php-fpm python python3 perl".split()
+)
+MAX_SCRATCH_ENTRIES = 50000
+MAX_WEB_ENTRIES = 200000
+MAX_PRIVILEGED_ENTRIES = 2000000
+
+
+def name_flags(name, path_from_top):
+    """What makes a file name suspicious at a glance (DESIGN.md §8.6)."""
+    flags = []
+    if any(part.startswith(".") for part in path_from_top.split("/") if part):
+        flags.append("hidden")
+    if name.strip(". ") == "":
+        flags.append("dots_or_spaces_only")
+    elif name != name.strip():
+        flags.append("leading_or_trailing_space")
+    if any(ord(c) < 32 or ord(c) == 127 for c in name):
+        flags.append("control_characters")
+    if any(ord(c) > 127 for c in name):
+        flags.append("non_ascii")
+    if name.startswith("[") and name.endswith("]"):
+        flags.append("kernel_thread_name")
+    if name.lstrip(".") in SYSTEM_LOOKALIKES:
+        flags.append("system_name")
+    return flags
+
+
+def file_kind(run, absolute):
+    """("elf" | "script" | None, refusal) from a regular file's first bytes,
+    read under the protection rules for walked files."""
+    try:
+        raw, info = open_regular_file(absolute)
+    except (OSError, ValueError):
+        return None, None
+    with raw:
+        refusal = run.refusal(absolute, info, key_file=True, walked=True)
+        if refusal:
+            return None, refusal
+        try:
+            head = raw.read(4)
+        except OSError:
+            return None, None
+    if head == b"\x7fELF":
+        return "elf", None
+    if head[:2] == b"#!":
+        return "script", None
+    return None, None
+
+
+def describe_unusual(run, entry, top, hash_it):
+    """Annotate a walk entry: name flags, kind, change time after
+    modification time (a back-dated file), and a SHA-256 where wanted."""
+    absolute = entry["path"]
+    relative = absolute[len(top) :]
+    name = absolute.rsplit("/", 1)[-1]
+    flags = name_flags(name, relative)
+    if flags:
+        entry["name_flags"] = flags
+    if entry.get("type") != "-":
+        return entry
+    kind, refusal = file_kind(run, absolute)
+    if kind:
+        entry["kind"] = kind
+    mtime, ctime = entry.get("mtime"), entry.get("ctime")
+    if mtime and ctime and ctime > mtime:
+        try:
+            gap = parse_time(ctime).timestamp() - parse_time(mtime).timestamp()
+        except ValueError:
+            gap = 0
+        if gap > 86400:
+            entry["changed_after_modified_seconds"] = int(gap)
+    if not hash_it(entry, kind):
+        pass
+    elif entry.get("size", 0) > 8 << 20:
+        entry["hash_skipped"] = "larger than 8388608 bytes"
+    else:
+        if refusal:
+            entry["hash_skipped"] = REFUSED + refusal
+        else:
+            digest, problem = digest_of(run, absolute, "sha256", walked=True)
+            if digest:
+                entry["sha256"] = digest
+            else:
+                entry["hash_skipped"] = problem
+    return entry
+
+
+def _runnable(entry, kind):
+    return bool(kind) or bool(int(entry.get("mode", "0"), 8) & 0o111)
+
+
+def mask_names(entry):
+    """Names in scratch places and web roots are whatever anyone chose, so
+    the path, a link's target and any error text that repeats them are
+    masked like log text (a file named after a password or token, say);
+    what masking replaced is counted."""
+    found = {}
+    # Error texts repeat the name (an OSError's message carries the path).
+    for key in ("path", "link_target", "error", "hash_skipped", "capabilities_unreadable"):
+        value = entry.get(key)
+        if isinstance(value, str):
+            masked, counts = mask_text(value.encode("utf-8", "surrogateescape") + b"\n")
+            if counts:
+                entry[key] = masked[:-1].decode("utf-8", "replace")
+                for kind, count in counts.items():
+                    found[kind] = found.get(kind, 0) + count
+    if found:
+        entry["masked"] = found
+
+
+def walk_place(run, module, top, limit, keep, hash_it, record="unusual_file", prune=None):
+    """Walk one place; send each entry `keep(entry)` accepts as `record`,
+    annotated (hashed where `hash_it(entry, kind)` says), and count the
+    rest. Returns the walk's summary, or None if the place isn't there."""
+    directory, risk = resolve_links(top)
+    if risk:
+        run.stream.record(module, "not_examined", {"path": top, "reason": risk})
+        return None
+    try:
+        info = os.lstat(path(directory))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        run.stream.record(module, "unreadable_file", {"path": top, "reason": str(exc)})
+        return None
+    if not stat.S_ISDIR(info.st_mode):
+        return None
+    walk = Walk(run, directory, max_depth=32, max_entries=limit, hash_files=None, prune=prune)
+    sent = counted = 0
+    for entry in walk:
+        if "error" in entry:
+            mask_names(entry)
+            run.stream.record(module, record, entry)
+            continue
+        if entry["path"] == directory:
+            continue
+        if keep(entry):
+            describe_unusual(run, entry, directory, hash_it)
+            entry["place"] = top
+            mask_names(entry)
+            run.stream.record(module, record, entry)
+            sent += 1
+        else:
+            counted += 1
+    summary = walk.summary()
+    summary.update({"place": top, "resolved": directory, "sent": sent, "not_listed": counted})
+    # Whole only if nothing was cut short or left undescended: a place
+    # listed only in part is still searched for privileged files.
+    summary["whole"] = not summary["truncated"] and not any(summary["not_descended"].values())
+    run.stream.record(module, "walk_summary", summary)
+    return summary
+
+
+def _is_web_listed(entry, root):
+    name = entry["path"].rsplit("/", 1)[-1]
+    kind = entry.get("type")
+    if kind == "d":
+        return name.startswith(".")
+    if kind == "l":
+        # A script-named link, or one leading out of the web root
+        # (shared hosting's "root.txt -> /").
+        target = entry.get("link_target") or ""
+        outside = target.startswith("/") and not target.startswith(root.rstrip("/") + "/")
+        return bool(WEB_SCRIPT.search(name)) or outside or ".." in target.split("/")
+    if kind != "-":
+        return True  # a device, pipe or socket has no business in a web root
+    privileged = privileged_elsewhere(entry)
+    return (
+        privileged
+        or bool(WEB_SCRIPT.search(name))
+        or name.startswith(".")
+        or bool(int(entry.get("mode", "0"), 8) & 0o111)
+    )
+
+
+def _web_hashed(entry, kind):
+    # Hidden data files (.env, .htpasswd, .user.ini, .my.cnf in www-data's
+    # home) are listed but not hashed: a short secret's hash can be guessed.
+    name = entry["path"].rsplit("/", 1)[-1]
+    if name.startswith(".") and not (
+        WEB_SCRIPT.search(name) or kind or int(entry.get("mode", "0"), 8) & 0o111
+    ):
+        return False
+    return True
+
+
+def _everything(entry):
+    if entry.get("type") == "-":
+        privileged_elsewhere(entry)  # annotates set-user-ID and capabilities
+    return True
+
+
+def _out_of_place_in_dev(entry):
+    kind = entry.get("type")
+    name = entry["path"].rsplit("/", 1)[-1]
+    if kind == "-":
+        privileged_elsewhere(entry)
+        return True
+    if kind in ("d", "l"):
+        return name.startswith(".")
+    # Device nodes, pipes and sockets belong here — unless hidden (a copy of
+    # /dev/mem named .m, say).
+    return name.startswith(".")
+
+
+def _always(entry, kind):
+    return True
+
+
+def container_runtime_installed():
+    return any(os.path.lexists(path(p)) for p in CONTAINER_RUNTIMES)
+
+
+# Shares of the module's remaining time: no search can use up another's.
+SCRATCH_TIME_SHARE = 0.25
+WEB_TIME_SHARE = 0.5
+
+
+@contextlib.contextmanager
+def time_share(run, module, phase, share):
+    """Run a phase within `share` of the module's remaining time. If the
+    phase runs out, it stops there (recorded as `phase_time_limit`) and the
+    module goes on; if the module itself runs out, ModuleTimeout passes."""
+    deadline = run.deadline
+    now = time.monotonic()
+    run.deadline = min(deadline, now + share * max(0.0, deadline - now))
+    try:
+        yield
+    except ModuleTimeout:
+        if time.monotonic() >= deadline:
+            raise
+        run.stream.record(module, "phase_time_limit", {"phase": phase, "share": share})
+    finally:
+        run.deadline = deadline
+
+
+def module_unusual_files(run):
+    """Files in places intruders use (DESIGN.md §8.6): every entry of /tmp,
+    /var/tmp and /dev/shm; what doesn't belong in /dev; scripts,
+    executables and hidden files in web roots; and set-user-ID,
+    set-group-ID and capability files and device nodes in every top-level
+    directory the system walk doesn't cover. Each search has its own share
+    of the time. Names, metadata, name flags and SHA-256s of runnable files
+    — never contents."""
+    module = "unusual_files"
+    listed = []  # places listed whole: the privileged search skips them
+
+    def note(summary):
+        if summary and summary["whole"]:
+            listed.append(summary["resolved"])
+
+    with time_share(run, module, "scratch", SCRATCH_TIME_SHARE):
+        for top in SCRATCH_DIRS:
+            run.check_time()
+            note(walk_place(run, module, top, MAX_SCRATCH_ENTRIES, _everything, _runnable))
+        run.check_time()
+        walk_place(run, module, DEV_DIR, MAX_SCRATCH_ENTRIES, _out_of_place_in_dev, _runnable)
+
+    configured = run.settings.get("web_roots")
+    roots = list(DEFAULT_WEB_ROOTS) if configured is None else list(configured)
+    run.stream.record(
+        module, "web_roots", {"roots": roots, "source": "default" if configured is None else "host"}
+    )
+    with time_share(run, module, "web_roots", WEB_TIME_SHARE):
+        for top in roots:
+            run.check_time()
+            note(
+                walk_place(
+                    run,
+                    module,
+                    top,
+                    MAX_WEB_ENTRIES,
+                    lambda entry, root=top: _is_web_listed(entry, root),
+                    _web_hashed,
+                    "web_file",
+                )
+            )
+
+    # The rest of the time: every top-level directory the system walk
+    # doesn't cover.
+    runtime = container_runtime_installed()
+
+    def prune(absolute):
+        if runtime and absolute.rstrip("/") in CONTAINER_STORES:
+            return "container_storage"  # whole container filesystems (DESIGN.md §8.13)
+        if absolute in listed:
+            return "listed_above"
+        return None
+
+    covered = set(SYSTEM_FILE_ROOTS) | set(MERGED_DIRS) | NOT_SEARCHED_TOP
+    try:
+        names, cut = list_directory("/", MAX_DIR_FILES, run)
+    except OSError as exc:
+        names, cut = [], False
+        run.stream.record(module, "unreadable_file", {"path": "/", "reason": str(exc)})
+    if cut:
+        run.stream.record(module, "listing_truncated", {"path": "/"})
+    for name in names:
+        run.check_time()
+        top = "/" + name
+        facts = path_facts(top)
+        if facts is None or facts.get("type") == "l":
+            continue  # a link: what it leads to is walked under its own name
+        if facts.get("type") != "d":
+            entry = dict(facts)  # a file right in /
+            if privileged_elsewhere(entry):
+                mask_names(entry)
+                run.stream.record(module, "privileged_file", entry)
+            continue
+        if top in covered or top in listed:
+            continue
+        walk_place(
+            run,
+            module,
+            top,
+            MAX_PRIVILEGED_ENTRIES,
+            privileged_elsewhere,
+            _always,
+            "privileged_file",
+            prune=prune,
+        )
+
+
+def privileged_elsewhere(entry):
+    """Whether a walk entry is set-user-ID, set-group-ID, carries
+    capabilities, or is a device node outside /dev (recorded on the
+    entry)."""
+    if entry.get("type") in ("b", "c"):
+        entry["device_node"] = True
+        return True
+    if entry.get("type") != "-":
+        return False
+    mode = int(entry.get("mode", "0"), 8)
+    try:
+        caps, root_id = file_capabilities(entry["path"])
+    except ValueError as exc:
+        entry["capabilities_unreadable"] = str(exc)
+        return True
+    except UnsafePath as exc:
+        entry["not_examined"] = exc.reason
+        return False
+    if caps:
+        entry["capabilities"] = capabilities_text(caps)
+        if root_id:
+            entry["capabilities_root_id"] = root_id
+    entry["setuid"], entry["setgid"] = bool(mode & 0o4000), bool(mode & 0o2000)
+    return bool(mode & 0o6000) or bool(caps)
+
+
 # Collection modules, by name, in their default order.
 MODULES = {
     "host_facts": module_host_facts,
@@ -5079,6 +5493,7 @@ MODULES = {
     "kernel_modules": module_kernel_modules,
     "package_verify": module_package_verify,
     "system_files": module_system_files,
+    "unusual_files": module_unusual_files,
 }
 
 
@@ -5112,6 +5527,20 @@ def settings_problems(settings):
                 problems.append("unknown modules: " + ", ".join(unknown))
     if settings.get("home_text", "off") not in ("off", "privileged", "all"):
         problems.append("home_text must be off, privileged or all")
+    web_roots = settings.get("web_roots")
+    if web_roots is not None and not (
+        isinstance(web_roots, list)
+        and len(web_roots) <= 64
+        and all(
+            isinstance(r, str)
+            and r.startswith("/")
+            and "\0" not in r
+            and ".." not in r.split("/")
+            and len(r) <= 4096
+            for r in web_roots
+        )
+    ):
+        problems.append("web_roots must be null or at most 64 absolute paths without '..'")
     limits = settings.get("limits")
     if not isinstance(limits, dict):
         problems.append("limits must be an object")

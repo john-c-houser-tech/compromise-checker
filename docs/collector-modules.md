@@ -560,6 +560,63 @@ complete, the mapped directories, and whether a limit — the walk's entry or
 time limit, or the findings limit — cut the pass short. With no package
 manager, nothing is called unowned.
 
+## `unusual_files`
+
+**Why:** files in the places intruders use: tools dropped in scratch
+directories, web shells, back-dated files, names chosen to pass for system
+ones, and set-user-ID or capability files outside the system directories
+(DESIGN.md §8.6).
+
+**Walks** (see "Directory walks") — the scratch places and `/dev` within a
+quarter of the module's remaining time, then the web roots within half of
+what is left, then the privileged search with the rest, so no search can
+use up another's time; one that runs out of its share stops there
+(`phase_time_limit`) and the next still runs:
+- `/tmp`, `/var/tmp` and `/dev/shm`: every entry is sent (`unusual_file`);
+- `/dev`: only what doesn't belong — regular files, and hidden directories,
+  links, device nodes, pipes or sockets (a copy of `/dev/mem` named `.m`);
+- web roots: the host's own list (`checker hosts add --web-root`), or by
+  default `/var/www`, `/srv/www`, `/srv/http` and `/usr/share/nginx/html`
+  (Phase 1 decision 3; a `web_roots` record says which). Only files a web
+  server could run — a script extension anywhere in the name, since Apache
+  runs `shell.php.jpg` when a handler maps `.php` (`.php`, `.phtml`,
+  `.phar`, `.shtml`, `.cfm`, `.jsp`, `.asp(x)`, `.cgi`, `.pl`, `.py`, `.sh`
+  and the like) — executables, set-user-ID or capability files, devices,
+  pipes and sockets, hidden files and directories, and links that are
+  script-named or lead out of the web root (shared hosting's `root.txt ->
+  /`) are sent (`web_file`); everything else — uploads, whose names can be
+  personal — is only counted (`not_listed` in the walk summary). Hidden
+  data files (`.env`, `.htpasswd`, `.user.ini`) are listed but not hashed:
+  a short secret's hash could be guessed;
+- every other top-level directory the system walk (`system_files`) doesn't
+  cover — `/var`, `/home`, `/root`, `/srv`, `/run`, `/mnt`, `/media`, and
+  whatever else is there (`/data`, `/app`, `/.x`) — and the files directly
+  in `/`, `/proc` and `/sys` excepted: only set-user-ID, set-group-ID and
+  capability files and device nodes (`privileged_file`). Places listed
+  whole above are skipped; one listed only in part (cut short by a limit)
+  is searched again. Container storage (`/var/lib/docker`,
+  `/var/lib/containers` and the like: whole container filesystems, left for
+  the container checks) is skipped only when a container runtime is
+  installed; without one those are ordinary directories.
+
+Each entry sent carries the walk's metadata and, where they apply: name
+flags (`hidden`, `dots_or_spaces_only`, `leading_or_trailing_space`,
+`control_characters`, `non_ascii`, `kernel_thread_name` such as
+`[kworker/0:1]`, `system_name` such as a `sshd` in `/tmp`); `kind` (`elf`
+or `script`, from the first four bytes — the only content read, under the
+protection rules for walked files); `changed_after_modified_seconds` when
+the change time is more than a day after the modification time (a file
+whose modification time was set back); `time_out_of_range` with the raw
+seconds when a time is outside any date's range (anyone can set one in
+`/tmp`; it never stops the walk); the set-user-ID and set-group-ID
+bits and capabilities; and the SHA-256 of runnable files (ELF, `#!`
+script or an execute bit; in web roots every listed file) up to 8 MiB,
+hashed under the protection rules for walked files. Because anyone can name
+a file here, each path and link target is masked like log text (a file
+named after a password or token) — and so is error text that repeats them
+— with what was masked counted on the entry. Files over 8 MiB are not
+hashed, and say so. No file contents are sent.
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,

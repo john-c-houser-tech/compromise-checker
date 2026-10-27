@@ -1131,7 +1131,11 @@ class ResourceTests(FixtureRoot):
     def test_manifest_lists_the_allowed_commands(self):
         manifest = collect(self.root, [])[0]
         self.assertEqual(
-            manifest["commands_allowed"], {"journalctl": ["/usr/bin/journalctl", "/bin/journalctl"]}
+            manifest["commands_allowed"],
+            {
+                "journalctl": ["/usr/bin/journalctl", "/bin/journalctl"],
+                "rpm": ["/usr/bin/rpm", "/bin/rpm"],
+            },
         )
 
 
@@ -2753,6 +2757,138 @@ class KernelModuleTests(FixtureRoot):
     def test_missing_proc_modules_is_an_error(self):
         records = collect(self.root, ["kernel_modules"])
         self.assertEqual(records[-1]["modules"]["kernel_modules"]["status"], "error")
+
+
+def md5hex(data):
+    return hashlib.md5(data, usedforsecurity=False).hexdigest()  # dpkg's format
+
+
+class PackageVerifyTests(FixtureRoot):
+    def dpkg_fixture(self):
+        self.write(
+            "var/lib/dpkg/status",
+            b"Package: openssh-server\nStatus: install ok installed\n"
+            b"Conffiles:\n /etc/ssh/moduli " + md5hex(b"moduli\n").encode() + b"\n"
+            b" /etc/ssh/old.conf 0123456789abcdef0123456789abcdef obsolete\n"
+            b"Description: x\n",
+        )
+        self.write("etc/ssh/moduli", b"edited\n")  # an administrator's edit
+        good = b"\x7fELF ls"
+        self.write("usr/bin/ls", good)
+        self.write("usr/bin/ps", b"\x7fELF trojaned ps")
+        self.write("usr/share/doc/coreutils/README", b"doc")
+        self.write("usr/bin/dash.distrib", b"real dash")
+        self.write(
+            "var/lib/dpkg/info/coreutils.md5sums",
+            (
+                f"{md5hex(good)}  usr/bin/ls\n"
+                f"{md5hex(b'original ps')}  usr/bin/ps\n"
+                f"{md5hex(b'gone')}  usr/bin/gone\n"
+                f"{md5hex(b'doc')}  usr/share/doc/coreutils/README\n"
+                "not a line\n"
+            ).encode(),
+        )
+        self.write(
+            "var/lib/dpkg/info/dash:amd64.md5sums",
+            f"{md5hex(b'real dash')}  usr/bin/dash\n".encode(),
+        )
+        self.write("var/lib/dpkg/diversions", b"/usr/bin/dash\n/usr/bin/dash.distrib\nlocal-pkg\n")
+
+    def test_dpkg_sends_only_differences(self):
+        self.dpkg_fixture()
+        records = collect(self.root, ["package_verify"])
+        changed = {r["path"]: r for r in records_named(records, "package_file_changed")}
+        self.assertEqual(sorted(changed), ["/usr/bin/gone", "/usr/bin/ps"])
+        self.assertEqual(changed["/usr/bin/ps"]["result"], "changed")
+        self.assertEqual(changed["/usr/bin/gone"]["result"], "missing")
+        conf = records_named(records, "conffile_changed")
+        self.assertEqual([(c["path"], c["result"]) for c in conf], [("/etc/ssh/moduli", "changed")])
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(summary["files"], 5)
+        self.assertEqual(summary["malformed_lines"], 1)
+        self.assertEqual(summary["critical_checked"], summary["critical_files"])
+        self.assertFalse(summary["truncated"])
+        self.assertEqual(
+            records_named(records, "package_managers")[0], {"rpm": False, "dpkg": True}
+        )
+        self.assertEqual(sources(records), {})  # no file content is sent
+        self.assertEqual(records[-1]["modules"]["package_verify"]["status"], "ok")
+        # The checksum lists themselves are listed with hashes, so a rewrite
+        # (to cover a replaced file) shows against the baseline.
+        stores = {r["path"]: r for r in records_named(records, "checksum_store")}
+        lists = stores["/var/lib/dpkg/info/coreutils.md5sums"]
+        self.assertEqual(
+            lists["sha256"],
+            hashlib.sha256(
+                Path(self.root, "var/lib/dpkg/info/coreutils.md5sums").read_bytes()
+            ).hexdigest(),
+        )
+        self.assertIn("ctime", lists)
+
+    def test_files_left_out_by_path_exclude_are_not_missing(self):
+        self.dpkg_fixture()
+        self.write(
+            "etc/dpkg/dpkg.cfg.d/excludes",
+            b"path-exclude=/usr/share/doc/*\npath-include=/usr/share/doc/*/copyright\n"
+            b"path-exclude /usr/bin/gon*\n",
+        )
+        os.remove(Path(self.root, "usr/share/doc/coreutils/README"))
+        records = collect(self.root, ["package_verify"])
+        changed = sorted(r["path"] for r in records_named(records, "package_file_changed"))
+        self.assertEqual(changed, ["/usr/bin/ps"])  # gone and README were never installed
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(summary["files_result"]["excluded"], 2)
+
+    def test_path_filters_last_match_wins(self):
+        collector = load_collector(self.root)
+        filters = [(True, "/usr/share/doc/*"), (False, "/usr/share/doc/*/copyright")]
+        self.assertTrue(collector.dpkg_excluded(filters, "/usr/share/doc/x/README"))
+        self.assertFalse(collector.dpkg_excluded(filters, "/usr/share/doc/x/copyright"))
+        self.assertFalse(collector.dpkg_excluded(filters, "/usr/bin/ls"))
+
+    def test_critical_paths_are_checked_first(self):
+        collector = load_collector(self.root)
+        entries = [
+            ("a", "/usr/share/doc/x/README", "0"),
+            ("a", "/usr/lib/python3/x.py", "0"),
+            ("a", "/usr/sbin/sshd", "0"),
+            ("a", "/usr/lib/x86_64-linux-gnu/security/pam_unix.so", "0"),
+        ]
+        ordered = [e[1] for e in sorted(entries, key=collector._package_order)]
+        self.assertEqual(
+            ordered[:2], ["/usr/sbin/sshd", "/usr/lib/x86_64-linux-gnu/security/pam_unix.so"]
+        )
+        self.assertEqual(ordered[-1], "/usr/share/doc/x/README")
+
+    def test_time_limit_is_reported(self):
+        self.dpkg_fixture()
+        records = collect(self.root, ["package_verify"], module_seconds=1e-9)
+        self.assertEqual(records[-1]["modules"]["package_verify"]["status"], "timeout")
+
+    def test_rpm_runs_without_scripts_and_accepts_its_findings(self):
+        Path(self.root, "var/lib/rpm").mkdir(parents=True)
+        self.write(
+            "usr/bin/rpm",
+            b"#!/bin/sh\necho \"args $*\"\necho 'S.5....T.    /usr/bin/ps'\nexit 1\n",
+        ).chmod(0o755)
+        self.write("var/lib/rpm/rpmdb.sqlite", b"SQLite format 3\0")
+        records = collect(self.root, ["package_verify"])
+        ((start, content, end),) = sources(records).values()
+        self.assertEqual(start["meta"]["argv"][1:], ["-Va", "--noscripts", "--nodeps"])
+        stores = {r["path"]: r for r in records_named(records, "checksum_store")}
+        self.assertIn("/var/lib/rpm/rpmdb.sqlite", stores)
+        self.assertNotIn(
+            "sha256", stores["/var/lib/rpm/rpmdb.sqlite"]
+        )  # big, and changes on every install
+        self.assertIn(b"S.5....T.    /usr/bin/ps", content)
+        self.assertEqual(end["exit_code"], 1)
+        self.assertEqual(records[-1]["modules"]["package_verify"]["status"], "ok")
+
+    def test_rpm_killed_by_a_signal_is_a_failure(self):
+        Path(self.root, "var/lib/rpm").mkdir(parents=True)
+        self.write("usr/bin/rpm", b"#!/bin/sh\nkill -9 $$\n").chmod(0o755)
+        records = collect(self.root, ["package_verify"])
+        self.assertEqual(records[-1]["modules"]["package_verify"]["status"], "error")
 
 
 CANARIES = {

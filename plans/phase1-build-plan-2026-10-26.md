@@ -167,7 +167,17 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
 4. **Before 1.9 — budget:** confirm the spend for the full matrix and
    scenario runs.
 
+**As built:** 1.4 was split into 1.4a (logs and boots, #20), 1.4b (package
+verification) and 1.4c (SUID/SGID files, file capabilities, unowned
+executables), to keep each review small.
+
 ## After Phase 1
+
+- **Package verification against vendor packages** (noted during 1.4b): rpm's
+  database and dpkg's lists live on the server, so root can rewrite them with
+  the file they describe. Compare instead with checksums from the vendor's
+  signed packages or repository metadata, fetched by the controller.
+
 
 Phase 2 (whitelists, scoring and calibration, checks 8.8–8.13) gets its own
 plan once Phase 1's clean-host false-positive counts are in: they decide

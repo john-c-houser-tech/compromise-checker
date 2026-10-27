@@ -443,7 +443,11 @@ for everyone.
 ### 8.5 System binary integrity
 
 ★ Package verification failures for system binaries (`ps`, `ls`, `ss`,
-`sshd`, `login`, `sudo`, `su`, PAM modules). New SUID/SGID files, and SUID
+`sshd`, `login`, `sudo`, `su`, PAM modules). The checksums verified against live
+on the server itself (rpm's database, dpkg's lists), so root can rewrite them
+too: a clean result is "unchanged or covered up". Their own hashes and
+change times are collected so a rewrite shows against the baseline;
+comparing with the vendor's signed packages is a later addition. New SUID/SGID files, and SUID
 files no package owns. File capabilities such as `cap_setuid`. Executables in
 system directories that no package owns.
 

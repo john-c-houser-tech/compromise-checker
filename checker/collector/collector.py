@@ -1148,6 +1148,7 @@ class Walk:
 # command line, the executable's hash, the exit status and its error output.
 COMMANDS = {
     "journalctl": ("/usr/bin/journalctl", "/bin/journalctl"),
+    "rpm": ("/usr/bin/rpm", "/bin/rpm"),
 }
 # A fixed, minimal environment: nothing from the login session reaches a command.
 _COMMAND_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C.UTF-8"}
@@ -1180,13 +1181,18 @@ def find_command(name):
     return None, None, "; ".join(reasons) or "not installed"
 
 
-def run_command(run, module, name, args, transform=None):
+def _exit_zero(code):
+    return code == 0
+
+
+def run_command(run, module, name, args, transform=None, accept=_exit_zero):
     """Run an allow-listed command and send its output as a source, masked
     line by line like a file. The command is killed when the module's time
     runs out or its output reaches the size cap. Returns its exit code, or
     None if it could not be run (recorded instead). After closing the
     source, raises ModuleTimeout if time ran out, or CommandFailed if the
-    command exited with a non-zero status of its own accord."""
+    command exited of its own accord with a status `accept` rejects (by
+    default any but 0; rpm -V exits non-zero when it finds changes)."""
     executable, info, problem = find_command(name)
     if executable is None:
         run.stream.record(module, "command_unavailable", {"command": name, "reason": problem})
@@ -1284,7 +1290,7 @@ def run_command(run, module, name, args, transform=None):
     writer.finish(truncated_reason, extra=extra)
     if truncated_reason == "time":
         raise ModuleTimeout()
-    if truncated_reason is None and exit_code != 0:
+    if truncated_reason is None and not accept(exit_code):
         raise CommandFailed(f"{name} exited with status {exit_code}")
     return exit_code
 
@@ -3968,6 +3974,257 @@ def module_kernel_modules(run):
     run.stream.record(module, "module_policy", policy)
 
 
+# --- Package verification (DESIGN.md §8.5) ------------------------------------------
+
+# rpm's databases, old and new locations.
+RPM_DATABASES = ("/var/lib/rpm", "/usr/lib/sysimage/rpm")
+DPKG_STATUS = "/var/lib/dpkg/status"
+DPKG_INFO = "/var/lib/dpkg/info"
+DPKG_DIVERSIONS = "/var/lib/dpkg/diversions"
+DPKG_CONFIG = "/etc/dpkg/dpkg.cfg"
+DPKG_CONFIG_DIR = "/etc/dpkg/dpkg.cfg.d"
+_DPKG_PATH_FILTER = re.compile(r"^\s*(path-exclude|path-include)[=\s]\s*(\S+)\s*$")
+# Checked first, so a short time limit still covers what an intruder
+# replaces: programs, PAM modules, the dynamic loader and libc, sshd.
+CRITICAL_PACKAGE_PATHS = re.compile(
+    r"^/(?:usr/)?(?:s?bin/|lib(?:64|exec|/[^/]+-linux-gnu)?/(?:security/|ld-|libc\.|libpam|openssh/))"
+)
+# Checked last: data that runs nowhere.
+BULK_PACKAGE_PATHS = re.compile(r"^/usr/(?:share/(?:doc|man|locale|i18n|icons)|lib/firmware)/")
+MAX_PACKAGE_FILES = 500000
+
+
+def _rpm_accept(code):
+    # rpm -V exits non-zero when it finds changes; a signal is a failure.
+    return code is not None and code >= 0
+
+
+def verify_rpm(run, module):
+    """rpm -Va, without the packages' own verify scripts (which could
+    change the server) and without dependency checks. Its output — one line
+    per changed file, with the attributes that changed — is the evidence.
+    The database it compares against is listed first (see
+    record_checksum_stores)."""
+    for directory in RPM_DATABASES:
+        record_checksum_stores(run, module, directory, hash_files=None)
+    run_command(run, module, "rpm", ["-Va", "--noscripts", "--nodeps"], accept=_rpm_accept)
+
+
+def record_checksum_stores(run, module, directory, hash_files):
+    """List where the package manager keeps the checksums it is checked
+    against. They live on the same server, so root can rewrite them along
+    with the file they describe; their hashes and change times let a
+    rewrite show against the baseline (and a list changed long after its
+    package's other files stand out on a first check)."""
+    top, risk = resolve_links(directory)
+    if risk:
+        run.stream.record(module, "not_examined", {"path": directory, "reason": risk})
+        return
+    if not os.path.isdir(path(top)):
+        return
+    walk = Walk(run, top, max_depth=1, max_entries=MAX_PACKAGE_FILES, hash_files=hash_files)
+    for entry in walk:
+        run.stream.record(module, "checksum_store", entry)
+    run.stream.record(module, "walk_summary", walk.summary())
+    run.check_time()
+
+
+def dpkg_diversions():
+    """{original path: (diverted-to path, diverting package)} from dpkg's
+    diversions file (groups of three lines; ":" is a local diversion)."""
+    lines = (read_small(DPKG_DIVERSIONS, 4 * 1024 * 1024) or "").splitlines()
+    return {lines[i]: (lines[i + 1], lines[i + 2]) for i in range(0, len(lines) - 2, 3) if lines[i]}
+
+
+def dpkg_path_filters():
+    """dpkg's path-exclude and path-include options, in the order dpkg reads
+    them (dpkg.cfg.d's files in name order, then dpkg.cfg): a package file
+    a filter excludes was never installed (minimised images leave out
+    documentation this way), so its absence is not a finding."""
+    names = []
+    try:
+        listing, _ = list_directory(DPKG_CONFIG_DIR, MAX_DIR_FILES)
+        names = [_join(DPKG_CONFIG_DIR, n) for n in listing]
+    except OSError:
+        pass
+    filters = []
+    for absolute in names + [DPKG_CONFIG]:
+        for line in (read_small(absolute, CONFIG_FILE_BYTES) or "").splitlines():
+            match = _DPKG_PATH_FILTER.match(line)
+            if match:
+                filters.append((match.group(1) == "path-exclude", match.group(2)))
+    return filters
+
+
+def dpkg_excluded(filters, absolute):
+    """Whether dpkg's filters leave this path out: the last matching filter
+    decides (dpkg matches with fnmatch, "*" crossing "/")."""
+    excluded = False
+    for exclude, pattern in filters:
+        if fnmatch.fnmatchcase(absolute, pattern):
+            excluded = exclude
+    return excluded
+
+
+def md5_of(run, absolute):
+    """(hex digest, None) of a regular file, or (None, why not)."""
+    try:
+        raw, _ = open_regular_file(absolute)
+    except FileNotFoundError:
+        return None, "missing"
+    except UnsafePath as exc:
+        return None, exc.reason
+    except (OSError, ValueError) as exc:
+        return None, str(exc)
+    digest = hashlib.md5(usedforsecurity=False)  # dpkg's own format, not a security choice
+    with raw:
+        try:
+            while True:
+                if run.out_of_time():
+                    return None, "time"
+                block = raw.read(CHUNK_BYTES * 4)
+                if not block:
+                    break
+                digest.update(block)
+        except OSError as exc:
+            return None, str(exc)
+    return digest.hexdigest(), None
+
+
+def _package_order(item):
+    absolute = item[1]
+    if CRITICAL_PACKAGE_PATHS.match(absolute):
+        return 0
+    return 2 if BULK_PACKAGE_PATHS.match(absolute) else 1
+
+
+def dpkg_conffiles():
+    """[(package, path, md5)] of installed packages' configuration files,
+    from dpkg's status file (their md5sums aren't in the .md5sums lists)."""
+    text, _ = read_whole_lines(DPKG_STATUS, 64 * 1024 * 1024)
+    found, package, in_conffiles = [], None, False
+    for line in (text or "").splitlines():
+        if line.startswith("Package: "):
+            package, in_conffiles = line[9:].strip(), False
+        elif line.startswith("Conffiles:"):
+            in_conffiles = True
+        elif in_conffiles and line.startswith(" /"):
+            parts = line.split()
+            if len(parts) >= 2 and "obsolete" not in parts[2:]:
+                found.append((package, parts[0], parts[1]))
+        else:
+            in_conffiles = False
+    return found
+
+
+def verify_dpkg(run, module):
+    """Each package file's MD5 against dpkg's .md5sums lists, critical paths
+    first, then configuration files against dpkg's status file. Sends only
+    the differences (`package_file_changed`, `conffile_changed`) and a
+    summary; a changed configuration file is usually an administrator's
+    edit, so it is kept apart."""
+    record_checksum_stores(run, module, DPKG_INFO, hash_files="all")
+    names, listing_cut = list_directory(DPKG_INFO, MAX_PACKAGE_FILES, run)
+    diversions = dpkg_diversions()
+    filters = dpkg_path_filters()
+    entries, packages, malformed = [], 0, 0
+    for name in names:
+        if not name.endswith(".md5sums"):
+            continue
+        packages += 1
+        package = name[: -len(".md5sums")].split(":", 1)[0]
+        text, _ = read_whole_lines(_join(DPKG_INFO, name), 16 * 1024 * 1024)
+        for line in (text or "").splitlines():
+            digest, _, relative = line.partition("  ")
+            if len(digest) != 32 or not relative:
+                malformed += 1
+                continue
+            entries.append((package, "/" + relative.lstrip("/"), digest.lower()))
+            if len(entries) >= MAX_PACKAGE_FILES:
+                listing_cut = True
+                break
+    entries.sort(key=_package_order)
+    counts = {"checked": 0, "changed": 0, "missing": 0, "excluded": 0, "unreadable": 0}
+    cut = None
+    critical_total = sum(1 for e in entries if _package_order(e) == 0)
+    critical_checked = 0
+    for package, absolute, expected in entries:
+        if run.out_of_time():
+            cut = "time"
+            break
+        diverted = diversions.get(absolute)
+        actual_path = diverted[0] if diverted and diverted[1] != package else absolute
+        actual, problem = md5_of(run, actual_path)
+        if problem == "time":
+            cut = "time"
+            break
+        counts["checked"] += 1
+        if _package_order((package, absolute)) == 0:
+            critical_checked += 1
+        if actual == expected:
+            continue
+        if problem == "missing" and dpkg_excluded(filters, absolute):
+            counts["excluded"] += 1  # never installed: left out by path-exclude
+            continue
+        kind = "missing" if problem == "missing" else "unreadable" if problem else "changed"
+        counts[kind] += 1
+        details = {"package": package, "path": absolute, "result": kind}
+        if actual_path != absolute:
+            details["diverted_to"] = actual_path
+        if problem and problem != "missing":
+            details["reason"] = problem
+        run.stream.record(module, "package_file_changed", details)
+    conffiles = {"checked": 0, "changed": 0, "missing": 0}
+    if cut is None:
+        for package, absolute, expected in dpkg_conffiles():
+            if run.out_of_time():
+                cut = "time"
+                break
+            actual, problem = md5_of(run, absolute)
+            conffiles["checked"] += 1
+            if actual == expected or problem == "time":
+                continue
+            kind = "missing" if problem == "missing" else "changed"
+            conffiles[kind] += 1
+            run.stream.record(
+                module, "conffile_changed", {"package": package, "path": absolute, "result": kind}
+            )
+    run.stream.record(
+        module,
+        "package_verify_summary",
+        {
+            "manager": "dpkg",
+            "packages": packages,
+            "files": len(entries),
+            "malformed_lines": malformed,
+            "critical_files": critical_total,
+            "critical_checked": critical_checked,
+            "files_result": counts,
+            "conffiles": conffiles,
+            "diversions": len(diversions),
+            "path_filters": len(filters),
+            "listing_truncated": listing_cut,
+            "truncated": cut is not None,
+            "truncated_reason": cut,
+        },
+    )
+    if cut == "time":
+        raise ModuleTimeout()
+
+
+def module_package_verify(run):
+    """Package verification: rpm -Va on the RHEL family, dpkg's checksums on
+    Ubuntu (DESIGN.md §8.5)."""
+    module = "package_verify"
+    has_rpm = any(os.path.isdir(path(d)) for d in RPM_DATABASES) and find_command("rpm")[0]
+    has_dpkg = os.path.lexists(path(DPKG_STATUS))
+    run.stream.record(module, "package_managers", {"rpm": bool(has_rpm), "dpkg": has_dpkg})
+    if has_dpkg:
+        verify_dpkg(run, module)
+    if has_rpm:
+        verify_rpm(run, module)
+
+
 # Collection modules, by name, in their default order.
 MODULES = {
     "host_facts": module_host_facts,
@@ -3986,6 +4243,7 @@ MODULES = {
     "login_records": module_login_records,
     "crash_dumps": module_crash_dumps,
     "kernel_modules": module_kernel_modules,
+    "package_verify": module_package_verify,
 }
 
 

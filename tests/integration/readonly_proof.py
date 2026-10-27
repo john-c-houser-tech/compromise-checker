@@ -188,6 +188,7 @@ EXPECTED_RECORDS = (
     ("login_records", "login_record"),
     ("kernel_modules", "kernel_module"),
     ("startup", "home_startup_file"),
+    ("package_verify", "checksum_store"),
 )
 EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal")
 

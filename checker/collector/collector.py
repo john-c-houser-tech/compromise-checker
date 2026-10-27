@@ -22,6 +22,7 @@ import fnmatch
 import glob
 import gzip
 import hashlib
+import io
 import json
 import os
 import platform
@@ -490,15 +491,19 @@ class Run:
         self.deadline = deadline
         self._protected = None
 
-    def refusal(self, opened, info, key_file=False):
+    def refusal(self, opened, info, key_file=False, spool=False, walked=False):
         """Why the contents of a file just opened (its path after links, its
         fstat) must not be read, or None. These rules don't depend on knowing
         every history file on the server:
 
         - a protected file (PROTECTED_FILES) is refused however it was reached;
-        - nothing hard-linked is read, except distribution content under /usr
-          (packages ship hard links, e.g. RHEL's crypto policies): elsewhere
-          a hard link could be any file;
+        - nothing hard-linked is read, except root-owned distribution content
+          under /usr that a program's own configuration names (packages ship
+          hard links, e.g. RHEL's crypto policies): elsewhere a hard link
+          could be any file. A file merely found in a walked directory
+          (`walked`) gets no exception at all — ownership alone can't vouch
+          for it, since root's shell can write a history file into a user's
+          home (`su` without `-` keeps HOME);
         - configuration and logs are read only from system locations, so a
           link can't carry a history file or anything else out;
         - nothing named like a shell history file is read, and the history
@@ -512,11 +517,19 @@ class Run:
             return "is (or links to) a protected file; its contents are never read"
         if opened.rsplit("/", 1)[-1] in _HISTORY_NAMES:
             return "is a shell history file; its contents are never read"
-        if info.st_nlink > 1 and not opened.startswith("/usr/"):
+        if info.st_nlink > 1 and (
+            walked or not (opened.startswith("/usr/") and info.st_uid == PACKAGE_OWNER_UID)
+        ):
             return "is hard-linked, so it could be a protected file; its contents are never read"
         if key_file:
             return None
-        if not opened.startswith(SYSTEM_LOCATIONS):
+        if spool:
+            # Only the cron module's own spool reads, which classify each
+            # file (crontab, at job, job output) by where it lies; no link
+            # from a configuration file can reach a spool.
+            if not opened.startswith(SPOOL_LOCATIONS):
+                return "is outside cron's and at's spools"
+        elif not opened.startswith(SYSTEM_LOCATIONS):
             return "is outside the system locations configuration and logs are read from"
         if opened.startswith(homes):
             return "is inside an account's home directory; its contents are never read"
@@ -713,10 +726,18 @@ def pump_lines(run, writer, reader, transform=None):
             return "size"  # whole lines only: the one that doesn't fit is left out
 
 
-def send_file(run, module, absolute):
+def send_file(run, module, absolute, text_only=False, rewrite=None, spool=False, walked=False):
     """Send one file as a source: decompressed, masked, chunked, capped.
     Returns True if sent, False if it could not be read (recorded instead).
-    Raises ModuleTimeout after closing the source cleanly if time runs out."""
+    Raises ModuleTimeout after closing the source cleanly if time runs out.
+
+    With `text_only`, a file with a NUL byte in its first block is not sent
+    (a `content_skipped` record says so). With `rewrite`, the file is read
+    whole, up to SMALL_TEXT_BYTES, and `rewrite(data)` is sent instead —
+    still masked; a longer file is not sent. With `spool`, the file must lie
+    in cron's or at's spool instead of a system location; with `walked`, it
+    was found by walking a directory, not named by configuration, so no hard
+    link is read (Run.refusal)."""
     suffix = os.path.splitext(absolute)[1]
     if suffix in _COMPRESSED and suffix not in _OPENERS:
         details = describe_unreadable(absolute)
@@ -733,7 +754,7 @@ def send_file(run, module, absolute):
         details["reason"] = str(exc)
         run.stream.record(module, "unreadable_file", details)
         return False
-    refusal = run.refusal(absolute, info)
+    refusal = run.refusal(absolute, info, spool=spool, walked=walked)
     if refusal:
         # The file actually opened — through any link or hard link — is one
         # collected as status or metadata only: never send its text.
@@ -747,6 +768,26 @@ def send_file(run, module, absolute):
     for suffix, (name, cls) in _OPENERS.items():
         if absolute.endswith(suffix):
             compression, opener = name, cls
+    skipped = None
+    if (text_only or rewrite) and opener is None:
+        try:
+            data = raw.read(SMALL_TEXT_BYTES + 1 if rewrite else 8192)
+            raw.seek(0)
+        except OSError as exc:
+            data, skipped = b"", str(exc)
+        if b"\0" in data[:8192]:
+            skipped = "binary"
+        elif rewrite and len(data) > SMALL_TEXT_BYTES:
+            skipped = f"larger than {SMALL_TEXT_BYTES} bytes"
+        elif rewrite:
+            raw.close()
+            raw, opener = io.BytesIO(rewrite(data)), None
+    elif text_only or rewrite:
+        skipped = "compressed"
+    if skipped:
+        raw.close()
+        run.stream.record(module, "content_skipped", {"path": absolute, "reason": skipped})
+        return False
     writer = SourceWriter(run, module, "file", absolute, file_meta(info, compression))
     truncated_reason, error = None, None
     try:
@@ -899,7 +940,12 @@ class Walk:
         if link_target is not None:
             entry["link_target"] = link_target
         if stat.S_ISREG(info.st_mode) and self._wants_hash(info):
-            if info.st_size > self.hash_bytes:
+            # A hash is no text, but a short file's hash can still be
+            # guessed: protected files are never hashed either.
+            refusal = self.run.refusal(absolute, info, key_file=True)
+            if refusal:
+                entry["hash_skipped"] = refusal
+            elif info.st_size > self.hash_bytes:
                 entry["hash_skipped"] = f"larger than {self.hash_bytes} bytes"
             else:
                 digest, problem = hash_file(self.run, absolute, expect=info)
@@ -1650,8 +1696,16 @@ PROTECTED_FILES = (
 )
 
 
+# Owner of the hard-linked package files under /usr that may be read
+# (Run.refusal). Tests, which can't create root-owned files, change it.
+PACKAGE_OWNER_UID = 0
+
 # The only places configuration and log text is sent from (see Run.refusal).
 SYSTEM_LOCATIONS = ("/etc/", "/usr/", "/lib/", "/lib64/", "/var/log/", "/run/")
+# Cron's and at's spools: crontabs and queued jobs, whose lines are the
+# evidence. Users write them only through crontab(1) and at(1). Read only by
+# module_cron's classified walk (Run.refusal's `spool`), never through links.
+SPOOL_LOCATIONS = ("/var/spool/cron/", "/var/spool/at/")
 
 
 # Shells that give no interactive session, so leave no shell history.
@@ -2098,7 +2152,7 @@ def resolve_links(absolute):
     return resolved or "/", None
 
 
-def send_config_file(run, module, absolute):
+def send_config_file(run, module, absolute, text_only=False):
     """Send a configuration file the way its program reads it: through
     symbolic links (RHEL's authselect and crypto-policies use them by
     design). A link is recorded, then its resolved target is sent, still only
@@ -2112,7 +2166,7 @@ def send_config_file(run, module, absolute):
         facts["resolved"] = resolved
         run.stream.record(module, "config_link", facts)
     absolute = resolved
-    return absolute if send_file(run, module, absolute) else None
+    return absolute if send_file(run, module, absolute, text_only) else None
 
 
 def read_config_text(run, module, absolute):
@@ -2744,6 +2798,469 @@ def module_pam(run):
             run.check_time()
 
 
+# --- Persistence (DESIGN.md §8.4) ---------------------------------------------------
+
+SMALL_TEXT_BYTES = 256 * 1024
+MAX_TREE_ENTRIES = 5000
+
+
+def _text(relative):
+    return True
+
+
+def collect_tree(run, module, top, seen, max_depth=4, choose=_text, extra=None, spool=False):
+    """Walk one directory (see "Directory walks"), recording each entry as a
+    `file` record, then send the text of the small text files in it, masked.
+    `choose(relative path)` says what to send of each regular file: True for
+    its text, False for nothing, or a function rewriting its bytes before
+    masking. `seen` holds the directories already walked (by device and
+    inode: /lib/systemd/system is often /usr/lib/systemd/system) and the
+    files already sent (by path), so each is done once per module; a linked
+    top is recorded as a `config_link` (with `extra`) even when its target
+    was walked already. `spool` marks cron's spool walks (see send_file). A
+    missing top is skipped without a record."""
+    directory, risk = resolve_links(top)
+    if risk:
+        run.stream.record(module, "not_examined", {"path": top, "reason": risk})
+        return
+    try:
+        info = os.lstat(path(directory))
+    except FileNotFoundError:
+        return
+    except UnsafePath as exc:
+        run.stream.record(module, "not_examined", {"path": top, "reason": exc.reason})
+        return
+    except OSError as exc:
+        run.stream.record(module, "unreadable_file", {"path": top, "reason": str(exc)})
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        return
+    if spool and directory != top:
+        # A spool's files are told apart by where they lie under it; one
+        # reached through a link (/var/spool/cron -> /var/spool/at) can't be,
+        # so it is listed and hashed without text.
+        run.stream.record(
+            module,
+            "not_examined",
+            {"path": top, "resolved": directory, "reason": "spool reached through a link; no text"},
+        )
+        choose = _no_text
+    # A spool listed through such a link leaves its target to its own,
+    # classified walk.
+    unclassified = spool and directory != top
+    walked = (info.st_dev, info.st_ino) in seen
+    if directory != top or walked:
+        # Each alias is evidence of its own: a user's unit directory linked
+        # to another's, or to a system one, still shows.
+        facts = path_facts(top) or {"path": top}
+        facts["resolved"] = directory
+        if walked:
+            facts["already_walked"] = True
+        if extra:
+            facts.update(extra)
+        run.stream.record(module, "config_link", facts)
+    if walked:
+        return
+    if not unclassified:
+        seen.add((info.st_dev, info.st_ino))
+    walk = Walk(
+        run,
+        directory,
+        max_depth=max_depth,
+        max_entries=MAX_TREE_ENTRIES,
+        hash_bytes=8 << 20,
+        hash_files="all",
+    )
+    texts = []
+    for entry in walk:
+        if extra:
+            entry.update(extra)
+        run.stream.record(module, "file", entry)
+        if entry.get("type") != "-" or "error" in entry:
+            continue
+        what = choose(entry["path"][len(directory) :].lstrip("/"))
+        if not what:
+            continue
+        if entry["size"] > SMALL_TEXT_BYTES:
+            reason = f"larger than {SMALL_TEXT_BYTES} bytes"
+            run.stream.record(module, "content_skipped", {"path": entry["path"], "reason": reason})
+            continue
+        texts.append((entry["path"], what))
+    summary = walk.summary()
+    if extra:
+        summary.update(extra)
+    run.stream.record(module, "walk_summary", summary)
+    run.check_time()
+    for absolute, what in texts:
+        run.check_time()
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        rewrite = None if what is True else what
+        send_file(run, module, absolute, text_only=True, rewrite=rewrite, spool=spool, walked=True)
+
+
+def send_config_files(run, module, names, seen):
+    """Send each of these single files that exists, through links, as text,
+    unless already sent (`seen`, as in collect_tree)."""
+    for absolute in names:
+        run.check_time()
+        resolved, risk = resolve_links(absolute)
+        if risk:
+            run.stream.record(module, "not_examined", {"path": absolute, "reason": risk})
+        elif not os.path.lexists(path(absolute)):
+            continue
+        elif resolved not in seen:
+            seen.add(resolved)
+            send_config_file(run, module, absolute, text_only=True)
+        else:
+            # Its target was sent already; the link itself is still evidence
+            # (/etc/profile -> /etc/rc.d/rc.local).
+            facts = path_facts(absolute)
+            if facts is not None and facts.get("type") == "l":
+                facts.update({"resolved": resolved, "already_sent": True})
+                run.stream.record(module, "config_link", facts)
+
+
+# Cron. RHEL keeps crontabs in /var/spool/cron/<user> and at jobs in
+# /var/spool/at (their output in /var/spool/at/spool); Ubuntu keeps them in
+# /var/spool/cron/crontabs/<user> and /var/spool/cron/atjobs (output in
+# /var/spool/cron/atspool).
+CRON_FILES = (
+    "/etc/crontab",
+    "/etc/anacrontab",
+    "/etc/cron.allow",
+    "/etc/cron.deny",
+    "/etc/at.allow",
+    "/etc/at.deny",
+)
+CRON_DIRS = (
+    "/etc/cron.d",
+    "/etc/cron.hourly",
+    "/etc/cron.daily",
+    "/etc/cron.weekly",
+    "/etc/cron.monthly",
+    "/etc/cron.yearly",
+)
+
+_AT_UMASK = re.compile(rb"^umask [0-7]+\s*$")
+_AT_EXPORT = re.compile(rb"; export ([A-Za-z_][A-Za-z0-9_]*)\s*$")
+_AT_CD = re.compile(rb"^cd .* \|\| \{\s*$")
+
+
+def at_job_without_environment(data):
+    """An at job with its copy of the submitter's environment left out. at(1)
+    writes a header of comments, `umask`, one `NAME=value; export NAME`
+    line per variable (values escaped, so none can start a line of its own
+    with `cd `), then `cd <directory> || {` and the commands. The variables
+    are replaced by a comment naming them; a file laid out any other way
+    keeps only its leading comments."""
+    lines = data.splitlines(keepends=True)
+    head = 0
+    while head < len(lines) and lines[head].startswith(b"#"):
+        head += 1
+    withheld = b"# [collector: not laid out like an at job; the rest is withheld]\n"
+    if head == len(lines) or not _AT_UMASK.match(lines[head]):
+        return b"".join(lines[:head]) + withheld
+    names = []
+    for end in range(head + 1, len(lines)):
+        if _AT_CD.match(lines[end]):
+            break
+        match = _AT_EXPORT.search(lines[end])
+        if match:
+            names.append(match.group(1))
+    else:
+        return b"".join(lines[: head + 1]) + withheld
+    note = b"# [collector: %d environment lines withheld; variables: %s]\n" % (
+        end - head - 1,
+        b" ".join(names),
+    )
+    return b"".join(lines[: head + 1]) + note + b"".join(lines[end:])
+
+
+def _cron_spool_text(relative):
+    first = relative.split("/", 1)[0]
+    if first == "atspool":
+        return False  # jobs' output: anything at all
+    if first == "atjobs":
+        return _at_spool_text(relative.split("/", 1)[1]) if "/" in relative else False
+    return True
+
+
+def _at_spool_text(relative):
+    if "/" in relative:  # spool/: jobs' output
+        return False
+    if relative == ".SEQ":  # the next job number
+        return True
+    return at_job_without_environment
+
+
+def module_cron(run):
+    """System cron configuration and every user's crontab and queued at jobs,
+    masked; at jobs without their copy of the user's environment."""
+    module = "cron"
+    seen = set()
+    send_config_files(run, module, CRON_FILES, seen)
+    for directory in CRON_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=2)
+    collect_tree(
+        run, module, "/var/spool/cron", seen, max_depth=3, choose=_cron_spool_text, spool=True
+    )
+    collect_tree(run, module, "/var/spool/at", seen, max_depth=2, choose=_at_spool_text, spool=True)
+
+
+# systemd: unit directories in its search order, generators (programs that
+# write units at boot), and the manager's own settings.
+SYSTEMD_DIRS = (
+    "/etc/systemd/system.control",
+    "/run/systemd/system.control",
+    "/etc/systemd/system",
+    "/run/systemd/system",
+    "/run/systemd/transient",
+    "/run/systemd/generator.early",
+    "/run/systemd/generator",
+    "/run/systemd/generator.late",
+    "/usr/local/lib/systemd/system",
+    "/usr/lib/systemd/system",
+    "/lib/systemd/system",
+    "/etc/systemd/user",
+    "/run/systemd/user",
+    "/usr/local/lib/systemd/user",
+    "/usr/lib/systemd/user",
+    "/lib/systemd/user",
+    "/etc/systemd/system-generators",
+    "/run/systemd/system-generators",
+    "/usr/local/lib/systemd/system-generators",
+    "/usr/lib/systemd/system-generators",
+    "/lib/systemd/system-generators",
+    "/etc/systemd/user-generators",
+    "/run/systemd/user-generators",
+    "/usr/local/lib/systemd/user-generators",
+    "/usr/lib/systemd/user-generators",
+    "/lib/systemd/user-generators",
+    "/etc/systemd/system.conf.d",
+    "/etc/systemd/user.conf.d",
+)
+SYSTEMD_FILES = ("/etc/systemd/system.conf", "/etc/systemd/user.conf")
+# Users whose own units start at boot, without a login.
+LINGER_DIR = "/var/lib/systemd/linger"
+HOME_UNIT_DIRS = (
+    ".config/systemd/user.control",
+    ".config/systemd/user",
+    ".local/share/systemd/user",
+)
+
+
+def _no_text(relative):
+    return False
+
+
+def _home_fields(home):
+    fields = {"accounts": home["accounts"], "home": home["home"]}
+    if home["source"] == "directory":
+        fields.update({"home_source": "directory", "owner_uid": home["owner_uid"]})
+    return fields
+
+
+def homes_for(run, module):
+    """The home directories to look in, after recording the search."""
+    accounts, _ = read_accounts()
+    if accounts is None:
+        raise OSError("/etc/passwd could not be read")
+    homes, summary = discover_homes(accounts, run)
+    run.stream.record(module, "homes", summary)
+    return [home for home in homes if not home.get("skipped")]
+
+
+def module_systemd(run):
+    """systemd units, timers and generators in every system and user unit
+    directory, masked; users' own units in their homes as hashes only."""
+    module = "systemd"
+    seen = set()
+    send_config_files(run, module, SYSTEMD_FILES, seen)
+    for directory in SYSTEMD_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=4)
+    collect_tree(run, module, LINGER_DIR, seen, max_depth=1, choose=_no_text)
+    for home in homes_for(run, module):
+        for relative in HOME_UNIT_DIRS:
+            collect_tree(
+                run,
+                module,
+                _join(home["home"], relative),
+                seen,
+                max_depth=4,
+                choose=_no_text,
+                extra=_home_fields(home),
+            )
+
+
+# Run at boot or at login. System files are sent as text; files in homes
+# only as hashes, since homes are never read as configuration.
+STARTUP_FILES = (
+    "/etc/rc.local",
+    "/etc/rc.d/rc.local",
+    "/etc/environment",
+    "/etc/security/pam_env.conf",
+    "/etc/profile",
+    "/etc/bashrc",
+    "/etc/bash.bashrc",
+    "/etc/bash.bash_logout",
+    "/etc/zshrc",
+    "/etc/zshenv",
+    "/etc/zprofile",
+    "/etc/zlogin",
+    "/etc/zlogout",
+    "/etc/csh.cshrc",
+    "/etc/csh.login",
+    "/etc/ld.so.preload",
+    "/etc/ld.so.conf",
+)
+STARTUP_DIRS = (
+    "/etc/profile.d",
+    "/etc/zsh",
+    "/etc/fish",
+    "/etc/skel",
+    "/etc/update-motd.d",
+    "/etc/ld.so.conf.d",
+    "/etc/init.d",
+    "/etc/rc.d",
+    "/etc/xdg/autostart",
+)
+HOME_STARTUP_FILES = (
+    ".profile",
+    ".bash_profile",
+    ".bash_login",
+    ".bashrc",
+    ".bash_logout",
+    ".zshenv",
+    ".zprofile",
+    ".zshrc",
+    ".zlogin",
+    ".zlogout",
+    ".cshrc",
+    ".tcshrc",
+    ".login",
+    ".config/fish/config.fish",
+    ".pam_environment",
+    ".xprofile",
+    ".xsession",
+    ".ssh/rc",
+    ".ssh/environment",
+)
+HOME_STARTUP_DIRS = (".config/fish/conf.d", ".config/autostart")
+
+
+def home_file_facts(run, absolute):
+    """path_facts of a file in a home, with its SHA-256 if it is a regular
+    file the protection rules allow hashing. A link (~/.bashrc ->
+    ~/.dotfiles/bashrc) keeps its own facts and gets the SHA-256 of the
+    regular file it leads to, as `resolved` and `target_sha256`, under the
+    same checks. Never any text. None if it doesn't exist."""
+    facts = path_facts(absolute)
+    if facts is None or facts.get("type") not in ("-", "l"):
+        return facts
+    target, key = absolute, "sha256"
+    if facts["type"] == "l":
+        target, risk = resolve_links(absolute)
+        if risk:
+            facts["target_not_examined"] = risk
+            return facts
+        facts["resolved"], key = target, "target_sha256"
+    try:
+        info = os.lstat(path(target))
+    except UnsafePath as exc:
+        facts["target_not_examined"] = exc.reason
+        return facts
+    except OSError as exc:
+        facts["hash_skipped"] = str(exc)
+        return facts
+    if not stat.S_ISREG(info.st_mode):
+        facts["hash_skipped"] = "not a regular file"
+        return facts
+    refusal = run.refusal(target, info, key_file=True)
+    if refusal:
+        facts["hash_skipped"] = refusal
+    elif info.st_size > 8 << 20:
+        facts["hash_skipped"] = "larger than 8388608 bytes"
+    else:
+        digest, problem = hash_file(run, target, expect=info)
+        if digest:
+            facts[key] = digest
+        else:
+            facts["hash_skipped"] = problem
+    return facts
+
+
+def module_startup(run):
+    """Boot scripts, login shell start-up files, the dynamic loader's
+    preload and search paths, and update-motd.d, masked; start-up files in
+    homes as hashes only."""
+    module = "startup"
+    seen = set()
+    send_config_files(run, module, STARTUP_FILES, seen)
+    for directory in STARTUP_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=3)
+    for home in homes_for(run, module):
+        fields = _home_fields(home)
+        for relative in HOME_STARTUP_FILES:
+            run.check_time()
+            target = _join(home["home"], relative)
+            _, risk = resolve_links(target)
+            if risk:
+                run.stream.record(module, "not_examined", {"path": target, "reason": risk})
+                continue
+            facts = home_file_facts(run, target)
+            if facts is not None:
+                facts.update(fields)
+                run.stream.record(module, "home_startup_file", facts)
+        for relative in HOME_STARTUP_DIRS:
+            collect_tree(
+                run,
+                module,
+                _join(home["home"], relative),
+                seen,
+                max_depth=2,
+                choose=_no_text,
+                extra=fields,
+            )
+
+
+# Hooks run by package managers and by udev.
+HOOK_FILES = ("/etc/apt/apt.conf", "/etc/dpkg/dpkg.cfg", "/etc/dnf/dnf.conf", "/etc/yum.conf")
+HOOK_DIRS = (
+    "/etc/apt/apt.conf.d",
+    "/etc/dpkg/dpkg.cfg.d",
+    "/etc/dnf/plugins",
+    "/etc/dnf/libdnf5-plugins",
+    "/etc/yum/pluginconf.d",
+    "/usr/lib64/libdnf5/plugins",
+    "/usr/lib/libdnf5/plugins",
+    "/etc/udev/rules.d",
+    "/run/udev/rules.d",
+    "/usr/local/lib/udev/rules.d",
+    "/usr/lib/udev/rules.d",
+    "/lib/udev/rules.d",
+)
+DNF_PLUGIN_DIRS = ("/usr/lib/python3*/site-packages/dnf-plugins",)
+
+
+def module_hooks(run):
+    """apt, dpkg and dnf hook configuration and dnf plugins, and udev rules,
+    masked."""
+    module = "hooks"
+    seen = set()
+    send_config_files(run, module, HOOK_FILES, seen)
+    for directory in HOOK_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=3)
+    for pattern in DNF_PLUGIN_DIRS:
+        skipped = []
+        matches = glob_absolute(pattern, skipped, run)
+        for gap in skipped:
+            run.stream.record(module, "not_examined", gap)
+        for directory in matches:
+            collect_tree(run, module, directory, seen, max_depth=2)
+
+
 # Collection modules, by name, in their default order.
 MODULES = {
     "host_facts": module_host_facts,
@@ -2753,6 +3270,10 @@ MODULES = {
     "sudoers": module_sudoers,
     "ssh": module_ssh,
     "pam": module_pam,
+    "cron": module_cron,
+    "systemd": module_systemd,
+    "startup": module_startup,
+    "hooks": module_hooks,
 }
 
 

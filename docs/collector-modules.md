@@ -240,22 +240,88 @@ directory found (`/usr/lib64/security`, `/usr/lib/<architecture>/security`
 and their `/lib` equivalents, each walked once at its real location), with
 the SHA-256 of every file up to 8 MiB.
 
+## Persistence: `cron`, `systemd`, `startup`, `hooks`
+
+**Why:** the places an intruder leaves something to run again — on a
+schedule, at boot, at login, or when packages or devices change
+(DESIGN.md §8.4).
+
+All four work the same way. Single files are sent as text through links
+(see "Configuration files that are links"). Directories get a walk (see
+"Directory walks") with the SHA-256 of every file up to 8 MiB, recorded as
+`file` records with a `walk_summary`, and then the text of each file in them
+up to 256 KiB. A file with a NUL byte in its first 8 KiB (a compiled
+generator, for example) or a longer file gets a `content_skipped` record
+instead; its hash is still in the walk. A directory reached through a link
+is recorded as a `config_link` and walked once at its real location
+(`/lib/systemd/system` is usually `/usr/lib/systemd/system`); every further
+link to it still gets its own `config_link` (with `already_walked`, and the
+home and accounts for a home's directory), so one user's unit directory
+linked to another's still shows. Likewise every link to a single file
+already sent (`/etc/profile` → `/etc/rc.d/rc.local`) gets a `config_link`
+marked `already_sent`. All text is
+masked, and the protection rules below decide what may be read at all.
+
+| Module | Sends as text | Walked without text |
+|---|---|---|
+| `cron` | `/etc/crontab`, `/etc/anacrontab`, `cron.allow`/`deny`, `at.allow`/`deny`; `/etc/cron.d` and `/etc/cron.{hourly,daily,weekly,monthly,yearly}`; every user's crontab (`/var/spool/cron/<user>` on RHEL, `/var/spool/cron/crontabs/<user>` on Ubuntu); queued `at` jobs (`/var/spool/at`, `/var/spool/cron/atjobs`), without their environment (below) | Running `at` jobs' output (`/var/spool/at/spool`, `/var/spool/cron/atspool`): anything a job printed |
+| `systemd` | `/etc/systemd/system.conf`, `user.conf` and their `.d` directories; system and user unit directories in `/etc`, `/run` (including `transient` and the generators' output) and `/usr/local/lib`, `/usr/lib`, `/lib`; the `system.control` drop-in directories in `/etc` and `/run`; generator directories in `/etc`, `/run`, `/usr/local/lib`, `/usr/lib`, `/lib` (scripts as text, programs by hash) | `/var/lib/systemd/linger` (users whose own units start at boot); `~/.config/systemd/user`, `~/.config/systemd/user.control` and `~/.local/share/systemd/user` in every home |
+| `startup` | `rc.local`, `/etc/init.d`, `/etc/rc.d`; `/etc/environment`, `/etc/security/pam_env.conf`; the system shell start-up files (`/etc/profile`, `profile.d`, `bashrc`/`bash.bashrc`, zsh, fish, csh) and `/etc/skel`; `/etc/update-motd.d`; `/etc/xdg/autostart`; `/etc/ld.so.preload`, `/etc/ld.so.conf` and `ld.so.conf.d` | `.config/fish/conf.d` and `.config/autostart` in every home; plus a `home_startup_file` record with the SHA-256 of each of `.profile`, `.bash_profile`, `.bash_login`, `.bashrc`, `.bash_logout`, zsh's, csh's and fish's start-up files, `.pam_environment`, `.xprofile`, `.xsession`, `.ssh/rc` and `.ssh/environment` — for one that is a link, the SHA-256 of the file it leads to (`resolved`, `target_sha256`), under the same checks |
+| `hooks` | `/etc/apt/apt.conf` and `apt.conf.d` (`DPkg::Pre-Invoke` and the like); `/etc/dpkg/dpkg.cfg` and `dpkg.cfg.d`; `/etc/dnf/dnf.conf`, `/etc/yum.conf`, `/etc/dnf/plugins` (including `post-transaction-actions.d`), `/etc/yum/pluginconf.d`, libdnf5's plugin directories, and the Python dnf plugins; udev rules in `/etc`, `/run`, `/usr/local/lib`, `/usr/lib` and `/lib` | — |
+
+Homes are found as in `accounts` (including domain users' homes), and each
+of `systemd` and `startup` records the search's `homes` summary. Nothing in
+a home is sent as text: files there are listed and hashed only, so a changed
+`.bashrc` or a new user unit shows against the baseline without anything a
+user wrote leaving the server.
+
+**Limit: the first check.** A hash shows change, not content. On a server's
+first check there is no baseline, so a backdoor already in a home start-up
+file or a user unit before that check is not recognised from its text. What
+the first check still has: a home start-up file whose hash differs from the
+`/etc/skel` file of the same name is reported as customised (one that
+matches is known to be unchanged), and any user unit or user autostart entry
+is reported by name, owner and times, since servers rarely have one. Their
+contents are left for a person on the server to read.
+
+**`at` jobs.** `at` stores a copy of the submitting user's whole environment
+in each job, as `NAME=value; export NAME` lines between the `umask` line and
+`cd <directory> || {`. Those lines are replaced, before masking, by one
+comment giving their count and the variables' names; the header comments,
+`umask`, working directory and commands are sent. `at` escapes the spaces in
+a value, so no value can put a `cd … || {` line of its own into the file and
+end the environment early. A file not laid out this way keeps only its
+leading comment lines, and a note says the rest was withheld. A spool
+directory reached through a link (`/var/spool/cron` → `/var/spool/at`) is
+listed and hashed without text, since its files can't be told apart by
+where they lie; its target still gets its own walk.
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,
 never as text: `/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow` and
 their `-` backups, `/etc/security/opasswd` (old password hashes), and every
-account's shell history. Three rules keep their contents in, checked on the
+account's shell history. These rules keep their contents in, checked on the
 file actually opened, after any links:
 
 - **Configuration and log text is read only from system locations** —
-  `/etc`, `/usr`, `/lib`, `/lib64`, `/var/log`, `/run`. A link that leads
+  `/etc`, `/usr`, `/lib`, `/lib64`, `/var/log`, `/run`. Cron's and `at`'s
+  spools (`/var/spool/cron`, `/var/spool/at`) are read only by `cron`'s own
+  walk of them, which tells crontabs, `at` jobs and job output apart; no
+  configuration link can reach them. A link that leads
   anywhere else, a home directory included, is not followed for its text.
   History files live in home directories, so no configuration link can
   carry one out, whether or not the home search found it.
 - **Nothing hard-linked is read as text**, since a hard link could be any
-  file — except distribution content under `/usr`, where packages ship hard
-  links (RHEL's crypto policies, for example).
+  file — except root-owned distribution content under `/usr` that a
+  program's own configuration names, where packages ship hard links (RHEL's
+  crypto policies, for example). Files found by walking a directory (the
+  persistence modules) get no exception: ownership can't vouch for them,
+  since root's shell can write a history file into a user's home (`su`
+  without `-` keeps `HOME`).
+- **Nothing protected is hashed either**: a short file's hash can be
+  guessed, so directory walks and home start-up files skip the hash of any
+  file these rules refuse.
 - **The account files above, and the history files in every `/etc/passwd`
   account's home, are refused by device and inode**, however they're
   reached and whatever the name; anything named like a history file is

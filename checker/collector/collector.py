@@ -4047,6 +4047,18 @@ def dpkg_excluded(filters, absolute):
 REFUSED = "refused: "
 
 
+def store_refusal(run, absolute):
+    """Why a package manager's own list or status file must not be read (a
+    hard link to a protected file, say: what's parsed from it ends up in
+    records), or None."""
+    try:
+        raw, info = open_regular_file(absolute)
+    except (OSError, ValueError):
+        return None  # the read itself reports this
+    with raw:
+        return run.refusal(absolute, info, key_file=True)
+
+
 def digest_of(run, absolute, algorithm="md5"):
     """(hex digest, None) of a regular file, or (None, why not): "missing",
     "time", REFUSED + the reason for a protected file, or an error."""
@@ -4119,8 +4131,10 @@ def verify_dpkg(run, module):
     # hashed with the other stores, so a rewrite of either shows.
     record_checksum_stores(run, module, DPKG_INFO, hash_files="all")
     status = path_facts(DPKG_STATUS) or {"path": DPKG_STATUS}
-    status["sha256"], problem = hash_file(run, DPKG_STATUS)
-    if problem:
+    digest, problem = digest_of(run, DPKG_STATUS, "sha256")  # under the protection rules
+    if digest:
+        status["sha256"] = digest
+    else:
         status["hash_skipped"] = problem
     run.stream.record(module, "checksum_store", status)
     names, listing_cut = list_directory(DPKG_INFO, MAX_PACKAGE_FILES, run)
@@ -4139,7 +4153,12 @@ def verify_dpkg(run, module):
             break
         packages += 1
         package = name[: -len(".md5sums")].split(":", 1)[0]
-        text, list_cut = read_whole_lines(_join(DPKG_INFO, name), 16 * 1024 * 1024)
+        absolute = _join(DPKG_INFO, name)
+        text, list_cut = (
+            (None, False)
+            if store_refusal(run, absolute)
+            else read_whole_lines(absolute, 16 * 1024 * 1024)
+        )
         if text is None:
             unreadable_lists.append(name)  # its files go unchecked: a gap, said so
             continue
@@ -4195,7 +4214,8 @@ def verify_dpkg(run, module):
         run.stream.record(module, "package_file_changed", details)
     conffiles = {"checked": 0, "changed": 0, "missing": 0, "unreadable": 0}
     status_truncated = False
-    if cut is None:
+    status_refused = bool(store_refusal(run, DPKG_STATUS))
+    if cut is None and not status_refused:
         found, status_truncated = dpkg_conffiles()
         for package, absolute, expected in found:
             if run.out_of_time():
@@ -4232,9 +4252,17 @@ def verify_dpkg(run, module):
             "lists_unreadable": unreadable_lists,
             "lists_truncated": truncated_lists,
             "status_truncated": status_truncated,
+            "status_refused": status_refused,
             # False when some package's files went unchecked for any reason.
             "complete": cut is None
-            and not (listing_cut or unreadable_lists or truncated_lists or status_truncated),
+            and not (
+                listing_cut
+                or unreadable_lists
+                or truncated_lists
+                or status_truncated
+                or status_refused
+                or malformed
+            ),
             "truncated": cut is not None,
             "truncated_reason": cut,
         },
@@ -4318,8 +4346,10 @@ def rpm_entries(run, module, database):
     """Every packaged file's record from rpm's SQLite database, opened
     immutable: SQLite then takes no locks and creates no -shm or -wal file
     (running rpm itself as root does both). Returns (entries, packages,
-    malformed headers); each entry is (package, path, expected digest,
-    algorithm, mode, file flags, verify flags, link target)."""
+    malformed headers, truncated); each entry is (package, path, expected
+    digest, algorithm, mode, file flags, verify flags, link target, owner,
+    group). Reading stops at MAX_PACKAGE_FILES entries (truncated is then
+    True) and at the module's deadline (ModuleTimeout)."""
     import sqlite3  # standard library; only needed on rpm systems
     from urllib.parse import quote
 
@@ -4333,8 +4363,11 @@ def rpm_entries(run, module, database):
 
 def _rpm_entries(run, rows):
     # Headers one at a time, so only the file entries are held in memory.
-    entries, packages, malformed = [], 0, 0
+    entries, packages, malformed, truncated = [], 0, 0, False
     for (blob,) in rows:
+        if len(entries) >= MAX_PACKAGE_FILES:
+            truncated = True
+            break
         run.check_time()
         try:
             header = RpmHeader(bytes(blob))
@@ -4373,7 +4406,7 @@ def _rpm_entries(run, rows):
                 )
         except (ValueError, IndexError, TypeError, struct.error):
             malformed += 1
-    return entries, packages, malformed
+    return entries, packages, malformed, truncated
 
 
 def verify_rpm(run, module, database):
@@ -4384,7 +4417,7 @@ def verify_rpm(run, module, database):
     files are skipped, a missing %missingok file is fine, and each file's
     verify flags are honoured. Sends only the differences and a summary."""
     try:
-        entries, packages, malformed = rpm_entries(run, module, database)
+        entries, packages, malformed, listing_cut = rpm_entries(run, module, database)
     except ImportError:
         run.stream.record(module, "package_verify_unsupported", {"reason": "no sqlite3 module"})
         return
@@ -4518,6 +4551,9 @@ def verify_rpm(run, module, database):
             # Changes still in SQLite's write-ahead log aren't seen by an
             # immutable read: recently changed packages may look stale.
             "wal_pending": bool(wal and wal.get("size")),
+            "listing_truncated": listing_cut,
+            # False when some installed file went unchecked for any reason.
+            "complete": cut is None and not (listing_cut or malformed),
             "truncated": cut is not None,
             "truncated_reason": cut,
         },

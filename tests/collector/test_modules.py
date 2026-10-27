@@ -2861,6 +2861,36 @@ class PackageVerifyTests(FixtureRoot):
             stores["/var/lib/dpkg/status"]["sha256"], hashlib.sha256(status).hexdigest()
         )
 
+    def test_malformed_list_lines_make_the_result_incomplete(self):
+        self.dpkg_fixture()  # its coreutils list has one malformed line
+        records = collect(self.root, ["package_verify"])
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(summary["malformed_lines"], 1)
+        self.assertFalse(summary["complete"])
+
+    def test_status_file_hash_follows_the_protection_rules(self):
+        self.dpkg_fixture()
+        os.remove(Path(self.root, "var/lib/dpkg/status"))
+        self.write("etc/shadow", b"root:*:1::::::\n")
+        os.link(Path(self.root, "etc/shadow"), Path(self.root, "var/lib/dpkg/status"))
+        records = collect(self.root, ["package_verify"])
+        stores = {r["path"]: r for r in records_named(records, "checksum_store")}
+        self.assertNotIn("sha256", stores["/var/lib/dpkg/status"])
+        self.assertIn("refused", stores["/var/lib/dpkg/status"]["hash_skipped"])
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertTrue(summary["status_refused"])  # not parsed either
+        self.assertFalse(summary["complete"])
+        self.assertEqual(records_named(records, "conffile_changed"), [])
+
+    def test_a_list_linked_to_a_protected_file_is_not_read(self):
+        self.dpkg_fixture()
+        self.write("etc/shadow", f"{md5hex(b'x')}  etc/CanaryShadowPath\n".encode())
+        os.link(Path(self.root, "etc/shadow"), Path(self.root, "var/lib/dpkg/info/evil.md5sums"))
+        records = collect(self.root, ["package_verify"])
+        self.assertNotIn("CanaryShadowPath", json.dumps(records))
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertIn("evil.md5sums", summary["lists_unreadable"])
+
     def test_gaps_are_never_reported_as_complete(self):
         self.dpkg_fixture()
         Path(self.root, "var/lib/dpkg/info/broken.md5sums").mkdir()  # can't be read as a file
@@ -3055,8 +3085,20 @@ class RpmVerifyTests(FixtureRoot):
         )
         self.assertEqual(summary["critical_checked"], summary["critical_files"])
         self.assertFalse(summary["wal_pending"])
+        self.assertFalse(summary["complete"])  # one malformed header: a gap
         self.assertEqual(sources(records), {})
         self.assertEqual(records[-1]["modules"]["package_verify"]["status"], "ok")
+
+    def test_entry_cap_is_reported(self):
+        self.rpm_fixture()
+        collector = load_collector(self.root)
+        collector.MAX_PACKAGE_FILES = 0
+        out = io.BytesIO()
+        collector.main(settings(["package_verify"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertTrue(summary["listing_truncated"])
+        self.assertFalse(summary["complete"])
 
     def test_pending_write_ahead_log_is_reported(self):
         self.rpm_fixture(wal=b"not empty")

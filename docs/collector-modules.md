@@ -480,9 +480,11 @@ administrators' edits. **Sends:** only the differences
 (`package_file_changed`: changed, missing or unreadable, with the package)
 and a `package_verify_summary` (packages, files, how many of the critical
 ones were checked, results, whether time ran out, and `complete`: false
-when any package's files went unchecked — a checksum list unreadable or
-cut short, the status file cut short, the entry limit of 500,000 files or
-the time limit reached). An unreadable status file ends the module with an
+when any package's files went unchecked — a checksum list unreadable,
+refused or cut short, a malformed list line or rpm header, the status file
+cut short or refused, the entry limit of 500,000 files or the time limit
+reached). dpkg's own lists and status file are read under the protection
+rules too: one hard-linked to a protected file is neither read nor hashed. An unreadable status file ends the module with an
 error. Every file is hashed under the protection rules: a list naming a
 protected file, a history file or a hard-linked file (or a diversion
 leading to one) gets `refused`, and the file is not read. `%config` files on

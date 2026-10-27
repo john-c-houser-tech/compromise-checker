@@ -277,19 +277,30 @@ _CRYPT_HASH = (
 # typed in the wrong box: in failed-login messages it is masked unless it
 # names a local account (Masker._apply_rules). First, so it sees the name
 # before any other rule changes it.
-_UNKNOWN_USER_RULE = _rule(
-    "unknown_user",
-    rb"(?i:\b(?:invalid|illegal) user )",
-    rb"[^\n]*?(?= from [0-9A-Fa-f:.]+ port )|\S+",
-)
+# Each name is taken up to the fixed text its message puts after it, not as
+# a word: a typed password can hold spaces, colons and quotes. Names are
+# bounded (sshd logs at most 100 characters of one), so matching stays
+# linear on hostile lines.
+_NAME = rb"[^\n]{1,256}?"
 UNKNOWN_USER_RULES = [
-    _UNKNOWN_USER_RULE,
+    # sshd: "Invalid user X from A port P", "... for invalid user X from A
+    # port P", "Connection closed by invalid user X A port P"; else up to
+    # " [preauth]" or the end of the line.
+    _rule(
+        "unknown_user",
+        rb"(?i:\b(?:invalid|illegal) user )",
+        _NAME + rb"(?= (?:from )?[0-9A-Fa-f:.]+ port \d)|" + _NAME + rb"(?= \[preauth\]|\r?$)|\S+",
+    ),
     # login(1): FAILED LOGIN 1 FROM host FOR 'name', User not known ...
-    _rule("unknown_user", rb"FAILED LOGIN \(?\d+\)? (?:FROM \S+ )?FOR ", rb"'[^'\n]*'|[^,\n]+"),
+    _rule(
+        "unknown_user",
+        rb"FAILED LOGIN \(?\d+\)? (?:FROM \S+ )?FOR ",
+        rb"'" + _NAME + rb"'(?=, )|" + _NAME + rb"(?=, )",
+    ),
     # su(1): user name does not exist
-    _rule("unknown_user", rb"\buser ", rb"\S+(?= does not exist)"),
+    _rule("unknown_user", rb"\buser ", _NAME + rb"(?= does not exist)"),
     # pam_sss: received for user name: 10 (User not known ...)
-    _rule("unknown_user", rb"received for user ", rb"[^:\s]+(?=: \d+ \(User not known)"),
+    _rule("unknown_user", rb"received for user ", _NAME + rb"(?=: \d+ \(User not known)"),
 ]
 
 MASKING_RULES = UNKNOWN_USER_RULES + [

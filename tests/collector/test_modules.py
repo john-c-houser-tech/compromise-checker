@@ -384,6 +384,37 @@ class MaskingTests(unittest.TestCase):
         for line, expected in cases.items():
             self.assertEqual(self.mask(line)[0], expected, line)
 
+    def test_failed_login_names_are_masked_whole(self):
+        # A typed password can hold spaces, colons and quotes: the whole name
+        # up to its message's boundary is masked, never just a first word.
+        cases = {
+            b"sshd[1]: Connection closed by invalid user two words 192.0.2.9 port 22 [preauth]\n": (
+                b"sshd[1]: Connection closed by invalid user [MASKED:unknown_user] 192.0.2.9"
+                b" port 22 [preauth]\n"
+            ),
+            b"sshd[1]: Disconnected from invalid user pass word [preauth]\n": (
+                b"sshd[1]: Disconnected from invalid user [MASKED:unknown_user] [preauth]\n"
+            ),
+            b"login[2]: FAILED LOGIN 1 FROM tty1 FOR 'root'hunter2', User not known\n": (
+                b"login[2]: FAILED LOGIN 1 FROM tty1 FOR [MASKED:unknown_user], User not known\n"
+            ),
+            b"su[3]: user two words does not exist or the user entry is bad\n": (
+                b"su[3]: user [MASKED:unknown_user] does not exist or the user entry is bad\n"
+            ),
+            b"sshd[4]: pam_sss(sshd:auth): received for user a b:c: 10 (User not known)\n": (
+                b"sshd[4]: pam_sss(sshd:auth): received for user [MASKED:unknown_user]: 10"
+                b" (User not known)\n"
+            ),
+        }
+        for line, expected in cases.items():
+            self.assertEqual(self.mask(line)[0], expected, line)
+
+    def test_failed_login_rules_stay_fast_on_hostile_lines(self):
+        line = b"invalid user " * 50000 + b"\n"
+        started = time.monotonic()
+        self.mask(line)
+        self.assertLess(time.monotonic() - started, 5)
+
     def test_each_rule(self):
         cases = [
             (b"export DB_PASSWORD=hunter2\n", b"hunter2", "password"),

@@ -22,7 +22,11 @@ password typed in the wrong box, so in failed-login messages — sshd's
 `Invalid user X` and `… for invalid user X` (or `illegal user`), login's
 `FAILED LOGIN … FOR 'X'`, su's `user X does not exist`, pam_sss's
 `received for user X: … (User not known …)` — the name is masked as
-`unknown_user` unless it is an `/etc/passwd` account name. This rule runs
+`unknown_user` unless it is an `/etc/passwd` account name. The name is taken
+whole, up to the fixed text its message puts after it (` from <address>
+port`, `', `, ` does not exist`, `: <code> (User not known`), never as a
+single word, since a typed password can hold spaces, colons and quotes; it
+is bounded at 256 characters, so matching stays linear. This rule runs
 first, so it judges the name as written. Two fixed vocabularies are never masked, because they look like
 `key=value` settings but can't hold a secret and are exactly what the checks
 compare: sudo's `NOPASSWD:` and `PASSWD:` tags in a line that is a sudo rule

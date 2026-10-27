@@ -140,10 +140,14 @@ every location set inside a `Match` block, since those apply to some logins.
 expanded for every account (`%h`, `%u`, `%U`, `~`). For each key file found:
 
 - `authorized_key`, one per key: account, file, line, key type, the
-  SHA-256 fingerprint exactly as `ssh-keygen -l` and sshd's logs show it,
-  the key's size in bytes, its options (masked) and the option names, and
-  its comment (masked). If the type on the line and the type inside the key
-  differ, both are given.
+  SHA-256 fingerprint exactly as `ssh-keygen -l` and sshd's logs show it
+  (for a certificate, the fingerprint of the key inside it, as OpenSSH
+  gives it, with `certificate: true`), the key's size in bytes, its options
+  as a list of names and values — each value decoded as sshd decodes it and
+  then masked; for `environment`, the whole value is masked when the
+  variable's name looks like a secret; an option sshd doesn't know is
+  masked and marked `known: false` — and its comment (masked). If the type
+  on the line and the type inside the key differ, both are given.
 - `authorized_keys_file`: the file's owner, mode, size, times and inode, the
   number of keys, and the line numbers of lines that are not keys.
 - `ssh_dir`: facts about each home's `.ssh` directory.
@@ -172,6 +176,16 @@ masked; and a directory walk (see "Directory walks") of each PAM module
 directory found (`/usr/lib64/security`, `/usr/lib/<architecture>/security`
 and their `/lib` equivalents, each walked once at its real location), with
 the SHA-256 of every file up to 8 MiB.
+
+## Protected files
+
+`/etc/shadow`, `/etc/gshadow`, their `-` backups, `/etc/security/opasswd`
+(old password hashes) and every account's shell history files are
+collected only as status or metadata. Any file the collector would send is
+checked against them *after* it is opened, by device and inode, so no
+configuration link or hard link can carry their contents out: such a file
+is described (`unreadable_file`, "is (or links to) a protected file")
+instead.
 
 ## Configuration files that are links
 

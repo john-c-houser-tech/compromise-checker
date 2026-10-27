@@ -318,6 +318,13 @@ class Run:
         self.since = parse_time(settings["since"])
         self.source_bytes = int(settings["limits"]["source_bytes"])
         self.deadline = deadline
+        self._protected = None
+
+    def protected(self):
+        """Inodes of files whose contents are never sent (see protected_inodes)."""
+        if self._protected is None:
+            self._protected = protected_inodes()
+        return self._protected
 
     def out_of_time(self):
         return time.monotonic() >= self.deadline
@@ -528,6 +535,14 @@ def send_file(run, module, absolute):
     except (OSError, ValueError) as exc:
         details = describe_unreadable(absolute)
         details["reason"] = str(exc)
+        run.stream.record(module, "unreadable_file", details)
+        return False
+    if (info.st_dev, info.st_ino) in run.protected():
+        # The file actually opened — through any link or hard link — is one
+        # collected as status or metadata only: never send its text.
+        raw.close()
+        details = describe_unreadable(absolute)
+        details["reason"] = "is (or links to) a protected file; its contents are never sent"
         run.stream.record(module, "unreadable_file", details)
         return False
 
@@ -1335,6 +1350,34 @@ def read_accounts():
     return accounts, malformed
 
 
+# Files collected only as status or metadata (policy §7): password hashes
+# and old ones, and shell history. send_file refuses them by inode, so no
+# configuration link or hard link can carry their contents out.
+PROTECTED_FILES = (
+    "/etc/shadow",
+    "/etc/shadow-",
+    "/etc/gshadow",
+    "/etc/gshadow-",
+    "/etc/security/opasswd",
+)
+
+
+def protected_inodes():
+    candidates = list(PROTECTED_FILES)
+    accounts, _ = read_accounts()
+    for home in sorted({a["home"] for a in accounts or () if a["home"]}):
+        candidates.extend(_join(home, name) for name in HISTORY_FILES)
+    inodes = set()
+    for absolute in candidates:
+        try:
+            info = os.stat(path(absolute))
+        except OSError:
+            continue
+        if stat.S_ISREG(info.st_mode):
+            inodes.add((info.st_dev, info.st_ino))
+    return inodes
+
+
 HISTORY_FILES = (
     ".bash_history",
     ".zsh_history",
@@ -1542,9 +1585,32 @@ def module_sudoers(run):
 # --- SSH ------------------------------------------------------------------------------
 
 _SSH_KEY_TYPE = re.compile(
-    r"^(?:ssh-(?:rsa|dss|ed25519|ed448)|ecdsa-sha2-nistp(?:256|384|521)"
-    r"|sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com)"
-    r"(?:-cert-v01@openssh\.com)?$"
+    r"^(?:(?:ssh-(?:rsa|dss|ed25519|ed448)|ecdsa-sha2-nistp(?:256|384|521))"
+    r"(?:-cert-v01@openssh\.com)?"
+    r"|sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)(?:-cert-v01)?@openssh\.com)$"
+)
+# Public-key fields after the nonce in a certificate, by plain key type
+# (OpenSSH PROTOCOL.certkeys): what the plain key's blob is rebuilt from.
+_CERT_KEY_FIELDS = {
+    "ssh-rsa": 2,
+    "ssh-dss": 4,
+    "ecdsa-sha2-nistp256": 2,
+    "ecdsa-sha2-nistp384": 2,
+    "ecdsa-sha2-nistp521": 2,
+    "ssh-ed25519": 1,
+    "sk-ecdsa-sha2-nistp256@openssh.com": 3,
+    "sk-ssh-ed25519@openssh.com": 2,
+}
+# Options sshd accepts in authorized_keys; a line with any other is ignored.
+SSH_KEY_OPTIONS = frozenset(
+    "agent-forwarding cert-authority command environment expiry-time from"
+    " no-agent-forwarding no-port-forwarding no-pty no-touch-required no-user-rc"
+    " no-x11-forwarding permitlisten permitopen port-forwarding principals pty restrict"
+    " tunnel user-rc verify-required x11-forwarding".split()
+)
+# Variable names whose values are secrets (as in the masking rules).
+_SECRET_NAME = re.compile(
+    r"(?i:password|passwd|secret|token|api[_-]?key|apikey|access[_-]?key|auth(?!orization))|pwd"
 )
 DEFAULT_AUTHORIZED_KEYS = (".ssh/authorized_keys", ".ssh/authorized_keys2")
 MAX_KEY_FILE_BYTES = 1024 * 1024
@@ -1566,8 +1632,16 @@ def _split_token(text):
     return text, ""
 
 
-def _option_names(options):
-    names, current, quoted, escaped = [], "", False, False
+def _mask_str(text):
+    return mask_text(text.encode("utf-8"))[0].decode("utf-8", "replace")
+
+
+def ssh_key_options(options):
+    """authorized_keys options as a list of {"name", "value"}, each value
+    decoded as sshd decodes it and only then masked, so a quoted secret
+    can't leave a fragment behind. An option sshd doesn't know (which makes
+    it ignore the line) is masked and marked "known": false."""
+    items, current, quoted, escaped = [], "", False, False
     for char in options + ",":
         if escaped:
             escaped = False
@@ -1576,11 +1650,66 @@ def _option_names(options):
         elif char == '"':
             quoted = not quoted
         elif char == "," and not quoted:
-            names.append(current.split("=", 1)[0].strip().lower())
+            items.append(current)
             current = ""
             continue
         current += char
-    return [n for n in names if n]
+    result = []
+    for item in items:
+        if not item:
+            continue
+        name, has_value, value = item.partition("=")
+        name = name.strip().lower()
+        if name not in SSH_KEY_OPTIONS:
+            result.append({"name": _mask_str(item), "known": False})
+            continue
+        option = {"name": name}
+        if has_value:
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = value[1:-1].replace('\\"', '"')  # sshd's only escape
+            if name == "environment" and "=" in value:
+                variable, _, setting = value.partition("=")
+                if _SECRET_NAME.search(variable):
+                    value = variable + "=[MASKED:password]"
+                else:
+                    value = variable + "=" + _mask_str(setting)
+            else:
+                value = _mask_str(value)
+            option["value"] = value
+        result.append(option)
+    return result
+
+
+def _ssh_string_end(blob, start):
+    """End of the length-prefixed string at `start`; ValueError if it overruns."""
+    if start + 4 > len(blob):
+        raise ValueError("truncated")
+    end = start + 4 + int.from_bytes(blob[start : start + 4], "big")
+    if end > len(blob):
+        raise ValueError("truncated")
+    return end
+
+
+def plain_key_blob(blob, cert_type):
+    """The plain public key inside a certificate, which is what OpenSSH
+    fingerprints (`ssh-keygen -l`, sshd's logs). None if it can't be read."""
+    if cert_type.startswith("sk-"):  # the plain type keeps its @openssh.com
+        plain = cert_type.replace("-cert-v01", "")
+    else:
+        plain = cert_type.replace("-cert-v01@openssh.com", "")
+    count = _CERT_KEY_FIELDS.get(plain)
+    if count is None:
+        return None
+    try:
+        position = _ssh_string_end(blob, 0)  # the certificate type
+        position = _ssh_string_end(blob, position)  # the nonce
+        start = position
+        for _ in range(count):
+            position = _ssh_string_end(blob, position)
+    except ValueError:
+        return None
+    name = plain.encode("ascii")
+    return len(name).to_bytes(4, "big") + name + blob[start:position]
 
 
 def parse_authorized_key(line):
@@ -1607,16 +1736,21 @@ def parse_authorized_key(line):
     embedded = blob[4 : 4 + length].decode("ascii", errors="replace")
     if not _SSH_KEY_TYPE.match(embedded):
         return None  # not a key inside: never echo what it holds
-    fingerprint = base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
+    certificate = "-cert-v01" in embedded
+    key_blob = plain_key_blob(blob, embedded) if certificate else blob
+    if key_blob is None:
+        return None
+    fingerprint = base64.b64encode(hashlib.sha256(key_blob).digest()).decode("ascii").rstrip("=")
     key = {"type": first, "fingerprint": "SHA256:" + fingerprint, "key_bytes": len(blob)}
+    if certificate:
+        key["certificate"] = True  # fingerprint of the key inside, as OpenSSH gives it
     if embedded != first:
         key["embedded_type"] = embedded  # the line's type and the key's disagree
     if options is not None:
-        key["options"] = mask_text(options.encode("utf-8"))[0].decode("utf-8", "replace")
-        key["option_names"] = _option_names(options)
+        key["options"] = ssh_key_options(options)
     comment = comment.strip()
     if comment:
-        key["comment"] = mask_text(comment.encode("utf-8"))[0].decode("utf-8", "replace")
+        key["comment"] = _mask_str(comment)
     return key
 
 

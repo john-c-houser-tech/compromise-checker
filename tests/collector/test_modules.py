@@ -918,6 +918,34 @@ class ResourceTests(FixtureRoot):
 ED25519 = "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 ED25519_FP = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"  # ssh-keygen -lf
 SHA512_HASH = "$6$saltsalt$" + "x" * 86
+# Real OpenSSH certificates (ssh-keygen -s); a certificate's fingerprint is
+# its plain key's: ssh-keygen -lf gives the same for the key and the cert.
+ED25519_CERT = (
+    "AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAAII/S9Q/WcHPzQr5Kav/ZZkd8qYw8"
+    "byOdqsOFnwOgBFSHAAAAINQeF0lVFvOIeCp1UHjzXXSeCwwAdD32kn8IZPe0Wn+yAAAAAAAAAAAAAAAB"
+    "AAAAA2lkMQAAAAcAAAADamNoAAAAAAAAAAD//////////wAAAAAAAACCAAAAFXBlcm1pdC1YMTEtZm9y"
+    "d2FyZGluZwAAAAAAAAAXcGVybWl0LWFnZW50LWZvcndhcmRpbmcAAAAAAAAAFnBlcm1pdC1wb3J0LWZv"
+    "cndhcmRpbmcAAAAAAAAACnBlcm1pdC1wdHkAAAAAAAAADnBlcm1pdC11c2VyLXJjAAAAAAAAAAAAAAAz"
+    "AAAAC3NzaC1lZDI1NTE5AAAAIGGWE5avKjZdK2uynAxWWzQ1QB0AwlBn1KzXLGMZaSMxAAAAUwAAAAtz"
+    "c2gtZWQyNTUxOQAAAEBqKcbKX3xw0HA4syd233vGiiuJv2XJ+4cuJEwG3gVcA6P5Ch51QrG8dk04oS4h"
+    "C1tN2F6AMq9WTshjDB4NXy0P"
+)
+ED25519_CERT_FP = "SHA256:WZRADrLxX2iLOFnHtOMdDEqFIh4HHjby+TFXwyjKpu8"
+RSA_CERT = (
+    "AAAAHHNzaC1yc2EtY2VydC12MDFAb3BlbnNzaC5jb20AAAAgLi/4clNkpYv4AS3n1RimDkLkbDf3jkmA"
+    "qeETQOZhehUAAAADAQABAAABAQDLmyLxu/CpCPMq7RgAbFuokEpOqcgw3zwvlFdo2gc5z4wE/odHwZR2"
+    "mDXNJusgviOjP6J8sh+N2azAjFQHP3D7clw926AxBh+hXUPXbBk52OJZxWk/C6UYh4ZXENleWRJQ5s1l"
+    "MJUuW+5S1OUf09olSsmNkt5OLBLBp58Y/O0Ntqogt6HIEOxx28u0p7IK5z2IjK0OCWOBYaIry9oNlcly"
+    "0cB4s1Je2EDEUzoE9EMujrwGpw1XKY3BbtSbG3B0McJB1xRsDvn4xfWgTgUzIPFUZ+253xhoBYV6fUqJ"
+    "DxOhllRIj4AHq3UFvQZVLJTPt5oiYsN9Qq+6U9lZnVKQylDDAAAAAAAAAAAAAAABAAAAA2lkMgAAAAcA"
+    "AAADamNoAAAAAAAAAAD//////////wAAAAAAAACCAAAAFXBlcm1pdC1YMTEtZm9yd2FyZGluZwAAAAAA"
+    "AAAXcGVybWl0LWFnZW50LWZvcndhcmRpbmcAAAAAAAAAFnBlcm1pdC1wb3J0LWZvcndhcmRpbmcAAAAA"
+    "AAAACnBlcm1pdC1wdHkAAAAAAAAADnBlcm1pdC11c2VyLXJjAAAAAAAAAAAAAAAzAAAAC3NzaC1lZDI1"
+    "NTE5AAAAIGGWE5avKjZdK2uynAxWWzQ1QB0AwlBn1KzXLGMZaSMxAAAAUwAAAAtzc2gtZWQyNTUxOQAA"
+    "AEDLi95VbgDXTQ8bfiVAQGuGEATTDT+aAOSS7wbzBOAxBzwepm+bn293LuqRbtYnFYW+YPTVgRPg3TUU"
+    "sB1nAqME"
+)
+RSA_CERT_FP = "SHA256:ctvaWHlPTcyYqK1Yu3famfZeo6pfp2KLhXJ0kuSKIGE"
 YESCRYPT_HASH = "$y$j9T$salt$" + "y" * 43
 
 PASSWD = (
@@ -1134,8 +1162,14 @@ class SshTests(FixtureRoot):
         records = [json.loads(line) for line in raw.splitlines()]
         # root and toor share /root, so each key is reported for both accounts.
         first, second = [k for k in self.keys(records) if k["account"] == "root"]
-        self.assertEqual(first["option_names"], ["from", "command", "no-pty"])
-        self.assertIn("--token=[MASKED:password]", first["options"])
+        self.assertEqual(
+            first["options"],
+            [
+                {"name": "from", "value": "10.0.0.0/8"},
+                {"name": "command", "value": "backup --token=[MASKED:password] now"},
+                {"name": "no-pty"},
+            ],
+        )
         self.assertEqual(first["comment"], "deploy key")
         self.assertEqual(second["embedded_type"], "ssh-ed25519")  # the line says ssh-rsa
         facts = records_named(records, "authorized_keys_file")
@@ -1182,6 +1216,47 @@ class SshTests(FixtureRoot):
         )
         (key,) = self.keys(collect(self.root, ["ssh"]))
         self.assertEqual((key["fingerprint"], key["comment"]), (ED25519_FP, "jch@laptop"))
+
+    def test_option_values_are_decoded_before_masking(self):
+        collector = load_collector(self.root)
+        options = collector.ssh_key_options(
+            'command="backup --password=\\"first TAILSECRET\\"",'
+            'environment="APP_PASSWORD=first TAILSECRET",environment="LANG=C.UTF-8",'
+            "ghp_" + "a" * 36 + "=x"
+        )
+        self.assertNotIn("TAILSECRET", json.dumps(options))
+        self.assertNotIn("a" * 36, json.dumps(options))
+        self.assertEqual(options[0]["value"], "backup --password=[MASKED:password]")
+        self.assertEqual(options[1]["value"], "APP_PASSWORD=[MASKED:password]")
+        self.assertEqual(options[2]["value"], "LANG=C.UTF-8")
+        self.assertEqual(options[3]["known"], False)
+
+    def test_certificates_fingerprint_their_key_like_openssh(self):
+        collector = load_collector(self.root)
+        for line, fingerprint in (
+            ("ssh-ed25519-cert-v01@openssh.com " + ED25519_CERT, ED25519_CERT_FP),
+            ("ssh-rsa-cert-v01@openssh.com " + RSA_CERT, RSA_CERT_FP),
+        ):
+            key = collector.parse_authorized_key(line)
+            self.assertEqual((key["fingerprint"], key["certificate"]), (fingerprint, True))
+
+    def test_security_key_certificate_types(self):
+        collector = load_collector(self.root)
+
+        def string(data):
+            return len(data).to_bytes(4, "big") + data
+
+        cert_type = "sk-ssh-ed25519-cert-v01@openssh.com"
+        fields = string(b"\x01" * 32) + string(b"ssh:")
+        blob = string(cert_type.encode()) + string(b"nonce") + fields + string(b"rest")
+        line = cert_type + " " + base64.b64encode(blob).decode()
+        key = collector.parse_authorized_key(line)
+        plain = string(b"sk-ssh-ed25519@openssh.com") + fields
+        expected = base64.b64encode(hashlib.sha256(plain).digest()).decode().rstrip("=")
+        self.assertEqual(key["fingerprint"], "SHA256:" + expected)
+        self.assertTrue(
+            collector._SSH_KEY_TYPE.match("sk-ecdsa-sha2-nistp256-cert-v01@openssh.com")
+        )
 
     def test_blob_that_is_not_a_key_is_not_echoed(self):
         self.write("etc/ssh/sshd_config", b"")
@@ -1281,6 +1356,27 @@ class PamTests(FixtureRoot):
         records = collect(self.root, ["pam"])
         files = [f["path"] for f in records_named(records, "module_file")]
         self.assertEqual(files, ["/usr/lib/security", "/usr/lib/security/pam_unix.so"])
+
+    def test_config_links_never_carry_protected_files(self):
+        self.write("etc/passwd", PASSWD.encode())
+        self.write("etc/shadow", ("jch:" + SHA512_HASH + ":20000:0:99999:7:::\n").encode())
+        self.write("home/jch/.bash_history", b"mysql -uroot -phunter2\n")
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.symlink("../shadow", Path(self.root, "etc/pam.d/leak"))
+        os.link(Path(self.root, "etc/shadow"), Path(self.root, "etc/pam.d/hardlink"))
+        os.symlink("../../home/jch/.bash_history", Path(self.root, "etc/pam.d/history"))
+        self.write("etc/pam.d/sshd", b"auth required pam_unix.so\n")
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["pam"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        for secret in (b"saltsalt", b"hunter2"):
+            self.assertNotIn(secret, raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(sorted(sources(records)), ["/etc/pam.d/sshd"])
+        refused = [r["path"] for r in records_named(records, "unreadable_file")]
+        self.assertEqual(
+            sorted(refused), ["/etc/pam.d/hardlink", "/etc/shadow", "/home/jch/.bash_history"]
+        )
 
     def test_too_many_pam_files_is_a_recorded_gap(self):
         for name in ("a", "b", "c"):

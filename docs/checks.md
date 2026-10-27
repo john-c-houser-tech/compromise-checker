@@ -134,9 +134,10 @@ Beside the findings, each assessment says what the collection couldn't see
 - a time zone assumed;
 - the tool's own login not recognised (NAT).
 
-It also gives each log's reach: the first and last event times from the
-authentication log, the authentication journal, the system journal and the
-login records.
+It also gives each log's reach: the first and last times of the events the
+checks use, from the authentication log, the authentication journal, the
+system journal and the login records. Lines no check uses aren't counted,
+so a quiet log can reach further back than this says.
 
 ## Assessments
 

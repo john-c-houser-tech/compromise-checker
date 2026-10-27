@@ -123,7 +123,10 @@ include access tokens, and sometimes secrets typed into commands.
   collected as masked text, but each `at` job's stored copy of the
   submitting user's environment is left out; only the variable names are
   kept. Start-up files and systemd units in home directories are collected
-  as metadata and a SHA-256 fingerprint only, never as text.
+  as metadata and a SHA-256 fingerprint only, unless your organization
+  chooses during setup to collect their text too; then only for root,
+  service accounts and accounts with administrator rights, unless you also
+  enable it for ordinary users. Secret masking always applies.
 - **Secret masking.** Before evidence leaves the server, the collector
   replaces text matching these patterns with a marker such as
   `[MASKED:password]`:

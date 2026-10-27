@@ -488,10 +488,12 @@ class Run:
         self.settings = settings
         self.since = parse_time(settings["since"])
         self.source_bytes = int(settings["limits"]["source_bytes"])
+        # Text of home start-up files and user units (policy §7), opt-in.
+        self.home_text = settings.get("home_text") or "off"
         self.deadline = deadline
         self._protected = None
 
-    def refusal(self, opened, info, key_file=False, spool=False, walked=False):
+    def refusal(self, opened, info, key_file=False, spool=False, walked=False, home=None):
         """Why the contents of a file just opened (its path after links, its
         fstat) must not be read, or None. These rules don't depend on knowing
         every history file on the server:
@@ -503,13 +505,16 @@ class Run:
           could be any file. A file merely found in a walked directory
           (`walked`) gets no exception at all — ownership alone can't vouch
           for it, since root's shell can write a history file into a user's
-          home (`su` without `-` keeps HOME);
+          home (`su` without `-` keeps HOME), and none for a home's files;
         - configuration and logs are read only from system locations, so a
           link can't carry a history file or anything else out;
         - nothing named like a shell history file is read, and the history
           files of /etc/passwd accounts are refused by inode, under any name;
         - nothing inside an account's home is read as configuration, even
-          where that home lies in a system location."""
+          where that home lies in a system location. Only the opt-in text of
+          a home's start-up files and user units is read there (`home`:
+          that home's prefixes and those of homes not covered), and only
+          inside that home, never inside another one the opt-in leaves out."""
         if self._protected is None:
             self._protected = protected_inodes()
         inodes, homes = self._protected
@@ -518,11 +523,20 @@ class Run:
         if opened.rsplit("/", 1)[-1] in _HISTORY_NAMES:
             return "is a shell history file; its contents are never read"
         if info.st_nlink > 1 and (
-            walked or not (opened.startswith("/usr/") and info.st_uid == PACKAGE_OWNER_UID)
+            walked
+            or home is not None
+            or not (opened.startswith("/usr/") and info.st_uid == PACKAGE_OWNER_UID)
         ):
             return "is hard-linked, so it could be a protected file; its contents are never read"
         if key_file:
             return None
+        if home is not None:
+            paths, others = home
+            if opened.startswith(others):
+                return "is inside another account's home, whose text is not collected"
+            if opened.startswith(paths):
+                return None
+            return "is outside the home directory whose text is collected"
         if spool:
             # Only the cron module's own spool reads, which classify each
             # file (crontab, at job, job output) by where it lies; no link
@@ -726,7 +740,9 @@ def pump_lines(run, writer, reader, transform=None):
             return "size"  # whole lines only: the one that doesn't fit is left out
 
 
-def send_file(run, module, absolute, text_only=False, rewrite=None, spool=False, walked=False):
+def send_file(
+    run, module, absolute, text_only=False, rewrite=None, spool=False, walked=False, home=None
+):
     """Send one file as a source: decompressed, masked, chunked, capped.
     Returns True if sent, False if it could not be read (recorded instead).
     Raises ModuleTimeout after closing the source cleanly if time runs out.
@@ -737,7 +753,9 @@ def send_file(run, module, absolute, text_only=False, rewrite=None, spool=False,
     still masked; a longer file is not sent. With `spool`, the file must lie
     in cron's or at's spool instead of a system location; with `walked`, it
     was found by walking a directory, not named by configuration, so no hard
-    link is read (Run.refusal)."""
+    link is read; with `home` (see homes_for), it is a home file whose text
+    the opt-in allows, and must lie in that home and in no home the opt-in
+    doesn't cover (Run.refusal)."""
     suffix = os.path.splitext(absolute)[1]
     if suffix in _COMPRESSED and suffix not in _OPENERS:
         details = describe_unreadable(absolute)
@@ -754,7 +772,7 @@ def send_file(run, module, absolute, text_only=False, rewrite=None, spool=False,
         details["reason"] = str(exc)
         run.stream.record(module, "unreadable_file", details)
         return False
-    refusal = run.refusal(absolute, info, spool=spool, walked=walked)
+    refusal = run.refusal(absolute, info, spool=spool, walked=walked, home=home)
     if refusal:
         # The file actually opened — through any link or hard link — is one
         # collected as status or metadata only: never send its text.
@@ -2257,6 +2275,156 @@ def module_sudoers(run):
             pending.extend((_join(target, n), depth + 1) for n in names[:MAX_DIR_FILES])
 
 
+# Who the home_text opt-in's "privileged" setting covers (policy §7: root,
+# service accounts and accounts with administrator rights).
+ADMIN_GROUPS = ("sudo", "wheel", "admin")
+_SUDO_NOT_A_RULE = re.compile(r"^\s*(?:Defaults|Host_Alias|Runas_Alias|Cmnd_Alias|Cmd_Alias)\b")
+_SUDO_USER_ALIAS = re.compile(r"^\s*User_Alias\s+(.*)$")
+_SUDO_RULE_USERS = re.compile(r"^\s*((?:(?:\\.|[^\s,\\])+\s*,\s*)*(?:\\.|[^\s,\\])+)\s+\S[^=]*=")
+_SUDO_TOKEN_SPLIT = re.compile(r"(?<!\\),")
+
+
+def _sudo_unescape(token):
+    return re.sub(r"\\(.)", r"\1", token.strip())
+
+
+def sudo_grantees(run):
+    """Users and groups that sudoers rules grant rights to, read the way
+    sudo reads them (includes followed, User_Alias expanded): (user names,
+    group names, uids, gids, everyone). Read for names only; nothing of it
+    is sent. Negated entries are ignored (they take rights away)."""
+    users, groups, uids, gids = set(), set(), set(), set()
+    aliases, rule_tokens = {}, []
+    seen, pending = set(), [("/etc/sudoers", 0)]
+    while pending and not run.out_of_time():
+        absolute, depth = pending.pop(0)
+        if absolute in seen or depth > MAX_INCLUDE_DEPTH:
+            continue
+        seen.add(absolute)
+        resolved, risk = resolve_links(absolute)
+        if risk:
+            continue
+        text = read_small(resolved, CONFIG_FILE_BYTES) or ""
+        text = re.sub(r"\\\n", " ", text)  # continued lines
+        for line in text.splitlines():
+            include = _SUDO_INCLUDE.match(line)
+            if include:
+                target = _sudo_include_path(include.group(2), absolute)
+                if include.group(1) == "include":
+                    pending.append((target, depth + 1))
+                    continue
+                directory, risk = resolve_links(target)
+                if risk:
+                    continue
+                try:
+                    names, _ = list_directory(directory, MAX_DIR_FILES, run)
+                except OSError:
+                    continue
+                pending.extend((_join(target, n), depth + 1) for n in names if _sudo_reads(n))
+                continue
+            line = re.sub(r"(?<!\\)#.*$", "", line)
+            alias = _SUDO_USER_ALIAS.match(line)
+            if alias:
+                for definition in alias.group(1).split(":"):
+                    name, _, members = definition.partition("=")
+                    aliases[name.strip()] = [
+                        _sudo_unescape(t) for t in _SUDO_TOKEN_SPLIT.split(members)
+                    ]
+                continue
+            if _SUDO_NOT_A_RULE.match(line):
+                continue
+            rule = _SUDO_RULE_USERS.match(line)
+            if rule:
+                rule_tokens.extend(
+                    _sudo_unescape(t) for t in _SUDO_TOKEN_SPLIT.split(rule.group(1))
+                )
+    everyone = False
+    expanded, stack = set(), list(rule_tokens)
+    while stack:
+        token = stack.pop()
+        if not token or token.startswith("!") or token in expanded:
+            continue
+        expanded.add(token)
+        if token in aliases:
+            stack.extend(aliases[token])
+        elif token == "ALL":  # noqa: S105 - sudo's keyword, not a password
+            everyone = True
+        elif token.startswith("%#") and token[2:].isdigit():
+            gids.add(int(token[2:]))
+        elif token.startswith("%:"):
+            groups.add(token[2:])
+        elif token.startswith("%"):
+            groups.add(token[1:])
+        elif token.startswith("#") and token[1:].isdigit():
+            uids.add(int(token[1:]))
+        elif not token.startswith("+"):  # netgroups aren't resolved
+            users.add(token)
+    return users, groups, uids, gids, everyone
+
+
+def _login_defs_uid_range():
+    """(UID_MIN, UID_MAX) from /etc/login.defs: outside it, an account is
+    a system (service) account."""
+    values = {"UID_MIN": 1000, "UID_MAX": 60000}
+    for line in (read_small("/etc/login.defs") or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] in values and parts[1].isdigit():
+            values[parts[0]] = int(parts[1])
+    return values["UID_MIN"], values["UID_MAX"]
+
+
+def _short_names(name):
+    """A user name and its short forms: alice@corp.example and CORP\\alice
+    are alice too."""
+    return {name, name.split("@", 1)[0], name.rsplit("\\", 1)[-1]}
+
+
+def privileged_accounts(run, accounts):
+    """The accounts the opt-in's "privileged" setting covers, as (local
+    account names, names from sudoers for homes without a local account):
+    UID 0; service accounts (UIDs outside login.defs' range for people);
+    members of the sudo, wheel or admin groups; and users and local groups
+    sudoers grants rights to. A domain group's members can't be seen
+    without asking the directory, which the collector never does."""
+    uid_min, uid_max = _login_defs_uid_range()
+    users, groups, uids, gids, everyone = sudo_grantees(run)
+    text, _ = read_whole_lines("/etc/group", ACCOUNT_FILE_BYTES)
+    admin_gids, members = set(gids), set()
+    for line in (text or "").splitlines():
+        fields = line.split(":")
+        if len(fields) != 4:
+            continue
+        if fields[0] in ADMIN_GROUPS or fields[0] in groups or _days(fields[2]) in gids:
+            admin_gids.add(_days(fields[2]))
+            members.update(m for m in fields[3].split(",") if m)
+    sudo_names = set()
+    for user in users:
+        sudo_names |= _short_names(user)
+    names = set()
+    for account in accounts:
+        uid = account["uid"]
+        if (
+            everyone
+            or (uid is not None and (uid == 0 or uid < uid_min or uid > uid_max or uid in uids))
+            or account["gid"] in admin_gids
+            or account["name"] in members
+            or account["name"] in sudo_names
+        ):
+            names.add(account["name"])
+    return names, (sudo_names | ({"ALL"} if everyone else set()))
+
+
+def covers_home(home, privileged, sudo_names):
+    """Whether "privileged" covers this home: one of its accounts is, or, for
+    a home with no local account (a domain user's), sudoers names a user
+    whose name is the home's directory name (or grants everyone)."""
+    if set(home["accounts"]) & privileged:
+        return True
+    if home["source"] == "directory":
+        return "ALL" in sudo_names or home["home"].rstrip("/").rsplit("/", 1)[-1] in sudo_names
+    return False
+
+
 # --- SSH ------------------------------------------------------------------------------
 
 _SSH_KEY_TYPE = re.compile(
@@ -2808,7 +2976,9 @@ def _text(relative):
     return True
 
 
-def collect_tree(run, module, top, seen, max_depth=4, choose=_text, extra=None, spool=False):
+def collect_tree(
+    run, module, top, seen, max_depth=4, choose=_text, extra=None, spool=False, home=None
+):
     """Walk one directory (see "Directory walks"), recording each entry as a
     `file` record, then send the text of the small text files in it, masked.
     `choose(relative path)` says what to send of each regular file: True for
@@ -2817,8 +2987,9 @@ def collect_tree(run, module, top, seen, max_depth=4, choose=_text, extra=None, 
     inode: /lib/systemd/system is often /usr/lib/systemd/system) and the
     files already sent (by path), so each is done once per module; a linked
     top is recorded as a `config_link` (with `extra`) even when its target
-    was walked already. `spool` marks cron's spool walks (see send_file). A
-    missing top is skipped without a record."""
+    was walked already. `spool` marks cron's spool walks and `home` a home
+    whose text the opt-in allows (see send_file). A missing top is skipped
+    without a record."""
     directory, risk = resolve_links(top)
     if risk:
         run.stream.record(module, "not_examined", {"path": top, "reason": risk})
@@ -2897,7 +3068,16 @@ def collect_tree(run, module, top, seen, max_depth=4, choose=_text, extra=None, 
             continue
         seen.add(absolute)
         rewrite = None if what is True else what
-        send_file(run, module, absolute, text_only=True, rewrite=rewrite, spool=spool, walked=True)
+        send_file(
+            run,
+            module,
+            absolute,
+            text_only=True,
+            rewrite=rewrite,
+            spool=spool,
+            walked=True,
+            home=home,
+        )
 
 
 def send_config_files(run, module, names, seen):
@@ -3063,18 +3243,53 @@ def _home_fields(home):
 
 
 def homes_for(run, module):
-    """The home directories to look in, after recording the search."""
+    """The home directories to look in, after recording the search. Each
+    carries "text" when the home_text opt-in covers it, else None: (its path
+    prefixes, itself and where it leads; the prefixes of every home not
+    covered, which stay closed even inside it). A `home_text` record says
+    which homes are covered."""
     accounts, _ = read_accounts()
     if accounts is None:
         raise OSError("/etc/passwd could not be read")
     homes, summary = discover_homes(accounts, run)
     run.stream.record(module, "homes", summary)
-    return [home for home in homes if not home.get("skipped")]
+    homes = [home for home in homes if not home.get("skipped")]
+    privileged, privileged_names = set(), set()
+    if run.home_text == "privileged":
+        privileged, privileged_names = privileged_accounts(run, accounts)
+    covered, prefixes = [], {}
+    for home in homes:
+        resolved, risk = resolve_links(home["home"])
+        paths = {home["home"]} if risk else {home["home"], resolved}
+        prefixes[home["home"]] = tuple(sorted(p.rstrip("/") + "/" for p in paths))
+    for home in homes:
+        home["text"] = None
+        # "/" as a home (some service accounts') would make every file one
+        # of its own: never a home for text.
+        if home["home"].rstrip("/") and (
+            run.home_text == "all" or covers_home(home, privileged, privileged_names)
+        ):
+            covered.append(home["home"])
+    for home in homes:
+        if home["home"] not in covered:
+            continue
+        # A broad home (/var, /home) holds other accounts' homes: those
+        # stay closed unless covered themselves.
+        others = tuple(
+            prefix
+            for other, other_prefixes in prefixes.items()
+            if other != home["home"] and other not in covered
+            for prefix in other_prefixes
+        )
+        home["text"] = (prefixes[home["home"]], others)
+    run.stream.record(module, "home_text", {"setting": run.home_text, "homes": covered})
+    return homes
 
 
 def module_systemd(run):
     """systemd units, timers and generators in every system and user unit
-    directory, masked; users' own units in their homes as hashes only."""
+    directory, masked; users' own units in their homes as hashes, and as
+    masked text only where the home_text opt-in covers the home."""
     module = "systemd"
     seen = set()
     send_config_files(run, module, SYSTEMD_FILES, seen)
@@ -3089,8 +3304,9 @@ def module_systemd(run):
                 _join(home["home"], relative),
                 seen,
                 max_depth=4,
-                choose=_no_text,
+                choose=_text if home["text"] else _no_text,
                 extra=_home_fields(home),
+                home=home["text"],
             )
 
 
@@ -3177,7 +3393,7 @@ def home_file_facts(run, absolute):
     if not stat.S_ISREG(info.st_mode):
         facts["hash_skipped"] = "not a regular file"
         return facts
-    refusal = run.refusal(target, info, key_file=True)
+    refusal = run.refusal(target, info, key_file=True, walked=True)
     if refusal:
         facts["hash_skipped"] = refusal
     elif info.st_size > 8 << 20:
@@ -3191,10 +3407,45 @@ def home_file_facts(run, absolute):
     return facts
 
 
+# Files of `NAME=value` settings: their values are left out, as in at jobs,
+# except for the variables whose value is the evidence (SSH_ENV_VALUES_SENT).
+HOME_ENVIRONMENT_FILES = (".ssh/environment", ".pam_environment")
+_ENV_LINE = re.compile(rb"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def environment_without_values(data):
+    """An environment file with every value withheld except those of the
+    variables in SSH_ENV_VALUES_SENT; comments and blank lines are kept."""
+    out = []
+    for line in data.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped or stripped.startswith(b"#"):
+            out.append(line)
+            continue
+        match = _ENV_LINE.match(line)
+        if match and match.group(1).decode() in SSH_ENV_VALUES_SENT:
+            out.append(line)
+        elif match:
+            out.append(match.group(1) + b" [collector: value withheld]\n")
+        else:
+            out.append(b"[collector: line withheld]\n")
+    return b"".join(out)
+
+
+def send_home_text(run, module, absolute, relative, home, seen):
+    """Send a home start-up file's text under the opt-in (once per module)."""
+    if absolute in seen:
+        return
+    seen.add(absolute)
+    rewrite = environment_without_values if relative in HOME_ENVIRONMENT_FILES else None
+    send_file(run, module, absolute, text_only=True, rewrite=rewrite, home=home["text"])
+
+
 def module_startup(run):
     """Boot scripts, login shell start-up files, the dynamic loader's
     preload and search paths, and update-motd.d, masked; start-up files in
-    homes as hashes only."""
+    homes as hashes, and as masked text only where the home_text opt-in
+    covers the home."""
     module = "startup"
     seen = set()
     send_config_files(run, module, STARTUP_FILES, seen)
@@ -3210,9 +3461,13 @@ def module_startup(run):
                 run.stream.record(module, "not_examined", {"path": target, "reason": risk})
                 continue
             facts = home_file_facts(run, target)
-            if facts is not None:
-                facts.update(fields)
-                run.stream.record(module, "home_startup_file", facts)
+            if facts is None:
+                continue
+            facts.update(fields)
+            run.stream.record(module, "home_startup_file", facts)
+            if home["text"] and ("sha256" in facts or "target_sha256" in facts):
+                # Only what was hashed: the same checks have passed.
+                send_home_text(run, module, facts.get("resolved", target), relative, home, seen)
         for relative in HOME_STARTUP_DIRS:
             collect_tree(
                 run,
@@ -3220,8 +3475,9 @@ def module_startup(run):
                 _join(home["home"], relative),
                 seen,
                 max_depth=2,
-                choose=_no_text,
+                choose=_text if home["text"] else _no_text,
                 extra=fields,
+                home=home["text"],
             )
 
 
@@ -3305,6 +3561,8 @@ def settings_problems(settings):
             unknown = [m for m in modules if m not in MODULES]
             if unknown:
                 problems.append("unknown modules: " + ", ".join(unknown))
+    if settings.get("home_text", "off") not in ("off", "privileged", "all"):
+        problems.append("home_text must be off, privileged or all")
     limits = settings.get("limits")
     if not isinstance(limits, dict):
         problems.append("limits must be an object")

@@ -586,3 +586,19 @@ async def test_sealing_does_not_block_other_hosts(server, checker_home, monkeypa
         ticker(),
     )
     assert max(gaps) < 0.3  # the loop kept turning while the bundle was sealed
+
+
+async def test_collect_sends_the_configured_home_text(server, checker_home, monkeypatch):
+    sent = []
+    real = collect_module.build_program
+
+    def capture(settings):
+        sent.append(settings)
+        return real(settings)
+
+    monkeypatch.setattr(collect_module, "build_program", capture)
+    config, _ = initialise(checker_home, home_text="privileged")
+    await collect_hosts(
+        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+    )
+    assert [s.home_text for s in sent] == ["privileged"]

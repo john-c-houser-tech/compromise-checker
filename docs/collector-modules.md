@@ -282,7 +282,42 @@ the first check still has: a home start-up file whose hash differs from the
 `/etc/skel` file of the same name is reported as customised (one that
 matches is known to be unchanged), and any user unit or user autostart entry
 is reported by name, owner and times, since servers rarely have one. Their
-contents are left for a person on the server to read.
+contents are left for a person on the server to read, unless the opt-in
+below collects them.
+
+**Opt-in: home text** (`checker init --home-text`, policy §7). With
+`privileged` or `all`, `startup` also sends the masked text of each home
+start-up file listed above, and `systemd` and `startup` the text of the
+files in the home unit and autostart directories, for the homes it covers;
+each module records which in a `home_text` record. The default, `off`, sends
+none.
+
+- **`privileged`** covers the homes of: UID 0; service accounts (UIDs
+  outside `/etc/login.defs`' `UID_MIN`–`UID_MAX`, 1000–60000 by default);
+  members of the `sudo`, `wheel` and `admin` groups (by membership or
+  primary group); and every user and local group that sudoers grants rights
+  to, read the way sudo reads it (includes followed, `User_Alias` expanded;
+  negated entries ignored; a rule for `ALL` covers everyone). A home with no
+  local account (a domain user's) is covered when sudoers names a user whose
+  name, without `@domain` or `DOMAIN\`, is the home's directory name. A
+  domain group's members (`%domain\ admins`) can't be seen without asking
+  the directory server, which the collector never does, so their homes are
+  covered only by `all`.
+- **`all`** covers every home found.
+
+Only files already hashed are read, under the same protection rules, plus
+three of their own: the file opened must lie inside that home (a link
+leading out of it, to `/opt/shared/profile` say, is described as
+unreadable, not sent); never inside another home the setting doesn't cover,
+even one inside it (service accounts' homes can be broad: `/srv` holding
+`/srv/erin`, `/var`, `/var/www`); and nothing hard-linked is read, even
+under `/usr` (a service account's home can be `/usr/sbin`). `/` as a home
+(some service accounts have it) is never covered. `.ssh/environment` and
+`.pam_environment` are sent with each value replaced by
+`[collector: value withheld]`, except the variables whose value is the
+evidence (`LD_PRELOAD`, `PATH`, `BASH_ENV` and the others listed for
+`authorized_keys` `environment=` options); a line that doesn't start with a
+variable name is withheld whole.
 
 **`at` jobs.** `at` stores a copy of the submitting user's whole environment
 in each job, as `NAME=value; export NAME` lines between the `umask` line and

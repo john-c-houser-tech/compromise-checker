@@ -28,6 +28,8 @@ from pydantic_core import PydanticCustomError
 
 PROTOCOL = 1
 
+HomeText = Literal["off", "privileged", "all"]
+
 
 class _Model(BaseModel):
     # Unknown fields are allowed so a newer collector can add optional fields
@@ -52,6 +54,9 @@ class Settings(_Model):
     since: AwareDatetime
     modules: list[str] | None = None
     limits: Limits
+    # Text of home start-up files and user units (policy §7): never, only
+    # privileged accounts' homes, or every home. Hashes are always sent.
+    home_text: HomeText = "off"
 
 
 # --- Stream records (collector → controller) ----------------------------------

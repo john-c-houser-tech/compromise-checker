@@ -53,6 +53,7 @@ async def collect_hosts(
         since=started - timedelta(days=days),
         modules=None,
         limits=limits,
+        home_text=config.home_text,
     )
     program = build_program(settings)
     fingerprint = collector_sha256()

@@ -12,7 +12,9 @@ it leaves the server (masking rules version 3, listed in the policy §7).
 Masking works on whole lines, so a secret can never be split across two
 reads. Two fixed vocabularies are never masked, because they look like
 `key=value` settings but can't hold a secret and are exactly what the checks
-compare: sudo's `NOPASSWD:` and `PASSWD:` tags (what follows is the command),
+compare: sudo's `NOPASSWD:` and `PASSWD:` tags in a line that is a sudo rule
+(`user host = (runas) TAG: command`; anywhere else, such as a log line,
+`PASSWD: x` is masked like any password label),
 and PAM control flags and `pam_debug` arguments where both the key and the
 value are PAM's own words (`auth_err=die`, `new_authtok_reqd=ok`,
 `auth=authinfo_unavail`). A private key block runs only as long as its lines look like key
@@ -236,8 +238,10 @@ is checked against them *after* it is opened, by device and inode, so no
 configuration link or hard link can carry their contents out: such a file
 is described (`unreadable_file`, "is (or links to) a protected file")
 instead. If the home search was cut short (so a history file might be
-missing from the protected set), the collector fails closed: anything
-hard-linked, or reached inside a home root, is refused the same way.
+missing from the protected set), the collector fails closed: configuration
+and logs are read only from system locations (`/etc`, `/usr`, `/lib`,
+`/lib64`, `/var/log`, `/run`) and never if hard-linked; a key file is
+refused if hard-linked or named like a history file.
 
 ## Network drives and automounted folders
 
@@ -254,8 +258,9 @@ alone and recorded as `not_examined` with the reason (`automount` or
 `network_filesystem`). The check sits where every file-system access goes —
 the function that turns a path on the server into one the operating system
 opens — so no lookup can bypass it: parent directories are resolved one step
-at a time, checking the mount table before each, so a link can't lead the
-collector onto such a mount either; glob patterns are expanded one directory
+at a time, checking the mount table before each, and a final symbolic link's
+destination is checked too, so a link can't lead the collector onto such a
+mount either; glob patterns are expanded one directory
 at a time behind the same check. On a server with no automounted or network
 mounts at all, the check costs nothing.
 

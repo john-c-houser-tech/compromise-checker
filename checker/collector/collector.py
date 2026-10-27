@@ -93,8 +93,9 @@ def path(absolute):
     automounted or network mounts, the parent directories are resolved one
     step at a time and checked first, and UnsafePath is raised for anything
     that would lead onto such a mount. The final component itself is never
-    followed here, so lstat and O_NOFOLLOW keep their meaning. On a server
-    with no such mounts at all, this costs nothing."""
+    followed here, so lstat and O_NOFOLLOW keep their meaning, but where it is
+    a link, its destination is checked too, since listing or opening may
+    follow it. On a server with no such mounts at all, this costs nothing."""
     if absolute.startswith("/") and has_risky_mounts():
         parent, _, name = absolute.rstrip("/").rpartition("/")
         resolved, risk = resolve_links(parent or "/")
@@ -103,6 +104,15 @@ def path(absolute):
         if name:
             absolute = resolved.rstrip("/") + "/" + name
         risk = mount_risk(absolute)
+        if not risk:
+            # Not followed here, but listing, stat or opening it may follow
+            # it: a final link must lead somewhere safe too.
+            try:
+                linked = stat.S_ISLNK(os.lstat(_raw_path(absolute)).st_mode)
+            except OSError:
+                linked = False
+            if linked:
+                _, risk = resolve_links(absolute)
         if risk:
             raise UnsafePath(absolute, risk)
     return _raw_path(absolute)
@@ -186,7 +196,8 @@ def _rule(kind, context, secret):
 _QUOTED = rb'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\''
 
 # Fixed vocabularies that look like key=value secrets but never hold one: sudo's
-# NOPASSWD:/PASSWD: tags (what follows is the command), and PAM's control
+# NOPASSWD:/PASSWD: tags in a sudo rule (what follows is the command; see
+# _SUDO_RULE), and PAM's control
 # flags and pam_debug arguments, where both the key and the value come from
 # PAM's own word list. Masking them would hide exactly what the sudo and PAM
 # checks compare — `auth_err=die` changed to `auth_err=ignore` would look the
@@ -204,8 +215,7 @@ _PAM_DEBUG_ARG = rb"auth|cred|acct|prechauthtok|chauthtok|open_session|close_ses
 # The vocabulary word must be the whole value: `auth_err=die:S3cret` is masked.
 _VALUE_ENDS = rb"(?=[\s\],]|$)"
 _NOT_A_SECRET = (
-    rb"(?!(?:NO)?PASSWD:"
-    rb"|(?:"
+    rb"(?!(?:"
     + _PAM_RETURN
     + rb")=(?:"
     + _PAM_ACTION
@@ -268,6 +278,15 @@ _KEY_LINE = re.compile(rb"^(\s*)" + _BASE64 + rb"(\s*)$")
 _KEY_HEADER = re.compile(rb"(?:^|\s)(?:Proc-Type|DEK-Info):\s")
 # Longer than any real PEM private key (a 16384-bit RSA key is under 200).
 MAX_KEY_LINES = 256
+
+
+# A sudoers rule — "user[,user] host[,host] = …" — is the only place sudo's
+# NOPASSWD:/PASSWD: tags are kept. Log lines begin with a timestamp and can't
+# match; inside a rule, a tag counts only right after ")", "=", "," or another
+# tag. Anywhere else "PASSWD: x" is masked like any password label.
+_SUDO_RULE = re.compile(rb"^\s*[%+]?[\w.@$\\-]+(?:\s*,\s*[%+]?[\w.@$\\-]+)*\s+[\w.@!*,\s-]+?=")
+_SUDO_TAG = re.compile(rb"(?<=[)=,:])(\s*)((?:NO)?PASSWD:)")
+_TAG_HOLD = b"\x00sudo-tag-%d\x00"
 
 
 class Masker:
@@ -346,7 +365,20 @@ class Masker:
                 rest = b"\n" if data.endswith(b"\n") else b""
             # The text before the key still goes through every rule below.
             data = data[: begin.start()] + MASK % b"private_key" + rest
-        return self._apply_rules(data)
+        if not _SUDO_RULE.match(data):
+            return self._apply_rules(data)
+        # A sudo rule: hold its tags aside so the rules can't take them for
+        # password labels, then put them back.
+        tags = []
+
+        def hold(match):
+            tags.append(match.group(2))
+            return match.group(1) + _TAG_HOLD % (len(tags) - 1)
+
+        data = self._apply_rules(_SUDO_TAG.sub(hold, data))
+        for index, tag in enumerate(tags):
+            data = data.replace(_TAG_HOLD % index, tag, 1)
+        return data
 
     def _apply_rules(self, data):
         for kind, pattern in MASKING_RULES:
@@ -389,22 +421,28 @@ class Run:
         self.deadline = deadline
         self._protected = None
 
-    def refusal(self, opened, info):
+    def refusal(self, opened, info, key_file=False):
         """Why the contents of a file just opened (its path after links, its
         fstat) must not be read, or None. A protected file is refused however
         it was reached. If the protected set may be incomplete (the home
-        search was cut short), anything hard-linked or inside a home root is
-        refused too: it could be a history file the search didn't reach."""
+        search was cut short, so a history file may be missing from it), the
+        collector fails closed: configuration and logs are read only from
+        system locations, never anything hard-linked; a key file (whose place
+        is the home directory) is refused if hard-linked or named like a
+        history file."""
         if self._protected is None:
             self._protected = protected_inodes(self)
-        inodes, complete, roots = self._protected
+        inodes, complete = self._protected
         if (info.st_dev, info.st_ino) in inodes:
             return "is (or links to) a protected file; its contents are never read"
-        if not complete:
-            inside = any(opened.startswith(r.rstrip("/") + "/") for r in roots)
-            if info.st_nlink > 1 or inside:
-                return "the home search was cut short, so this could be a protected file"
-        return None
+        if complete:
+            return None
+        reason = "the home search was cut short, so this could be a protected file"
+        if info.st_nlink > 1:
+            return reason
+        if key_file:
+            return reason if opened.rsplit("/", 1)[-1] in _HISTORY_NAMES else None
+        return None if opened.startswith(SYSTEM_LOCATIONS) else reason
 
     def out_of_time(self):
         return time.monotonic() >= self.deadline
@@ -1344,24 +1382,28 @@ def glob_absolute(pattern, skipped=None):
     for part in [p for p in pattern.split("/") if p]:
         following = []
         for base in found:
-            try:
-                if glob.has_magic(part):
+            names = [part]
+            if glob.has_magic(part):
+                try:
                     names = sorted(os.listdir(path(base)))
-                    hidden = part.startswith(".")
-                    names = [
-                        n for n in names if fnmatch.fnmatchcase(n, part) and (hidden or n[0] != ".")
-                    ]
-                else:
-                    names = [part]
-                for name in names:
-                    candidate = _join(base, name)
+                except UnsafePath as exc:
+                    if skipped is not None:
+                        skipped.append({"path": exc.target, "reason": exc.reason})
+                    continue
+                except OSError:
+                    continue
+                hidden = part.startswith(".")
+                names = [
+                    n for n in names if fnmatch.fnmatchcase(n, part) and (hidden or n[0] != ".")
+                ]
+            for name in names:
+                candidate = _join(base, name)
+                try:  # one refused candidate never costs its siblings
                     if os.path.lexists(path(candidate)):
                         following.append(candidate)
-            except UnsafePath as exc:
-                if skipped is not None:
-                    skipped.append({"path": exc.target, "reason": exc.reason})
-            except OSError:
-                continue
+                except UnsafePath as exc:
+                    if skipped is not None:
+                        skipped.append({"path": exc.target, "reason": exc.reason})
         found = following
     return found
 
@@ -1471,6 +1513,11 @@ PROTECTED_FILES = (
 )
 
 
+# Where configuration and logs live. When the protected set may be
+# incomplete, only these are read (see Run.refusal).
+SYSTEM_LOCATIONS = ("/etc/", "/usr/", "/lib/", "/lib64/", "/var/log/", "/run/")
+
+
 def protected_inodes(run=None):
     """(inodes of the protected files, whether every home was searched, the
     home roots). If the home search was cut short, a history file may be
@@ -1492,7 +1539,7 @@ def protected_inodes(run=None):
             continue
         if stat.S_ISREG(info.st_mode):
             inodes.add((info.st_dev, info.st_ino))
-    return inodes, summary["complete"], summary["roots"]
+    return inodes, summary["complete"]
 
 
 HISTORY_FILES = (
@@ -1677,6 +1724,9 @@ def discover_homes(accounts, run=None):
         "not_examined": not_examined,
     }
     return [homes[h] for h in sorted(homes)], summary
+
+
+_HISTORY_NAMES = frozenset(name.rsplit("/", 1)[-1] for name in HISTORY_FILES)
 
 
 def module_accounts(run):
@@ -2231,7 +2281,7 @@ def send_authorized_keys(run, module, account, absolute, extra=None):
         record(module, "unreadable_file", details)
         return
     with raw:
-        refusal = run.refusal(target, info)
+        refusal = run.refusal(target, info, key_file=True)
         if refusal:
             details = describe_unreadable(target)
             details.update({"account": account["name"], "reason": refusal})

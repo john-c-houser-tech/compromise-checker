@@ -472,6 +472,19 @@ class MaskingTests(unittest.TestCase):
             masked, counts = self.mask(line)
             self.assertEqual((masked, counts), (line, {}), line)
 
+    def test_sudo_tags_are_kept_only_in_sudo_rules(self):
+        kept = b"jch ALL = (root) NOPASSWD:SETENV: /bin/a, PASSWD: /bin/b\n"
+        self.assertEqual(self.mask(kept), (kept, {}))
+        for line in (
+            b"app: PASSWD: hunter2\n",
+            b"Oct 26 10:00:00 web01 app[7]: NOPASSWD: hunter2\n",
+            b"user=bob PASSWD: hunter2\n",
+            b"# %wheel ALL=(ALL) NOPASSWD: hunter2\n",
+        ):
+            masked, counts = self.mask(line)
+            self.assertNotIn(b"hunter2", masked, line)
+            self.assertEqual(counts, {"password": 1}, line)
+
     def test_secrets_near_the_exceptions_are_still_masked(self):
         cases = {
             b"auth required pam_debug.so auth=success/S3cret\n": 1,
@@ -1569,6 +1582,27 @@ class DomainHomeTests(FixtureRoot):
         (key,) = records_named(records, "authorized_key")
         self.assertEqual(key["home"], "/home/alice")
 
+    def test_cut_short_search_reads_config_only_from_system_locations(self):
+        for name in ("a", "b", "c"):
+            self.write(f"home/{name}/.bash_history", b"CanaryHistory\n")
+        self.write("srv/elsewhere/.bash_history", b"CanaryHistory\n")
+        self.write("srv/elsewhere/keys", self.key)
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.symlink("../../srv/elsewhere/.bash_history", Path(self.root, "etc/pam.d/x"))
+        self.write("etc/pam.d/sshd", b"auth required pam_unix.so\n")
+        self.write("etc/ssh/sshd_config", b"AuthorizedKeysFile /srv/elsewhere/keys .bash_history\n")
+        collector = load_collector(self.root)
+        collector.MAX_HOME_ENTRIES = 1
+        out = io.BytesIO()
+        collector.main(settings(["pam", "ssh"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"CanaryHistory", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(sorted(sources(records)), ["/etc/pam.d/sshd", "/etc/ssh/sshd_config"])
+        # A key file is still read from wherever sshd reads it.
+        keys = [k["path"] for k in records_named(records, "authorized_key")]
+        self.assertIn("/srv/elsewhere/keys", keys)
+
     def test_linked_unlisted_home_is_followed(self):
         self.write("srv/alice/.ssh/authorized_keys", self.key)
         Path(self.root, "home").mkdir(exist_ok=True)
@@ -1661,6 +1695,37 @@ class MountTests(FixtureRoot):
             self.assertEqual(caught.exception.reason, reason, unsafe)
         for safe in ("/home", "/srv/homes", "/etc/pam.d/sshd", "/proc/self/mountinfo"):
             self.assertEqual(collector.path(safe), os.path.join(self.root, safe.lstrip("/")))
+
+    def test_final_link_onto_a_network_drive_is_refused(self):
+        os.makedirs(Path(self.root, "srv"))
+        os.symlink("../mnt/team", Path(self.root, "srv/conf"))
+        self.write("mnt/team/x.conf", b"PermitRootLogin yes\n")
+        collector = load_collector(self.root)
+        with self.assertRaises(collector.UnsafePath):
+            collector.path("/srv/conf")  # listing it would follow the link
+        self.write("etc/ssh/sshd_config", b"Include /srv/conf/*.conf\n")
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(sorted(sources(records)), ["/etc/ssh/sshd_config"])
+        self.assertIn(("/srv/conf", "network_filesystem"), self.gaps(records))
+
+    def test_one_refused_include_does_not_cost_its_siblings(self):
+        self.write(
+            "proc/self/mountinfo",
+            (
+                MOUNTINFO + "50 22 0:50 / /etc/ssh/sshd_config.d/10-remote.conf rw - nfs4 f:/x rw\n"
+            ).encode(),
+        )
+        self.write("etc/ssh/sshd_config", b"Include /etc/ssh/sshd_config.d/*.conf\n")
+        self.write("etc/ssh/sshd_config.d/10-remote.conf", b"PermitRootLogin yes\n")
+        self.write("etc/ssh/sshd_config.d/20-local.conf", b"PasswordAuthentication no\n")
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(
+            sorted(sources(records)),
+            ["/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/20-local.conf"],
+        )
+        self.assertIn(
+            ("/etc/ssh/sshd_config.d/10-remote.conf", "network_filesystem"), self.gaps(records)
+        )
 
     def gaps(self, records):
         return {(g["path"], g["reason"]) for g in records_named(records, "not_examined")}

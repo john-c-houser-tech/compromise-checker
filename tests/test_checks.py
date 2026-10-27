@@ -282,17 +282,39 @@ def test_authorized_keys():
 
 
 def test_success_after_guessing():
-    events = [ev("ssh.login.failed", i, address="198.51.100.9", user="root") for i in range(4)]
-    events.append(ev("auth.failure", 4, rest=" logname= uid=0 rhost=198.51.100.9 user=root"))
+    def attempt(minute, port):
+        # One wrong password, as sshd and PAM both log it.
+        return [
+            ev("ssh.login.failed", minute, address="198.51.100.9", user="root", port=port),
+            ev("auth.failure", minute, rest=" uid=0 rhost=198.51.100.9 user=root"),
+        ]
+
+    events = [e for i in range(5) for e in attempt(i, 4000 + i)]
     events.append(
-        ev("ssh.login.accepted", 5, address="198.51.100.9", user="root", method="password")
+        ev("ssh.login.accepted", 6, address="198.51.100.9", user="root", method="password")
     )
     events.append(
         ev("ssh.login.accepted", 6, address="203.0.113.1", user="jch", method="publickey")
     )
     [finding] = of(run(events), "ssh.guessed")
     assert finding.band == "high" and "5 failures" in finding.summary
-    assert of(run(events[1:]), "ssh.guessed") == []  # four failures: under the threshold
+    assert finding.first_seen == events[0].corrected
+    # Two typos, each logged three ways, and a "too many" line: not guessing.
+    typos = attempt(0, 4000) + attempt(1, 4000)
+    typos.append(ev("ssh.invalid_user", 1, address="198.51.100.9", user="root", port=4000))
+    typos.append(
+        ev("ssh.login.too_many_failures", 1, address="198.51.100.9", user="root", port=4000)
+    )
+    typos.append(
+        ev("ssh.login.accepted", 2, address="198.51.100.9", user="root", method="password")
+    )
+    assert of(run(typos), "ssh.guessed") == []
+    # Only PAM saw the failures (no sshd lines): they count.
+    pam_only = [ev("auth.failure", i, rest=" rhost=198.51.100.9 user=root") for i in range(5)]
+    pam_only.append(
+        ev("ssh.login.accepted", 6, address="198.51.100.9", user="root", method="password")
+    )
+    assert len(of(run(pam_only), "ssh.guessed")) == 1
 
 
 def test_root_logins_and_new_sources():
@@ -447,10 +469,12 @@ def test_cli_analyze(home, capsys):
 
 
 def test_changes_that_are_not_findings():
-    # An out-of-tree module already there at the baseline: reported then, not again.
+    # An out-of-tree module already there at the baseline: still reported
+    # (the baseline's bundle may never have been analysed), but not as new.
     modules = {"zfs": {"taint": "PO"}}
     same = snap(host={"kernel_taint": {"value": 4097}}, kernel_modules=modules)
-    assert of(run([], same, baseline=same), "kernel.taint") == []
+    [finding] = of(run([], same, baseline=same), "kernel.taint")
+    assert finding.band == "medium" and not finding.new
     # A person's account (UID 1000+) getting a shell is not a service account.
     before = snap(accounts=accounts(ann={"uid": 1002, "shell": "/usr/sbin/nologin"}))
     after = snap(accounts=accounts(ann={"uid": 1002, "shell": "/bin/bash"}))
@@ -459,3 +483,138 @@ def test_changes_that_are_not_findings():
     before = snap(groups={"users": {"members": []}})
     after = snap(groups={"users": {"members": ["bob"]}})
     assert of(run([], after, baseline=before), "group.privileged") == []
+
+
+def test_service_accounts_that_can_log_in_in_every_way():
+    before = snap(
+        accounts=accounts(
+            daemon={"uid": 1, "shell": "/usr/sbin/nologin", "shadow_status": "locked"},
+            nobody={"uid": 65534, "shell": "/usr/sbin/nologin", "shadow_status": "locked"},
+            bin={"uid": 2, "shell": "/usr/sbin/nologin", "password": {"status": "shadowed"}},
+        )
+    )
+    after = snap(
+        accounts=accounts(
+            daemon={"uid": 1, "shell": "", "shadow_status": "locked"},  # empty: /bin/sh
+            nobody={"uid": 65534, "shell": "/usr/sbin/nologin", "shadow_status": "empty"},
+            bin={"uid": 2, "shell": "/usr/sbin/nologin", "password": {"status": "set"}},
+        )
+    )
+    found = of(run([], after, baseline=before), "account.changes")
+    assert sorted(f.summary for f in found) == [
+        "bin (UID 2) gained a password in /etc/passwd",
+        "daemon (UID 1) gained a login shell (/bin/sh)",
+        "nobody (UID 65534) gained no password at all",
+    ]
+
+
+def test_primary_group_root_equivalent():
+    groups = {"sudo": {"gid": 27, "members": []}, "adm": {"gid": 4, "members": []}}
+    before = snap(accounts=accounts(eve={"uid": 1001, "gid": 1001}), groups=groups)
+    after = snap(
+        accounts=accounts(eve={"uid": 1001, "gid": 27}, mal={"uid": 1002, "gid": 0}),
+        groups=groups,
+    )
+    found = of(run([], after, baseline=before), "account.changes")
+    assert sorted((f.title, f.band) for f in found if "primary" in f.title) == [
+        ("A new account whose primary group is root-equivalent", "high"),
+        ("An account's primary group became root-equivalent", "high"),
+    ]
+
+
+def test_new_flags():
+    previous = "2027-01-02T12:30:00+00:00"
+    old, recent = (
+        ev("su.failed", 0, user="a", target="root"),
+        ev("su.failed", 60, user="b", target="root"),
+    )
+    context = Context("h", "b", [old, recent], snap(), previous_time=previous)
+    findings, _ = run_checks(context)
+    assert {f.summary.split(" ")[0]: f.new for f in of(findings, "account.password")} == {
+        "a": False,
+        "b": True,
+    }
+    # A previous bundle that didn't collect a section can't say a change isn't new.
+    partial = Snapshot({"masking_version": 6}, {"host": Section({})})
+    before = snap(accounts=accounts())
+    after = snap(accounts=accounts(eve={"uid": 1001}))
+    [finding] = [
+        f for f in of(run([], after, baseline=before, previous=partial), "account.changes")
+    ]
+    assert finding.new
+
+
+def test_reboots_from_wtmp_when_the_journal_has_one_boot():
+    events = [
+        ev("unit.started", -1, source="system_journal", what="x"),
+        boot(200, "current"),  # a volatile journal: this boot only
+        ev("system.boot", 0, source="login_records:/var/log/wtmp"),
+        ev("system.boot", 100, source="login_records:/var/log/wtmp"),
+    ]
+    [finding] = of(run(events), "system.reboot")
+    assert finding.title.startswith("An unclean reboot") and "wtmp" in finding.summary
+
+
+def test_a_power_button_reboot():
+    events = [
+        ev("unit.started", -1, source="system_journal", what="x"),
+        boot(0, "a"),
+        ev("system.shutdown_requested", 50, source="system_journal"),
+        boot(60, "b"),
+    ]
+    [finding] = of(run(events), "system.reboot")
+    assert finding.title == "A reboot by the power button" and finding.band == "info"
+
+
+def test_core_dump_of_a_journal_event_keeps_its_program():
+    from checker.events import EventBuilder
+    from checker.protocol import SourceStart
+
+    builder = EventBuilder()
+    start = SourceStart(
+        type="source_start", source_id=1, module="system_journal", kind="command", name="j"
+    )
+    builder.line(
+        start,
+        b'{"MESSAGE": "Process 4242 (nginx) of user 33 dumped core.", "SYSLOG_IDENTIFIER":'
+        b' "systemd-coredump", "_COMM": "systemd-coredump", "_UID": "0",'
+        b' "__REALTIME_TIMESTAMP": "1798891200000000"}',
+    )
+    [event] = builder.events
+    assert event.fields["comm"] == "nginx" and event.fields["uid"] == "33"
+    assert event.fields["journal_comm"] == "systemd-coredump"
+    listeners = {"tcp 0.0.0.0:80 netns=host": {"programs": ["nginx"], "uids": [0], "sockets": 1}}
+    [finding] = of(run([event], snap(listeners=listeners)), "kernel.core_dump")
+    assert finding.band == "medium"
+
+
+def test_new_sources_need_earlier_logins():
+    events = [ev("ssh.login.accepted", 0, address="203.0.113.1", user="jch")]
+    # Earlier bundles with no logins at all: "never seen" can't be said.
+    assert of(run(events, earlier=[[], []]), "ssh.login") == []
+
+
+def test_cli_analyze_with_nothing_to_analyze(home, capsys):
+    assert cli.main(["analyze", "--all"]) == 1
+    assert "no host has a usable bundle" in capsys.readouterr().err
+
+
+def test_coverage_names_missing_system_logs(home):
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    gaps = analyze(store, "web01", identity, config.recipients)["coverage"]["gaps"]
+    assert any("no system journal events" in g for g in gaps)
+    assert any("reboots can't be classified" in g for g in gaps)
+
+
+def test_an_invalid_user_attempt_counts_once():
+    # sshd logs an invalid user twice per attempt ("Invalid user", then
+    # "Failed password for invalid user"): three attempts are three.
+    events = []
+    for i in range(3):
+        events.append(ev("ssh.invalid_user", i, address="198.51.100.9", user="x", port=5000 + i))
+        events.append(ev("ssh.login.failed", i, address="198.51.100.9", user="x", port=5000 + i))
+    events.append(
+        ev("ssh.login.accepted", 4, address="198.51.100.9", user="jch", method="password")
+    )
+    assert of(run(events), "ssh.guessed") == []

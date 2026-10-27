@@ -79,6 +79,10 @@ def coverage(
             }
     if not any(p in reach for p in ("auth_log", "auth_journal")):
         gaps.append("no authentication log events: logins and sudo can't be checked")
+    if "system_journal" not in reach:
+        gaps.append("no system journal events: kernel messages and shutdowns can't be checked")
+    if not any(e.type in ("system.boot_journal", "system.boot") for e in events):
+        gaps.append("no boot list or boot records: reboots can't be classified")
     offset = events_summary.get("clock_offset_seconds")
     if offset is not None and abs(offset) > LARGE_CLOCK_OFFSET:
         gaps.append(f"the host's clock is {offset:+.0f} s off the controller's")
@@ -109,6 +113,8 @@ def analyze(
         parsed = parse_bundle(row, identity)
         store_parsed(store, row, recipients, parsed)
     since_baseline = since_previous = None
+    previous_time = None
+    no_baseline = "no baseline yet"
     notes = list(found.notes)
     for comparison in found.comparisons:
         if comparison.newer:
@@ -116,13 +122,17 @@ def analyze(
                 f"the baseline ({comparison.bundle_id}) is newer than this bundle: change-based"
                 " checks didn't run"
             )
+            no_baseline = "the baseline is newer than this bundle"
             continue
         if comparison.label == "baseline":
             since_baseline = comparison.differences
         else:
             since_previous = comparison.differences
+            previous_time = store.bundle(comparison.bundle_id)["started_at"]
             if comparison.bundle_id == found.baseline_id:
                 since_baseline = comparison.differences
+    if found.baseline_id == row["id"] and not found.first:
+        no_baseline = "this bundle is the baseline"
     if found.first:
         notes.append(
             "this is the host's first analysis and its baseline: change-based checks start"
@@ -142,6 +152,8 @@ def analyze(
         since_baseline=since_baseline,
         since_previous=since_previous,
         earlier_events=earlier,
+        previous_time=previous_time,
+        no_baseline=no_baseline,
     )
     findings, ran = run_checks(context)
     counts: dict[str, int] = {}

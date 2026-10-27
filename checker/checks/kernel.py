@@ -218,9 +218,9 @@ def kernel_taint(context: Context) -> list[Finding]:
         taint = set(str(item.get("taint") or "")) & {"O", "E", "P", "F"}
         if not taint:
             continue
+        # Reported on every analysis, not only when new: the baseline's own
+        # bundle may never have been analysed.
         is_new = name in added
-        if diff is not None and not is_new:
-            continue  # it was already there at the baseline, and reported then
         findings.append(
             Finding(
                 "kernel.taint",

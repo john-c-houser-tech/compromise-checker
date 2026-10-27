@@ -467,6 +467,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             hosts = [h for h in store.hosts() if usable_bundles(store, h)]
             if args.bundle:
                 raise EvidenceError("--bundle names one host's bundle: give the host instead")
+            if not hosts:
+                raise EvidenceError("no host has a usable bundle yet: collect first")
         else:
             hosts = [args.host]
         for number, host in enumerate(hosts):
@@ -529,9 +531,12 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
     for c in assessment["checks"]:
         if c["status"].startswith("failed"):
             print(f"  check {c['check']} {c['status']}")
-    waiting = [c["check"] for c in assessment["checks"] if c["status"] == "no baseline yet"]
-    if waiting:
-        print(f"  waiting for a baseline: {', '.join(waiting)}")
+    waiting: dict[str, list[str]] = {}
+    for c in assessment["checks"]:
+        if c["status"] not in ("ran",) and not c["status"].startswith("failed"):
+            waiting.setdefault(c["status"], []).append(c["check"])
+    for why, names in waiting.items():
+        print(f"  not run ({why}): {', '.join(names)}")
 
 
 def _brief(item: dict) -> str:

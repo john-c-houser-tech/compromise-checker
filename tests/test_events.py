@@ -657,7 +657,7 @@ def test_cli_events(stored_bundle, capsys):
     assert "ssh.login.failed" in out and "198.51.100.9" in out
     listed = out.split("Clock", 1)[1]
     assert "SHA256:scannerkey" not in listed and "python3" not in listed  # own session hidden
-    assert "comm=logger" in listed  # the forged logind line is not
+    assert "journal_comm=logger" in listed  # the forged logind line is not
     assert cli.main(["events", "b1", "--own", "--type", "sudo."]) == 0
     out = capsys.readouterr().out
     assert "[own session]" in out and "ssh.login" not in out.split("Clock", 1)[1]
@@ -703,7 +703,14 @@ def test_another_login_to_the_scanner_account_stays_a_finding():
     events = [
         make("ssh.login.accepted", 0, user="scanner", port=41000, pid=11),
         make("session.opened", 0, service="sshd", user="scanner", pid=11, audit_session="77"),
-        make("logind.session_new", 0, session="77", user="scanner", comm="systemd-logind", uid="0"),
+        make(
+            "logind.session_new",
+            0,
+            session="77",
+            user="scanner",
+            journal_comm="systemd-logind",
+            journal_uid="0",
+        ),
         make(
             "sudo.command",
             0,
@@ -717,7 +724,14 @@ def test_another_login_to_the_scanner_account_stays_a_finding():
         # Theirs, by password from another port.
         make("ssh.login.accepted", 1, user="scanner", port=50000, pid=21),
         make("session.opened", 1, service="sshd", user="scanner", pid=21, audit_session="80"),
-        make("logind.session_new", 1, session="80", user="scanner", comm="systemd-logind", uid="0"),
+        make(
+            "logind.session_new",
+            1,
+            session="80",
+            user="scanner",
+            journal_comm="systemd-logind",
+            journal_uid="0",
+        ),
         make("login.session", 1, user="scanner", pid=21),
         make(
             "sudo.command",
@@ -784,9 +798,30 @@ def test_a_logind_session_number_from_a_message_is_not_trusted():
     events = [
         make("ssh.login.accepted", 0, user="scanner", port=41000, pid=11),
         make("session.opened", 0, service="sshd", user="scanner", pid=11, audit_session="77"),
-        make("logind.session_new", 0, session="78", user="scanner", comm="systemd-logind", uid="0"),
-        make("logind.session_new", 0, session="77", user="scanner", comm="logger", uid="1002"),
-        make("logind.session_new", 0, session="77", user="scanner", comm="systemd-logind", uid="0"),
+        make(
+            "logind.session_new",
+            0,
+            session="78",
+            user="scanner",
+            journal_comm="systemd-logind",
+            journal_uid="0",
+        ),
+        make(
+            "logind.session_new",
+            0,
+            session="77",
+            user="scanner",
+            journal_comm="logger",
+            journal_uid="1002",
+        ),
+        make(
+            "logind.session_new",
+            0,
+            session="77",
+            user="scanner",
+            journal_comm="systemd-logind",
+            journal_uid="0",
+        ),
         make("unit.started", 0, what="Session 77 of User scanner"),
         make("unit.started", 0, what="Session 78 of User scanner"),
         make("account.created", 0, user="backdoor", uid="0", audit_session="77"),
@@ -841,9 +876,9 @@ def test_duplicates_merge_but_real_repeats_stay():
         # file and the journal.
         ev("auth_log:/var/log/secure", 1, user="root", port=6000, pid=13, year_inferred=True),
         ev("auth_log:/var/log/secure", 1, user="root", port=6000, pid=13, year_inferred=True),
-        ev("auth_journal", 1, user="root", port=6000, pid=13, comm="sshd"),
-        ev("auth_journal", 1, user="root", port=6000, pid=13, comm="sshd"),
-        ev("auth_journal", 2, user="root", port=6000, pid=13, comm="sshd"),  # journal only
+        ev("auth_journal", 1, user="root", port=6000, pid=13, journal_comm="sshd"),
+        ev("auth_journal", 1, user="root", port=6000, pid=13, journal_comm="sshd"),
+        ev("auth_journal", 2, user="root", port=6000, pid=13, journal_comm="sshd"),  # journal only
         ev("auth_log:/var/log/secure", 3, user="root", port=6001, pid=14),  # file only
     ]
     kept = merge_duplicates(events)

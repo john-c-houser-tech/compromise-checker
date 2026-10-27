@@ -20,7 +20,8 @@ SYSTEM_UID_MAX = 999  # service accounts: 1-999 (login.defs SYS_UID_MAX)
 NO_LOGIN = ("nologin", "false", "sync", "shutdown", "halt")
 ROOT_GROUPS = {"root", "wheel", "sudo", "admin", "docker", "lxd", "disk", "shadow"}
 LOG_GROUPS = {"adm", "systemd-journal"}
-FAILURES = ("ssh.login.failed", "ssh.invalid_user", "ssh.login.too_many_failures", "auth.failure")
+# A "too many failures" line repeats the last attempt, so it isn't counted.
+FAILURES = ("ssh.login.failed", "ssh.invalid_user", "auth.failure")
 GUESSES_BEFORE_SUCCESS = 5
 GUESSING_WINDOW = timedelta(hours=24)
 SENSITIVE_SSHD = {
@@ -58,11 +59,18 @@ def base_name(key: str) -> str:
 
 
 def can_log_in(shell: str | None) -> bool:
-    return bool(shell) and not str(shell).rsplit("/", 1)[-1].startswith(NO_LOGIN)
+    """An empty shell field means /bin/sh; None: not known."""
+    if shell is None:
+        return False
+    return not str(shell).rsplit("/", 1)[-1].startswith(NO_LOGIN)
 
 
-def has_password(item: dict) -> bool:
-    return item.get("shadow_status") == "set"
+# A password status that lets someone log in: a hash, or none at all.
+OPENS = {"set", "empty"}
+
+
+def is_service(uid) -> bool:
+    return isinstance(uid, int) and (0 < uid <= SYSTEM_UID_MAX or uid == 65534)
 
 
 # --- Accounts -------------------------------------------------------------------------
@@ -161,10 +169,43 @@ def account_changes(context: Context) -> list[Finding]:
                 )
             )
     accounts = context.items("accounts")
+    privileged_gids = {
+        item.get("gid"): base_name(key)
+        for key, item in context.items("groups").items()
+        if base_name(key) in ROOT_GROUPS | LOG_GROUPS and item.get("gid") is not None
+    }
+    privileged_gids.setdefault(0, "root")
+
+    def primary(key: str, gid, how: str, summary: str) -> None:
+        group = privileged_gids[gid]
+        findings.append(
+            Finding(
+                "account.changes",
+                "A new account whose primary group is root-equivalent"
+                if how == "added"
+                else "An account's primary group became root-equivalent",
+                COMPROMISE,
+                "high" if group in ROOT_GROUPS else "medium",
+                summary.format(group=group),
+                [f"account:{key}", f"group:{group}"],
+                [context.change_ref("accounts", key, how)],
+                new=context.new_since_previous("accounts", key),
+                uncertain=uncertain,
+            )
+        )
+
+    for key, item in diff["added"].items():
+        if key == base_name(key) and item.get("gid") in privileged_gids:
+            primary(
+                key, item["gid"], "added", f"{key}: primary group {{group}} (GID {item['gid']})"
+            )
     for key, fields in diff["changed"].items():
         item = accounts.get(key, {})
         uid = item.get("uid")
-        if not isinstance(uid, int) or not 0 < uid <= SYSTEM_UID_MAX:
+        if "gid" in fields and fields["gid"][1] in privileged_gids:
+            old, new = fields["gid"]
+            primary(key, new, "changed", f"{key}: primary group now {{group}} (GID {old} → {new})")
+        if not is_service(uid):
             continue
         gained = []
         if (
@@ -172,10 +213,16 @@ def account_changes(context: Context) -> list[Finding]:
             and can_log_in(fields["shell"][1])
             and not can_log_in(fields["shell"][0])
         ):
-            gained.append(f"a login shell ({fields['shell'][1]})")
+            gained.append(f"a login shell ({fields['shell'][1] or '/bin/sh'})")
         status = fields.get("shadow_status")
-        if status and status[1] == "set" and status[0] != "set":
-            gained.append("a password")
+        if status and status[1] in OPENS and status[0] not in OPENS:
+            gained.append("no password at all" if status[1] == "empty" else "a password")
+        elif "password" in fields:  # a hash (or nothing) written into /etc/passwd itself
+            old, new = ((p or {}).get("status") for p in fields["password"])
+            if new in OPENS and old not in OPENS:
+                gained.append(
+                    "no password at all" if new == "empty" else "a password in /etc/passwd"
+                )
         if gained:
             findings.append(
                 Finding(
@@ -373,12 +420,23 @@ def _address(event) -> str | None:
 
 @check("ssh.guessed", "Failed logins followed by success from the same source")
 def guessed(context: Context) -> list[Finding]:
-    failures = defaultdict(list)
+    """One wrong password is logged several times (sshd's line, PAM's, an
+    invalid-user line): attempts are counted once per connection port and
+    second, and PAM's failures only for addresses sshd logged none for."""
+    sshd: dict[str, dict] = defaultdict(dict)
+    pam: dict[str, dict] = defaultdict(dict)
     for index, event in context.of(*FAILURES):
         address = _address(event)
         moment = parse_time(event.corrected)
-        if address and moment:
-            failures[address].append((moment, index))
+        if not address or moment is None:
+            continue
+        target = pam if event.type == "auth.failure" else sshd
+        key = (event.fields.get("port"), moment.replace(microsecond=0))
+        target[address].setdefault(key, (moment, index))
+    failures = {
+        address: sorted((sshd.get(address) or pam.get(address)).values())
+        for address in set(sshd) | set(pam)
+    }
     findings = []
     for index, event in context.of("ssh.login.accepted"):
         address, moment = event.fields.get("address"), parse_time(event.corrected)
@@ -426,15 +484,16 @@ def logins(context: Context) -> list[Finding]:
                     event.corrected,
                 )
             )
-    earlier = context.earlier_events()
-    if not earlier:
-        return findings  # nothing to know "never seen before" from yet
+    if not accepted:
+        return findings
     seen = {
         e.fields.get("address")
-        for events in earlier
+        for events in context.earlier_events()
         for e in events
         if e.type == "ssh.login.accepted" and not e.own_session
     }
+    if not seen:
+        return findings  # no earlier login to know "never seen before" from
     new = defaultdict(list)
     for index, event in accepted:
         address = event.fields.get("address")

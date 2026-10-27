@@ -59,6 +59,11 @@ class Context:
     # Earlier bundles' events, oldest first, loaded only if a check asks.
     earlier_events: Callable[[], list[list[Event]]] = lambda: []
     scanner: str | None = None  # the account the tool logs in as
+    # When the previous bundle was collected (controller clock): an event
+    # before it was in that bundle's analysis already.
+    previous_time: str | None = None
+    # Why change-based checks can't run, when they can't.
+    no_baseline: str = "no baseline yet"
 
     def of(self, *types: str) -> Iterator[tuple[int, Event]]:
         """(index, event) for events of these types (or type prefixes ending
@@ -89,6 +94,10 @@ class Context:
         if self.since_previous is None:
             return True
         diff = self.since_previous.get(section) or {}
+        if not diff.get("comparable", True) and not any(
+            diff.get(kind) for kind in ("added", "removed", "changed")
+        ):
+            return True  # the previous bundle didn't collect it: can't say it isn't new
         return any(key in diff.get(kind, {}) for kind in ("added", "removed", "changed"))
 
     def change_ref(self, section: str, key: str, how: str) -> dict[str, Any]:
@@ -140,7 +149,7 @@ def run_checks(context: Context) -> tuple[list[Finding], list[dict[str, Any]]]:
     ran: list[dict[str, Any]] = []
     for item in REGISTRY:
         if item.needs_baseline and context.since_baseline is None:
-            ran.append({"check": item.id, "status": "no baseline yet"})
+            ran.append({"check": item.id, "status": context.no_baseline})
             continue
         try:
             found = item.run(context)
@@ -149,6 +158,15 @@ def run_checks(context: Context) -> tuple[list[Finding], list[dict[str, Any]]]:
             continue
         ran.append({"check": item.id, "status": "ran", "findings": len(found)})
         findings += found
+    previous = parse_time(context.previous_time)
+    for finding in findings:
+        # A finding from the logs alone is new when its latest event came
+        # after the previous bundle was collected.
+        if any("change" in ref for ref in finding.evidence):
+            continue
+        if any("event" in ref for ref in finding.evidence):
+            last = parse_time(finding.last_seen)
+            finding.new = previous is None or last is None or last > previous
     order = {band: i for i, band in enumerate(BANDS)}
     findings.sort(key=lambda f: (order[f.band], CATEGORIES.index(f.category), f.check, f.summary))
     return findings, ran

@@ -80,9 +80,10 @@ recorded, which includes connecting and any prompt).
 | `login.failed` | btmp | user (masked unless a local account), host, address |
 
 Journal events also carry the journal's `audit_session`, `boot_id`,
-`systemd_unit`, `comm` and `uid` where present — fields the journal sets
-itself, so they say who really logged a message whatever name it gives
-itself — and a `pid`. Each event keeps the line it came
+`systemd_unit`, `journal_comm` and `journal_uid` where present — fields the
+journal sets itself, so they say who really logged a message whatever name
+it gives itself, kept apart from a message's own fields (a core dump's
+`comm`) — and a `pid`. Each event keeps the line it came
 from (up to 2,048 characters) — already masked on the server like all
 collected text.
 
@@ -116,7 +117,7 @@ clock), an event is the tool's own when it is:
   ID);
 - **logind's session** whose number is the audit session the journal itself
   gave that PAM session — never a number read from a message — logged by
-  logind itself (the journal's `comm` and `uid`), and that session's scope
+  logind itself (the journal's `journal_comm` and `journal_uid`), and that session's scope
   starting and stopping;
 - **its `sudo` of exactly the collector's command** as the session recorded
   it (python's path as sudo resolved it, then exactly the arguments), as

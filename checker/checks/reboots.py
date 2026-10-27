@@ -28,13 +28,16 @@ def reboots(context: Context) -> list[Finding]:
     )
     boots = [b for b in boots if b[0] is not None]
     source = "the journal's boot list"
-    if not boots:
+    # A volatile journal lists only the current boot: wtmp may know more.
+    if len(boots) < 2:
         boots = sorted(
             (parse_time(e.corrected), i, e)
             for i, e in context.of("system.boot")
             if parse_time(e.corrected) is not None
         )
         source = "wtmp boot records"
+        if len(boots) < 2:
+            return []
     # How far back shutdowns can be seen: the oldest system journal or
     # login record event. A boot before that can't be classified.
     reach = [
@@ -81,6 +84,12 @@ def reboots(context: Context) -> list[Finding]:
         when = max(s[0] for s in down)
         evidence = [{"event": index}] + [{"event": s[1]} for s in down]
         by = [c for c in commands if when - OPERATOR_WINDOW <= c[0] <= when]
+        # The power button (a cloud provider's console sends one too).
+        button = [
+            s
+            for s in down
+            if s[2].type == "system.shutdown_requested" and not s[2].fields.get("what")
+        ]
         planned = [u for u in updates if when - UPDATER_WINDOW <= u[0] <= when]
         if by:
             users = sorted({c[2].fields.get("user", "?") for c in by})
@@ -88,6 +97,12 @@ def reboots(context: Context) -> list[Finding]:
             summary = f"booted {started.isoformat()}, after `sudo` by {', '.join(users)}"
             entities += [f"account:{u}" for u in users]
             evidence += [{"event": c[1]} for c in by]
+        elif button:
+            title, band = "A reboot by the power button", "info"
+            summary = (
+                f"booted {started.isoformat()}, after the power button was pressed (or a"
+                " provider console's power-off)"
+            )
         elif planned:
             title, band = "A planned reboot (automatic updates)", "info"
             summary = f"booted {started.isoformat()}, after an automatic update"

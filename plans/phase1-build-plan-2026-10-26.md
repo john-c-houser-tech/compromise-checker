@@ -143,6 +143,13 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
   (checks 8.4–8.7). Not yet: configured maintenance windows for 8.2 (with
   the whitelists), logins at unusual hours for 8.3 (needs a per-host
   profile).
+- **Decision needed before `purge` is built:** the policy (§8) promises
+  90-day retention and a `purge` command, but the bundles, custody,
+  baselines and assessments tables are append-only, enforced by triggers.
+  For example, `purge` could be the one sanctioned way to delete: it drops
+  the triggers inside its transaction, deletes, restores them, and records
+  what it removed (by identifiers and counts only) in a purge log. Noted in
+  the 1.6b and 1.7a reviews.
 
 **1.8 — HTML report and `checker report`.**
 - One self-contained HTML file per run: summary (hosts, findings by band,

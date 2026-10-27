@@ -474,6 +474,8 @@ class MaskingTests(unittest.TestCase):
 
     def test_secrets_near_the_exceptions_are_still_masked(self):
         cases = {
+            b"auth required pam_debug.so auth=success/S3cret\n": 1,
+            b"auth [auth_err=die:S3cret default=bad] pam_sss.so\n": 1,
             b"session optional pam_exec.so /x password=hunter2\n": 1,
             b"auth_err=hunter2 auth=letmein\n": 2,
             b"NOPASSWD=secret passwd: hunter2\n": 2,
@@ -482,7 +484,7 @@ class MaskingTests(unittest.TestCase):
         for line, hits in cases.items():
             masked, counts = self.mask(line)
             self.assertEqual(counts, {"password": hits}, line)
-            for secret in (b"hunter2", b"letmein", b"secret", b"okay2", b"dieXYZ"):
+            for secret in (b"hunter2", b"letmein", b"secret", b"okay2", b"dieXYZ", b"S3cret"):
                 self.assertNotIn(secret, masked, line)
 
     def test_quoted_values_are_masked_whole(self):
@@ -1551,6 +1553,22 @@ class DomainHomeTests(FixtureRoot):
         self.assertTrue(homes["truncated"])
         self.assertEqual(len(homes["unlisted"]), 2)  # the directory's order, cut at the cap
 
+    def test_linked_home_root_is_searched_and_protected(self):
+        # /home -> /srv/homes: the domain user's keys are found there, and a
+        # hard link to their history from pam.d is refused.
+        self.write("srv/homes/alice/.ssh/authorized_keys", self.key)
+        self.write("srv/homes/alice/.bash_history", b"CanaryHistory\n")
+        os.symlink("srv/homes", Path(self.root, "home"))
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.link(Path(self.root, "srv/homes/alice/.bash_history"), Path(self.root, "etc/pam.d/leak"))
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["ssh", "pam"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"CanaryHistory", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        (key,) = records_named(records, "authorized_key")
+        self.assertEqual(key["home"], "/home/alice")
+
     def test_linked_unlisted_home_is_followed(self):
         self.write("srv/alice/.ssh/authorized_keys", self.key)
         Path(self.root, "home").mkdir(exist_ok=True)
@@ -1623,6 +1641,86 @@ class MountTests(FixtureRoot):
         self.assertIn(("/home/alice", "automount"), skipped)
         self.assertIn(("/mnt/team/u", "network_filesystem"), skipped)
         self.assertEqual(records[-1]["status"], "complete")
+
+    def test_every_file_system_access_is_guarded(self):
+        # path() is where every lookup goes: it refuses anything that would
+        # look inside an automounted folder or a network drive, however the
+        # path is spelled, and leaves everything else alone.
+        os.makedirs(Path(self.root, "srv"))
+        os.symlink("../home", Path(self.root, "srv/homes"))
+        os.symlink("../mnt/team", Path(self.root, "srv/team"))
+        collector = load_collector(self.root)
+        for unsafe, reason in (
+            ("/home/alice/.ssh", "automount"),
+            ("/srv/homes/alice/.ssh", "automount"),
+            ("/srv/team/x", "network_filesystem"),
+            ("/mnt/team", "network_filesystem"),
+        ):
+            with self.assertRaises(collector.UnsafePath) as caught:
+                collector.path(unsafe)
+            self.assertEqual(caught.exception.reason, reason, unsafe)
+        for safe in ("/home", "/srv/homes", "/etc/pam.d/sshd", "/proc/self/mountinfo"):
+            self.assertEqual(collector.path(safe), os.path.join(self.root, safe.lstrip("/")))
+
+    def gaps(self, records):
+        return {(g["path"], g["reason"]) for g in records_named(records, "not_examined")}
+
+    def test_linked_parent_onto_a_network_drive_is_not_probed(self):
+        # A passwd home /srv/alice that is a link onto NFS: its history and
+        # .ssh must not be looked at through the link.
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0:root:/root:/bin/bash\nalice:x:1002:1002::/srv/alice/home:/bin/bash\n",
+        )
+        self.write("mnt/team/alice/home/.bash_history", b"x\n")
+        os.makedirs(Path(self.root, "srv"))
+        os.symlink("../mnt/team/alice", Path(self.root, "srv/alice"))
+        records = collect(self.root, ["accounts"])
+        history = [h for h in records_named(records, "shell_history") if "alice" in h["path"]]
+        self.assertEqual(history, [])
+        homes = records_named(records, "homes")[0]
+        self.assertIn(
+            ("/srv/alice/home", "network_filesystem"),
+            {(n["path"], n["reason"]) for n in homes["not_examined"]},
+        )
+
+    def test_include_globs_never_look_inside_automounted_folders(self):
+        self.write("etc/ssh/sshd_config", b"Include /home/*/sshd.conf\n")
+        self.write("home/alice/sshd.conf", b"PermitRootLogin yes\n")
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(sorted(sources(records)), ["/etc/ssh/sshd_config"])
+
+    def test_refused_link_is_not_probed_afterwards(self):
+        os.makedirs(Path(self.root, "etc"), exist_ok=True)
+        os.symlink("../home/alice", Path(self.root, "etc/sudo-links"))
+        self.write("home/alice/rules", b"alice ALL=(ALL) NOPASSWD: ALL\n")
+        self.write("etc/sudoers", b"#include /etc/sudo-links/rules\n")
+        records = collect(self.root, ["sudoers"])
+        self.assertEqual(sorted(sources(records)), ["/etc/sudoers"])
+        self.assertIn(("/etc/sudo-links/rules", "automount"), self.gaps(records))
+        self.assertEqual(records_named(records, "config_link"), [])
+
+    def test_included_directory_on_an_automount_is_not_listed(self):
+        self.write("home/alice/sudoers.d/x", b"alice ALL=(ALL) ALL\n")
+        self.write("etc/sudoers", b"@includedir /home/alice/sudoers.d\n")
+        records = collect(self.root, ["sudoers"])
+        self.assertIn(("/home/alice/sudoers.d", "automount"), self.gaps(records))
+        self.assertEqual(records_named(records, "include_dir"), [])
+
+    def test_unattributed_keys_on_a_network_drive_are_not_read(self):
+        self.write("etc/ssh/sshd_config", b"AuthorizedKeysFile /mnt/team/keys/%u\n")
+        self.write("mnt/team/keys/bob", self.key)
+        records = collect(self.root, ["ssh"])
+        self.assertEqual(records_named(records, "authorized_key"), [])
+        self.assertIn(("/mnt/team", "network_filesystem"), self.gaps(records))
+
+    def test_linked_pam_directory_on_an_automount_is_not_listed(self):
+        self.write("home/alice/pam.d/sshd", b"auth required pam_unix.so\n")
+        os.makedirs(Path(self.root, "etc"), exist_ok=True)
+        os.symlink("../home/alice/pam.d", Path(self.root, "etc/pam.d"))
+        records = collect(self.root, ["pam"])
+        self.assertEqual(sources(records), {})
+        self.assertIn(("/etc/pam.d", "automount"), self.gaps(records))
 
     def test_links_into_risky_mounts_are_not_followed(self):
         self.write("home/alice/x.conf", b"auth required pam_unix.so\n")

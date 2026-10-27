@@ -127,7 +127,10 @@ the fixed part of SSSD's `override_homedir`, `fallback_homedir` and
 `homedir_substring` settings) that holds `.ssh` or a history file and
 belongs to no `/etc/passwd` account is an *unlisted home*. A home that is a
 symbolic link (`/home/alice` → `/srv/alice`) is followed to its target, as
-sshd follows it, but never descended through. Only those three
+sshd follows it, but never descended through. A home root that is itself a
+link (`/home` → `/srv/homes`) is searched at its target. If a root can't be
+searched, or the search is cut short, the `homes` record says
+`complete: false`, and protection fails closed (see "Protected files"). Only those three
 SSSD settings are read from `sssd.conf`; nothing from it is sent. NSS itself
 is not asked: with SSSD's defaults it lists no domain users, and a lookup
 can reach the directory server and write SSSD's cache on the target.
@@ -248,9 +251,13 @@ Anything under an `autofs` mount point (except listing the autofs directory
 itself, which mounts nothing) or on a network file system (NFS, CIFS/SMB,
 Ceph, GlusterFS, Lustre, GPFS, AFS, 9p, sshfs, WebDAV and similar) is left
 alone and recorded as `not_examined` with the reason (`automount` or
-`network_filesystem`). Links are resolved one component at a time, checking
-the mount table before each step, so a link can't lead the collector onto
-such a mount either.
+`network_filesystem`). The check sits where every file-system access goes —
+the function that turns a path on the server into one the operating system
+opens — so no lookup can bypass it: parent directories are resolved one step
+at a time, checking the mount table before each, so a link can't lead the
+collector onto such a mount either; glob patterns are expanded one directory
+at a time behind the same check. On a server with no automounted or network
+mounts at all, the check costs nothing.
 
 Directives (includes, `AuthorizedKeysFile`) are looked for in the first
 1 MiB of each sudo and sshd configuration file; a longer file gets a

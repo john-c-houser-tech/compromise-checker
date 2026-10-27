@@ -18,6 +18,7 @@ what each module reads, and why, is in docs/collector-modules.md.
 import base64
 import binascii
 import datetime
+import fnmatch
 import glob
 import gzip
 import hashlib
@@ -70,10 +71,41 @@ CHUNK_BYTES = 64 * 1024
 MAX_LINE = 1024 * 1024
 
 
-def path(absolute):
+def _raw_path(absolute):
     if ROOT == "/":
         return absolute
     return os.path.join(ROOT, absolute.lstrip("/"))
+
+
+class UnsafePath(OSError):
+    """A path the collector must not look at: reaching it would mean looking
+    inside an automounted folder or a network file system (see mount_risk)."""
+
+    def __init__(self, absolute, reason):
+        super().__init__(f"not examined ({reason}): {absolute}")
+        self.reason = reason
+        self.target = absolute
+
+
+def path(absolute):
+    """The OS path for a path on the target. Every file-system access goes
+    through here, so this is where the mount guard sits: on a server with
+    automounted or network mounts, the parent directories are resolved one
+    step at a time and checked first, and UnsafePath is raised for anything
+    that would lead onto such a mount. The final component itself is never
+    followed here, so lstat and O_NOFOLLOW keep their meaning. On a server
+    with no such mounts at all, this costs nothing."""
+    if absolute.startswith("/") and has_risky_mounts():
+        parent, _, name = absolute.rstrip("/").rpartition("/")
+        resolved, risk = resolve_links(parent or "/")
+        if risk:
+            raise UnsafePath(absolute, risk)
+        if name:
+            absolute = resolved.rstrip("/") + "/" + name
+        risk = mount_risk(absolute)
+        if risk:
+            raise UnsafePath(absolute, risk)
+    return _raw_path(absolute)
 
 
 def now_iso():
@@ -169,10 +201,23 @@ _PAM_RETURN = (
 )
 _PAM_ACTION = rb"ignore|bad|die|ok|done|reset|[0-9]+"
 _PAM_DEBUG_ARG = rb"auth|cred|acct|prechauthtok|chauthtok|open_session|close_session"
+# The vocabulary word must be the whole value: `auth_err=die:S3cret` is masked.
+_VALUE_ENDS = rb"(?=[\s\],]|$)"
 _NOT_A_SECRET = (
     rb"(?!(?:NO)?PASSWD:"
-    rb"|(?:" + _PAM_RETURN + rb")=(?:" + _PAM_ACTION + rb")(?![\w.-])"
-    rb"|(?:" + _PAM_DEBUG_ARG + rb")=(?:" + _PAM_RETURN + rb")(?![\w.-]))"
+    rb"|(?:"
+    + _PAM_RETURN
+    + rb")=(?:"
+    + _PAM_ACTION
+    + rb")"
+    + _VALUE_ENDS
+    + rb"|(?:"
+    + _PAM_DEBUG_ARG
+    + rb")=(?:"
+    + _PAM_RETURN
+    + rb")"
+    + _VALUE_ENDS
+    + rb")"
 )
 
 # Specific formats first, so the generic key=value rule doesn't relabel a
@@ -1267,6 +1312,8 @@ def path_facts(absolute):
         info = os.lstat(path(absolute))
     except FileNotFoundError:
         return None
+    except UnsafePath as exc:
+        return {"path": absolute, "not_examined": exc.reason}
     except OSError as exc:
         return {"path": absolute, "error": str(exc)}
     facts = {
@@ -1288,13 +1335,35 @@ def path_facts(absolute):
     return facts
 
 
-def glob_absolute(pattern):
-    """Paths matching a glob pattern, as absolute paths on the target."""
-    matches = glob.glob(path(pattern))
-    if ROOT == "/":
-        return sorted(matches)
-    root = ROOT.rstrip("/")
-    return sorted("/" + match[len(root) :].lstrip("/") for match in matches)
+def glob_absolute(pattern, skipped=None):
+    """Paths matching a glob pattern, as absolute paths on the target,
+    expanded one directory at a time so that nothing is looked inside before
+    the mount guard has passed it. Paths it won't look at are appended to
+    `skipped` as {"path", "reason"}."""
+    found = ["/"]
+    for part in [p for p in pattern.split("/") if p]:
+        following = []
+        for base in found:
+            try:
+                if glob.has_magic(part):
+                    names = sorted(os.listdir(path(base)))
+                    hidden = part.startswith(".")
+                    names = [
+                        n for n in names if fnmatch.fnmatchcase(n, part) and (hidden or n[0] != ".")
+                    ]
+                else:
+                    names = [part]
+                for name in names:
+                    candidate = _join(base, name)
+                    if os.path.lexists(path(candidate)):
+                        following.append(candidate)
+            except UnsafePath as exc:
+                if skipped is not None:
+                    skipped.append({"path": exc.target, "reason": exc.reason})
+            except OSError:
+                continue
+        found = following
+    return found
 
 
 def _hash_algorithm(value):
@@ -1423,7 +1492,7 @@ def protected_inodes(run=None):
             continue
         if stat.S_ISREG(info.st_mode):
             inodes.add((info.st_dev, info.st_ino))
-    return inodes, not summary["truncated"], summary["roots"]
+    return inodes, summary["complete"], summary["roots"]
 
 
 HISTORY_FILES = (
@@ -1499,7 +1568,7 @@ def discover_homes(accounts, run=None):
             )
             entry["accounts"].append(account["name"])
     for home, entry in homes.items():
-        risk = mount_risk(home)
+        _, risk = resolve_links(home)  # its parents too: /srv/alice -> NFS
         if risk:
             entry["skipped"] = risk
             skip(home, risk)
@@ -1510,17 +1579,23 @@ def discover_homes(accounts, run=None):
             roots.append(parent)
     roots.extend(root for root in sssd_home_roots() if root not in roots)
 
-    examined, truncated = 0, False
+    examined, truncated, unsearched = 0, False, []
     pending = [(root, 1) for root in roots]
     while pending and not truncated:
         directory, depth = pending.pop(0)
-        risk = mount_risk(directory)
+        # A linked root (/home -> /srv/homes) is searched at its target; the
+        # homes found keep the path sshd and the templates use.
+        listed, risk = resolve_links(directory)
         if risk:
             skip(directory, risk)
             continue
         try:
-            fd = _open_directory(directory)
-        except OSError:
+            fd = _open_directory(listed)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            # Couldn't be searched: protection can't assume it has no homes.
+            unsearched.append({"path": directory, "error": str(exc)})
             continue
         entries = []
         try:
@@ -1559,7 +1634,12 @@ def discover_homes(accounts, run=None):
                     info = os.stat(path(target))
                 except OSError:
                     continue
-                if stat.S_ISDIR(info.st_mode) and _looks_like_home(target):
+                try:
+                    looks = stat.S_ISDIR(info.st_mode) and _looks_like_home(target)
+                except UnsafePath as exc:
+                    skip(child, exc.reason)
+                    continue
+                if looks:
                     homes[child] = {
                         "home": child,
                         "accounts": [],
@@ -1568,7 +1648,12 @@ def discover_homes(accounts, run=None):
                         "resolved": target,
                     }
                 continue
-            if _looks_like_home(child):
+            try:
+                looks = _looks_like_home(child)
+            except UnsafePath as exc:  # e.g. a linked .local leading onto a network drive
+                skip(child, exc.reason)
+                continue
+            if looks:
                 try:
                     owner = os.lstat(path(child)).st_uid
                 except OSError:
@@ -1585,6 +1670,9 @@ def discover_homes(accounts, run=None):
         "roots": roots,
         "examined": examined,
         "truncated": truncated,
+        "unsearched": unsearched,
+        # False when a history file could exist that the search didn't reach.
+        "complete": not truncated and not unsearched,
         "unlisted": sorted(h for h, e in homes.items() if e["source"] == "directory"),
         "not_examined": not_examined,
     }
@@ -1710,7 +1798,11 @@ def mount_table():
     global _MOUNTS
     if _MOUNTS is None:
         mounts = []
-        text = read_small("/proc/self/mountinfo", 4 * 1024 * 1024) or ""
+        try:  # raw: path() itself consults this table
+            with open(_raw_path("/proc/self/mountinfo"), "rb") as table:
+                text = table.read(4 * 1024 * 1024).decode("utf-8", "replace")
+        except OSError:
+            text = ""
         for index, line in enumerate(text.splitlines()):
             left, separator, right = line.partition(" - ")
             fields, rest = left.split(), right.split()
@@ -1721,6 +1813,10 @@ def mount_table():
         mounts.sort(reverse=True)
         _MOUNTS = [(point, fstype) for _, _, point, fstype in mounts]
     return _MOUNTS
+
+
+def has_risky_mounts():
+    return any(fstype == "autofs" or fstype in NETWORK_FILESYSTEMS for _, fstype in mount_table())
 
 
 def mount_risk(target):
@@ -1755,7 +1851,7 @@ def resolve_links(absolute):
         if risk:
             return None, risk
         try:
-            info = os.lstat(path(candidate))
+            info = os.lstat(_raw_path(candidate))
         except OSError:
             # Missing: the rest is joined as written, as realpath does.
             return "/".join([candidate] + parts), None
@@ -1766,7 +1862,7 @@ def resolve_links(absolute):
         if hops > 40:
             return None, "too many symbolic links"
         try:
-            target = os.readlink(path(candidate))
+            target = os.readlink(_raw_path(candidate))
         except OSError:
             return None, "unreadable symbolic link"
         if target.startswith("/"):
@@ -1781,13 +1877,13 @@ def send_config_file(run, module, absolute):
     design). A link is recorded, then its resolved target is sent, still only
     if that is a regular file. Returns the path sent, or None."""
     resolved, risk = resolve_links(absolute)
-    facts = path_facts(absolute) if not mount_risk(absolute) else None
+    if risk:  # before any probe of the path: probing could follow the link
+        run.stream.record(module, "not_examined", {"path": absolute, "reason": risk})
+        return None
+    facts = path_facts(absolute)
     if facts is not None and facts.get("type") == "l":
         facts["resolved"] = resolved
         run.stream.record(module, "config_link", facts)
-    if risk:
-        run.stream.record(module, "not_examined", {"path": absolute, "reason": risk})
-        return None
     absolute = resolved
     return absolute if send_file(run, module, absolute) else None
 
@@ -1855,8 +1951,12 @@ def module_sudoers(run):
             if match.group(1) == "include":
                 pending.append((target, depth + 1))
                 continue
+            directory, risk = resolve_links(target)
+            if risk:
+                run.stream.record(module, "not_examined", {"path": target, "reason": risk})
+                continue
             try:
-                names = sorted(os.listdir(path(target)))
+                names = sorted(os.listdir(path(directory)))
             except OSError as exc:
                 run.stream.record(
                     module, "include_dir", {"path": target, "from": absolute, "error": str(exc)}
@@ -2106,17 +2206,16 @@ def send_authorized_keys(run, module, account, absolute, extra=None):
     recorded. Following them is safe because nothing but public keys'
     fingerprints, options and comments is ever taken from the file."""
     record = run.stream.record
-    target = absolute
+    # Every candidate is resolved and mount-checked first, link or not: a
+    # plain file on a network file system must not be opened either.
+    target, risk = resolve_links(absolute)
+    if risk:
+        record(
+            module, "not_examined", {"account": account["name"], "path": absolute, "reason": risk}
+        )
+        return
     links = links_on_path(absolute)
     if links:
-        target, risk = resolve_links(absolute)
-        if risk:
-            record(
-                module,
-                "not_examined",
-                {"account": account["name"], "path": absolute, "reason": risk},
-            )
-            return
         record(
             module,
             "authorized_keys_link",
@@ -2219,8 +2318,11 @@ class SshdConfig:
                 for pattern in args:
                     if not pattern.startswith("/"):
                         pattern = "/etc/ssh/" + pattern
-                    for match in glob_absolute(pattern):
+                    skipped = []
+                    for match in glob_absolute(pattern, skipped):
                         self.read(match, depth + 1, in_match)
+                    for gap in skipped:
+                        self.run.stream.record(self.module, "not_examined", gap)
             elif keyword == "authorizedkeysfile" and args:
                 if in_match:
                     self.match_keys.extend(a for a in args if a not in self.match_keys)
@@ -2315,7 +2417,11 @@ def module_ssh(run):
         if re.search(r"%[^uU]", template):
             continue
         wildcard = re.sub(r"%[uU]", "*", template).replace("\0", "%")
-        for candidate in glob_absolute(wildcard):
+        skipped = []
+        matches = glob_absolute(wildcard, skipped)
+        for gap in skipped:
+            run.stream.record(module, "not_examined", gap)
+        for candidate in matches:
             if candidate not in read:
                 run.check_time()
                 read.add(candidate)
@@ -2342,8 +2448,14 @@ def module_pam(run):
     names = []
     if path_facts("/etc/pam.conf") is not None:
         names.append("/etc/pam.conf")
+    pam_dir, risk = resolve_links("/etc/pam.d")
     try:
-        entries = sorted(os.listdir(path("/etc/pam.d")))
+        if risk:
+            raise UnsafePath("/etc/pam.d", risk)
+        entries = sorted(os.listdir(path(pam_dir)))
+    except UnsafePath as exc:
+        run.stream.record(module, "not_examined", {"path": "/etc/pam.d", "reason": exc.reason})
+        entries = []
     except OSError as exc:
         run.stream.record(module, "unreadable_file", {"path": "/etc/pam.d", "reason": str(exc)})
         entries = []
@@ -2359,7 +2471,11 @@ def module_pam(run):
 
     seen = set()
     for pattern in PAM_MODULE_DIRS:
-        for found in glob_absolute(pattern):
+        skipped = []
+        matches = glob_absolute(pattern, skipped)
+        for gap in skipped:
+            run.stream.record(module, "not_examined", gap)
+        for found in matches:
             # Walk the real directory: Walk never follows a link at its top,
             # and the inode seen must be the one walked.
             directory, risk = resolve_links(found)

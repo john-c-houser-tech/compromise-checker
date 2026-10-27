@@ -1371,6 +1371,10 @@ def module_accounts(run):
     run.check_time()
 
     text = read_small("/etc/group", ACCOUNT_FILE_BYTES)
+    if text is None:
+        details = describe_unreadable("/etc/group")
+        details["reason"] = "could not be read"
+        record(module, "unreadable_file", details)
     bad = []
     for number, line in enumerate((text or "").splitlines(), 1):
         if not line.strip() or line.startswith("#"):
@@ -1441,6 +1445,18 @@ def module_accounts(run):
 _SUDO_INCLUDE = re.compile(r"^\s*[#@](include|includedir)\s+(.+?)\s*$")
 
 
+def resolve_links(absolute):
+    """`absolute` with every symbolic link resolved, as a path on the
+    target; None if it leads outside the test fixture root."""
+    resolved = os.path.realpath(path(absolute))
+    if ROOT == "/":
+        return resolved
+    root = ROOT.rstrip("/")
+    if not resolved.startswith(root + "/"):
+        return None
+    return resolved[len(root) :]
+
+
 def send_config_file(run, module, absolute):
     """Send a configuration file the way its program reads it: through
     symbolic links (RHEL's authselect and crypto-policies use them by
@@ -1448,13 +1464,7 @@ def send_config_file(run, module, absolute):
     if that is a regular file. Returns the path sent, or None."""
     facts = path_facts(absolute)
     if facts is not None and facts.get("type") == "l":
-        resolved = os.path.realpath(path(absolute))
-        if ROOT != "/":
-            root = ROOT.rstrip("/")
-            if not resolved.startswith(root + "/"):
-                resolved = None  # escapes the test fixture root
-            else:
-                resolved = resolved[len(root) :]
+        resolved = resolve_links(absolute)
         facts["resolved"] = resolved
         run.stream.record(module, "config_link", facts)
         if resolved is None:
@@ -1467,6 +1477,7 @@ def _sudo_include_path(target, including):
     target = target.strip()
     if len(target) >= 2 and target[0] == target[-1] == '"':
         target = target[1:-1]
+    target = re.sub(r"\\(.)", r"\1", target)  # sudo's escapes: "\ " is a space, "\\" a backslash
     target = target.replace("%h", socket.gethostname().split(".")[0])
     if not target.startswith("/"):  # relative to the including file (sudo 1.9.1+)
         target = _join(os.path.dirname(including), target)
@@ -1583,7 +1594,7 @@ def parse_authorized_key(line):
         first, rest = _split_token(rest)
         if not _SSH_KEY_TYPE.match(first):
             return None
-    blob_text, _, comment = rest.partition(" ")
+    blob_text, comment = _split_token(rest)
     try:
         blob = base64.b64decode(blob_text, validate=True)
     except (ValueError, binascii.Error):
@@ -1591,7 +1602,11 @@ def parse_authorized_key(line):
     if len(blob) < 4:
         return None
     length = int.from_bytes(blob[:4], "big")
+    if length > len(blob) - 4:
+        return None
     embedded = blob[4 : 4 + length].decode("ascii", errors="replace")
+    if not _SSH_KEY_TYPE.match(embedded):
+        return None  # not a key inside: never echo what it holds
     fingerprint = base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
     key = {"type": first, "fingerprint": "SHA256:" + fingerprint, "key_bytes": len(blob)}
     if embedded != first:
@@ -1603,22 +1618,6 @@ def parse_authorized_key(line):
     if comment:
         key["comment"] = mask_text(comment.encode("utf-8"))[0].decode("utf-8", "replace")
     return key
-
-
-def _sshd_directives(text, keyword):
-    """Arguments of every `keyword` line (case-insensitive), Match blocks included."""
-    values = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        parts = re.split(r"[\s=]+", stripped, maxsplit=1)
-        if parts[0].lower() == keyword.lower() and len(parts) == 2:
-            try:
-                values.extend(shlex.split(parts[1], comments=True))
-            except ValueError:
-                values.extend(parts[1].split())
-    return values
 
 
 def _expand_key_path(pattern, account):
@@ -1719,40 +1718,82 @@ def send_authorized_keys(run, module, account, absolute):
     record(module, "authorized_keys_file", facts)
 
 
+class SshdConfig:
+    """Reads sshd_config as sshd does: Include lines are expanded in place,
+    the first global AuthorizedKeysFile wins, and a Match block lasts to the
+    next Match line or the end of its file. Every file read is sent."""
+
+    def __init__(self, run, module):
+        self.run, self.module = run, module
+        self.sent = {}  # path → the path actually sent (links resolved), or None
+        self.global_keys = None  # None: not set, so sshd's defaults apply
+        self.match_keys = []
+
+    def read(self, absolute, depth, in_match):
+        self.run.check_time()
+        if depth > MAX_INCLUDE_DEPTH:
+            self.run.stream.record(
+                self.module, "include_not_followed", {"path": absolute, "reason": "depth"}
+            )
+            return
+        # Each file is sent once; one included twice is still read again in
+        # its new place, as sshd would.
+        if absolute not in self.sent:
+            self.sent[absolute] = send_config_file(self.run, self.module, absolute)
+        if self.sent[absolute] is None:
+            return
+        text = read_small(self.sent[absolute], CONFIG_FILE_BYTES) or ""
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = re.split(r"[\s=]+", stripped, maxsplit=1)
+            keyword = parts[0].lower()
+            try:
+                args = shlex.split(parts[1], comments=True) if len(parts) == 2 else []
+            except ValueError:
+                args = parts[1].split()
+            if keyword == "match":
+                in_match = True
+            elif keyword == "include":
+                for pattern in args:
+                    if not pattern.startswith("/"):
+                        pattern = "/etc/ssh/" + pattern
+                    for match in glob_absolute(pattern):
+                        self.read(match, depth + 1, in_match)
+            elif keyword == "authorizedkeysfile" and args:
+                if in_match:
+                    self.match_keys.extend(a for a in args if a not in self.match_keys)
+                elif self.global_keys is None:
+                    self.global_keys = args
+
+
 def module_ssh(run):
     """sshd_config and its includes (masked), and every account's authorized
     keys as fingerprints, options and comments — never the keys themselves."""
     module = "ssh"
-    seen, texts = set(), []
-    pending = [("/etc/ssh/sshd_config", 0)]
-    while pending:
-        run.check_time()
-        absolute, depth = pending.pop(0)
-        if absolute in seen:
-            continue
-        seen.add(absolute)
-        sent = send_config_file(run, module, absolute)
-        if sent is None:
-            continue
-        text = read_small(sent, CONFIG_FILE_BYTES) or ""
-        texts.append(text)
-        for pattern in _sshd_directives(text, "Include"):
-            if not pattern.startswith("/"):
-                pattern = "/etc/ssh/" + pattern
-            if depth + 1 > MAX_INCLUDE_DEPTH:
-                run.stream.record(
-                    module, "include_not_followed", {"path": pattern, "reason": "depth"}
-                )
-                continue
-            pending.extend((match, depth + 1) for match in glob_absolute(pattern))
-
-    patterns = []
-    for text in texts:
-        for value in _sshd_directives(text, "AuthorizedKeysFile"):
-            if value.lower() != "none" and value not in patterns:
-                patterns.append(value)
-    patterns = patterns or list(DEFAULT_AUTHORIZED_KEYS)
-    run.stream.record(module, "authorized_keys_locations", {"patterns": patterns})
+    config = SshdConfig(run, module)
+    config.read("/etc/ssh/sshd_config", 0, False)
+    if config.global_keys is None:
+        global_patterns = list(DEFAULT_AUTHORIZED_KEYS)
+    else:
+        global_patterns = [p for p in config.global_keys if p.lower() != "none"]
+    patterns = list(global_patterns)
+    for value in config.match_keys:
+        if value.lower() != "none" and value not in patterns:
+            patterns.append(value)
+    run.stream.record(
+        module,
+        "authorized_keys_locations",
+        {
+            "patterns": patterns,
+            "global": global_patterns,
+            "global_set": config.global_keys is not None,
+            # Locations set inside Match blocks apply only to some logins;
+            # their keys are collected too, since any of them may be used.
+            "match": config.match_keys,
+        },
+    )
 
     accounts, _ = read_accounts()
     if accounts is None:
@@ -1808,15 +1849,25 @@ def module_pam(run):
         run.stream.record(module, "unreadable_file", {"path": "/etc/pam.d", "reason": str(exc)})
         entries = []
     names.extend("/etc/pam.d/" + name for name in entries[:MAX_DIR_FILES])
+    run.stream.record(
+        module,
+        "config_dir",
+        {"path": "/etc/pam.d", "entries": len(entries), "truncated": len(entries) > MAX_DIR_FILES},
+    )
     for absolute in names:
         run.check_time()
         send_config_file(run, module, absolute)
 
     seen = set()
     for pattern in PAM_MODULE_DIRS:
-        for directory in glob_absolute(pattern):
+        for found in glob_absolute(pattern):
+            # Walk the real directory: Walk never follows a link at its top,
+            # and the inode seen must be the one walked.
+            directory = resolve_links(found)
+            if directory is None:
+                continue
             try:
-                info = os.stat(path(directory))
+                info = os.lstat(path(directory))
             except OSError:
                 continue
             if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) in seen:

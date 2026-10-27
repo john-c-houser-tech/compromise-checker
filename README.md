@@ -26,6 +26,9 @@ What works today:
   facts and the authentication log, with secrets masked before they leave
   the server.
 - `checker bundle list|show|verify` — inspect and re-check stored evidence.
+- `checker events BUNDLE` — parse a bundle into events (logins, sudo, account
+  changes, kernel and systemd messages, login records), with the tool's own
+  session recognised and left out ([how](docs/events.md)).
 
 **Read-only, proven:** on throwaway Ubuntu 24.04 and Rocky Linux 9 servers,
 with auditd recording every write by the scanner's session, the collector

@@ -429,6 +429,20 @@ CREATE TABLE IF NOT EXISTS custody (
     controller TEXT NOT NULL,
     detail TEXT
 );
+-- What the controller derived from a bundle (events, snapshots): files
+-- encrypted to the evidence key like the bundle, regenerable from it, so
+-- replaced when a newer parser runs (not append-only, unlike the bundle).
+CREATE TABLE IF NOT EXISTS derived (
+    bundle_id TEXT NOT NULL REFERENCES bundles(id),
+    kind TEXT NOT NULL,
+    parser_version INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    items INTEGER NOT NULL,
+    ciphertext_sha256 TEXT NOT NULL,
+    summary BLOB,
+    PRIMARY KEY (bundle_id, kind)
+);
 -- Append-only, enforced by the database itself (DESIGN.md §3.4).
 CREATE TRIGGER IF NOT EXISTS bundles_no_update BEFORE UPDATE ON bundles
     BEGIN SELECT RAISE(ABORT, 'bundles are append-only'); END;
@@ -523,6 +537,20 @@ class Store:
             query = "SELECT * FROM bundles WHERE host = ? ORDER BY started_at"
             return self._db.execute(query, (host,)).fetchall()
         return self._db.execute("SELECT * FROM bundles ORDER BY started_at").fetchall()
+
+    def record_derived(self, row: dict[str, Any]) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO derived (bundle_id, kind, parser_version, path,"
+                " created_at, items, ciphertext_sha256, summary) VALUES (:bundle_id, :kind,"
+                " :parser_version, :path, :created_at, :items, :ciphertext_sha256, :summary)",
+                row,
+            )
+
+    def derived(self, bundle_id: str, kind: str) -> sqlite3.Row | None:
+        return self._db.execute(
+            "SELECT * FROM derived WHERE bundle_id = ? AND kind = ?", (bundle_id, kind)
+        ).fetchone()
 
     def custody_of(self, bundle_id: str) -> list[sqlite3.Row]:
         return self._db.execute(

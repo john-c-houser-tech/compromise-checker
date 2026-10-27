@@ -72,6 +72,12 @@ class Session:
     remote_port: int | None = None
     # Every key offered, in order: sshd logs refused ones too.
     offered_key_fingerprints: list[str] = field(default_factory=list)
+    # The exact command run on the host (sudo logs it), and when the
+    # collector's first bytes arrived: the collector writes its manifest,
+    # with its start on the host's clock, first, so this is the controller's
+    # side of the clock-offset measurement (after any password prompt).
+    command: str | None = None
+    first_data_at: datetime | None = None
     exit_status: int | None = None
     bytes_received: int = 0
     stderr: str = ""
@@ -304,7 +310,8 @@ async def _run(conn, host, program, sink, session, password, prompt_timeout) -> 
     if host.sudo == "password":
         token = secrets.token_hex(8)
         prompt, ready = f"[checker-sudo-{token}]", f"[checker-ready-{token}]"
-    process = await conn.create_process(remote_command(host, prompt, ready), encoding=None)
+    session.command = remote_command(host, prompt, ready)
+    process = await conn.create_process(session.command, encoding=None)
     stderr = bytearray()
     prompt_seen = asyncio.Event()
     password_rejected = asyncio.Event()
@@ -325,6 +332,8 @@ async def _run(conn, host, program, sink, session, password, prompt_timeout) -> 
 
     async def read_stdout():
         while data := await process.stdout.read(READ_SIZE):
+            if session.first_data_at is None:
+                session.first_data_at = datetime.now(UTC)
             session.bytes_received += len(data)
             result = sink(data)
             if result is not None:  # any awaitable: keep backpressure, surface errors

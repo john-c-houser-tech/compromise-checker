@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from checker import __version__
+from checker.analysis import load_events, parse_bundle, store_events
 from checker.collect import collect_hosts
 from checker.credentials import password_for
 from checker.evidence import (
@@ -403,7 +404,63 @@ def build_parser() -> argparse.ArgumentParser:
         action.add_argument("bundle", help="bundle id")
         action.add_argument("--identity", help="the evidence private key file")
         action.set_defaults(handler=handler)
+    events = commands.add_parser("events", help="parse a bundle into events and list them")
+    events.add_argument("bundle", help="bundle id")
+    events.add_argument("--type", help="only events whose type starts with this, e.g. ssh.")
+    events.add_argument("--own", action="store_true", help="include this tool's own session")
+    events.add_argument("--reparse", action="store_true", help="parse again even if stored")
+    events.add_argument("--identity", help="the evidence private key file")
+    events.set_defaults(handler=cmd_events)
     return parser
+
+
+def cmd_events(args: argparse.Namespace) -> int:
+    """Parse a bundle into events (or load its stored parse) and list them."""
+    base = home()
+    store = Store(database_file(base))
+    try:
+        row = store.bundle(args.bundle)
+        identity = _identity(args, base)
+        parsed = None if args.reparse else load_events(store, row, identity)
+        if parsed is None:
+            parsed = parse_bundle(row, identity)
+            store_events(store, row, load_config(base).recipients, parsed)
+        else:
+            store.custody(row["id"], "viewed", {"events": True})
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    summary = parsed.summary
+    offset = summary.get("clock_offset_seconds")
+    zone = summary.get("time_zone")
+    assumed = " (assumed)" if summary.get("time_zone_assumed") else ""
+    print(f"Bundle     {row['id']}")
+    print(
+        f"Events     {summary.get('events')} ({summary.get('own_session')} from this tool's"
+        " own session, shown with --own)"
+    )
+    print(
+        f"Clock      offset {offset if offset is not None else 'unknown'} s; zone {zone}{assumed}"
+    )
+    if summary.get("problem"):
+        print(f"Problem    {summary['problem']}")
+    if summary.get("own_login_found") is False:
+        print(
+            "Note       this tool's own SSH login was not found in the logs, so it and what"
+            " followed from it are listed as findings (a NAT between the controller and"
+            " the host changes the source port it is recognised by)"
+        )
+    for event in parsed.events:
+        if event.own_session and not args.own:
+            continue
+        if args.type and not event.type.startswith(args.type):
+            continue
+        detail = " ".join(f"{k}={v}" for k, v in event.fields.items())
+        own = " [own session]" if event.own_session else ""
+        print(f"{event.corrected or '-':32} {event.type:26} {detail}{own}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

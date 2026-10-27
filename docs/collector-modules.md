@@ -13,7 +13,9 @@ Masking works on whole lines, so a secret can never be split across two
 reads. Two fixed vocabularies are never masked, because they look like
 `key=value` settings but can't hold a secret and are exactly what the checks
 compare: sudo's `NOPASSWD:` and `PASSWD:` tags in a line that is a sudo rule
-(`user host = (runas) TAG: command`; anywhere else, such as a log line,
+(`user host = (runas) TAG: command`), and only where a command spec starts —
+after the rule's `=` or an unescaped `,`, before the command — never in a
+command's arguments or a comment; anywhere else, such as a log line,
 `PASSWD: x` is masked like any password label),
 and PAM control flags and `pam_debug` arguments where both the key and the
 value are PAM's own words (`auth_err=die`, `new_authtok_reqd=ok`,
@@ -131,8 +133,10 @@ belongs to no `/etc/passwd` account is an *unlisted home*. A home that is a
 symbolic link (`/home/alice` → `/srv/alice`) is followed to its target, as
 sshd follows it, but never descended through. A home root that is itself a
 link (`/home` → `/srv/homes`) is searched at its target. If a root can't be
-searched, or the search is cut short, the `homes` record says
-`complete: false`, and protection fails closed (see "Protected files"). Only those three
+searched, the search is cut short, or `/etc/passwd` can't be read (so local
+homes are unknown), protection fails closed (see "Protected files"). A
+home-like directory is still searched one level below (`/home/CORP/.ssh` and
+`/home/CORP/alice`). Only those three
 SSSD settings are read from `sssd.conf`; nothing from it is sent. NSS itself
 is not asked: with SSSD's defaults it lists no domain users, and a lookup
 can reach the directory server and write SSSD's cache on the target.
@@ -251,8 +255,9 @@ would be a change to the server, and a lookup on a slow or unreachable file
 server can block in the kernel, past any time limit. So before looking
 inside any path — a home, a configuration link's target, a key file — the
 collector checks the mount table (`/proc/self/mountinfo`, kernel memory).
-Anything under an `autofs` mount point (except listing the autofs directory
-itself, which mounts nothing) or on a network file system (NFS, CIFS/SMB,
+Anything under an `autofs` mount point (except listing an indirect map's
+directory itself, which mounts nothing; a direct map's mount point is never
+touched, since any access mounts it) or on a network file system (NFS, CIFS/SMB,
 Ceph, GlusterFS, Lustre, GPFS, AFS, 9p, sshfs, WebDAV and similar) is left
 alone and recorded as `not_examined` with the reason (`automount` or
 `network_filesystem`). The check sits where every file-system access goes —
@@ -261,7 +266,9 @@ opens — so no lookup can bypass it: parent directories are resolved one step
 at a time, checking the mount table before each, and a final symbolic link's
 destination is checked too, so a link can't lead the collector onto such a
 mount either; glob patterns are expanded one directory
-at a time behind the same check. On a server with no automounted or network
+at a time behind the same check, and stop at 10,000 entries or the module's
+time limit (recorded as `not_examined` with reason `limit`). Directory walks
+check each entry the same way before reading its metadata. On a server with no automounted or network
 mounts at all, the check costs nothing.
 
 Directives (includes, `AuthorizedKeysFile`) are looked for in the first

@@ -285,7 +285,15 @@ MAX_KEY_LINES = 256
 # match; inside a rule, a tag counts only right after ")", "=", "," or another
 # tag. Anywhere else "PASSWD: x" is masked like any password label.
 _SUDO_RULE = re.compile(rb"^\s*[%+]?[\w.@$\\-]+(?:\s*,\s*[%+]?[\w.@$\\-]+)*\s+[\w.@!*,\s-]+?=")
-_SUDO_TAG = re.compile(rb"(?<=[)=,:])(\s*)((?:NO)?PASSWD:)")
+# A command spec starts right after the rule's "=" and after each unescaped
+# ",": an optional "(runas)", then tags ("NOPASSWD:", "SETENV:" …) right
+# before the command. Only tags there are held; text in a command (where a
+# "," or "=" would be escaped or an argument) or in a comment never is.
+_SUDO_SPEC = re.compile(rb"\s*(?:\([^)\n]*\)\s*)?((?:[A-Z_]+:\s*)+)")
+_SUDO_SPEC_SEPARATOR = re.compile(rb"(?<!\\),")
+_SUDO_TAG = re.compile(rb"(?:NO)?PASSWD:")
+# A comment: "#" not starting a numeric uid ("#1000") or an include.
+_SUDO_COMMENT = re.compile(rb"#(?![0-9]|include)")
 _TAG_HOLD = b"\x00sudo-tag-%d\x00"
 
 
@@ -365,17 +373,31 @@ class Masker:
                 rest = b"\n" if data.endswith(b"\n") else b""
             # The text before the key still goes through every rule below.
             data = data[: begin.start()] + MASK % b"private_key" + rest
-        if not _SUDO_RULE.match(data):
+        rule_start = _SUDO_RULE.match(data)
+        if not rule_start:
             return self._apply_rules(data)
-        # A sudo rule: hold its tags aside so the rules can't take them for
-        # password labels, then put them back.
+        # A sudo rule: hold the tags of its command specs aside (never in the
+        # comment) so the rules can't take them for password labels, then put
+        # them back.
+        comment = _SUDO_COMMENT.search(data)
+        rule, rest = (data[: comment.start()], data[comment.start() :]) if comment else (data, b"")
         tags = []
 
-        def hold(match):
-            tags.append(match.group(2))
-            return match.group(1) + _TAG_HOLD % (len(tags) - 1)
+        def hold_tag(match):
+            tags.append(match.group(0))
+            return _TAG_HOLD % (len(tags) - 1)
 
-        data = self._apply_rules(_SUDO_TAG.sub(hold, data))
+        starts = [rule_start.end()]
+        starts += [m.end() for m in _SUDO_SPEC_SEPARATOR.finditer(rule, rule_start.end())]
+        pieces, last = [], 0
+        for start in starts:
+            spec = _SUDO_SPEC.match(rule, start)
+            if spec:
+                pieces.append(rule[last : spec.start(1)])
+                pieces.append(_SUDO_TAG.sub(hold_tag, spec.group(1)))
+                last = spec.end(1)
+        pieces.append(rule[last:])
+        data = self._apply_rules(b"".join(pieces) + rest)
         for index, tag in enumerate(tags):
             data = data.replace(_TAG_HOLD % index, tag, 1)
         return data
@@ -864,6 +886,10 @@ class Walk:
                         if self._stop():
                             return
                         absolute = _join(directory, item.name)
+                        risk = mount_risk(absolute)
+                        if risk:  # e.g. an NFS mount inside the directory
+                            yield self._counted({"path": absolute, "not_examined": risk})
+                            continue
                         try:
                             info = item.stat(follow_symlinks=False)
                             link_target = None
@@ -1373,19 +1399,38 @@ def path_facts(absolute):
     return facts
 
 
-def glob_absolute(pattern, skipped=None):
+MAX_GLOB_ENTRIES = 10000
+
+
+def glob_absolute(pattern, skipped=None, run=None):
     """Paths matching a glob pattern, as absolute paths on the target,
     expanded one directory at a time so that nothing is looked inside before
     the mount guard has passed it. Paths it won't look at are appended to
-    `skipped` as {"path", "reason"}."""
-    found = ["/"]
+    `skipped` as {"path", "reason"}; so is the pattern, with reason "limit",
+    if expansion stops at MAX_GLOB_ENTRIES entries or the run's deadline."""
+    found, budget = ["/"], [MAX_GLOB_ENTRIES]
+
+    def spent():
+        budget[0] -= 1
+        if budget[0] < 0 or (run is not None and run.out_of_time()):
+            if skipped is not None:
+                skipped.append({"path": pattern, "reason": "limit"})
+            return True
+        return False
+
     for part in [p for p in pattern.split("/") if p]:
         following = []
         for base in found:
             names = [part]
             if glob.has_magic(part):
                 try:
-                    names = sorted(os.listdir(path(base)))
+                    names = []
+                    with os.scandir(path(base)) as listing:
+                        for item in listing:
+                            if spent():
+                                return sorted(following)
+                            names.append(item.name)
+                    names.sort()
                 except UnsafePath as exc:
                     if skipped is not None:
                         skipped.append({"path": exc.target, "reason": exc.reason})
@@ -1397,6 +1442,8 @@ def glob_absolute(pattern, skipped=None):
                     n for n in names if fnmatch.fnmatchcase(n, part) and (hidden or n[0] != ".")
                 ]
             for name in names:
+                if spent():
+                    return sorted(following)
                 candidate = _join(base, name)
                 try:  # one refused candidate never costs its siblings
                     if os.path.lexists(path(candidate)):
@@ -1525,6 +1572,9 @@ def protected_inodes(run=None):
     candidates = list(PROTECTED_FILES)
     accounts, _ = read_accounts()
     homes, summary = discover_homes(accounts, run)
+    if accounts is None:
+        # Without the account list, local homes are unknown: fail closed.
+        summary["complete"] = False
     for home in homes:
         if not home.get("skipped"):
             candidates.extend(_join(home["home"], name) for name in HISTORY_FILES)
@@ -1711,7 +1761,7 @@ def discover_homes(accounts, run=None):
                     "source": "directory",
                     "owner_uid": owner,
                 }
-            elif depth < 2:
+            if depth < 2:  # even a home-like parent: /home/CORP/.ssh and /home/CORP/alice
                 pending.append((child, depth + 1))  # e.g. /home/<domain>/<user>
     summary = {
         "roots": roots,
@@ -1859,14 +1909,20 @@ def mount_table():
             if not separator or len(fields) < 5 or not rest:
                 continue
             point = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[4])
-            mounts.append((len(point.rstrip("/")), index, point, rest[0]))
+            fstype = rest[0]
+            options = rest[2].split(",") if len(rest) > 2 else []
+            if fstype == "autofs" and ("direct" in options or "offset" in options):
+                fstype = "autofs-direct"  # the mount point itself is the trigger
+            mounts.append((len(point.rstrip("/")), index, point, fstype))
         mounts.sort(reverse=True)
         _MOUNTS = [(point, fstype) for _, _, point, fstype in mounts]
     return _MOUNTS
 
 
 def has_risky_mounts():
-    return any(fstype == "autofs" or fstype in NETWORK_FILESYSTEMS for _, fstype in mount_table())
+    return any(
+        fstype.startswith("autofs") or fstype in NETWORK_FILESYSTEMS for _, fstype in mount_table()
+    )
 
 
 def mount_risk(target):
@@ -1876,8 +1932,10 @@ def mount_risk(target):
         if target == point or target.startswith(point.rstrip("/") + "/"):
             if fstype in NETWORK_FILESYSTEMS:
                 return "network_filesystem"
+            if fstype == "autofs-direct":
+                return "automount"  # a direct map mounts on any access to the point itself
             if fstype == "autofs" and target != point:
-                return "automount"  # listing the autofs directory itself is safe
+                return "automount"  # listing an indirect map's directory is safe
             return None
     return None
 
@@ -2369,7 +2427,7 @@ class SshdConfig:
                     if not pattern.startswith("/"):
                         pattern = "/etc/ssh/" + pattern
                     skipped = []
-                    for match in glob_absolute(pattern, skipped):
+                    for match in glob_absolute(pattern, skipped, self.run):
                         self.read(match, depth + 1, in_match)
                     for gap in skipped:
                         self.run.stream.record(self.module, "not_examined", gap)
@@ -2468,7 +2526,7 @@ def module_ssh(run):
             continue
         wildcard = re.sub(r"%[uU]", "*", template).replace("\0", "%")
         skipped = []
-        matches = glob_absolute(wildcard, skipped)
+        matches = glob_absolute(wildcard, skipped, run)
         for gap in skipped:
             run.stream.record(module, "not_examined", gap)
         for candidate in matches:
@@ -2522,7 +2580,7 @@ def module_pam(run):
     seen = set()
     for pattern in PAM_MODULE_DIRS:
         skipped = []
-        matches = glob_absolute(pattern, skipped)
+        matches = glob_absolute(pattern, skipped, run)
         for gap in skipped:
             run.stream.record(module, "not_examined", gap)
         for found in matches:

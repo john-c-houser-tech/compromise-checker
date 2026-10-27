@@ -476,6 +476,8 @@ class MaskingTests(unittest.TestCase):
         kept = b"jch ALL = (root) NOPASSWD:SETENV: /bin/a, PASSWD: /bin/b\n"
         self.assertEqual(self.mask(kept), (kept, {}))
         for line in (
+            b"root ALL=(ALL) ALL # note=PASSWD: hunter2\n",  # in the comment
+            b"root ALL=(ALL) /bin/run --x=PASSWD: hunter2\n",  # in the command
             b"app: PASSWD: hunter2\n",
             b"Oct 26 10:00:00 web01 app[7]: NOPASSWD: hunter2\n",
             b"user=bob PASSWD: hunter2\n",
@@ -1603,6 +1605,22 @@ class DomainHomeTests(FixtureRoot):
         keys = [k["path"] for k in records_named(records, "authorized_key")]
         self.assertIn("/srv/elsewhere/keys", keys)
 
+    def test_unreadable_account_list_fails_closed(self):
+        self.write("root/.bash_history", b"CanaryHistory\n")
+        os.remove(Path(self.root, "etc/passwd"))
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.symlink("../../root/.bash_history", Path(self.root, "etc/pam.d/x"))
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["pam"]), out=out)
+        self.assertNotIn(b"CanaryHistory", gzip.decompress(out.getvalue()))
+
+    def test_home_like_parent_is_still_searched_below(self):
+        self.write("home/CORP/.ssh/authorized_keys", self.key)
+        self.write("home/CORP/alice/.ssh/authorized_keys", self.key)
+        records = collect(self.root, ["ssh"])
+        homes = sorted(k["home"] for k in records_named(records, "authorized_key"))
+        self.assertEqual(homes, ["/home/CORP", "/home/CORP/alice"])
+
     def test_linked_unlisted_home_is_followed(self):
         self.write("srv/alice/.ssh/authorized_keys", self.key)
         Path(self.root, "home").mkdir(exist_ok=True)
@@ -1726,6 +1744,41 @@ class MountTests(FixtureRoot):
         self.assertIn(
             ("/etc/ssh/sshd_config.d/10-remote.conf", "network_filesystem"), self.gaps(records)
         )
+
+    def test_mounts_inside_a_walked_directory_are_not_probed(self):
+        self.write(
+            "proc/self/mountinfo",
+            (MOUNTINFO + "60 22 0:60 / /usr/lib64/security/remote rw - nfs4 f:/x rw\n").encode(),
+        )
+        self.write("usr/lib64/security/pam_unix.so", b"\x7fELF")
+        self.write("usr/lib64/security/remote/pam_x.so", b"\x7fELF")
+        records = collect(self.root, ["pam"])
+        files = {f["path"]: f for f in records_named(records, "module_file")}
+        self.assertEqual(
+            files["/usr/lib64/security/remote"],
+            {"path": "/usr/lib64/security/remote", "not_examined": "network_filesystem"},
+        )
+        self.assertNotIn("/usr/lib64/security/remote/pam_x.so", files)
+        self.assertIn("sha256", files["/usr/lib64/security/pam_unix.so"])
+
+    def test_direct_automount_points_are_never_touched(self):
+        self.write(
+            "proc/self/mountinfo",
+            (MOUNTINFO + "61 22 0:61 / /srv/homes rw - autofs map rw,fd=5,direct\n").encode(),
+        )
+        collector = load_collector(self.root)
+        self.assertEqual(collector.mount_risk("/srv/homes"), "automount")
+        self.assertIsNone(collector.mount_risk("/home"))  # indirect: listing is safe
+
+    def test_glob_expansion_is_bounded(self):
+        for index in range(30):
+            self.write(f"etc/ssh/sshd_config.d/{index:02}.conf", b"\n")
+        collector = load_collector(self.root)
+        collector.MAX_GLOB_ENTRIES = 10
+        skipped = []
+        found = collector.glob_absolute("/etc/ssh/sshd_config.d/*.conf", skipped)
+        self.assertLessEqual(len(found), 10)
+        self.assertIn({"path": "/etc/ssh/sshd_config.d/*.conf", "reason": "limit"}, skipped)
 
     def gaps(self, records):
         return {(g["path"], g["reason"]) for g in records_named(records, "not_examined")}

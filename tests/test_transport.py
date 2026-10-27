@@ -48,7 +48,9 @@ def program():
     settings = Settings(
         run_id="r1",
         since=datetime(2026, 9, 25, tzinfo=UTC),
-        modules=None,  # all the collector has
+        # One light module: the fake target runs the collector on the machine
+        # hosting the tests, where heavy modules (package verification) take minutes.
+        modules=["host_facts"],
         limits=Limits(overall_seconds=60, module_seconds=30, source_bytes=1 << 20),
     )
     return build_program(settings)

@@ -473,8 +473,14 @@ class MaskingTests(unittest.TestCase):
             self.assertEqual((masked, counts), (line, {}), line)
 
     def test_sudo_tags_are_kept_only_in_sudo_rules(self):
-        kept = b"jch ALL = (root) NOPASSWD:SETENV: /bin/a, PASSWD: /bin/b\n"
-        self.assertEqual(self.mask(kept), (kept, {}))
+        for kept in (
+            b"jch ALL = (root) NOPASSWD:SETENV: /bin/a, PASSWD: /bin/b\n",
+            b"#1000 ALL=(ALL) NOPASSWD: ALL\n",
+            b"%#27 ALL=(ALL) NOPASSWD: ALL\n",
+            b"%:admins ALL = NOPASSWD: ALL\n",
+            b"jch 10.0.0.0/8 = (root) NOPASSWD: ALL\n",
+        ):
+            self.assertEqual(self.mask(kept), (kept, {}), kept)
         for line in (
             b"root ALL=(ALL) ALL # note=PASSWD: hunter2\n",  # in the comment
             b"root ALL=(ALL) /bin/run --x=PASSWD: hunter2\n",  # in the command
@@ -1094,6 +1100,16 @@ class AccountsTests(FixtureRoot):
         records = collect(self.root, ["accounts"])
         self.assertEqual(records_named(records, "unreadable_file")[0]["path"], "/etc/shadow")
 
+    def test_oversized_account_file_is_read_to_whole_lines(self):
+        collector = load_collector(self.root)
+        collector.ACCOUNT_FILE_BYTES = len(PASSWD.splitlines(keepends=True)[0]) + 10
+        out = io.BytesIO()
+        collector.main(settings(["accounts"]), out=out)
+        records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+        self.assertEqual([a["name"] for a in records_named(records, "account")], ["root"])
+        gaps = {g["path"] for g in records_named(records, "incomplete_file")}
+        self.assertIn("/etc/passwd", gaps)
+
     def test_unreadable_group_file_is_recorded(self):
         os.remove(Path(self.root, "etc/group"))
         records = collect(self.root, ["accounts"])
@@ -1169,6 +1185,18 @@ class SudoersTests(FixtureRoot):
         self.write("etc/ssh/sshd_config", b"Include /usr/share/crypto-policies/DEFAULT/*.txt\n")
         records = collect(self.root, ["ssh"])
         self.assertIn("/usr/share/crypto-policies/DEFAULT/opensshserver.txt", sources(records))
+
+    def test_large_included_directory_is_read_incrementally(self):
+        self.write("etc/sudoers", b"@includedir /etc/sudoers.d\n")
+        for index in range(5):
+            self.write(f"etc/sudoers.d/f{index}", b"x ALL=(ALL) ALL\n")
+        collector = load_collector(self.root)
+        collector.MAX_DIR_FILES = 2
+        out = io.BytesIO()
+        collector.main(settings(["sudoers"]), out=out)
+        records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+        (listing,) = records_named(records, "include_dir")
+        self.assertEqual((len(listing["files"]), listing["truncated"]), (2, True))
 
     def test_include_loop_ends(self):
         self.write("etc/sudoers", b"#include /etc/sudoers\n")
@@ -1343,6 +1371,11 @@ class SshTests(FixtureRoot):
             collector._SSH_KEY_TYPE.match("sk-ecdsa-sha2-nistp256-cert-v01@openssh.com")
         )
 
+    def test_blob_with_no_key_inside_is_not_a_key(self):
+        collector = load_collector(self.root)
+        self.assertIsNone(collector.parse_authorized_key("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 x"))
+        self.assertIsNotNone(collector.parse_authorized_key(f"ssh-ed25519 {ED25519} x"))
+
     def test_blob_that_is_not_a_key_is_not_echoed(self):
         self.write("etc/ssh/sshd_config", b"")
         inner = b"password=example-secret"
@@ -1497,6 +1530,38 @@ class PamTests(FixtureRoot):
         )
         self.assertNotIn(b"John Example", raw)
 
+    def test_history_in_service_homes_and_aliases_is_refused(self):
+        # Apache's home is inside /usr; a hard link under /usr to a user's
+        # history, under another name, is refused by inode.
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0:root:/root:/bin/bash\n"
+            b"apache:x:48:48::/usr/share/httpd:/sbin/nologin\n"
+            b"jch:x:1000:1000::/home/jch:/bin/bash\n",
+        )
+        self.write("usr/share/httpd/.bash_history", b"CanaryHistory\n")
+        self.write("usr/share/httpd/notes", b"CanaryHistory\n")
+        self.write("home/jch/.bash_history", b"CanaryHistory\n")
+        os.makedirs(Path(self.root, "usr/share/crypto-policies"))
+        os.link(
+            Path(self.root, "home/jch/.bash_history"),
+            Path(self.root, "usr/share/crypto-policies/alias"),
+        )
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        for name, target in (
+            ("a", "../../usr/share/httpd/.bash_history"),
+            ("b", "../../usr/share/httpd/notes"),
+            ("c", "../../usr/share/crypto-policies/alias"),
+        ):
+            os.symlink(target, Path(self.root, "etc/pam.d", name))
+        self.write("etc/pam.d/sshd", b"auth required pam_unix.so\n")
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["pam"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"CanaryHistory", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(sorted(sources(records)), ["/etc/pam.d/sshd"])
+
     def test_too_many_pam_files_is_a_recorded_gap(self):
         for name in ("a", "b", "c"):
             self.write("etc/pam.d/" + name, b"auth required pam_unix.so\n")
@@ -1506,8 +1571,9 @@ class PamTests(FixtureRoot):
         collector.main(settings(["pam"]), out=out)
         records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
         (listing,) = records_named(records, "config_dir")
-        self.assertEqual((listing["entries"], listing["truncated"]), (3, True))
-        self.assertEqual(sorted(sources(records)), ["/etc/pam.d/a", "/etc/pam.d/b"])
+        # Read incrementally: it stops at the limit and says so.
+        self.assertEqual((listing["entries"], listing["truncated"]), (2, True))
+        self.assertEqual(len(sources(records)), 2)  # the directory's order, cut at the limit
 
 
 class DomainHomeTests(FixtureRoot):
@@ -1793,6 +1859,19 @@ class MountTests(FixtureRoot):
         self.assertEqual(collector.mount_risk("/srv/homes"), "automount")
         self.assertIsNone(collector.mount_risk("/home"))  # indirect: listing is safe
 
+    def test_glob_limit_never_returns_partial_matches(self):
+        self.write("etc/inc/stray.conf", b"PermitRootLogin yes\n")
+        self.write("etc/inc/a/sshd.conf", b"\n")
+        collector = load_collector(self.root)
+        skipped = []
+        # Budgets that run out at each step of the expansion, including just
+        # after /etc/inc/a (a prefix, not a match) has been found.
+        for budget in range(1, 8):
+            collector.MAX_GLOB_ENTRIES = budget
+            found = collector.glob_absolute("/etc/inc/*/sshd.conf", skipped)
+            self.assertIn(found, ([], ["/etc/inc/a/sshd.conf"]), budget)
+        self.assertEqual(skipped[-1]["reason"], "limit")
+
     def test_glob_expansion_is_bounded(self):
         for index in range(30):
             self.write(f"etc/ssh/sshd_config.d/{index:02}.conf", b"\n")
@@ -1800,7 +1879,7 @@ class MountTests(FixtureRoot):
         collector.MAX_GLOB_ENTRIES = 10
         skipped = []
         found = collector.glob_absolute("/etc/ssh/sshd_config.d/*.conf", skipped)
-        self.assertLessEqual(len(found), 10)
+        self.assertEqual(found, [])  # cut short: fail closed
         self.assertIn({"path": "/etc/ssh/sshd_config.d/*.conf", "reason": "limit"}, skipped)
 
     def gaps(self, records):

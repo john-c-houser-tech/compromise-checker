@@ -114,6 +114,7 @@ switched off (DESIGN.md §8.3).
 | `password_status` | `/etc/shadow` | Per account: `empty`, `no_password` (`*`, `!!`…), `locked` or `set`; the hash *algorithm* (yescrypt, sha512, md5, des…); last change, minimum, maximum, warning, inactivity and expiry, in days and as dates |
 | `shell_history` | each home directory | Type, owner, mode, size, times and link target of known history files (`.bash_history`, `.zsh_history`, fish, MySQL, PostgreSQL, Python, SQLite…) |
 | `malformed_lines` | any of the three | Line numbers only |
+| `incomplete_file` | any of the three | Read only to its last whole line within 8 MiB: later entries are missing |
 
 If `/etc/group` or `/etc/shadow` can't be read, an `unreadable_file` record
 says so. **Never sent:** password hashes — `/etc/shadow` is reduced to status on the
@@ -248,8 +249,12 @@ file actually opened, after any links:
 - **Nothing hard-linked is read as text**, since a hard link could be any
   file — except distribution content under `/usr`, where packages ship hard
   links (RHEL's crypto policies, for example).
-- **The account files above are refused by device and inode**, however
-  they're reached, though they sit in `/etc`.
+- **The account files above, and the history files in every `/etc/passwd`
+  account's home, are refused by device and inode**, however they're
+  reached and whatever the name; anything named like a history file is
+  refused too.
+- **Nothing inside an account's home is read as configuration**, even where
+  the home lies inside a system location (Apache's `/usr/share/httpd`).
 
 Key files, whose place is the home directory, are read wherever sshd reads
 them, but never if hard-linked or named like a history file — and only
@@ -278,7 +283,9 @@ at a time, checking the mount table before each, and a final symbolic link's
 destination is checked too, so a link can't lead the collector onto such a
 mount either; glob patterns are expanded one directory
 at a time behind the same check, and stop at 10,000 entries or the module's
-time limit (recorded as `not_examined` with reason `limit`). Directory walks
+time limit — returning no matches at all rather than partial ones (recorded
+as `not_examined` with reason `limit`). Directory listings (`sudoers.d`,
+`/etc/pam.d`) are read incrementally and stop at 1024 entries, saying so. Directory walks
 check each entry the same way before reading its metadata. On a server with no automounted or network
 mounts at all, the check costs nothing.
 

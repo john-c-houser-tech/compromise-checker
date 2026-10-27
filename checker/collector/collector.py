@@ -284,7 +284,10 @@ MAX_KEY_LINES = 256
 # NOPASSWD:/PASSWD: tags are kept. Log lines begin with a timestamp and can't
 # match; inside a rule, a tag counts only right after ")", "=", "," or another
 # tag. Anywhere else "PASSWD: x" is masked like any password label.
-_SUDO_RULE = re.compile(rb"^\s*[%+]?[\w.@$\\-]+(?:\s*,\s*[%+]?[\w.@$\\-]+)*\s+[\w.@!*,\s-]+?=")
+_SUDO_USER = rb"!?[%+]?(?:#[0-9]+|:?[\w.@$\\-]+)"  # name, #uid, %#gid, %:group
+_SUDO_RULE = re.compile(
+    rb"^\s*" + _SUDO_USER + rb"(?:\s*,\s*" + _SUDO_USER + rb")*\s+[\w.@!*,/\s-]+?="
+)
 # A command spec starts right after the rule's "=" and after each unescaped
 # ",": an optional "(runas)", then tags ("NOPASSWD:", "SETENV:" …) right
 # before the command. Only tags there are held; text in a command (where a
@@ -454,20 +457,25 @@ class Run:
           a hard link could be any file;
         - configuration and logs are read only from system locations, so a
           link can't carry a history file or anything else out;
-        - a key file, whose place is the home directory, is refused if it is
-          named like a history file."""
+        - nothing named like a shell history file is read, and the history
+          files of /etc/passwd accounts are refused by inode, under any name;
+        - nothing inside an account's home is read as configuration, even
+          where that home lies in a system location."""
         if self._protected is None:
             self._protected = protected_inodes()
-        if (info.st_dev, info.st_ino) in self._protected:
+        inodes, homes = self._protected
+        if (info.st_dev, info.st_ino) in inodes:
             return "is (or links to) a protected file; its contents are never read"
+        if opened.rsplit("/", 1)[-1] in _HISTORY_NAMES:
+            return "is a shell history file; its contents are never read"
         if info.st_nlink > 1 and not opened.startswith("/usr/"):
             return "is hard-linked, so it could be a protected file; its contents are never read"
         if key_file:
-            if opened.rsplit("/", 1)[-1] in _HISTORY_NAMES:
-                return "is a shell history file; its contents are never read"
             return None
         if not opened.startswith(SYSTEM_LOCATIONS):
             return "is outside the system locations configuration and logs are read from"
+        if opened.startswith(homes):
+            return "is inside an account's home directory; its contents are never read"
         return None
 
     def out_of_time(self):
@@ -721,6 +729,37 @@ def read_small(absolute, limit=65536):
             return raw.read(limit).decode("utf-8", errors="replace")
     except OSError:  # opened but unreadable (I/O error): treat as missing
         return None
+
+
+def list_directory(absolute, limit, run=None):
+    """Up to `limit` names in a directory, read incrementally (a huge one is
+    never read whole) and sorted. Returns (names, truncated). Raises OSError."""
+    names, truncated = [], False
+    with os.scandir(path(absolute)) as listing:
+        for item in listing:
+            if len(names) >= limit or (run is not None and run.out_of_time()):
+                truncated = True
+                break
+            names.append(item.name)
+    return sorted(names), truncated
+
+
+def read_whole_lines(absolute, limit):
+    """Up to `limit` bytes of a text file, cut back to its last whole line if
+    longer. Returns (text, truncated), or (None, False) if unreadable."""
+    try:
+        raw, _ = open_regular_file(absolute)
+    except (OSError, ValueError):
+        return None, False
+    try:
+        with raw:
+            data = raw.read(limit + 1)
+    except OSError:
+        return None, False
+    truncated = len(data) > limit
+    if truncated:
+        data = data[: data.rfind(b"\n", 0, limit) + 1]
+    return data.decode("utf-8", errors="replace"), truncated
 
 
 def hash_file(run, absolute, expect=None):
@@ -1368,6 +1407,7 @@ def module_auth_journal(run):
 # --- Accounts and access (DESIGN.md §8.3) ------------------------------------------
 
 ACCOUNT_FILE_BYTES = 8 * 1024 * 1024
+ACCOUNTS_TRUNCATED = False
 CONFIG_FILE_BYTES = 1024 * 1024
 MAX_INCLUDE_DEPTH = 8
 MAX_DIR_FILES = 1024
@@ -1432,7 +1472,7 @@ def glob_absolute(pattern, skipped=None, run=None):
                     with os.scandir(path(base)) as listing:
                         for item in listing:
                             if spent():
-                                return sorted(following)
+                                return []  # fail closed: never a partial match
                             names.append(item.name)
                     names.sort()
                 except UnsafePath as exc:
@@ -1447,7 +1487,7 @@ def glob_absolute(pattern, skipped=None, run=None):
                 ]
             for name in names:
                 if spent():
-                    return sorted(following)
+                    return []
                 candidate = _join(base, name)
                 try:  # one refused candidate never costs its siblings
                     if os.path.lexists(path(candidate)):
@@ -1517,8 +1557,10 @@ def _date_from_days(days):
 def read_accounts():
     """Accounts from /etc/passwd as dicts (name, uid, gid, home, shell, and
     the password field's status), plus the numbers of malformed lines.
-    None if the file can't be read."""
-    text = read_small("/etc/passwd", ACCOUNT_FILE_BYTES)
+    None if the file can't be read. A file larger than ACCOUNT_FILE_BYTES is
+    read to its last whole line; ACCOUNTS_TRUNCATED then says so."""
+    global ACCOUNTS_TRUNCATED
+    text, ACCOUNTS_TRUNCATED = read_whole_lines("/etc/passwd", ACCOUNT_FILE_BYTES)
     if text is None:
         return None, []
     accounts, malformed = [], []
@@ -1569,11 +1611,21 @@ SYSTEM_LOCATIONS = ("/etc/", "/usr/", "/lib/", "/lib64/", "/var/log/", "/run/")
 
 
 def protected_inodes():
-    """Inodes of PROTECTED_FILES. Shell history needs no list: it lives in
-    home directories, outside the system locations, and Run.refusal never
-    reads configuration or logs from there, nor anything hard-linked."""
+    """(inodes of PROTECTED_FILES and of the history files in /etc/passwd
+    accounts' homes, those homes). The history inodes catch aliases under
+    any name — a hard link under /usr, say; the homes let Run.refusal keep
+    out a service account's home that lies inside a system location
+    (Apache's /usr/share/httpd)."""
+    candidates = list(PROTECTED_FILES)
+    accounts, _ = read_accounts()
+    homes = sorted(
+        {a["home"].rstrip("/") for a in accounts or () if a["home"].rstrip("/")}
+        - {r.rstrip("/") for r in SYSTEM_LOCATIONS}
+    )
+    for home in homes:
+        candidates.extend(_join(home, name) for name in HISTORY_FILES)
     inodes = set()
-    for absolute in PROTECTED_FILES:
+    for absolute in candidates:
         resolved, risk = resolve_links(absolute)
         if risk:
             continue
@@ -1583,7 +1635,7 @@ def protected_inodes():
             continue
         if stat.S_ISREG(info.st_mode):
             inodes.add((info.st_dev, info.st_ino))
-    return inodes
+    return inodes, tuple(home + "/" for home in homes)
 
 
 HISTORY_FILES = (
@@ -1786,6 +1838,8 @@ def module_accounts(run):
     accounts, malformed = read_accounts()
     if accounts is None:
         raise OSError("/etc/passwd could not be read")
+    if ACCOUNTS_TRUNCATED:
+        record(module, "incomplete_file", {"path": "/etc/passwd", "read_bytes": ACCOUNT_FILE_BYTES})
     for account in accounts:
         record(module, "account", account)
     if malformed:
@@ -1793,7 +1847,9 @@ def module_accounts(run):
         record(module, "malformed_lines", {"path": "/etc/passwd", "lines": malformed})
     run.check_time()
 
-    text = read_small("/etc/group", ACCOUNT_FILE_BYTES)
+    text, truncated = read_whole_lines("/etc/group", ACCOUNT_FILE_BYTES)
+    if truncated:
+        record(module, "incomplete_file", {"path": "/etc/group", "read_bytes": ACCOUNT_FILE_BYTES})
     if text is None:
         details = describe_unreadable("/etc/group")
         details["reason"] = "could not be read"
@@ -1818,7 +1874,9 @@ def module_accounts(run):
 
     # /etc/shadow is reduced to status here, on the server: the hashes are
     # never sent (policy §7; decision 1 of the Phase 1 plan).
-    text = read_small("/etc/shadow", ACCOUNT_FILE_BYTES)
+    text, truncated = read_whole_lines("/etc/shadow", ACCOUNT_FILE_BYTES)
+    if truncated:
+        record(module, "incomplete_file", {"path": "/etc/shadow", "read_bytes": ACCOUNT_FILE_BYTES})
     if text is None:
         details = describe_unreadable("/etc/shadow")
         details["reason"] = "could not be read"
@@ -2058,7 +2116,7 @@ def module_sudoers(run):
                 run.stream.record(module, "not_examined", {"path": target, "reason": risk})
                 continue
             try:
-                names = sorted(os.listdir(path(directory)))
+                names, listing_cut = list_directory(directory, MAX_DIR_FILES, run)
             except OSError as exc:
                 run.stream.record(
                     module, "include_dir", {"path": target, "from": absolute, "error": str(exc)}
@@ -2071,7 +2129,7 @@ def module_sudoers(run):
                     "path": target,
                     "from": absolute,
                     "files": [{"name": n, "sudo_reads": _sudo_reads(n)} for n in names],
-                    "truncated": len(names) > MAX_DIR_FILES,
+                    "truncated": listing_cut,
                 },
             )
             # Every file is sent, including those sudo skips: evidence either way.
@@ -2194,6 +2252,20 @@ def _ssh_string_end(blob, start):
     return end
 
 
+def _plain_key_complete(blob, key_type):
+    """Whether a plain key blob holds exactly its type's public-key fields."""
+    count = dict(_CERT_KEY_FIELDS, **{"ssh-ed448": 1}).get(key_type)
+    if count is None:
+        return False
+    try:
+        position = _ssh_string_end(blob, 0)
+        for _ in range(count):
+            position = _ssh_string_end(blob, position)
+    except ValueError:
+        return False
+    return position == len(blob)
+
+
 def plain_key_blob(blob, cert_type):
     """The plain public key inside a certificate, which is what OpenSSH
     fingerprints (`ssh-keygen -l`, sshd's logs). None if it can't be read."""
@@ -2242,7 +2314,7 @@ def parse_authorized_key(line):
         return None  # not a key inside: never echo what it holds
     certificate = "-cert-v01" in embedded
     key_blob = plain_key_blob(blob, embedded) if certificate else blob
-    if key_blob is None:
+    if key_blob is None or (not certificate and not _plain_key_complete(blob, embedded)):
         return None
     fingerprint = base64.b64encode(hashlib.sha256(key_blob).digest()).decode("ascii").rstrip("=")
     key = {"type": first, "fingerprint": "SHA256:" + fingerprint, "key_bytes": len(blob)}
@@ -2462,6 +2534,10 @@ def module_ssh(run):
     accounts, _ = read_accounts()
     if accounts is None:
         raise OSError("/etc/passwd could not be read")
+    if ACCOUNTS_TRUNCATED:  # some accounts' keys may not have been looked at
+        run.stream.record(
+            module, "incomplete_file", {"path": "/etc/passwd", "read_bytes": ACCOUNT_FILE_BYTES}
+        )
     homes, summary = discover_homes(accounts, run)
     # The search's coverage matters here too: a cut-short search means some
     # domain users' keys may not have been looked at.
@@ -2551,10 +2627,11 @@ def module_pam(run):
     if path_facts("/etc/pam.conf") is not None:
         names.append("/etc/pam.conf")
     pam_dir, risk = resolve_links("/etc/pam.d")
+    listing_cut = False
     try:
         if risk:
             raise UnsafePath("/etc/pam.d", risk)
-        entries = sorted(os.listdir(path(pam_dir)))
+        entries, listing_cut = list_directory(pam_dir, MAX_DIR_FILES, run)
     except UnsafePath as exc:
         run.stream.record(module, "not_examined", {"path": "/etc/pam.d", "reason": exc.reason})
         entries = []
@@ -2565,7 +2642,7 @@ def module_pam(run):
     run.stream.record(
         module,
         "config_dir",
-        {"path": "/etc/pam.d", "entries": len(entries), "truncated": len(entries) > MAX_DIR_FILES},
+        {"path": "/etc/pam.d", "entries": len(entries), "truncated": listing_cut},
     )
     for absolute in names:
         run.check_time()

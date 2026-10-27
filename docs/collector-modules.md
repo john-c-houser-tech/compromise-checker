@@ -163,10 +163,14 @@ expanded for every account (`%h`, `%u`, `%U`, `~`). For each key file found:
   (for a certificate, the fingerprint of the key inside it, as OpenSSH
   gives it, with `certificate: true`), the key's size in bytes, its options
   as a list of names and values — each value decoded as sshd decodes it and
-  then masked; for `environment`, the whole value is masked when the
-  variable's name looks like a secret (including any `…_PWD`, but not the
-  directories `PWD` and `OLDPWD`); an option sshd doesn't know, which makes
-  it ignore the line, is replaced by its length and `known: false` — and its comment (masked). If the type
+  then masked; for `environment`, the variable's name, and its value only
+  for the loader and interpreter variables a check needs (`LD_PRELOAD`,
+  `LD_LIBRARY_PATH`, `LD_AUDIT`, `PATH`, `PYTHONPATH`, `PYTHONSTARTUP`,
+  `PERL5LIB`, `PERL5OPT`, `RUBYOPT`, `RUBYLIB`, `NODE_OPTIONS`, `BASH_ENV`,
+  `ENV`, `PROMPT_COMMAND`) and a few harmless ones (`HOME`, `SHELL`, `LANG`,
+  `LC_ALL`, `TZ`) — any other value could be a secret no pattern recognises,
+  so only its length is sent; an option sshd doesn't know, which makes it
+  ignore the line, is replaced by its length and `known: false` — and its comment (masked). If the type
   on the line and the type inside the key differ, both are given.
 - `authorized_keys_file`: the file's owner, mode, size, times and inode, the
   number of keys, and the line numbers of lines that are not keys. Only the

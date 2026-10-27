@@ -1731,9 +1731,14 @@ SSH_KEY_OPTIONS = frozenset(
     " no-x11-forwarding permitlisten permitopen port-forwarding principals pty restrict"
     " tunnel user-rc verify-required x11-forwarding".split()
 )
-# Variable names whose values are secrets (as in the masking rules).
-_SECRET_NAME = re.compile(
-    r"(?i:password|passwd|secret|token|api[_-]?key|apikey|access[_-]?key|auth(?!orization))|pwd"
+# environment= variables whose values a check needs: loader and interpreter
+# hooks an attacker would set, and a few harmless ones. Any other variable
+# is sent as its name and value length only — its value could be anything,
+# a secret included, and no pattern can tell.
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+SSH_ENV_VALUES_SENT = frozenset(
+    "LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PATH PYTHONPATH PYTHONSTARTUP PERL5LIB PERL5OPT"
+    " RUBYOPT RUBYLIB NODE_OPTIONS BASH_ENV ENV PROMPT_COMMAND HOME SHELL LANG LC_ALL TZ".split()
 )
 DEFAULT_AUTHORIZED_KEYS = (".ssh/authorized_keys", ".ssh/authorized_keys2")
 MAX_KEY_FILE_BYTES = 1024 * 1024
@@ -1791,18 +1796,17 @@ def ssh_key_options(options):
         if has_value:
             if len(value) >= 2 and value[0] == value[-1] == '"':
                 value = value[1:-1].replace('\\"', '"')  # sshd's only escape
-            if name == "environment" and "=" in value:
-                variable, _, setting = value.partition("=")
-                upper = variable.upper()
-                # MYSQL_PWD and the like; PWD and OLDPWD are directories.
-                pwd = upper.endswith("PWD") and upper not in ("PWD", "OLDPWD")
-                if pwd or _SECRET_NAME.search(variable):
-                    value = variable + "=[MASKED:password]"
-                else:
-                    value = variable + "=" + _mask_str(setting)
+            if name != "environment":
+                option["value"] = _mask_str(value)
             else:
-                value = _mask_str(value)
-            option["value"] = value
+                variable, _, setting = value.partition("=")
+                if not _ENV_NAME.match(variable):
+                    variable, setting = None, value  # malformed: send nothing of it
+                option["variable"] = variable
+                if variable in SSH_ENV_VALUES_SENT:
+                    option["value"] = _mask_str(setting)
+                else:
+                    option["value_length"] = len(setting)
         result.append(option)
     return result
 

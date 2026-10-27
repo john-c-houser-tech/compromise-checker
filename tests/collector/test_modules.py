@@ -1224,20 +1224,30 @@ class SshTests(FixtureRoot):
             'environment="APP_PASSWORD=first TAILSECRET",environment="LANG=C.UTF-8",'
             "ghp_" + "a" * 36 + "=x,"
             'environment="MYSQL_PWD=hunter2",environment="mysql_pwd=hunter2",'
-            'environment="PWD=/srv/app",'
+            'environment="PWD=/srv/app",environment="hunter2-no-equals",'
+            'environment="LD_PRELOAD=/opt/evil/x.so",'
             'unknown-option="backup --password=\\"first TAILSECRET\\""'
         )
         self.assertNotIn("TAILSECRET", json.dumps(options))
         self.assertNotIn("a" * 36, json.dumps(options))
         self.assertEqual(options[0]["value"], "backup --password=[MASKED:password]")
-        self.assertEqual(options[1]["value"], "APP_PASSWORD=[MASKED:password]")
-        self.assertEqual(options[2]["value"], "LANG=C.UTF-8")
+        self.assertEqual(
+            options[1], {"name": "environment", "variable": "APP_PASSWORD", "value_length": 16}
+        )
+        self.assertEqual(
+            options[2], {"name": "environment", "variable": "LANG", "value": "C.UTF-8"}
+        )
         self.assertEqual(options[3], {"known": False, "length": 42})
         self.assertNotIn("hunter2", json.dumps(options))
-        self.assertEqual(options[4]["value"], "MYSQL_PWD=[MASKED:password]")
-        self.assertEqual(options[5]["value"], "mysql_pwd=[MASKED:password]")
-        self.assertEqual(options[6]["value"], "PWD=/srv/app")
-        self.assertEqual(options[7]["known"], False)
+        # Only allow-listed variables' values are sent; the rest, length only.
+        self.assertEqual(
+            options[4], {"name": "environment", "variable": "MYSQL_PWD", "value_length": 7}
+        )
+        self.assertEqual(options[5]["value_length"], 7)
+        self.assertEqual(options[6], {"name": "environment", "variable": "PWD", "value_length": 8})
+        self.assertEqual(options[7], {"name": "environment", "variable": None, "value_length": 17})
+        self.assertEqual(options[8]["value"], "/opt/evil/x.so")
+        self.assertEqual(options[9]["known"], False)
 
     def test_certificates_fingerprint_their_key_like_openssh(self):
         collector = load_collector(self.root)
@@ -1513,6 +1523,118 @@ class DomainHomeTests(FixtureRoot):
         (homes,) = records_named(records, "homes")
         self.assertTrue(homes["truncated"])
         self.assertEqual(homes["unlisted"], ["/home/a", "/home/b"])
+
+
+# --- Canary test: no planted secret may leave the server, through any module ----------
+
+CANARIES = {
+    "hash": "$6$CanarySalt$" + "H" * 86,
+    "gecos": "CanaryGecosName",
+    "history": "CanaryHistoryCommand",
+    "option": "CanaryOptionSecret",
+    "env": "CanaryEnvSecret",
+    "comment": "CanaryCommentSecret",
+    "sssd": "CanarySssdBindPassword",
+    "private": "CanaryPrivateKeyBody",
+    "log": "CanaryLogPassword",
+    "pam": "CanaryPamSecret",
+    "sudo": "CanarySudoSecret",
+    "opasswd": "CanaryOldHash",
+}
+
+
+class CanaryTests(FixtureRoot):
+    """Plant secrets in every channel the collector touches, run every
+    module, and require that none of them appears anywhere in the output."""
+
+    def plant(self):
+        c = CANARIES
+        h = c["hash"]
+        self.write(
+            "etc/passwd",
+            (
+                f"root:x:0:0:root:/root:/bin/bash\n"
+                f"jch:{h}:1000:1000:{c['gecos']}:/home/jch:/bin/bash\n"
+            ).encode(),
+        )
+        self.write("etc/shadow", f"root:{h}:20000:0:99999:7:::\njch:!{h}:20000::::::\n".encode())
+        self.write("etc/gshadow", f"root:{h}::\n".encode())
+        self.write("etc/security/opasswd", f"jch:1000:1:{c['opasswd']}\n".encode())
+        self.write("etc/group", b"root:x:0:\nsudo:x:27:jch\n")
+        for home in ("root", "home/jch", "home/CORP/alice"):
+            self.write(
+                f"{home}/.bash_history", f"mysql -p{c['history']}\n{c['history']}\n".encode()
+            )
+        # Configuration links and hard links to every protected file.
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.makedirs(Path(self.root, "etc/sudoers.d"))
+        os.makedirs(Path(self.root, "etc/ssh/sshd_config.d"))
+        targets = {
+            "shadow": "etc/shadow",
+            "gshadow": "etc/gshadow",
+            "passwd": "etc/passwd",
+            "opasswd": "etc/security/opasswd",
+            "hist": "home/jch/.bash_history",
+            "domainhist": "home/CORP/alice/.bash_history",
+        }
+        for directory in ("etc/pam.d", "etc/sudoers.d", "etc/ssh/sshd_config.d"):
+            for name, target in targets.items():
+                link = Path(self.root, directory, name + ".conf")
+                os.symlink(os.path.relpath(Path(self.root, target), link.parent), link)
+                os.link(Path(self.root, target), Path(self.root, directory, name + "-hard.conf"))
+        self.write("etc/pam.d/sshd", f"auth optional pam_exec.so /x password={c['pam']}\n".encode())
+        self.write("etc/sudoers", b"@includedir /etc/sudoers.d\n#include /etc/shadow\n")
+        self.write("etc/sudoers.d/app", f"Defaults env_keep+=TOKEN\n# token={c['sudo']}\n".encode())
+        self.write(
+            "etc/ssh/sshd_config",
+            b"Include /etc/ssh/sshd_config.d/*.conf\n"
+            b"AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/keys/%u\n",
+        )
+        self.write(
+            "etc/sssd/sssd.conf",
+            (
+                "[domain/corp]\noverride_homedir = /home/%d/%u\n"
+                f"ldap_default_authtok = {c['sssd']}\n"
+            ).encode(),
+        )
+        key = f"ssh-ed25519 {ED25519}"
+        lines = [
+            f'command="run --password=\\"a {c["option"]}\\"",'
+            f'environment="DB_PWD={c["env"]}" {key} ok',
+            f'environment="X={c["env"]} y" {key} ok2',
+            f'bogus-option="{c["option"]}" {key} bad',
+            f"{key} password={c['comment']}",
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            c["private"],
+            "-----END OPENSSH PRIVATE KEY-----",
+            f"ssh-ed25519 {base64.b64encode(c['private'].encode()).decode()} junk",
+        ]
+        for home in ("root", "home/jch", "home/CORP/alice"):
+            self.write(f"{home}/.ssh/authorized_keys", ("\n".join(lines) + "\n").encode())
+        self.write("etc/ssh/keys/bob", ("\n".join(lines) + "\n").encode())
+        os.makedirs(Path(self.root, "var/log"))
+        self.write("var/log/secure", f"Oct 26 sshd[1]: password={c['log']} x\n".encode())
+        self.write(
+            "var/log/auth.log",
+            f"Oct 26 sudo: -----BEGIN RSA PRIVATE KEY-----\n{c['private']}\n".encode(),
+        )
+
+    def test_no_canary_leaves_through_any_module(self):
+        self.plant()
+        collector = load_collector(self.root)
+        collector.COMMANDS = {"journalctl": ()}  # no real journal in a fixture
+        out = io.BytesIO()
+        collector.main(settings(None), out=out)
+        raw = gzip.decompress(out.getvalue())
+        text = raw.decode("utf-8", "replace")
+        leaks = {}
+        for name, canary in CANARIES.items():
+            for form in {canary, canary[:16], base64.b64encode(canary.encode()).decode()[:16]}:
+                if form in text:
+                    leaks[name] = form
+        self.assertEqual(leaks, {})
+        trailer = json.loads(raw.splitlines()[-1])
+        self.assertEqual(trailer["status"], "complete", trailer["modules"])
 
 
 if __name__ == "__main__":

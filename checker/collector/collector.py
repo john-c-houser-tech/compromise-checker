@@ -491,7 +491,7 @@ class Run:
         self.deadline = deadline
         self._protected = None
 
-    def refusal(self, opened, info, key_file=False):
+    def refusal(self, opened, info, key_file=False, spool=False):
         """Why the contents of a file just opened (its path after links, its
         fstat) must not be read, or None. These rules don't depend on knowing
         every history file on the server:
@@ -520,7 +520,13 @@ class Run:
             return "is hard-linked, so it could be a protected file; its contents are never read"
         if key_file:
             return None
-        if not opened.startswith(TEXT_LOCATIONS):
+        if spool:
+            # Only the cron module's own spool reads, which classify each
+            # file (crontab, at job, job output) by where it lies; no link
+            # from a configuration file can reach a spool.
+            if not opened.startswith(SPOOL_LOCATIONS):
+                return "is outside cron's and at's spools"
+        elif not opened.startswith(SYSTEM_LOCATIONS):
             return "is outside the system locations configuration and logs are read from"
         if opened.startswith(homes):
             return "is inside an account's home directory; its contents are never read"
@@ -717,7 +723,7 @@ def pump_lines(run, writer, reader, transform=None):
             return "size"  # whole lines only: the one that doesn't fit is left out
 
 
-def send_file(run, module, absolute, text_only=False, rewrite=None):
+def send_file(run, module, absolute, text_only=False, rewrite=None, spool=False):
     """Send one file as a source: decompressed, masked, chunked, capped.
     Returns True if sent, False if it could not be read (recorded instead).
     Raises ModuleTimeout after closing the source cleanly if time runs out.
@@ -725,7 +731,8 @@ def send_file(run, module, absolute, text_only=False, rewrite=None):
     With `text_only`, a file with a NUL byte in its first block is not sent
     (a `content_skipped` record says so). With `rewrite`, the file is read
     whole, up to SMALL_TEXT_BYTES, and `rewrite(data)` is sent instead —
-    still masked; a longer file is not sent."""
+    still masked; a longer file is not sent. With `spool`, the file must lie
+    in cron's or at's spool instead of a system location (Run.refusal)."""
     suffix = os.path.splitext(absolute)[1]
     if suffix in _COMPRESSED and suffix not in _OPENERS:
         details = describe_unreadable(absolute)
@@ -742,7 +749,7 @@ def send_file(run, module, absolute, text_only=False, rewrite=None):
         details["reason"] = str(exc)
         run.stream.record(module, "unreadable_file", details)
         return False
-    refusal = run.refusal(absolute, info)
+    refusal = run.refusal(absolute, info, spool=spool)
     if refusal:
         # The file actually opened — through any link or hard link — is one
         # collected as status or metadata only: never send its text.
@@ -1691,9 +1698,9 @@ PACKAGE_OWNER_UID = 0
 # The only places configuration and log text is sent from (see Run.refusal).
 SYSTEM_LOCATIONS = ("/etc/", "/usr/", "/lib/", "/lib64/", "/var/log/", "/run/")
 # Cron's and at's spools: crontabs and queued jobs, whose lines are the
-# evidence. Users write them only through crontab(1) and at(1).
+# evidence. Users write them only through crontab(1) and at(1). Read only by
+# module_cron's classified walk (Run.refusal's `spool`), never through links.
 SPOOL_LOCATIONS = ("/var/spool/cron/", "/var/spool/at/")
-TEXT_LOCATIONS = SYSTEM_LOCATIONS + SPOOL_LOCATIONS
 
 
 # Shells that give no interactive session, so leave no shell history.
@@ -2796,15 +2803,17 @@ def _text(relative):
     return True
 
 
-def collect_tree(run, module, top, seen, max_depth=4, choose=_text, extra=None):
+def collect_tree(run, module, top, seen, max_depth=4, choose=_text, extra=None, spool=False):
     """Walk one directory (see "Directory walks"), recording each entry as a
     `file` record, then send the text of the small text files in it, masked.
     `choose(relative path)` says what to send of each regular file: True for
     its text, False for nothing, or a function rewriting its bytes before
     masking. `seen` holds the directories already walked (by device and
     inode: /lib/systemd/system is often /usr/lib/systemd/system) and the
-    files already sent (by path), so each is done once per module. A missing
-    top is skipped without a record."""
+    files already sent (by path), so each is done once per module; a linked
+    top is recorded as a `config_link` (with `extra`) even when its target
+    was walked already. `spool` marks cron's spool walks (see send_file). A
+    missing top is skipped without a record."""
     directory, risk = resolve_links(top)
     if risk:
         run.stream.record(module, "not_examined", {"path": top, "reason": risk})
@@ -2819,13 +2828,22 @@ def collect_tree(run, module, top, seen, max_depth=4, choose=_text, extra=None):
     except OSError as exc:
         run.stream.record(module, "unreadable_file", {"path": top, "reason": str(exc)})
         return
-    if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) in seen:
+    if not stat.S_ISDIR(info.st_mode):
         return
-    seen.add((info.st_dev, info.st_ino))
-    if directory != top:
+    walked = (info.st_dev, info.st_ino) in seen
+    if directory != top or walked:
+        # Each alias is evidence of its own: a user's unit directory linked
+        # to another's, or to a system one, still shows.
         facts = path_facts(top) or {"path": top}
         facts["resolved"] = directory
+        if walked:
+            facts["already_walked"] = True
+        if extra:
+            facts.update(extra)
         run.stream.record(module, "config_link", facts)
+    if walked:
+        return
+    seen.add((info.st_dev, info.st_ino))
     walk = Walk(
         run,
         directory,
@@ -2859,7 +2877,8 @@ def collect_tree(run, module, top, seen, max_depth=4, choose=_text, extra=None):
         if absolute in seen:
             continue
         seen.add(absolute)
-        send_file(run, module, absolute, text_only=True, rewrite=None if what is True else what)
+        rewrite = None if what is True else what
+        send_file(run, module, absolute, text_only=True, rewrite=rewrite, spool=spool)
 
 
 def send_config_files(run, module, names, seen):
@@ -2956,8 +2975,10 @@ def module_cron(run):
     send_config_files(run, module, CRON_FILES, seen)
     for directory in CRON_DIRS:
         collect_tree(run, module, directory, seen, max_depth=2)
-    collect_tree(run, module, "/var/spool/cron", seen, max_depth=3, choose=_cron_spool_text)
-    collect_tree(run, module, "/var/spool/at", seen, max_depth=2, choose=_at_spool_text)
+    collect_tree(
+        run, module, "/var/spool/cron", seen, max_depth=3, choose=_cron_spool_text, spool=True
+    )
+    collect_tree(run, module, "/var/spool/at", seen, max_depth=2, choose=_at_spool_text, spool=True)
 
 
 # systemd: unit directories in its search order, generators (programs that

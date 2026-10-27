@@ -254,7 +254,10 @@ up to 256 KiB. A file with a NUL byte in its first 8 KiB (a compiled
 generator, for example) or a longer file gets a `content_skipped` record
 instead; its hash is still in the walk. A directory reached through a link
 is recorded as a `config_link` and walked once at its real location
-(`/lib/systemd/system` is usually `/usr/lib/systemd/system`). All text is
+(`/lib/systemd/system` is usually `/usr/lib/systemd/system`); every further
+link to it still gets its own `config_link` (with `already_walked`, and the
+home and accounts for a home's directory), so one user's unit directory
+linked to another's still shows. All text is
 masked, and the protection rules below decide what may be read at all.
 
 | Module | Sends as text | Walked without text |
@@ -288,8 +291,10 @@ account's shell history. These rules keep their contents in, checked on the
 file actually opened, after any links:
 
 - **Configuration and log text is read only from system locations** —
-  `/etc`, `/usr`, `/lib`, `/lib64`, `/var/log`, `/run`, and cron's and
-  `at`'s spools, `/var/spool/cron` and `/var/spool/at`. A link that leads
+  `/etc`, `/usr`, `/lib`, `/lib64`, `/var/log`, `/run`. Cron's and `at`'s
+  spools (`/var/spool/cron`, `/var/spool/at`) are read only by `cron`'s own
+  walk of them, which tells crontabs, `at` jobs and job output apart; no
+  configuration link can reach them. A link that leads
   anywhere else, a home directory included, is not followed for its text.
   History files live in home directories, so no configuration link can
   carry one out, whether or not the home search found it.

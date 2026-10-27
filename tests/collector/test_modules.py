@@ -2189,6 +2189,47 @@ class PersistenceTests(FixtureRoot):
         self.assertEqual(tops.count("/usr/lib/systemd/system"), 1)
         self.assertNotIn("/lib/systemd/system", tops)
 
+    def test_linked_user_unit_directories_are_each_recorded(self):
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0:root:/root:/bin/bash\njch:x:1000:1000::/home/jch:/bin/bash\n"
+            b"amy:x:1001:1001::/home/amy:/bin/bash\n",
+        )
+        self.write("srv/units/miner.service", b"[Service]\nExecStart=/tmp/m\n")
+        for home in ("home/jch", "home/amy"):
+            Path(self.root, home, ".config/systemd").mkdir(parents=True)
+            os.symlink("/srv/units", Path(self.root, home, ".config/systemd/user"))
+        records = collect(self.root, ["systemd"])
+        links = {
+            r["path"]: r
+            for r in records_named(records, "config_link")
+            if r["path"].endswith("/.config/systemd/user")
+        }
+        self.assertEqual(
+            sorted(links), ["/home/amy/.config/systemd/user", "/home/jch/.config/systemd/user"]
+        )
+        self.assertEqual(links["/home/amy/.config/systemd/user"]["accounts"], ["amy"])
+        self.assertEqual(links["/home/jch/.config/systemd/user"]["accounts"], ["jch"])
+        self.assertEqual(sum(1 for r in links.values() if r.get("already_walked")), 1)
+        self.assertNotIn("/srv/units/miner.service", sources(records))  # homes: no text
+
+    def test_configuration_links_never_read_the_spools(self):
+        self.write("var/spool/at/a0000201c80375", AT_JOB)
+        self.write("var/spool/cron/crontabs/jch", b"@daily x\n")
+        Path(self.root, "etc/cron.d").mkdir(parents=True)
+        os.symlink("/var/spool/at/a0000201c80375", Path(self.root, "etc/cron.d/x"))
+        Path(self.root, "etc/profile.d").mkdir(parents=True)
+        os.symlink("/var/spool/cron/crontabs/jch", Path(self.root, "etc/profile.d/y.sh"))
+        os.symlink("/var/spool/at/a0000201c80375", Path(self.root, "etc/rc.local"))
+        records = collect(self.root, ["cron", "startup"])
+        sent = sources(records)
+        self.assertIn("/var/spool/at/a0000201c80375", sent)  # by cron's walk, rewritten
+        self.assertNotIn(b"line2", sent["/var/spool/at/a0000201c80375"][1])
+        refused = [r["path"] for r in records_named(records, "unreadable_file")]
+        self.assertEqual(refused, ["/var/spool/at/a0000201c80375"])  # via /etc/rc.local
+        starts = [r["name"] for r in records if r["type"] == "source_start"]
+        self.assertEqual(starts.count("/var/spool/at/a0000201c80375"), 1)
+
     def test_startup_system_text_and_home_hashes(self):
         self.write("etc/ld.so.preload", b"/usr/lib/libhide.so\n")
         self.write("etc/rc.d/rc.local", b"#!/bin/sh\n/opt/x &\n")
@@ -2401,6 +2442,16 @@ class CanaryTests(FixtureRoot):
             self.write(f"{home}/.ssh/rc", f"{c['homestartup']}\n".encode())
             self.write(f"{home}/.config/systemd/user/x.service", f"{c['userunit']}\n".encode())
             os.symlink(f"/{home}/.bashrc", Path(self.root, "etc/profile.d", home.replace("/", "_")))
+        # Configuration links into the spools: only cron's own classified
+        # walk may read there, so neither the environment nor output leaks.
+        for link, target in (
+            ("etc/rc.local", "/var/spool/at/a0000201c80375"),
+            ("etc/environment", "/var/spool/at/spool/a0000201c80375"),
+            ("etc/cron.d/atjob", "/var/spool/cron/atjobs/a0000101c80375"),
+            ("etc/systemd/system/out.service", "/var/spool/cron/atspool/a0000101c80375"),
+            ("etc/pam.d/atjob", "/var/spool/at/a0000201c80375"),
+        ):
+            os.symlink(target, Path(self.root, link))
         self.write(
             "var/log/auth.log",
             f"Oct 26 sudo: -----BEGIN RSA PRIVATE KEY-----\n{c['private']}\n".encode(),

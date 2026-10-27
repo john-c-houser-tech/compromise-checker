@@ -26,8 +26,11 @@ password typed in the wrong box, so in failed-login messages — sshd's
 whole, up to the fixed text its message puts after it (` from <address>
 port`, `', `, ` does not exist`, `: <code> (User not known`), never as a
 single word, since a typed password can hold spaces, colons and quotes; it
-is bounded at 256 characters, so matching stays linear. This rule runs
-first, so it judges the name as written. Two fixed vocabularies are never masked, because they look like
+is bounded at 256 characters, so matching stays linear. The name is
+compared with the accounts exactly as submitted — only login's one framing
+pair of quotes (`FOR 'name'`) is removed, and a quoted name runs to its last
+closing quote — so `root'` or `'root'` given to sshd is never taken for
+`root`. This rule runs first, so it judges the name as written. Two fixed vocabularies are never masked, because they look like
 `key=value` settings but can't hold a secret and are exactly what the checks
 compare: sudo's `NOPASSWD:` and `PASSWD:` tags in a line that is a sudo rule
 (`user host = (runas) TAG: command`), and only where a command spec starts —
@@ -384,8 +387,11 @@ edited records (§8.10).
 **Reads:** every `/var/log/wtmp*` and `/var/log/btmp*` file (rotations
 included, decompressed where the server's Python can), under the protection
 rules (a hard-linked one is refused). These files are binary, so masking
-can't run on them as they are: the collector parses each 384-byte record on
-the server and sends only fields. **Sends:** a `login_record` for each record
+can't run on them as they are: the collector parses each record on the
+server and sends only fields. Records are 384 bytes on x86_64, ppc64le and
+s390x and 400 bytes on AArch64 (64-bit session and time fields); on any
+other architecture the files are listed (`login_files`, `supported: false`)
+but not parsed, rather than guessed at. **Sends:** a `login_record` for each record
 in the window — type, PID, terminal, id, user, host, exit status, session,
 time and address — with the four text fields masked like any log text; then
 a `login_file` summary per file: file metadata, counts of records, records

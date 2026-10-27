@@ -409,6 +409,27 @@ class MaskingTests(unittest.TestCase):
         for line, expected in cases.items():
             self.assertEqual(self.mask(line)[0], expected, line)
 
+    def test_quotes_never_turn_a_typed_name_into_an_account(self):
+        cases = {
+            b"login[2]: FAILED LOGIN 1 FROM tty1 FOR 'Alpha17', Omega42', User not known\n": (
+                b"login[2]: FAILED LOGIN 1 FROM tty1 FOR [MASKED:unknown_user], User not known\n"
+            ),
+            b"login[2]: FAILED LOGIN 1 FROM tty1 FOR ''root'', User not known\n": (
+                b"login[2]: FAILED LOGIN 1 FROM tty1 FOR [MASKED:unknown_user], User not known\n"
+            ),
+            b"login[2]: FAILED LOGIN 1 FROM tty1 FOR 'root', Authentication failure\n": (
+                b"login[2]: FAILED LOGIN 1 FROM tty1 FOR 'root', Authentication failure\n"
+            ),
+            b"sshd[1]: Invalid user root' from 192.0.2.9 port 22\n": (
+                b"sshd[1]: Invalid user [MASKED:unknown_user] from 192.0.2.9 port 22\n"
+            ),
+            b"sshd[1]: Invalid user 'root' from 192.0.2.9 port 22\n": (
+                b"sshd[1]: Invalid user [MASKED:unknown_user] from 192.0.2.9 port 22\n"
+            ),
+        }
+        for line, expected in cases.items():
+            self.assertEqual(self.mask(line)[0], expected, line)
+
     def test_failed_login_rules_stay_fast_on_hostile_lines(self):
         line = b"invalid user " * 50000 + b"\n"
         started = time.monotonic()
@@ -2566,6 +2587,53 @@ class LoginRecordTests(FixtureRoot):
         )
         btmp = [f for f in records_named(records, "login_file") if f["path"] == "/var/log/btmp"]
         self.assertEqual(btmp[0]["masked"], {"unknown_user": 1})
+
+    def collect_as(self, layout):
+        collector = load_collector(self.root)
+        collector.utmp_layout = lambda: layout(collector)
+        out = io.BytesIO()
+        collector.main(settings(["login_records"]), out=out)
+        return [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+
+    def test_aarch64_records_are_400_bytes(self):
+        # Built field by field, independently of the collector's layouts:
+        # AArch64 glibc has a 64-bit session and 64-bit time fields.
+        def record(kind, user, when):
+            return b"".join(
+                (
+                    kind.to_bytes(2, "little") + b"\0\0",
+                    (42).to_bytes(4, "little"),
+                    b"pts/1".ljust(32, b"\0"),
+                    b"ts/1",
+                    user.ljust(32, b"\0"),
+                    b"203.0.113.7".ljust(256, b"\0"),
+                    b"\0" * 4,  # exit status
+                    (7).to_bytes(8, "little"),  # session
+                    int(when).to_bytes(8, "little"),  # seconds
+                    (0).to_bytes(8, "little"),  # microseconds
+                    bytes([203, 0, 113, 7]).ljust(16, b"\0"),
+                    b"\0" * 20,
+                    b"\0" * 4,  # padding to 8-byte alignment
+                )
+            )
+
+        self.assertEqual(len(record(7, b"x", NOW)), 400)
+        self.write("var/log/wtmp", record(7, b"jch", NOW) + record(8, b"", NOW))
+        records = self.collect_as(lambda c: c.UTMP_LAYOUTS["aarch64"])
+        login = records_named(records, "login_record")
+        self.assertEqual(
+            [(r["type"], r["user"], r["session"]) for r in login][0], ("user_process", "jch", 7)
+        )
+        self.assertEqual(login[0]["address"], "203.0.113.7")
+        self.assertEqual(len(login), 2)
+        summary = records_named(records, "login_file")[0]
+        self.assertEqual((summary["record_size"], summary["partial_bytes"]), (400, 0))
+
+    def test_unknown_architecture_is_reported_not_guessed(self):
+        self.write("var/log/wtmp", utmp(7, user=b"jch"))
+        records = self.collect_as(lambda c: None)
+        self.assertEqual(records_named(records, "login_record"), [])
+        self.assertFalse(records_named(records, "login_files")[0]["supported"])
 
     def test_rotations_compressed_and_refused(self):
         self.write("etc/passwd", b"b:x:1000:1000::/home/b:/bin/bash\n")

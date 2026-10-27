@@ -282,6 +282,14 @@ _CRYPT_HASH = (
 # bounded (sshd logs at most 100 characters of one), so matching stays
 # linear on hostile lines.
 _NAME = rb"[^\n]{1,256}?"
+# login(1): FAILED LOGIN 1 FROM host FOR 'name', User not known ...
+# Greedy, so a name holding "', " runs to the last closing quote; its one
+# framing pair of quotes is removed before the account check.
+_LOGIN_NAME_RULE = _rule(
+    "unknown_user",
+    rb"FAILED LOGIN \(?\d+\)? (?:FROM \S+ )?FOR ",
+    rb"'[^\n]{0,256}'(?=, )|" + _NAME + rb"(?=, )",
+)
 UNKNOWN_USER_RULES = [
     # sshd: "Invalid user X from A port P", "... for invalid user X from A
     # port P", "Connection closed by invalid user X A port P"; else up to
@@ -291,12 +299,7 @@ UNKNOWN_USER_RULES = [
         rb"(?i:\b(?:invalid|illegal) user )",
         _NAME + rb"(?= (?:from )?[0-9A-Fa-f:.]+ port \d)|" + _NAME + rb"(?= \[preauth\]|\r?$)|\S+",
     ),
-    # login(1): FAILED LOGIN 1 FROM host FOR 'name', User not known ...
-    _rule(
-        "unknown_user",
-        rb"FAILED LOGIN \(?\d+\)? (?:FROM \S+ )?FOR ",
-        rb"'" + _NAME + rb"'(?=, )|" + _NAME + rb"(?=, )",
-    ),
+    _LOGIN_NAME_RULE,
     # su(1): user name does not exist
     _rule("unknown_user", rb"\buser ", _NAME + rb"(?= does not exist)"),
     # pam_sss: received for user name: 10 (User not known ...)
@@ -486,7 +489,9 @@ class Masker:
             marker = MASK % kind.encode("ascii")
             pieces, last, hits = [], 0, 0
             for match in pattern.finditer(data):
-                if kind == "unknown_user" and match.group(1).strip(b"'") in local_account_names():
+                if kind == "unknown_user" and _submitted_name(pattern, match.group(1)) in (
+                    local_account_names()
+                ):
                     continue  # a real account's name is evidence, not a secret
                 pieces.append(data[last : match.start(1)])
                 pieces.append(marker)
@@ -500,6 +505,15 @@ class Masker:
 
 
 _LOCAL_ACCOUNT_NAMES = None
+
+
+def _submitted_name(pattern, name):
+    """The name as submitted: verbatim, except login(1)'s one framing pair
+    of quotes (FOR 'name'), so "root'" or "'root'" given to sshd is never
+    taken for root."""
+    if pattern is _LOGIN_NAME_RULE[1] and len(name) >= 2 and name[:1] == name[-1:] == b"'":
+        return name[1:-1]
+    return name
 
 
 def local_account_names():
@@ -3658,9 +3672,24 @@ def module_boots(run):
 # logins) are binary, so masking can't run on them as they are: they are
 # parsed here and only their text fields, masked, are sent. btmp's user
 # field is where a password typed at the login prompt by mistake ends up.
-# glibc's record on 64-bit Linux: type, pid, line, id, user, host, exit
-# status, session, time (32-bit seconds, microseconds), address, reserved.
-UTMP_RECORD = struct.Struct("=hxxi32s4s32s256shhiIi16s20s")
+# glibc's record: type, pid, line, id, user, host, exit status, session,
+# time (seconds, microseconds), address, reserved. Most 64-bit
+# architectures keep 32-bit session and time fields there (384 bytes);
+# AArch64 has 64-bit ones (400 bytes). Any other architecture is reported
+# as unsupported rather than guessed at.
+UTMP_LAYOUTS = {
+    "x86_64": struct.Struct("=hxxi32s4s32s256shhiIi16s20s"),
+    "ppc64le": struct.Struct("=hxxi32s4s32s256shhiIi16s20s"),
+    "s390x": struct.Struct("=hxxi32s4s32s256shhiIi16s20s"),
+    "aarch64": struct.Struct("=hxxi32s4s32s256shhqqq16s20s4x"),
+}
+
+
+def utmp_layout():
+    """This server's login-record layout, or None if it isn't known."""
+    return UTMP_LAYOUTS.get(platform.machine())
+
+
 UTMP_TYPES = {
     0: "empty",
     1: "run_level",
@@ -3709,7 +3738,7 @@ def _utmp_address(raw):
     return socket.inet_ntop(socket.AF_INET6, raw)
 
 
-def send_login_records(run, module, absolute):
+def send_login_records(run, module, absolute, layout):
     """Parse one wtmp or btmp file: a `login_record` for each record in the
     window, then a `login_file` summary (records before the window, blank
     records — zeroed, as log cleaners leave them — and a partial record at
@@ -3737,7 +3766,11 @@ def send_login_records(run, module, absolute):
     opener = _OPENERS.get(suffix, (None, None))[1]
     since = run.since.timestamp()
     failed = absolute.rsplit("/", 1)[-1].startswith("btmp")
-    summary = {"path": absolute, "meta": file_meta(info, _COMPRESSED.get(suffix))}
+    summary = {
+        "path": absolute,
+        "meta": file_meta(info, _COMPRESSED.get(suffix)),
+        "record_size": layout.size,
+    }
     counts = {"records": 0, "blank": 0, "before_window": 0, "sent": 0}
     masked, first, last, partial, cut, error = {}, None, None, 0, None, None
     try:
@@ -3748,23 +3781,23 @@ def send_login_records(run, module, absolute):
                     if run.out_of_time():
                         cut = "time"
                         break
-                    block = reader.read(UTMP_RECORD.size * 1024)
+                    block = reader.read(layout.size * 1024)
                     if not block:
                         break
-                    whole = len(block) - len(block) % UTMP_RECORD.size
+                    whole = len(block) - len(block) % layout.size
                     if whole < len(block):  # only possible at the end of the file
-                        more = reader.read(UTMP_RECORD.size)
+                        more = reader.read(layout.size)
                         if more:
                             block += more
-                            whole = len(block) - len(block) % UTMP_RECORD.size
+                            whole = len(block) - len(block) % layout.size
                         partial = len(block) - whole
-                    for offset in range(0, whole, UTMP_RECORD.size):
-                        piece = block[offset : offset + UTMP_RECORD.size]
+                    for offset in range(0, whole, layout.size):
+                        piece = block[offset : offset + layout.size]
                         counts["records"] += 1
                         if not any(piece):
                             counts["blank"] += 1
                             continue
-                        fields = UTMP_RECORD.unpack(piece)
+                        fields = layout.unpack(piece)
                         kind, pid, line, ident, user, host = fields[:6]
                         term, status, session, seconds, micros, address = fields[6:12]
                         first = seconds if first is None else min(first, seconds)
@@ -3825,10 +3858,15 @@ def module_login_records(run):
     if listing_cut:
         run.stream.record(module, "listing_truncated", {"path": "/var/log"})
     found = sorted(n for n in names if _LOGIN_RECORD_FILE.match(n))
-    run.stream.record(module, "login_files", {"names": found})
-    for name in found:
+    layout = utmp_layout()
+    run.stream.record(
+        module,
+        "login_files",
+        {"names": found, "machine": platform.machine(), "supported": layout is not None},
+    )
+    for name in found if layout is not None else ():
         run.check_time()
-        send_login_records(run, module, "/var/log/" + name)
+        send_login_records(run, module, "/var/log/" + name, layout)
     for absolute in LOGIN_DATABASES:
         facts = path_facts(absolute)
         if facts is not None:

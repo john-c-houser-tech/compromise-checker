@@ -204,6 +204,19 @@ for arch in b64 b32; do
     auditctl -a always,exit -F arch=$arch -F perm=wa -F auid="$uid" -F success=1 -k cc-write \
         >/dev/null
 done
+# Something for the persistence modules to find: a user crontab, a queued
+# at job, a start-up file and a user unit in a home.
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v at >/dev/null 2>&1 || ! command -v crontab >/dev/null 2>&1; then
+    (apt-get install -y -qq cron at) >/dev/null 2>&1 || dnf install -y -q cronie at >/dev/null
+fi
+systemctl enable --now atd >/dev/null 2>&1 || true
+useradd --create-home --shell /bin/bash proofuser
+echo '*/30 * * * * /usr/bin/true proof' | crontab -u proofuser -
+(cd /tmp && echo 'echo proof' | PROOF_SECRET=not-for-the-checker at now + 2 hours >/dev/null 2>&1)
+install -d -o proofuser /home/proofuser/.config/systemd/user
+printf '[Service]\nExecStart=/usr/bin/true\n' > /home/proofuser/.config/systemd/user/proof.service
+echo 'export PROOF=1' >> /home/proofuser/.bashrc
 # Something for the collector to find in the authentication log.
 logger -p authpriv.notice "compromise-checker read-only proof: marker" || true
 """

@@ -469,9 +469,13 @@ the SHA-256 of every file in it, and dpkg's status file (which holds the
 configuration files' checksums) with its SHA-256 (`checksum_store`), then
 computes each
 package file's MD5 and compares it with dpkg's `.md5sums` lists, programs,
-PAM modules, the loader, libc and OpenSSH's helpers first, documentation,
-man pages, locales and firmware last, so a short time limit still covers
-what an intruder replaces. Diverted files are checked where `dpkg-divert`
+PAM modules, the loader, libc and OpenSSH's helpers first, so a short time
+limit still covers what an intruder replaces. Data that runs nowhere —
+documentation, man and info pages, locales, icons, fonts, time-zone data,
+firmware — is checked for presence but not hashed (`not_hashed` in the
+summary; on rpm systems its mode and owner are still compared): on a server
+it can be gigabytes, and hashing it would use the time limit up first.
+Kernel modules are code and are hashed. Diverted files are checked where `dpkg-divert`
 moved them. A file left out on purpose by dpkg's `path-exclude` options
 (minimised images skip documentation this way) is counted as excluded, not
 missing. Configuration files are compared with the checksums in dpkg's

@@ -3983,8 +3983,14 @@ _DPKG_PATH_FILTER = re.compile(r"^\s*(path-exclude|path-include)[=\s]\s*(\S+)\s*
 CRITICAL_PACKAGE_PATHS = re.compile(
     r"^/(?:usr/)?(?:s?bin/|lib(?:64|exec|/[^/]+-linux-gnu)?/(?:security/|ld-|libc\.|libpam|openssh/))"
 )
-# Checked last: data that runs nowhere.
-BULK_PACKAGE_PATHS = re.compile(r"^/usr/(?:share/(?:doc|man|locale|i18n|icons)|lib/firmware)/")
+# Data that runs nowhere: present or missing is checked, contents aren't
+# hashed — on a server they can be gigabytes (firmware, documentation) and
+# would use the time limit up before what matters. Kernel modules are code
+# and stay hashed.
+BULK_PACKAGE_PATHS = re.compile(
+    r"^/(?:usr/)?(?:share/(?:doc|man|info|locale|i18n|icons|fonts|zoneinfo|help|gtk-doc|javadoc)"
+    r"|lib/firmware)/"
+)
 MAX_PACKAGE_FILES = 500000
 
 
@@ -4181,6 +4187,7 @@ def verify_dpkg(run, module):
         "excluded": 0,
         "unreadable": 0,
         "refused": 0,
+        "not_hashed": 0,
     }
     critical_total = sum(1 for e in entries if _package_order(e) == 0)
     critical_checked = 0
@@ -4190,7 +4197,17 @@ def verify_dpkg(run, module):
             break
         diverted = diversions.get(absolute)
         actual_path = diverted[0] if diverted and diverted[1] != package else absolute
-        actual, problem = digest_of(run, actual_path)
+        if _package_order((package, absolute)) == 2:
+            try:
+                os.lstat(path(actual_path))
+                counts["not_hashed"] += 1  # data that runs nowhere: present is enough
+                continue
+            except FileNotFoundError:
+                actual, problem = None, "missing"
+            except OSError as exc:
+                actual, problem = None, str(exc)
+        else:
+            actual, problem = digest_of(run, actual_path)
         if problem == "time":
             cut = "time"
             break
@@ -4433,6 +4450,7 @@ def verify_rpm(run, module, database):
         "link": 0,
         "unreadable": 0,
         "refused": 0,
+        "not_hashed": 0,
     }
     config = {"checked": 0, "changed": 0, "missing": 0}
     critical_total = sum(1 for e in entries if _package_order(e) == 0 and not e[5] & RPMFILE_GHOST)
@@ -4522,6 +4540,9 @@ def verify_rpm(run, module, database):
                     report_package_change(run, module, package, absolute, "link", is_config)
             continue
         if not (stat.S_ISREG(mode) and expected and algorithm and verify & RPMVERIFY_FILEDIGEST):
+            continue
+        if _package_order((package, absolute)) == 2:
+            counts["not_hashed"] += 1  # data that runs nowhere: mode and owner were checked
             continue
         actual, problem = digest_of(run, absolute, algorithm)
         if problem == "time":

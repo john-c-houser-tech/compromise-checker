@@ -2935,6 +2935,25 @@ class PackageVerifyTests(FixtureRoot):
         self.assertFalse(collector.dpkg_excluded(filters, "/usr/share/doc/x/copyright"))
         self.assertFalse(collector.dpkg_excluded(filters, "/usr/bin/ls"))
 
+    def test_data_files_are_checked_for_presence_not_hashed(self):
+        self.dpkg_fixture()
+        self.write("usr/share/doc/coreutils/README", b"edited docs")  # wrong contents
+        self.write("usr/lib/firmware/x.bin", b"blob")
+        self.write(
+            "var/lib/dpkg/info/fw.md5sums",
+            (
+                f"{md5hex(b'other')}  usr/lib/firmware/x.bin\n"
+                f"{md5hex(b'gone')}  usr/share/man/man1/gone.1.gz\n"
+            ).encode(),
+        )
+        records = collect(self.root, ["package_verify"])
+        changed = {r["path"]: r["result"] for r in records_named(records, "package_file_changed")}
+        self.assertNotIn("/usr/share/doc/coreutils/README", changed)
+        self.assertNotIn("/usr/lib/firmware/x.bin", changed)
+        self.assertEqual(changed["/usr/share/man/man1/gone.1.gz"], "missing")
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(summary["files_result"]["not_hashed"], 2)
+
     def test_critical_paths_are_checked_first(self):
         collector = load_collector(self.root)
         entries = [
@@ -3026,7 +3045,9 @@ class RpmVerifyTests(FixtureRoot):
             ("/usr/bin/vi", None, 0o120777, 0, "vim"),
             ("/usr/share/doc/x/README", b"x", 0o100644, 2, "", 2),  # not installed (nodocs)
             ("/usr/bin/su", b"\x7fELF su", 0o100755, 0, "", 0, "daemon"),  # owner changed
+            ("/usr/share/man/man1/ps.1.gz", b"original man", 0o100644, 0, ""),  # data
         ]
+        self.write("usr/share/man/man1/ps.1.gz", b"different man page")
         self.write("usr/bin/su", b"\x7fELF su")
         Path(self.root, "usr/bin/su").chmod(0o755)
         # The files here belong to whoever runs the tests: call that root.
@@ -3086,6 +3107,7 @@ class RpmVerifyTests(FixtureRoot):
         self.assertEqual(summary["critical_checked"], summary["critical_files"])
         self.assertFalse(summary["wal_pending"])
         self.assertFalse(summary["complete"])  # one malformed header: a gap
+        self.assertEqual(summary["files_result"]["not_hashed"], 1)  # the man page
         self.assertEqual(sources(records), {})
         self.assertEqual(records[-1]["modules"]["package_verify"]["status"], "ok")
 

@@ -3480,6 +3480,7 @@ class UnusualFilesTests(FixtureRoot):
 
     def test_privileged_files_outside_system_directories(self):
         self.write("home/jch/.cache/x", b"\x7fELF").chmod(0o4755)
+        self.write("usr/bin/dockerd", b"\x7fELF").chmod(0o755)  # a runtime is installed
         self.write("var/lib/docker/overlay2/abc/diff/usr/bin/su", b"\x7fELF").chmod(0o4755)
         self.write("var/tmp/rootsh", b"\x7fELF").chmod(0o4755)
         self.write("srv/data/report.csv", b"a,b")
@@ -3501,6 +3502,94 @@ class UnusualFilesTests(FixtureRoot):
         records = self.run_unusual(web_roots=[])
         entry = {r["path"]: r for r in records_named(records, "unusual_file")}["/tmp/h"]
         self.assertNotIn("kind", entry)  # its first bytes weren't read
+
+    def test_container_storage_is_searched_without_a_runtime(self):
+        self.write("var/lib/containers/.x/sh", b"\x7fELF").chmod(0o4755)
+        records = self.run_unusual(web_roots=[])
+        privileged = [r["path"] for r in records_named(records, "privileged_file")]
+        self.assertEqual(privileged, ["/var/lib/containers/.x/sh"])
+
+    def test_every_other_top_level_directory_and_files_in_root(self):
+        self.write("data/.sh", b"\x7fELF").chmod(0o4755)
+        self.write(".rootkit", b"\x7fELF").chmod(0o4755)
+        self.write("usr/bin/passwd", b"\x7fELF").chmod(0o4755)  # system_files' place
+        records = self.run_unusual(web_roots=[])
+        privileged = sorted(r["path"] for r in records_named(records, "privileged_file"))
+        self.assertEqual(privileged, ["/.rootkit", "/data/.sh"])
+
+    def test_places_listed_in_part_are_still_searched(self):
+        for i in range(5):
+            self.write(f"var/tmp/junk{i}", b"")
+        self.write("var/tmp/zz/rootsh", b"\x7fELF").chmod(0o4755)
+        collector = load_collector(self.root)
+        collector.file_capabilities = lambda absolute: ({}, None)
+        collector.MAX_SCRATCH_ENTRIES = 3
+        out = io.BytesIO()
+        collector.main(unusual_settings([]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        privileged = [r["path"] for r in records_named(records, "privileged_file")]
+        self.assertIn("/var/tmp/zz/rootsh", privileged)
+
+    def test_out_of_range_times_never_stop_the_walk(self):
+        target = self.write("tmp/far", b"x")
+        try:
+            os.utime(target, (300000000000, 300000000000))
+            if os.stat(target).st_mtime < 1e11:
+                raise OSError("clamped")
+        except (OSError, OverflowError):
+            self.skipTest("this file system can't store such a time")
+        self.write("tmp/later", b"x")
+        records = self.run_unusual(web_roots=[])
+        files = {r["path"]: r for r in records_named(records, "unusual_file")}
+        self.assertIn("/tmp/later", files)
+        self.assertIsNone(files["/tmp/far"]["mtime"])
+        self.assertEqual(files["/tmp/far"]["time_out_of_range"]["mtime"], 300000000000)
+        self.assertEqual(records[-1]["modules"]["unusual_files"]["status"], "ok")
+
+    def test_error_text_is_masked_too(self):
+        collector = load_collector(self.root)
+        entry = {
+            "path": "/tmp/password=CanaryErrorName",
+            "error": "[Errno 13] Permission denied: '/tmp/password=CanaryErrorName'",
+        }
+        collector.mask_names(entry)
+        self.assertNotIn("CanaryErrorName", json.dumps(entry))
+
+    def test_disguised_web_shells_links_and_hidden_files(self):
+        self.write("var/www/site/uploads/shell.php.jpg", b"<?php")
+        self.write("var/www/site/x.shtml", b"<!--#exec cmd=id-->")
+        self.write("var/www/site/.env", b"DB_PASSWORD=short")
+        self.write("var/www/site/big.php", b"<?php" + b" " * (9 << 20))
+        os.symlink("/", Path(self.root, "var/www/site/root.txt"))
+        os.symlink("index.html", Path(self.root, "var/www/site/home.html"))
+        records = self.run_unusual()
+        web = {r["path"]: r for r in records_named(records, "web_file")}
+        for listed in (
+            "/var/www/site/uploads/shell.php.jpg",
+            "/var/www/site/x.shtml",
+            "/var/www/site/.env",
+            "/var/www/site/root.txt",
+        ):
+            self.assertIn(listed, web)
+        self.assertNotIn("/var/www/site/home.html", web)  # an ordinary link inside the root
+        self.assertNotIn("sha256", web["/var/www/site/.env"])  # hidden data: not hashed
+        self.assertIn("sha256", web["/var/www/site/uploads/shell.php.jpg"])
+        self.assertEqual(web["/var/www/site/big.php"]["hash_skipped"], "larger than 8388608 bytes")
+
+    def test_hidden_things_in_dev(self):
+        Path(self.root, "dev").mkdir()
+        os.symlink("/tmp/x", Path(self.root, "dev/.lnk"))
+        os.mkfifo(Path(self.root, "dev/.pipe"))
+        os.mkfifo(Path(self.root, "dev/initctl"))  # an ordinary pipe: belongs
+        records = self.run_unusual(web_roots=[])
+        files = {r["path"] for r in records_named(records, "unusual_file")}
+        self.assertIn("/dev/.lnk", files)
+        self.assertIn("/dev/.pipe", files)
+        self.assertNotIn("/dev/initctl", files)
+
+    def test_collector_refuses_bad_web_roots(self):
+        records = self.run_unusual(web_roots="/var/www")
+        self.assertEqual(records[-1]["status"], "refused")
 
     def test_secret_shaped_names_are_masked(self):
         self.write("tmp/password=CanaryNameSecret.txt", b"x")

@@ -17,6 +17,7 @@ what each module reads, and why, is in docs/collector-modules.md.
 
 import base64
 import binascii
+import contextlib
 import datetime
 import errno
 import fnmatch
@@ -5336,24 +5337,73 @@ def container_runtime_installed():
     return any(os.path.lexists(path(p)) for p in CONTAINER_RUNTIMES)
 
 
+# Shares of the module's remaining time: no search can use up another's.
+SCRATCH_TIME_SHARE = 0.25
+WEB_TIME_SHARE = 0.5
+
+
+@contextlib.contextmanager
+def time_share(run, module, phase, share):
+    """Run a phase within `share` of the module's remaining time. If the
+    phase runs out, it stops there (recorded as `phase_time_limit`) and the
+    module goes on; if the module itself runs out, ModuleTimeout passes."""
+    deadline = run.deadline
+    now = time.monotonic()
+    run.deadline = min(deadline, now + share * max(0.0, deadline - now))
+    try:
+        yield
+    except ModuleTimeout:
+        if time.monotonic() >= deadline:
+            raise
+        run.stream.record(module, "phase_time_limit", {"phase": phase, "share": share})
+    finally:
+        run.deadline = deadline
+
+
 def module_unusual_files(run):
     """Files in places intruders use (DESIGN.md §8.6): every entry of /tmp,
-    /var/tmp and /dev/shm; what doesn't belong in /dev; set-user-ID,
+    /var/tmp and /dev/shm; what doesn't belong in /dev; scripts,
+    executables and hidden files in web roots; and set-user-ID,
     set-group-ID and capability files and device nodes in every top-level
-    directory the system walk doesn't cover; and scripts, executables and
-    hidden files in web roots. Names, metadata, name flags and SHA-256s of
-    runnable files — never contents."""
+    directory the system walk doesn't cover. Each search has its own share
+    of the time. Names, metadata, name flags and SHA-256s of runnable files
+    — never contents."""
     module = "unusual_files"
     listed = []  # places listed whole: the privileged search skips them
-    for top in SCRATCH_DIRS:
-        run.check_time()
-        summary = walk_place(run, module, top, MAX_SCRATCH_ENTRIES, _everything, _runnable)
+
+    def note(summary):
         if summary and summary["whole"]:
             listed.append(summary["resolved"])
-    run.check_time()
-    walk_place(run, module, DEV_DIR, MAX_SCRATCH_ENTRIES, _out_of_place_in_dev, _runnable)
 
-    # Before the web roots, so a huge one can't use up the time first.
+    with time_share(run, module, "scratch", SCRATCH_TIME_SHARE):
+        for top in SCRATCH_DIRS:
+            run.check_time()
+            note(walk_place(run, module, top, MAX_SCRATCH_ENTRIES, _everything, _runnable))
+        run.check_time()
+        walk_place(run, module, DEV_DIR, MAX_SCRATCH_ENTRIES, _out_of_place_in_dev, _runnable)
+
+    configured = run.settings.get("web_roots")
+    roots = list(DEFAULT_WEB_ROOTS) if configured is None else list(configured)
+    run.stream.record(
+        module, "web_roots", {"roots": roots, "source": "default" if configured is None else "host"}
+    )
+    with time_share(run, module, "web_roots", WEB_TIME_SHARE):
+        for top in roots:
+            run.check_time()
+            note(
+                walk_place(
+                    run,
+                    module,
+                    top,
+                    MAX_WEB_ENTRIES,
+                    lambda entry, root=top: _is_web_listed(entry, root),
+                    _web_hashed,
+                    "web_file",
+                )
+            )
+
+    # The rest of the time: every top-level directory the system walk
+    # doesn't cover.
     runtime = container_runtime_installed()
 
     def prune(absolute):
@@ -5394,23 +5444,6 @@ def module_unusual_files(run):
             _always,
             "privileged_file",
             prune=prune,
-        )
-
-    configured = run.settings.get("web_roots")
-    roots = list(DEFAULT_WEB_ROOTS) if configured is None else list(configured)
-    run.stream.record(
-        module, "web_roots", {"roots": roots, "source": "default" if configured is None else "host"}
-    )
-    for top in roots:
-        run.check_time()
-        walk_place(
-            run,
-            module,
-            top,
-            MAX_WEB_ENTRIES,
-            lambda entry, root=top: _is_web_listed(entry, root),
-            _web_hashed,
-            "web_file",
         )
 
 

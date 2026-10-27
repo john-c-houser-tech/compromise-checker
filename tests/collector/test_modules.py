@@ -3587,6 +3587,37 @@ class UnusualFilesTests(FixtureRoot):
         self.assertIn("/dev/.pipe", files)
         self.assertNotIn("/dev/initctl", files)
 
+    def run_shares(self, **shares):
+        collector = load_collector(self.root)
+        collector.file_capabilities = lambda absolute: ({}, None)
+        for name, value in shares.items():
+            setattr(collector, name, value)
+        out = io.BytesIO()
+        collector.main(unusual_settings(None), out=out)
+        return [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+
+    def test_a_search_out_of_its_time_share_never_stops_the_next(self):
+        self.write("tmp/a", b"x")
+        self.write("var/www/site/shell.php", b"<?php")
+        self.write("home/jch/.x", b"\x7fELF").chmod(0o4755)
+        # The scratch search gets no time: the web roots and the
+        # privileged search still run.
+        records = self.run_shares(SCRATCH_TIME_SHARE=0.0)
+        self.assertEqual(records_named(records, "phase_time_limit")[0]["phase"], "scratch")
+        self.assertIn(
+            "/var/www/site/shell.php", [r["path"] for r in records_named(records, "web_file")]
+        )
+        self.assertIn(
+            "/home/jch/.x", [r["path"] for r in records_named(records, "privileged_file")]
+        )
+        # The web roots get no time: the privileged search still runs.
+        records = self.run_shares(WEB_TIME_SHARE=0.0)
+        self.assertEqual(records_named(records, "phase_time_limit")[0]["phase"], "web_roots")
+        self.assertIn(
+            "/home/jch/.x", [r["path"] for r in records_named(records, "privileged_file")]
+        )
+        self.assertEqual(records[-1]["modules"]["unusual_files"]["status"], "ok")
+
     def test_collector_refuses_bad_web_roots(self):
         records = self.run_unusual(web_roots="/var/www")
         self.assertEqual(records[-1]["status"], "refused")

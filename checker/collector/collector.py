@@ -56,7 +56,7 @@ except ImportError:
 
 COLLECTOR_VERSION = "0.1.0.dev0"
 PROTOCOL = 1
-MASKING_VERSION = 2
+MASKING_VERSION = 3
 
 # Every path the collector reads goes through path(). Only the test suite
 # changes ROOT, to point the collector at a directory of fixture files; the
@@ -153,6 +153,28 @@ def _rule(kind, context, secret):
 # can't leave its second word behind.
 _QUOTED = rb'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\''
 
+# Fixed vocabularies that look like key=value secrets but never hold one: sudo's
+# NOPASSWD:/PASSWD: tags (what follows is the command), and PAM's control
+# flags and pam_debug arguments, where both the key and the value come from
+# PAM's own word list. Masking them would hide exactly what the sudo and PAM
+# checks compare — `auth_err=die` changed to `auth_err=ignore` would look the
+# same before and after.
+_PAM_RETURN = (
+    rb"success|open_err|symbol_err|service_err|system_err|buf_err|perm_denied|auth_err"
+    rb"|cred_insufficient|authinfo_unavail|user_unknown|maxtries|new_authtok_reqd"
+    rb"|acct_expired|session_err|cred_unavail|cred_expired|cred_err|no_module_data"
+    rb"|conv_err|authtok_err|authtok_recover_err|authtok_lock_busy|authtok_disable_aging"
+    rb"|try_again|ignore|abort|authtok_expired|module_unknown|bad_item|conv_again"
+    rb"|incomplete|default"
+)
+_PAM_ACTION = rb"ignore|bad|die|ok|done|reset|[0-9]+"
+_PAM_DEBUG_ARG = rb"auth|cred|acct|prechauthtok|chauthtok|open_session|close_session"
+_NOT_A_SECRET = (
+    rb"(?!(?:NO)?PASSWD:"
+    rb"|(?:" + _PAM_RETURN + rb")=(?:" + _PAM_ACTION + rb")(?![\w.-])"
+    rb"|(?:" + _PAM_DEBUG_ARG + rb")=(?:" + _PAM_RETURN + rb")(?![\w.-]))"
+)
+
 # Specific formats first, so the generic key=value rule doesn't relabel a
 # value that is already masked.
 MASKING_RULES = [
@@ -179,8 +201,10 @@ MASKING_RULES = [
         "password",
         # The key starts a word that isn't inside a PAM "(service:type)" label,
         # and "pwd" counts only in lower case, so sudo's "PWD=" (its working
-        # directory) is kept.
-        rb"(?<![(\w.-])[A-Za-z0-9_.-]*(?:(?i:password|passwd|secret|token|api[_-]?key|apikey|"
+        # directory) is kept. Sudo tags and PAM's own flags are not secrets.
+        rb"(?<![(\w.-])"
+        + _NOT_A_SECRET
+        + rb"[A-Za-z0-9_.-]*(?:(?i:password|passwd|secret|token|api[_-]?key|apikey|"
         rb"access[_-]?key|auth(?!orization))|pwd)[A-Za-z0-9_.-]*[\"']?\s*[=:]\s*",
         _QUOTED + rb"|[^\s\"'&,;]+",
     ),

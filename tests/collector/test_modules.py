@@ -458,6 +458,33 @@ class MaskingTests(unittest.TestCase):
         )
         self.assertEqual(counts["password"], 1)
 
+    def test_sudo_tags_and_pam_flags_are_kept(self):
+        # Evidence the sudo and PAM checks compare; none of it can be a secret.
+        for line in (
+            b"%wheel\tALL=(ALL)\tNOPASSWD: ALL\n",
+            b"scanner ALL=(root) NOPASSWD: /usr/bin/python3 -I -B -\n",
+            b"deploy ALL=(root) PASSWD: /usr/bin/systemctl\n",
+            b"account [success=ok new_authtok_reqd=ok user_unknown=bad default=die] pam_sss.so\n",
+            b"auth [success=done authinfo_unavail=ignore auth_err=die default=bad] pam_sss.so\n",
+            b"auth [success=2 default=ignore] pam_unix.so\n",
+            b"auth required pam_debug.so auth=authinfo_unavail cred=success\n",
+        ):
+            masked, counts = self.mask(line)
+            self.assertEqual((masked, counts), (line, {}), line)
+
+    def test_secrets_near_the_exceptions_are_still_masked(self):
+        cases = {
+            b"session optional pam_exec.so /x password=hunter2\n": 1,
+            b"auth_err=hunter2 auth=letmein\n": 2,
+            b"NOPASSWD=secret passwd: hunter2\n": 2,
+            b"new_authtok_reqd=okay2 auth_err=dieXYZ\n": 2,
+        }
+        for line, hits in cases.items():
+            masked, counts = self.mask(line)
+            self.assertEqual(counts, {"password": hits}, line)
+            for secret in (b"hunter2", b"letmein", b"secret", b"okay2", b"dieXYZ"):
+                self.assertNotIn(secret, masked, line)
+
     def test_quoted_values_are_masked_whole(self):
         for text in (
             b'password="first second" x\n',
@@ -525,7 +552,7 @@ class PriorityTests(unittest.TestCase):
         self.assertIn(manifest["priority"]["io"], ("idle", "unchanged"))
         if os.uname().machine == "x86_64":
             self.assertEqual(manifest["priority"]["io"], "idle")
-        self.assertEqual(manifest["masking_version"], 2)
+        self.assertEqual(manifest["masking_version"], 3)
 
 
 # --- PR 1.1 groundwork: walks, commands, the journal, resource use ------------------

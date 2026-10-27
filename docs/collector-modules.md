@@ -8,9 +8,14 @@ Every file is opened read-only, without following a final symbolic link,
 without blocking on pipes or devices, and without updating its access time
 where the kernel allows. Anything that is not a regular file is described
 (type, owner, link target) instead of read. Text is masked for secrets before
-it leaves the server (masking rules version 2, listed in the policy §7).
+it leaves the server (masking rules version 3, listed in the policy §7).
 Masking works on whole lines, so a secret can never be split across two
-reads. A private key block runs only as long as its lines look like key
+reads. Two fixed vocabularies are never masked, because they look like
+`key=value` settings but can't hold a secret and are exactly what the checks
+compare: sudo's `NOPASSWD:` and `PASSWD:` tags (what follows is the command),
+and PAM control flags and `pam_debug` arguments where both the key and the
+value are PAM's own words (`auth_err=die`, `new_authtok_reqd=ok`,
+`auth=authinfo_unavail`). A private key block runs only as long as its lines look like key
 material — a base64 token alone on the line (`=` only as end padding), a
 PEM header or a blank line, or, for a key logged line by line, one base64
 token straight after the same program tag as its `BEGIN` line (the log

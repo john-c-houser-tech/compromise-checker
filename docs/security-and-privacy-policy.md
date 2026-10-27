@@ -122,7 +122,9 @@ include access tokens, and sometimes secrets typed into commands.
 - **Secret masking.** Before evidence leaves the server, the collector
   replaces text matching these patterns with a marker such as
   `[MASKED:password]`:
-  - private key blocks (`-----BEGIN … PRIVATE KEY-----` to the matching end);
+  - private key blocks (`-----BEGIN … PRIVATE KEY-----` to the matching end,
+    for as long as the lines look like key material, so a fake start line
+    cannot hide the lines after it);
   - values of settings and command options named like password, passwd, pwd,
     secret, token, api key, access key or auth (including `-p<password>` for
     MySQL clients);

@@ -279,3 +279,13 @@ def test_home_text_setting_reaches_the_collector():
         assert records[-1].status == "complete"
     with pytest.raises(ValueError):
         make_settings(home_text="everyone")
+
+
+def test_web_roots_setting():
+    assert make_settings(web_roots=["/srv/app"]).web_roots == ["/srv/app"]
+    assert make_settings().web_roots is None  # the collector's defaults
+    for bad in (["relative/path"], ["/srv/../etc"], ["/a\0b"], ["/x"] * 65):
+        with pytest.raises(ValueError):
+            make_settings(web_roots=bad)
+    records = read_stream(run_program(build_program(make_settings(web_roots=["/srv/app"]))))
+    assert records[0].settings["web_roots"] == ["/srv/app"]

@@ -66,6 +66,11 @@ stores it with the evidence; the manifest carries the version string only.
   whether the masked text of home start-up files and user units is sent
   (`checker init --home-text`; see collector-modules.md). Any other value is
   refused.
+- `web_roots` — optional: a list of absolute paths (no `..`, at most 64)
+  listed for web shells by `unusual_files`, replacing its defaults; omitted
+  or `null` means the defaults (`/var/www`, `/srv/www`, `/srv/http`,
+  `/usr/share/nginx/html`). Set per host with `checker hosts add
+  --web-root`.
 
 ## 3. Result stream
 

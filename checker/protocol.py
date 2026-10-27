@@ -22,6 +22,7 @@ from pydantic import (
     Field,
     TypeAdapter,
     ValidationError,
+    field_validator,
     model_validator,
 )
 from pydantic_core import PydanticCustomError
@@ -29,6 +30,20 @@ from pydantic_core import PydanticCustomError
 PROTOCOL = 1
 
 HomeText = Literal["off", "privileged", "all"]
+MAX_WEB_ROOTS = 64
+
+
+def check_web_roots(value: list[str] | None) -> list[str] | None:
+    """Web roots as the collector takes them: absolute paths, no ".." or
+    NUL, at most MAX_WEB_ROOTS of them. None means the collector's defaults."""
+    if value is None:
+        return None
+    if len(value) > MAX_WEB_ROOTS:
+        raise ValueError(f"at most {MAX_WEB_ROOTS} web roots")
+    for root in value:
+        if not root.startswith("/") or "\0" in root or ".." in root.split("/") or len(root) > 4096:
+            raise ValueError(f"not an absolute path without '..': {root!r}")
+    return value
 
 
 class _Model(BaseModel):
@@ -57,6 +72,14 @@ class Settings(_Model):
     # Text of home start-up files and user units (policy §7): never, only
     # privileged accounts' homes, or every home. Hashes are always sent.
     home_text: HomeText = "off"
+    # Directories listed for web shells (DESIGN.md §8.6); None: the
+    # collector's common defaults, a list (even empty) replaces them.
+    web_roots: list[str] | None = None
+
+    @field_validator("web_roots")
+    @classmethod
+    def _valid_web_roots(cls, value: list[str] | None) -> list[str] | None:
+        return check_web_roots(value)
 
 
 # --- Stream records (collector → controller) ----------------------------------

@@ -162,11 +162,11 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
 
 1. **Before 1.2 — `/etc/shadow`:** send per-account password *status* only
    (recommended), never hashes.
-2. **Before 1.5 — process command lines:** send them masked (recommended:
-   they are the main evidence for reverse shells and miners), or only the
-   executable path.
-3. **Before 1.5 — web roots:** none scanned by default, with a per-host list
-   (recommended), or common defaults (`/var/www`, `/srv/www`).
+2. ~~Before 1.5 — process command lines.~~ **Decided 2026-10-27:** sent
+   masked (they are the main evidence for reverse shells and miners).
+3. ~~Before 1.5 — web roots.~~ **Decided 2026-10-27:** common paths by
+   default (`/var/www`, `/srv/www`, `/srv/http`, `/usr/share/nginx/html`),
+   replaced by a per-host list where one is set.
 4. **Before 1.9 — budget:** confirm the spend for the full matrix and
    scenario runs.
 

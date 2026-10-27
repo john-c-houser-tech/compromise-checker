@@ -190,6 +190,7 @@ EXPECTED_RECORDS = (
     ("startup", "home_startup_file"),
     ("package_verify", "checksum_store"),
     ("system_files", "privileged_file"),  # passwd, su and the like on any server
+    ("unusual_files", "walk_summary"),  # /tmp exists everywhere
 )
 EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal")
 

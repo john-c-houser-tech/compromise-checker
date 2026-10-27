@@ -17,7 +17,8 @@ What works today:
 - `checker init` — sets up the evidence key, database and configuration;
   `--home-text privileged|all` opts in to collecting the masked text of
   start-up files and user units in home directories (policy §7).
-- `checker hosts add|list|remove` and `checker trust` — the inventory, and
+- `checker hosts add|list|remove` and `checker trust` — the inventory
+  (`--web-root DIR`, repeatable, sets a host's own web roots), and
   verified SSH host keys (no way to switch verification off).
 - `checker collect` — logs in (key, agent or password; sudo with or without a
   password, or root), runs the collector read-only, and stores the result as

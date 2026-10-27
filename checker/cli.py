@@ -49,6 +49,7 @@ def cmd_hosts_add(args: argparse.Namespace) -> int:
             password_source=args.password_source,
             group=args.group,
             python=args.python,
+            web_roots=args.web_root,
         )
         with inventory_transaction() as inventory:
             inventory.add(host)
@@ -339,6 +340,15 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--password-source", choices=["prompt", "keyring"], default="prompt")
     add.add_argument("--group", help="a group name, e.g. web")
     add.add_argument("--python", default="python3", help="the interpreter on the host")
+    add.add_argument(
+        "--web-root",
+        action="append",
+        metavar="DIR",
+        help=(
+            "a web root to list for web shells (repeatable); replaces the defaults"
+            " /var/www, /srv/www, /srv/http and /usr/share/nginx/html"
+        ),
+    )
     add.set_defaults(handler=cmd_hosts_add)
 
     hosts_commands.add_parser("list", help="list hosts").set_defaults(handler=cmd_hosts_list)

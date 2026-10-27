@@ -560,6 +560,46 @@ complete, the mapped directories, and whether a limit — the walk's entry or
 time limit, or the findings limit — cut the pass short. With no package
 manager, nothing is called unowned.
 
+## `unusual_files`
+
+**Why:** files in the places intruders use: tools dropped in scratch
+directories, web shells, back-dated files, names chosen to pass for system
+ones, and set-user-ID or capability files outside the system directories
+(DESIGN.md §8.6).
+
+**Walks** (see "Directory walks"):
+- `/tmp`, `/var/tmp` and `/dev/shm`: every entry is sent (`unusual_file`);
+- `/dev`: only what isn't a device — regular files and hidden directories;
+- web roots: the host's own list (`checker hosts add --web-root`), or by
+  default `/var/www`, `/srv/www`, `/srv/http` and `/usr/share/nginx/html`
+  (Phase 1 decision 3; a `web_roots` record says which). Only files a web
+  server could run (`.php`, `.phtml`, `.phar`, `.jsp`, `.asp(x)`, `.cgi`,
+  `.pl`, `.py`, `.sh` and the like), executables, set-user-ID or capability
+  files, and hidden files and directories are sent (`web_file`); everything
+  else — uploads, whose names can be personal — is only counted
+  (`not_listed` in the walk summary);
+- `/var`, `/home`, `/root`, `/srv`, `/run`, `/mnt` and `/media`: only
+  set-user-ID, set-group-ID and capability files (`privileged_file`), the
+  places above excepted (already listed) and container storage
+  (`/var/lib/docker`, `/var/lib/containers` and the like: whole container
+  filesystems, left for the container checks) not descended, which the walk
+  summary records.
+
+Each entry sent carries the walk's metadata and, where they apply: name
+flags (`hidden`, `dots_or_spaces_only`, `leading_or_trailing_space`,
+`control_characters`, `non_ascii`, `kernel_thread_name` such as
+`[kworker/0:1]`, `system_name` such as a `sshd` in `/tmp`); `kind` (`elf`
+or `script`, from the first four bytes — the only content read, under the
+protection rules for walked files); `changed_after_modified_seconds` when
+the change time is more than a day after the modification time (a file
+whose modification time was set back); the set-user-ID and set-group-ID
+bits and capabilities; and the SHA-256 of runnable files (ELF, `#!`
+script or an execute bit; in web roots every listed file) up to 8 MiB,
+hashed under the protection rules for walked files. Because anyone can name
+a file here, each path and link target is masked like log text (a file
+named after a password or token), with what was masked counted on the
+entry. No file contents are sent.
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,

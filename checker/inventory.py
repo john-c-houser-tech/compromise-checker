@@ -14,6 +14,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from checker.files import atomic_write, locked
+from checker.protocol import check_web_roots
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
 
@@ -53,6 +54,8 @@ class Host(BaseModel):
     password_source: Literal["prompt", "keyring"] = "prompt"  # noqa: S105 - not a password
     group: str | None = None
     python: str = "python3"
+    # Web roots to list for web shells instead of the common defaults.
+    web_roots: list[str] | None = None
 
     @field_validator("name")
     @classmethod
@@ -68,6 +71,11 @@ class Host(BaseModel):
         if not re.fullmatch(r"[A-Za-z0-9/._-]+", value):
             raise ValueError("a plain interpreter name or path")
         return value
+
+    @field_validator("web_roots")
+    @classmethod
+    def _valid_web_roots(cls, value: list[str] | None) -> list[str] | None:
+        return check_web_roots(value)
 
     def needs_password(self) -> bool:
         return self.auth == "password" or self.sudo == "password"

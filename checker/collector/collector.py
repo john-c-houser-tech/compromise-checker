@@ -287,7 +287,8 @@ _NAME = rb"[^\n]{1,256}?"
 # framing pair of quotes is removed before the account check.
 _LOGIN_NAME_RULE = _rule(
     "unknown_user",
-    rb"FAILED LOGIN \(?\d+\)? (?:FROM \S+ )?FOR ",
+    # Both util-linux's "FROM host" and shadow's "on 'tty' from 'host'".
+    rb"FAILED LOGIN \(?\d+\)? (?:(?:FROM|from|on) \S+ ){0,2}FOR ",
     rb"'[^\n]{0,256}'(?=, )|" + _NAME + rb"(?=, )",
 )
 UNKNOWN_USER_RULES = [
@@ -304,6 +305,13 @@ UNKNOWN_USER_RULES = [
     _rule("unknown_user", rb"\buser ", _NAME + rb"(?= does not exist)"),
     # pam_sss: received for user name: 10 (User not known ...)
     _rule("unknown_user", rb"received for user ", _NAME + rb"(?=: \d+ \(User not known)"),
+    # PAM modules' companion line: "authentication failure; logname= ...
+    # rhost=... user=name", the name last on the line.
+    _rule(
+        "unknown_user",
+        rb"authentication failure;[^\n]{0,512}? user=",
+        _NAME + rb"(?=\r?$)|\S+",
+    ),
 ]
 
 MASKING_RULES = UNKNOWN_USER_RULES + [
@@ -3678,9 +3686,9 @@ def module_boots(run):
 # AArch64 has 64-bit ones (400 bytes). Any other architecture is reported
 # as unsupported rather than guessed at.
 UTMP_LAYOUTS = {
-    "x86_64": struct.Struct("=hxxi32s4s32s256shhiIi16s20s"),
-    "ppc64le": struct.Struct("=hxxi32s4s32s256shhiIi16s20s"),
-    "s390x": struct.Struct("=hxxi32s4s32s256shhiIi16s20s"),
+    "x86_64": struct.Struct("=hxxi32s4s32s256shhiii16s20s"),
+    "ppc64le": struct.Struct("=hxxi32s4s32s256shhiii16s20s"),
+    "s390x": struct.Struct("=hxxi32s4s32s256shhiii16s20s"),
     "aarch64": struct.Struct("=hxxi32s4s32s256shhqqq16s20s4x"),
 }
 
@@ -3704,6 +3712,7 @@ UTMP_TYPES = {
 }
 _LOGIN_RECORD_FILE = re.compile(r"^(?:wtmp|btmp)(?:[-.][\w.-]+)?$")
 MAX_LOGIN_RECORDS = 200000
+LATEST_RECORD_TIME = 253402300799  # 9999-12-31T23:59:59Z, the last a timestamp can show
 # Newer systems keep login records in SQLite instead (wtmpdb, lastlog2):
 # described here, read in a later version.
 LOGIN_DATABASES = ("/var/lib/wtmpdb/wtmp.db", "/var/lib/lastlog/lastlog2.db")
@@ -3771,7 +3780,7 @@ def send_login_records(run, module, absolute, layout):
         "meta": file_meta(info, _COMPRESSED.get(suffix)),
         "record_size": layout.size,
     }
-    counts = {"records": 0, "blank": 0, "before_window": 0, "sent": 0}
+    counts = {"records": 0, "blank": 0, "bad_time": 0, "before_window": 0, "sent": 0}
     masked, first, last, partial, cut, error = {}, None, None, 0, None, None
     try:
         with raw:
@@ -3800,6 +3809,11 @@ def send_login_records(run, module, absolute, layout):
                         fields = layout.unpack(piece)
                         kind, pid, line, ident, user, host = fields[:6]
                         term, status, session, seconds, micros, address = fields[6:12]
+                        if not (0 <= seconds <= LATEST_RECORD_TIME and 0 <= micros < 1000000):
+                            # Damaged or forged: counted, never allowed to stop
+                            # the file's other records or skew its first/last times.
+                            counts["bad_time"] += 1
+                            continue
                         first = seconds if first is None else min(first, seconds)
                         last = seconds if last is None else max(last, seconds)
                         if seconds < since:
@@ -3901,7 +3915,9 @@ def module_crash_dumps(run):
         run.check_time()
 
 
-_PROC_MODULE = re.compile(r"^(\S+) (\d+) (\d+|-) (\S+) (\S+) \S+(?: \(([A-Z]+)\))?$")
+# name size refcount used-by state address [(taint letters, then "+" while
+# loading or "-" while unloading)]; the refcount is -1 while unloading.
+_PROC_MODULE = re.compile(r"^(\S+) (\d+) (-?\d+|-) (\S+) (\S+) \S+(?: \(([A-Z]*)([+-]?)\))?$")
 # The kernel's settings for loading modules: signatures enforced, loading
 # switched off, lockdown.
 MODULE_POLICY_FILES = {
@@ -3926,7 +3942,7 @@ def module_kernel_modules(run):
         if not match:
             run.stream.record(module, "unparsed_line", {"length": len(line)})
             continue
-        name, size, refcount, used_by, state, taint = match.groups()
+        name, size, refcount, used_by, state, taint, transition = match.groups()
         safe = name.replace("/", "")
         sys_taint = (
             read_small(f"/sys/module/{safe}/taint", 64) if safe not in ("", ".", "..") else None
@@ -3941,6 +3957,7 @@ def module_kernel_modules(run):
                 "used_by": [u for u in used_by.split(",") if u and u != "-"],
                 "state": state,
                 "taint": taint or "",
+                "transition": {"+": "loading", "-": "unloading"}.get(transition or ""),
                 "sys_taint": sys_taint.strip() if sys_taint is not None else None,
             },
         )

@@ -430,6 +430,30 @@ class MaskingTests(unittest.TestCase):
         for line, expected in cases.items():
             self.assertEqual(self.mask(line)[0], expected, line)
 
+    def test_more_failed_login_formats(self):
+        cases = {
+            b"login[2]: FAILED LOGIN (1) on '/dev/tty1' FOR 'Summer2026!', Auth failure\n": (
+                b"login[2]: FAILED LOGIN (1) on '/dev/tty1' FOR [MASKED:unknown_user],"
+                b" Auth failure\n"
+            ),
+            b"login[2]: FAILED LOGIN (1) on '/dev/pts/0' from 'h' FOR 'x y', User not known\n": (
+                b"login[2]: FAILED LOGIN (1) on '/dev/pts/0' from 'h' FOR [MASKED:unknown_user],"
+                b" User not known\n"
+            ),
+            b"sshd[4]: pam_sss(sshd:auth): authentication failure; logname= uid=0 euid=0"
+            b" tty=ssh ruser= rhost=192.0.2.9 user=Summer2026!\n": (
+                b"sshd[4]: pam_sss(sshd:auth): authentication failure; logname= uid=0 euid=0"
+                b" tty=ssh ruser= rhost=192.0.2.9 user=[MASKED:unknown_user]\n"
+            ),
+            b"sshd[4]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0"
+            b" tty=ssh ruser= rhost=192.0.2.9  user=jch\n": (
+                b"sshd[4]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0"
+                b" tty=ssh ruser= rhost=192.0.2.9  user=jch\n"
+            ),
+        }
+        for line, expected in cases.items():
+            self.assertEqual(self.mask(line)[0], expected, line)
+
     def test_failed_login_rules_stay_fast_on_hostile_lines(self):
         line = b"invalid user " * 50000 + b"\n"
         started = time.monotonic()
@@ -2472,7 +2496,7 @@ class PersistenceTests(FixtureRoot):
         self.assertEqual(files["/etc/cron.d/hist"]["link_target"], "/home/jch/.bash_history")
 
 
-UTMP = struct.Struct("=hxxi32s4s32s256shhiIi16s20s")
+UTMP = struct.Struct("=hxxi32s4s32s256shhiii16s20s")  # glibc: signed seconds
 
 
 def utmp(kind, user=b"", host=b"", line=b"", when=None, address=b"", pid=1):
@@ -2629,6 +2653,30 @@ class LoginRecordTests(FixtureRoot):
         summary = records_named(records, "login_file")[0]
         self.assertEqual((summary["record_size"], summary["partial_bytes"]), (400, 0))
 
+    def test_damaged_times_are_counted_and_never_stop_collection(self):
+        # Signed seconds: -1 is before 1970, never a login in 2106.
+        self.write(
+            "var/log/wtmp",
+            utmp(7, user=b"neg", when=-1) + utmp(7, user=b"ok") + utmp(7, user=b"ok2"),
+        )
+        records = collect(self.root, ["login_records"])
+        self.assertEqual([r["user"] for r in records_named(records, "login_record")], ["ok", "ok2"])
+        summary = records_named(records, "login_file")[0]
+        self.assertEqual(summary["bad_time"], 1)
+        self.assertGreater(summary["first_time"], "2026")
+
+    def test_out_of_range_aarch64_time_is_counted(self):
+        big = struct.Struct("=hxxi32s4s32s256shhqqq16s20s4x")
+
+        def record(user, when):
+            return big.pack(7, 1, b"", b"", user, b"", 0, 0, 0, when, 0, b"", b"")
+
+        self.write("var/log/wtmp", record(b"far", 253402300800) + record(b"now", int(NOW)))
+        records = self.collect_as(lambda c: c.UTMP_LAYOUTS["aarch64"])
+        self.assertEqual([r["user"] for r in records_named(records, "login_record")], ["now"])
+        self.assertEqual(records_named(records, "login_file")[0]["bad_time"], 1)
+        self.assertEqual(records[-1]["modules"]["login_records"]["status"], "ok")
+
     def test_unknown_architecture_is_reported_not_guessed(self):
         self.write("var/log/wtmp", utmp(7, user=b"jch"))
         records = self.collect_as(lambda c: None)
@@ -2677,7 +2725,9 @@ class KernelModuleTests(FixtureRoot):
             "proc/modules",
             b"rootkit 16384 0 - Live 0xffffffffc0a00000 (OE)\n"
             b"ext4 1000000 2 jbd2,mbcache, Live 0xffffffffc0b00000\n"
-            b"garbage line\n",
+            b"garbage line\n"
+            b"leaving 8192 -1 - Unloading 0xffffffffc0c00000 (OE-)\n"
+            b"arriving 8192 0 - Loading 0xffffffffc0d00000 (+)\n",
         )
         self.write("sys/module/rootkit/taint", b"OE\n")
         self.write("sys/module/module/parameters/sig_enforce", b"N\n")
@@ -2687,6 +2737,13 @@ class KernelModuleTests(FixtureRoot):
         self.assertEqual(mods["rootkit"]["taint"], "OE")
         self.assertEqual(mods["rootkit"]["sys_taint"], "OE")
         self.assertEqual(mods["ext4"]["used_by"], ["jbd2", "mbcache"])
+        self.assertEqual(
+            (mods["leaving"]["refcount"], mods["leaving"]["taint"], mods["leaving"]["transition"]),
+            (-1, "OE", "unloading"),
+        )
+        self.assertEqual(
+            (mods["arriving"]["taint"], mods["arriving"]["transition"]), ("", "loading")
+        )
         self.assertNotIn("0xffff", json.dumps(records))  # load addresses are left out
         self.assertEqual(len(records_named(records, "unparsed_line")), 1)
         policy = records_named(records, "module_policy")[0]

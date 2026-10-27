@@ -20,8 +20,10 @@ The old 13-character DES format can't be told apart from ordinary text and
 is not masked. A name given at a login prompt that isn't an account can be a
 password typed in the wrong box, so in failed-login messages — sshd's
 `Invalid user X` and `… for invalid user X` (or `illegal user`), login's
-`FAILED LOGIN … FOR 'X'`, su's `user X does not exist`, pam_sss's
-`received for user X: … (User not known …)` — the name is masked as
+`FAILED LOGIN … FOR 'X'` (util-linux's `FROM host` and shadow's
+`on 'tty' from 'host'` forms), su's `user X does not exist`, pam_sss's
+`received for user X: … (User not known …)`, and PAM modules' companion
+`authentication failure; … user=X` — the name is masked as
 `unknown_user` unless it is an `/etc/passwd` account name. The name is taken
 whole, up to the fixed text its message puts after it (` from <address>
 port`, `', `, ` does not exist`, `: <code> (User not known`), never as a
@@ -395,8 +397,10 @@ but not parsed, rather than guessed at. **Sends:** a `login_record` for each rec
 in the window — type, PID, terminal, id, user, host, exit status, session,
 time and address — with the four text fields masked like any log text; then
 a `login_file` summary per file: file metadata, counts of records, records
-before the window, blank (zeroed) records, as log cleaners leave them, and
-of bytes left over at the end, the first and last record times, and what
+before the window, blank (zeroed) records, as log cleaners leave them,
+records with an impossible time (before 1970, after 9999, or a damaged
+microsecond field: `bad_time`, never sent and kept out of the first and last
+times), and of bytes left over at the end, the first and last record times, and what
 masking replaced. At most 200,000 records per file are sent; past that, or
 past the time limit, the summary says so. Nothing else of the files is sent.
 `btmp`'s user field is where a password typed at the login prompt by mistake
@@ -426,7 +430,8 @@ itself, which the kernel's taint flags may still reveal.
 `/sys/module/module/parameters/sig_enforce`,
 `/proc/sys/kernel/modules_disabled`, `/sys/kernel/security/lockdown` and
 `/proc/sys/kernel/tainted`. **Sends:** a `kernel_module` record per module
-(name, size, reference count, the modules using it, state, taint flags) and
+(name, size, reference count — -1 while unloading — the modules using it,
+state, taint flags, and `transition`: loading or unloading) and
 a `module_policy` record. Load addresses are left out: they would reveal the
 kernel's memory layout. A line that doesn't parse is counted
 (`unparsed_line`), not sent. If `/proc/modules` can't be read, the module

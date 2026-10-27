@@ -8,7 +8,7 @@ Every file is opened read-only, without following a final symbolic link,
 without blocking on pipes or devices, and without updating its access time
 where the kernel allows. Anything that is not a regular file is described
 (type, owner, link target) instead of read. Text is masked for secrets before
-it leaves the server (masking rules version 5, listed in the policy §7).
+it leaves the server (masking rules version 6, listed in the policy §7).
 Masking works on whole lines, so a secret can never be split across two
 reads. Password hashes in the standard crypt formats (`$1$`, `$2b$`, `$5$`,
 `$6$`, `$7$`, `$y$`, `$gy$`…) are masked wherever they appear, salt
@@ -24,7 +24,11 @@ password typed in the wrong box, so in failed-login messages — sshd's
 `on 'tty' from 'host'` forms), su's `user X does not exist`, pam_sss's
 `received for user X: … (User not known …)`, and PAM modules' companion
 `authentication failure; … user=X` — the name is masked as
-`unknown_user` unless it is an `/etc/passwd` account name. The name is taken
+`unknown_user` unless it is an `/etc/passwd` account name. Command-line
+options that take a password without saying so are masked too: `sshpass
+-p`, `redis-cli -a`, `docker`/`podman`/`helm login -p`, `curl`/`wget -u
+user:password`, openssl's `pass:`, `htpasswd -b`'s password, and values
+after `aws_secret_access_key`-style key names. The name is taken
 whole, up to the fixed text its message puts after it (` from <address>
 port`, `', `, ` does not exist`, `: <code> (User not known`), never as a
 single word, since a typed password can hold spaces, colons and quotes; it
@@ -616,6 +620,79 @@ a file here, each path and link target is masked like log text (a file
 named after a password or token) — and so is error text that repeats them
 — with what was masked counted on the entry. Files over 8 MiB are not
 hashed, and say so. No file contents are sent.
+
+## `processes`
+
+**Why:** what is running now: reverse shells, miners, implants running from
+deleted or memory-only files, injected libraries, unexpected listeners,
+packet sniffers and connections, and processes hidden by a user-space
+rootkit (DESIGN.md §8.7).
+
+**Reads** `/proc` (kernel memory; nothing on disk), in three parts, each
+with its own share of the module's time — the listing at most 40%, the
+hidden-process probe at most half of what is left, the sockets the rest —
+and writes a `process_summary` however far it got. It **sends**:
+- a `process` record for each process: PID, parent, state, real, effective,
+  saved and filesystem user and group IDs, threads, CPU seconds, start time,
+  the executable (`exe_deleted` when its file has been deleted, `exe_memfd`
+  when it runs from memory only; `kernel_thread` or `exe_unreadable` when
+  there is none to read), working directory, root (a `chroot` or container
+  shows), the cgroup (which service or container), the network namespace,
+  the command line — masked (Phase 1 decision 2), with every control
+  character made a space first, as one line, with its argument count — and,
+  of its environment (read to its end, up to 16 MiB, `environ_truncated`
+  past that), only `LD_PRELOAD`, `LD_LIBRARY_PATH` and `LD_AUDIT`, masked;
+  nothing else of a process's environment leaves the server. Executable
+  mappings from deleted files, memory-only files or scratch places are
+  listed (`suspicious_mappings`, up to 20): a library injected with `dlopen`
+  or `ptrace` shows there, not in the environment. Its open files are
+  counted by kind (file, socket, pipe, memory-only, anon_inode, unreadable;
+  at most 100,000 looked at, `fds_truncated` past that or at the deadline);
+  the kinds of its standard input, output and error are given
+  (`std_streams`, with the socket's inode: a shell talking to a socket is a
+  reverse shell); and the interesting ones listed (up to 200): deleted
+  files, files in `/tmp`, `/var/tmp` or `/dev/shm`, and memory-only files.
+  Reading a process's command line, environment or mappings waits on its
+  memory lock, which a process stuck on a hung network or FUSE mapping can
+  hold for ever: each such read gets two seconds in a helper thread, and a
+  blocked one is abandoned and marked (`memory_reads_blocked`); after eight,
+  no more are tried. The name, executable, directories, cgroup and paths are
+  masked like log text too. `/proc`'s links are read as text, never
+  followed, so a target on a network drive is still recorded;
+- a `socket` record for each TCP, UDP, raw and packet socket (IPv4 and
+  IPv6), read from every network namespace in use (through one process in
+  it — so containers' sockets show): addresses and ports (for packet
+  sockets: type, ethertype, interface), TCP state, owner, namespace, and the
+  processes holding it (matched by inode through their open files);
+  `unmatched_sockets` counts socket inodes held by processes but in no table
+  read (unix, netlink and the like). Tables are read up to 16 MiB each;
+  `sockets_truncated` in the summary says if one was cut;
+- a `process_summary`: whether the listing finished, counts (processes,
+  processes gone mid-run, threads, sockets), the network namespaces seen,
+  the kernel's own count of tasks (from `/proc/loadavg`) to set against the
+  threads found — meaningful on a host, not inside a container, where
+  `/proc/loadavg` still counts the whole host's tasks — and the
+  hidden-process probe's coverage.
+
+**Hidden processes.** A user-space rootkit hides a process by hooking the
+listing of `/proc` (`readdir`), which `ps` and the collector's own Python
+both use, but a direct lookup of `/proc/<pid>` still answers. So the
+collector looks up every PID up to the larger of the kernel's `pid_max`
+and 4,194,304 (the 64-bit limit: root could lower `pid_max` after starting
+a process above it), skipping listed PIDs and thread IDs. A candidate is
+reported (`hidden_process`, with the process's details, before the sockets
+are read so its sockets name it) only if, at a re-check, it still exists,
+is still missing from a fresh listing, is a process rather than a thread,
+and started before the first listing — so a short-lived process started
+meanwhile is never one. `ps` itself is not run: it isn't on the command
+allow-list, and it would be fooled the same way.
+
+**Limit: kernel rootkits.** A rootkit loaded into the kernel can hide a
+process from the direct lookup too, so "no hidden processes found" means
+none hidden from `/proc`'s listing, not proof that nothing is hidden. Such a
+rootkit's traces, where it leaves any, are in `kernel_modules` (the
+kernel's taint flags, unsigned or out-of-tree modules) and
+`system_journal` (module loads).
 
 ## Protected files
 

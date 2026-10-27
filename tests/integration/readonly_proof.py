@@ -191,6 +191,8 @@ EXPECTED_RECORDS = (
     ("package_verify", "checksum_store"),
     ("system_files", "privileged_file"),  # passwd, su and the like on any server
     ("unusual_files", "walk_summary"),  # /tmp exists everywhere
+    ("processes", "process"),
+    ("processes", "socket"),  # sshd listens on every server
 )
 EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal")
 

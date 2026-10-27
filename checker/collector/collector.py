@@ -61,7 +61,7 @@ except ImportError:
 
 COLLECTOR_VERSION = "0.1.0.dev0"
 PROTOCOL = 1
-MASKING_VERSION = 5
+MASKING_VERSION = 6
 
 # Every path the collector reads goes through path(). Only the test suite
 # changes ROOT, to point the collector at a directory of fixture files; the
@@ -340,6 +340,34 @@ MASKING_RULES = UNKNOWN_USER_RULES + [
     _rule(
         "password",
         rb"(?i)--?(?:password|passwd|pass|token|secret|api-?key)[= ]",
+        _QUOTED + rb"|\S+",
+    ),
+    # Command-line options that take a password without saying so (seen in
+    # process command lines, sudo logs and shell history alike):
+    # sshpass -p X, redis-cli -a X, docker/podman login -p X,
+    # curl/wget -u user:X, openssl ... pass:X, htpasswd -b file user X,
+    # aws configure set aws_secret_access_key X.
+    _rule("password", rb"\bsshpass\b[^\n]{0,256}?\s-p\s*", _QUOTED + rb"|\S+"),
+    _rule("password", rb"\bredis-cli\b[^\n]{0,256}?\s(?:-a|--pass)\s+", _QUOTED + rb"|\S+"),
+    _rule(
+        "password",
+        rb"\b(?:docker|podman|buildah|skopeo|helm|nerdctl)\b[^\n]{0,256}?\blogin\b"
+        rb"[^\n]{0,256}?\s-p\s*",
+        _QUOTED + rb"|\S+",
+    ),
+    _rule("password", rb"(?:\s-u\s*|\s--user[= ])[^\s:'\"]{1,256}:", _QUOTED + rb"|[^\s'\"]+"),
+    _rule("password", rb"\bpass:", _QUOTED + rb"|\S+"),
+    _rule(
+        "password",
+        rb"\bhtpasswd\s+(?:-[A-Za-z]+\s+){0,8}?(?:-[A-Za-z]*b[A-Za-z]*\s+)(?:-[A-Za-z]+\s+){0,8}"
+        rb"\S+\s+\S+\s+",
+        _QUOTED + rb"|\S+",
+    ),
+    _rule(
+        "password",
+        # Key names only: "password <word>" is ordinary log text ("Failed
+        # password for root").
+        rb"(?i)\b\w*(?:secret_access_key|secret[_-]key|access[_-]token)\s+",
         _QUOTED + rb"|\S+",
     ),
     _rule(
@@ -5473,6 +5501,541 @@ def privileged_elsewhere(entry):
     return bool(mode & 0o6000) or bool(caps)
 
 
+# --- Live processes (DESIGN.md §8.7) ------------------------------------------------
+
+# The only environment variables sent: the loader's, whose values are the
+# evidence of an injected library. Nothing else of a process's environment
+# leaves the server.
+LOADER_VARIABLES = (b"LD_PRELOAD", b"LD_LIBRARY_PATH", b"LD_AUDIT")
+MAX_PROCESSES = 100000
+MAX_FDS_LISTED = 200  # interesting open files listed per process; all are counted
+MAX_FDS_EXAMINED = 100000  # open files looked at per process, then fds_truncated
+PROC_READ_BYTES = 256 * 1024
+ENVIRON_BYTES = 16 * 1024 * 1024  # read to the end: LD_PRELOAD can sit past any padding
+MAPS_BYTES = 4 * 1024 * 1024
+MAX_MAPPINGS_LISTED = 20
+# Reading a process's command line, environment or maps waits on its memory
+# lock, which a process stuck on a hung NFS or FUSE mapping can hold for
+# ever: each such read gets this long in a helper thread, then is abandoned.
+BLOCKING_READ_SECONDS = 2.0
+MAX_ABANDONED_READS = 8
+LISTING_TIME_SHARE = 0.4
+# The kernel's PID_MAX_LIMIT on 64-bit: probed even if pid_max is lower now,
+# since root can lower it after starting a process above it.
+PID_MAX_LIMIT = 4194304
+# The probe for hidden processes gets this share of the module's time.
+PROBE_TIME_SHARE = 0.5
+TCP_STATES = {
+    "01": "established",
+    "02": "syn_sent",
+    "03": "syn_recv",
+    "04": "fin_wait1",
+    "05": "fin_wait2",
+    "06": "time_wait",
+    "07": "close",
+    "08": "close_wait",
+    "09": "last_ack",
+    "0A": "listen",
+    "0B": "closing",
+}
+SOCKET_TABLES = ("tcp", "tcp6", "udp", "udp6", "raw", "raw6")  # packet: read_packet
+SOCKET_TABLE_BYTES = 16 * 1024 * 1024
+SCRATCH_PREFIXES = tuple(d + "/" for d in SCRATCH_DIRS)
+
+
+def read_proc(absolute, limit=PROC_READ_BYTES):
+    """Up to `limit` bytes of a /proc file, or None if it is gone or
+    unreadable (a process can exit at any moment)."""
+    try:
+        fd = os.open(path(absolute), os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return None
+    try:
+        chunks, total = [], 0
+        while total < limit:
+            chunk = os.read(fd, min(65536, limit - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def read_link(absolute):
+    """A /proc link's target, read as text: the kernel's own links are never
+    followed here, so the mount guard (which would refuse a target on a
+    network drive and lose it) doesn't apply."""
+    try:
+        return os.readlink(_raw_path(absolute))
+    except OSError:
+        return None
+
+
+_ABANDONED_READS = [0]
+
+
+def read_proc_bounded(absolute, limit):
+    """(data, blocked): read_proc in a helper thread that is abandoned after
+    BLOCKING_READ_SECONDS (see there). After MAX_ABANDONED_READS, such reads
+    are not tried again in this run."""
+    if _ABANDONED_READS[0] >= MAX_ABANDONED_READS:
+        return None, True
+    result = {}
+
+    def read():
+        result["data"] = read_proc(absolute, limit)
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(BLOCKING_READ_SECONDS)
+    if reader.is_alive():
+        _ABANDONED_READS[0] += 1
+        return None, True
+    return result.get("data"), False
+
+
+_CONTROL_TO_SPACE = bytes(32 if b < 32 or b == 127 else b for b in range(256))
+
+
+def masked(text):
+    """Text from a process (a command line, a name, a path anyone could
+    choose), masked like log text; (masked text, what masking replaced)."""
+    if text is None:
+        return None, {}
+    raw = text if isinstance(text, bytes) else text.encode("utf-8", "surrogateescape")
+    # Every control character becomes a space: masking splits lines at
+    # some of them (\r), which would part a label from its value.
+    raw = raw.translate(_CONTROL_TO_SPACE)
+    out, counts = mask_text(raw + b"\n")
+    return out[:-1].decode("utf-8", "replace"), counts
+
+
+def _add_counts(into, counts):
+    for kind, count in counts.items():
+        into[kind] = into.get(kind, 0) + count
+
+
+def parse_proc_stat(raw):
+    """(comm, fields after it) from /proc/<pid>/stat; the name can hold
+    spaces and parentheses, so it ends at the last ')'."""
+    text = raw.decode("utf-8", "replace")
+    start, end = text.find("("), text.rfind(")")
+    if start < 0 or end < start:
+        raise ValueError("unreadable stat")
+    return text[start + 1 : end], text[end + 2 :].split()
+
+
+def _ids(status, key):
+    for line in status.splitlines():
+        if line.startswith(key + ":"):
+            return [int(v) for v in line.split()[1:5]]
+    return None
+
+
+def describe_process(run, pid, boot_time, ticks, sockets_of):
+    """One process from /proc, or None if it is gone."""
+    base = f"/proc/{pid}"
+    stat_raw = read_proc(base + "/stat", 4096)
+    if not stat_raw:
+        return None
+    try:
+        comm, fields = parse_proc_stat(stat_raw)
+        state, ppid = fields[0], int(fields[1])
+        cpu = (int(fields[11]) + int(fields[12])) / ticks
+        threads = int(fields[17])
+        start = boot_time + int(fields[19]) / ticks if boot_time is not None else None
+    except (ValueError, IndexError):
+        return {"pid": pid, "unreadable": "stat"}
+    status = (read_proc(base + "/status", 65536) or b"").decode("utf-8", "replace")
+    found = {}
+    process = {
+        "pid": pid,
+        "ppid": ppid,
+        "state": state,
+        "uids": _ids(status, "Uid"),
+        "gids": _ids(status, "Gid"),
+        "threads": threads,
+        "cpu_seconds": round(cpu, 2),
+        "start_time": iso_from_timestamp(start) if start is not None else None,
+    }
+    process["comm"], counts = masked(comm)
+    _add_counts(found, counts)
+    exe = read_link(base + "/exe")
+    if exe is None:
+        if ppid == 2 or pid == 2:
+            process["kernel_thread"] = True
+        else:
+            process["exe_unreadable"] = True
+    else:
+        process["exe_deleted"] = exe.endswith(" (deleted)")
+        process["exe_memfd"] = exe.startswith("/memfd:")
+        process["exe"], counts = masked(exe)
+        _add_counts(found, counts)
+    for key in ("cwd", "root"):
+        value = read_link(base + "/" + key)
+        if value is not None:
+            process[key], counts = masked(value)
+            _add_counts(found, counts)
+    cmdline, blocked = read_proc_bounded(base + "/cmdline", PROC_READ_BYTES)
+    if blocked:
+        process["memory_reads_blocked"] = True  # cmdline, environ and maps not read
+        cmdline = None
+    if cmdline:
+        args = cmdline.rstrip(b"\0").split(b"\0")
+        process["argc"] = len(args)
+        process["cmdline"], counts = masked(b" ".join(args))
+        _add_counts(found, counts)
+        process["cmdline_truncated"] = len(cmdline) >= PROC_READ_BYTES
+    environ = None
+    if not blocked:
+        environ, blocked = read_proc_bounded(base + "/environ", ENVIRON_BYTES)
+        if environ is not None and len(environ) >= ENVIRON_BYTES:
+            process["environ_truncated"] = True
+    loader = {}
+    for item in (environ or b"").split(b"\0"):
+        name, sep, value = item.partition(b"=")
+        if sep and name in LOADER_VARIABLES:
+            loader[name.decode()], counts = masked(value)
+            _add_counts(found, counts)
+    if loader:
+        process["loader_environment"] = loader
+    cgroup = read_proc(base + "/cgroup", 8192)
+    if cgroup:
+        process["cgroup"], counts = masked(
+            cgroup.decode("utf-8", "replace").strip().splitlines()[-1]
+        )
+        _add_counts(found, counts)
+    if not blocked:
+        describe_mappings(base, process, found)
+    net = read_link(base + "/ns/net")
+    if net:
+        process["netns"] = net
+    describe_open_files(run, base, process, found, sockets_of)
+    if found:
+        process["masked"] = found
+    return process
+
+
+def describe_mappings(base, process, found):
+    """Executable mappings from deleted files, memory-only files or scratch
+    places (a library injected with dlopen or ptrace shows here, not in the
+    environment). Only those paths, masked; nothing of the memory."""
+    data, blocked = read_proc_bounded(base + "/maps", MAPS_BYTES)
+    if blocked:
+        process["memory_reads_blocked"] = True
+        return
+    listed, seen = [], set()
+    for line in (data or b"").decode("utf-8", "replace").splitlines():
+        parts = line.split(None, 5)
+        if len(parts) < 6 or "x" not in parts[1]:
+            continue
+        target = parts[5]
+        if target in seen:
+            continue
+        if (
+            target.endswith(" (deleted)")
+            or target.startswith("/memfd:")
+            or target.startswith(SCRATCH_PREFIXES)
+        ):
+            seen.add(target)
+            text, counts = masked(target)
+            _add_counts(found, counts)
+            if len(listed) < MAX_MAPPINGS_LISTED:
+                listed.append(text)
+    if listed:
+        process["suspicious_mappings"] = listed
+
+
+def describe_open_files(run, base, process, found, sockets_of):
+    """Counts of a process's open files by kind, and the interesting ones:
+    deleted files, files in scratch places, memory-only files, and sockets
+    (tied to /proc/net's tables by inode)."""
+    try:
+        names = sorted(os.listdir(path(base + "/fd")), key=lambda n: (len(n), n))  # numeric
+    except OSError:
+        process["fds_unreadable"] = True
+        return
+    kinds, listed, std = {}, [], {}
+    for number, name in enumerate(names):
+        if number >= MAX_FDS_EXAMINED or (number & 0xFF == 0 and run.out_of_time()):
+            process["fds_truncated"] = True
+            break
+        target = read_link(base + "/fd/" + name)
+        if target is None:
+            kinds["unreadable"] = kinds.get("unreadable", 0) + 1
+            continue
+        if target.startswith("socket:["):
+            kind = "socket"
+            sockets_of.setdefault(target[8:-1], set()).add(process["pid"])
+        elif target.startswith("pipe:["):
+            kind = "pipe"
+        elif target.startswith("anon_inode:"):
+            kind = "anon_inode"
+        elif target.startswith("/memfd:"):
+            kind = "memfd"
+        else:
+            kind = "file"
+        kinds[kind] = kinds.get(kind, 0) + 1
+        if name in ("0", "1", "2"):
+            # A shell whose input or output is a socket: a reverse shell.
+            stream = {"kind": kind}
+            if kind == "socket":
+                stream["inode"] = target[8:-1]
+            std[name] = stream
+        interesting = (
+            kind == "memfd"
+            or target.endswith(" (deleted)")
+            or (kind == "file" and target.startswith(SCRATCH_PREFIXES))
+        )
+        if interesting and len(listed) < MAX_FDS_LISTED:
+            text, counts = masked(target)
+            _add_counts(found, counts)
+            listed.append({"fd": name, "target": text})
+    process["fds"] = kinds
+    if std:
+        process["std_streams"] = std
+    if listed:
+        process["open_files"] = listed
+
+
+def _address(hex_address):
+    """'0100007F:0016' -> ('127.0.0.1', 22): /proc/net writes each 32-bit
+    word of the address in the host's byte order."""
+    host, _, port = hex_address.partition(":")
+    raw = bytes.fromhex(host)
+    words = b"".join(
+        int.from_bytes(raw[i : i + 4], sys.byteorder).to_bytes(4, "big")
+        for i in range(0, len(raw), 4)
+    )
+    family = socket.AF_INET if len(words) == 4 else socket.AF_INET6
+    return socket.inet_ntop(family, words), int(port, 16)
+
+
+def _table_lines(absolute):
+    """(lines after the header, truncated) of a /proc/net table."""
+    data = read_proc(absolute, SOCKET_TABLE_BYTES)
+    if data is None:
+        return [], False
+    truncated = len(data) >= SOCKET_TABLE_BYTES
+    lines = data.decode("ascii", "replace").splitlines()[1:]
+    if truncated and lines:
+        lines.pop()  # cut part-way
+    return lines, truncated
+
+
+def read_sockets(run, module, sockets_of, namespaces):
+    """TCP, UDP, raw and packet sockets from each network namespace's
+    tables (read through one process in it), each with the processes
+    holding it. Returns (count, inodes seen, truncated)."""
+    count, seen, truncated = 0, set(), False
+    for netns, reader in sorted(namespaces.items()):
+        base = f"/proc/{reader}/net" if reader else "/proc/net"
+        for table in SOCKET_TABLES:
+            lines, cut = _table_lines(f"{base}/{table}")
+            truncated = truncated or cut
+            for line in lines:
+                run.check_time()
+                parts = line.split()
+                if len(parts) < 10:
+                    continue
+                try:
+                    local, remote = _address(parts[1]), _address(parts[2])
+                except (ValueError, OSError):
+                    continue
+                inode = parts[9]
+                seen.add(inode)
+                state = TCP_STATES.get(parts[3], parts[3]) if table.startswith("tcp") else None
+                run.stream.record(
+                    module,
+                    "socket",
+                    {
+                        "protocol": table,
+                        "netns": netns,
+                        "local": list(local),
+                        "remote": list(remote),
+                        "state": state,
+                        "uid": int(parts[7]) if parts[7].isdigit() else None,
+                        "inode": inode,
+                        "pids": sorted(sockets_of.get(inode, ())),
+                    },
+                )
+                count += 1
+        # Packet sockets (sniffers, and implants like BPFDoor): sk RefCnt
+        # Type Proto Iface R Rmem User Inode.
+        lines, cut = _table_lines(f"{base}/packet")
+        truncated = truncated or cut
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 9:
+                continue
+            inode = parts[8]
+            seen.add(inode)
+            run.stream.record(
+                module,
+                "socket",
+                {
+                    "protocol": "packet",
+                    "netns": netns,
+                    "type": parts[2],
+                    "ethertype": parts[3],
+                    "interface": parts[4],
+                    "uid": int(parts[7]) if parts[7].isdigit() else None,
+                    "inode": inode,
+                    "pids": sorted(sockets_of.get(inode, ())),
+                },
+            )
+            count += 1
+    return count, seen, truncated
+
+
+def _start_ticks(pid):
+    raw = read_proc(f"/proc/{pid}/stat", 4096)
+    try:
+        return int(parse_proc_stat(raw)[1][19]) if raw else None
+    except (ValueError, IndexError):
+        return None
+
+
+def probe_hidden(run, module, listed, threads, listed_at_ticks):
+    """Look up /proc/<pid> for every possible PID and report those that
+    exist but weren't in /proc's listing (a rootkit hides a process by
+    hooking the listing, not the lookup). Thread IDs answer too and are
+    skipped. A candidate is reported only if, at a re-check, it still
+    exists, is missing from a fresh listing, is a process (its Tgid is
+    itself) and started before the first listing — so a short-lived process
+    started meanwhile is never one. Returns (probed up to, upper end,
+    hidden PIDs)."""
+    current = (read_small("/proc/sys/kernel/pid_max") or "").strip()
+    pid_max = max(int(current) if current.isdigit() else 0, PID_MAX_LIMIT)
+    candidates, reached = [], 0
+    # Names looked up in the open /proc directory: millions of lookups, so
+    # no path is built or re-checked for each (/proc is the kernel's own).
+    proc = os.open(path("/proc"), os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        for pid in range(1, pid_max + 1):
+            if pid & 0xFFF == 0 and run.out_of_time():
+                break
+            reached = pid
+            if pid in listed or pid in threads:
+                continue
+            try:
+                os.stat(str(pid), dir_fd=proc, follow_symlinks=False)
+            except OSError:
+                continue
+            candidates.append(pid)
+    finally:
+        os.close(proc)
+    try:
+        fresh = {int(n) for n in os.listdir(path("/proc")) if n.isdigit()}
+    except OSError:
+        fresh = set()
+    hidden = []
+    for pid in candidates:
+        if pid in fresh:
+            continue  # listed now: it started after the first listing
+        status = read_small(f"/proc/{pid}/status")
+        if status is None:
+            continue  # gone: a short-lived process, not a hidden one
+        tgid = None
+        for line in status.splitlines():
+            if line.startswith("Tgid:"):
+                tgid = int(line.split()[1])
+        if tgid != pid:
+            continue  # a thread
+        started = _start_ticks(pid)
+        if started is None or listed_at_ticks is None or started >= listed_at_ticks:
+            continue  # started after the first listing
+        hidden.append(pid)
+    return reached, pid_max, hidden
+
+
+def module_processes(run):
+    """Every process from /proc (DESIGN.md §8.7): executable (deleted or
+    memory-only), working directory, root, parent, user, start and CPU time,
+    cgroup, network namespace, masked command line, only the loader's
+    environment variables, suspicious executable mappings, and open files;
+    a check for processes hidden from /proc's listing; and TCP, UDP, raw
+    and packet sockets in every network namespace with the processes
+    holding them. The listing and the probe each get a share of the time,
+    and the summary is always written."""
+    module = "processes"
+    boot_time = None
+    for line in (read_small("/proc/stat") or "").splitlines():
+        if line.startswith("btime "):
+            boot_time = int(line.split()[1])
+    ticks = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+    uptime = (read_small("/proc/uptime") or "").split()
+    listed_at_ticks = int(float(uptime[0]) * ticks) if uptime else None
+    names = os.listdir(path("/proc"))
+    listed = sorted(int(n) for n in names if n.isdigit())
+    sockets_of, threads, namespaces = {}, set(), {}
+    counts = {"processes": 0, "gone": 0, "threads": 0, "sockets": 0}
+    summary = {"listing_complete": False, "probe": None, "sockets_truncated": False}
+    # This process's own namespace, read through /proc/net, even when its
+    # name can't be read.
+    namespaces[read_link("/proc/self/ns/net") or "self"] = None
+    try:
+        with time_share(run, module, "listing", LISTING_TIME_SHARE):
+            for pid in listed[:MAX_PROCESSES]:
+                run.check_time()
+                process = describe_process(run, pid, boot_time, ticks, sockets_of)
+                if process is None:
+                    counts["gone"] += 1
+                    continue
+                try:
+                    tasks = {int(t) for t in os.listdir(path(f"/proc/{pid}/task")) if t.isdigit()}
+                except OSError:
+                    tasks = set()
+                threads |= tasks
+                counts["threads"] += len(tasks)
+                counts["processes"] += 1
+                if process.get("netns"):
+                    namespaces.setdefault(process["netns"], pid)
+                run.stream.record(module, "process", process)
+            else:
+                summary["listing_complete"] = len(listed) <= MAX_PROCESSES
+        with time_share(run, module, "hidden_process_probe", PROBE_TIME_SHARE):
+            reached, pid_max, hidden = probe_hidden(
+                run, module, set(listed), threads, listed_at_ticks
+            )
+            summary["probe"] = {
+                "reached": reached,
+                "upper_end": pid_max,
+                "complete": reached >= pid_max,
+                "hidden": len(hidden),
+            }
+            # Before the sockets, so a hidden process's sockets name it.
+            for pid in hidden:
+                details = describe_process(run, pid, boot_time, ticks, sockets_of) or {"pid": pid}
+                details["hidden_from_listing"] = True
+                run.stream.record(module, "hidden_process", details)
+        counts["sockets"], seen, summary["sockets_truncated"] = read_sockets(
+            run, module, sockets_of, namespaces
+        )
+        unmatched = {inode: sorted(pids) for inode, pids in sockets_of.items() if inode not in seen}
+        if unmatched:
+            # Sockets of other kinds (unix, netlink...) or in tables not read.
+            run.stream.record(module, "unmatched_sockets", {"count": len(unmatched)})
+    finally:
+        loadavg = (read_small("/proc/loadavg") or "").split()
+        kernel_tasks = None
+        if len(loadavg) >= 4 and "/" in loadavg[3]:
+            kernel_tasks = int(loadavg[3].split("/")[1])
+        summary.update(
+            {
+                "counts": counts,
+                "listed": len(listed),
+                "kernel_tasks": kernel_tasks,
+                "network_namespaces": len(namespaces),
+            }
+        )
+        run.stream.record(module, "process_summary", summary)
+
+
 # Collection modules, by name, in their default order.
 MODULES = {
     "host_facts": module_host_facts,
@@ -5494,6 +6057,7 @@ MODULES = {
     "package_verify": module_package_verify,
     "system_files": module_system_files,
     "unusual_files": module_unusual_files,
+    "processes": module_processes,
 }
 
 

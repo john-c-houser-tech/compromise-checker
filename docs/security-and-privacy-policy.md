@@ -143,6 +143,10 @@ include access tokens, and sometimes secrets typed into commands.
   - user names in failed-login records and messages that don't match a
     local account (a password is sometimes typed into the user-name box by
     mistake);
+  - passwords given to command-line options that take one without saying
+    so (for example `sshpass -p`, `redis-cli -a`, `curl -u user:password`,
+    `docker login -p`, openssl's `pass:` and `htpasswd -b`), and values
+    after key names such as `aws_secret_access_key`;
   - well-known credential formats, including cloud access keys, GitHub,
     Slack, Stripe and Anthropic API keys, and signed web tokens (JWTs).
 

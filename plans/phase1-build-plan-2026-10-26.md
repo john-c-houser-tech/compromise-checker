@@ -99,6 +99,10 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
   environment. Sockets per process from `/proc/net` and file descriptors.
 - Hidden-process check: the `/proc` listing compared with `ps`, and a
   bounded probe of process IDs that `/proc` doesn't list.
+  *As built (1.5b):* `ps` isn't on the command allow-list and would be fooled
+  by the same `readdir` hook, so the check is the probe of every PID up to
+  `pid_max` (thread IDs skipped, re-checked against a fresh listing) and the
+  kernel's own task count from `/proc/loadavg`.
 - Set-user-ID and set-group-ID files and file capabilities outside the
   system directories 1.4c walks (`/var`, `/tmp`, `/dev/shm`, `/home`,
   `/root`, `/srv`): noted in the 1.4c review.

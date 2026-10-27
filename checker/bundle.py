@@ -43,6 +43,20 @@ class Consumer(Protocol):
     def trailer(self, trailer: Trailer) -> None: ...
 
 
+class Tee:
+    """Several consumers fed by one walk."""
+
+    def __init__(self, *consumers: Consumer) -> None:
+        self.consumers = consumers
+
+    def __getattr__(self, name: str):
+        def call(*args: Any) -> None:
+            for consumer in self.consumers:
+                getattr(consumer, name)(*args)
+
+        return call
+
+
 class _Walk:
     """The writer pyrage decrypts into: decompresses, checks the protocol,
     joins each source's chunks into whole lines and calls the consumer."""

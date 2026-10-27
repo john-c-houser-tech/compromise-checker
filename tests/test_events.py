@@ -14,7 +14,7 @@ import pytest
 from pyrage import x25519
 
 from checker import cli
-from checker.analysis import load_events, parse_bundle, store_events
+from checker.analysis import load_events, parse_bundle, store_parsed
 from checker.bundle import walk_bundle
 from checker.events import (
     Event,
@@ -639,7 +639,7 @@ def test_events_from_a_bundle(stored_bundle):
 def test_events_are_stored_encrypted_and_reloaded(stored_bundle, tmp_path):
     store, row, identity, config = stored_bundle
     parsed = parse_bundle(row, identity)
-    target = store_events(store, row, config.recipients, parsed)
+    target = store_parsed(store, row, config.recipients, parsed)
     assert b"scanner" not in target.read_bytes()  # encrypted
     again = load_events(store, row, identity)
     assert [e.as_dict() for e in again.events] == [e.as_dict() for e in parsed.events]
@@ -897,11 +897,11 @@ def test_a_replaced_bundle_is_not_parsed(stored_bundle, tmp_path):
 
 def test_a_new_parse_is_written_before_it_is_recorded(stored_bundle):
     store, row, identity, config = stored_bundle
-    first = store_events(store, row, config.recipients, parse_bundle(row, identity))
+    first = store_parsed(store, row, config.recipients, parse_bundle(row, identity))
     assert oct(first.stat().st_mode & 0o777) == "0o600"
     parsed = parse_bundle(row, identity)
     parsed.events.pop()
-    second = store_events(store, row, config.recipients, parsed)
+    second = store_parsed(store, row, config.recipients, parsed)
     assert second != first and not first.exists()  # replaced only once recorded
     assert len(load_events(store, row, identity).events) == len(parsed.events)
     assert not list(Path(row["path"]).parent.glob("*.tmp"))

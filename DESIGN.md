@@ -378,7 +378,8 @@ are files; everything else is in the database.
   window since the last run, with an overlap.
 - An operator can **accept** a snapshot as the new baseline after reviewing a
   change (for example, after a planned upgrade). Acceptance is recorded with
-  who and why.
+  who and why. Until then, the baseline is the host's oldest analysed
+  snapshot, so slow changes show against it (docs/snapshots.md).
 - A baseline taken from a host that was already compromised would hide the
   compromise. The first-run report therefore runs every check that does not
   need a baseline (integrity, anti-forensics, live process checks, known-bad

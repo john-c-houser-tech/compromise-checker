@@ -11,10 +11,14 @@ where the kernel allows. Anything that is not a regular file is described
 it leaves the server (masking rules version 2, listed in the policy §7).
 Masking works on whole lines, so a secret can never be split across two
 reads. A private key block runs only as long as its lines look like key
-material (base64, PEM headers, blank lines; at most 256 lines): the first
-other line ends it and is masked normally, so a fake `BEGIN … PRIVATE KEY`
-line can't hide the log lines after it; such a block is counted as
-`private_key_unterminated`. Two cases fail closed — nothing is sent rather than risk an unmasked
+material — a base64 token alone on the line (`=` only as end padding), a
+PEM header or a blank line, or, for a key logged line by line, one base64
+token straight after the same program tag as its `BEGIN` line (the log
+prefix is kept and masked like any text) — and for at most 256 lines. The
+first other line ends it and is masked normally, so a fake `BEGIN … PRIVATE
+KEY` line can't hide the log lines after it; such a block is counted as
+`private_key_unterminated`. An unfinished last line cut off by a time limit
+is never sent, since masking might not recognise a secret's missing end. Two cases fail closed — nothing is sent rather than risk an unmasked
 secret: a line longer than 1 MiB is replaced by a marker giving its length,
 and a compressed file in a format the server's Python cannot open (for
 example `.zst`) is described as unreadable instead of being sent raw.

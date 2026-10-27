@@ -419,6 +419,45 @@ class MaskingTests(unittest.TestCase):
             b"Oct 26 app[1]: \n",
         )
 
+    def test_fake_key_start_cannot_hide_assignments(self):
+        # "=" counts as base64 only as padding at the end.
+        for line in (b"COMMAND=/bin/bash\n", b"sudo[10]: root : COMMAND=/bin/bash\n"):
+            masked, counts = self.mask(b"-----BEGIN RSA PRIVATE KEY-----\n" + line)
+            self.assertEqual(masked, b"[MASKED:private_key]\n" + line, line)
+            self.assertEqual(counts["private_key_unterminated"], 1)
+
+    def test_short_last_line_of_a_logged_key_is_masked(self):
+        text = (
+            b"Oct 26 app[1]: -----BEGIN PRIVATE KEY-----\n"
+            b"Oct 26 app[1]: MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n"
+            b"Oct 26 app[1]: AQI=\n"
+            b"Oct 26 app[1]: -----END PRIVATE KEY-----\n"
+        )
+        masked, counts = self.mask(text)
+        self.assertNotIn(b"AQI=", masked)
+        self.assertEqual(counts, {"private_key": 1})
+
+    def test_other_programs_lines_end_a_logged_key(self):
+        text = b"Oct 26 app[1]: -----BEGIN PRIVATE KEY-----\nOct 26 other[2]: QUFBQUFB\n"
+        masked, counts = self.mask(text)
+        self.assertEqual(
+            masked, b"Oct 26 app[1]: [MASKED:private_key]\nOct 26 other[2]: QUFBQUFB\n"
+        )
+        self.assertEqual(counts["private_key_unterminated"], 1)
+
+    def test_kept_log_prefix_is_masked_too(self):
+        text = (
+            b"app[1]: -----BEGIN PRIVATE KEY-----\n"
+            b"password=hunter2 app[1]: MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n"
+        )
+        masked, counts = self.mask(text)
+        self.assertEqual(
+            masked,
+            b"app[1]: [MASKED:private_key]\n"
+            b"password=[MASKED:password] app[1]: [MASKED:private_key]\n",
+        )
+        self.assertEqual(counts["password"], 1)
+
     def test_quoted_values_are_masked_whole(self):
         for text in (
             b'password="first second" x\n',
@@ -705,6 +744,14 @@ class CommandTests(FixtureRoot):
         ((_, _, end),) = sources(records).values()
         self.assertEqual(end["stderr"], "ok\n")
         self.assertTrue(end["stderr_truncated"])
+
+    def test_output_line_cut_by_the_deadline_is_withheld(self):
+        self.install(b"#!/bin/sh\nprintf 'ok\\nurl https://u:hunter2-partial'\nexec sleep 30\n")
+        _, timed_out, records = self.run_command(seconds=1)
+        self.assertTrue(timed_out)
+        ((_, content, end),) = sources(records).values()
+        self.assertEqual(content, b"ok\n")
+        self.assertEqual(end["truncated_reason"], "time")
 
     def test_endless_line_stops_at_the_byte_cap(self):
         self.install(b"#!/bin/sh\nexec head -c 5000000 /dev/zero\n")

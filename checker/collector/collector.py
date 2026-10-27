@@ -187,12 +187,13 @@ MASKING_RULES = [
 _PEM_BEGIN = re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 _PEM_END = re.compile(rb"-----END [A-Z0-9 ]*PRIVATE KEY-----")
 # Inside a key block, only lines that look like key material stay in it: a
-# base64 run alone on the line, or a long one ending a line that has a log
-# prefix (a key logged line by line); a PEM header; or a blank line. Any
+# base64 token alone on the line; a PEM header; a blank line; or, when the
+# key began after a log prefix (a key logged line by line), a line whose
+# message is one base64 token straight after that same program tag. Any
 # other line ends the block and is masked normally, so a fake "BEGIN" line
 # can hide nothing but base64 — never the log lines after it.
-_KEY_LINE = re.compile(rb"^(\s*)[A-Za-z0-9+/=]+(\s*)$")
-_KEY_TAIL = re.compile(rb"^(.*\s)[A-Za-z0-9+/=]{16,}(\s*)$")
+_BASE64 = rb"[A-Za-z0-9+/]+={0,2}"  # "=" only as padding at the end
+_KEY_LINE = re.compile(rb"^(\s*)" + _BASE64 + rb"(\s*)$")
 _KEY_HEADER = re.compile(rb"(?:^|\s)(?:Proc-Type|DEK-Info):\s")
 # Longer than any real PEM private key (a 16384-bit RSA key is under 200).
 MAX_KEY_LINES = 256
@@ -205,6 +206,7 @@ class Masker:
         self.counts = {}
         self._in_key_block = False
         self._key_lines = 0
+        self._key_tail = None  # continuation pattern for a key logged after a prefix
 
     def _count(self, kind, n=1):
         self.counts[kind] = self.counts.get(kind, 0) + n
@@ -217,12 +219,24 @@ class Masker:
         if not data.strip() or _KEY_HEADER.search(data) or _KEY_LINE.match(data):
             self._key_lines += 1
             return b""  # part of the key, already replaced by its marker
-        match = _KEY_TAIL.match(data)
+        match = self._key_tail.match(data) if self._key_tail else None
         if match is None:
             return None
-        # A key logged line by line: keep the log prefix, which is evidence.
+        # A key logged line by line: keep the log prefix, which is evidence,
+        # masked by the ordinary rules like any other text.
         self._key_lines += 1
-        return match.group(1) + MASK % b"private_key" + match.group(2)
+        return self._apply_rules(match.group(1)) + MASK % b"private_key" + match.group(2)
+
+    def _start_key_block(self, prefix):
+        """Enter a key block. With a log prefix before the BEGIN marker, its
+        last word (the program tag, such as "app[1]:") is what continuation
+        lines must carry."""
+        self._in_key_block, self._key_lines, self._key_tail = True, 0, None
+        words = prefix.split()
+        if words:
+            self._key_tail = re.compile(
+                rb"^((?:.*\s)?" + re.escape(words[-1]) + rb"\s+)" + _BASE64 + rb"(\s*)$"
+            )
 
     def oversized(self, length):
         """Stand-in for a line too long to mask safely."""
@@ -257,10 +271,13 @@ class Masker:
             if end:
                 rest = data[end.end() :]
             else:
-                self._in_key_block, self._key_lines = True, 0
+                self._start_key_block(data[: begin.start()])
                 rest = b"\n" if data.endswith(b"\n") else b""
             # The text before the key still goes through every rule below.
             data = data[: begin.start()] + MASK % b"private_key" + rest
+        return self._apply_rules(data)
+
+    def _apply_rules(self, data):
         for kind, pattern in MASKING_RULES:
             marker = MASK % kind.encode("ascii")
             pieces, last, hits = [], 0, 0
@@ -468,6 +485,10 @@ def pump_lines(run, writer, reader, transform=None):
         line = reader.readline(MAX_LINE + 1)
         if not line:
             return None
+        if not line.endswith(b"\n") and len(line) <= MAX_LINE and run.out_of_time():
+            # Cut off by the deadline (a command killed mid-line): masking
+            # might not recognise a secret's unfinished end, so withhold it.
+            return "time"
         length = len(line)
         if length > MAX_LINE:
             # Too long to mask safely: skip to its end, send a marker.

@@ -4,6 +4,8 @@ disk, and walked record by record and line by line (DESIGN.md §6)."""
 from __future__ import annotations
 
 import base64
+import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -36,6 +38,7 @@ class Consumer(Protocol):
     def source_start(self, start: SourceStart) -> None: ...
     def line(self, start: SourceStart, line: bytes) -> None: ...
     def source_end(self, start: SourceStart, end: SourceEnd) -> None: ...
+    def source_cut(self, start: SourceStart) -> None: ...  # the stream ended inside it
     def error(self, error: Error) -> None: ...
     def trailer(self, trailer: Trailer) -> None: ...
 
@@ -49,8 +52,10 @@ class _Walk:
         self.reader = StreamReader()
         self.open: dict[int, tuple[SourceStart, bytearray]] = {}
         self.problem: str | None = None
+        self.sha256 = hashlib.sha256()
 
     def write(self, data: bytes) -> int:
+        self.sha256.update(data)
         if self.problem is None:
             try:
                 for item in self.reader.feed(data):
@@ -63,16 +68,18 @@ class _Walk:
         pass
 
     def finish(self) -> None:
-        if self.problem is not None:
-            return
-        try:
-            for item in self.reader.finish():
-                self._dispatch(item)
-        except ProtocolError as exc:
-            self.problem = str(exc)
-        for start, pending in self.open.values():  # cut off: what arrived still counts
+        if self.problem is None:
+            try:
+                for item in self.reader.finish():
+                    self._dispatch(item)
+            except ProtocolError as exc:
+                self.problem = str(exc)
+        # Sources the stream ended inside (cut off, or broken part-way): what
+        # arrived still counts, and the consumer is told they were cut.
+        for start, pending in self.open.values():
             if pending:
                 self.consumer.line(start, bytes(pending))
+            self.consumer.source_cut(start)
         self.open.clear()
 
     def _dispatch(self, item: Any) -> None:
@@ -109,14 +116,42 @@ class _Walk:
             self.consumer.trailer(item)
 
 
-def walk_bundle(path: Path, identity: x25519.Identity, consumer: Consumer) -> str | None:
-    """Decrypt a bundle into `consumer`. Returns the protocol problem that
-    stopped the walk early, if any (what came before it was delivered)."""
+class _HashingReader:
+    """The encrypted file, hashed as pyrage reads it."""
+
+    def __init__(self, f) -> None:
+        self._f = f
+        self.sha256 = hashlib.sha256()
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._f.read(size)
+        self.sha256.update(data)
+        return data
+
+    def readinto(self, buffer) -> int:
+        data = self._f.read(len(buffer))
+        buffer[: len(data)] = data
+        self.sha256.update(data)
+        return len(data)
+
+
+@dataclass
+class Walked:
+    problem: str | None  # the protocol problem that stopped the walk early, if any
+    ciphertext_sha256: str
+    plaintext_sha256: str
+
+
+def walk_bundle(path: Path, identity: x25519.Identity, consumer: Consumer) -> Walked:
+    """Decrypt a bundle into `consumer` (what came before any problem is
+    delivered), hashing what was read so it can be checked against the
+    hashes recorded when the bundle was stored."""
     walk = _Walk(consumer)
     try:
-        with open(path, "rb") as source:
+        with open(path, "rb") as f:
+            source = _HashingReader(f)
             pyrage.decrypt_io(source, walk, [identity])
     except (pyrage.DecryptError, OSError) as exc:
         raise EvidenceError(f"cannot decrypt {path}: {exc}") from exc
     walk.finish()
-    return walk.problem
+    return Walked(walk.problem, source.sha256.hexdigest(), walk.sha256.hexdigest())

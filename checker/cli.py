@@ -446,6 +446,12 @@ def cmd_events(args: argparse.Namespace) -> int:
     )
     if summary.get("problem"):
         print(f"Problem    {summary['problem']}")
+    if summary.get("own_login_found") is False:
+        print(
+            "Note       this tool's own SSH login was not found in the logs, so it and what"
+            " followed from it are listed as findings (a NAT between the controller and"
+            " the host changes the source port it is recognised by)"
+        )
     for event in parsed.events:
         if event.own_session and not args.own:
             continue

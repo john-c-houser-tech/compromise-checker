@@ -7,8 +7,10 @@ on the host is recognised and marked (`own_session`) rather than dropped."""
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
+import shlex
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
@@ -40,6 +42,7 @@ class Event:
     program: str | None = None
     line: str = ""
     own_session: bool = False
+    also_in: list[str] = field(default_factory=list)  # other sources that logged it too
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -71,24 +74,48 @@ _RULES: list[tuple[str | None, re.Pattern[str], str]] = [
         "ssh.invalid_user",
     ),
     (
+        "sshd",
+        re.compile(
+            r"^(?:error: )?maximum authentication attempts exceeded for (?P<invalid>invalid user )?"
+            r"(?P<user>.*?) from (?P<address>\S+) port (?P<port>\d+)"
+        ),
+        "ssh.login.too_many_failures",
+    ),
+    (
+        "sshd",
+        re.compile(
+            r"^(?:Connection closed by|Disconnected from) (?:authenticating|(?P<invalid>invalid)) "
+            r"user (?P<user>.*?) (?P<address>\S+) port (?P<port>\d+)"
+        ),
+        "ssh.login.abandoned",
+    ),
+    (
         None,
         re.compile(
             r"^pam_unix\((?P<service>[^:]+):session\): session (?P<action>opened|closed) "
-            r"for user (?P<user>[^\s(]+)"
+            r"for user (?P<user>[^\s(]+)(?:\(uid=\d+\))?(?: by (?P<by>[^\s(]+))?"
         ),
         "session",
     ),
     (
         None,
-        re.compile(r"^pam_unix\((?P<service>[^:]+):auth\): authentication failure;(?P<rest>.*)$"),
+        re.compile(
+            r"^(?P<module>pam_unix|pam_sss)\((?P<service>[^:]+):auth\): authentication failure;"
+            r"(?P<rest>.*)$"
+        ),
         "auth.failure",
     ),
-    ("sudo", re.compile(r"^\s*(?P<user>\S+) : user NOT in sudoers"), "sudo.denied"),
     (
+        # A refusal or failure puts its reason first ("3 incorrect password
+        # attempts", "command not allowed", "user NOT in sudoers").
         "sudo",
-        re.compile(r"^\s*(?P<user>\S+) : (?P<details>(?:\S+=[^;]*; )*)COMMAND=(?P<command>.*)$"),
+        re.compile(
+            r"^\s*(?P<user>\S+) : (?:(?P<reason>[^;=]+?) ; )?(?P<details>(?:\S+=[^;]*; )*)"
+            r"COMMAND=(?P<command>.*)$"
+        ),
         "sudo.command",
     ),
+    ("sudo", re.compile(r"^\s*(?P<user>\S+) : (?P<reason>user NOT in sudoers)"), "sudo.denied"),
     ("su", re.compile(r"^FAILED SU \(to (?P<target>\S+)\) (?P<user>\S+)"), "su.failed"),
     ("su", re.compile(r"^\(to (?P<target>\S+)\) (?P<user>\S+) on (?P<tty>\S+)"), "su.switch"),
     (
@@ -102,22 +129,58 @@ _RULES: list[tuple[str | None, re.Pattern[str], str]] = [
         re.compile(r"^add '(?P<user>[^']+)' to (?:shadow )?group '(?P<group>[^']+)'"),
         "group.member_added",
     ),
+    (
+        "usermod",
+        re.compile(r"^delete '(?P<user>[^']+)' from (?:shadow )?group '(?P<group>[^']+)'"),
+        "group.member_removed",
+    ),
+    (
+        "usermod",
+        re.compile(r"^change user name '(?P<old_user>[^']+)' to '(?P<user>[^']+)'"),
+        "account.renamed",
+    ),
+    ("usermod", re.compile(r"^(?P<action>lock|unlock) user '(?P<user>[^']+)'"), "account.lock"),
     ("usermod", re.compile(r"^change user '(?P<user>[^']+)'"), "account.modified"),
+    (
+        "gpasswd",
+        re.compile(r"^user (?P<user>\S+) added by (?P<by>\S+) to group (?P<group>\S+)"),
+        "group.member_added",
+    ),
+    (
+        "gpasswd",
+        re.compile(r"^user (?P<user>\S+) removed by (?P<by>\S+) from group (?P<group>\S+)"),
+        "group.member_removed",
+    ),
+    (
+        "gpasswd",
+        re.compile(r"^members of group (?P<group>\S+) set by (?P<by>\S+) to (?P<members>.*)$"),
+        "group.members_set",
+    ),
     ("groupadd", re.compile(r"^new group: name=(?P<group>[^,]+)"), "group.created"),
     (None, re.compile(r"password changed for (?P<user>\S+)"), "account.password_changed"),
     (
         "systemd-logind",
-        re.compile(r"^New session (?P<session>\S+) of user (?P<user>[^\s.]+)"),
+        # systemd 256 and later quote both: New session '5' of user 'jch' with …
+        re.compile(
+            r"^New session '?(?P<session>[^\s']+?)'? of user '?(?P<user>[^\s']+?)'?\.?(?:\s|$)"
+        ),
         "logind.session_new",
     ),
     (
         "systemd-logind",
-        re.compile(r"^(?:Removed session|Session) (?P<session>[^\s.]+)(?: logged out)?"),
+        re.compile(
+            r"^(?:Removed session '?(?P<session>[^\s'.]+)"
+            r"|Session '?(?P<session2>[^\s'.]+)'? logged out)"
+        ),
         "logind.session_end",
     ),
     (
         "systemd-logind",
-        re.compile(r"^(?:System is (?P<what>rebooting|powering down)|Power key pressed)"),
+        re.compile(
+            r"^(?:System is (?P<what>rebooting|powering down)"
+            r"|The system will (?P<what2>reboot|power off|halt|suspend) now"
+            r"|Power key pressed)"
+        ),
         "system.shutdown_requested",
     ),
     (
@@ -174,12 +237,22 @@ def classify(program: str | None, message: str) -> tuple[str, dict[str, Any]] | 
         fields = {k: v for k, v in match.groupdict().items() if v is not None}
         if "port" in fields and fields["port"].isdigit():
             fields["port"] = int(fields["port"])
+        if kind == "system.shutdown_requested" and "what2" in fields:
+            fields["what"] = fields.pop("what2")
+        if kind == "logind.session_end" and "session2" in fields:
+            fields["session"] = fields.pop("session2")
+        if kind == "account.lock":
+            kind = "account.locked" if fields.pop("action") == "lock" else "account.unlocked"
         if kind == "sudo.command":
+            reason = fields.get("reason", "")
+            if reason:  # refused or failed: the command did not run
+                failed = "incorrect password" in reason or "password is required" in reason
+                kind = "sudo.failed" if failed else "sudo.denied"
             details = dict(_SUDO_DETAIL.findall(fields.pop("details", "") + " ;"))
             # sudo's USER= is who the command runs as, not who ran sudo.
             names = {"TTY": "tty", "PWD": "pwd", "USER": "runas"}
             fields.update({names[k]: v.strip() for k, v in details.items()})
-        if kind == "ssh.login.failed":
+        if kind in ("ssh.login.failed", "ssh.login.too_many_failures", "ssh.login.abandoned"):
             fields["invalid_user"] = bool(fields.pop("invalid", None))
         if kind == "session":
             kind = "session." + fields.pop("action")
@@ -204,28 +277,42 @@ def host_zone(localtime_link: str | None) -> tuple[tzinfo, bool]:
 
 def resolve_syslog_years(
     parsed: list[tuple[int, int, str]], newest: datetime, zone: tzinfo
-) -> list[datetime | None]:
-    """Years for traditional syslog dates (no year). Lines are in time order
-    and the last is no later than the file's modification time (`newest`),
-    so walking back from the end, the year steps back whenever the month
-    goes up (December before January) — and a last line dated after the
-    file's time belongs to the year before."""
-    out: list[datetime | None] = [None] * len(parsed)
+) -> list[tuple[datetime | None, bool]]:
+    """Years for traditional syslog dates (no year), each with whether it is
+    uncertain. Lines are in time order and the last is no later than the
+    file's modification time (`newest`), so walking back from the end, the
+    year steps back whenever the month goes up (December before January),
+    and a last line dated after the file's time belongs to the year before.
+
+    Only December before January is a sure year boundary: any other step
+    back (a log quiet across New Year, or a clock that jumped, as on a VM
+    that boots on a wrong date until NTP corrects it), a line dated after
+    the one following it in the same month, and a last line more than 31
+    days before the file's time mark the times from there back uncertain."""
+    out: list[tuple[datetime | None, bool]] = [(None, True)] * len(parsed)
     local_newest = newest.astimezone(zone)
-    year, later_month = local_newest.year, None
+    year, later, uncertain = local_newest.year, None, False
     for i in range(len(parsed) - 1, -1, -1):
         month, day, clock = parsed[i]
-        if later_month is None:
+        if later is None:
             if month > local_newest.month:
                 year -= 1
-        elif month > later_month:
+                uncertain = month != 12 or local_newest.month != 1
+        elif month > later[0]:
             year -= 1
-        later_month = month
+            uncertain = uncertain or (month, later[0]) != (12, 1)
+        elif (month, day, clock) > later:
+            uncertain = True  # out of order within a month: the clock went back
+        later = (month, day, clock)
         try:
             hour, minute, second = (int(x) for x in clock.split(":"))
-            out[i] = datetime(year, month, day, hour, minute, second, tzinfo=zone)
+            moment = datetime(year, month, day, hour, minute, second, tzinfo=zone)
         except ValueError:  # 29 February in the wrong year, a damaged line
-            out[i] = None
+            out[i] = (None, True)
+            continue
+        if i == len(parsed) - 1 and local_newest - moment > timedelta(days=31):
+            uncertain = True
+        out[i] = (moment, uncertain)
     return out
 
 
@@ -250,8 +337,9 @@ class EventBuilder:
         self.offset = timedelta(0)
         self.offset_known = False
         self.problems: list[str] = []
-        self._syslog: dict[int, list[tuple[tuple[int, int, str], dict[str, Any]]]] = {}
-        self._raw_lines: dict[int, int] = {}
+        # Per open auth_log source: the classified lines with traditional
+        # syslog dates, waiting for the source's end to learn their years.
+        self._syslog: dict[int, list[tuple[tuple[int, int, str], tuple]]] = {}
 
     # Consumer interface
     def manifest(self, manifest: Manifest) -> None:
@@ -286,6 +374,10 @@ class EventBuilder:
         if start.module == "auth_log":
             self._flush_syslog(start)
 
+    def source_cut(self, start: SourceStart) -> None:
+        if start.module == "auth_log":
+            self._flush_syslog(start, cut=True)
+
     def error(self, error: Error) -> None:
         pass
 
@@ -294,6 +386,7 @@ class EventBuilder:
 
     # Helpers
     def _add(self, moment, source, kind, fields, program=None, line=""):
+        """Add one event. Classified fields are this event's own dict."""
         corrected = moment - self.offset if (moment is not None and self.offset_known) else moment
         self.events.append(
             Event(
@@ -319,13 +412,20 @@ class EventBuilder:
             return
         match = _SYSLOG.match(text)
         if match and match["mon"] in _MONTHS:
+            # Classified now, so only lines that are events wait for their year.
+            found = classify(match["prog"], match["msg"])
+            if found is None:
+                return
             key = (_MONTHS[match["mon"]], int(match["day"]), match["time"])
-            self._syslog[start.source_id].append((key, {"match": match.groupdict(), "text": text}))
+            pending = (match["prog"], match["pid"], found, text[:MAX_EVENT_LINE])
+            self._syslog.setdefault(start.source_id, []).append((key, pending))
 
-    def _flush_syslog(self, start: SourceStart) -> None:
+    def _flush_syslog(self, start: SourceStart, cut: bool = False) -> None:
         pending = self._syslog.pop(start.source_id, [])
         if not pending:
             return
+        # A cut-off source has no later line than its last that arrived;
+        # its modification time still bounds it.
         mtime = (start.meta or {}).get("mtime")
         try:
             newest = datetime.fromisoformat(mtime) if mtime else None
@@ -337,14 +437,22 @@ class EventBuilder:
             newest = datetime.now(UTC)
         years = resolve_syslog_years([key for key, _ in pending], newest, self.zone)
         source = f"auth_log:{start.name}"
-        for moment, (_, item) in zip(years, pending, strict=True):
-            m = item["match"]
-            self._message(moment, source, m["prog"], m["msg"], m["pid"], item["text"])
+        for (moment, uncertain), (_, (program, pid, found, text)) in zip(
+            years, pending, strict=True
+        ):
+            extra: dict[str, Any] = {"year_inferred": True}
+            if uncertain:
+                extra["time_uncertain"] = True
+            if cut:
+                extra["source_cut"] = True
+            self._emit(moment, source, program, found, pid, text, extra)
 
     def _message(self, moment, source, program, message, pid, text, extra=None):
         found = classify(program, message)
-        if found is None:
-            return
+        if found is not None:
+            self._emit(moment, source, program, found, pid, text, extra)
+
+    def _emit(self, moment, source, program, found, pid, text, extra=None):
         kind, fields = found
         if pid:
             fields.setdefault("pid", int(pid))
@@ -381,8 +489,11 @@ class EventBuilder:
         for key, name in (("_AUDIT_SESSION", "audit_session"), ("_BOOT_ID", "boot_id")):
             if isinstance(entry.get(key), str):
                 extra[name] = entry[key]
-        if isinstance(entry.get("_SYSTEMD_UNIT"), str):
-            extra["systemd_unit"] = entry["_SYSTEMD_UNIT"]
+        # Fields the journal itself sets ("trusted"): who really logged it,
+        # whatever name the message gives itself.
+        for key, name in (("_SYSTEMD_UNIT", "systemd_unit"), ("_COMM", "comm"), ("_UID", "uid")):
+            if isinstance(entry.get(key), str):
+                extra[name] = entry[key]
         pid = entry.get("SYSLOG_PID") or entry.get("_PID")
         pid = pid if isinstance(pid, str) and pid.isdigit() else None
         self._message(moment, start.module, program, message, pid, message, extra)
@@ -433,16 +544,106 @@ class EventBuilder:
         self._add(moment, f"login_records:{path}", kind, fields)
 
 
+# --- One record logged to several places -------------------------------------------------
+
+# Fields only one kind of source carries, or that describe how an event was
+# read rather than what was logged: left out when comparing.
+_SOURCE_ONLY = {
+    "audit_session",
+    "boot_id",
+    "systemd_unit",
+    "comm",
+    "uid",
+    "year_inferred",
+    "time_uncertain",
+    "source_cut",
+}
+
+
+def merge_duplicates(events: list[Event]) -> list[Event]:
+    """The same record often reaches a bundle twice or three times: sshd and
+    sudo lines in both /var/log/secure (or auth.log) and the journal, logind
+    lines in both journal reads. Events alike to the second, in type,
+    process and fields are one record: the source that has the most of them
+    is kept (the journal, on a tie, for its trusted fields) and the others
+    are named in `also_in`. Counting per source keeps real repeats."""
+    groups: dict[tuple, dict[str, list[Event]]] = {}
+    alone: list[Event] = []
+    for event in events:
+        if event.time is None:
+            alone.append(event)
+            continue
+        fields = {k: v for k, v in event.fields.items() if k not in _SOURCE_ONLY}
+        key = (event.time[:19], event.type, json.dumps(fields, sort_keys=True, default=str))
+        groups.setdefault(key, {}).setdefault(event.source, []).append(event)
+    kept = alone
+    for by_source in groups.values():
+        best = max(
+            by_source, key=lambda src: (len(by_source[src]), not src.startswith("auth_log:"), src)
+        )
+        others = sorted(src for src in by_source if src != best)
+        for event in by_source[best]:
+            event.also_in = others
+            kept.append(event)
+    return kept
+
+
 # --- The tool's own session ---------------------------------------------------------------
 
 SELF_WINDOW = timedelta(minutes=5)
+# How soon after its own SSH login a systemd user manager it started logs.
+_USER_MANAGER_DELAY = timedelta(seconds=30)
+
+
+def _collector_command(session: dict[str, Any]) -> tuple[str, str] | None:
+    """(python's file name, the arguments after it) of the collector's
+    command, as sudo logs it: the command resolved to a full path, then the
+    arguments joined by spaces."""
+    command = session.get("command")
+    if not command:
+        return None
+    argv = shlex.split(command)
+    if "--" in argv:
+        argv = argv[argv.index("--") + 1 :]
+    if len(argv) < 2:
+        return None
+    return argv[0].rsplit("/", 1)[-1], " ".join(argv[1:])
+
+
+def _is_collector(logged: str, expected: tuple[str, str] | None) -> bool:
+    if expected is None:  # a session stored before commands were recorded
+        program, _, args = logged.partition(" ")
+        return program.rsplit("/", 1)[-1].startswith("python") and (
+            args == "-I -B -" or args.startswith('-I -B -c import sys;sys.stderr.write("[checker-')
+        )
+    name, args = expected
+    head, sep, tail = logged.partition(" ")
+    return bool(sep) and tail == args and head.rsplit("/", 1)[-1] == name
+
+
+def _public(address: str | None) -> bool:
+    try:
+        return address is not None and ipaddress.ip_address(address).is_global
+    except ValueError:
+        return False
 
 
 def mark_own_session(events: list[Event], session: dict[str, Any] | None) -> int:
-    """Mark the events the tool's own session caused: its SSH login (by key
-    fingerprint or source port), its PAM and logind sessions, its sudo of
-    the collector, its login records, and journal entries in its audit
-    session. Returns how many were marked."""
+    """Mark the events the tool's own connection caused, each tied to that
+    connection rather than to its account or time alone:
+
+    - its SSH login: the session's user, from its source port (and address,
+      when the controller's own is public, so no NAT can change it), with
+      the key that logged in;
+    - the PAM session (and any login record) of that sshd process;
+    - the logind session whose number is the audit session the journal
+      itself gave that PAM session — never a number read from a message —
+      and its session scope's start and stop;
+    - its sudo of exactly the collector's command (in that audit session,
+      when the journal says), and that sudo process's PAM session;
+    - a systemd user manager for the user starting within seconds of it.
+
+    Returns how many were marked."""
     if not session:
         return 0
     user = session.get("user")
@@ -456,47 +657,112 @@ def mark_own_session(events: list[Event], session: dict[str, Any] | None) -> int
     if ended.tzinfo is None:
         ended = ended.replace(tzinfo=UTC)
     low, high = started - SELF_WINDOW, ended + SELF_WINDOW
-    fingerprints = {session.get("client_key_fingerprint")} | set(
-        session.get("offered_key_fingerprints") or []
-    )
-    fingerprints.discard(None)
     port = session.get("local_port")
-    marked = 0
-    audit_sessions: set[str] = set()
+    address = session.get("local_address") if _public(session.get("local_address")) else None
+    used_key = session.get("client_key_fingerprint")
+    offered = set(session.get("offered_key_fingerprints") or []) | {used_key}
+    offered.discard(None)
+    expected = _collector_command(session)
 
-    def within(event: Event) -> bool:
+    def moment(event: Event) -> datetime | None:
         if event.corrected is None:
-            return False
-        moment = datetime.fromisoformat(event.corrected)
-        return low <= moment <= high
+            return None
+        found = datetime.fromisoformat(event.corrected)
+        return found if low <= found <= high else None
 
-    for event in events:
-        if not within(event):
-            continue
-        f = event.fields
-        own = False
-        if event.type in ("ssh.login.accepted", "ssh.login.failed") and f.get("user") == user:
-            own = (f.get("fingerprint") in fingerprints) or (
-                port is not None and f.get("port") == port
-            )
-        elif event.type in ("session.opened", "session.closed") and f.get("user") == user:
-            own = f.get("service") in ("sshd", "sudo", "systemd-user")
-        elif event.type == "sudo.command" and f.get("user") == user:
-            own = "python3 -I -B -" in (f.get("command") or "") or "python3 -I -B -c" in (
-                f.get("command") or ""
-            )
-        elif event.type in ("logind.session_new",) and f.get("user") == user:
-            own = True
-            audit_sessions.add(str(f.get("session")))
-        elif event.type in ("login.session", "login.ended") and f.get("user") == user:
-            own = True
-        if own:
+    candidates = [e for e in events if moment(e) is not None]
+    marked = 0
+
+    def mark(event: Event) -> None:
+        nonlocal marked
+        if not event.own_session:
             event.own_session = True
             marked += 1
-    if audit_sessions:
-        for event in events:
-            if not event.own_session and event.fields.get("audit_session") in audit_sessions:
-                if within(event):
-                    event.own_session = True
-                    marked += 1
+
+    # 1. The SSH login itself, and the sshd process that logged it.
+    sshd_pids: set[int] = set()
+    logins: list[datetime] = []
+    for event in candidates:
+        f = event.fields
+        if event.type not in ("ssh.login.accepted", "ssh.login.failed") or f.get("user") != user:
+            continue
+        if port is None or f.get("port") != port:
+            continue
+        if address is not None and f.get("address") != address:
+            continue
+        keys = {used_key} if event.type == "ssh.login.accepted" else offered
+        if f.get("fingerprint") is not None and f["fingerprint"] not in keys:
+            continue
+        mark(event)
+        if isinstance(f.get("pid"), int):
+            sshd_pids.add(f["pid"])
+        if event.type == "ssh.login.accepted":
+            logins.append(moment(event))
+
+    # 2. That process's PAM session and login records; the audit session the
+    # journal gave them.
+    audit_sessions: set[str] = set()
+    for event in candidates:
+        f = event.fields
+        if f.get("pid") not in sshd_pids:
+            continue
+        if (event.type in ("session.opened", "session.closed") and f.get("service") == "sshd") or (
+            event.type in ("login.session", "login.ended") and f.get("user") == user
+        ):
+            mark(event)
+            if f.get("audit_session") not in (None, "4294967295"):
+                audit_sessions.add(f["audit_session"])
+
+    # 3. logind's session of that number (from logind itself, when the
+    # journal says who logged it), and its scope.
+    scopes = {f"session-{n}.scope" for n in audit_sessions} | {
+        f"Session {n} of User {user}" for n in audit_sessions
+    }
+    for event in candidates:
+        f = event.fields
+        if event.type in ("logind.session_new", "logind.session_end"):
+            if str(f.get("session")) not in audit_sessions:
+                continue
+            if event.type == "logind.session_new" and f.get("user") != user:
+                continue
+            if "comm" in f and (f["comm"] != "systemd-logind" or f.get("uid") != "0"):
+                continue
+            mark(event)
+        elif event.type in ("unit.started", "unit.stopped") and f.get("what") in scopes:
+            mark(event)
+
+    # 4. Its sudo of the collector, and that sudo process's PAM session.
+    sudo_pids: set[int] = set()
+    for event in candidates:
+        f = event.fields
+        if event.type != "sudo.command" or f.get("user") != user:
+            continue
+        if f.get("runas", "root") != "root" or f.get("tty", "unknown") != "unknown":
+            continue
+        if not _is_collector(f.get("command") or "", expected):
+            continue
+        if "audit_session" in f and f["audit_session"] not in audit_sessions:
+            continue
+        mark(event)
+        if isinstance(f.get("pid"), int):
+            sudo_pids.add(f["pid"])
+    for event in candidates:
+        f = event.fields
+        if (
+            event.type in ("session.opened", "session.closed")
+            and f.get("service") == "sudo"
+            and f.get("pid") in sudo_pids
+        ):
+            mark(event)
+
+    # 5. The user manager systemd starts for a first login.
+    for event in candidates:
+        f = event.fields
+        if (
+            event.type == "session.opened"
+            and f.get("service") == "systemd-user"
+            and f.get("user") == user
+            and any(timedelta(0) <= moment(event) - at <= _USER_MANAGER_DELAY for at in logins)
+        ):
+            mark(event)
     return marked

@@ -80,6 +80,10 @@ async def test_key_login_runs_the_collector_and_records_the_session(server):
     assert session.bytes_received == len(data)
     assert session.remote_port == server.port
     assert session.ended_at >= session.started_at
+    # What the own-session filter needs: the exact command, and when the
+    # first bytes came (the controller's side of the clock offset).
+    assert session.command == server.target.commands[0]
+    assert session.started_at <= session.first_data_at <= session.ended_at
 
 
 async def test_password_login_as_root(server):

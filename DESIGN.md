@@ -116,8 +116,10 @@ first.
 **Never done:** removing, editing, or suppressing any of those traces.
 Changing logs on a system that may be compromised destroys evidence, and it
 is exactly what an attacker does. Instead the analyzer recognises the tool's
-own sessions (by connection time, source address and key fingerprint, which
-the controller records) and leaves them out of the findings.
+own sessions and leaves them out of the findings. Each trace is tied to the
+tool's own connection (its source port, key and exact command, which the
+controller records, and the process and audit-session numbers the logs link
+them by), never to the account or the time alone (docs/events.md).
 
 ### 3.3 Credentials
 

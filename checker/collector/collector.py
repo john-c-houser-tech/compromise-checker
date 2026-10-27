@@ -31,6 +31,7 @@ import shlex
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import threading
@@ -58,7 +59,7 @@ except ImportError:
 
 COLLECTOR_VERSION = "0.1.0.dev0"
 PROTOCOL = 1
-MASKING_VERSION = 4
+MASKING_VERSION = 5
 
 # Every path the collector reads goes through path(). Only the test suite
 # changes ROOT, to point the collector at a directory of fixture files; the
@@ -272,7 +273,48 @@ _CRYPT_HASH = (
 
 # Specific formats first, so the generic key=value rule doesn't relabel a
 # value that is already masked.
-MASKING_RULES = [
+# A name given at a login prompt that is not an account can be a password
+# typed in the wrong box: in failed-login messages it is masked unless it
+# names a local account (Masker._apply_rules). First, so it sees the name
+# before any other rule changes it.
+# Each name is taken up to the fixed text its message puts after it, not as
+# a word: a typed password can hold spaces, colons and quotes. Names are
+# bounded (sshd logs at most 100 characters of one), so matching stays
+# linear on hostile lines.
+_NAME = rb"[^\n]{1,256}?"
+# login(1): FAILED LOGIN 1 FROM host FOR 'name', User not known ...
+# Greedy, so a name holding "', " runs to the last closing quote; its one
+# framing pair of quotes is removed before the account check.
+_LOGIN_NAME_RULE = _rule(
+    "unknown_user",
+    # Both util-linux's "FROM host" and shadow's "on 'tty' from 'host'".
+    rb"FAILED LOGIN \(?\d+\)? (?:(?:FROM|from|on) \S+ ){0,2}FOR ",
+    rb"'[^\n]{0,256}'(?=, )|" + _NAME + rb"(?=, )",
+)
+UNKNOWN_USER_RULES = [
+    # sshd: "Invalid user X from A port P", "... for invalid user X from A
+    # port P", "Connection closed by invalid user X A port P"; else up to
+    # " [preauth]" or the end of the line.
+    _rule(
+        "unknown_user",
+        rb"(?i:\b(?:invalid|illegal) user )",
+        _NAME + rb"(?= (?:from )?[0-9A-Fa-f:.]+ port \d)|" + _NAME + rb"(?= \[preauth\]|\r?$)|\S+",
+    ),
+    _LOGIN_NAME_RULE,
+    # su(1): user name does not exist
+    _rule("unknown_user", rb"\buser ", _NAME + rb"(?= does not exist)"),
+    # pam_sss: received for user name: 10 (User not known ...)
+    _rule("unknown_user", rb"received for user ", _NAME + rb"(?=: \d+ \(User not known)"),
+    # PAM modules' companion line: "authentication failure; logname= ...
+    # rhost=... user=name", the name last on the line.
+    _rule(
+        "unknown_user",
+        rb"authentication failure;[^\n]{0,512}? user=",
+        _NAME + rb"(?=\r?$)|\S+",
+    ),
+]
+
+MASKING_RULES = UNKNOWN_USER_RULES + [
     _rule("aws_access_key", rb"\b", rb"(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     _rule("github_token", rb"\b", rb"gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{20,}"),
     _rule("slack_token", rb"\b", rb"xox[abprs]-[A-Za-z0-9-]{10,}"),
@@ -455,6 +497,10 @@ class Masker:
             marker = MASK % kind.encode("ascii")
             pieces, last, hits = [], 0, 0
             for match in pattern.finditer(data):
+                if kind == "unknown_user" and _submitted_name(pattern, match.group(1)) in (
+                    local_account_names()
+                ):
+                    continue  # a real account's name is evidence, not a secret
                 pieces.append(data[last : match.start(1)])
                 pieces.append(marker)
                 last = match.end(1)
@@ -464,6 +510,29 @@ class Masker:
                 data = b"".join(pieces)
                 self._count(kind, hits)
         return data
+
+
+_LOCAL_ACCOUNT_NAMES = None
+
+
+def _submitted_name(pattern, name):
+    """The name as submitted: verbatim, except login(1)'s one framing pair
+    of quotes (FOR 'name'), so "root'" or "'root'" given to sshd is never
+    taken for root."""
+    if pattern is _LOGIN_NAME_RULE[1] and len(name) >= 2 and name[:1] == name[-1:] == b"'":
+        return name[1:-1]
+    return name
+
+
+def local_account_names():
+    """The /etc/passwd account names, as bytes, read once per run."""
+    global _LOCAL_ACCOUNT_NAMES
+    if _LOCAL_ACCOUNT_NAMES is None:
+        accounts, _ = read_accounts()
+        _LOCAL_ACCOUNT_NAMES = frozenset(
+            a["name"].encode("utf-8", errors="surrogateescape") for a in accounts or ()
+        )
+    return _LOCAL_ACCOUNT_NAMES
 
 
 def mask_text(data):
@@ -1436,6 +1505,7 @@ JOURNAL_FIELDS = (
     "_SYSTEMD_UNIT",
     "_AUDIT_SESSION",
     "_AUDIT_LOGINUID",
+    "_BOOT_ID",  # which boot an entry belongs to (DESIGN.md §8.2)
 )
 # Syslog facilities 4 (auth) and 10 (authpriv): what /var/log/secure and
 # auth.log hold. Matches on the same field are alternatives.
@@ -1497,9 +1567,9 @@ def mask_journal_line(line, masker):
         return b"[MASKED:unparsed_line %d bytes]\n" % len(line)
 
 
-def module_auth_journal(run):
-    """Authentication messages from the systemd journal, within the window."""
-    args = [
+def journal_args(run):
+    """journalctl's options for a masked JSON read of the window."""
+    return [
         "--output=json",
         "--no-pager",
         "--quiet",
@@ -1509,11 +1579,15 @@ def module_auth_journal(run):
         f"--since=@{int(run.since.timestamp())}",
         "--output-fields=" + ",".join(JOURNAL_FIELDS),
     ]
+
+
+def module_auth_journal(run):
+    """Authentication messages from the systemd journal, within the window."""
     run_command(
         run,
         "auth_journal",
         "journalctl",
-        args + list(JOURNAL_AUTH_MATCHES),
+        journal_args(run) + list(JOURNAL_AUTH_MATCHES),
         transform=mask_journal_line,
     )
 
@@ -3567,6 +3641,333 @@ def module_hooks(run):
             collect_tree(run, module, directory, seen, max_depth=2)
 
 
+# --- Logs, boots and the kernel (DESIGN.md §8.1, §8.2) -------------------------------
+
+# Kernel messages, systemd's own (units started and stopped, shutdown),
+# logind's (power-off and reboot requests) and core-dump reports. Terms
+# joined by "+" are alternatives, as are values of one field.
+JOURNAL_SYSTEM_MATCHES = (
+    "_TRANSPORT=kernel",
+    "+",
+    "_PID=1",
+    "+",
+    "SYSLOG_IDENTIFIER=systemd-logind",
+    "SYSLOG_IDENTIFIER=systemd-coredump",
+    "SYSLOG_IDENTIFIER=systemd-shutdown",
+)
+
+
+def module_system_journal(run):
+    """Kernel, systemd, logind and core-dump messages from the journal,
+    within the window: out-of-memory kills, segfaults, oopses, module
+    loads, unit starts and stops, shutdowns and reboots."""
+    run_command(
+        run,
+        "system_journal",
+        "journalctl",
+        journal_args(run) + list(JOURNAL_SYSTEM_MATCHES),
+        transform=mask_journal_line,
+    )
+
+
+def module_boots(run):
+    """The journal's list of boots, as text (JSON output needs systemd 251,
+    newer than Ubuntu 22.04's)."""
+    run_command(run, "boots", "journalctl", ["--list-boots", "--no-pager"])
+
+
+# Login records. wtmp (logins, logouts, boots, shutdowns) and btmp (failed
+# logins) are binary, so masking can't run on them as they are: they are
+# parsed here and only their text fields, masked, are sent. btmp's user
+# field is where a password typed at the login prompt by mistake ends up.
+# glibc's record: type, pid, line, id, user, host, exit status, session,
+# time (seconds, microseconds), address, reserved. Most 64-bit
+# architectures keep 32-bit session and time fields there (384 bytes);
+# AArch64 has 64-bit ones (400 bytes). Any other architecture is reported
+# as unsupported rather than guessed at.
+UTMP_LAYOUTS = {
+    "x86_64": struct.Struct("=hxxi32s4s32s256shhiii16s20s"),
+    "ppc64le": struct.Struct("=hxxi32s4s32s256shhiii16s20s"),
+    "s390x": struct.Struct("=hxxi32s4s32s256shhiii16s20s"),
+    "aarch64": struct.Struct("=hxxi32s4s32s256shhqqq16s20s4x"),
+}
+
+
+def utmp_layout():
+    """This server's login-record layout, or None if it isn't known."""
+    return UTMP_LAYOUTS.get(platform.machine())
+
+
+UTMP_TYPES = {
+    0: "empty",
+    1: "run_level",
+    2: "boot_time",
+    3: "new_time",
+    4: "old_time",
+    5: "init_process",
+    6: "login_process",
+    7: "user_process",
+    8: "dead_process",
+    9: "accounting",
+}
+_LOGIN_RECORD_FILE = re.compile(r"^(?:wtmp|btmp)(?:[-.][\w.-]+)?$")
+MAX_LOGIN_RECORDS = 200000
+LATEST_RECORD_TIME = 253402300799  # 9999-12-31T23:59:59Z, the last a timestamp can show
+# Newer systems keep login records in SQLite instead (wtmpdb, lastlog2):
+# described here, read in a later version.
+LOGIN_DATABASES = ("/var/lib/wtmpdb/wtmp.db", "/var/lib/lastlog/lastlog2.db")
+
+
+def _utmp_text(raw, counts):
+    text = raw.split(b"\0", 1)[0]
+    if not text:
+        return ""
+    masked, found = mask_text(text + b"\n")
+    for kind, count in found.items():
+        counts[kind] = counts.get(kind, 0) + count
+    return masked.rstrip(b"\n").decode("utf-8", errors="replace")
+
+
+def _utmp_user(raw, counts, failed):
+    """A record's user name, masked; in btmp (failed logins), withheld
+    unless it names a local account, since a name typed at the prompt by
+    mistake can be a password."""
+    name = raw.split(b"\0", 1)[0]
+    if failed and name and name not in local_account_names():
+        counts["unknown_user"] = counts.get("unknown_user", 0) + 1
+        return (MASK % b"unknown_user").decode("ascii")
+    return _utmp_text(raw, counts)
+
+
+def _utmp_address(raw):
+    if not any(raw):
+        return None
+    if not any(raw[4:]):
+        return socket.inet_ntop(socket.AF_INET, raw[:4])
+    return socket.inet_ntop(socket.AF_INET6, raw)
+
+
+def send_login_records(run, module, absolute, layout):
+    """Parse one wtmp or btmp file: a `login_record` for each record in the
+    window, then a `login_file` summary (records before the window, blank
+    records — zeroed, as log cleaners leave them — and a partial record at
+    the end). Masked text fields only; nothing else of the file is sent."""
+    suffix = os.path.splitext(absolute)[1]
+    if suffix in _COMPRESSED and suffix not in _OPENERS:
+        details = describe_unreadable(absolute)
+        details["reason"] = f"{_COMPRESSED[suffix]}-compressed; this server's Python can't open it"
+        run.stream.record(module, "unreadable_file", details)
+        return
+    try:
+        raw, info = open_regular_file(absolute)
+    except (OSError, ValueError) as exc:
+        details = describe_unreadable(absolute)
+        details["reason"] = str(exc)
+        run.stream.record(module, "unreadable_file", details)
+        return
+    refusal = run.refusal(absolute, info)
+    if refusal:
+        raw.close()
+        details = describe_unreadable(absolute)
+        details["reason"] = refusal
+        run.stream.record(module, "unreadable_file", details)
+        return
+    opener = _OPENERS.get(suffix, (None, None))[1]
+    since = run.since.timestamp()
+    failed = absolute.rsplit("/", 1)[-1].startswith("btmp")
+    summary = {
+        "path": absolute,
+        "meta": file_meta(info, _COMPRESSED.get(suffix)),
+        "record_size": layout.size,
+    }
+    counts = {"records": 0, "blank": 0, "bad_time": 0, "before_window": 0, "sent": 0}
+    masked, first, last, partial, cut, error = {}, None, None, 0, None, None
+    try:
+        with raw:
+            reader = opener(raw) if opener else raw
+            with reader:
+                while True:
+                    if run.out_of_time():
+                        cut = "time"
+                        break
+                    block = reader.read(layout.size * 1024)
+                    if not block:
+                        break
+                    whole = len(block) - len(block) % layout.size
+                    if whole < len(block):  # only possible at the end of the file
+                        more = reader.read(layout.size)
+                        if more:
+                            block += more
+                            whole = len(block) - len(block) % layout.size
+                        partial = len(block) - whole
+                    for offset in range(0, whole, layout.size):
+                        piece = block[offset : offset + layout.size]
+                        counts["records"] += 1
+                        if not any(piece):
+                            counts["blank"] += 1
+                            continue
+                        fields = layout.unpack(piece)
+                        kind, pid, line, ident, user, host = fields[:6]
+                        term, status, session, seconds, micros, address = fields[6:12]
+                        if not (0 <= seconds <= LATEST_RECORD_TIME and 0 <= micros < 1000000):
+                            # Damaged or forged: counted, never allowed to stop
+                            # the file's other records or skew its first/last times.
+                            counts["bad_time"] += 1
+                            continue
+                        first = seconds if first is None else min(first, seconds)
+                        last = seconds if last is None else max(last, seconds)
+                        if seconds < since:
+                            counts["before_window"] += 1
+                            continue
+                        if counts["sent"] >= MAX_LOGIN_RECORDS:
+                            cut = "records"
+                            continue
+                        counts["sent"] += 1
+                        run.stream.record(
+                            module,
+                            "login_record",
+                            {
+                                "path": absolute,
+                                "index": counts["records"] - 1,
+                                "type": UTMP_TYPES.get(kind, kind),
+                                "pid": pid,
+                                "line": _utmp_text(line, masked),
+                                "id": _utmp_text(ident, masked),
+                                "user": _utmp_user(user, masked, failed),
+                                "host": _utmp_text(host, masked),
+                                "exit": [term, status],
+                                "session": session,
+                                "time": iso_from_timestamp(seconds + micros / 1e6),
+                                "address": _utmp_address(address),
+                            },
+                        )
+    except _DECOMPRESS_ERRORS as exc:
+        error = f"{type(exc).__name__}: {exc}"
+    summary.update(counts)
+    summary.update(
+        {
+            "partial_bytes": partial,
+            "first_time": iso_from_timestamp(first) if first is not None else None,
+            "last_time": iso_from_timestamp(last) if last is not None else None,
+            "masked": masked,
+            "truncated": cut is not None,
+            "truncated_reason": cut,
+        }
+    )
+    if error:
+        summary["error"] = error
+    run.stream.record(module, "login_file", summary)
+    if cut == "time":
+        raise ModuleTimeout()
+
+
+def module_login_records(run):
+    """wtmp and btmp and their rotations, parsed (see send_login_records);
+    the SQLite login databases of newer systems described, not yet read."""
+    module = "login_records"
+    try:
+        names, listing_cut = list_directory("/var/log", MAX_DIR_FILES * 4, run)
+    except OSError as exc:
+        raise OSError(f"/var/log could not be listed: {exc}") from exc
+    if listing_cut:
+        run.stream.record(module, "listing_truncated", {"path": "/var/log"})
+    found = sorted(n for n in names if _LOGIN_RECORD_FILE.match(n))
+    layout = utmp_layout()
+    run.stream.record(
+        module,
+        "login_files",
+        {"names": found, "machine": platform.machine(), "supported": layout is not None},
+    )
+    for name in found if layout is not None else ():
+        run.check_time()
+        send_login_records(run, module, "/var/log/" + name, layout)
+    for absolute in LOGIN_DATABASES:
+        facts = path_facts(absolute)
+        if facts is not None:
+            run.stream.record(module, "login_database", facts)
+
+
+# Where core dumps and crash reports are kept: listed, never read (a dump
+# or an apport report holds the crashed program's memory).
+CRASH_DIRS = ("/var/lib/systemd/coredump", "/var/crash", "/var/lib/apport/coredump")
+
+
+def module_crash_dumps(run):
+    """Listings of the core-dump and crash-report directories."""
+    module = "crash_dumps"
+    seen = set()
+    for top in CRASH_DIRS:
+        directory, risk = resolve_links(top)
+        if risk:
+            run.stream.record(module, "not_examined", {"path": top, "reason": risk})
+            continue
+        try:
+            info = os.lstat(path(directory))
+        except OSError:
+            continue
+        if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) in seen:
+            continue
+        seen.add((info.st_dev, info.st_ino))
+        walk = Walk(run, directory, max_depth=2, max_entries=5000, hash_files=None)
+        for entry in walk:
+            run.stream.record(module, "file", entry)
+        run.stream.record(module, "walk_summary", walk.summary())
+        run.check_time()
+
+
+# name size refcount used-by state address [(taint letters, then "+" while
+# loading or "-" while unloading)]; the refcount is -1 while unloading.
+_PROC_MODULE = re.compile(r"^(\S+) (\d+) (-?\d+|-) (\S+) (\S+) \S+(?: \(([A-Z]*)([+-]?)\))?$")
+# The kernel's settings for loading modules: signatures enforced, loading
+# switched off, lockdown.
+MODULE_POLICY_FILES = {
+    "sig_enforce": "/sys/module/module/parameters/sig_enforce",
+    "modules_disabled": "/proc/sys/kernel/modules_disabled",
+    "lockdown": "/sys/kernel/security/lockdown",
+    "tainted": "/proc/sys/kernel/tainted",
+}
+
+
+def module_kernel_modules(run):
+    """Loaded kernel modules (/proc/modules) with each one's taint flags
+    (unsigned, out-of-tree, proprietary), and the module-loading policy.
+    Load addresses are left out: they would reveal the kernel's layout."""
+    module = "kernel_modules"
+    text = read_small("/proc/modules", 4 * 1024 * 1024)
+    if text is None:
+        raise OSError("/proc/modules could not be read")
+    for line in text.splitlines():
+        run.check_time()
+        match = _PROC_MODULE.match(line)
+        if not match:
+            run.stream.record(module, "unparsed_line", {"length": len(line)})
+            continue
+        name, size, refcount, used_by, state, taint, transition = match.groups()
+        safe = name.replace("/", "")
+        sys_taint = (
+            read_small(f"/sys/module/{safe}/taint", 64) if safe not in ("", ".", "..") else None
+        )
+        run.stream.record(
+            module,
+            "kernel_module",
+            {
+                "name": name,
+                "size": int(size),
+                "refcount": None if refcount == "-" else int(refcount),
+                "used_by": [u for u in used_by.split(",") if u and u != "-"],
+                "state": state,
+                "taint": taint or "",
+                "transition": {"+": "loading", "-": "unloading"}.get(transition or ""),
+                "sys_taint": sys_taint.strip() if sys_taint is not None else None,
+            },
+        )
+    policy = {}
+    for key, absolute in MODULE_POLICY_FILES.items():
+        value = read_small(absolute, 4096)
+        policy[key] = value.strip() if value is not None else None
+    run.stream.record(module, "module_policy", policy)
+
+
 # Collection modules, by name, in their default order.
 MODULES = {
     "host_facts": module_host_facts,
@@ -3580,6 +3981,11 @@ MODULES = {
     "systemd": module_systemd,
     "startup": module_startup,
     "hooks": module_hooks,
+    "system_journal": module_system_journal,
+    "boots": module_boots,
+    "login_records": module_login_records,
+    "crash_dumps": module_crash_dumps,
+    "kernel_modules": module_kernel_modules,
 }
 
 

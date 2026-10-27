@@ -8,7 +8,7 @@ Every file is opened read-only, without following a final symbolic link,
 without blocking on pipes or devices, and without updating its access time
 where the kernel allows. Anything that is not a regular file is described
 (type, owner, link target) instead of read. Text is masked for secrets before
-it leaves the server (masking rules version 4, listed in the policy §7).
+it leaves the server (masking rules version 5, listed in the policy §7).
 Masking works on whole lines, so a secret can never be split across two
 reads. Password hashes in the standard crypt formats (`$1$`, `$2b$`, `$5$`,
 `$6$`, `$7$`, `$y$`, `$gy$`…) are masked wherever they appear, salt
@@ -17,7 +17,22 @@ included, for example in a copied shadow line pasted into a config file or
 value is still masked whole; each format's fields are bounded, so it runs
 in linear time even on hostile input.
 The old 13-character DES format can't be told apart from ordinary text and
-is not masked. Two fixed vocabularies are never masked, because they look like
+is not masked. A name given at a login prompt that isn't an account can be a
+password typed in the wrong box, so in failed-login messages — sshd's
+`Invalid user X` and `… for invalid user X` (or `illegal user`), login's
+`FAILED LOGIN … FOR 'X'` (util-linux's `FROM host` and shadow's
+`on 'tty' from 'host'` forms), su's `user X does not exist`, pam_sss's
+`received for user X: … (User not known …)`, and PAM modules' companion
+`authentication failure; … user=X` — the name is masked as
+`unknown_user` unless it is an `/etc/passwd` account name. The name is taken
+whole, up to the fixed text its message puts after it (` from <address>
+port`, `', `, ` does not exist`, `: <code> (User not known`), never as a
+single word, since a typed password can hold spaces, colons and quotes; it
+is bounded at 256 characters, so matching stays linear. The name is
+compared with the accounts exactly as submitted — only login's one framing
+pair of quotes (`FOR 'name'`) is removed, and a quoted name runs to its last
+closing quote — so `root'` or `'root'` given to sshd is never taken for
+`root`. This rule runs first, so it judges the name as written. Two fixed vocabularies are never masked, because they look like
 `key=value` settings but can't hold a secret and are exactly what the checks
 compare: sudo's `NOPASSWD:` and `PASSWD:` tags in a line that is a sudo rule
 (`user host = (runas) TAG: command`), and only where a command spec starts —
@@ -96,7 +111,7 @@ applies instead, and is recorded.
 line, with only these fields: `MESSAGE`, `PRIORITY`, `SYSLOG_FACILITY`,
 `SYSLOG_IDENTIFIER`, `SYSLOG_PID`, `_SOURCE_REALTIME_TIMESTAMP`,
 `_HOSTNAME`, `_TRANSPORT`, `_PID`, `_UID`, `_GID`, `_COMM`, `_EXE`,
-`_SYSTEMD_UNIT`, `_AUDIT_SESSION`, `_AUDIT_LOGINUID`, plus the cursor,
+`_SYSTEMD_UNIT`, `_AUDIT_SESSION`, `_AUDIT_LOGINUID`, `_BOOT_ID`, plus the cursor,
 times, sequence numbers and boot id journalctl always adds. The process
 command line (`_CMDLINE`) is never requested. Each entry is decoded and
 every field value masked on its own — never the JSON text, where escaped
@@ -342,6 +357,85 @@ leading comment lines, and a note says the rest was withheld. A spool
 directory reached through a link (`/var/spool/cron` → `/var/spool/at`) is
 listed and hashed without text, since its files can't be told apart by
 where they lie; its target still gets its own walk.
+
+## `system_journal`
+
+**Why:** kernel and system health (DESIGN.md §8.1): out-of-memory kills,
+segfaults, oopses, hung tasks, machine checks, module loads and taint; and
+reboots (§8.2): unit starts and stops, shutdown and reboot requests, and
+core-dump reports.
+
+**Runs:** `journalctl` with the same options and fields as `auth_journal`,
+for `_TRANSPORT=kernel` + `_PID=1` (systemd itself) +
+`SYSLOG_IDENTIFIER=systemd-logind`, `systemd-coredump` or `systemd-shutdown`.
+
+**Sends:** one `command` source, masked exactly as `auth_journal`'s.
+
+## `boots`
+
+**Why:** which boots the journal holds, with their first and last entries:
+the frame for classifying reboots (§8.2) and for spotting gaps (§8.10).
+
+**Runs:** `journalctl --list-boots --no-pager`. **Sends:** its text as a
+`command` source, masked. (JSON output needs systemd 251, newer than Ubuntu
+22.04's, so the controller parses the text.)
+
+## `login_records`
+
+**Why:** logins, logouts, boots and shutdowns (`wtmp`) and failed logins
+(`btmp`): reboot classification (§8.2), login history (§8.3), and cleared or
+edited records (§8.10).
+
+**Reads:** every `/var/log/wtmp*` and `/var/log/btmp*` file (rotations
+included, decompressed where the server's Python can), under the protection
+rules (a hard-linked one is refused). These files are binary, so masking
+can't run on them as they are: the collector parses each record on the
+server and sends only fields. Records are 384 bytes on x86_64, ppc64le and
+s390x and 400 bytes on AArch64 (64-bit session and time fields); on any
+other architecture the files are listed (`login_files`, `supported: false`)
+but not parsed, rather than guessed at. **Sends:** a `login_record` for each record
+in the window — type, PID, terminal, id, user, host, exit status, session,
+time and address — with the four text fields masked like any log text; then
+a `login_file` summary per file: file metadata, counts of records, records
+before the window, blank (zeroed) records, as log cleaners leave them,
+records with an impossible time (before 1970, after 9999, or a damaged
+microsecond field: `bad_time`, never sent and kept out of the first and last
+times), and of bytes left over at the end, the first and last record times, and what
+masking replaced. At most 200,000 records per file are sent; past that, or
+past the time limit, the summary says so. Nothing else of the files is sent.
+`btmp`'s user field is where a password typed at the login prompt by mistake
+ends up, so it is sent only when it names an `/etc/passwd` account, and is
+otherwise replaced by `[MASKED:unknown_user]` (counted in the summary) — the
+same rule masking applies to failed-login names in the authentication logs.
+`wtmp` records successful logins, whose names are kept. The SQLite login databases of newer systems
+(`/var/lib/wtmpdb/wtmp.db`, `/var/lib/lastlog/lastlog2.db`) are described
+(`login_database`), not yet read.
+
+## `crash_dumps`
+
+**Why:** core dumps of network-facing services (§8.1).
+
+**Sends:** a directory walk (see "Directory walks") of
+`/var/lib/systemd/coredump`, `/var/crash` and `/var/lib/apport/coredump`:
+names, owners, sizes and times only. Nothing is read or hashed: a core dump
+or an apport report holds the crashed program's memory.
+
+## `kernel_modules`
+
+**Why:** out-of-tree, unsigned or proprietary modules, and the
+module-loading policy (§8.1); a rootkit's module shows here unless it hides
+itself, which the kernel's taint flags may still reveal.
+
+**Reads:** `/proc/modules`, each module's `/sys/module/<name>/taint`, and
+`/sys/module/module/parameters/sig_enforce`,
+`/proc/sys/kernel/modules_disabled`, `/sys/kernel/security/lockdown` and
+`/proc/sys/kernel/tainted`. **Sends:** a `kernel_module` record per module
+(name, size, reference count — -1 while unloading — the modules using it,
+state, taint flags, and `transition`: loading or unloading) and
+a `module_policy` record. Load addresses are left out: they would reveal the
+kernel's memory layout. A line that doesn't parse is counted
+(`unparsed_line`), not sent. If `/proc/modules` can't be read, the module
+ends with an error.
 
 ## Protected files
 

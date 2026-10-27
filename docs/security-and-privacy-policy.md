@@ -140,6 +140,9 @@ include access tokens, and sometimes secrets typed into commands.
   - passwords inside web addresses (`scheme://user:password@host`);
   - password hashes in the standard crypt formats (`$1$`, `$2b$`, `$5$`,
     `$6$`, `$y$` and similar);
+  - user names in failed-login records and messages that don't match a
+    local account (a password is sometimes typed into the user-name box by
+    mistake);
   - well-known credential formats, including cloud access keys, GitHub,
     Slack, Stripe and Anthropic API keys, and signed web tokens (JWTs).
 

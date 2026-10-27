@@ -8,9 +8,16 @@ Every file is opened read-only, without following a final symbolic link,
 without blocking on pipes or devices, and without updating its access time
 where the kernel allows. Anything that is not a regular file is described
 (type, owner, link target) instead of read. Text is masked for secrets before
-it leaves the server (masking rules version 3, listed in the policy §7).
+it leaves the server (masking rules version 4, listed in the policy §7).
 Masking works on whole lines, so a secret can never be split across two
-reads. Two fixed vocabularies are never masked, because they look like
+reads. Password hashes in the standard crypt formats (`$1$`, `$2b$`, `$5$`,
+`$6$`, `$7$`, `$y$`, `$gy$`…) are masked wherever they appear, salt
+included, for example in a copied shadow line pasted into a config file or
+`usermod -p<hash>` in a sudo log. This rule runs last, so a `password=`
+value is still masked whole; each format's fields are bounded, so it runs
+in linear time even on hostile input.
+The old 13-character DES format can't be told apart from ordinary text and
+is not masked. Two fixed vocabularies are never masked, because they look like
 `key=value` settings but can't hold a secret and are exactly what the checks
 compare: sudo's `NOPASSWD:` and `PASSWD:` tags in a line that is a sudo rule
 (`user host = (runas) TAG: command`), and only where a command spec starts —

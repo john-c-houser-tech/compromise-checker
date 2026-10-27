@@ -156,7 +156,7 @@ sometimes secrets typed into shell commands.
   redaction mode.
 - **Secret scrubbing at source.** Before evidence leaves the target, the
   collector masks well-known secret patterns: private key blocks, `password=`
-  style arguments, bearer tokens, and cloud access keys. The masking rules
+  style arguments, password hashes, bearer tokens, and cloud access keys. The masking rules
   are published, and the report says that masking ran.
 - **Encrypted at rest.** Evidence bundles are encrypted on the controller
   (age, to a key the organization holds). The database index keeps only

@@ -130,6 +130,8 @@ include access tokens, and sometimes secrets typed into commands.
     MySQL clients);
   - HTTP `Authorization` headers and bearer tokens;
   - passwords inside web addresses (`scheme://user:password@host`);
+  - password hashes in the standard crypt formats (`$1$`, `$2b$`, `$5$`,
+    `$6$`, `$y$` and similar);
   - well-known credential formats, including cloud access keys, GitHub,
     Slack, Stripe and Anthropic API keys, and signed web tokens (JWTs).
 

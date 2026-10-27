@@ -57,7 +57,7 @@ except ImportError:
 
 COLLECTOR_VERSION = "0.1.0.dev0"
 PROTOCOL = 1
-MASKING_VERSION = 3
+MASKING_VERSION = 4
 
 # Every path the collector reads goes through path(). Only the test suite
 # changes ROOT, to point the collector at a directory of fixture files; the
@@ -230,6 +230,45 @@ _NOT_A_SECRET = (
     + rb")"
 )
 
+_B64 = rb"[./0-9A-Za-z]"
+# A crypt salt can be empty and hold any character but "$" (and, in a shadow
+# line, ":"); bounded like every field here.
+_SALT = rb"[^$:\s]"
+_CRYPT_HASH = (
+    rb"\$[156]\$(?:rounds=[0-9]{1,9}\$)?"
+    + _SALT
+    + rb"{0,16}\$"
+    + _B64
+    + rb"{16,86}"  # md5, sha-crypt
+    + rb"|\$2[abxy]\$[0-9]{2}\$"
+    + _B64
+    + rb"{53}"  # bcrypt
+    + rb"|\$7\$"
+    + _B64
+    + rb"{11}"
+    + _SALT
+    + rb"{0,86}\$"
+    + _B64
+    + rb"{43}"  # scrypt: params, salt
+    + rb"|\$g?y\$"
+    + _B64
+    + rb"{1,32}\$"
+    + _SALT
+    + rb"{0,86}\$"
+    + _B64
+    + rb"{16,86}"  # yescrypt
+    + rb"|\$sha1\$[0-9]{1,10}\$"
+    + _SALT
+    + rb"{0,64}\$"
+    + _B64
+    + rb"{16,86}"
+    + rb"|\$md5(?:,rounds=[0-9]{1,9})?\$"
+    + _SALT
+    + rb"{0,16}\$\$?"
+    + _B64
+    + rb"{16,86}"
+)
+
 # Specific formats first, so the generic key=value rule doesn't relabel a
 # value that is already masked.
 MASKING_RULES = [
@@ -263,6 +302,11 @@ MASKING_RULES = [
         rb"access[_-]?key|auth(?!orization))|pwd)[A-Za-z0-9_.-]*[\"']?\s*[=:]\s*",
         _QUOTED + rb"|[^\s\"'&,;]+",
     ),
+    # Password hashes in the standard crypt formats, wherever they turn up (a
+    # copied shadow line, a pasted hash, usermod -p$6$...). Last, so that a
+    # `password=` value is still masked whole; each format's fields are
+    # bounded, so matching stays linear on hostile input.
+    _rule("password_hash", rb"", _CRYPT_HASH),
 ]
 
 _PEM_BEGIN = re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")

@@ -1350,10 +1350,12 @@ def read_accounts():
     return accounts, malformed
 
 
-# Files collected only as status or metadata (policy §7): password hashes
-# and old ones, and shell history. send_file refuses them by inode, so no
+# Files collected only as status or metadata (policy §7): account files
+# that hold password hashes, old hashes, and shell history. send_file refuses them by inode, so no
 # configuration link or hard link can carry their contents out.
 PROTECTED_FILES = (
+    "/etc/passwd",  # can hold hashes too; read only through read_accounts()
+    "/etc/passwd-",
     "/etc/shadow",
     "/etc/shadow-",
     "/etc/gshadow",
@@ -1516,6 +1518,24 @@ def send_config_file(run, module, absolute):
     return absolute if send_file(run, module, absolute) else None
 
 
+def read_config_text(run, module, absolute):
+    """A configuration file's text, for finding its directives. Only the
+    first CONFIG_FILE_BYTES are searched; a longer file gets a record saying
+    its directives may be incomplete."""
+    text = read_small(absolute, CONFIG_FILE_BYTES) or ""
+    try:
+        size = os.stat(path(absolute)).st_size
+    except OSError:
+        size = 0
+    if size > CONFIG_FILE_BYTES:
+        run.stream.record(
+            module,
+            "directives_incomplete",
+            {"path": absolute, "size": size, "searched_bytes": CONFIG_FILE_BYTES},
+        )
+    return text
+
+
 def _sudo_include_path(target, including):
     target = target.strip()
     if len(target) >= 2 and target[0] == target[-1] == '"':
@@ -1547,7 +1567,7 @@ def module_sudoers(run):
         sent = send_config_file(run, module, absolute)
         if sent is None:
             continue
-        text = read_small(sent, CONFIG_FILE_BYTES) or ""
+        text = read_config_text(run, module, sent)
         for line in text.splitlines():
             match = _SUDO_INCLUDE.match(line)
             if not match:
@@ -1661,7 +1681,8 @@ def ssh_key_options(options):
         name, has_value, value = item.partition("=")
         name = name.strip().lower()
         if name not in SSH_KEY_OPTIONS:
-            result.append({"name": _mask_str(item), "known": False})
+            # sshd ignores the line; nothing of an unknown option is sent.
+            result.append({"known": False, "length": len(item)})
             continue
         option = {"name": name}
         if has_value:
@@ -1669,7 +1690,10 @@ def ssh_key_options(options):
                 value = value[1:-1].replace('\\"', '"')  # sshd's only escape
             if name == "environment" and "=" in value:
                 variable, _, setting = value.partition("=")
-                if _SECRET_NAME.search(variable):
+                upper = variable.upper()
+                # MYSQL_PWD and the like; PWD and OLDPWD are directories.
+                pwd = upper.endswith("PWD") and upper not in ("PWD", "OLDPWD")
+                if pwd or _SECRET_NAME.search(variable):
                     value = variable + "=[MASKED:password]"
                 else:
                     value = variable + "=" + _mask_str(setting)
@@ -1821,13 +1845,27 @@ def send_authorized_keys(run, module, account, absolute):
         record(module, "unreadable_file", details)
         return
     with raw:
+        if (info.st_dev, info.st_ino) in run.protected():
+            details = describe_unreadable(target)
+            details.update(
+                {
+                    "account": account["name"],
+                    "reason": "is (or links to) a protected file; its contents are never read",
+                }
+            )
+            record(module, "unreadable_file", details)
+            return
         try:
             data = raw.read(MAX_KEY_FILE_BYTES + 1)
         except OSError as exc:
             record(module, "unreadable_file", {"path": absolute, "reason": str(exc)})
             return
+    truncated = len(data) > MAX_KEY_FILE_BYTES
+    if truncated:
+        # Whole lines only: an unfinished one might not mask correctly.
+        data = data[: data.rfind(b"\n", 0, MAX_KEY_FILE_BYTES) + 1]
     keys, not_keys = 0, []
-    for number, line in enumerate(data[:MAX_KEY_FILE_BYTES].splitlines(), 1):
+    for number, line in enumerate(data.splitlines(), 1):
         text = line.decode("utf-8", errors="replace")
         if not text.strip() or text.lstrip().startswith("#"):
             continue
@@ -1849,7 +1887,7 @@ def send_authorized_keys(run, module, account, absolute):
             "resolved": target,
             "keys": keys,
             "lines_not_keys": not_keys,
-            "truncated": len(data) > MAX_KEY_FILE_BYTES,
+            "truncated": truncated,
         }
     )
     record(module, "authorized_keys_file", facts)
@@ -1879,7 +1917,7 @@ class SshdConfig:
             self.sent[absolute] = send_config_file(self.run, self.module, absolute)
         if self.sent[absolute] is None:
             return
-        text = read_small(self.sent[absolute], CONFIG_FILE_BYTES) or ""
+        text = read_config_text(self.run, self.module, self.sent[absolute])
         for line in text.splitlines():
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):

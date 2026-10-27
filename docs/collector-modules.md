@@ -145,11 +145,13 @@ expanded for every account (`%h`, `%u`, `%U`, `~`). For each key file found:
   gives it, with `certificate: true`), the key's size in bytes, its options
   as a list of names and values — each value decoded as sshd decodes it and
   then masked; for `environment`, the whole value is masked when the
-  variable's name looks like a secret; an option sshd doesn't know is
-  masked and marked `known: false` — and its comment (masked). If the type
+  variable's name looks like a secret (including any `…_PWD`, but not the
+  directories `PWD` and `OLDPWD`); an option sshd doesn't know, which makes
+  it ignore the line, is replaced by its length and `known: false` — and its comment (masked). If the type
   on the line and the type inside the key differ, both are given.
 - `authorized_keys_file`: the file's owner, mode, size, times and inode, the
-  number of keys, and the line numbers of lines that are not keys.
+  number of keys, and the line numbers of lines that are not keys. Only the
+  first 1 MiB is read, whole lines only (`truncated` says if more was left).
 - `ssh_dir`: facts about each home's `.ssh` directory.
 
 **Never sent:** the keys themselves, and any line that isn't a public key,
@@ -179,13 +181,19 @@ the SHA-256 of every file up to 8 MiB.
 
 ## Protected files
 
-`/etc/shadow`, `/etc/gshadow`, their `-` backups, `/etc/security/opasswd`
-(old password hashes) and every account's shell history files are
-collected only as status or metadata. Any file the collector would send is
-checked against them *after* it is opened, by device and inode, so no
+`/etc/passwd`, `/etc/shadow`, `/etc/gshadow` and their `-` backups,
+`/etc/security/opasswd` (old password hashes) and every account's shell
+history files are collected only as structured records, status or metadata.
+Any file the collector would send — and any authorized_keys file it reads —
+is checked against them *after* it is opened, by device and inode, so no
 configuration link or hard link can carry their contents out: such a file
 is described (`unreadable_file`, "is (or links to) a protected file")
 instead.
+
+Directives (includes, `AuthorizedKeysFile`) are looked for in the first
+1 MiB of each sudo and sshd configuration file; a longer file gets a
+`directives_incomplete` record, since what lies beyond could change what is
+collected.
 
 ## Configuration files that are links
 

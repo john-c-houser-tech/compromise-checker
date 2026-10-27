@@ -1222,14 +1222,22 @@ class SshTests(FixtureRoot):
         options = collector.ssh_key_options(
             'command="backup --password=\\"first TAILSECRET\\"",'
             'environment="APP_PASSWORD=first TAILSECRET",environment="LANG=C.UTF-8",'
-            "ghp_" + "a" * 36 + "=x"
+            "ghp_" + "a" * 36 + "=x,"
+            'environment="MYSQL_PWD=hunter2",environment="mysql_pwd=hunter2",'
+            'environment="PWD=/srv/app",'
+            'unknown-option="backup --password=\\"first TAILSECRET\\""'
         )
         self.assertNotIn("TAILSECRET", json.dumps(options))
         self.assertNotIn("a" * 36, json.dumps(options))
         self.assertEqual(options[0]["value"], "backup --password=[MASKED:password]")
         self.assertEqual(options[1]["value"], "APP_PASSWORD=[MASKED:password]")
         self.assertEqual(options[2]["value"], "LANG=C.UTF-8")
-        self.assertEqual(options[3]["known"], False)
+        self.assertEqual(options[3], {"known": False, "length": 42})
+        self.assertNotIn("hunter2", json.dumps(options))
+        self.assertEqual(options[4]["value"], "MYSQL_PWD=[MASKED:password]")
+        self.assertEqual(options[5]["value"], "mysql_pwd=[MASKED:password]")
+        self.assertEqual(options[6]["value"], "PWD=/srv/app")
+        self.assertEqual(options[7]["known"], False)
 
     def test_certificates_fingerprint_their_key_like_openssh(self):
         collector = load_collector(self.root)
@@ -1301,18 +1309,49 @@ class SshTests(FixtureRoot):
         (facts,) = records_named(records, "authorized_keys_file")
         self.assertEqual(facts["resolved"], "/srv/keys")
 
-    def test_link_to_a_file_of_secrets_sends_nothing_from_it(self):
+    def test_key_file_linked_to_a_protected_file_is_refused(self):
         self.write("etc/ssh/sshd_config", b"")
         self.write("etc/shadow", ("jch:" + SHA512_HASH + ":20000:0:99999:7:::\n").encode())
-        Path(self.root, "home/jch/.ssh").mkdir(parents=True)
-        os.symlink("../../../etc/shadow", Path(self.root, "home/jch/.ssh/authorized_keys"))
+        history = f'command="mysql -pS3cret" ssh-ed25519 {ED25519} from history\n'
+        self.write("home/jch/.bash_history", history.encode())
+        os.makedirs(Path(self.root, "root/.ssh"))
+        os.symlink("../../etc/shadow", Path(self.root, "root/.ssh/authorized_keys"))
+        os.makedirs(Path(self.root, "home/jch/.ssh"))
+        os.symlink("../.bash_history", Path(self.root, "home/jch/.ssh/authorized_keys"))
         out = io.BytesIO()
         load_collector(self.root).main(settings(["ssh"]), out=out)
         raw = gzip.decompress(out.getvalue())
-        self.assertNotIn(b"saltsalt", raw)
+        for secret in (b"saltsalt", b"from history", b"mysql"):
+            self.assertNotIn(secret, raw)
         records = [json.loads(line) for line in raw.splitlines()]
-        (facts,) = records_named(records, "authorized_keys_file")
-        self.assertEqual((facts["keys"], facts["lines_not_keys"]), (0, [1]))
+        self.assertEqual(self.keys(records), [])
+        refused = {r["path"] for r in records_named(records, "unreadable_file")}
+        self.assertEqual(refused, {"/etc/shadow", "/home/jch/.bash_history"})
+
+    def test_cut_off_key_file_drops_its_unfinished_line(self):
+        self.write("etc/ssh/sshd_config", b"")
+        first = f"ssh-ed25519 {ED25519} first\n".encode()
+        second = f'ssh-ed25519 {ED25519} password="two words"\n'.encode()
+        self.write("home/jch/.ssh/authorized_keys", first + second)
+        collector = load_collector(self.root)
+        collector.MAX_KEY_FILE_BYTES = len(first) + len(second) - 8  # inside the quotes
+        out = io.BytesIO()
+        collector.main(settings(["ssh"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"two", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual([k["comment"] for k in self.keys(records)], ["first"])
+        self.assertTrue(records_named(records, "authorized_keys_file")[0]["truncated"])
+
+    def test_directives_past_the_search_limit_are_a_recorded_gap(self):
+        self.write("etc/ssh/sshd_config", b"# padding\n" * 20 + b"AuthorizedKeysFile none\n")
+        collector = load_collector(self.root)
+        collector.CONFIG_FILE_BYTES = 50
+        out = io.BytesIO()
+        collector.main(settings(["ssh"]), out=out)
+        records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+        (gap,) = records_named(records, "directives_incomplete")
+        self.assertEqual((gap["path"], gap["searched_bytes"]), ("/etc/ssh/sshd_config", 50))
 
     def test_dangling_link_is_described(self):
         self.write("etc/ssh/sshd_config", b"")
@@ -1362,6 +1401,7 @@ class PamTests(FixtureRoot):
         self.write("etc/shadow", ("jch:" + SHA512_HASH + ":20000:0:99999:7:::\n").encode())
         self.write("home/jch/.bash_history", b"mysql -uroot -phunter2\n")
         os.makedirs(Path(self.root, "etc/pam.d"))
+        os.symlink("../passwd", Path(self.root, "etc/pam.d/accounts"))
         os.symlink("../shadow", Path(self.root, "etc/pam.d/leak"))
         os.link(Path(self.root, "etc/shadow"), Path(self.root, "etc/pam.d/hardlink"))
         os.symlink("../../home/jch/.bash_history", Path(self.root, "etc/pam.d/history"))
@@ -1375,8 +1415,10 @@ class PamTests(FixtureRoot):
         self.assertEqual(sorted(sources(records)), ["/etc/pam.d/sshd"])
         refused = [r["path"] for r in records_named(records, "unreadable_file")]
         self.assertEqual(
-            sorted(refused), ["/etc/pam.d/hardlink", "/etc/shadow", "/home/jch/.bash_history"]
+            sorted(refused),
+            ["/etc/pam.d/hardlink", "/etc/passwd", "/etc/shadow", "/home/jch/.bash_history"],
         )
+        self.assertNotIn(b"John Example", raw)
 
     def test_too_many_pam_files_is_a_recorded_gap(self):
         for name in ("a", "b", "c"):

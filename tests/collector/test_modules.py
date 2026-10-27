@@ -7,6 +7,7 @@ temporary directory laid out like a server (its ROOT), which only tests can do.
 
 import base64
 import datetime
+import errno
 import gzip
 import hashlib
 import importlib.util
@@ -3180,6 +3181,20 @@ class CapabilityTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=raw):
                 self.collector.decode_capabilities(raw)
 
+    def test_attribute_read_errors_are_not_no_capabilities(self):
+        from unittest import mock
+
+        with mock.patch("os.getxattr", side_effect=OSError(errno.EIO, "I/O error")):
+            with self.assertRaises(ValueError):
+                self.collector.file_capabilities("/usr/bin/x")
+        with mock.patch("os.getxattr", side_effect=OSError(errno.ENODATA, "No data")):
+            self.assertEqual(self.collector.file_capabilities("/usr/bin/x"), ({}, None))
+
+    def test_libcap_numbers_for_unnamed_capabilities(self):
+        parse = self.collector.parse_capabilities_text
+        self.assertEqual(parse("41=ep"), {"cap_41": "ep"})
+        self.assertEqual(parse("13=ep"), {"cap_net_raw": "ep"})
+
     def test_text_round_trip(self):
         text = self.collector.capabilities_text(
             {"cap_net_raw": "ep", "cap_net_admin": "ep", "cap_sys_time": "p"}
@@ -3281,6 +3296,101 @@ class SystemFilesTests(FixtureRoot):
         self.assertEqual(records_named(records, "unowned_executable"), [])
         self.assertEqual(len(records_named(records, "privileged_file")), 2)
         self.assertIsNone(records_named(records, "system_files_summary")[0]["owners"])
+
+    def test_local_diversion_makes_the_replacement_unowned(self):
+        self.fixture()
+        with open(Path(self.root, "var/lib/dpkg/info/coreutils.list"), "a") as listing:
+            listing.write("/usr/bin/sudo\n")
+        self.write("usr/bin/sudo.distrib", b"\x7fELF real sudo").chmod(0o4755)
+        self.write("usr/bin/sudo", b"\x7fELF trojan").chmod(0o4755)
+        self.write("var/lib/dpkg/diversions", b"/usr/bin/sudo\n/usr/bin/sudo.distrib\n:\n")
+        records = self.run_with(caps={})
+        found = {r["path"]: r for r in records_named(records, "privileged_file")}
+        self.assertIsNone(found["/usr/bin/sudo"]["package"])  # never credited to coreutils
+        self.assertEqual(found["/usr/bin/sudo"]["diverted_by"], ":")
+        self.assertEqual(found["/usr/bin/sudo.distrib"]["package"], "coreutils")
+
+    def test_package_diversion_credits_the_diverting_package(self):
+        self.fixture()
+        with open(Path(self.root, "var/lib/dpkg/info/coreutils.list"), "a") as listing:
+            listing.write("/usr/bin/vi\n")
+        self.write("var/lib/dpkg/info/vim.list", b"/usr/bin/vi\n")
+        self.write("usr/bin/vi", b"\x7fELF vim").chmod(0o755)
+        self.write("usr/bin/vi.orig", b"\x7fELF vi").chmod(0o755)
+        self.write("var/lib/dpkg/diversions", b"/usr/bin/vi\n/usr/bin/vi.orig\nvim\n")
+        records = self.run_with(caps={})
+        unowned = {r["path"] for r in records_named(records, "unowned_executable")}
+        self.assertNotIn("/usr/bin/vi", unowned)
+        self.assertNotIn("/usr/bin/vi.orig", unowned)
+
+    def test_diversion_claimed_under_the_merged_usr_path(self):
+        # Ubuntu's t64 transition: the old package listed /lib/..., the new
+        # one diverts that path and lists the file as /usr/lib/....
+        self.fixture()
+        os.symlink("usr/lib", Path(self.root, "lib"))
+        with open(Path(self.root, "var/lib/dpkg/info/coreutils.list"), "a") as listing:
+            listing.write("/lib/x86_64-linux-gnu/libe2p.so.2.3\n")
+        self.write(
+            "var/lib/dpkg/info/libext2fs2t64.list", b"/usr/lib/x86_64-linux-gnu/libe2p.so.2.3\n"
+        )
+        self.write("usr/lib/x86_64-linux-gnu/libe2p.so.2.3", b"\x7fELF e2p").chmod(0o644)
+        self.write(
+            "var/lib/dpkg/diversions",
+            b"/lib/x86_64-linux-gnu/libe2p.so.2.3\n"
+            b"/lib/x86_64-linux-gnu/libe2p.so.2.3.usr-is-merged\nlibext2fs2t64\n",
+        )
+        records = self.run_with(caps={})
+        unowned = {r["path"] for r in records_named(records, "unowned_executable")}
+        self.assertNotIn("/usr/lib/x86_64-linux-gnu/libe2p.so.2.3", unowned)
+
+    def test_damaged_package_database_never_cancels_the_walk(self):
+        self.fixture()
+        os.remove(Path(self.root, "var/lib/dpkg/status"))
+        self.write("var/lib/rpm/rpmdb.sqlite", b"not a database at all")
+        records = self.run_with(caps={})
+        summary = records_named(records, "system_files_summary")[0]
+        self.assertIsNone(summary["owners"])
+        self.assertIn("Error", summary["owners_problem"])
+        self.assertEqual(len(records_named(records, "privileged_file")), 2)  # still reported
+        self.assertEqual(records[-1]["modules"]["system_files"]["status"], "ok")
+
+    def test_unowned_shared_library_without_execute_bit(self):
+        self.fixture()
+        self.write("usr/lib/x86_64-linux-gnu/libprocesshider.so", b"\x7fELF hide").chmod(0o644)
+        self.write("usr/lib/x86_64-linux-gnu/notes.txt", b"x").chmod(0o644)
+        records = self.run_with(caps={})
+        unowned = {r["path"] for r in records_named(records, "unowned_executable")}
+        self.assertIn("/usr/lib/x86_64-linux-gnu/libprocesshider.so", unowned)
+        self.assertNotIn("/usr/lib/x86_64-linux-gnu/notes.txt", unowned)
+
+    def test_opt_moved_under_var_is_still_local(self):
+        self.fixture()
+        shutil.rmtree(Path(self.root, "opt"))
+        self.write("var/opt/app/run", b"\x7fELF app").chmod(0o755)
+        os.symlink("var/opt", Path(self.root, "opt"))
+        records = self.run_with(caps={})
+        unowned = {r["path"]: r for r in records_named(records, "unowned_executable")}
+        self.assertTrue(unowned["/var/opt/app/run"]["local"])
+
+    def test_limits_are_reported_and_dropped_findings_counted(self):
+        self.fixture()
+        records = self.run_with(caps={}, MAX_FILE_FINDINGS=1)
+        summary = records_named(records, "system_files_summary")[0]
+        self.assertEqual(summary["dropped"]["unowned_executable"], 3)
+        self.assertEqual(summary["counts"]["unowned"], 5)  # counted past the limit (rootshell too)
+        records = self.run_with(caps={}, MAX_SYSTEM_ENTRIES=3)
+        summary = records_named(records, "system_files_summary")[0]
+        self.assertEqual(summary["truncated_reason"], "entries")
+
+    def test_hard_linked_finding_is_not_hashed(self):
+        self.fixture()
+        self.write("var/lib/secret", b"CanaryLinked")
+        os.link(Path(self.root, "var/lib/secret"), Path(self.root, "usr/local/bin/linked"))
+        Path(self.root, "usr/local/bin/linked").chmod(0o755)
+        records = self.run_with(caps={}, PACKAGE_OWNER_UID=os.getuid())
+        found = {r["path"]: r for r in records_named(records, "unowned_executable")}
+        self.assertNotIn("sha256", found["/usr/local/bin/linked"])
+        self.assertIn("hard-linked", found["/usr/local/bin/linked"]["hash_skipped"])
 
     def test_real_capability_attribute(self):
         target = self.write("usr/bin/capped", b"x")

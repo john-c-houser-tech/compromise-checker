@@ -99,6 +99,9 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
   environment. Sockets per process from `/proc/net` and file descriptors.
 - Hidden-process check: the `/proc` listing compared with `ps`, and a
   bounded probe of process IDs that `/proc` doesn't list.
+- Set-user-ID and set-group-ID files and file capabilities outside the
+  system directories 1.4c walks (`/var`, `/tmp`, `/dev/shm`, `/home`,
+  `/root`, `/srv`): noted in the 1.4c review.
 
 **1.6 — Controller: parsers, events, snapshots, baselines.**
 - Parsers per source: authentication logs (traditional syslog dates with

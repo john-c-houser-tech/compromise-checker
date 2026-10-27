@@ -450,7 +450,8 @@ on the server itself (rpm's database, dpkg's lists), so root can rewrite them
 too: a clean result is "unchanged or covered up". Their own hashes and
 change times are collected so a rewrite shows against the baseline;
 comparing with the vendor's signed packages is a later addition. New SUID/SGID files, and SUID
-files no package owns. File capabilities such as `cap_setuid`. Executables in
+files no package owns (in the system directories; elsewhere they are
+§8.6's). File capabilities such as `cap_setuid`. Executables in
 system directories that no package owns.
 
 ### 8.6 Files in unusual places

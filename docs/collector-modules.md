@@ -308,10 +308,12 @@ file actually opened, after any links:
   History files live in home directories, so no configuration link can
   carry one out, whether or not the home search found it.
 - **Nothing hard-linked is read as text**, since a hard link could be any
-  file — except root-owned distribution content under `/usr`, where
-  packages ship hard links (RHEL's crypto policies, for example). A hard
-  link has its file's owner, so one to a user's history file is never
-  root-owned, whether or not the home search found that user.
+  file — except root-owned distribution content under `/usr` that a
+  program's own configuration names, where packages ship hard links (RHEL's
+  crypto policies, for example). Files found by walking a directory (the
+  persistence modules) get no exception: ownership can't vouch for them,
+  since root's shell can write a history file into a user's home (`su`
+  without `-` keeps `HOME`).
 - **Nothing protected is hashed either**: a short file's hash can be
   guessed, so directory walks and home start-up files skip the hash of any
   file these rules refuse.

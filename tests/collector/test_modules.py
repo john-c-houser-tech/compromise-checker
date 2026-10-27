@@ -2189,6 +2189,24 @@ class PersistenceTests(FixtureRoot):
         self.assertEqual(tops.count("/usr/lib/systemd/system"), 1)
         self.assertNotIn("/lib/systemd/system", tops)
 
+    def test_walked_hard_links_are_never_read_even_root_owned_under_usr(self):
+        self.write("home/CORP/bob/.bash_history", b"CanaryWalkedHistory\n")
+        os.makedirs(Path(self.root, "usr/lib/systemd/system"))
+        os.link(
+            Path(self.root, "home/CORP/bob/.bash_history"),
+            Path(self.root, "usr/lib/systemd/system/x.service"),
+        )
+        collector = load_collector(self.root)
+        # As if the history file were root's (su without "-" keeps HOME).
+        collector.PACKAGE_OWNER_UID = os.getuid()
+        out = io.BytesIO()
+        collector.main(settings(["systemd"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        self.assertEqual(sources(records), {})
+        refused = records_named(records, "unreadable_file")
+        self.assertEqual([r["path"] for r in refused], ["/usr/lib/systemd/system/x.service"])
+        self.assertIn("hard-linked", refused[0]["reason"])
+
     def test_linked_user_unit_directories_are_each_recorded(self):
         self.write(
             "etc/passwd",

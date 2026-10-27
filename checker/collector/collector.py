@@ -491,16 +491,19 @@ class Run:
         self.deadline = deadline
         self._protected = None
 
-    def refusal(self, opened, info, key_file=False, spool=False):
+    def refusal(self, opened, info, key_file=False, spool=False, walked=False):
         """Why the contents of a file just opened (its path after links, its
         fstat) must not be read, or None. These rules don't depend on knowing
         every history file on the server:
 
         - a protected file (PROTECTED_FILES) is refused however it was reached;
         - nothing hard-linked is read, except root-owned distribution content
-          under /usr (packages ship hard links, e.g. RHEL's crypto policies):
-          elsewhere a hard link could be any file, and a hard link shares its
-          file's owner, so one to a user's history file is never root's;
+          under /usr that a program's own configuration names (packages ship
+          hard links, e.g. RHEL's crypto policies): elsewhere a hard link
+          could be any file. A file merely found in a walked directory
+          (`walked`) gets no exception at all — ownership alone can't vouch
+          for it, since root's shell can write a history file into a user's
+          home (`su` without `-` keeps HOME);
         - configuration and logs are read only from system locations, so a
           link can't carry a history file or anything else out;
         - nothing named like a shell history file is read, and the history
@@ -514,8 +517,8 @@ class Run:
             return "is (or links to) a protected file; its contents are never read"
         if opened.rsplit("/", 1)[-1] in _HISTORY_NAMES:
             return "is a shell history file; its contents are never read"
-        if info.st_nlink > 1 and not (
-            opened.startswith("/usr/") and info.st_uid == PACKAGE_OWNER_UID
+        if info.st_nlink > 1 and (
+            walked or not (opened.startswith("/usr/") and info.st_uid == PACKAGE_OWNER_UID)
         ):
             return "is hard-linked, so it could be a protected file; its contents are never read"
         if key_file:
@@ -723,7 +726,7 @@ def pump_lines(run, writer, reader, transform=None):
             return "size"  # whole lines only: the one that doesn't fit is left out
 
 
-def send_file(run, module, absolute, text_only=False, rewrite=None, spool=False):
+def send_file(run, module, absolute, text_only=False, rewrite=None, spool=False, walked=False):
     """Send one file as a source: decompressed, masked, chunked, capped.
     Returns True if sent, False if it could not be read (recorded instead).
     Raises ModuleTimeout after closing the source cleanly if time runs out.
@@ -732,7 +735,9 @@ def send_file(run, module, absolute, text_only=False, rewrite=None, spool=False)
     (a `content_skipped` record says so). With `rewrite`, the file is read
     whole, up to SMALL_TEXT_BYTES, and `rewrite(data)` is sent instead —
     still masked; a longer file is not sent. With `spool`, the file must lie
-    in cron's or at's spool instead of a system location (Run.refusal)."""
+    in cron's or at's spool instead of a system location; with `walked`, it
+    was found by walking a directory, not named by configuration, so no hard
+    link is read (Run.refusal)."""
     suffix = os.path.splitext(absolute)[1]
     if suffix in _COMPRESSED and suffix not in _OPENERS:
         details = describe_unreadable(absolute)
@@ -749,7 +754,7 @@ def send_file(run, module, absolute, text_only=False, rewrite=None, spool=False)
         details["reason"] = str(exc)
         run.stream.record(module, "unreadable_file", details)
         return False
-    refusal = run.refusal(absolute, info, spool=spool)
+    refusal = run.refusal(absolute, info, spool=spool, walked=walked)
     if refusal:
         # The file actually opened — through any link or hard link — is one
         # collected as status or metadata only: never send its text.
@@ -2878,7 +2883,7 @@ def collect_tree(run, module, top, seen, max_depth=4, choose=_text, extra=None, 
             continue
         seen.add(absolute)
         rewrite = None if what is True else what
-        send_file(run, module, absolute, text_only=True, rewrite=rewrite, spool=spool)
+        send_file(run, module, absolute, text_only=True, rewrite=rewrite, spool=spool, walked=True)
 
 
 def send_config_files(run, module, names, seen):

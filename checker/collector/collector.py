@@ -532,11 +532,14 @@ class Run:
             return None
         if home is not None:
             paths, others = home
-            if opened.startswith(others):
+            own = max((len(p) for p in paths if opened.startswith(p)), default=0)
+            if not own:
+                return "is outside the home directory whose text is collected"
+            # The most specific home wins: another home inside this one
+            # (/srv/erin in /srv) stays closed unless covered itself.
+            if any(len(p) > own and opened.startswith(p) for p in others):
                 return "is inside another account's home, whose text is not collected"
-            if opened.startswith(paths):
-                return None
-            return "is outside the home directory whose text is collected"
+            return None
         if spool:
             # Only the cron module's own spool reads, which classify each
             # file (crontab, at job, job output) by where it lies; no link
@@ -2322,7 +2325,7 @@ def sudo_grantees(run):
                     continue
                 pending.extend((_join(target, n), depth + 1) for n in names if _sudo_reads(n))
                 continue
-            line = re.sub(r"(?<!\\)#.*$", "", line)
+            line = re.sub(r"(?<!\\)#(?![0-9]).*$", "", line)  # "#1001" is a uid
             alias = _SUDO_USER_ALIAS.match(line)
             if alias:
                 for definition in alias.group(1).split(":"):
@@ -2397,6 +2400,8 @@ def privileged_accounts(run, accounts):
         if fields[0] in ADMIN_GROUPS or fields[0] in groups or _days(fields[2]) in gids:
             admin_gids.add(_days(fields[2]))
             members.update(m for m in fields[3].split(",") if m)
+    # Short forms (alice for alice@corp.example) are only for homes with no
+    # local account; a local account must be named exactly.
     sudo_names = set()
     for user in users:
         sudo_names |= _short_names(user)
@@ -2408,7 +2413,7 @@ def privileged_accounts(run, accounts):
             or (uid is not None and (uid == 0 or uid < uid_min or uid > uid_max or uid in uids))
             or account["gid"] in admin_gids
             or account["name"] in members
-            or account["name"] in sudo_names
+            or account["name"] in users
         ):
             names.add(account["name"])
     return names, (sudo_names | ({"ALL"} if everyone else set()))
@@ -3068,6 +3073,8 @@ def collect_tree(
             continue
         seen.add(absolute)
         rewrite = None if what is True else what
+        if home is not None and is_environment_file(absolute):
+            rewrite = environment_without_values  # e.g. a unit directory linked to ~/.ssh
         send_file(
             run,
             module,
@@ -3257,32 +3264,27 @@ def homes_for(run, module):
     privileged, privileged_names = set(), set()
     if run.home_text == "privileged":
         privileged, privileged_names = privileged_accounts(run, accounts)
-    covered, prefixes = [], {}
+    # "/" as a home (some service accounts' on systemd hosts) would make
+    # every file one of its own: it is never a home for text, nor a prefix
+    # for or against one.
+    prefixes = {}
     for home in homes:
         resolved, risk = resolve_links(home["home"])
         paths = {home["home"]} if risk else {home["home"], resolved}
-        prefixes[home["home"]] = tuple(sorted(p.rstrip("/") + "/" for p in paths))
+        prefixes[home["home"]] = tuple(sorted({p.rstrip("/") + "/" for p in paths} - {"/"}))
+    covered = set()
     for home in homes:
-        home["text"] = None
-        # "/" as a home (some service accounts') would make every file one
-        # of its own: never a home for text.
-        if home["home"].rstrip("/") and (
+        if prefixes[home["home"]] and (
             run.home_text == "all" or covers_home(home, privileged, privileged_names)
         ):
-            covered.append(home["home"])
+            covered.add(home["home"])
+    # Homes not covered stay closed even inside a covered one (Run.refusal).
+    closed = tuple(
+        prefix for name, own in prefixes.items() if name not in covered for prefix in own
+    )
     for home in homes:
-        if home["home"] not in covered:
-            continue
-        # A broad home (/var, /home) holds other accounts' homes: those
-        # stay closed unless covered themselves.
-        others = tuple(
-            prefix
-            for other, other_prefixes in prefixes.items()
-            if other != home["home"] and other not in covered
-            for prefix in other_prefixes
-        )
-        home["text"] = (prefixes[home["home"]], others)
-    run.stream.record(module, "home_text", {"setting": run.home_text, "homes": covered})
+        home["text"] = (prefixes[home["home"]], closed) if home["home"] in covered else None
+    run.stream.record(module, "home_text", {"setting": run.home_text, "homes": sorted(covered)})
     return homes
 
 
@@ -3371,17 +3373,20 @@ def home_file_facts(run, absolute):
     file the protection rules allow hashing. A link (~/.bashrc ->
     ~/.dotfiles/bashrc) keeps its own facts and gets the SHA-256 of the
     regular file it leads to, as `resolved` and `target_sha256`, under the
-    same checks. Never any text. None if it doesn't exist."""
+    same checks; `resolved` is also set when a parent directory is a link.
+    Never any text. None if it doesn't exist."""
     facts = path_facts(absolute)
     if facts is None or facts.get("type") not in ("-", "l"):
         return facts
-    target, key = absolute, "sha256"
-    if facts["type"] == "l":
-        target, risk = resolve_links(absolute)
-        if risk:
-            facts["target_not_examined"] = risk
-            return facts
-        facts["resolved"], key = target, "target_sha256"
+    # Every component resolved, parents included (~/.ssh -> ../amy/.ssh):
+    # the file actually reached is what the home rules judge.
+    target, risk = resolve_links(absolute)
+    if risk:
+        facts["target_not_examined"] = risk
+        return facts
+    key = "target_sha256" if facts["type"] == "l" else "sha256"
+    if target != absolute:
+        facts["resolved"] = target
     try:
         info = os.lstat(path(target))
     except UnsafePath as exc:
@@ -3432,13 +3437,21 @@ def environment_without_values(data):
     return b"".join(out)
 
 
-def send_home_text(run, module, absolute, relative, home, seen):
-    """Send a home start-up file's text under the opt-in (once per module)."""
-    if absolute in seen:
+def is_environment_file(absolute):
+    """Whether a home file, by its resolved path, is an environment file:
+    however it was reached (.bashrc -> .ssh/environment, a unit directory
+    linked to ~/.ssh), its values are withheld."""
+    return absolute.endswith(tuple("/" + name for name in HOME_ENVIRONMENT_FILES))
+
+
+def send_home_text(run, module, resolved, home, seen):
+    """Send a home file's text under the opt-in, once per module, by its
+    resolved path (so each route to it gets the same treatment)."""
+    if resolved in seen:
         return
-    seen.add(absolute)
-    rewrite = environment_without_values if relative in HOME_ENVIRONMENT_FILES else None
-    send_file(run, module, absolute, text_only=True, rewrite=rewrite, home=home["text"])
+    seen.add(resolved)
+    rewrite = environment_without_values if is_environment_file(resolved) else None
+    send_file(run, module, resolved, text_only=True, rewrite=rewrite, home=home["text"])
 
 
 def module_startup(run):
@@ -3467,7 +3480,7 @@ def module_startup(run):
             run.stream.record(module, "home_startup_file", facts)
             if home["text"] and ("sha256" in facts or "target_sha256" in facts):
                 # Only what was hashed: the same checks have passed.
-                send_home_text(run, module, facts.get("resolved", target), relative, home, seen)
+                send_home_text(run, module, facts.get("resolved", target), home, seen)
         for relative in HOME_STARTUP_DIRS:
             collect_tree(
                 run,

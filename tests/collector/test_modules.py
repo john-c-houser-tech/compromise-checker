@@ -2551,8 +2551,50 @@ class HomeTextTests(FixtureRoot):
         covered = records_named(records, "home_text")[0]["homes"]
         self.assertIn("/srv", covered)
         self.assertNotIn("/", covered)
+        # "/" as a home must not close every other home either.
+        self.assertIn("/root/.bashrc", sources(records))
+        self.assertIn("/home/jch/.bashrc", sources(records))
         reasons = {r["path"]: r["reason"] for r in records_named(records, "unreadable_file")}
         self.assertIn("another account's home", reasons["/srv/erin/.bashrc"])
+
+    def test_domain_name_never_covers_a_local_namesake(self):
+        with open(Path(self.root, "etc/passwd"), "a") as passwd:
+            passwd.write("alice:x:1006:1006::/home/alice:/bin/bash\n")
+        self.write("home/alice/.bashrc", b"# local alice\n")
+        bashrcs = self.bashrcs(self.collect("privileged"))
+        self.assertIn("/home/CORP/alice/.bashrc", bashrcs)  # alice@corp.example's home
+        self.assertNotIn("/home/alice/.bashrc", bashrcs)  # an unrelated local alice
+
+    def test_numeric_sudo_principals(self):
+        with open(Path(self.root, "etc/passwd"), "a") as passwd:
+            passwd.write("fay:x:1007:1007::/home/fay:/bin/bash\n")
+            passwd.write("gus:x:1008:700::/home/gus:/bin/bash\n")
+        self.write("etc/group", b"sudo:x:27:jch\nops:x:500:carl\nnum:x:700:\n")
+        self.write("etc/sudoers.d/numeric", b"#1007 ALL=(ALL) ALL\n%#700 ALL=(ALL) ALL # ok\n")
+        for user in ("fay", "gus"):
+            self.write(f"home/{user}/.bashrc", f"# {user}\n".encode())
+        bashrcs = self.bashrcs(self.collect("privileged"))
+        self.assertIn("/home/fay/.bashrc", bashrcs)
+        self.assertIn("/home/gus/.bashrc", bashrcs)
+
+    def test_environment_files_are_filtered_however_reached(self):
+        self.write("home/jch/.ssh/environment", b"API=CanaryEnvRoute\nLD_PRELOAD=/x.so\n")
+        os.remove(Path(self.root, "home/jch/.bashrc"))
+        os.symlink(".ssh/environment", Path(self.root, "home/jch/.bashrc"))
+        Path(self.root, "home/jch/.config/systemd").mkdir(parents=True)
+        os.symlink("../../.ssh", Path(self.root, "home/jch/.config/systemd/user"))
+        records = self.collect("all", modules=("startup", "systemd"))
+        raw = json.dumps(records)
+        self.assertNotIn("CanaryEnvRoute", raw)
+        self.assertIn("LD_PRELOAD=/x.so", raw)
+
+    def test_linked_parent_directory_cannot_open_an_uncovered_home(self):
+        self.write("home/amy/.ssh/rc", b"CanaryAmyRc\n")
+        os.symlink("../amy/.ssh", Path(self.root, "home/jch/.ssh"))
+        records = self.collect("privileged")
+        self.assertNotIn("CanaryAmyRc", json.dumps(records))
+        reasons = {r["path"]: r["reason"] for r in records_named(records, "unreadable_file")}
+        self.assertIn("/home/amy/.ssh/rc", reasons)
 
     def test_unknown_setting_is_refused(self):
         records = self.collect("everything")

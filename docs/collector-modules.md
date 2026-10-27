@@ -296,24 +296,30 @@ none.
   outside `/etc/login.defs`' `UID_MIN`–`UID_MAX`, 1000–60000 by default);
   members of the `sudo`, `wheel` and `admin` groups (by membership or
   primary group); and every user and local group that sudoers grants rights
-  to, read the way sudo reads it (includes followed, `User_Alias` expanded;
-  negated entries ignored; a rule for `ALL` covers everyone). A home with no
-  local account (a domain user's) is covered when sudoers names a user whose
-  name, without `@domain` or `DOMAIN\`, is the home's directory name. A
+  to, read the way sudo reads it (includes followed, `User_Alias` expanded,
+  numeric `#uid` and `%#gid` entries included; negated entries ignored; a
+  rule for `ALL` covers everyone). A local account must be named exactly. A
+  home with no local account (a domain user's) is covered when sudoers names
+  a user whose name, without `@domain` or `DOMAIN\`, is the home's directory
+  name; that short form never covers a local account of the same name. A
   domain group's members (`%domain\ admins`) can't be seen without asking
   the directory server, which the collector never does, so their homes are
   covered only by `all`.
 - **`all`** covers every home found.
 
 Only files already hashed are read, under the same protection rules, plus
-three of their own: the file opened must lie inside that home (a link
-leading out of it, to `/opt/shared/profile` say, is described as
-unreadable, not sent); never inside another home the setting doesn't cover,
-even one inside it (service accounts' homes can be broad: `/srv` holding
-`/srv/erin`, `/var`, `/var/www`); and nothing hard-linked is read, even
-under `/usr` (a service account's home can be `/usr/sbin`). `/` as a home
-(some service accounts have it) is never covered. `.ssh/environment` and
-`.pam_environment` are sent with each value replaced by
+three of their own, judged on the path with every link resolved, parent
+directories included (an `~/.ssh` linked to another user's): the file must
+lie inside that home (a link leading out of it, to `/opt/shared/profile`
+say, is described as unreadable, not sent); never inside another home the
+setting doesn't cover, even one inside it — the most specific home decides
+(service accounts' homes can be broad: `/srv` holding `/srv/erin`, `/var`,
+`/var/www`); and nothing hard-linked is read, even under `/usr` (a service
+account's home can be `/usr/sbin`). `/` as a home (several service accounts
+have it on systemd hosts) is never covered and never closes anything.
+`.ssh/environment` and `.pam_environment` — recognised by the path reached,
+so a `.bashrc` linked to one, or a unit directory linked to `~/.ssh`, gets
+the same treatment — are sent with each value replaced by
 `[collector: value withheld]`, except the variables whose value is the
 evidence (`LD_PRELOAD`, `PATH`, `BASH_ENV` and the others listed for
 `authorized_keys` `environment=` options); a line that doesn't start with a

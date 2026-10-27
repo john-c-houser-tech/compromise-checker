@@ -62,6 +62,10 @@ stores it with the evidence; the manifest carries the version string only.
   and an empty list means none.
 - `limits` — time limits and the per-source byte cap. A source that reaches
   its cap is cut off and marked truncated.
+- `home_text` — optional: `"off"` (the default), `"privileged"` or `"all"`;
+  whether the masked text of home start-up files and user units is sent
+  (`checker init --home-text`; see collector-modules.md). Any other value is
+  refused.
 
 ## 3. Result stream
 

@@ -28,6 +28,13 @@ from checker.evidence import (
 from checker.inventory import Host, home, inventory_transaction, load_inventory
 from checker.transport import TransportError, fetch_host_key, trust_host_key
 
+# What `checker init --home-text` means, as `init` reports it.
+HOME_TEXT = {
+    "off": "not collected (hashes only)",
+    "privileged": "collected, masked, for root, service and administrator accounts",
+    "all": "collected, masked, for every account",
+}
+
 
 def cmd_hosts_add(args: argparse.Namespace) -> int:
     try:
@@ -126,7 +133,7 @@ def cmd_trust(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
 def cmd_init(args: argparse.Namespace) -> int:
     base = home()
     try:
-        config, identity_path = initialise(base, args.recipient)
+        config, identity_path = initialise(base, args.recipient, args.home_text)
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
@@ -138,6 +145,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("cannot be read, by you or anyone else.")
     else:
         print("Its private key is not on this machine; use --identity to read bundles.")
+    print(
+        f"Text of start-up files and user units in home directories: {HOME_TEXT[config.home_text]}"
+    )
     print("Next: `checker hosts add`, then `checker trust`, then `checker collect`.")
     return 0
 
@@ -348,6 +358,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--recipient",
         metavar="AGE_PUBLIC_KEY",
         help="encrypt evidence to this key (its private half kept elsewhere)",
+    )
+    init.add_argument(
+        "--home-text",
+        choices=sorted(HOME_TEXT),
+        default="off",
+        help=(
+            "also collect the masked text of start-up files and user units in home"
+            " directories: off (hashes only, the default), privileged (root, service"
+            " and administrator accounts) or all"
+        ),
     )
     init.set_defaults(handler=cmd_init)
 

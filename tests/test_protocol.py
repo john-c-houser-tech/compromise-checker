@@ -268,3 +268,12 @@ def test_modules_output_matches_the_models(tmp_path):
     chunks = [r for r in records if isinstance(r, Chunk)]
     assert {c.encoding for c in chunks} == {"utf-8", "base64"}
     assert all("Secret1" not in c.data for c in chunks)
+
+
+def test_home_text_setting_reaches_the_collector():
+    for value in ("off", "privileged", "all"):
+        records = read_stream(run_program(build_program(make_settings(home_text=value))))
+        assert records[0].settings["home_text"] == value
+        assert records[-1].status == "complete"
+    with pytest.raises(ValueError):
+        make_settings(home_text="everyone")

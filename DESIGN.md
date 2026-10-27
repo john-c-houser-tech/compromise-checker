@@ -432,10 +432,13 @@ units, `rc.local`, `/etc/profile.d`, shell start-up files, Ubuntu
 `LD_PRELOAD` in any process environment.
 
 Files in home directories (start-up files, user units) are collected as
-hashes only (policy §7), so a first check has no baseline for them. That
-check reports a home start-up file that differs from its `/etc/skel`
-counterpart as customised, and every user unit or autostart entry by name;
-it can't say what they run. Later checks report any change.
+hashes only by default (policy §7), so a first check has no baseline for
+them. That check reports a home start-up file that differs from its
+`/etc/skel` counterpart as customised, and every user unit or autostart entry
+by name; it can't say what they run. Later checks report any change. An
+opt-in chosen in `checker init` (`--home-text privileged` or `all`) also
+collects their masked text, for root, service and administrator accounts or
+for everyone.
 
 ### 8.5 System binary integrity
 

@@ -176,8 +176,11 @@ class Result:
     audit: "Verdict | None" = None
     seconds: float | None = None
     peak_rss_kb: int | None = None
+    home_text_files: int = 0
     error: str | None = None
 
+
+HOME_PATHS = ("/home/", "/root/")
 
 SETUP = r"""
 set -eu
@@ -428,7 +431,8 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             print(f"{distro}: scanner account and audit rules in place")
 
             home = work / f"{distro}-home"
-            config, _ = initialise(home)
+            # The widest setting, so the proof covers every read the collector can make.
+            config, _ = initialise(home, home_text="all")
             scanner = Host(
                 name=distro,
                 address=address,
@@ -477,12 +481,21 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 f"{s['name']} ({s['bytes']:,} bytes, masked {s['masked'] or 'nothing'})"
                 for s in opened.summary.sources
             ]
+            # The setup planted home start-up files and home_text is "all":
+            # their text must have been read, or the proof covers less than
+            # it claims.
+            result.home_text_files = sum(
+                1
+                for s in opened.summary.sources
+                if s.get("module") == "startup" and s["name"].startswith(HOME_PATHS)
+            )
         audit = result.audit
         result.passed = (
             result.status == "complete"
             and audit is not None
             and not audit.collector
             and not audit.unexpected
+            and result.home_text_files > 0
         )
     except Exception as exc:  # report it; the server is still deleted below
         result.error = f"{type(exc).__name__}: {exc}"
@@ -515,6 +528,9 @@ def report(results: list[Result]) -> bool:
             print(f"  error: {r.error}")
         if r.seconds is not None:
             print(f"  collector ran {r.seconds} s, peak memory {r.peak_rss_kb or '?'} KB")
+            print(f"  home start-up files read as text (home_text=all): {r.home_text_files}")
+            if not r.home_text_files:
+                print("  FAIL: no home start-up text was read, so those reads went unproven")
         for source in r.sources:
             print(f"  collected {source}")
         audit = r.audit

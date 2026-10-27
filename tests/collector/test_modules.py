@@ -36,21 +36,22 @@ def load_collector(root):
     return module
 
 
-def settings(modules, days=30, source_bytes=1 << 20, module_seconds=60):
+def settings(modules, days=30, source_bytes=1 << 20, module_seconds=60, home_text=None):
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
-    return json.dumps(
-        {
-            "protocol": 1,
-            "run_id": "t",
-            "since": since.isoformat(),
-            "modules": modules,
-            "limits": {
-                "overall_seconds": 120,
-                "module_seconds": module_seconds,
-                "source_bytes": source_bytes,
-            },
-        }
-    )
+    value = {
+        "protocol": 1,
+        "run_id": "t",
+        "since": since.isoformat(),
+        "modules": modules,
+        "limits": {
+            "overall_seconds": 120,
+            "module_seconds": module_seconds,
+            "source_bytes": source_bytes,
+        },
+    }
+    if home_text is not None:
+        value["home_text"] = home_text
+    return json.dumps(value)
 
 
 def collect(root, modules, **kwargs):
@@ -2401,7 +2402,251 @@ CANARIES = {
     "unit": "CanaryUnitToken",
     "homestartup": "CanaryHomeStartupLine",
     "userunit": "CanaryUserUnitLine",
+    "homeenv": "CanaryHomeEnvironmentValue",
 }
+
+
+HOME_TEXT_PASSWD = (
+    "root:x:0:0:root:/root:/bin/bash\n"
+    "jch:x:1000:1000::/home/jch:/bin/bash\n"
+    "amy:x:1001:1001::/home/amy:/bin/bash\n"
+    "bob:x:1002:1002::/home/bob:/bin/bash\n"
+    "carl:x:1003:1003::/home/carl:/bin/bash\n"
+    "dina:x:1004:1004::/home/dina:/bin/bash\n"
+)
+
+
+class HomeTextTests(FixtureRoot):
+    """The opt-in text of home start-up files and user units (policy §7)."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("etc/passwd", HOME_TEXT_PASSWD.encode())
+        self.write("etc/group", b"sudo:x:27:jch\nops:x:500:carl\nstaff:x:50:amy\n")
+        self.write(
+            "etc/sudoers",
+            b"Defaults env_reset\nroot ALL=(ALL) ALL\n@includedir /etc/sudoers.d\n",
+        )
+        self.write(
+            "etc/sudoers.d/admins",
+            b"User_Alias DBAS = dina, alice@corp.example\n"
+            b"bob ALL=(ALL) NOPASSWD: ALL\n%ops ALL=/usr/bin/systemctl\n"
+            b"DBAS ALL=(postgres) ALL\n!amy ALL=ALL\n",
+        )
+        for home in ("root", "home/jch", "home/amy", "home/bob", "home/carl", "home/dina"):
+            self.write(f"{home}/.bashrc", f"# {home}\n".encode())
+        for home in ("home/CORP/alice", "home/CORP/dave"):  # domain users: no local account
+            self.write(f"{home}/.bashrc", f"# {home}\n".encode())
+            Path(self.root, home, ".ssh").mkdir()
+
+    def collect(self, home_text, modules=("startup",)):
+        collector = load_collector(self.root)
+        out = io.BytesIO()
+        collector.main(settings(list(modules), home_text=home_text), out=out)
+        return [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+
+    def bashrcs(self, records):
+        return sorted(n for n in sources(records) if n.endswith("/.bashrc"))
+
+    def test_off_sends_no_home_text(self):
+        records = self.collect("off")
+        self.assertEqual(self.bashrcs(records), [])
+        self.assertEqual(records_named(records, "home_text"), [{"setting": "off", "homes": []}])
+
+    def test_privileged_covers_root_admin_groups_and_sudoers_grantees(self):
+        records = self.collect("privileged")
+        self.assertEqual(
+            self.bashrcs(records),
+            [
+                "/home/CORP/alice/.bashrc",  # alice@corp.example, by alias
+                "/home/bob/.bashrc",  # named in a rule
+                "/home/carl/.bashrc",  # member of %ops
+                "/home/dina/.bashrc",  # in a User_Alias
+                "/home/jch/.bashrc",  # sudo group
+                "/root/.bashrc",
+            ],
+        )
+        # amy is only negated, dave only has a home.
+        self.assertEqual(records[-1]["modules"]["startup"]["status"], "ok")
+
+    def test_all_covers_every_home(self):
+        self.assertEqual(len(self.bashrcs(self.collect("all"))), 8)
+
+    def test_sudoers_granting_everyone_covers_everyone(self):
+        self.write("etc/sudoers.d/everyone", b"ALL ALL=(ALL) /usr/bin/id\n")
+        self.assertEqual(len(self.bashrcs(self.collect("privileged"))), 8)
+
+    def test_text_never_leaves_the_home_or_follows_hard_links(self):
+        self.write("home/jch/.dotfiles/zshrc", b"alias ls=ls\n")
+        os.symlink(".dotfiles/zshrc", Path(self.root, "home/jch/.zshrc"))
+        self.write("opt/shared/profile", b"export SHARED=1\n")
+        os.symlink("/opt/shared/profile", Path(self.root, "home/jch/.profile"))
+        self.write("home/jch/notes", b"private\n")
+        os.link(Path(self.root, "home/jch/notes"), Path(self.root, "home/jch/.zlogin"))
+        records = self.collect("all")
+        sent = sources(records)
+        self.assertIn("/home/jch/.dotfiles/zshrc", sent)
+        self.assertNotIn("/opt/shared/profile", sent)
+        self.assertNotIn("/home/jch/notes", sent)
+        self.assertNotIn("/home/jch/.zlogin", sent)
+        reasons = {r["path"]: r["reason"] for r in records_named(records, "unreadable_file")}
+        self.assertIn("outside the home", reasons["/opt/shared/profile"])
+        home = {f["path"]: f for f in records_named(records, "home_startup_file")}
+        self.assertIn("hard-linked", home["/home/jch/.zlogin"]["hash_skipped"])
+
+    def test_environment_files_keep_names_and_evidence_values_only(self):
+        self.write(
+            "home/jch/.ssh/environment",
+            b"# set by admin\nLD_PRELOAD=/tmp/.x.so\nAPI=CanaryEnv\n"
+            b"export PATH=/tmp:/usr/bin\n!!\n",
+        )
+        records = self.collect("privileged")
+        text = sources(records)["/home/jch/.ssh/environment"][1]
+        self.assertEqual(
+            text,
+            b"# set by admin\nLD_PRELOAD=/tmp/.x.so\nAPI [collector: value withheld]\n"
+            b"export PATH=/tmp:/usr/bin\n[collector: line withheld]\n",
+        )
+
+    def test_user_units_and_autostart_follow_the_setting(self):
+        self.write("home/jch/.config/systemd/user/m.service", b"[Service]\nExecStart=/tmp/m\n")
+        self.write("home/amy/.config/systemd/user/n.service", b"[Service]\nExecStart=/tmp/n\n")
+        self.write("home/jch/.config/autostart/a.desktop", b"[Desktop Entry]\nExec=/tmp/a\n")
+        records = self.collect("privileged", modules=("systemd", "startup"))
+        sent = sources(records)
+        self.assertIn("/home/jch/.config/systemd/user/m.service", sent)
+        self.assertIn("/home/jch/.config/autostart/a.desktop", sent)
+        self.assertNotIn("/home/amy/.config/systemd/user/n.service", sent)
+
+    def test_hard_links_in_a_home_under_usr_are_never_read(self):
+        # daemon's home is /usr/sbin, and "privileged" covers service
+        # accounts: a hard link there gets no /usr package exception.
+        with open(Path(self.root, "etc/passwd"), "a") as passwd:
+            passwd.write("daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n")
+        self.write("var/lib/secret", b"CanaryUsrHomeLink\n")
+        Path(self.root, "usr/sbin").mkdir(parents=True)
+        os.link(Path(self.root, "var/lib/secret"), Path(self.root, "usr/sbin/.profile"))
+        collector = load_collector(self.root)
+        collector.PACKAGE_OWNER_UID = os.getuid()  # as if root-owned
+        out = io.BytesIO()
+        collector.main(settings(["startup"], home_text="privileged"), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"CanaryUsrHomeLink", raw)
+        self.assertIn(b'"/usr/sbin"', raw)  # the home was covered
+
+    def test_broad_service_homes_never_open_other_homes(self):
+        # Service accounts (covered by "privileged") can have "/" or a
+        # directory holding other homes as their home.
+        with open(Path(self.root, "etc/passwd"), "a") as passwd:
+            passwd.write("nobody:x:65534:65534::/:/sbin/nologin\n")
+            passwd.write("svc:x:999:999::/srv:/sbin/nologin\n")
+            passwd.write("erin:x:1005:1005::/srv/erin:/bin/bash\n")
+        self.write("srv/erin/.bashrc", b"CanaryErinStartup\n")
+        os.symlink("/home/amy/.bashrc", Path(self.root, ".profile"))
+        os.symlink("/srv/erin/.bashrc", Path(self.root, "srv/.profile"))
+        records = self.collect("privileged")
+        raw = json.dumps(records)
+        self.assertNotIn("CanaryErinStartup", raw)
+        self.assertNotIn("# home/amy", raw)
+        covered = records_named(records, "home_text")[0]["homes"]
+        self.assertIn("/srv", covered)
+        self.assertNotIn("/", covered)
+        # "/" as a home must not close every other home either.
+        self.assertIn("/root/.bashrc", sources(records))
+        self.assertIn("/home/jch/.bashrc", sources(records))
+        reasons = {r["path"]: r["reason"] for r in records_named(records, "unreadable_file")}
+        self.assertIn("another account's home", reasons["/srv/erin/.bashrc"])
+
+    def test_domain_name_never_covers_a_local_namesake(self):
+        with open(Path(self.root, "etc/passwd"), "a") as passwd:
+            passwd.write("alice:x:1006:1006::/home/alice:/bin/bash\n")
+        self.write("home/alice/.bashrc", b"# local alice\n")
+        bashrcs = self.bashrcs(self.collect("privileged"))
+        self.assertIn("/home/CORP/alice/.bashrc", bashrcs)  # alice@corp.example's home
+        self.assertNotIn("/home/alice/.bashrc", bashrcs)  # an unrelated local alice
+
+    def test_numeric_sudo_principals(self):
+        with open(Path(self.root, "etc/passwd"), "a") as passwd:
+            passwd.write("fay:x:1007:1007::/home/fay:/bin/bash\n")
+            passwd.write("gus:x:1008:700::/home/gus:/bin/bash\n")
+        self.write("etc/group", b"sudo:x:27:jch\nops:x:500:carl\nnum:x:700:\n")
+        self.write("etc/sudoers.d/numeric", b"#1007 ALL=(ALL) ALL\n%#700 ALL=(ALL) ALL # ok\n")
+        for user in ("fay", "gus"):
+            self.write(f"home/{user}/.bashrc", f"# {user}\n".encode())
+        bashrcs = self.bashrcs(self.collect("privileged"))
+        self.assertIn("/home/fay/.bashrc", bashrcs)
+        self.assertIn("/home/gus/.bashrc", bashrcs)
+
+    def test_environment_files_are_filtered_however_reached(self):
+        self.write("home/jch/.ssh/environment", b"API=CanaryEnvRoute\nLD_PRELOAD=/x.so\n")
+        os.remove(Path(self.root, "home/jch/.bashrc"))
+        os.symlink(".ssh/environment", Path(self.root, "home/jch/.bashrc"))
+        Path(self.root, "home/jch/.config/systemd").mkdir(parents=True)
+        os.symlink("../../.ssh", Path(self.root, "home/jch/.config/systemd/user"))
+        records = self.collect("all", modules=("startup", "systemd"))
+        raw = json.dumps(records)
+        self.assertNotIn("CanaryEnvRoute", raw)
+        self.assertIn("LD_PRELOAD=/x.so", raw)
+
+    def test_linked_parent_directory_cannot_open_an_uncovered_home(self):
+        self.write("home/amy/.ssh/rc", b"CanaryAmyRc\n")
+        os.symlink("../amy/.ssh", Path(self.root, "home/jch/.ssh"))
+        records = self.collect("privileged")
+        self.assertNotIn("CanaryAmyRc", json.dumps(records))
+        reasons = {r["path"]: r["reason"] for r in records_named(records, "unreadable_file")}
+        self.assertIn("/home/amy/.ssh/rc", reasons)
+
+    def test_a_covered_alias_never_opens_the_home_it_aliases(self):
+        with open(Path(self.root, "etc/passwd"), "a") as passwd:
+            passwd.write("svc:x:998:998::/srv/svc:/sbin/nologin\n")
+        Path(self.root, "srv").mkdir()
+        os.symlink("../home/amy", Path(self.root, "srv/svc"))
+        records = self.collect("privileged")
+        self.assertNotIn("# home/amy", json.dumps(records))
+
+    def test_linked_environment_entry_points_are_still_filtered(self):
+        self.write("home/jch/.config/env/ssh/environment", b"API=CanaryLinkedEnv\n")
+        os.symlink(".config/env/ssh", Path(self.root, "home/jch/.ssh"))
+        self.write("home/jch/.config/env/pam", b"TOKEN DEFAULT=CanaryPamEnv\n")
+        os.symlink(".config/env/pam", Path(self.root, "home/jch/.pam_environment"))
+        Path(self.root, "home/jch/.config/autostart").mkdir(parents=True)
+        os.symlink("../env/ssh/environment", Path(self.root, "home/jch/.config/autostart/e"))
+        records = self.collect("all")
+        raw = json.dumps(records)
+        self.assertNotIn("CanaryLinkedEnv", raw)
+        self.assertNotIn("CanaryPamEnv", raw)
+        self.assertIn("API [collector: value withheld]", raw)
+
+    def test_quoted_sudo_principals(self):
+        with open(Path(self.root, "etc/passwd"), "a") as passwd:
+            passwd.write("hal:x:1009:1009::/home/hal:/bin/bash\n")
+        self.write("home/hal/.bashrc", b"# hal\n")
+        self.write("etc/sudoers.d/quoted", b'"hal" ALL=(ALL) ALL\n')
+        self.assertIn("/home/hal/.bashrc", self.bashrcs(self.collect("privileged")))
+
+    def test_domain_members_of_admin_groups_are_covered(self):
+        self.write("etc/group", b"sudo:x:27:jch,dave@corp.example\nops:x:500:carl\n")
+        self.assertIn("/home/CORP/dave/.bashrc", self.bashrcs(self.collect("privileged")))
+
+    def test_an_uncovered_walk_never_hides_a_covered_one(self):
+        self.write("home/jch/.config/systemd/user/m.service", b"CanaryCoveredUnit\n")
+        Path(self.root, "home/amy/.config/systemd").mkdir(parents=True)
+        os.symlink(
+            "/home/jch/.config/systemd/user", Path(self.root, "home/amy/.config/systemd/user")
+        )
+        records = self.collect("privileged", modules=("systemd",))  # amy's home sorts first
+        self.assertIn("/home/jch/.config/systemd/user/m.service", sources(records))
+
+    def test_a_refused_route_never_hides_a_permitted_one(self):
+        os.remove(Path(self.root, "home/amy/.bashrc"))
+        os.symlink("/home/jch/.bashrc", Path(self.root, "home/amy/.bashrc"))
+        records = self.collect("all")  # amy's route to jch's file is refused, jch's isn't
+        self.assertIn("/home/jch/.bashrc", sources(records))
+
+    def test_unknown_setting_is_refused(self):
+        records = self.collect("everything")
+        self.assertEqual(records[-1]["status"], "refused")
+        self.assertIn("home_text must be", json.dumps(records))
 
 
 class CanaryTests(FixtureRoot):
@@ -2516,6 +2761,23 @@ class CanaryTests(FixtureRoot):
             self.write(f"{home}/.ssh/rc", f"{c['homestartup']}\n".encode())
             self.write(f"{home}/.config/systemd/user/x.service", f"{c['userunit']}\n".encode())
             os.symlink(f"/{home}/.bashrc", Path(self.root, "etc/profile.d", home.replace("/", "_")))
+            # Home start-up names leading to what must never be read, for the
+            # home_text opt-in: history and protected files by link and hard
+            # link, and an environment file's values.
+            os.link(Path(self.root, home, ".bash_history"), Path(self.root, home, ".profile"))
+            os.symlink(".bash_history", Path(self.root, home, ".zshrc"))
+            os.symlink("/etc/shadow", Path(self.root, home, ".zshenv"))
+            os.symlink(
+                f"/{home}/.bash_history", Path(self.root, home, ".config/systemd/user/h.service")
+            )
+            os.makedirs(Path(self.root, home, ".config/autostart"))
+            os.symlink("/etc/gshadow", Path(self.root, home, ".config/autostart/g.desktop"))
+            os.link(
+                Path(self.root, "etc/shadow"), Path(self.root, home, ".config/autostart/s.desktop")
+            )
+            self.write(
+                f"{home}/.ssh/environment", f"API={c['homeenv']}\nLD_PRELOAD=/x.so\n".encode()
+            )
         # Configuration links into the spools: only cron's own classified
         # walk may read there, so neither the environment nor output leaks.
         for link, target in (
@@ -2531,20 +2793,41 @@ class CanaryTests(FixtureRoot):
             f"Oct 26 sudo: -----BEGIN RSA PRIVATE KEY-----\n{c['private']}\n".encode(),
         )
 
-    def test_no_canary_leaves_through_any_module(self):
-        self.plant()
+    def run_all(self, home_text=None):
         collector = load_collector(self.root)
         collector.COMMANDS = {"journalctl": ()}  # no real journal in a fixture
         out = io.BytesIO()
-        collector.main(settings(None), out=out)
-        raw = gzip.decompress(out.getvalue())
+        collector.main(settings(None, home_text=home_text), out=out)
+        return gzip.decompress(out.getvalue())
+
+    def leaks(self, raw, allowed=()):
         text = raw.decode("utf-8", "replace")
         leaks = {}
         for name, canary in CANARIES.items():
+            if name in allowed:
+                continue
             for form in {canary, canary[:16], base64.b64encode(canary.encode()).decode()[:16]}:
                 if form in text:
                     leaks[name] = form
-        self.assertEqual(leaks, {})
+        return leaks
+
+    def test_no_canary_leaves_through_any_module(self):
+        self.plant()
+        raw = self.run_all()
+        self.assertEqual(self.leaks(raw), {})
+        trailer = json.loads(raw.splitlines()[-1])
+        self.assertEqual(trailer["status"], "complete", trailer["modules"])
+
+    def test_home_text_opt_in_sends_only_start_up_text(self):
+        # With every home's text allowed, only the start-up files and units
+        # themselves may appear: never history, protected files, values
+        # in environment files, or anything reached by a link or hard link.
+        self.plant()
+        raw = self.run_all(home_text="all")
+        self.assertEqual(self.leaks(raw, allowed=("homestartup", "userunit")), {})
+        text = raw.decode("utf-8", "replace")
+        self.assertIn(CANARIES["homestartup"], text)  # the opt-in did send text
+        self.assertIn(CANARIES["userunit"], text)
         trailer = json.loads(raw.splitlines()[-1])
         self.assertEqual(trailer["status"], "complete", trailer["modules"])
 

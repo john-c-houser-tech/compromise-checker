@@ -28,6 +28,7 @@ from pyrage import x25519
 from checker.files import atomic_write, locked
 from checker.protocol import (
     Error,
+    HomeText,
     IncompleteStream,
     Manifest,
     ProtocolError,
@@ -52,6 +53,8 @@ class Config(BaseModel):
     recipients: list[str]  # age public keys bundles are encrypted to
     identity_file: str | None = None  # where the matching private key is, if here
     retention_days: int = 90
+    # Opt-in chosen in `checker init` (policy §7); see protocol HomeText.
+    home_text: HomeText = "off"
 
 
 def config_file(home: Path) -> Path:
@@ -69,7 +72,9 @@ def load_config(home: Path) -> Config:
     return Config.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
 
 
-def initialise(home: Path, recipient: str | None = None) -> tuple[Config, Path | None]:
+def initialise(
+    home: Path, recipient: str | None = None, home_text: HomeText = "off"
+) -> tuple[Config, Path | None]:
     """Create the tool's directory, evidence key and database. With
     `recipient`, bundles are encrypted to that key and its private half stays
     wherever the organization keeps it; otherwise a key pair is made here."""
@@ -79,10 +84,12 @@ def initialise(home: Path, recipient: str | None = None) -> tuple[Config, Path |
     with locked(config_file(home)):
         if config_file(home).exists():
             raise EvidenceError(f"already set up ({config_file(home)}); nothing changed")
-        return _initialise(home, recipient)
+        return _initialise(home, recipient, home_text)
 
 
-def _initialise(home: Path, recipient: str | None) -> tuple[Config, Path | None]:
+def _initialise(
+    home: Path, recipient: str | None, home_text: HomeText
+) -> tuple[Config, Path | None]:
     identity_path = None
     if recipient:
         try:
@@ -104,7 +111,9 @@ def _initialise(home: Path, recipient: str | None) -> tuple[Config, Path | None]
         )
         recipients = [public]
     config = Config(
-        recipients=recipients, identity_file=str(identity_path) if identity_path else None
+        recipients=recipients,
+        identity_file=str(identity_path) if identity_path else None,
+        home_text=home_text,
     )
     Store(database_file(home)).close()
     atomic_write(config_file(home), yaml.safe_dump(config.model_dump(), sort_keys=False))

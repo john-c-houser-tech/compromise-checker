@@ -467,17 +467,25 @@ def cmd_changes(args: argparse.Namespace) -> int:
         store.close()
     print(f"Host       {found.host}")
     print(f"Bundle     {found.bundle_id}")
-    if found.first:
+    if found.baseline_set_now:
         print(
-            f"Baseline   {found.baseline_id}: this is the host's first analysis, so it is the"
-            " baseline; change-based checks start from here"
+            f"Baseline   {found.baseline_id}: set just now, at the host's first analysis;"
+            " change-based checks start from it"
         )
     else:
         print(f"Baseline   {found.baseline_id}")
+    for note in found.notes:
+        print(f"Note       {note}")
     if not found.comparisons:
-        print("Nothing earlier to compare with.")
+        print("Nothing else to compare with.")
     for comparison in found.comparisons:
-        print(f"\nSince the {comparison.label} bundle, {comparison.bundle_id}:")
+        if comparison.newer:
+            print(
+                f"\nFrom this bundle to the {comparison.label} bundle, {comparison.bundle_id},"
+                " which is newer:"
+            )
+        else:
+            print(f"\nSince the {comparison.label} bundle, {comparison.bundle_id}:")
         if not comparison.differences:
             print("  no changes")
         for name, diff in comparison.differences.items():
@@ -533,7 +541,7 @@ def cmd_baseline_accept(args: argparse.Namespace) -> int:
     base = home()
     store = Store(database_file(base))
     try:
-        row = accept(
+        row, notes = accept(
             store,
             args.host,
             args.reason,
@@ -547,8 +555,8 @@ def cmd_baseline_accept(args: argparse.Namespace) -> int:
     finally:
         store.close()
     print(f"{args.host}: baseline is now {row['id']}; later changes are compared with it.")
-    if row["status"] != "complete":
-        print(f"Note: that bundle is {row['status']}; its incomplete sections compare as such.")
+    for note in notes:
+        print(f"Note: {note}.")
     return 0
 
 

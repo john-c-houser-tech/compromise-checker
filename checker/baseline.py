@@ -23,6 +23,10 @@ class Comparison:
     label: str  # "previous" or "baseline"
     bundle_id: str
     differences: dict[str, dict[str, Any]]
+    # The other bundle is newer than this one (a baseline accepted later
+    # than the bundle asked about): the differences still run from the
+    # older to the newer.
+    newer: bool = False
 
 
 @dataclass
@@ -30,8 +34,14 @@ class Changes:
     host: str
     bundle_id: str
     baseline_id: str
-    first: bool  # this bundle is the host's first baseline, set just now
+    baseline_set_now: bool  # the host had no baseline: this call set it
     comparisons: list[Comparison] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def first(self) -> bool:
+        """This bundle is the host's first baseline, set just now."""
+        return self.baseline_set_now and self.baseline_id == self.bundle_id
 
 
 def usable_bundles(store: Store, host: str) -> list[Any]:
@@ -69,15 +79,26 @@ def changes(
     host's oldest usable bundle becomes it (and the result says so)."""
     target = _pick(store, host, bundle_id)
     baseline = current_baseline(store, host)
-    first = False
+    set_now, notes = False, []
     if baseline is None:
-        oldest = usable_bundles(store, host)[0]
-        snapshot_of(store, oldest, identity, recipients)  # it must have one
-        store.record_baseline(host, oldest["id"], "first", None)
+        # The oldest full collection; a run limited to some modules can't
+        # stand for the whole host. If there is none, the oldest at all.
+        rows = usable_bundles(store, host)
+        chosen = next(
+            (r for r in rows if snapshot_of(store, r, identity, recipients).meta.get("full")),
+            None,
+        )
+        if chosen is None:
+            chosen = rows[0]
+            notes.append(
+                "no bundle of this host collected every module, so the baseline covers only"
+                " what its bundle collected"
+            )
+        store.record_baseline(host, chosen["id"], "first", None)
         baseline = current_baseline(store, host)
-        first = oldest["id"] == target["id"]
-    result = Changes(host, target["id"], baseline["bundle_id"], first)
-    new = snapshot_of(store, target, identity, recipients)
+        set_now = True
+    result = Changes(host, target["id"], baseline["bundle_id"], set_now, notes=notes)
+    snapshot = snapshot_of(store, target, identity, recipients)
     earlier = [r for r in usable_bundles(store, host) if r["started_at"] < target["started_at"]]
     others = []
     if earlier:
@@ -87,8 +108,10 @@ def changes(
     ):
         others.append(("baseline", store.bundle(baseline["bundle_id"])))
     for label, row in others:
-        old = snapshot_of(store, row, identity, recipients)
-        result.comparisons.append(Comparison(label, row["id"], compare(old, new)))
+        other = snapshot_of(store, row, identity, recipients)
+        newer = row["started_at"] > target["started_at"]
+        differences = compare(snapshot, other) if newer else compare(other, snapshot)
+        result.comparisons.append(Comparison(label, row["id"], differences, newer))
     return result
 
 
@@ -99,12 +122,22 @@ def accept(
     identity: x25519.Identity,
     recipients: list[str],
     bundle_id: str | None = None,
-) -> Any:
+) -> tuple[Any, list[str]]:
     """Make a bundle's snapshot (by default the host's latest) the host's
-    baseline, recording who accepted it, from where, and why (encrypted)."""
+    baseline, recording who accepted it, from where, and why (encrypted).
+    Returns the bundle and anything the operator should know."""
     if not reason.strip():
         raise EvidenceError("a reason is required to accept a baseline")
     row = _pick(store, host, bundle_id)
-    snapshot_of(store, row, identity, recipients)  # it must have one
+    if not snapshot_of(store, row, identity, recipients).meta.get("full"):
+        raise EvidenceError(
+            f"bundle {row['id']} collected only some modules; a baseline must cover them all"
+        )
+    notes = []
+    current = current_baseline(store, host)
+    if current is not None and store.bundle(current["bundle_id"])["started_at"] > row["started_at"]:
+        notes.append(f"it is older than the baseline it replaces ({current['bundle_id']})")
+    if row["status"] != "complete":
+        notes.append(f"it is {row['status']}; its incomplete sections compare as such")
     store.record_baseline(host, row["id"], "accepted", seal_text(reason.strip(), recipients))
-    return row
+    return row, notes

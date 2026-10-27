@@ -24,18 +24,10 @@ from checker.evidence import (
     load_identity,
     open_text,
 )
-from checker.snapshot import SnapshotBuilder, compare, sshd_lines, sudoers_lines
+from checker.snapshot import FULL, SnapshotBuilder, compare, sshd_lines, sudoers_lines
 
 START = datetime(2027, 1, 2, 12, 0, tzinfo=UTC)
-ALL_MODULES = [
-    "host_facts",
-    "accounts",
-    "sudoers",
-    "ssh",
-    "kernel_modules",
-    "processes",
-    "systemd",
-]
+ALL_MODULES = sorted(FULL)  # a full collection
 
 
 def stream(records):
@@ -83,7 +75,7 @@ def host_records(
     accounts=(("root", 0), ("jch", 1000)),
     sudoers="root ALL=(ALL) ALL\n",
     keys=(("jch", "SHA256:jchkey"),),
-    listening=(("tcp", ["0.0.0.0", 22], "LISTEN", 700),),
+    listening=(("tcp", ["0.0.0.0", 22], "listen", 700),),
     extra=(),
     statuses=None,
     planned=ALL_MODULES,
@@ -263,7 +255,9 @@ def test_a_snapshot_holds_the_host_state(tmp_path):
     [key] = s["authorized_keys"].items.values()
     assert key["fingerprint"] == "SHA256:jchkey" and "line" not in key
     # Listening sockets only, with their programs.
-    assert s["listeners"].items == {"tcp 0.0.0.0:22 netns=host": {"uid": 0, "programs": ["sshd"]}}
+    assert s["listeners"].items == {
+        "tcp 0.0.0.0:22 netns=host": {"uids": [0], "programs": ["sshd"], "sockets": 1}
+    }
     assert s["host"].items["os"] == {"id": "ubuntu", "version_id": "24.04"}
     assert all(section.complete for section in s.values())
     assert snap.meta["masking_version"] == 6
@@ -318,8 +312,8 @@ def test_compare_reports_added_removed_and_changed(tmp_path):
             sudoers="root ALL=(ALL) ALL\nbackdoor ALL=(ALL) NOPASSWD: ALL\n",
             keys=(("jch", "SHA256:jchkey"), ("root", "SHA256:newkey")),
             listening=(
-                ("tcp", ["0.0.0.0", 22], "LISTEN", 700),
-                ("tcp", ["0.0.0.0", 4444], "LISTEN", 800),
+                ("tcp", ["0.0.0.0", 22], "listen", 700),
+                ("tcp", ["0.0.0.0", 4444], "listen", 800),
             ),
         ),
         tmp_path,
@@ -411,6 +405,7 @@ def test_the_first_analysis_becomes_the_baseline(home):
     add_bundle(home, "b1", 0, host_records())
     found = changes(store, "web01", identity, config.recipients)
     assert found.first and found.baseline_id == "b1" and found.comparisons == []
+    assert found.baseline_set_now
     assert current_baseline(store, "web01")["how"] == "first"
     assert [r["action"] for r in store.custody_of("b1")][-1] == "baseline"
 
@@ -436,7 +431,10 @@ def test_accepting_moves_the_baseline_with_who_and_why(home):
     add_bundle(home, "b1", 0, host_records())
     add_bundle(home, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("tmp", 2000))))
     changes(store, "web01", identity, config.recipients)
-    accept(store, "web01", "Planned: tmp account for the migration", identity, config.recipients)
+    _, notes = accept(
+        store, "web01", "Planned: tmp account for the migration", identity, config.recipients
+    )
+    assert notes == []
     rows = store.baselines("web01")
     assert [(r["how"], r["bundle_id"]) for r in rows] == [("first", "b1"), ("accepted", "b2")]
     assert b"migration" not in rows[-1]["reason"]  # encrypted
@@ -476,7 +474,7 @@ def test_baselines_are_append_only(home):
 def test_cli_changes_and_baseline(home, capsys):
     add_bundle(home, "b1", 0, host_records())
     assert cli.main(["changes", "web01"]) == 0
-    assert "first analysis" in capsys.readouterr().out
+    assert "set just now" in capsys.readouterr().out
     add_bundle(home, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("evil", 0))))
     assert cli.main(["changes", "web01"]) == 0
     out = capsys.readouterr().out
@@ -486,3 +484,191 @@ def test_cli_changes_and_baseline(home, capsys):
     assert cli.main(["baseline", "show", "web01"]) == 0
     out = capsys.readouterr().out
     assert "first" in out and "accepted" in out and "— known" in out
+
+
+# --- Review findings ----------------------------------------------------------------------
+
+
+def test_the_collectors_own_socket_states_and_packet_sockets(tmp_path):
+    packet = [
+        rec("processes", "process", pid=900, comm="implant"),
+        rec("processes", "process", pid=901, comm="dhclient"),
+    ]
+    for pid, ethertype in ((900, "0800"), (901, "0003")):
+        packet.append(
+            rec(
+                "processes",
+                "socket",
+                protocol="packet",
+                netns="host",
+                type="3",
+                ethertype=ethertype,
+                interface="2",
+                uid=0,
+                inode=str(pid),
+                pids=[pid],
+            )
+        )
+    # Two listeners on one port (SO_REUSEPORT): one item with both programs.
+    listening = (("tcp", ["0.0.0.0", 22], "listen", 700), ("tcp", ["0.0.0.0", 22], "listen", 800))
+    snap = snapshot_of_records(host_records(listening=listening, extra=packet), tmp_path)
+    items = snap.sections["listeners"].items
+    assert items["tcp 0.0.0.0:22 netns=host"]["programs"] == ["nc", "sshd"]
+    assert items["tcp 0.0.0.0:22 netns=host"]["sockets"] == 2
+    assert items["packet type=3 ethertype=0800 interface=2 netns=host"]["programs"] == ["implant"]
+    assert len(items) == 3
+
+
+def test_privileged_files_elsewhere_web_files_and_unowned_executables(tmp_path):
+    extra = [
+        rec("unusual_files", "privileged_file", path="/home/eve/.x/sh", setuid=True, mode="4755"),
+        rec("unusual_files", "web_file", path="/var/www/html/up.php", size=10),
+        rec("system_files", "unowned_executable", path="/usr/lib/libz.so.9", size=10),
+    ]
+    snap = snapshot_of_records(host_records(extra=extra), tmp_path)
+    assert "/home/eve/.x/sh" in snap.sections["privileged_files"].items
+    assert "/var/www/html/up.php" in snap.sections["web_files"].items
+    assert "/usr/lib/libz.so.9" in snap.sections["unowned_executables"].items
+
+
+def test_a_duplicate_name_above_the_real_one_shows(tmp_path):
+    old = snapshot_of_records(host_records(), tmp_path)
+    # A second jch, UID 0, inserted above the real one: the system uses it.
+    records = host_records(accounts=(("root", 0), ("jch", 0), ("jch", 1000)))
+    new = snapshot_of_records(records, tmp_path)
+    diff = compare(old, new)["accounts"]
+    assert diff["changed"]["jch"]["uid"] == [1000, 0]
+    assert list(diff["added"]) == ["jch #2"]
+
+
+def test_sudoers_uid_users_and_comments_ending_in_a_backslash():
+    lines = ["# a comment \\", "eve ALL=(ALL) NOPASSWD: ALL", "#1000 ALL=(ALL) ALL # why"]
+    assert sudoers_lines(lines) == ["eve ALL=(ALL) NOPASSWD: ALL", "#1000 ALL=(ALL) ALL"]
+    assert sudoers_lines(["a ALL=\\", "  /bin/x", "esc \\#kept"]) == [
+        "a ALL= /bin/x",
+        "esc \\#kept",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("record", "section"),
+    [
+        (
+            rec(
+                "ssh", "authorized_keys_file", path="/home/jch/.ssh/authorized_keys", truncated=True
+            ),
+            "authorized_keys",
+        ),
+        (rec("ssh", "directives_incomplete", path="/etc/ssh/sshd_config", size=2), "sshd_config"),
+        (rec("sudoers", "include_dir", path="/etc/sudoers.d", truncated=True), "sudo_rules"),
+        (rec("pam", "config_dir", path="/etc/pam.d", entries=2000, truncated=True), "pam"),
+        (
+            rec(
+                "systemd",
+                "walk_summary",
+                top="/etc/systemd/system",
+                truncated=False,
+                not_descended={"depth": 0, "other_filesystem": 1, "pruned": 0},
+            ),
+            "systemd",
+        ),
+        (
+            rec("ssh", "not_examined", account="jch", path="/etc/ssh/keys/jch", reason="hard link"),
+            "authorized_keys",
+        ),
+        (
+            rec(
+                "system_files",
+                "system_files_summary",
+                truncated=True,
+                truncated_reason="findings",
+                dropped={"privileged_file": 3},
+            ),
+            "privileged_files",
+        ),
+    ],
+)
+def test_every_kind_of_gap_marks_its_section(tmp_path, record, section):
+    snap = snapshot_of_records(host_records(extra=[record]), tmp_path)
+    assert not snap.sections[section].complete, snap.sections[section].gaps
+
+
+def test_gaps_go_to_the_right_sections(tmp_path):
+    homes = rec("ssh", "homes", complete=False)
+    key_gap = rec("ssh", "not_examined", account="jch", path="/etc/ssh/keys/jch", reason="x")
+    snap = snapshot_of_records(host_records(extra=[homes, key_gap]), tmp_path)
+    assert not snap.sections["authorized_keys"].complete
+    assert snap.sections["sshd_config"].complete  # a key file under /etc/ssh is still a key file
+    snap = snapshot_of_records(
+        host_records(extra=[rec("accounts", "homes", complete=False)]), tmp_path
+    )
+    assert snap.sections["accounts"].complete and snap.sections["groups"].complete
+    # Writable places cross into other filesystems by design.
+    walk = rec(
+        "unusual_files",
+        "walk_summary",
+        top="/var",
+        truncated=False,
+        not_descended={"depth": 0, "other_filesystem": 4, "pruned": 3},
+    )
+    snap = snapshot_of_records(host_records(extra=[walk]), tmp_path)
+    assert snap.sections["unusual_files"].complete
+
+
+def test_a_partial_run_is_not_compared_and_cannot_be_a_baseline(home):
+    _, store, identity, config = home
+    partial = host_records(planned=["host_facts", "accounts"])
+    add_bundle(home, "p0", 0, partial)
+    add_bundle(home, "b1", 10, host_records())
+    add_bundle(home, "p2", 20, partial)
+    found = changes(store, "web01", identity, config.recipients)
+    assert found.baseline_id == "b1" and found.baseline_set_now and not found.first
+    previous = found.comparisons[0].differences
+    assert previous["sudo_rules"]["removed"] == {} and not previous["sudo_rules"]["comparable"]
+    with pytest.raises(EvidenceError, match="only some modules"):
+        accept(store, "web01", "x", identity, config.recipients, bundle_id="p2")
+
+
+def test_an_older_bundle_compares_forwards_and_an_older_accept_is_noted(home):
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    add_bundle(home, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("new", 5))))
+    changes(store, "web01", identity, config.recipients)
+    accept(store, "web01", "reviewed", identity, config.recipients, bundle_id="b2")
+    found = changes(store, "web01", identity, config.recipients, bundle_id="b1")
+    [comparison] = found.comparisons
+    assert comparison.newer and list(comparison.differences["accounts"]["added"]) == ["new"]
+    _, notes = accept(store, "web01", "back", identity, config.recipients, bundle_id="b1")
+    assert notes == ["it is older than the baseline it replaces (b2)"]
+
+
+def test_masking_note_covers_masked_names_too(tmp_path):
+    old = snapshot_of_records(host_records(masking=5), tmp_path)
+    new = snapshot_of_records(host_records(masking=6, keys=(("jch", "SHA256:other"),)), tmp_path)
+    assert "masking changed" in compare(old, new)["authorized_keys"]["notes"][0]
+
+
+def test_run_files_ignore_their_boot_time_facts(tmp_path):
+    def unit(inode):
+        return rec(
+            "systemd",
+            "file",
+            path="/run/systemd/transient/x.service",
+            inode=inode,
+            mtime=str(inode),
+            ctime=str(inode),
+            mode="0644",
+            uid=0,
+            size=5,
+        )
+
+    old = snapshot_of_records(host_records(extra=[unit(1)]), tmp_path)
+    new = snapshot_of_records(host_records(extra=[unit(2)]), tmp_path)
+    assert "systemd" not in compare(old, new)
+
+
+def test_an_error_in_a_module_marks_all_its_sections(tmp_path):
+    error = {"type": "error", "module": "accounts", "message": "boom"}
+    snap = snapshot_of_records(host_records(extra=[error]), tmp_path)
+    for section in ("accounts", "groups", "shell_history"):
+        assert snap.sections[section].gaps == ["error: boom"]

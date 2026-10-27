@@ -42,15 +42,42 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "kernel_modules": ("loaded kernel modules", ("kernel_modules",)),
     "package_changes": ("package files that differ from their package", ("package_verify",)),
     "checksum_store": ("the package managers' own checksum lists", ("package_verify",)),
-    "privileged_files": ("set-user-ID, set-group-ID and capability files", ("system_files",)),
+    "privileged_files": (
+        "set-user-ID, set-group-ID, capability and device files, in system directories and"
+        " elsewhere",
+        ("system_files", "unusual_files"),
+    ),
+    "unowned_executables": (
+        "executables in system directories that no package installed",
+        ("system_files",),
+    ),
     "unusual_files": ("unusual files in writable and web directories", ("unusual_files",)),
+    "web_files": ("executable or script files in web roots", ("unusual_files",)),
     "listeners": ("listening and raw sockets, with their programs", ("processes",)),
 }
 
-# Sections built from masked text: a new masking version can change them
-# without any change on the host.
-_FROM_TEXT = {"sudo_rules", "sshd_config"}
-_TEXT_HASHED = {"sudo_files", "ssh_files", "pam", "cron", "systemd", "startup", "hooks"}
+# Every module the sections come from: a bundle that planned them all is a
+# full collection.
+FULL = frozenset(m for _, modules in SECTIONS.values() for m in modules)
+
+# Sections holding masked text, hashes of it, or masked names: a new masking
+# version can change them without any change on the host.
+_MASKED = {
+    "sudo_rules",
+    "sshd_config",
+    "sudo_files",
+    "ssh_files",
+    "pam",
+    "cron",
+    "systemd",
+    "startup",
+    "hooks",
+    "authorized_keys",
+    "unusual_files",
+    "web_files",
+    "listeners",
+    "shell_history",
+}
 
 # Which section a module's text sources and file records go to.
 _FILE_SECTIONS = {
@@ -73,24 +100,37 @@ _FILE_RECORDS = {
     "include_dir",
 }
 # Records that mean some of a module's data is missing.
-_GAPS = {"unreadable_file", "listing_truncated", "phase_time_limit", "incomplete_file"}
+_GAPS = {
+    "unreadable_file",
+    "listing_truncated",
+    "phase_time_limit",
+    "incomplete_file",
+    "not_examined",
+    "directives_incomplete",
+}
 
 
-def _gap_sections(module: str, path: str | None) -> set[str] | None:
-    """The sections a gap at `path` leaves incomplete, where a module feeds
-    several; None: all of them."""
-    if module == "accounts" and path:
-        if path in ("/etc/passwd", "/etc/shadow"):
-            return {"accounts"}
-        if path == "/etc/group":
-            return {"groups"}
-        return {"shell_history"}
-    if module == "ssh" and path:
-        if path.startswith("/etc/ssh/"):
-            return {"sshd_config", "ssh_files"}
-        return {"authorized_keys", "ssh_files"}
-    if module == "sudoers":
-        return {"sudo_rules", "sudo_files"}
+def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | None:
+    """The sections a gap leaves incomplete, where a module feeds several,
+    judged by what kind of record reported it; None: all of them (a gap
+    in the module as a whole: an error, a summary cut short)."""
+    if not name:
+        return None
+    path = data.get("path")
+    if module == "accounts":
+        if path not in ("/etc/passwd", "/etc/shadow", "/etc/group"):
+            return {"shell_history"}  # home directories: only history comes from them
+        return {"groups"} if path == "/etc/group" else {"accounts"}
+    if module == "ssh":
+        # Key files are reported with their account (or found through the
+        # homes); everything else is sshd's own configuration.
+        if name in ("homes", "authorized_keys_file") or "account" in data or "home" in data:
+            return {"authorized_keys", "ssh_files"}
+        return {"sshd_config", "ssh_files"}
+    if module == "unusual_files":
+        return {"unusual_files", "web_files", "privileged_files"}
+    if module == "system_files":
+        return {"privileged_files", "unowned_executables"}
     return None
 
 
@@ -141,21 +181,35 @@ def _meta(data: dict[str, Any]) -> dict[str, Any]:
 # --- Text the collector sent ---------------------------------------------------------
 
 
+def _without_comment(line: str) -> str:
+    """A sudoers line up to its comment. `#` starts one, except in
+    `#include`/`#includedir` and before digits (`#1000` is a user ID), and
+    when escaped (`\\#`)."""
+    for i, char in enumerate(line):
+        if char != "#" or (i and line[i - 1] == "\\"):
+            continue
+        rest = line[i + 1 :]
+        if rest[:1].isdigit() or (not line[:i].strip() and rest.startswith("include")):
+            continue
+        return line[:i]
+    return line
+
+
 def sudoers_lines(lines: list[str]) -> list[str]:
     """The lines sudo acts on: comments and blank lines dropped (but not
-    `#include`, a directive), continuations joined, spaces collapsed."""
+    `#include` or a `#UID` user), continuations joined, spaces collapsed.
+    A comment ends at its line's end, backslash or not, as in sudo."""
     out: list[str] = []
     pending = ""
     for raw in lines:
-        line = raw.rstrip()
+        line = _without_comment(raw).rstrip()
         if line.endswith("\\"):
             pending += line[:-1] + " "
             continue
         line = (pending + line).strip()
         pending = ""
-        if not line or (line.startswith("#") and not line.startswith(("#include", "#includedir"))):
-            continue
-        out.append(" ".join(line.split()))
+        if line:
+            out.append(" ".join(line.split()))
     if pending.strip():
         out.append(" ".join(pending.split()))
     return out
@@ -200,12 +254,13 @@ class SnapshotBuilder:
         self._sockets: list[dict[str, Any]] = []
         self._password: dict[str, dict[str, Any]] = {}
         self._gaps: dict[str, list[tuple[str, set[str] | None]]] = {}
+        self._names: dict[str, dict[str, int]] = {}
 
     def section(self, name: str) -> Section:
         return self.sections.setdefault(name, Section())
 
-    def _module_gap(self, module: str, why: str, path: str | None = None) -> None:
-        self._gaps.setdefault(module, []).append((why, _gap_sections(module, path)))
+    def _module_gap(self, module: str, why: str, name: str = "", data: Any = None) -> None:
+        self._gaps.setdefault(module, []).append((why, _gap_sections(module, name, data or {})))
 
     # Consumer interface
     def manifest(self, manifest: Manifest) -> None:
@@ -215,11 +270,27 @@ class SnapshotBuilder:
         module, name, data = record.module, record.name, record.data
         if name in _GAPS:
             where = data.get("path") or data.get("phase") or ""
-            self._module_gap(module, f"{name}: {where}", data.get("path"))
-        elif name == "walk_summary" and data.get("truncated"):
-            self._module_gap(module, f"walk of {data.get('top')} cut short")
+            self._module_gap(module, f"{name}: {where}", name, data)
+        elif name == "walk_summary":
+            if data.get("truncated"):
+                self._module_gap(module, f"walk of {data.get('top')} cut short", name, data)
+            skipped = data.get("not_descended") or {}
+            # Walks of writable places cross into other filesystems by design
+            # (DESIGN.md §8.6); anywhere else, a mount on top hides what's under it.
+            deeper = skipped.get("depth") or 0
+            if module != "unusual_files":
+                deeper += skipped.get("other_filesystem") or 0
+            if deeper:
+                why = f"walk of {data.get('top')}: {deeper} directories not entered"
+                self._module_gap(module, why, name, data)
         elif name == "homes" and data.get("complete") is False:
-            self._module_gap(module, "not every home directory was examined")
+            self._module_gap(module, "not every home directory was examined", name, data)
+        elif data.get("truncated") is True and name in (
+            "authorized_keys_file",
+            "include_dir",
+            "config_dir",
+        ):
+            self._module_gap(module, f"{name} cut short: {data.get('path')}", name, data)
         handler = getattr(self, f"_on_{module}", None)
         if handler is not None:
             handler(name, data)
@@ -227,6 +298,11 @@ class SnapshotBuilder:
             item = self.section(_FILE_SECTIONS[module]).items.setdefault(data["path"], {})
             item.update(_meta(data))
             item.setdefault("record", name)
+            if data["path"].startswith("/run/"):
+                # Remade at every boot (transient units, generators' output):
+                # its content, owner and mode matter, not its inode and times.
+                for volatile in ("inode", "ctime", "mtime"):
+                    item.pop(volatile, None)
 
     def source_start(self, start: SourceStart) -> None:
         wanted = start.kind == "file" and start.module in _FILE_SECTIONS
@@ -269,12 +345,13 @@ class SnapshotBuilder:
         item["content_sha256"] = digest.hexdigest()
         if cut:
             item["content_cut"] = True
-            self._module_gap(start.module, f"{start.name} cut short", start.name)
+            self._module_gap(start.module, f"{start.name} cut short", "source", {})
         if lines is None:
             return
         if start.module == "sudoers":
             rules = self.section("sudo_rules")
-            # Keyed by text: a line moved within its file isn't a change.
+            # Keyed by text: a line moved within its file isn't a change; the
+            # same line twice is one rule.
             for text in sudoers_lines(lines):
                 rules.items[f"{start.name}: {text}"] = {"path": start.name}
         else:
@@ -302,20 +379,30 @@ class SnapshotBuilder:
         elif name == "mandatory_access_control":
             host["mandatory_access_control"] = dict(data)
 
+    def _occurrence(self, kind: str, name: str) -> str:
+        """The item key for the nth entry of a name: the system uses the
+        first, so it keeps the plain name; later ones (a duplicate name is
+        itself suspicious) are `name #2` and so on."""
+        seen = self._names.setdefault(kind, {})
+        seen[name] = seen.get(name, 0) + 1
+        return name if seen[name] == 1 else f"{name} #{seen[name]}"
+
     def _on_accounts(self, name: str, data: dict[str, Any]) -> None:
         if name == "account" and data.get("name"):
+            key = self._occurrence("account", data["name"])
             item = {k: data.get(k) for k in ("uid", "gid", "home", "shell", "password")}
-            item.update(self._password.get(data["name"], {}))
-            self.section("accounts").items[data["name"]] = item
+            item.update(self._password.get(key, {}))
+            self.section("accounts").items[key] = item
         elif name == "password_status" and data.get("name"):
+            key = self._occurrence("password_status", data["name"])
             status = {f"shadow_{k}": v for k, v in data.items() if k not in ("name", "line")}
-            self._password[data["name"]] = status
-            account = self.section("accounts").items.get(data["name"])
+            self._password[key] = status
+            account = self.section("accounts").items.get(key)
             if account is not None:
                 account.update(status)
         elif name == "group" and data.get("name"):
             members = sorted(m for m in data.get("members") or [] if m)
-            self.section("groups").items[data["name"]] = {
+            self.section("groups").items[self._occurrence("group", data["name"])] = {
                 "gid": data.get("gid"),
                 "members": members,
             }
@@ -353,15 +440,22 @@ class SnapshotBuilder:
     def _on_system_files(self, name: str, data: dict[str, Any]) -> None:
         if name == "privileged_file" and data.get("path"):
             self.section("privileged_files").items[data["path"]] = _meta(data)
+        elif name == "unowned_executable" and data.get("path"):
+            self.section("unowned_executables").items[data["path"]] = _meta(data)
         elif name == "system_files_summary" and data.get("truncated"):
-            self._module_gap("system_files", "cut short")
+            self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 
     def _on_unusual_files(self, name: str, data: dict[str, Any]) -> None:
-        if name == "unusual_file" and data.get("path"):
-            self.section("unusual_files").items[data["path"]] = _meta(data)
+        sections = {
+            "unusual_file": "unusual_files",
+            "web_file": "web_files",
+            "privileged_file": "privileged_files",
+        }
+        if name in sections and data.get("path"):
+            self.section(sections[name]).items[data["path"]] = _meta(data)
 
     def _on_processes(self, name: str, data: dict[str, Any]) -> None:
-        if name == "process" and isinstance(data.get("pid"), int):
+        if name in ("process", "hidden_process") and isinstance(data.get("pid"), int):
             self._processes[data["pid"]] = data.get("comm") or "?"
         elif name == "socket":
             self._sockets.append(data)
@@ -380,19 +474,29 @@ class SnapshotBuilder:
             protocol = str(sock.get("protocol") or "?")
             remote = sock.get("remote") or []
             listening = (
-                sock.get("state") == "LISTEN"
+                str(sock.get("state") or "").lower() == "listen"
                 or (protocol.startswith("udp") and len(remote) == 2 and remote[1] == 0)
                 or protocol.startswith(("raw", "packet"))
             )
             if not listening:
                 continue
             local = sock.get("local")
-            where = (
-                f"{local[0]}:{local[1]}" if isinstance(local, list) and len(local) == 2 else local
-            )
+            if protocol == "packet":  # no address: what it captures, and where
+                where = "type={} ethertype={} interface={}".format(
+                    sock.get("type"), sock.get("ethertype"), sock.get("interface")
+                )
+            elif isinstance(local, list) and len(local) == 2:
+                where = f"{local[0]}:{local[1]}"
+            else:
+                where = str(local)
             key = f"{protocol} {where} netns={sock.get('netns')}"
-            programs = sorted({self._processes.get(pid, "?") for pid in sock.get("pids") or []})
-            section.items[key] = {"uid": sock.get("uid"), "programs": programs}
+            # Several sockets can share a key (SO_REUSEPORT, two sniffers on
+            # one interface): one item holding all of their owners.
+            item = section.items.setdefault(key, {"uids": [], "programs": [], "sockets": 0})
+            item["sockets"] += 1
+            item["uids"] = sorted(set(item["uids"]) | {sock.get("uid")}, key=str)
+            programs = {self._processes.get(pid, "?") for pid in sock.get("pids") or []}
+            item["programs"] = sorted(set(item["programs"]) | programs)
 
     def _planned(self) -> set[str]:
         return set(self.manifest_data.modules_planned) if self.manifest_data else set()
@@ -427,6 +531,8 @@ class SnapshotBuilder:
             "masking_version": manifest.masking_version if manifest else None,
             "host_time": manifest.started_at.isoformat() if manifest else None,
             "hostname": manifest.host.hostname if manifest else None,
+            "modules_planned": sorted(planned),
+            "full": FULL <= planned,
         }
         return Snapshot(meta, dict(sorted(self.sections.items())))
 
@@ -445,14 +551,22 @@ def compare(old: Snapshot, new: Snapshot) -> dict[str, dict[str, Any]]:
         before, after = old.sections.get(name), new.sections.get(name)
         notes: list[str] = []
         if before is None or after is None:
-            notes.append("collected in only one of the two")
+            # A run limited to some modules: nothing to compare, nothing
+            # removed or added.
+            out[name] = {
+                "added": {},
+                "removed": {},
+                "changed": {},
+                "comparable": False,
+                "notes": ["collected in only one of the two; not compared"],
+            }
+            continue
         for label, side in (("earlier", before), ("later", after)):
             if side is not None and not side.complete:
                 notes.append(f"{label} incomplete: " + "; ".join(side.gaps[:3]))
-        if masking_changed and name in _FROM_TEXT | _TEXT_HASHED:
+        if masking_changed and name in _MASKED:
             notes.append("masking changed between the two; text may differ without a change")
-        a = before.items if before else {}
-        b = after.items if after else {}
+        a, b = before.items, after.items
         changed = {}
         for key in sorted(set(a) & set(b)):
             fields = {

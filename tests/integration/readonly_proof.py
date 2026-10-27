@@ -428,7 +428,8 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             print(f"{distro}: scanner account and audit rules in place")
 
             home = work / f"{distro}-home"
-            config, _ = initialise(home)
+            # The widest setting, so the proof covers every read the collector can make.
+            config, _ = initialise(home, home_text="all")
             scanner = Host(
                 name=distro,
                 address=address,

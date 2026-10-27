@@ -1131,7 +1131,8 @@ class ResourceTests(FixtureRoot):
     def test_manifest_lists_the_allowed_commands(self):
         manifest = collect(self.root, [])[0]
         self.assertEqual(
-            manifest["commands_allowed"], {"journalctl": ["/usr/bin/journalctl", "/bin/journalctl"]}
+            manifest["commands_allowed"],
+            {"journalctl": ["/usr/bin/journalctl", "/bin/journalctl"]},
         )
 
 
@@ -2753,6 +2754,387 @@ class KernelModuleTests(FixtureRoot):
     def test_missing_proc_modules_is_an_error(self):
         records = collect(self.root, ["kernel_modules"])
         self.assertEqual(records[-1]["modules"]["kernel_modules"]["status"], "error")
+
+
+def md5hex(data):
+    return hashlib.md5(data, usedforsecurity=False).hexdigest()  # dpkg's format
+
+
+class PackageVerifyTests(FixtureRoot):
+    def dpkg_fixture(self):
+        self.write(
+            "var/lib/dpkg/status",
+            b"Package: openssh-server\nStatus: install ok installed\n"
+            b"Conffiles:\n /etc/ssh/moduli " + md5hex(b"moduli\n").encode() + b"\n"
+            b" /etc/ssh/old.conf 0123456789abcdef0123456789abcdef obsolete\n"
+            b"Description: x\n",
+        )
+        self.write("etc/ssh/moduli", b"edited\n")  # an administrator's edit
+        good = b"\x7fELF ls"
+        self.write("usr/bin/ls", good)
+        self.write("usr/bin/ps", b"\x7fELF trojaned ps")
+        self.write("usr/share/doc/coreutils/README", b"doc")
+        self.write("usr/bin/dash.distrib", b"real dash")
+        self.write(
+            "var/lib/dpkg/info/coreutils.md5sums",
+            (
+                f"{md5hex(good)}  usr/bin/ls\n"
+                f"{md5hex(b'original ps')}  usr/bin/ps\n"
+                f"{md5hex(b'gone')}  usr/bin/gone\n"
+                f"{md5hex(b'doc')}  usr/share/doc/coreutils/README\n"
+                "not a line\n"
+            ).encode(),
+        )
+        self.write(
+            "var/lib/dpkg/info/dash:amd64.md5sums",
+            f"{md5hex(b'real dash')}  usr/bin/dash\n".encode(),
+        )
+        self.write("var/lib/dpkg/diversions", b"/usr/bin/dash\n/usr/bin/dash.distrib\nlocal-pkg\n")
+
+    def test_dpkg_sends_only_differences(self):
+        self.dpkg_fixture()
+        records = collect(self.root, ["package_verify"])
+        changed = {r["path"]: r for r in records_named(records, "package_file_changed")}
+        self.assertEqual(sorted(changed), ["/usr/bin/gone", "/usr/bin/ps"])
+        self.assertEqual(changed["/usr/bin/ps"]["result"], "changed")
+        self.assertEqual(changed["/usr/bin/gone"]["result"], "missing")
+        conf = records_named(records, "conffile_changed")
+        self.assertEqual([(c["path"], c["result"]) for c in conf], [("/etc/ssh/moduli", "changed")])
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(summary["files"], 5)
+        self.assertEqual(summary["malformed_lines"], 1)
+        self.assertEqual(summary["critical_checked"], summary["critical_files"])
+        self.assertFalse(summary["truncated"])
+        self.assertEqual(records_named(records, "package_managers")[0], {"rpm": [], "dpkg": True})
+        self.assertEqual(sources(records), {})  # no file content is sent
+        self.assertEqual(records[-1]["modules"]["package_verify"]["status"], "ok")
+        # The checksum lists themselves are listed with hashes, so a rewrite
+        # (to cover a replaced file) shows against the baseline.
+        stores = {r["path"]: r for r in records_named(records, "checksum_store")}
+        lists = stores["/var/lib/dpkg/info/coreutils.md5sums"]
+        self.assertEqual(
+            lists["sha256"],
+            hashlib.sha256(
+                Path(self.root, "var/lib/dpkg/info/coreutils.md5sums").read_bytes()
+            ).hexdigest(),
+        )
+        self.assertIn("ctime", lists)
+
+    def run_patched(self, **attributes):
+        collector = load_collector(self.root)
+        for name, value in attributes.items():
+            setattr(collector, name, value)
+        out = io.BytesIO()
+        collector.main(settings(["package_verify"]), out=out)
+        return [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+
+    def test_protected_files_named_in_a_list_are_never_hashed(self):
+        self.dpkg_fixture()
+        self.write("etc/passwd", b"jch:x:1000:1000::/home/jch:/bin/bash\n")
+        self.write("etc/shadow", b"root:*:1::::::\n")
+        self.write("home/jch/.bash_history", b"secret\n")
+        os.link(Path(self.root, "etc/shadow"), Path(self.root, "usr/bin/shadowcopy"))
+        self.write(
+            "var/lib/dpkg/info/evil.md5sums",
+            (
+                f"{md5hex(b'x')}  etc/shadow\n"
+                f"{md5hex(b'x')}  home/jch/.bash_history\n"
+                f"{md5hex(b'x')}  usr/bin/shadowcopy\n"
+            ).encode(),
+        )
+        records = collect(self.root, ["package_verify"])
+        refused = {
+            r["path"]
+            for r in records_named(records, "package_file_changed")
+            if r["result"] == "refused"
+        }
+        self.assertEqual(refused, {"/etc/shadow", "/home/jch/.bash_history", "/usr/bin/shadowcopy"})
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(summary["files_result"]["refused"], 3)
+
+    def test_status_file_is_a_checksum_store_too(self):
+        self.dpkg_fixture()
+        records = collect(self.root, ["package_verify"])
+        stores = {r["path"]: r for r in records_named(records, "checksum_store")}
+        status = Path(self.root, "var/lib/dpkg/status").read_bytes()
+        self.assertEqual(
+            stores["/var/lib/dpkg/status"]["sha256"], hashlib.sha256(status).hexdigest()
+        )
+
+    def test_malformed_list_lines_make_the_result_incomplete(self):
+        self.dpkg_fixture()  # its coreutils list has one malformed line
+        records = collect(self.root, ["package_verify"])
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(summary["malformed_lines"], 1)
+        self.assertFalse(summary["complete"])
+
+    def test_status_file_hash_follows_the_protection_rules(self):
+        self.dpkg_fixture()
+        os.remove(Path(self.root, "var/lib/dpkg/status"))
+        self.write("etc/shadow", b"root:*:1::::::\n")
+        os.link(Path(self.root, "etc/shadow"), Path(self.root, "var/lib/dpkg/status"))
+        records = collect(self.root, ["package_verify"])
+        stores = {r["path"]: r for r in records_named(records, "checksum_store")}
+        self.assertNotIn("sha256", stores["/var/lib/dpkg/status"])
+        self.assertIn("refused", stores["/var/lib/dpkg/status"]["hash_skipped"])
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertTrue(summary["status_refused"])  # not parsed either
+        self.assertFalse(summary["complete"])
+        self.assertEqual(records_named(records, "conffile_changed"), [])
+
+    def test_a_list_linked_to_a_protected_file_is_not_read(self):
+        self.dpkg_fixture()
+        self.write("etc/shadow", f"{md5hex(b'x')}  etc/CanaryShadowPath\n".encode())
+        os.link(Path(self.root, "etc/shadow"), Path(self.root, "var/lib/dpkg/info/evil.md5sums"))
+        records = collect(self.root, ["package_verify"])
+        self.assertNotIn("CanaryShadowPath", json.dumps(records))
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertIn("evil.md5sums", summary["lists_unreadable"])
+
+    def test_gaps_are_never_reported_as_complete(self):
+        self.dpkg_fixture()
+        Path(self.root, "var/lib/dpkg/info/broken.md5sums").mkdir()  # can't be read as a file
+        records = collect(self.root, ["package_verify"])
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(summary["lists_unreadable"], ["broken.md5sums"])
+        self.assertFalse(summary["complete"])
+
+    def test_entry_cap_stops_all_lists(self):
+        self.dpkg_fixture()
+        records = self.run_patched(MAX_PACKAGE_FILES=2)
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(summary["files"], 2)
+        self.assertTrue(summary["listing_truncated"])
+        self.assertFalse(summary["complete"])
+
+    def test_unreadable_status_file_is_an_error(self):
+        self.dpkg_fixture()
+        os.remove(Path(self.root, "var/lib/dpkg/status"))
+        Path(self.root, "var/lib/dpkg/status").mkdir()
+        records = collect(self.root, ["package_verify"])
+        self.assertEqual(records[-1]["modules"]["package_verify"]["status"], "error")
+
+    def test_files_left_out_by_path_exclude_are_not_missing(self):
+        self.dpkg_fixture()
+        self.write(
+            "etc/dpkg/dpkg.cfg.d/excludes",
+            b"path-exclude=/usr/share/doc/*\npath-include=/usr/share/doc/*/copyright\n"
+            b"path-exclude /usr/bin/gon*\n",
+        )
+        os.remove(Path(self.root, "usr/share/doc/coreutils/README"))
+        records = collect(self.root, ["package_verify"])
+        changed = sorted(r["path"] for r in records_named(records, "package_file_changed"))
+        self.assertEqual(changed, ["/usr/bin/ps"])  # gone and README were never installed
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(summary["files_result"]["excluded"], 2)
+
+    def test_path_filters_last_match_wins(self):
+        collector = load_collector(self.root)
+        filters = [(True, "/usr/share/doc/*"), (False, "/usr/share/doc/*/copyright")]
+        self.assertTrue(collector.dpkg_excluded(filters, "/usr/share/doc/x/README"))
+        self.assertFalse(collector.dpkg_excluded(filters, "/usr/share/doc/x/copyright"))
+        self.assertFalse(collector.dpkg_excluded(filters, "/usr/bin/ls"))
+
+    def test_data_files_are_checked_for_presence_not_hashed(self):
+        self.dpkg_fixture()
+        self.write("usr/share/doc/coreutils/README", b"edited docs")  # wrong contents
+        self.write("usr/lib/firmware/x.bin", b"blob")
+        self.write(
+            "var/lib/dpkg/info/fw.md5sums",
+            (
+                f"{md5hex(b'other')}  usr/lib/firmware/x.bin\n"
+                f"{md5hex(b'gone')}  usr/share/man/man1/gone.1.gz\n"
+            ).encode(),
+        )
+        records = collect(self.root, ["package_verify"])
+        changed = {r["path"]: r["result"] for r in records_named(records, "package_file_changed")}
+        self.assertNotIn("/usr/share/doc/coreutils/README", changed)
+        self.assertNotIn("/usr/lib/firmware/x.bin", changed)
+        self.assertEqual(changed["/usr/share/man/man1/gone.1.gz"], "missing")
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(summary["files_result"]["not_hashed"], 2)
+
+    def test_critical_paths_are_checked_first(self):
+        collector = load_collector(self.root)
+        entries = [
+            ("a", "/usr/share/doc/x/README", "0"),
+            ("a", "/usr/lib/python3/x.py", "0"),
+            ("a", "/usr/sbin/sshd", "0"),
+            ("a", "/usr/lib/x86_64-linux-gnu/security/pam_unix.so", "0"),
+        ]
+        ordered = [e[1] for e in sorted(entries, key=collector._package_order)]
+        self.assertEqual(
+            ordered[:2], ["/usr/sbin/sshd", "/usr/lib/x86_64-linux-gnu/security/pam_unix.so"]
+        )
+        self.assertEqual(ordered[-1], "/usr/share/doc/x/README")
+
+    def test_time_limit_is_reported(self):
+        self.dpkg_fixture()
+        records = collect(self.root, ["package_verify"], module_seconds=1e-9)
+        self.assertEqual(records[-1]["modules"]["package_verify"]["status"], "timeout")
+
+
+def rpm_header(entries):
+    """An rpm header blob, built independently of the collector: entries
+    are (tag, type, value); type 4 int32, 3 int16, 6 string, 8 string array."""
+    index, data = [], b""
+    for tag, kind, value in entries:
+        if kind in (2, 3, 4):
+            width = {2: 1, 3: 2, 4: 4}[kind]
+            data += b"\0" * (-len(data) % width)
+            offset = len(data)
+            data += b"".join(v.to_bytes(width, "big") for v in value)
+            count = len(value)
+        elif kind == 6:
+            offset, count = len(data), 1
+            data += value.encode() + b"\0"
+        else:
+            offset, count = len(data), len(value)
+            data += b"".join(v.encode() + b"\0" for v in value)
+        index.append(struct.pack(">iiii", tag, kind, offset, count))
+    return struct.pack(">II", len(index), len(data)) + b"".join(index) + data
+
+
+def rpm_package(name, files):
+    """files: (path, content or None for a link/dir, mode, flags, link)."""
+    dirs = sorted({f[0].rsplit("/", 1)[0] + "/" for f in files})
+    return rpm_header(
+        [
+            (1000, 6, name),
+            (1030, 3, [f[2] for f in files]),
+            (
+                1035,
+                8,
+                [hashlib.sha256(f[1]).hexdigest() if f[1] is not None else "" for f in files],
+            ),
+            (1036, 8, [f[4] for f in files]),
+            (1037, 4, [f[3] for f in files]),
+            (1029, 2, [f[5] if len(f) > 5 else 0 for f in files]),  # int8 states
+            (1116, 4, [dirs.index(f[0].rsplit("/", 1)[0] + "/") for f in files]),
+            (1117, 8, [f[0].rsplit("/", 1)[1] for f in files]),
+            (1118, 8, dirs),
+            (5011, 4, [8]),
+            (1039, 8, [f[6] if len(f) > 6 else "root" for f in files]),  # owners
+            (1040, 8, ["root"] * len(files)),  # groups
+        ]
+    )
+
+
+class RpmVerifyTests(FixtureRoot):
+    def rpm_fixture(self, wal=b""):
+        import sqlite3
+
+        good = b"\x7fELF sshd"
+        self.write("usr/sbin/sshd", good)
+        self.write("usr/bin/ps", b"\x7fELF trojaned")
+        self.write("usr/bin/passwd", b"\x7fELF passwd")
+        for name in ("usr/sbin/sshd", "usr/bin/ps"):
+            Path(self.root, name).chmod(0o755)
+        Path(self.root, "usr/bin/passwd").chmod(0o4755)  # SUID added
+        self.write("etc/ssh/sshd_config", b"edited\n")
+        Path(self.root, "etc/ssh/sshd_config").chmod(0o600)
+        os.symlink("/opt/evil", Path(self.root, "usr/bin/vi"))
+        files = [
+            ("/usr/sbin/sshd", good, 0o100755, 0, ""),
+            ("/usr/bin/ps", b"\x7fELF ps", 0o100755, 0, ""),
+            ("/usr/bin/passwd", b"\x7fELF passwd", 0o100755, 0, ""),
+            ("/usr/bin/gone", b"x", 0o100755, 0, ""),
+            ("/usr/bin/optional", b"x", 0o100644, 8, ""),  # %missingok
+            ("/var/cache/ghost", b"x", 0o100644, 64, ""),  # %ghost
+            ("/etc/ssh/sshd_config", b"original\n", 0o100600, 1, ""),  # %config
+            ("/usr/bin/vi", None, 0o120777, 0, "vim"),
+            ("/usr/share/doc/x/README", b"x", 0o100644, 2, "", 2),  # not installed (nodocs)
+            ("/usr/bin/su", b"\x7fELF su", 0o100755, 0, "", 0, "daemon"),  # owner changed
+            ("/usr/share/man/man1/ps.1.gz", b"original man", 0o100644, 0, ""),  # data
+        ]
+        self.write("usr/share/man/man1/ps.1.gz", b"different man page")
+        self.write("usr/bin/su", b"\x7fELF su")
+        Path(self.root, "usr/bin/su").chmod(0o755)
+        # The files here belong to whoever runs the tests: call that root.
+        self.write(
+            "etc/passwd",
+            f"root:x:{os.getuid()}:{os.getgid()}::/root:/bin/bash\ndaemon:x:1:1::/:/sbin/nologin\n".encode(),
+        )
+        self.write("etc/group", f"root:x:{os.getgid()}:\n".encode())
+        Path(self.root, "var/lib/rpm").mkdir(parents=True)
+        database = Path(self.root, "var/lib/rpm/rpmdb.sqlite")
+        connection = sqlite3.connect(database)
+        connection.execute("PRAGMA journal_mode=WAL")  # as RHEL's rpm uses it
+        connection.execute("CREATE TABLE Packages (hnum INTEGER PRIMARY KEY, blob BLOB)")
+        connection.execute("INSERT INTO Packages (blob) VALUES (?)", (rpm_package("base", files),))
+        connection.execute("INSERT INTO Packages (blob) VALUES (?)", (b"\0\0\0\5garbage",))
+        connection.execute(
+            "INSERT INTO Packages (blob) VALUES (?)", (rpm_header([(1000, 6, "gpg-pubkey")]),)
+        )
+        connection.commit()
+        connection.close()
+        if wal:
+            self.write("var/lib/rpm/rpmdb.sqlite-wal", wal)
+        return database
+
+    def test_rpm_checks_from_its_database(self):
+        database = self.rpm_fixture()
+        before = sorted(os.listdir(database.parent))
+        records = collect(self.root, ["package_verify"])
+        self.assertEqual(sorted(os.listdir(database.parent)), before)  # no -shm or -wal made
+        changed = {(r["path"], r["result"]) for r in records_named(records, "package_file_changed")}
+        self.assertEqual(
+            changed,
+            {
+                ("/usr/bin/ps", "changed"),
+                ("/usr/bin/gone", "missing"),
+                ("/usr/bin/passwd", "mode"),
+                ("/usr/bin/vi", "link"),
+                ("/usr/bin/su", "owner"),
+            },
+        )
+        owner = [
+            r for r in records_named(records, "package_file_changed") if r["result"] == "owner"
+        ][0]
+        self.assertEqual((owner["expected_owner"], owner["owner"]), ("daemon", "root"))
+        mode = [r for r in records_named(records, "package_file_changed") if r["result"] == "mode"][
+            0
+        ]
+        self.assertEqual((mode["expected_mode"], mode["mode"]), ("100755", "104755"))
+        conf = records_named(records, "conffile_changed")
+        self.assertEqual(
+            [(c["path"], c["result"]) for c in conf], [("/etc/ssh/sshd_config", "changed")]
+        )
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertEqual(
+            (summary["manager"], summary["packages"], summary["malformed_headers"]), ("rpm", 1, 1)
+        )
+        self.assertEqual(summary["critical_checked"], summary["critical_files"])
+        self.assertFalse(summary["wal_pending"])
+        self.assertFalse(summary["complete"])  # one malformed header: a gap
+        self.assertEqual(summary["files_result"]["not_hashed"], 1)  # the man page
+        self.assertEqual(sources(records), {})
+        self.assertEqual(records[-1]["modules"]["package_verify"]["status"], "ok")
+
+    def test_entry_cap_is_reported(self):
+        self.rpm_fixture()
+        collector = load_collector(self.root)
+        collector.MAX_PACKAGE_FILES = 0
+        out = io.BytesIO()
+        collector.main(settings(["package_verify"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        summary = records_named(records, "package_verify_summary")[0]
+        self.assertTrue(summary["listing_truncated"])
+        self.assertFalse(summary["complete"])
+
+    def test_pending_write_ahead_log_is_reported(self):
+        self.rpm_fixture(wal=b"not empty")
+        records = collect(self.root, ["package_verify"])
+        self.assertTrue(records_named(records, "package_verify_summary")[0]["wal_pending"])
+
+    def test_hostile_header_offsets_are_contained(self):
+        collector = load_collector(self.root)
+        blob = struct.pack(">II", 1, 4) + struct.pack(">iiii", 1117, 8, 2, 1000) + b"ab\0\0"
+        header = collector.RpmHeader(blob)
+        with self.assertRaises(ValueError):
+            header.get(1117)
+        with self.assertRaises(ValueError):
+            collector.RpmHeader(struct.pack(">II", 5, 99))
 
 
 CANARIES = {

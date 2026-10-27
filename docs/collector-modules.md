@@ -437,6 +437,72 @@ kernel's memory layout. A line that doesn't parse is counted
 (`unparsed_line`), not sent. If `/proc/modules` can't be read, the module
 ends with an error.
 
+## `package_verify`
+
+**Why:** system programs and libraries replaced or changed since their
+package installed them: `ps`, `ls`, `ss`, `sshd`, `login`, `sudo`, `su`,
+PAM modules, the dynamic loader (DESIGN.md §8.5).
+
+**RHEL family** (rpm's SQLite database is present): no rpm command is run.
+Running `rpm -Va` as root makes SQLite open the database's `-shm` and `-wal`
+files for writing — a change to the server, which the read-only proof caught
+— so the collector does rpm's checks itself. It opens `rpmdb.sqlite` in
+SQLite's `immutable` mode (no locks, no `-shm` or `-wal` created), reads each
+package's header (bounds-checked: a damaged header is counted, not
+followed), and for every installed file compares the digest (in the
+package's own algorithm), the mode (type and permission bits, so an added
+set-user-ID bit shows), the owner and group (by name, as rpm does, through
+`/etc/passwd` and `/etc/group`) and a symbolic link's target, honouring
+each file's verify flags: `%ghost` files are skipped, a missing `%missingok` file is
+fine, files not installed (excluded documentation, another architecture)
+are left out. Critical paths go first, as for dpkg. Changes still in
+SQLite's write-ahead log aren't seen by an immutable read, so the summary
+says when that log is not empty (`wal_pending`): recently changed packages
+may then look changed. The database directory is listed first
+(`checksum_store`: names, sizes, times; the database is large and changes
+on every install, so it isn't hashed). Not compared yet: file
+capabilities (rpm -V's `P`), which come with the capability decoding of
+the filesystem pass (Phase 1 plan, 1.4c).
+
+**Ubuntu** (dpkg's status file is present): lists `/var/lib/dpkg/info` with
+the SHA-256 of every file in it, and dpkg's status file (which holds the
+configuration files' checksums) with its SHA-256 (`checksum_store`), then
+computes each
+package file's MD5 and compares it with dpkg's `.md5sums` lists, programs,
+PAM modules, the loader, libc and OpenSSH's helpers first, so a short time
+limit still covers what an intruder replaces. Data that runs nowhere —
+documentation, man and info pages, locales, icons, fonts, time-zone data,
+firmware — is checked for presence but not hashed (`not_hashed` in the
+summary; on rpm systems its mode and owner are still compared): on a server
+it can be gigabytes, and hashing it would use the time limit up first.
+Kernel modules are code and are hashed. Diverted files are checked where `dpkg-divert`
+moved them. A file left out on purpose by dpkg's `path-exclude` options
+(minimised images skip documentation this way) is counted as excluded, not
+missing. Configuration files are compared with the checksums in dpkg's
+status file and reported apart (`conffile_changed`), since most changes are
+administrators' edits. **Sends:** only the differences
+(`package_file_changed`: changed, missing or unreadable, with the package)
+and a `package_verify_summary` (packages, files, how many of the critical
+ones were checked, results, whether time ran out, and `complete`: false
+when any package's files went unchecked — a checksum list unreadable,
+refused or cut short, a malformed list line or rpm header, the status file
+cut short or refused, the entry limit of 500,000 files or the time limit
+reached). dpkg's own lists and status file are read under the protection
+rules too: one hard-linked to a protected file is neither read nor hashed. An unreadable status file ends the module with an
+error. Every file is hashed under the protection rules: a list naming a
+protected file, a history file or a hard-linked file (or a diversion
+leading to one) gets `refused`, and the file is not read. `%config` files on
+RHEL are reported the same way as dpkg's configuration files. No file
+content is sent.
+
+**Limit: the checksums live on the same server.** Both rpm's database and
+dpkg's lists are files root can rewrite along with the program they
+describe, so a clean result means "unchanged, or changed and covered up",
+not "proven untouched". The `checksum_store` listing makes a rewrite visible
+against the baseline (a changed hash or change time), and on a first check
+a list changed long after its package's other files stands out. Comparing
+against the vendor's signed packages is planned for a later version.
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,

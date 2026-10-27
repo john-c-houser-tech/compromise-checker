@@ -24,7 +24,9 @@ GOOD_SETTINGS = {
     "protocol": 1,
     "run_id": "test-run",
     "since": "2026-09-25T00:00:00+00:00",
-    "modules": None,
+    # One light module: these tests run on whatever machine hosts them, where
+    # the heavy modules (package verification) would take minutes.
+    "modules": ["host_facts"],
     "limits": {"overall_seconds": 60, "module_seconds": 30, "source_bytes": 1048576},
 }
 
@@ -83,8 +85,13 @@ class StreamTests(unittest.TestCase):
 
     def test_omitted_modules_means_all(self):
         settings = {k: v for k, v in GOOD_SETTINGS.items() if k != "modules"}
+        # Every module planned; a tiny time limit keeps the run short here.
+        settings["limits"] = dict(settings["limits"], module_seconds=0.001)
         _, records = run_collector(settings)
-        self.assertEqual(records[-1]["status"], "complete")
+        planned = records[0]["modules_planned"]
+        self.assertIn("host_facts", planned)
+        self.assertIn("package_verify", planned)
+        self.assertEqual(sorted(records[-1]["modules"]), sorted(planned))
 
     def test_empty_module_list_runs_nothing(self):
         _, records = run_collector(dict(GOOD_SETTINGS, modules=[]))

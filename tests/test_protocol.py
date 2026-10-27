@@ -30,6 +30,8 @@ def make_settings(**overrides):
     values = {
         "run_id": "run-1",
         "since": datetime(2026, 9, 25, tzinfo=UTC),
+        # One light module: these run on the machine hosting the tests.
+        "modules": ["host_facts"],
         "limits": Limits(overall_seconds=60, module_seconds=30, source_bytes=1 << 20),
     }
     values.update(overrides)

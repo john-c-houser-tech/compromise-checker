@@ -313,7 +313,9 @@ itself reported.
 ### 5.4 Read-only command allow-list
 
 Where reading files directly is impractical, the collector may run these
-and only these: `journalctl` (read options only), `rpm -Va` / `rpm -qa`,
+and only these: `journalctl` (read options only), `rpm -Va` / `rpm -qa`
+(in practice rpm's database is read directly instead: run as root, rpm
+makes SQLite write `-shm`/`-wal` files),
 `dpkg-query`, `ss` only as a cross-check against `/proc/net`, `systemctl show` /
 `list-unit-files`, `sestatus` / `aa-status`, `iptables-save` / `nft list
 ruleset` (read), `docker`/`podman` `ps --all` and `inspect` (read). Each
@@ -443,7 +445,11 @@ for everyone.
 ### 8.5 System binary integrity
 
 ★ Package verification failures for system binaries (`ps`, `ls`, `ss`,
-`sshd`, `login`, `sudo`, `su`, PAM modules). New SUID/SGID files, and SUID
+`sshd`, `login`, `sudo`, `su`, PAM modules). The checksums verified against live
+on the server itself (rpm's database, dpkg's lists), so root can rewrite them
+too: a clean result is "unchanged or covered up". Their own hashes and
+change times are collected so a rewrite shows against the baseline;
+comparing with the vendor's signed packages is a later addition. New SUID/SGID files, and SUID
 files no package owns. File capabilities such as `cap_setuid`. Executables in
 system directories that no package owns.
 

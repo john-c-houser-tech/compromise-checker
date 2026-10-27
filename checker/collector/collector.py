@@ -18,6 +18,7 @@ what each module reads, and why, is in docs/collector-modules.md.
 import base64
 import binascii
 import datetime
+import errno
 import fnmatch
 import glob
 import gzip
@@ -4065,9 +4066,11 @@ def store_refusal(run, absolute):
         return run.refusal(absolute, info, key_file=True)
 
 
-def digest_of(run, absolute, algorithm="md5"):
+def digest_of(run, absolute, algorithm="md5", walked=False):
     """(hex digest, None) of a regular file, or (None, why not): "missing",
-    "time", REFUSED + the reason for a protected file, or an error."""
+    "time", REFUSED + the reason for a protected file, or an error. With
+    `walked` (a file found by walking, not named by a package), no hard
+    link is hashed, even a root-owned one under /usr."""
     try:
         raw, info = open_regular_file(absolute)
     except FileNotFoundError:
@@ -4078,7 +4081,7 @@ def digest_of(run, absolute, algorithm="md5"):
         return None, str(exc)
     # A package list could name a protected file (or a diversion lead to
     # one): the same rules as for any hash apply before a byte is read.
-    refusal = run.refusal(absolute, info, key_file=True)
+    refusal = run.refusal(absolute, info, key_file=True, walked=walked)
     if refusal:
         raw.close()
         return None, REFUSED + refusal
@@ -4301,6 +4304,7 @@ RPMTAG_FILEVERIFYFLAGS = 1045
 RPMTAG_DIRINDEXES = 1116
 RPMTAG_BASENAMES = 1117
 RPMTAG_DIRNAMES = 1118
+RPMTAG_FILECAPS = 5010
 RPMTAG_FILEDIGESTALGO = 5011
 RPMFILE_CONFIG = 1 << 0
 RPMFILE_MISSINGOK = 1 << 3
@@ -4310,6 +4314,7 @@ RPMVERIFY_LINKTO = 1 << 2
 RPMVERIFY_USER = 1 << 3
 RPMVERIFY_GROUP = 1 << 4
 RPMVERIFY_MODE = 1 << 6
+RPMVERIFY_CAPS = 1 << 8
 RPM_DIGESTS = {1: "md5", 2: "sha1", 8: "sha256", 9: "sha384", 10: "sha512", 11: "sha224"}
 
 
@@ -4365,8 +4370,9 @@ def rpm_entries(run, module, database):
     (running rpm itself as root does both). Returns (entries, packages,
     malformed headers, truncated); each entry is (package, path, expected
     digest, algorithm, mode, file flags, verify flags, link target, owner,
-    group). Reading stops at MAX_PACKAGE_FILES entries (truncated is then
-    True) and at the module's deadline (ModuleTimeout)."""
+    group, capabilities as cap_to_text writes them). Reading stops at
+    MAX_PACKAGE_FILES entries (truncated is then True) and at the module's
+    deadline (ModuleTimeout)."""
     import sqlite3  # standard library; only needed on rpm systems
     from urllib.parse import quote
 
@@ -4403,6 +4409,7 @@ def _rpm_entries(run, rows):
             links = header.get(RPMTAG_FILELINKTOS) or [""] * len(names)
             users = header.get(RPMTAG_FILEUSERNAME) or [None] * len(names)
             groups = header.get(RPMTAG_FILEGROUPNAME) or [None] * len(names)
+            capabilities = header.get(RPMTAG_FILECAPS) or [""] * len(names)
             algorithm = RPM_DIGESTS.get((header.get(RPMTAG_FILEDIGESTALGO) or [1])[0])
             for i, name in enumerate(names):
                 if states[i] != 0:  # not installed (excluded docs, other arch)
@@ -4419,6 +4426,7 @@ def _rpm_entries(run, rows):
                         links[i],
                         users[i],
                         groups[i],
+                        capabilities[i],
                     )
                 )
         except (ValueError, IndexError, TypeError, struct.error):
@@ -4429,8 +4437,8 @@ def _rpm_entries(run, rows):
 def verify_rpm(run, module, database):
     """rpm -V's checks, done here from rpm's own database: digest, symlink
     target, mode, owner and group of every installed file (owners compared
-    by name, as rpm does, through /etc/passwd and /etc/group), critical
-    paths first. File capabilities are not compared yet. %ghost
+    by name, as rpm does, through /etc/passwd and /etc/group) and file
+    capabilities, critical paths first. %ghost
     files are skipped, a missing %missingok file is fine, and each file's
     verify flags are honoured. Sends only the differences and a summary."""
     try:
@@ -4447,6 +4455,7 @@ def verify_rpm(run, module, database):
         "mode": 0,
         "owner": 0,
         "group": 0,
+        "capabilities": 0,
         "link": 0,
         "unreadable": 0,
         "refused": 0,
@@ -4467,6 +4476,7 @@ def verify_rpm(run, module, database):
         link,
         user,
         group,
+        recorded_caps,
     ) in entries:
         if run.out_of_time():
             cut = "time"
@@ -4529,6 +4539,29 @@ def verify_rpm(run, module, database):
                 expected_mode=format(mode, "o"),
                 mode=format(info.st_mode, "o"),
             )
+        if stat.S_ISREG(mode) and verify & RPMVERIFY_CAPS:
+            try:
+                expected_caps = parse_capabilities_text(recorded_caps)
+            except ValueError:
+                expected_caps = None  # rpm's text unreadable: compared as unknown
+            try:
+                actual_caps = file_capabilities(absolute)[0]
+            except ValueError:
+                actual_caps = {"(unreadable)": "?"}  # a damaged attribute is a finding
+            except UnsafePath:
+                actual_caps = expected_caps
+            if expected_caps is not None and expected_caps != actual_caps:
+                counts["capabilities"] += 1
+                report_package_change(
+                    run,
+                    module,
+                    package,
+                    absolute,
+                    "capabilities",
+                    is_config,
+                    expected_capabilities=recorded_caps or None,
+                    capabilities=capabilities_text(actual_caps) if actual_caps else None,
+                )
         if stat.S_ISLNK(mode):
             if verify & RPMVERIFY_LINKTO:
                 try:
@@ -4628,6 +4661,404 @@ def module_package_verify(run):
         verify_rpm(run, module, database)
 
 
+# --- Privileged and unowned files (DESIGN.md §8.5) ---------------------------------
+
+# Capability names by bit number (linux/capability.h); later bits as cap_<n>.
+CAP_NAMES = (
+    "cap_chown cap_dac_override cap_dac_read_search cap_fowner cap_fsetid cap_kill"
+    " cap_setgid cap_setuid cap_setpcap cap_linux_immutable cap_net_bind_service"
+    " cap_net_broadcast cap_net_admin cap_net_raw cap_ipc_lock cap_ipc_owner cap_sys_module"
+    " cap_sys_rawio cap_sys_chroot cap_sys_ptrace cap_sys_pacct cap_sys_admin cap_sys_boot"
+    " cap_sys_nice cap_sys_resource cap_sys_time cap_sys_tty_config cap_mknod cap_lease"
+    " cap_audit_write cap_audit_control cap_setfcap cap_mac_override cap_mac_admin cap_syslog"
+    " cap_wake_alarm cap_block_suspend cap_audit_read cap_perfmon cap_bpf"
+    " cap_checkpoint_restore"
+).split()
+# The security.capability attribute (struct vfs_cap_data): a little-endian
+# word holding the revision and the effective flag, then (permitted,
+# inheritable) pairs — one for revision 1, two for 2 and 3 — and, for 3,
+# the user namespace's root id.
+_CAP_REVISIONS = {0x01000000: (1, 12), 0x02000000: (2, 20), 0x03000000: (2, 24)}
+_CAP_FLAG_ORDER = "eip"
+
+
+def decode_capabilities(raw):
+    """{capability name: flags} from a security.capability value, flags in
+    cap_to_text's letters (e effective, i inheritable, p permitted), plus
+    the root id of a revision-3 value. Raises ValueError on a malformed one."""
+    if len(raw) < 4:
+        raise ValueError("too short")
+    magic = int.from_bytes(raw[:4], "little")
+    pairs, size = _CAP_REVISIONS.get(magic & 0xFF000000, (None, None))
+    if pairs is None or len(raw) != size:
+        raise ValueError("unknown revision or size")
+    effective = bool(magic & 0x000001)
+    permitted = inheritable = 0
+    for i in range(pairs):
+        at = 4 + 8 * i
+        permitted |= int.from_bytes(raw[at : at + 4], "little") << (32 * i)
+        inheritable |= int.from_bytes(raw[at + 4 : at + 8], "little") << (32 * i)
+    caps = {}
+    for bit in range(64):
+        flags = ""
+        if permitted >> bit & 1:
+            flags += "p"
+        if inheritable >> bit & 1:
+            flags += "i"
+        if flags:
+            if effective:
+                flags += "e"
+            name = CAP_NAMES[bit] if bit < len(CAP_NAMES) else f"cap_{bit}"
+            caps[name] = "".join(f for f in _CAP_FLAG_ORDER if f in flags)
+    root = int.from_bytes(raw[20:24], "little") if size == 24 else None
+    return caps, root
+
+
+def capabilities_text(caps):
+    """cap_to_text's form: names sharing flags grouped, e.g.
+    "cap_net_admin,cap_net_raw=ep cap_sys_time=p"."""
+    groups = {}
+    for name, flags in caps.items():
+        groups.setdefault(flags, []).append(name)
+    return " ".join(
+        ",".join(sorted(names)) + "=" + flags for flags, names in sorted(groups.items())
+    )
+
+
+_CAP_CLAUSE = re.compile(r"^([a-z0-9_,]*)((?:[=+-][eip]*)+)$")
+_CAP_OP = re.compile(r"([=+-])([eip]*)")
+
+
+def parse_capabilities_text(text):
+    """{name: flags} from cap_to_text's form, as rpm records it ("" for
+    none). Raises ValueError on text it can't read."""
+    caps = {}
+    for clause in (text or "").split():
+        match = _CAP_CLAUSE.match(clause.lower())
+        if not match:
+            raise ValueError(f"unreadable capabilities: {clause!r}")
+        names = [
+            (CAP_NAMES[int(n)] if int(n) < len(CAP_NAMES) else f"cap_{n}") if n.isdigit() else n
+            for n in match.group(1).split(",")
+            if n
+        ] or list(CAP_NAMES)  # libcap writes numbers it has no name for as digits
+        for op, flags in _CAP_OP.findall(match.group(2)):
+            for name in names:
+                current = set(caps.get(name, ""))
+                if op == "=":
+                    current = set(flags)
+                elif op == "+":
+                    current |= set(flags)
+                else:
+                    current -= set(flags)
+                caps[name] = "".join(f for f in _CAP_FLAG_ORDER if f in current)
+    return {name: flags for name, flags in caps.items() if flags}
+
+
+_NO_ATTRIBUTE = {errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP}
+
+
+def file_capabilities(absolute):
+    """(capabilities dict, root id) of a file, ({}, None) if it has none.
+    Raises ValueError for an attribute that can't be read or decoded, and
+    UnsafePath for a path the mount guard won't touch."""
+    target = path(absolute)  # outside the try: a refusal is not "no capabilities"
+    try:
+        raw = os.getxattr(target, "security.capability", follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno in _NO_ATTRIBUTE:
+            return {}, None  # none set, or extended attributes unsupported here
+        raise ValueError(f"capability attribute unreadable: {exc}") from exc
+    return decode_capabilities(raw)
+
+
+# Where the system's programs and libraries live: an executable here that no
+# package installed is a finding (DESIGN.md §8.5). /usr/local and /opt are
+# administrators' own places; their files are reported apart.
+SYSTEM_FILE_ROOTS = (
+    "/usr",
+    "/usr/local",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/opt",
+    "/etc",
+    "/boot",
+)
+PROGRAM_DIRS = re.compile(r"^/(?:usr/)?(?:s?bin|lib(?:32|64|x32|exec)?)/")
+LIBRARY_DIRS = re.compile(r"^/(?:usr/)?lib(?:32|64|x32)?/")
+SHARED_LIBRARY = re.compile(r"\.so(?:\.[0-9.]+)?$")
+LOCAL_ROOTS = ("/usr/local", "/opt")
+# Directories that are links on merged-/usr systems (and /usr/sbin -> bin on
+# Fedora 42 and later), and /opt and /usr/local, which image-based systems
+# (RHEL image mode, Fedora CoreOS) move under /var: a package's "/bin/ls"
+# and the walk's "/usr/bin/ls" must be the same file.
+MERGED_DIRS = ("/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/usr/sbin") + LOCAL_ROOTS
+MAX_SYSTEM_ENTRIES = 2000000
+MAX_FILE_FINDINGS = 10000
+
+
+def merged_dirs():
+    """{"/bin": "/usr/bin", ...} for the top-level directories that are
+    links, so a package's "/bin/ls" and the walk's "/usr/bin/ls" match."""
+    links = {}
+    for directory in MERGED_DIRS:
+        try:
+            if not os.path.islink(path(directory)):
+                continue
+        except UnsafePath:
+            continue
+        resolved, risk = resolve_links(directory)
+        if not risk and resolved != directory:
+            links[directory] = resolved
+    return links
+
+
+def canonical_path(absolute, links):
+    for directory, resolved in links.items():
+        if absolute == directory or absolute.startswith(directory + "/"):
+            return resolved + absolute[len(directory) :]
+    return absolute
+
+
+def rpm_owners(run, database, links):
+    """{canonical path: package} from rpm's database, reading only each
+    header's names (lighter than rpm_entries). Returns (owners, complete)."""
+    import sqlite3  # standard library; only needed on rpm systems
+    from urllib.parse import quote
+
+    owners, complete = {}, True
+    uri = "file:" + quote(path(database)) + "?immutable=1&mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    try:
+        for (blob,) in connection.execute("SELECT blob FROM Packages"):
+            run.check_time()
+            if len(owners) >= MAX_PACKAGE_FILES:
+                return owners, False
+            try:
+                header = RpmHeader(bytes(blob))
+                names = header.get(RPMTAG_BASENAMES)
+                if not names:
+                    continue
+                package = header.get(RPMTAG_NAME) or "?"
+                dirs = header.get(RPMTAG_DIRNAMES)
+                indexes = header.get(RPMTAG_DIRINDEXES)
+                states = header.get(RPMTAG_FILESTATES) or [0] * len(names)
+                for i, name in enumerate(names):
+                    if states[i] == 0:
+                        owners.setdefault(canonical_path(dirs[indexes[i]] + name, links), package)
+            except (ValueError, IndexError, TypeError, struct.error):
+                complete = False
+    finally:
+        connection.close()
+    return owners, complete
+
+
+def _dpkg_list_paths(run, package_list):
+    text, truncated = (
+        (None, False)
+        if store_refusal(run, package_list)
+        else read_whole_lines(package_list, 16 * 1024 * 1024)
+    )
+    return [line for line in (text or "").splitlines() if line.startswith("/")], (
+        text is not None and not truncated
+    )
+
+
+def package_owners(run, module, links):
+    """({canonical path: package}, which manager, complete, {canonical
+    path: diverting package}) for every file a package installed: dpkg's
+    .list files and diversions, or rpm's database. (None, None, False, {})
+    when there is neither; complete is False when a list was unreadable or
+    cut short."""
+    owners, complete, diversions = {}, True, {}
+    if os.path.lexists(path(DPKG_STATUS)):
+        try:
+            names, cut = list_directory(DPKG_INFO, MAX_PACKAGE_FILES, run)
+        except OSError:
+            return None, None, False, {}
+        complete = not cut
+        for name in names:
+            if not name.endswith(".list"):
+                continue
+            run.check_time()
+            listed, whole = _dpkg_list_paths(run, _join(DPKG_INFO, name))
+            complete = complete and whole
+            package = name[: -len(".list")].split(":", 1)[0]
+            for line in listed:
+                owners.setdefault(canonical_path(line, links), package)
+        # A diversion moves the original package's file aside: that package
+        # now owns the diverted-to path, and the file at the original path
+        # belongs to the diverting package only if its own list has it —
+        # never after a local diversion ("dpkg-divert --local" and a
+        # replacement dropped in its place).
+        list_names = {}
+        for name in names:
+            if name.endswith(".list"):
+                list_names.setdefault(name[: -len(".list")].split(":", 1)[0], []).append(name)
+        for original, (diverted, diverter) in dpkg_diversions().items():
+            key = canonical_path(original, links)
+            owners[canonical_path(diverted, links)] = owners.get(key)
+            claimed = False
+            for name in list_names.get(diverter, ()):
+                paths, _ = _dpkg_list_paths(run, _join(DPKG_INFO, name))
+                # Compared after mapping merged /usr: Ubuntu's t64 packages
+                # divert /lib/... and list the file as /usr/lib/....
+                claimed = claimed or key in {canonical_path(p, links) for p in paths}
+            if claimed:
+                owners[key] = diverter
+            else:
+                owners.pop(key, None)
+            diversions[key] = diverter
+        return owners, "dpkg", complete, diversions
+    for candidate in RPM_DATABASES:
+        resolved, risk = resolve_links(candidate)
+        if risk or not os.path.isfile(path(resolved)):
+            continue
+        owners, complete = rpm_owners(run, resolved, links)
+        return owners, "rpm", complete, {}
+    return None, None, False, {}
+
+
+OWNERS_TIME_SHARE = 0.4  # of the module's remaining time, at most
+
+
+def load_owners(run, module, links):
+    """package_owners within a share of the module's time, so the walk for
+    set-user-ID and capability files never depends on it: if it fails or
+    runs out of time, those are still reported (without packages) and
+    nothing is called unowned. Returns (owners, manager, complete,
+    diversions, problem)."""
+    deadline = run.deadline
+    run.deadline = min(
+        deadline, time.monotonic() + OWNERS_TIME_SHARE * max(0.0, deadline - time.monotonic())
+    )
+    try:
+        return package_owners(run, module, links) + (None,)
+    except ModuleTimeout:
+        return None, None, False, {}, "time"
+    except ImportError as exc:  # no sqlite3 module
+        return None, None, False, {}, f"{type(exc).__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001 - a damaged database must not cancel the walk
+        return None, None, False, {}, f"{type(exc).__name__}: {exc}"
+    finally:
+        run.deadline = deadline
+
+
+def module_system_files(run):
+    """A bounded walk of the system directories, reporting set-user-ID and
+    set-group-ID files, files with capabilities, and executables and shared
+    libraries in the program and library directories that no package
+    installed — each with its SHA-256 (under the protection rules) and
+    owning package. Ordinary files are counted, not listed."""
+    module = "system_files"
+    links = merged_dirs()
+    owners, manager, owners_complete, diversions, owners_problem = load_owners(run, module, links)
+    local_roots = tuple(links.get(r, r).rstrip("/") + "/" for r in LOCAL_ROOTS)
+    counts = {"files": 0, "privileged": 0, "capabilities": 0, "unowned": 0, "bad_capabilities": 0}
+    findings = {"privileged_file": 0, "unowned_executable": 0}
+    dropped = {"privileged_file": 0, "unowned_executable": 0}
+    seen, walked, cut = set(), [], None
+    for root in SYSTEM_FILE_ROOTS:
+        directory, risk = resolve_links(root)
+        if risk:
+            run.stream.record(module, "not_examined", {"path": root, "reason": risk})
+            continue
+        try:
+            info = os.lstat(path(directory))
+        except OSError:
+            continue
+        if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) in seen:
+            continue
+        if any(directory.startswith(done.rstrip("/") + "/") for done in walked):
+            continue  # /bin -> /usr/bin: already inside the /usr walk
+        seen.add((info.st_dev, info.st_ino))
+        walked.append(directory)
+        walk = Walk(run, directory, max_depth=32, max_entries=MAX_SYSTEM_ENTRIES, hash_files=None)
+        for entry in walk:
+            if entry.get("type") != "-":
+                continue
+            counts["files"] += 1
+            mode = int(entry["mode"], 8)
+            absolute = entry["path"]
+            caps, root_id = {}, None
+            try:
+                caps, root_id = file_capabilities(absolute)
+            except ValueError as exc:
+                counts["bad_capabilities"] += 1
+                entry["capabilities_unreadable"] = str(exc)
+            except UnsafePath as exc:
+                entry["not_examined"] = exc.reason
+            canonical = canonical_path(absolute, links)
+            package = owners.get(canonical) if owners is not None else None
+            special = bool(mode & 0o6000)
+            local = canonical.startswith(local_roots)
+            runnable = bool(mode & 0o111) or bool(
+                LIBRARY_DIRS.match(canonical) and SHARED_LIBRARY.search(canonical)
+            )  # a library plant (ld.so.preload) is usually mode 0644
+            unowned = (
+                owners is not None
+                and package is None
+                and runnable
+                and bool(PROGRAM_DIRS.match(canonical) or local)
+            )
+            if not (special or caps or unowned or "capabilities_unreadable" in entry):
+                continue
+            name = "unowned_executable" if unowned and not (special or caps) else "privileged_file"
+            counts["privileged"] += special
+            counts["capabilities"] += bool(caps)
+            counts["unowned"] += unowned
+            # Each kind has its own limit: a flood of unowned files under
+            # /opt can't crowd out set-user-ID ones. Past it, counted only.
+            if findings[name] >= MAX_FILE_FINDINGS:
+                dropped[name] += 1
+                cut = cut or "findings"
+                continue
+            findings[name] += 1
+            entry.update(
+                {
+                    "package": package,
+                    "setuid": bool(mode & 0o4000),
+                    "setgid": bool(mode & 0o2000),
+                    "capabilities": capabilities_text(caps) if caps else None,
+                    "local": local,
+                }
+            )
+            if canonical in diversions:
+                entry["diverted_by"] = diversions[canonical]
+            if root_id:
+                entry["capabilities_root_id"] = root_id
+            if entry["size"] <= 8 << 20:
+                digest, problem = digest_of(run, absolute, "sha256", walked=True)
+                if digest:
+                    entry["sha256"] = digest
+                else:
+                    entry["hash_skipped"] = problem
+            run.stream.record(module, name, entry)
+        summary = walk.summary()
+        run.stream.record(module, "walk_summary", summary)
+        if walk.truncated_reason:
+            cut = walk.truncated_reason
+        if walk.truncated_reason == "time":
+            break
+    run.stream.record(
+        module,
+        "system_files_summary",
+        {
+            "owners": manager,
+            "owners_complete": owners_complete,
+            "owners_problem": owners_problem,
+            "merged_dirs": links,
+            "counts": counts,
+            "dropped": dropped,
+            "truncated": cut is not None,
+            "truncated_reason": cut,
+        },
+    )
+    run.check_time()
+
+
 # Collection modules, by name, in their default order.
 MODULES = {
     "host_facts": module_host_facts,
@@ -4647,6 +5078,7 @@ MODULES = {
     "crash_dumps": module_crash_dumps,
     "kernel_modules": module_kernel_modules,
     "package_verify": module_package_verify,
+    "system_files": module_system_files,
 }
 
 

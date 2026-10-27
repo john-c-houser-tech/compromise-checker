@@ -16,7 +16,9 @@ what each module reads, and why, is in docs/collector-modules.md.
 """
 
 import base64
+import binascii
 import datetime
+import glob
 import gzip
 import hashlib
 import json
@@ -1199,11 +1201,645 @@ def module_auth_journal(run):
     )
 
 
+# --- Accounts and access (DESIGN.md §8.3) ------------------------------------------
+
+ACCOUNT_FILE_BYTES = 8 * 1024 * 1024
+CONFIG_FILE_BYTES = 1024 * 1024
+MAX_INCLUDE_DEPTH = 8
+MAX_DIR_FILES = 1024
+
+
+def path_facts(absolute):
+    """Type, owner, mode, size and times of a path, without following a final
+    symbolic link (its target is recorded instead). None if it doesn't exist."""
+    try:
+        info = os.lstat(path(absolute))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return {"path": absolute, "error": str(exc)}
+    facts = {
+        "path": absolute,
+        "type": stat.filemode(info.st_mode)[0],
+        "mode": format(stat.S_IMODE(info.st_mode), "04o"),
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+        "size": info.st_size,
+        "inode": info.st_ino,
+        "mtime": iso_from_timestamp(info.st_mtime),
+        "ctime": iso_from_timestamp(info.st_ctime),
+    }
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            facts["link_target"] = os.readlink(path(absolute))
+        except OSError as exc:
+            facts["error"] = str(exc)
+    return facts
+
+
+def glob_absolute(pattern):
+    """Paths matching a glob pattern, as absolute paths on the target."""
+    matches = glob.glob(path(pattern))
+    if ROOT == "/":
+        return sorted(matches)
+    root = ROOT.rstrip("/")
+    return sorted("/" + match[len(root) :].lstrip("/") for match in matches)
+
+
+def _hash_algorithm(value):
+    """Name the password hash scheme from its prefix. Never returns any part
+    of the hash itself."""
+    if value.startswith("$"):
+        ident = value.split("$")[1] if value.count("$") >= 2 else ""
+        return {
+            "1": "md5",
+            "2a": "bcrypt",
+            "2b": "bcrypt",
+            "2x": "bcrypt",
+            "2y": "bcrypt",
+            "5": "sha256",
+            "6": "sha512",
+            "7": "scrypt",
+            "y": "yescrypt",
+            "gy": "gost-yescrypt",
+            "sha1": "sha1",
+            "md5": "sun-md5",
+        }.get(ident, "unknown")
+    if len(value) == 13 and re.match(r"^[./0-9A-Za-z]{13}$", value):
+        return "des"
+    if len(value) == 20 and value.startswith("_"):
+        return "bsdi-des"
+    return "unknown"
+
+
+def password_status(field):
+    """What a password field says, never what it holds: "empty" (anyone can
+    log in), "no_password" (none set, e.g. "*" or "!!"), "locked" (a hash
+    behind "!"), or "set"; with the hash algorithm where there is one."""
+    if field == "":
+        return {"status": "empty"}
+    locked = field.startswith("!")
+    value = field.lstrip("!")
+    if value == "" or value.startswith("*"):
+        return {"status": "no_password"}
+    return {"status": "locked" if locked else "set", "algorithm": _hash_algorithm(value)}
+
+
+def _days(value):
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _date_from_days(days):
+    if days is None or days < 0:
+        return None
+    try:
+        return (datetime.date(1970, 1, 1) + datetime.timedelta(days=days)).isoformat()
+    except OverflowError:
+        return None
+
+
+def read_accounts():
+    """Accounts from /etc/passwd as dicts (name, uid, gid, home, shell, and
+    the password field's status), plus the numbers of malformed lines.
+    None if the file can't be read."""
+    text = read_small("/etc/passwd", ACCOUNT_FILE_BYTES)
+    if text is None:
+        return None, []
+    accounts, malformed = [], []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split(":")
+        if len(fields) != 7 or not fields[0]:
+            malformed.append(number)
+            continue
+        name, password_field, uid, gid, _gecos, home, shell = fields
+        account = {
+            "name": name,
+            "uid": _days(uid),
+            "gid": _days(gid),
+            "home": home,
+            "shell": shell,
+            "line": number,
+        }
+        # "x": the password is in /etc/shadow. Anything else is the password
+        # field itself (a hash in /etc/passwd is a finding), reduced to its status.
+        shadowed = password_field == "x"  # noqa: S105 - the marker, not a password
+        account["password"] = (
+            {"status": "shadowed"} if shadowed else password_status(password_field)
+        )
+        accounts.append(account)
+    return accounts, malformed
+
+
+HISTORY_FILES = (
+    ".bash_history",
+    ".zsh_history",
+    ".histfile",
+    ".sh_history",
+    ".ash_history",
+    ".history",
+    ".local/share/fish/fish_history",
+    ".mysql_history",
+    ".psql_history",
+    ".python_history",
+    ".sqlite_history",
+)
+
+
+def module_accounts(run):
+    """Local accounts, groups and password status (never hashes), and facts
+    about shell history files (never their contents)."""
+    module = "accounts"
+    record = run.stream.record
+    for absolute in ("/etc/passwd", "/etc/group", "/etc/shadow"):
+        facts = path_facts(absolute)
+        if facts is not None:
+            record(module, "account_file", facts)
+
+    accounts, malformed = read_accounts()
+    if accounts is None:
+        raise OSError("/etc/passwd could not be read")
+    for account in accounts:
+        record(module, "account", account)
+    if malformed:
+        # Line numbers only: a malformed line could hold anything.
+        record(module, "malformed_lines", {"path": "/etc/passwd", "lines": malformed})
+    run.check_time()
+
+    text = read_small("/etc/group", ACCOUNT_FILE_BYTES)
+    bad = []
+    for number, line in enumerate((text or "").splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split(":")
+        if len(fields) != 4 or not fields[0]:
+            bad.append(number)
+            continue
+        members = [m for m in fields[3].split(",") if m]
+        record(
+            module,
+            "group",
+            {"name": fields[0], "gid": _days(fields[2]), "members": members, "line": number},
+        )
+    if bad:
+        record(module, "malformed_lines", {"path": "/etc/group", "lines": bad})
+    run.check_time()
+
+    # /etc/shadow is reduced to status here, on the server: the hashes are
+    # never sent (policy §7; decision 1 of the Phase 1 plan).
+    text = read_small("/etc/shadow", ACCOUNT_FILE_BYTES)
+    if text is None:
+        details = describe_unreadable("/etc/shadow")
+        details["reason"] = "could not be read"
+        record(module, "unreadable_file", details)
+    else:
+        bad = []
+        for number, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            fields = line.split(":")
+            if len(fields) != 9 or not fields[0]:
+                bad.append(number)
+                continue
+            last_change, expire = _days(fields[2]), _days(fields[7])
+            data = {"name": fields[0], "line": number}
+            data.update(password_status(fields[1]))
+            data.update(
+                {
+                    "last_change_days": last_change,
+                    "last_change": _date_from_days(last_change),
+                    "min_days": _days(fields[3]),
+                    "max_days": _days(fields[4]),
+                    "warn_days": _days(fields[5]),
+                    "inactive_days": _days(fields[6]),
+                    "expire_days": expire,
+                    "expire": _date_from_days(expire),
+                }
+            )
+            record(module, "password_status", data)
+        if bad:
+            record(module, "malformed_lines", {"path": "/etc/shadow", "lines": bad})
+    run.check_time()
+
+    homes = {}
+    for account in accounts:
+        if account["home"]:
+            homes.setdefault(account["home"], []).append(account["name"])
+    for home, names in sorted(homes.items()):
+        run.check_time()
+        for name in HISTORY_FILES:
+            facts = path_facts(_join(home, name))
+            if facts is not None:
+                facts["accounts"] = names
+                record(module, "shell_history", facts)
+
+
+_SUDO_INCLUDE = re.compile(r"^\s*[#@](include|includedir)\s+(.+?)\s*$")
+
+
+def send_config_file(run, module, absolute):
+    """Send a configuration file the way its program reads it: through
+    symbolic links (RHEL's authselect and crypto-policies use them by
+    design). A link is recorded, then its resolved target is sent, still only
+    if that is a regular file. Returns the path sent, or None."""
+    facts = path_facts(absolute)
+    if facts is not None and facts.get("type") == "l":
+        resolved = os.path.realpath(path(absolute))
+        if ROOT != "/":
+            root = ROOT.rstrip("/")
+            if not resolved.startswith(root + "/"):
+                resolved = None  # escapes the test fixture root
+            else:
+                resolved = resolved[len(root) :]
+        facts["resolved"] = resolved
+        run.stream.record(module, "config_link", facts)
+        if resolved is None:
+            return None
+        absolute = resolved
+    return absolute if send_file(run, module, absolute) else None
+
+
+def _sudo_include_path(target, including):
+    target = target.strip()
+    if len(target) >= 2 and target[0] == target[-1] == '"':
+        target = target[1:-1]
+    target = target.replace("%h", socket.gethostname().split(".")[0])
+    if not target.startswith("/"):  # relative to the including file (sudo 1.9.1+)
+        target = _join(os.path.dirname(including), target)
+    return target
+
+
+def _sudo_reads(name):
+    """Whether sudo reads a file of this name from an included directory: it
+    skips names ending in "~" or containing a "."."""
+    return not name.endswith("~") and "." not in name
+
+
+def module_sudoers(run):
+    """/etc/sudoers and everything it includes, masked."""
+    module = "sudoers"
+    seen = set()
+    pending = [("/etc/sudoers", 0)]
+    while pending:
+        run.check_time()
+        absolute, depth = pending.pop(0)
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        sent = send_config_file(run, module, absolute)
+        if sent is None:
+            continue
+        text = read_small(sent, CONFIG_FILE_BYTES) or ""
+        for line in text.splitlines():
+            match = _SUDO_INCLUDE.match(line)
+            if not match:
+                continue
+            target = _sudo_include_path(match.group(2), absolute)
+            if depth + 1 > MAX_INCLUDE_DEPTH:
+                run.stream.record(
+                    module, "include_not_followed", {"path": target, "reason": "depth"}
+                )
+                continue
+            if match.group(1) == "include":
+                pending.append((target, depth + 1))
+                continue
+            try:
+                names = sorted(os.listdir(path(target)))
+            except OSError as exc:
+                run.stream.record(
+                    module, "include_dir", {"path": target, "from": absolute, "error": str(exc)}
+                )
+                continue
+            run.stream.record(
+                module,
+                "include_dir",
+                {
+                    "path": target,
+                    "from": absolute,
+                    "files": [{"name": n, "sudo_reads": _sudo_reads(n)} for n in names],
+                    "truncated": len(names) > MAX_DIR_FILES,
+                },
+            )
+            # Every file is sent, including those sudo skips: evidence either way.
+            pending.extend((_join(target, n), depth + 1) for n in names[:MAX_DIR_FILES])
+
+
+# --- SSH ------------------------------------------------------------------------------
+
+_SSH_KEY_TYPE = re.compile(
+    r"^(?:ssh-(?:rsa|dss|ed25519|ed448)|ecdsa-sha2-nistp(?:256|384|521)"
+    r"|sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com)"
+    r"(?:-cert-v01@openssh\.com)?$"
+)
+DEFAULT_AUTHORIZED_KEYS = (".ssh/authorized_keys", ".ssh/authorized_keys2")
+MAX_KEY_FILE_BYTES = 1024 * 1024
+
+
+def _split_token(text):
+    """The first whitespace-delimited token, treating "quoted strings" (with
+    backslash escapes) as part of it, and the rest of the text."""
+    quoted, escaped = False, False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quoted:
+            escaped = True
+        elif char == '"':
+            quoted = not quoted
+        elif char in " \t" and not quoted:
+            return text[:index], text[index:].lstrip(" \t")
+    return text, ""
+
+
+def _option_names(options):
+    names, current, quoted, escaped = [], "", False, False
+    for char in options + ",":
+        if escaped:
+            escaped = False
+        elif char == "\\" and quoted:
+            escaped = True
+        elif char == '"':
+            quoted = not quoted
+        elif char == "," and not quoted:
+            names.append(current.split("=", 1)[0].strip().lower())
+            current = ""
+            continue
+        current += char
+    return [n for n in names if n]
+
+
+def parse_authorized_key(line):
+    """One authorized_keys line as facts: key type, SHA-256 fingerprint (as
+    sshd logs it), options and comment. None if it isn't a public key line.
+    The key itself is never returned."""
+    first, rest = _split_token(line.strip())
+    options = None
+    if not _SSH_KEY_TYPE.match(first):
+        options = first
+        first, rest = _split_token(rest)
+        if not _SSH_KEY_TYPE.match(first):
+            return None
+    blob_text, _, comment = rest.partition(" ")
+    try:
+        blob = base64.b64decode(blob_text, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if len(blob) < 4:
+        return None
+    length = int.from_bytes(blob[:4], "big")
+    embedded = blob[4 : 4 + length].decode("ascii", errors="replace")
+    fingerprint = base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
+    key = {"type": first, "fingerprint": "SHA256:" + fingerprint, "key_bytes": len(blob)}
+    if embedded != first:
+        key["embedded_type"] = embedded  # the line's type and the key's disagree
+    if options is not None:
+        key["options"] = mask_text(options.encode("utf-8"))[0].decode("utf-8", "replace")
+        key["option_names"] = _option_names(options)
+    comment = comment.strip()
+    if comment:
+        key["comment"] = mask_text(comment.encode("utf-8"))[0].decode("utf-8", "replace")
+    return key
+
+
+def _sshd_directives(text, keyword):
+    """Arguments of every `keyword` line (case-insensitive), Match blocks included."""
+    values = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = re.split(r"[\s=]+", stripped, maxsplit=1)
+        if parts[0].lower() == keyword.lower() and len(parts) == 2:
+            try:
+                values.extend(shlex.split(parts[1], comments=True))
+            except ValueError:
+                values.extend(parts[1].split())
+    return values
+
+
+def _expand_key_path(pattern, account):
+    """An AuthorizedKeysFile pattern for one account, or None if it uses a
+    token this collector doesn't know."""
+    out, index = [], 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "%" and index + 1 < len(pattern):
+            letter = pattern[index + 1]
+            value = {"%": "%", "h": account["home"], "u": account["name"]}.get(letter)
+            if letter == "U":
+                value = str(account["uid"])
+            if value is None:
+                return None
+            out.append(value)
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    expanded = "".join(out)
+    if expanded.startswith("~/"):
+        expanded = _join(account["home"], expanded[2:])
+    if not expanded.startswith("/"):
+        expanded = _join(account["home"], expanded)
+    return expanded
+
+
+def _link_on_the_way(base, absolute):
+    """The first symbolic link between `base` and the final component of
+    `absolute` (exclusive), as (path, target), or None."""
+    if not absolute.startswith(base.rstrip("/") + "/"):
+        return None
+    current = base.rstrip("/")
+    for part in absolute[len(current) + 1 :].split("/")[:-1]:
+        current = current + "/" + part
+        try:
+            if stat.S_ISLNK(os.lstat(path(current)).st_mode):
+                return current, os.readlink(path(current))
+        except OSError:
+            return None
+    return None
+
+
+def send_authorized_keys(run, module, account, absolute):
+    """Facts about one authorized_keys file: the file, then one record per key."""
+    record = run.stream.record
+    link = _link_on_the_way(account["home"], absolute)
+    if link is not None:
+        record(
+            module,
+            "authorized_keys_not_read",
+            {
+                "account": account["name"],
+                "path": absolute,
+                "reason": "the path goes through a symbolic link",
+                "link": link[0],
+                "link_target": link[1],
+            },
+        )
+        return
+    try:
+        raw, info = open_regular_file(absolute)
+    except (OSError, ValueError) as exc:
+        details = describe_unreadable(absolute)
+        details.update({"account": account["name"], "reason": str(exc)})
+        record(module, "unreadable_file", details)
+        return
+    with raw:
+        try:
+            data = raw.read(MAX_KEY_FILE_BYTES + 1)
+        except OSError as exc:
+            record(module, "unreadable_file", {"path": absolute, "reason": str(exc)})
+            return
+    keys, not_keys = 0, []
+    for number, line in enumerate(data[:MAX_KEY_FILE_BYTES].splitlines(), 1):
+        text = line.decode("utf-8", errors="replace")
+        if not text.strip() or text.lstrip().startswith("#"):
+            continue
+        key = parse_authorized_key(text)
+        if key is None:
+            not_keys.append(number)  # line numbers only: it could be anything
+            continue
+        key.update({"account": account["name"], "path": absolute, "line": number})
+        record(module, "authorized_key", key)
+        keys += 1
+    facts = file_meta(info, None)
+    del facts["compressed"]
+    facts.update(
+        {
+            "account": account["name"],
+            "path": absolute,
+            "keys": keys,
+            "lines_not_keys": not_keys,
+            "truncated": len(data) > MAX_KEY_FILE_BYTES,
+        }
+    )
+    record(module, "authorized_keys_file", facts)
+
+
+def module_ssh(run):
+    """sshd_config and its includes (masked), and every account's authorized
+    keys as fingerprints, options and comments — never the keys themselves."""
+    module = "ssh"
+    seen, texts = set(), []
+    pending = [("/etc/ssh/sshd_config", 0)]
+    while pending:
+        run.check_time()
+        absolute, depth = pending.pop(0)
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        sent = send_config_file(run, module, absolute)
+        if sent is None:
+            continue
+        text = read_small(sent, CONFIG_FILE_BYTES) or ""
+        texts.append(text)
+        for pattern in _sshd_directives(text, "Include"):
+            if not pattern.startswith("/"):
+                pattern = "/etc/ssh/" + pattern
+            if depth + 1 > MAX_INCLUDE_DEPTH:
+                run.stream.record(
+                    module, "include_not_followed", {"path": pattern, "reason": "depth"}
+                )
+                continue
+            pending.extend((match, depth + 1) for match in glob_absolute(pattern))
+
+    patterns = []
+    for text in texts:
+        for value in _sshd_directives(text, "AuthorizedKeysFile"):
+            if value.lower() != "none" and value not in patterns:
+                patterns.append(value)
+    patterns = patterns or list(DEFAULT_AUTHORIZED_KEYS)
+    run.stream.record(module, "authorized_keys_locations", {"patterns": patterns})
+
+    accounts, _ = read_accounts()
+    if accounts is None:
+        raise OSError("/etc/passwd could not be read")
+    homes = {}
+    for account in accounts:
+        if account["home"]:
+            homes.setdefault(account["home"], []).append(account["name"])
+    for home, names in sorted(homes.items()):
+        ssh_dir = path_facts(_join(home, ".ssh"))
+        if ssh_dir is not None:
+            ssh_dir["accounts"] = names
+            run.stream.record(module, "ssh_dir", ssh_dir)
+    for account in accounts:
+        run.check_time()
+        candidates = []
+        for pattern in patterns:
+            expanded = _expand_key_path(pattern, account)
+            if expanded is not None and expanded not in candidates:
+                candidates.append(expanded)
+        for candidate in candidates:
+            try:
+                os.lstat(path(candidate))
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pass  # described as unreadable below
+            send_authorized_keys(run, module, account, candidate)
+
+
+# --- PAM ----------------------------------------------------------------------------
+
+PAM_MODULE_DIRS = (
+    "/usr/lib64/security",
+    "/usr/lib/security",
+    "/usr/lib/*/security",
+    "/lib64/security",
+    "/lib/security",
+    "/lib/*/security",
+)
+
+
+def module_pam(run):
+    """PAM configuration (masked) and a hashed listing of the PAM module
+    directories, so an added or replaced module shows."""
+    module = "pam"
+    names = []
+    if path_facts("/etc/pam.conf") is not None:
+        names.append("/etc/pam.conf")
+    try:
+        entries = sorted(os.listdir(path("/etc/pam.d")))
+    except OSError as exc:
+        run.stream.record(module, "unreadable_file", {"path": "/etc/pam.d", "reason": str(exc)})
+        entries = []
+    names.extend("/etc/pam.d/" + name for name in entries[:MAX_DIR_FILES])
+    for absolute in names:
+        run.check_time()
+        send_config_file(run, module, absolute)
+
+    seen = set()
+    for pattern in PAM_MODULE_DIRS:
+        for directory in glob_absolute(pattern):
+            try:
+                info = os.stat(path(directory))
+            except OSError:
+                continue
+            if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) in seen:
+                continue  # /lib is often a link to /usr/lib: list each directory once
+            seen.add((info.st_dev, info.st_ino))
+            walk = Walk(
+                run, directory, max_depth=2, max_entries=5000, hash_bytes=8 << 20, hash_files="all"
+            )
+            for entry in walk:
+                run.stream.record(module, "module_file", entry)
+            run.stream.record(module, "walk_summary", walk.summary())
+            run.check_time()
+
+
 # Collection modules, by name, in their default order.
 MODULES = {
     "host_facts": module_host_facts,
     "auth_log": module_auth_log,
     "auth_journal": module_auth_journal,
+    "accounts": module_accounts,
+    "sudoers": module_sudoers,
+    "ssh": module_ssh,
+    "pam": module_pam,
 }
 
 

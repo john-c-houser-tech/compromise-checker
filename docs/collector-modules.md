@@ -91,6 +91,86 @@ field that is not valid UTF-8 as an array of byte values, and those bytes
 are masked too. A line that can't be parsed is not sent (fail closed) and is
 counted as `unparsed_line`.
 
+## `accounts`
+
+**Why:** new accounts, extra UID 0 accounts, service accounts gaining a
+login shell or a password, new members of powerful groups, and history files
+switched off (DESIGN.md §8.3).
+
+| Record | Read from | Contents |
+|---|---|---|
+| `account_file` | `/etc/passwd`, `/etc/group`, `/etc/shadow` | Type, owner, mode, size, inode, times |
+| `account` | `/etc/passwd` | Name, UID, GID, home, shell, line number, and the password field's *status* (`shadowed`, or as below). The comment (GECOS) field, usually a full name, is not sent. |
+| `group` | `/etc/group` | Name, GID, members, line number |
+| `password_status` | `/etc/shadow` | Per account: `empty`, `no_password` (`*`, `!!`…), `locked` or `set`; the hash *algorithm* (yescrypt, sha512, md5, des…); last change, minimum, maximum, warning, inactivity and expiry, in days and as dates |
+| `shell_history` | each home directory | Type, owner, mode, size, times and link target of known history files (`.bash_history`, `.zsh_history`, fish, MySQL, PostgreSQL, Python, SQLite…) |
+| `malformed_lines` | any of the three | Line numbers only |
+
+**Never sent:** password hashes — `/etc/shadow` is reduced to status on the
+server (Phase 1 plan, decision 1), and so is a hash found in `/etc/passwd` —
+and the contents of history files (policy §7). A malformed line is reported
+by number only, since it could hold anything.
+
+## `sudoers`
+
+**Why:** new sudo rights, especially `NOPASSWD` (DESIGN.md §8.3).
+
+**Sends:** `/etc/sudoers` and every file it includes (`@include`,
+`#include`, `@includedir`, `#includedir`, relative paths and `%h`
+resolved as sudo does, up to 8 levels), masked. Each included directory also
+gets an `include_dir` record listing its files and whether sudo reads each
+one (sudo skips names ending in `~` or containing a `.`); every file is sent
+either way, since a skipped one is still evidence.
+
+## `ssh`
+
+**Why:** `sshd_config` changes (root login, ports, key file locations,
+`AuthorizedKeysCommand`) and new or changed authorized keys for any account,
+root and service accounts included (DESIGN.md §8.3).
+
+**Sends:** `/etc/ssh/sshd_config` and every file its `Include` lines name
+(globs resolved relative to `/etc/ssh`, up to 8 levels), masked. Then the
+key file locations sshd uses — every `AuthorizedKeysFile` value in that
+configuration (Match blocks included), or sshd's defaults
+`.ssh/authorized_keys` and `.ssh/authorized_keys2` — expanded for every
+account (`%h`, `%u`, `%U`, `~`). For each key file found:
+
+- `authorized_key`, one per key: account, file, line, key type, the
+  SHA-256 fingerprint exactly as `ssh-keygen -l` and sshd's logs show it,
+  the key's size in bytes, its options (masked) and the option names, and
+  its comment (masked). If the type on the line and the type inside the key
+  differ, both are given.
+- `authorized_keys_file`: the file's owner, mode, size, times and inode, the
+  number of keys, and the line numbers of lines that are not keys.
+- `ssh_dir`: facts about each home's `.ssh` directory.
+
+**Never sent:** the keys themselves, and any line that isn't a public key
+(only its number — someone may have pasted a private key). A key file whose
+path passes through a symbolic link inside the home directory (say `.ssh`
+linked elsewhere) is not read: an `authorized_keys_not_read` record names
+the link and its target. A key file that is itself a link is described, not
+read.
+
+## `pam`
+
+**Why:** `pam_exec` and other added lines, and unknown or replaced modules
+in the PAM module directory (DESIGN.md §8.3).
+
+**Sends:** `/etc/pam.conf` if present and every file in `/etc/pam.d`,
+masked; and a directory walk (see "Directory walks") of each PAM module
+directory found (`/usr/lib64/security`, `/usr/lib/<architecture>/security`
+and their `/lib` equivalents, each listed once), with the SHA-256 of every
+file up to 8 MiB.
+
+## Configuration files that are links
+
+`sudoers`, `ssh` and `pam` read configuration the way sudo, sshd and PAM
+do: through symbolic links, which RHEL's `authselect` and crypto policies
+use by design (`/etc/pam.d/system-auth` → `/etc/authselect/system-auth`). A
+`config_link` record gives the link, its target and the resolved path; the
+resolved file is then sent, still only if it is a regular file. Key files
+and logs never follow links.
+
 ## Commands
 
 Where a file can't practically be read directly, a module runs a command

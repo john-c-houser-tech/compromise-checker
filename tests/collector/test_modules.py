@@ -1147,6 +1147,29 @@ class SudoersTests(FixtureRoot):
         records = collect(self.root, ["sudoers"])
         self.assertEqual(sorted(sources(records)), ["/etc/sudoers", "/etc/sudoers local"])
 
+    def test_config_text_only_from_system_locations(self):
+        self.write("etc/sudoers", b"#include /opt/app/sudoers\n@includedir /etc/sudoers.d\n")
+        self.write("opt/app/sudoers", b"app ALL=(ALL) NOPASSWD: ALL\n")
+        self.write("etc/sudoers.d/linked-src", b"x ALL=(ALL) ALL\n")
+        os.link(
+            Path(self.root, "etc/sudoers.d/linked-src"), Path(self.root, "etc/sudoers.d/linked")
+        )
+        records = collect(self.root, ["sudoers"])
+        self.assertEqual(sorted(sources(records)), ["/etc/sudoers"])
+        reasons = {r["path"]: r["reason"] for r in records_named(records, "unreadable_file")}
+        self.assertIn("outside the system locations", reasons["/opt/app/sudoers"])
+        self.assertIn("hard-linked", reasons["/etc/sudoers.d/linked"])
+
+    def test_hard_links_from_packages_under_usr_are_read(self):
+        self.write("usr/share/crypto-policies/DEFAULT/opensshserver.txt", b"Ciphers aes256-gcm\n")
+        os.link(
+            Path(self.root, "usr/share/crypto-policies/DEFAULT/opensshserver.txt"),
+            Path(self.root, "usr/share/crypto-policies/FUTURE-opensshserver.txt"),
+        )
+        self.write("etc/ssh/sshd_config", b"Include /usr/share/crypto-policies/DEFAULT/*.txt\n")
+        records = collect(self.root, ["ssh"])
+        self.assertIn("/usr/share/crypto-policies/DEFAULT/opensshserver.txt", sources(records))
+
     def test_include_loop_ends(self):
         self.write("etc/sudoers", b"#include /etc/sudoers\n")
         records = collect(self.root, ["sudoers"])
@@ -1909,6 +1932,13 @@ class CanaryTests(FixtureRoot):
                 link = Path(self.root, directory, name + ".conf")
                 os.symlink(os.path.relpath(Path(self.root, target), link.parent), link)
                 os.link(Path(self.root, target), Path(self.root, directory, name + "-hard.conf"))
+        # A history file reached only by a symbolic link (no hard link), so
+        # the location rule alone must stop it.
+        self.write("home/CORP/bob/.zsh_history", f"{c['history']}\n".encode())
+        os.symlink("../../home/CORP/bob/.zsh_history", Path(self.root, "etc/pam.d/bob.conf"))
+        os.symlink(
+            "../../../home/CORP/bob/.zsh_history", Path(self.root, "etc/ssh/sshd_config.d/bob.conf")
+        )
         self.write("etc/pam.d/sshd", f"auth optional pam_exec.so /x password={c['pam']}\n".encode())
         self.write("etc/sudoers", b"@includedir /etc/sudoers.d\n#include /etc/shadow\n")
         self.write("etc/sudoers.d/app", f"Defaults env_keep+=TOKEN\n# token={c['sudo']}\n".encode())

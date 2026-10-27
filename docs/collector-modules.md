@@ -133,8 +133,9 @@ belongs to no `/etc/passwd` account is an *unlisted home*. A home that is a
 symbolic link (`/home/alice` → `/srv/alice`) is followed to its target, as
 sshd follows it, but never descended through. A home root that is itself a
 link (`/home` → `/srv/homes`) is searched at its target. If a root can't be
-searched, the search is cut short, or `/etc/passwd` can't be read (so local
-homes are unknown), protection fails closed (see "Protected files"). A
+searched, or the search is cut short, the `homes` record says so
+(`complete: false`): some keys may not have been looked at. (Protection
+doesn't depend on the search; see "Protected files".) A
 home-like directory is still searched one level below (`/home/CORP/.ssh` and
 `/home/CORP/alice`). Only those three
 SSSD settings are read from `sssd.conf`; nothing from it is sent. NSS itself
@@ -233,19 +234,29 @@ the SHA-256 of every file up to 8 MiB.
 
 ## Protected files
 
-`/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow` and their `-`
-backups,
-`/etc/security/opasswd` (old password hashes) and every account's shell
-history files are collected only as structured records, status or metadata.
-Any file the collector would send — and any authorized_keys file it reads —
-is checked against them *after* it is opened, by device and inode, so no
-configuration link or hard link can carry their contents out: such a file
-is described (`unreadable_file`, "is (or links to) a protected file")
-instead. If the home search was cut short (so a history file might be
-missing from the protected set), the collector fails closed: configuration
-and logs are read only from system locations (`/etc`, `/usr`, `/lib`,
-`/lib64`, `/var/log`, `/run`) and never if hard-linked; a key file is
-refused if hard-linked or named like a history file.
+Some files are collected only as structured records, status or metadata,
+never as text: `/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow` and
+their `-` backups, `/etc/security/opasswd` (old password hashes), and every
+account's shell history. Three rules keep their contents in, checked on the
+file actually opened, after any links:
+
+- **Configuration and log text is read only from system locations** —
+  `/etc`, `/usr`, `/lib`, `/lib64`, `/var/log`, `/run`. A link that leads
+  anywhere else, a home directory included, is not followed for its text.
+  History files live in home directories, so no configuration link can
+  carry one out, whether or not the home search found it.
+- **Nothing hard-linked is read as text**, since a hard link could be any
+  file — except distribution content under `/usr`, where packages ship hard
+  links (RHEL's crypto policies, for example).
+- **The account files above are refused by device and inode**, however
+  they're reached, though they sit in `/etc`.
+
+Key files, whose place is the home directory, are read wherever sshd reads
+them, but never if hard-linked or named like a history file — and only
+public keys' fingerprints, options and comments are taken from them. A file
+refused by any rule is described (`unreadable_file`, with the reason)
+instead. An include pointing outside the system locations (for example
+`/opt/app/sudoers`) is therefore recorded but not sent.
 
 ## Network drives and automounted folders
 

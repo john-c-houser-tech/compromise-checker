@@ -445,26 +445,30 @@ class Run:
 
     def refusal(self, opened, info, key_file=False):
         """Why the contents of a file just opened (its path after links, its
-        fstat) must not be read, or None. A protected file is refused however
-        it was reached. If the protected set may be incomplete (the home
-        search was cut short, so a history file may be missing from it), the
-        collector fails closed: configuration and logs are read only from
-        system locations, never anything hard-linked; a key file (whose place
-        is the home directory) is refused if hard-linked or named like a
-        history file."""
+        fstat) must not be read, or None. These rules don't depend on knowing
+        every history file on the server:
+
+        - a protected file (PROTECTED_FILES) is refused however it was reached;
+        - nothing hard-linked is read, except distribution content under /usr
+          (packages ship hard links, e.g. RHEL's crypto policies): elsewhere
+          a hard link could be any file;
+        - configuration and logs are read only from system locations, so a
+          link can't carry a history file or anything else out;
+        - a key file, whose place is the home directory, is refused if it is
+          named like a history file."""
         if self._protected is None:
-            self._protected = protected_inodes(self)
-        inodes, complete = self._protected
-        if (info.st_dev, info.st_ino) in inodes:
+            self._protected = protected_inodes()
+        if (info.st_dev, info.st_ino) in self._protected:
             return "is (or links to) a protected file; its contents are never read"
-        if complete:
-            return None
-        reason = "the home search was cut short, so this could be a protected file"
-        if info.st_nlink > 1:
-            return reason
+        if info.st_nlink > 1 and not opened.startswith("/usr/"):
+            return "is hard-linked, so it could be a protected file; its contents are never read"
         if key_file:
-            return reason if opened.rsplit("/", 1)[-1] in _HISTORY_NAMES else None
-        return None if opened.startswith(SYSTEM_LOCATIONS) else reason
+            if opened.rsplit("/", 1)[-1] in _HISTORY_NAMES:
+                return "is a shell history file; its contents are never read"
+            return None
+        if not opened.startswith(SYSTEM_LOCATIONS):
+            return "is outside the system locations configuration and logs are read from"
+        return None
 
     def out_of_time(self):
         return time.monotonic() >= self.deadline
@@ -1544,9 +1548,9 @@ def read_accounts():
     return accounts, malformed
 
 
-# Files collected only as status or metadata (policy §7): account files
-# that hold password hashes, old hashes, and shell history. send_file refuses them by inode, so no
-# configuration link or hard link can carry their contents out.
+# Files collected only as records, status or metadata (policy §7): the account
+# files, which can hold password hashes, and old hashes. They sit in /etc, a
+# system location, so Run.refusal refuses them by inode however reached.
 PROTECTED_FILES = (
     "/etc/passwd",  # can hold hashes too; read only through read_accounts()
     "/etc/passwd-",
@@ -1560,26 +1564,16 @@ PROTECTED_FILES = (
 )
 
 
-# Where configuration and logs live. When the protected set may be
-# incomplete, only these are read (see Run.refusal).
+# The only places configuration and log text is sent from (see Run.refusal).
 SYSTEM_LOCATIONS = ("/etc/", "/usr/", "/lib/", "/lib64/", "/var/log/", "/run/")
 
 
-def protected_inodes(run=None):
-    """(inodes of the protected files, whether every home was searched, the
-    home roots). If the home search was cut short, a history file may be
-    missing from the set, and callers must fail closed."""
-    candidates = list(PROTECTED_FILES)
-    accounts, _ = read_accounts()
-    homes, summary = discover_homes(accounts, run)
-    if accounts is None:
-        # Without the account list, local homes are unknown: fail closed.
-        summary["complete"] = False
-    for home in homes:
-        if not home.get("skipped"):
-            candidates.extend(_join(home["home"], name) for name in HISTORY_FILES)
+def protected_inodes():
+    """Inodes of PROTECTED_FILES. Shell history needs no list: it lives in
+    home directories, outside the system locations, and Run.refusal never
+    reads configuration or logs from there, nor anything hard-linked."""
     inodes = set()
-    for absolute in candidates:
+    for absolute in PROTECTED_FILES:
         resolved, risk = resolve_links(absolute)
         if risk:
             continue
@@ -1589,7 +1583,7 @@ def protected_inodes(run=None):
             continue
         if stat.S_ISREG(info.st_mode):
             inodes.add((info.st_dev, info.st_ino))
-    return inodes, summary["complete"]
+    return inodes
 
 
 HISTORY_FILES = (

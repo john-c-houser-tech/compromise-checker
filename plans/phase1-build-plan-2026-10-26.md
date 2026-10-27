@@ -67,6 +67,15 @@ and user directories), `rc.local`, `/etc/profile.d`, shell start-up files,
 Ubuntu `update-motd.d`, apt and dnf hook configuration, udev rules,
 `/etc/ld.so.preload` — as file manifests plus masked contents of small text
 files.
+As built (#18, agreed with John 2026-10-27): crontab and `at` text from the
+spools (`at` environments reduced to names); files in homes as hashes only.
+
+**1.3b — Collector: opt-in text of home start-up files and user units**
+(agreed with John 2026-10-27). Hashes alone can't show what a backdoor
+already present at the first check runs. Modelled on the shell-history
+opt-in: chosen in `checker init`, root, service and administrator accounts
+by default (ordinary users only if also enabled), masked as usual. Needs its
+own policy §7 wording, approved by John before the PR. After 1.3 merges.
 
 **1.4 — Collector: logs, boots and integrity** (feeds 8.1, 8.2, 8.5).
 - Kernel messages and sshd/sudo/su units from the journal (JSON); `wtmp` and

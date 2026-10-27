@@ -1562,6 +1562,42 @@ class PamTests(FixtureRoot):
         records = [json.loads(line) for line in raw.splitlines()]
         self.assertEqual(sorted(sources(records)), ["/etc/pam.d/sshd"])
 
+    def refusal(self, collector, target):
+        run, _ = direct_run(collector)
+        return run.refusal(target, os.stat(Path(self.root, target.lstrip("/"))))
+
+    def test_runtime_homes_of_service_accounts_stay_readable(self):
+        # Ubuntu 22.04: systemd-network, systemd-resolve and systemd-timesync
+        # have /run/systemd as home, and /run/systemd/system holds runtime
+        # units — evidence the persistence checks must read.
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0:root:/root:/bin/bash\n"
+            b"systemd-network:x:100:102::/run/systemd:/usr/sbin/nologin\n"
+            b"systemd-resolve:x:101:103::/run/systemd:/usr/sbin/nologin\n"
+            b"sshd:x:105:65534::/run/sshd:/usr/sbin/nologin\n"
+            b"svc:x:900:900::/usr/local/svc:/bin/bash\n",
+        )
+        self.write("run/systemd/system/evil.service", b"[Service]\nExecStart=/tmp/x\n")
+        self.write("usr/local/svc/notes", b"x\n")
+        collector = load_collector(self.root)
+        self.assertIsNone(self.refusal(collector, "/run/systemd/system/evil.service"))
+        # An account with a login shell keeps its home out, wherever it is.
+        self.assertIn("home directory", self.refusal(collector, "/usr/local/svc/notes"))
+
+    def test_service_home_with_history_is_kept_out(self):
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0:root:/root:/bin/bash\napache:x:48:48::/usr/share/httpd:/sbin/nologin\n",
+        )
+        self.write("usr/share/httpd/notes", b"x\n")
+        collector = load_collector(self.root)
+        self.assertIsNone(self.refusal(collector, "/usr/share/httpd/notes"))
+        # Once a shell has been used as apache, its home is kept out.
+        self.write("usr/share/httpd/.bash_history", b"ls\n")
+        collector = load_collector(self.root)
+        self.assertIn("home directory", self.refusal(collector, "/usr/share/httpd/notes"))
+
     def test_too_many_pam_files_is_a_recorded_gap(self):
         for name in ("a", "b", "c"):
             self.write("etc/pam.d/" + name, b"auth required pam_unix.so\n")

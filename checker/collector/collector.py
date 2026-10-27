@@ -1610,20 +1610,43 @@ PROTECTED_FILES = (
 SYSTEM_LOCATIONS = ("/etc/", "/usr/", "/lib/", "/lib64/", "/var/log/", "/run/")
 
 
+# Shells that give no interactive session, so leave no shell history.
+_NO_LOGIN_SHELLS = frozenset(("nologin", "false", "sync", "halt", "shutdown"))
+
+
+def _has_login_shell(account):
+    return os.path.basename(account["shell"] or "/bin/sh") not in _NO_LOGIN_SHELLS
+
+
 def protected_inodes():
     """(inodes of PROTECTED_FILES and of the history files in /etc/passwd
-    accounts' homes, those homes). The history inodes catch aliases under
-    any name — a hard link under /usr, say; the homes let Run.refusal keep
-    out a service account's home that lies inside a system location
-    (Apache's /usr/share/httpd)."""
+    accounts' homes, the homes kept out). The history inodes catch aliases
+    under any name — a hard link under /usr, say. A home is kept out
+    entirely (Run.refusal) only where shell history can exist: an account
+    with a login shell uses it, or a history file is already there. Service
+    accounts' runtime homes — Ubuntu 22.04's systemd-network at
+    /run/systemd, sshd at /run/sshd — stay readable, since /run/systemd/system
+    is itself evidence."""
     candidates = list(PROTECTED_FILES)
     accounts, _ = read_accounts()
-    homes = sorted(
-        {a["home"].rstrip("/") for a in accounts or () if a["home"].rstrip("/")}
-        - {r.rstrip("/") for r in SYSTEM_LOCATIONS}
-    )
-    for home in homes:
-        candidates.extend(_join(home, name) for name in HISTORY_FILES)
+    homes, kept_out = set(), set()
+    system_roots = {r.rstrip("/") for r in SYSTEM_LOCATIONS}
+    for account in accounts or ():
+        home = account["home"].rstrip("/")
+        if not home or home in system_roots:
+            continue
+        homes.add(home)
+        if _has_login_shell(account):
+            kept_out.add(home)
+    for home in sorted(homes):
+        names = [_join(home, name) for name in HISTORY_FILES]
+        candidates.extend(names)
+        if home not in kept_out:
+            try:
+                if any(os.path.lexists(path(name)) for name in names):
+                    kept_out.add(home)
+            except UnsafePath:
+                kept_out.add(home)
     inodes = set()
     for absolute in candidates:
         resolved, risk = resolve_links(absolute)
@@ -1635,7 +1658,7 @@ def protected_inodes():
             continue
         if stat.S_ISREG(info.st_mode):
             inodes.add((info.st_dev, info.st_ino))
-    return inodes, tuple(home + "/" for home in homes)
+    return inodes, tuple(home + "/" for home in sorted(kept_out))
 
 
 HISTORY_FILES = (

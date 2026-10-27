@@ -528,6 +528,32 @@ class MaskingTests(unittest.TestCase):
                 self.assertNotIn(value[-16:], masked, line)
                 self.assertEqual(counts, {"password_hash": 1}, line)
 
+    def test_hash_inside_a_credential_keeps_the_whole_value_masked(self):
+        masked, _ = self.mask(b"password=$6$saltsalt$" + b"x" * 86 + b"!PlainTail\n")
+        self.assertEqual(masked, b"password=[MASKED:password]\n")
+
+    def test_hash_attached_to_an_option_is_masked(self):
+        line = b"COMMAND=/usr/sbin/usermod -p$6$saltsalt$" + b"x" * 86 + b" alice\n"
+        masked, counts = self.mask(line)
+        self.assertEqual(masked, b"COMMAND=/usr/sbin/usermod -p[MASKED:password_hash] alice\n")
+        self.assertEqual(counts, {"password_hash": 1})
+
+    def test_hostile_hash_fragments_mask_in_linear_time(self):
+        # A 1 MiB line of almost-hashes must not stall the collector (limits
+        # are checked between lines). The old pattern took ~0.8 s on 28 KiB.
+        for fragment in (
+            b",$6$abc",
+            b"$y$j9T$",
+            b"$2b$12$",
+            b"$7$abc$",
+            b"$md5,rounds=1$",
+            b"$1$$",
+        ):
+            line = fragment * (1024 * 1024 // len(fragment)) + b"\n"
+            started = time.monotonic()
+            self.mask(line)
+            self.assertLess(time.monotonic() - started, 2.0, fragment)
+
     def test_dollar_text_that_is_not_a_hash_is_kept(self):
         for line in (b"price is $1$ and $6$ total\n", b"PS1='\\$ ' $HOME/$USER\n"):
             self.assertEqual(self.mask(line), (line, {}), line)

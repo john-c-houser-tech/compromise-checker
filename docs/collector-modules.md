@@ -12,7 +12,10 @@ it leaves the server (masking rules version 4, listed in the policy §7).
 Masking works on whole lines, so a secret can never be split across two
 reads. Password hashes in the standard crypt formats (`$1$`, `$2b$`, `$5$`,
 `$6$`, `$7$`, `$y$`, `$gy$`…) are masked wherever they appear, salt
-included, for example in a copied shadow line pasted into a config file.
+included, for example in a copied shadow line pasted into a config file or
+`usermod -p<hash>` in a sudo log. This rule runs last, so a `password=`
+value is still masked whole; each format's fields are bounded, so it runs
+in linear time even on hostile input.
 The old 13-character DES format can't be told apart from ordinary text and
 is not masked. Two fixed vocabularies are never masked, because they look like
 `key=value` settings but can't hold a secret and are exactly what the checks

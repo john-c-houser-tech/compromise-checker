@@ -230,18 +230,43 @@ _NOT_A_SECRET = (
     + rb")"
 )
 
+_B64 = rb"[./0-9A-Za-z]"
+_CRYPT_HASH = (
+    rb"\$[156]\$(?:rounds=[0-9]{1,9}\$)?"
+    + _B64
+    + rb"{1,16}\$"
+    + _B64
+    + rb"{16,86}"  # md5, sha-crypt
+    + rb"|\$2[abxy]\$[0-9]{2}\$"
+    + _B64
+    + rb"{53}"  # bcrypt
+    + rb"|\$7\$"
+    + _B64
+    + rb"{11,64}\$"
+    + _B64
+    + rb"{43}"  # scrypt
+    + rb"|\$g?y\$"
+    + _B64
+    + rb"{1,32}\$"
+    + _B64
+    + rb"{1,86}\$"
+    + _B64
+    + rb"{16,86}"  # yescrypt
+    + rb"|\$sha1\$[0-9]{1,10}\$"
+    + _B64
+    + rb"{1,64}\$"
+    + _B64
+    + rb"{16,86}"
+    + rb"|\$md5(?:,rounds=[0-9]{1,9})?\$"
+    + _B64
+    + rb"{1,16}\$\$?"
+    + _B64
+    + rb"{16,86}"
+)
+
 # Specific formats first, so the generic key=value rule doesn't relabel a
 # value that is already masked.
 MASKING_RULES = [
-    # Password hashes in the standard crypt formats, wherever they turn up
-    # (a copied shadow line, a pasted hash): $1$ md5, $2a/b/x/y$ bcrypt,
-    # $5$/$6$ sha-crypt (with an optional rounds= field), $7$ scrypt,
-    # $y$/$gy$ yescrypt, $sha1$, $md5$. The whole hash, salt included.
-    _rule(
-        "password_hash",
-        rb"(?<![\w$])",
-        rb"\$(?:1|2[abxy]|5|6|7|y|gy|sha1|md5)(?:[$,][./0-9A-Za-z=,$]*)?\$[./0-9A-Za-z]{16,}",
-    ),
     _rule("aws_access_key", rb"\b", rb"(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     _rule("github_token", rb"\b", rb"gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{20,}"),
     _rule("slack_token", rb"\b", rb"xox[abprs]-[A-Za-z0-9-]{10,}"),
@@ -272,6 +297,11 @@ MASKING_RULES = [
         rb"access[_-]?key|auth(?!orization))|pwd)[A-Za-z0-9_.-]*[\"']?\s*[=:]\s*",
         _QUOTED + rb"|[^\s\"'&,;]+",
     ),
+    # Password hashes in the standard crypt formats, wherever they turn up (a
+    # copied shadow line, a pasted hash, usermod -p$6$...). Last, so that a
+    # `password=` value is still masked whole; each format's fields are
+    # bounded, so matching stays linear on hostile input.
+    _rule("password_hash", rb"", _CRYPT_HASH),
 ]
 
 _PEM_BEGIN = re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")

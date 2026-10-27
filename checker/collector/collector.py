@@ -1367,8 +1367,8 @@ PROTECTED_FILES = (
 def protected_inodes():
     candidates = list(PROTECTED_FILES)
     accounts, _ = read_accounts()
-    for home in sorted({a["home"] for a in accounts or () if a["home"]}):
-        candidates.extend(_join(home, name) for name in HISTORY_FILES)
+    for home in discover_homes(accounts)[0]:
+        candidates.extend(_join(home["home"], name) for name in HISTORY_FILES)
     inodes = set()
     for absolute in candidates:
         try:
@@ -1393,6 +1393,109 @@ HISTORY_FILES = (
     ".python_history",
     ".sqlite_history",
 )
+
+
+# Home directories are found on disk as well as in /etc/passwd: domain
+# accounts (SSSD, LDAP, Active Directory, winbind) log in through NSS without
+# appearing there, and their keys and history count just the same. NSS itself
+# is not asked: with SSSD's defaults it lists no domain users, and a lookup
+# can reach the directory server and write SSSD's cache on the target.
+HOME_ROOTS = ("/home",)
+MAX_HOME_ENTRIES = 20000
+_SSSD_HOMEDIR = re.compile(
+    r"^\s*(override_homedir|fallback_homedir|homedir_substring)\s*=\s*(.+?)\s*$", re.I
+)
+
+
+def sssd_home_roots():
+    """Fixed leading part of SSSD's home directory templates, e.g. /home for
+    /home/%d/%u. Only these settings are read; nothing of sssd.conf, which
+    can hold a bind password, is ever sent."""
+    roots = []
+    for absolute in ["/etc/sssd/sssd.conf"] + glob_absolute("/etc/sssd/conf.d/*.conf"):
+        for line in (read_small(absolute, CONFIG_FILE_BYTES) or "").splitlines():
+            match = _SSSD_HOMEDIR.match(line)
+            if not match:
+                continue
+            value = match.group(2).replace("%H", "/home")
+            fixed = []
+            for part in value.split("/")[1:]:
+                if "%" in part or not part:
+                    break
+                fixed.append(part)
+            root = "/" + "/".join(fixed)
+            if value.startswith("/") and root != "/" and root not in roots:
+                roots.append(root)
+    return roots
+
+
+def _looks_like_home(directory):
+    return any(os.path.lexists(path(_join(directory, name))) for name in (".ssh",) + HISTORY_FILES)
+
+
+def discover_homes(accounts, run=None):
+    """Every home directory: each /etc/passwd account's, plus unlisted ones
+    found on disk — a directory one or two levels below a home root (/home,
+    the parents of regular users' homes, SSSD's templates) holding .ssh or a
+    shell history file. Returns (homes, summary): each home is {"home",
+    "accounts", "source"}, with "owner_uid" for an unlisted one."""
+    homes = {}
+    for account in accounts or ():
+        if account["home"]:
+            entry = homes.setdefault(
+                account["home"], {"home": account["home"], "accounts": [], "source": "passwd"}
+            )
+            entry["accounts"].append(account["name"])
+    roots = list(HOME_ROOTS)
+    for account in accounts or ():
+        parent = os.path.dirname(account["home"].rstrip("/"))
+        if (account["uid"] or 0) >= 1000 and parent not in ("", "/") and parent not in roots:
+            roots.append(parent)
+    roots.extend(root for root in sssd_home_roots() if root not in roots)
+
+    examined, truncated = 0, False
+    pending = [(root, 1) for root in roots]
+    while pending and not truncated:
+        directory, depth = pending.pop(0)
+        try:
+            fd = _open_directory(directory)
+        except OSError:
+            continue
+        try:
+            with os.scandir(fd) as listing:
+                names = sorted(e.name for e in listing if e.is_dir(follow_symlinks=False))
+        except OSError:
+            names = []
+        finally:
+            os.close(fd)
+        for name in names:
+            examined += 1
+            if examined > MAX_HOME_ENTRIES or (run is not None and run.out_of_time()):
+                truncated = True
+                break
+            child = _join(directory, name)
+            if child in homes:
+                continue
+            if _looks_like_home(child):
+                try:
+                    owner = os.lstat(path(child)).st_uid
+                except OSError:
+                    continue
+                homes[child] = {
+                    "home": child,
+                    "accounts": [],
+                    "source": "directory",
+                    "owner_uid": owner,
+                }
+            elif depth < 2:
+                pending.append((child, depth + 1))  # e.g. /home/<domain>/<user>
+    summary = {
+        "roots": roots,
+        "examined": examined,
+        "truncated": truncated,
+        "unlisted": sorted(h for h, e in homes.items() if e["source"] == "directory"),
+    }
+    return [homes[h] for h in sorted(homes)], summary
 
 
 def module_accounts(run):
@@ -1474,16 +1577,16 @@ def module_accounts(run):
             record(module, "malformed_lines", {"path": "/etc/shadow", "lines": bad})
     run.check_time()
 
-    homes = {}
-    for account in accounts:
-        if account["home"]:
-            homes.setdefault(account["home"], []).append(account["name"])
-    for home, names in sorted(homes.items()):
+    homes, summary = discover_homes(accounts, run)
+    record(module, "homes", summary)
+    for home in homes:
         run.check_time()
         for name in HISTORY_FILES:
-            facts = path_facts(_join(home, name))
+            facts = path_facts(_join(home["home"], name))
             if facts is not None:
-                facts["accounts"] = names
+                facts["accounts"] = home["accounts"]
+                if home["source"] == "directory":
+                    facts.update({"home_source": "directory", "owner_uid": home["owner_uid"]})
                 record(module, "shell_history", facts)
 
 
@@ -1787,6 +1890,8 @@ def _expand_key_path(pattern, account):
         if char == "%" and index + 1 < len(pattern):
             letter = pattern[index + 1]
             value = {"%": "%", "h": account["home"], "u": account["name"]}.get(letter)
+            if letter == "h" and not account["home"]:
+                return None
             if letter == "U":
                 value = str(account["uid"])
             if value is None:
@@ -1818,7 +1923,7 @@ def links_on_path(absolute):
     return links
 
 
-def send_authorized_keys(run, module, account, absolute):
+def send_authorized_keys(run, module, account, absolute, extra=None):
     """Facts about one authorized_keys file: the file, then one record per key.
 
     Symbolic links are followed, as sshd follows them: a key reached through
@@ -1874,6 +1979,7 @@ def send_authorized_keys(run, module, account, absolute):
             not_keys.append(number)  # line numbers only: it could be anything
             continue
         key.update({"account": account["name"], "path": absolute, "line": number})
+        key.update(extra or {})
         if target != absolute:
             key["resolved"] = target
         record(module, "authorized_key", key)
@@ -1890,6 +1996,7 @@ def send_authorized_keys(run, module, account, absolute):
             "truncated": truncated,
         }
     )
+    facts.update(extra or {})
     record(module, "authorized_keys_file", facts)
 
 
@@ -1973,16 +2080,29 @@ def module_ssh(run):
     accounts, _ = read_accounts()
     if accounts is None:
         raise OSError("/etc/passwd could not be read")
-    homes = {}
-    for account in accounts:
-        if account["home"]:
-            homes.setdefault(account["home"], []).append(account["name"])
-    for home, names in sorted(homes.items()):
-        ssh_dir = path_facts(_join(home, ".ssh"))
+    homes, _ = discover_homes(accounts, run)
+    owners = []  # (account-like dict, extra fields for its records)
+    owners.extend((account, None) for account in accounts)
+    for home in homes:
+        ssh_dir = path_facts(_join(home["home"], ".ssh"))
         if ssh_dir is not None:
-            ssh_dir["accounts"] = names
+            ssh_dir["accounts"] = home["accounts"]
+            if home["source"] == "directory":
+                ssh_dir.update({"home_source": "directory", "owner_uid": home["owner_uid"]})
             run.stream.record(module, "ssh_dir", ssh_dir)
-    for account in accounts:
+        if home["source"] == "directory":
+            # A home with no local account (a domain user's): its name is
+            # unknown, so only locations that don't need one apply.
+            unlisted = {"name": None, "home": home["home"], "uid": home["owner_uid"]}
+            extra = {
+                "home_source": "directory",
+                "home": home["home"],
+                "owner_uid": home["owner_uid"],
+            }
+            owners.append((unlisted, extra))
+
+    read = set()
+    for account, extra in owners:
         run.check_time()
         candidates = []
         for pattern in patterns:
@@ -1996,7 +2116,24 @@ def module_ssh(run):
                 continue
             except OSError:
                 pass  # described as unreadable below
-            send_authorized_keys(run, module, account, candidate)
+            read.add(candidate)
+            send_authorized_keys(run, module, account, candidate, extra)
+
+    # Absolute per-user locations (/etc/ssh/keys/%u): files there that no
+    # local account accounts for may belong to domain users; list them too.
+    for pattern in patterns:
+        if not pattern.startswith("/") or not re.search(r"%[uU]", pattern):
+            continue
+        template = pattern.replace("%%", "\0")
+        if re.search(r"%[^uU]", template):
+            continue
+        wildcard = re.sub(r"%[uU]", "*", template).replace("\0", "%")
+        for candidate in glob_absolute(wildcard):
+            if candidate not in read:
+                run.check_time()
+                read.add(candidate)
+                nobody = {"name": None, "home": "", "uid": None}
+                send_authorized_keys(run, module, nobody, candidate, {"unattributed": True})
 
 
 # --- PAM ----------------------------------------------------------------------------

@@ -112,6 +112,25 @@ server (Phase 1 plan, decision 1), and so is a hash found in `/etc/passwd` —
 and the contents of history files (policy §7). A malformed line is reported
 by number only, since it could hold anything.
 
+### Home directories, including domain users
+
+Accounts that log in through NSS — SSSD, LDAP, Active Directory, winbind —
+are not in `/etc/passwd`, but their keys and shell history count just the
+same. So homes are also found on disk: a directory one or two levels below
+a home root (`/home`, the parent directories of regular users' homes, and
+the fixed part of SSSD's `override_homedir`, `fallback_homedir` and
+`homedir_substring` settings) that holds `.ssh` or a history file and
+belongs to no `/etc/passwd` account is an *unlisted home*. Only those three
+SSSD settings are read from `sssd.conf`; nothing from it is sent. NSS itself
+is not asked: with SSSD's defaults it lists no domain users, and a lookup
+can reach the directory server and write SSSD's cache on the target.
+
+A `homes` record gives the roots searched, how many directories were
+examined, whether the search was cut short (at 20,000 directories or the
+module's time limit), and the unlisted homes. Their history files are
+described (with `home_source: directory` and the owner's UID), protected
+like any other, and their keys listed by the `ssh` module.
+
 ## `sudoers`
 
 **Why:** new sudo rights, especially `NOPASSWD` (DESIGN.md §8.3).
@@ -153,6 +172,17 @@ expanded for every account (`%h`, `%u`, `%U`, `~`). For each key file found:
   number of keys, and the line numbers of lines that are not keys. Only the
   first 1 MiB is read, whole lines only (`truncated` says if more was left).
 - `ssh_dir`: facts about each home's `.ssh` directory.
+
+Unlisted homes (see `accounts`) are checked too, at every location that
+doesn't need the account name; their keys carry `account: null`,
+`home_source: directory`, the home and its owner's UID. For an absolute
+per-user location such as `/etc/ssh/keys/%u`, every file there is read, and
+one that matches no local account is marked `unattributed`.
+
+**Not collected:** keys that sshd gets from an `AuthorizedKeysCommand` (for
+example SSSD's `sss_ssh_authorizedkeys`, from LDAP or Active Directory)
+exist only in the directory service; running the command would query it.
+The command itself is in the collected configuration.
 
 **Never sent:** the keys themselves, and any line that isn't a public key,
 including one whose key data holds no recognised key type (only its number —

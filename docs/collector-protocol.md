@@ -92,7 +92,7 @@ says so in the report.
  "effective_uid": 0,
  "settings": { … as received … },
  "modules_planned": ["host_facts", "auth_log"],
- "masking_version": 3,
+ "masking_version": 4,
  "priority": {"nice": 19, "io": "idle"},
  "commands_allowed": {"journalctl": ["/usr/bin/journalctl", "/bin/journalctl"]}}
 ```

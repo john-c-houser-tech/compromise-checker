@@ -57,7 +57,7 @@ except ImportError:
 
 COLLECTOR_VERSION = "0.1.0.dev0"
 PROTOCOL = 1
-MASKING_VERSION = 3
+MASKING_VERSION = 4
 
 # Every path the collector reads goes through path(). Only the test suite
 # changes ROOT, to point the collector at a directory of fixture files; the
@@ -233,6 +233,15 @@ _NOT_A_SECRET = (
 # Specific formats first, so the generic key=value rule doesn't relabel a
 # value that is already masked.
 MASKING_RULES = [
+    # Password hashes in the standard crypt formats, wherever they turn up
+    # (a copied shadow line, a pasted hash): $1$ md5, $2a/b/x/y$ bcrypt,
+    # $5$/$6$ sha-crypt (with an optional rounds= field), $7$ scrypt,
+    # $y$/$gy$ yescrypt, $sha1$, $md5$. The whole hash, salt included.
+    _rule(
+        "password_hash",
+        rb"(?<![\w$])",
+        rb"\$(?:1|2[abxy]|5|6|7|y|gy|sha1|md5)(?:[$,][./0-9A-Za-z=,$]*)?\$[./0-9A-Za-z]{16,}",
+    ),
     _rule("aws_access_key", rb"\b", rb"(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     _rule("github_token", rb"\b", rb"gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{20,}"),
     _rule("slack_token", rb"\b", rb"xox[abprs]-[A-Za-z0-9-]{10,}"),

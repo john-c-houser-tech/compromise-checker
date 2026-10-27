@@ -508,6 +508,30 @@ class MaskingTests(unittest.TestCase):
             for secret in (b"hunter2", b"letmein", b"secret", b"okay2", b"dieXYZ", b"S3cret"):
                 self.assertNotIn(secret, masked, line)
 
+    def test_password_hashes_are_masked_anywhere(self):
+        hashes = (
+            b"$1$abcdefgh$" + b"w" * 22,
+            b"$2b$12$" + b"a" * 53,
+            b"$5$rounds=5000$saltsaltsalt$" + b"z" * 43,
+            b"$6$saltsalt$" + b"x" * 86,
+            b"$7$CU..../....saltsalt$" + b"s" * 43,
+            b"$y$j9T$abcdefghijklmnop$" + b"Q" * 43,
+            b"$gy$j9T$abcdefghijklmnop$" + b"Q" * 43,
+        )
+        for value in hashes:
+            for line in (
+                b"copied:" + value + b":20000:0:99999:7:::\n",
+                b"locked:!" + value + b":20000::\n",
+                b"note " + value + b" end\n",
+            ):
+                masked, counts = self.mask(line)
+                self.assertNotIn(value[-16:], masked, line)
+                self.assertEqual(counts, {"password_hash": 1}, line)
+
+    def test_dollar_text_that_is_not_a_hash_is_kept(self):
+        for line in (b"price is $1$ and $6$ total\n", b"PS1='\\$ ' $HOME/$USER\n"):
+            self.assertEqual(self.mask(line), (line, {}), line)
+
     def test_quoted_values_are_masked_whole(self):
         for text in (
             b'password="first second" x\n',
@@ -575,7 +599,7 @@ class PriorityTests(unittest.TestCase):
         self.assertIn(manifest["priority"]["io"], ("idle", "unchanged"))
         if os.uname().machine == "x86_64":
             self.assertEqual(manifest["priority"]["io"], "idle")
-        self.assertEqual(manifest["masking_version"], 3)
+        self.assertEqual(manifest["masking_version"], 4)
 
 
 # --- PR 1.1 groundwork: walks, commands, the journal, resource use ------------------
@@ -2019,6 +2043,9 @@ class CanaryTests(FixtureRoot):
             "../../../home/CORP/bob/.zsh_history", Path(self.root, "etc/ssh/sshd_config.d/bob.conf")
         )
         self.write("etc/pam.d/sshd", f"auth optional pam_exec.so /x password={c['pam']}\n".encode())
+        # A hash pasted into text the collector does send: config and a log.
+        self.write("etc/pam.d/pasted", f"# old root hash {h}\n".encode())
+        self.write("var/log/secure-pasted", f"Oct 26 app: restore {h}\n".encode())
         self.write("etc/sudoers", b"@includedir /etc/sudoers.d\n#include /etc/shadow\n")
         self.write("etc/sudoers.d/app", f"Defaults env_keep+=TOKEN\n# token={c['sudo']}\n".encode())
         self.write(
@@ -2049,7 +2076,6 @@ class CanaryTests(FixtureRoot):
         for home in ("root", "home/jch", "home/CORP/alice"):
             self.write(f"{home}/.ssh/authorized_keys", ("\n".join(lines) + "\n").encode())
         self.write("etc/ssh/keys/bob", ("\n".join(lines) + "\n").encode())
-        os.makedirs(Path(self.root, "var/log"))
         self.write("var/log/secure", f"Oct 26 sshd[1]: password={c['log']} x\n".encode())
         self.write(
             "var/log/auth.log",

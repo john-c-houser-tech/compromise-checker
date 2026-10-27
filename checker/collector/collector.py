@@ -54,7 +54,7 @@ except ImportError:
 
 COLLECTOR_VERSION = "0.1.0.dev0"
 PROTOCOL = 1
-MASKING_VERSION = 1
+MASKING_VERSION = 2
 
 # Every path the collector reads goes through path(). Only the test suite
 # changes ROOT, to point the collector at a directory of fixture files; the
@@ -186,6 +186,16 @@ MASKING_RULES = [
 
 _PEM_BEGIN = re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 _PEM_END = re.compile(rb"-----END [A-Z0-9 ]*PRIVATE KEY-----")
+# Inside a key block, only lines that look like key material stay in it: a
+# base64 run alone on the line, or a long one ending a line that has a log
+# prefix (a key logged line by line); a PEM header; or a blank line. Any
+# other line ends the block and is masked normally, so a fake "BEGIN" line
+# can hide nothing but base64 — never the log lines after it.
+_KEY_LINE = re.compile(rb"^(\s*)[A-Za-z0-9+/=]+(\s*)$")
+_KEY_TAIL = re.compile(rb"^(.*\s)[A-Za-z0-9+/=]{16,}(\s*)$")
+_KEY_HEADER = re.compile(rb"(?:^|\s)(?:Proc-Type|DEK-Info):\s")
+# Longer than any real PEM private key (a 16384-bit RSA key is under 200).
+MAX_KEY_LINES = 256
 
 
 class Masker:
@@ -194,9 +204,25 @@ class Masker:
     def __init__(self):
         self.counts = {}
         self._in_key_block = False
+        self._key_lines = 0
 
     def _count(self, kind, n=1):
         self.counts[kind] = self.counts.get(kind, 0) + n
+
+    def _key_material(self, data):
+        """Inside a key block: the masked line if `data` looks like key
+        material, or None if it doesn't (or the block has run too long)."""
+        if self._key_lines >= MAX_KEY_LINES:
+            return None
+        if not data.strip() or _KEY_HEADER.search(data) or _KEY_LINE.match(data):
+            self._key_lines += 1
+            return b""  # part of the key, already replaced by its marker
+        match = _KEY_TAIL.match(data)
+        if match is None:
+            return None
+        # A key logged line by line: keep the log prefix, which is evidence.
+        self._key_lines += 1
+        return match.group(1) + MASK % b"private_key" + match.group(2)
 
     def oversized(self, length):
         """Stand-in for a line too long to mask safely."""
@@ -207,12 +233,23 @@ class Masker:
         """Mask one whole line (bytes, with its newline). Returns the masked bytes."""
         if self._in_key_block:
             end = _PEM_END.search(data)
-            if not end:
-                return b""
-            self._in_key_block = False
-            data = data[end.end() :]  # whatever follows the block on this line
-            if not data.strip():
-                return b""
+            if end:
+                self._in_key_block = False
+                before = data[: end.start()]
+                if before.strip():
+                    before = self._key_material(before + b"\n")
+                    before = before[:-1] if before is not None else data[: end.start()]
+                data = before + data[end.end() :]  # the rest goes through the rules
+                if not data.strip():
+                    return b""
+            else:
+                masked = self._key_material(data)
+                if masked is not None:
+                    return masked
+                # Not key material: the block was never a real key. Mask this
+                # line normally, and count the unterminated block as evidence.
+                self._in_key_block = False
+                self._count("private_key_unterminated")
         begin = _PEM_BEGIN.search(data)
         if begin:
             self._count("private_key")
@@ -220,7 +257,7 @@ class Masker:
             if end:
                 rest = data[end.end() :]
             else:
-                self._in_key_block = True
+                self._in_key_block, self._key_lines = True, 0
                 rest = b"\n" if data.endswith(b"\n") else b""
             # The text before the key still goes through every rule below.
             data = data[: begin.start()] + MASK % b"private_key" + rest

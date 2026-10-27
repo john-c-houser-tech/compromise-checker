@@ -8,9 +8,13 @@ Every file is opened read-only, without following a final symbolic link,
 without blocking on pipes or devices, and without updating its access time
 where the kernel allows. Anything that is not a regular file is described
 (type, owner, link target) instead of read. Text is masked for secrets before
-it leaves the server (masking rules version 1, listed in the policy §7).
+it leaves the server (masking rules version 2, listed in the policy §7).
 Masking works on whole lines, so a secret can never be split across two
-reads. Two cases fail closed — nothing is sent rather than risk an unmasked
+reads. A private key block runs only as long as its lines look like key
+material (base64, PEM headers, blank lines; at most 256 lines): the first
+other line ends it and is masked normally, so a fake `BEGIN … PRIVATE KEY`
+line can't hide the log lines after it; such a block is counted as
+`private_key_unterminated`. Two cases fail closed — nothing is sent rather than risk an unmasked
 secret: a line longer than 1 MiB is replaced by a marker giving its length,
 and a compressed file in a format the server's Python cannot open (for
 example `.zst`) is described as unreadable instead of being sent raw.

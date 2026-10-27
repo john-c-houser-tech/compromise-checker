@@ -377,6 +377,48 @@ class MaskingTests(unittest.TestCase):
         self.assertEqual(masked, b"before\n[MASKED:private_key]\nafter\n")
         self.assertEqual(counts, {"private_key": 1})
 
+    def test_fake_key_start_cannot_hide_later_lines(self):
+        text = (
+            b"Oct 26 10:00:00 web01 attacker: -----BEGIN RSA PRIVATE KEY-----\n"
+            b"Oct 26 10:00:05 web01 sshd[9]: Accepted password for root from 198.51.100.7\n"
+            b"Oct 26 10:00:06 web01 sudo[10]: root : COMMAND=/bin/sh\n"
+        )
+        masked, counts = self.mask(text)
+        self.assertEqual(
+            masked,
+            b"Oct 26 10:00:00 web01 attacker: [MASKED:private_key]\n" + text.split(b"\n", 1)[1],
+        )
+        self.assertEqual(counts, {"private_key": 1, "private_key_unterminated": 1})
+
+    def test_key_block_cannot_run_on_forever(self):
+        text = b"-----BEGIN RSA PRIVATE KEY-----\n" + b"QUFBQUFB\n" * 300 + b"visible line\n"
+        masked, counts = self.mask(text)
+        self.assertEqual(masked, b"[MASKED:private_key]\n" + b"QUFBQUFB\n" * 44 + b"visible line\n")
+        self.assertEqual(counts["private_key_unterminated"], 1)
+
+    def test_encrypted_key_with_headers_is_masked_whole(self):
+        text = (
+            b"-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
+            b"DEK-Info: AES-128-CBC,0123456789ABCDEF\n\nMIIEow==\n"
+            b"-----END RSA PRIVATE KEY-----\nafter\n"
+        )
+        masked, counts = self.mask(text)
+        self.assertEqual(masked, b"[MASKED:private_key]\nafter\n")
+        self.assertEqual(counts, {"private_key": 1})
+
+    def test_key_logged_line_by_line_keeps_the_log_prefix(self):
+        text = (
+            b"Oct 26 app[1]: -----BEGIN PRIVATE KEY-----\n"
+            b"Oct 26 app[1]: MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n"
+            b"Oct 26 app[1]: -----END PRIVATE KEY-----\n"
+        )
+        masked, _ = self.mask(text)
+        self.assertEqual(
+            masked,
+            b"Oct 26 app[1]: [MASKED:private_key]\nOct 26 app[1]: [MASKED:private_key]\n"
+            b"Oct 26 app[1]: \n",
+        )
+
     def test_quoted_values_are_masked_whole(self):
         for text in (
             b'password="first second" x\n',
@@ -444,7 +486,7 @@ class PriorityTests(unittest.TestCase):
         self.assertIn(manifest["priority"]["io"], ("idle", "unchanged"))
         if os.uname().machine == "x86_64":
             self.assertEqual(manifest["priority"]["io"], "idle")
-        self.assertEqual(manifest["masking_version"], 1)
+        self.assertEqual(manifest["masking_version"], 2)
 
 
 # --- PR 1.1 groundwork: walks, commands, the journal, resource use ------------------
@@ -782,6 +824,19 @@ class JournalTests(FixtureRoot):
         self.assertEqual([e["MESSAGE"] for e in out], ["[MASKED:private_key]", "", "", "after"])
         self.assertEqual([e["_PID"] for e in out], ["1"] * 4)  # other fields unaffected
         self.assertEqual(masker.counts, {"private_key": 1})
+
+    def test_fake_key_start_in_the_journal_hides_nothing_after_it(self):
+        masker = self.collector.Masker()
+        entries = [
+            {"MESSAGE": "-----BEGIN OPENSSH PRIVATE KEY-----"},
+            {"MESSAGE": "Accepted password for root from 198.51.100.7 port 4711 ssh2"},
+        ]
+        out = [
+            json.loads(self.collector.mask_journal_line(json.dumps(e).encode() + b"\n", masker))
+            for e in entries
+        ]
+        self.assertEqual(out[1], entries[1])
+        self.assertEqual(masker.counts, {"private_key": 1, "private_key_unterminated": 1})
 
     def test_any_unparseable_line_is_withheld(self):
         out = self.collector.mask_journal_line(b"not json password=x\n", self.collector.Masker())

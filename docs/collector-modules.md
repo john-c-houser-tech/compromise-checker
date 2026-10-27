@@ -253,8 +253,14 @@ file actually opened, after any links:
   account's home, are refused by device and inode**, however they're
   reached and whatever the name; anything named like a history file is
   refused too.
-- **Nothing inside an account's home is read as configuration**, even where
-  the home lies inside a system location (Apache's `/usr/share/httpd`).
+- **Nothing inside an account's home is read as configuration** where shell
+  history can exist there — the account has a login shell, or a history
+  file is already present — even where the home lies inside a system
+  location. Service accounts' runtime homes without either (Ubuntu 22.04's
+  `systemd-network` at `/run/systemd`, `sshd` at `/run/sshd`) stay
+  readable, since `/run/systemd/system` is itself evidence. A custom-named
+  history file in a no-login account's home, with no default history beside
+  it, is not recognised.
 
 Key files, whose place is the home directory, are read wherever sshd reads
 them, but never if hard-linked or named like a history file — and only

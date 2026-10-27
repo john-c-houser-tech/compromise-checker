@@ -5473,6 +5473,365 @@ def privileged_elsewhere(entry):
     return bool(mode & 0o6000) or bool(caps)
 
 
+# --- Live processes (DESIGN.md §8.7) ------------------------------------------------
+
+# The only environment variables sent: the loader's, whose values are the
+# evidence of an injected library. Nothing else of a process's environment
+# leaves the server.
+LOADER_VARIABLES = (b"LD_PRELOAD", b"LD_LIBRARY_PATH", b"LD_AUDIT")
+MAX_PROCESSES = 100000
+MAX_FDS_LISTED = 200  # interesting open files listed per process; all are counted
+PROC_READ_BYTES = 256 * 1024
+# The probe for hidden processes gets this share of the module's time.
+PROBE_TIME_SHARE = 0.5
+TCP_STATES = {
+    "01": "established",
+    "02": "syn_sent",
+    "03": "syn_recv",
+    "04": "fin_wait1",
+    "05": "fin_wait2",
+    "06": "time_wait",
+    "07": "close",
+    "08": "close_wait",
+    "09": "last_ack",
+    "0A": "listen",
+    "0B": "closing",
+}
+SOCKET_TABLES = ("tcp", "tcp6", "udp", "udp6")
+SCRATCH_PREFIXES = tuple(d + "/" for d in SCRATCH_DIRS)
+
+
+def read_proc(absolute, limit=PROC_READ_BYTES):
+    """Up to `limit` bytes of a /proc file, or None if it is gone or
+    unreadable (a process can exit at any moment)."""
+    try:
+        fd = os.open(path(absolute), os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return None
+    try:
+        chunks, total = [], 0
+        while total < limit:
+            chunk = os.read(fd, min(65536, limit - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def read_link(absolute):
+    try:
+        return os.readlink(path(absolute))
+    except OSError:
+        return None
+
+
+def masked(text):
+    """Text from a process (a command line, a name, a path anyone could
+    choose), masked like log text; (masked text, what masking replaced)."""
+    if text is None:
+        return None, {}
+    raw = text if isinstance(text, bytes) else text.encode("utf-8", "surrogateescape")
+    out, counts = mask_text(raw.replace(b"\n", b" ") + b"\n")
+    return out[:-1].decode("utf-8", "replace"), counts
+
+
+def _add_counts(into, counts):
+    for kind, count in counts.items():
+        into[kind] = into.get(kind, 0) + count
+
+
+def parse_proc_stat(raw):
+    """(comm, fields after it) from /proc/<pid>/stat; the name can hold
+    spaces and parentheses, so it ends at the last ')'."""
+    text = raw.decode("utf-8", "replace")
+    start, end = text.find("("), text.rfind(")")
+    if start < 0 or end < start:
+        raise ValueError("unreadable stat")
+    return text[start + 1 : end], text[end + 2 :].split()
+
+
+def _ids(status, key):
+    for line in status.splitlines():
+        if line.startswith(key + ":"):
+            return [int(v) for v in line.split()[1:5]]
+    return None
+
+
+def describe_process(pid, boot_time, ticks, sockets_of):
+    """One process from /proc, or None if it is gone."""
+    base = f"/proc/{pid}"
+    stat_raw = read_proc(base + "/stat", 4096)
+    if not stat_raw:
+        return None
+    try:
+        comm, fields = parse_proc_stat(stat_raw)
+        state, ppid = fields[0], int(fields[1])
+        cpu = (int(fields[11]) + int(fields[12])) / ticks
+        threads = int(fields[17])
+        start = boot_time + int(fields[19]) / ticks if boot_time is not None else None
+    except (ValueError, IndexError):
+        return {"pid": pid, "unreadable": "stat"}
+    status = (read_proc(base + "/status", 65536) or b"").decode("utf-8", "replace")
+    found = {}
+    process = {
+        "pid": pid,
+        "ppid": ppid,
+        "state": state,
+        "uids": _ids(status, "Uid"),
+        "gids": _ids(status, "Gid"),
+        "threads": threads,
+        "cpu_seconds": round(cpu, 2),
+        "start_time": iso_from_timestamp(start) if start is not None else None,
+    }
+    process["comm"], counts = masked(comm)
+    _add_counts(found, counts)
+    exe = read_link(base + "/exe")
+    if exe is None:
+        if ppid == 2 or pid == 2:
+            process["kernel_thread"] = True
+        else:
+            process["exe_unreadable"] = True
+    else:
+        process["exe_deleted"] = exe.endswith(" (deleted)")
+        process["exe_memfd"] = exe.startswith("/memfd:")
+        process["exe"], counts = masked(exe)
+        _add_counts(found, counts)
+    for key in ("cwd", "root"):
+        value = read_link(base + "/" + key)
+        if value is not None:
+            process[key], counts = masked(value)
+            _add_counts(found, counts)
+    cmdline = read_proc(base + "/cmdline")
+    if cmdline:
+        args = cmdline.rstrip(b"\0").split(b"\0")
+        process["argc"] = len(args)
+        process["cmdline"], counts = masked(b" ".join(args))
+        _add_counts(found, counts)
+        process["cmdline_truncated"] = len(cmdline) >= PROC_READ_BYTES
+    environ = read_proc(base + "/environ")
+    loader = {}
+    for item in (environ or b"").split(b"\0"):
+        name, sep, value = item.partition(b"=")
+        if sep and name in LOADER_VARIABLES:
+            loader[name.decode()], counts = masked(value)
+            _add_counts(found, counts)
+    if loader:
+        process["loader_environment"] = loader
+    cgroup = read_proc(base + "/cgroup", 8192)
+    if cgroup:
+        process["cgroup"], counts = masked(
+            cgroup.decode("utf-8", "replace").strip().splitlines()[-1]
+        )
+        _add_counts(found, counts)
+    describe_open_files(base, process, found, sockets_of)
+    if found:
+        process["masked"] = found
+    return process
+
+
+def describe_open_files(base, process, found, sockets_of):
+    """Counts of a process's open files by kind, and the interesting ones:
+    deleted files, files in scratch places, memory-only files, and sockets
+    (tied to /proc/net's tables by inode)."""
+    try:
+        names = sorted(os.listdir(path(base + "/fd")), key=lambda n: (len(n), n))  # numeric
+    except OSError:
+        process["fds_unreadable"] = True
+        return
+    kinds, listed, std = {}, [], {}
+    for name in names:
+        target = read_link(base + "/fd/" + name)
+        if target is None:
+            continue
+        if target.startswith("socket:["):
+            kind = "socket"
+            sockets_of.setdefault(target[8:-1], set()).add(process["pid"])
+        elif target.startswith("pipe:["):
+            kind = "pipe"
+        elif target.startswith("anon_inode:"):
+            kind = "anon_inode"
+        elif target.startswith("/memfd:"):
+            kind = "memfd"
+        else:
+            kind = "file"
+        kinds[kind] = kinds.get(kind, 0) + 1
+        if name in ("0", "1", "2"):
+            # A shell whose input or output is a socket: a reverse shell.
+            stream = {"kind": kind}
+            if kind == "socket":
+                stream["inode"] = target[8:-1]
+            std[name] = stream
+        interesting = (
+            kind == "memfd"
+            or target.endswith(" (deleted)")
+            or (kind == "file" and target.startswith(SCRATCH_PREFIXES))
+        )
+        if interesting and len(listed) < MAX_FDS_LISTED:
+            text, counts = masked(target)
+            _add_counts(found, counts)
+            listed.append({"fd": name, "target": text})
+    process["fds"] = kinds
+    if std:
+        process["std_streams"] = std
+    if listed:
+        process["open_files"] = listed
+
+
+def _address(hex_address):
+    """'0100007F:0016' -> ('127.0.0.1', 22): /proc/net writes each 32-bit
+    word of the address in the host's byte order."""
+    host, _, port = hex_address.partition(":")
+    raw = bytes.fromhex(host)
+    words = b"".join(
+        int.from_bytes(raw[i : i + 4], sys.byteorder).to_bytes(4, "big")
+        for i in range(0, len(raw), 4)
+    )
+    family = socket.AF_INET if len(words) == 4 else socket.AF_INET6
+    return socket.inet_ntop(family, words), int(port, 16)
+
+
+def read_sockets(run, module, sockets_of):
+    """TCP and UDP sockets from /proc/net, each with the processes holding
+    it (by inode)."""
+    count = 0
+    for table in SOCKET_TABLES:
+        text = (read_proc(f"/proc/net/{table}", 64 << 20) or b"").decode("ascii", "replace")
+        for line in text.splitlines()[1:]:
+            run.check_time()
+            parts = line.split()
+            if len(parts) < 10:
+                continue
+            try:
+                local, remote = _address(parts[1]), _address(parts[2])
+            except (ValueError, OSError):
+                continue
+            inode = parts[9]
+            state = TCP_STATES.get(parts[3], parts[3]) if table.startswith("tcp") else None
+            run.stream.record(
+                module,
+                "socket",
+                {
+                    "protocol": table,
+                    "local": list(local),
+                    "remote": list(remote),
+                    "state": state,
+                    "uid": int(parts[7]) if parts[7].isdigit() else None,
+                    "inode": inode,
+                    "pids": sorted(sockets_of.get(inode, ())),
+                },
+            )
+            count += 1
+    return count
+
+
+def probe_hidden(run, module, listed, threads):
+    """Look up /proc/<pid> for every possible PID and report those that
+    exist but weren't in /proc's listing (a rootkit hides a process by
+    hooking the listing, not the lookup). Thread IDs answer too and are
+    skipped; a candidate must still be missing from a fresh listing, so a
+    newly started process isn't one. Returns (probed up to, candidates)."""
+    pid_max = int((read_small("/proc/sys/kernel/pid_max") or "4194304").strip() or 4194304)
+    candidates, reached = [], 0
+    # Names looked up in the open /proc directory: millions of lookups, so
+    # no path is built or re-checked for each (/proc is the kernel's own).
+    proc = os.open(path("/proc"), os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        for pid in range(1, pid_max + 1):
+            if pid & 0xFFF == 0 and run.out_of_time():
+                break
+            reached = pid
+            if pid in listed or pid in threads:
+                continue
+            try:
+                os.stat(str(pid), dir_fd=proc, follow_symlinks=False)
+            except OSError:
+                continue
+            candidates.append(pid)
+    finally:
+        os.close(proc)
+    try:
+        fresh = {int(n) for n in os.listdir(path("/proc")) if n.isdigit()}
+    except OSError:
+        fresh = set()
+    hidden = []
+    for pid in candidates:
+        if pid in fresh:
+            continue  # started after the listing
+        tgid = None
+        for line in (read_small(f"/proc/{pid}/status") or "").splitlines():
+            if line.startswith("Tgid:"):
+                tgid = int(line.split()[1])
+        if tgid is not None and tgid != pid:
+            continue  # a thread of a process started meanwhile
+        hidden.append(pid)
+    return reached, pid_max, hidden
+
+
+def module_processes(run):
+    """Every process from /proc (DESIGN.md §8.7): executable (deleted or
+    memory-only), working directory, root, parent, user, start and CPU time,
+    cgroup, masked command line, only the loader's environment variables,
+    and open files; TCP and UDP sockets with the processes holding them;
+    and a check for processes hidden from /proc's listing."""
+    module = "processes"
+    boot_time = None
+    for line in (read_small("/proc/stat") or "").splitlines():
+        if line.startswith("btime "):
+            boot_time = int(line.split()[1])
+    ticks = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+    names = os.listdir(path("/proc"))
+    listed = sorted(int(n) for n in names if n.isdigit())
+    sockets_of, threads, counts = {}, set(), {"processes": 0, "gone": 0, "threads": 0}
+    for pid in listed[:MAX_PROCESSES]:
+        run.check_time()
+        process = describe_process(pid, boot_time, ticks, sockets_of)
+        if process is None:
+            counts["gone"] += 1
+            continue
+        try:
+            tasks = {int(t) for t in os.listdir(path(f"/proc/{pid}/task")) if t.isdigit()}
+        except OSError:
+            tasks = set()
+        threads |= tasks
+        counts["threads"] += len(tasks)
+        counts["processes"] += 1
+        run.stream.record(module, "process", process)
+    counts["sockets"] = read_sockets(run, module, sockets_of)
+    # The kernel's own count of tasks, against what the listing showed.
+    loadavg = (read_small("/proc/loadavg") or "").split()
+    kernel_tasks = None
+    if len(loadavg) >= 4 and "/" in loadavg[3]:
+        kernel_tasks = int(loadavg[3].split("/")[1])
+    probe = {"reached": 0, "pid_max": None, "hidden": []}
+    with time_share(run, module, "hidden_process_probe", PROBE_TIME_SHARE):
+        reached, pid_max, hidden = probe_hidden(run, module, set(listed), threads)
+        probe = {"reached": reached, "pid_max": pid_max, "hidden": hidden}
+    for pid in probe["hidden"]:
+        details = describe_process(pid, boot_time, ticks, sockets_of) or {"pid": pid}
+        details["hidden_from_listing"] = True
+        run.stream.record(module, "hidden_process", details)
+    run.stream.record(
+        module,
+        "process_summary",
+        {
+            "counts": counts,
+            "listing_truncated": len(listed) > MAX_PROCESSES,
+            "kernel_tasks": kernel_tasks,
+            "probe": {
+                "reached": probe["reached"],
+                "pid_max": probe["pid_max"],
+                "complete": bool(probe["pid_max"]) and probe["reached"] >= probe["pid_max"],
+                "hidden": len(probe["hidden"]),
+            },
+        },
+    )
+
+
 # Collection modules, by name, in their default order.
 MODULES = {
     "host_facts": module_host_facts,
@@ -5494,6 +5853,7 @@ MODULES = {
     "package_verify": module_package_verify,
     "system_files": module_system_files,
     "unusual_files": module_unusual_files,
+    "processes": module_processes,
 }
 
 

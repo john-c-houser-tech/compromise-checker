@@ -465,8 +465,8 @@ Timestomping (modification time much older than change time).
 
 ★ Processes running from deleted files or from `memfd`. Processes running
 from temporary directories. Names imitating kernel threads (`[kworker/…]`)
-with a real executable behind them. Processes visible in `/proc` but hidden
-from `ps`. ★ A shell whose stdin or stdout is a network socket (reverse
+with a real executable behind them. Processes that answer a direct
+`/proc/<pid>` lookup but are hidden from `/proc`'s listing (what `ps` sees). ★ A shell whose stdin or stdout is a network socket (reverse
 shell). Sustained high CPU with connections to mining-pool ports.
 
 ### 8.8 Network and data transfer

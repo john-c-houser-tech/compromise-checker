@@ -617,6 +617,49 @@ named after a password or token) — and so is error text that repeats them
 — with what was masked counted on the entry. Files over 8 MiB are not
 hashed, and say so. No file contents are sent.
 
+## `processes`
+
+**Why:** what is running now: reverse shells, miners, implants running from
+deleted or memory-only files, injected libraries, unexpected listeners and
+connections, and processes hidden by a rootkit (DESIGN.md §8.7).
+
+**Reads** `/proc` (kernel memory; nothing on disk) and **sends**:
+- a `process` record for each process: PID, parent, state, real, effective,
+  saved and filesystem user and group IDs, threads, CPU seconds, start time,
+  the executable (`exe_deleted` when its file has been deleted, `exe_memfd`
+  when it runs from memory only; `kernel_thread` or `exe_unreadable` when
+  there is none to read), working directory, root (a `chroot` or container
+  shows), the cgroup (which service or container), the command line —
+  masked (Phase 1 decision 2), as one line, with its argument count — and,
+  of its environment, only `LD_PRELOAD`, `LD_LIBRARY_PATH` and `LD_AUDIT`,
+  masked; nothing else of a process's environment leaves the server. Its
+  open files are counted by kind (file, socket, pipe, memory-only,
+  anon_inode); the kinds of its standard input, output and error are given
+  (`std_streams`, with the socket's inode: a shell talking to a socket is a
+  reverse shell); and the interesting ones listed (up to 200): deleted files,
+  files in `/tmp`, `/var/tmp` or `/dev/shm`, and memory-only files. The
+  name, executable, directories, cgroup and open-file paths are masked like
+  log text too;
+- a `socket` record for each TCP and UDP socket (IPv4 and IPv6, from
+  `/proc/net`): local and remote address and port, TCP state, owner, and the
+  processes holding it (matched by inode through their open files);
+- a `process_summary`: counts (processes, processes gone mid-run, threads,
+  sockets), the kernel's own count of tasks (from `/proc/loadavg`) to set
+  against the threads found — meaningful on a host, not inside a container,
+  where `/proc/loadavg` still counts the whole host's tasks — and the
+  hidden-process probe's coverage.
+
+**Hidden processes.** A user-space rootkit hides a process by hooking the
+listing of `/proc` (`readdir`), which `ps` and the collector's own Python
+both use, but a direct lookup of `/proc/<pid>` still answers. So, within
+half of the module's remaining time, the collector looks up every PID up to
+the kernel's `pid_max` and reports (`hidden_process`, with the process's
+details) each one that exists but wasn't listed — skipping thread IDs (which
+answer too but are never listed), and only if it is still missing from a
+fresh listing (so a process started meanwhile isn't one). The summary says
+how far the probe got. `ps` itself is not run: it isn't on the command
+allow-list, and it would be fooled the same way.
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,

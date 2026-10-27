@@ -1197,27 +1197,56 @@ class SshTests(FixtureRoot):
         (facts,) = records_named(records, "authorized_keys_file")
         self.assertEqual(facts["lines_not_keys"], [1])
 
-    def test_linked_ssh_directory_is_not_followed(self):
+    def test_keys_through_a_linked_ssh_directory_are_listed(self):
+        # sshd follows the link, so these keys grant access: they must show.
         self.write("etc/ssh/sshd_config", b"")
         self.write("srv/elsewhere/authorized_keys", f"ssh-ed25519 {ED25519}\n".encode())
         Path(self.root, "home/jch").mkdir(parents=True)
-        os.symlink(Path(self.root, "srv/elsewhere"), Path(self.root, "home/jch/.ssh"))
+        os.symlink("../../srv/elsewhere", Path(self.root, "home/jch/.ssh"))
         records = collect(self.root, ["ssh"])
-        self.assertEqual(self.keys(records), [])
-        (skipped,) = records_named(records, "authorized_keys_not_read")
-        self.assertEqual(skipped["link"], "/home/jch/.ssh")
+        (key,) = self.keys(records)
+        self.assertEqual(key["path"], "/home/jch/.ssh/authorized_keys")
+        self.assertEqual(key["resolved"], "/srv/elsewhere/authorized_keys")
+        self.assertEqual(key["fingerprint"], ED25519_FP)
+        (link,) = records_named(records, "authorized_keys_link")
+        self.assertEqual(
+            link["links"], [{"path": "/home/jch/.ssh", "target": "../../srv/elsewhere"}]
+        )
         (ssh_dir,) = [d for d in records_named(records, "ssh_dir") if d["path"] == "/home/jch/.ssh"]
         self.assertEqual(ssh_dir["type"], "l")
 
-    def test_linked_key_file_is_described_not_read(self):
+    def test_keys_in_a_linked_key_file_are_listed(self):
         self.write("etc/ssh/sshd_config", b"")
-        self.write("srv/keys", f"ssh-ed25519 {ED25519}\n".encode())
+        self.write("srv/keys", f"ssh-ed25519 {ED25519} planted\n".encode())
         Path(self.root, "home/jch/.ssh").mkdir(parents=True)
-        os.symlink(Path(self.root, "srv/keys"), Path(self.root, "home/jch/.ssh/authorized_keys"))
+        os.symlink("../../../srv/keys", Path(self.root, "home/jch/.ssh/authorized_keys"))
+        records = collect(self.root, ["ssh"])
+        (key,) = self.keys(records)
+        self.assertEqual((key["resolved"], key["comment"]), ("/srv/keys", "planted"))
+        (facts,) = records_named(records, "authorized_keys_file")
+        self.assertEqual(facts["resolved"], "/srv/keys")
+
+    def test_link_to_a_file_of_secrets_sends_nothing_from_it(self):
+        self.write("etc/ssh/sshd_config", b"")
+        self.write("etc/shadow", ("jch:" + SHA512_HASH + ":20000:0:99999:7:::\n").encode())
+        Path(self.root, "home/jch/.ssh").mkdir(parents=True)
+        os.symlink("../../../etc/shadow", Path(self.root, "home/jch/.ssh/authorized_keys"))
+        out = io.BytesIO()
+        load_collector(self.root).main(settings(["ssh"]), out=out)
+        raw = gzip.decompress(out.getvalue())
+        self.assertNotIn(b"saltsalt", raw)
+        records = [json.loads(line) for line in raw.splitlines()]
+        (facts,) = records_named(records, "authorized_keys_file")
+        self.assertEqual((facts["keys"], facts["lines_not_keys"]), (0, [1]))
+
+    def test_dangling_link_is_described(self):
+        self.write("etc/ssh/sshd_config", b"")
+        Path(self.root, "home/jch/.ssh").mkdir(parents=True)
+        os.symlink("../../../nowhere", Path(self.root, "home/jch/.ssh/authorized_keys"))
         records = collect(self.root, ["ssh"])
         self.assertEqual(self.keys(records), [])
         (unreadable,) = records_named(records, "unreadable_file")
-        self.assertEqual(unreadable["file_type"], "l")
+        self.assertEqual(unreadable["path"], "/nowhere")
 
 
 class PamTests(FixtureRoot):

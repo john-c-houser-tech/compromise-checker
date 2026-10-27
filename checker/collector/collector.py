@@ -1646,43 +1646,43 @@ def _expand_key_path(pattern, account):
     return expanded
 
 
-def _link_on_the_way(base, absolute):
-    """The first symbolic link between `base` and the final component of
-    `absolute` (exclusive), as (path, target), or None."""
-    if not absolute.startswith(base.rstrip("/") + "/"):
-        return None
-    current = base.rstrip("/")
-    for part in absolute[len(current) + 1 :].split("/")[:-1]:
-        current = current + "/" + part
+def links_on_path(absolute):
+    """Every symbolic link among the components of `absolute`, the last one
+    included, as {"path", "target"} dicts in order from the root."""
+    links, current = [], ""
+    for part in absolute.strip("/").split("/"):
+        current += "/" + part
         try:
             if stat.S_ISLNK(os.lstat(path(current)).st_mode):
-                return current, os.readlink(path(current))
+                links.append({"path": current, "target": os.readlink(path(current))})
         except OSError:
-            return None
-    return None
+            break
+    return links
 
 
 def send_authorized_keys(run, module, account, absolute):
-    """Facts about one authorized_keys file: the file, then one record per key."""
+    """Facts about one authorized_keys file: the file, then one record per key.
+
+    Symbolic links are followed, as sshd follows them: a key reached through
+    a link grants access like any other, so it must be listed. The links are
+    recorded. Following them is safe because nothing but public keys'
+    fingerprints, options and comments is ever taken from the file."""
     record = run.stream.record
-    link = _link_on_the_way(account["home"], absolute)
-    if link is not None:
+    target = absolute
+    links = links_on_path(absolute)
+    if links:
+        target = resolve_links(absolute)
         record(
             module,
-            "authorized_keys_not_read",
-            {
-                "account": account["name"],
-                "path": absolute,
-                "reason": "the path goes through a symbolic link",
-                "link": link[0],
-                "link_target": link[1],
-            },
+            "authorized_keys_link",
+            {"account": account["name"], "path": absolute, "resolved": target, "links": links},
         )
-        return
+        if target is None:
+            return
     try:
-        raw, info = open_regular_file(absolute)
+        raw, info = open_regular_file(target)
     except (OSError, ValueError) as exc:
-        details = describe_unreadable(absolute)
+        details = describe_unreadable(target)
         details.update({"account": account["name"], "reason": str(exc)})
         record(module, "unreadable_file", details)
         return
@@ -1702,6 +1702,8 @@ def send_authorized_keys(run, module, account, absolute):
             not_keys.append(number)  # line numbers only: it could be anything
             continue
         key.update({"account": account["name"], "path": absolute, "line": number})
+        if target != absolute:
+            key["resolved"] = target
         record(module, "authorized_key", key)
         keys += 1
     facts = file_meta(info, None)
@@ -1710,6 +1712,7 @@ def send_authorized_keys(run, module, account, absolute):
         {
             "account": account["name"],
             "path": absolute,
+            "resolved": target,
             "keys": keys,
             "lines_not_keys": not_keys,
             "truncated": len(data) > MAX_KEY_FILE_BYTES,

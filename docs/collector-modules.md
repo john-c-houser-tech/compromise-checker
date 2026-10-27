@@ -150,11 +150,16 @@ expanded for every account (`%h`, `%u`, `%U`, `~`). For each key file found:
 
 **Never sent:** the keys themselves, and any line that isn't a public key,
 including one whose key data holds no recognised key type (only its number —
-someone may have pasted a private key). A key file whose
-path passes through a symbolic link inside the home directory (say `.ssh`
-linked elsewhere) is not read: an `authorized_keys_not_read` record names
-the link and its target. A key file that is itself a link is described, not
-read.
+someone may have pasted a private key).
+
+**Links are followed, as sshd follows them.** A key file reached through a
+symbolic link — the file itself, or a linked `.ssh` directory — still grants
+access, so its keys are listed: each `authorized_key` and
+`authorized_keys_file` record gives the configured path and the `resolved`
+one, and an `authorized_keys_link` record lists every link on the way. This
+is safe because nothing but public keys' fingerprints, options and comments
+is ever taken from the file: a link to `/etc/shadow` yields only "line 1 is
+not a key". The resolved file must still be a regular file.
 
 ## `pam`
 
@@ -175,7 +180,7 @@ do: through symbolic links, which RHEL's `authselect` and crypto policies
 use by design (`/etc/pam.d/system-auth` → `/etc/authselect/system-auth`). A
 `config_link` record gives the link, its target and the resolved path; the
 resolved file is then sent, still only if it is a regular file. Key files
-and logs never follow links.
+follow links too (see `ssh`); logs never do.
 
 ## Commands
 

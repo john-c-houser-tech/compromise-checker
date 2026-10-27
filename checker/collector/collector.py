@@ -2835,6 +2835,19 @@ def collect_tree(run, module, top, seen, max_depth=4, choose=_text, extra=None, 
         return
     if not stat.S_ISDIR(info.st_mode):
         return
+    if spool and directory != top:
+        # A spool's files are told apart by where they lie under it; one
+        # reached through a link (/var/spool/cron -> /var/spool/at) can't be,
+        # so it is listed and hashed without text.
+        run.stream.record(
+            module,
+            "not_examined",
+            {"path": top, "resolved": directory, "reason": "spool reached through a link; no text"},
+        )
+        choose = _no_text
+    # A spool listed through such a link leaves its target to its own,
+    # classified walk.
+    unclassified = spool and directory != top
     walked = (info.st_dev, info.st_ino) in seen
     if directory != top or walked:
         # Each alias is evidence of its own: a user's unit directory linked
@@ -2848,7 +2861,8 @@ def collect_tree(run, module, top, seen, max_depth=4, choose=_text, extra=None, 
         run.stream.record(module, "config_link", facts)
     if walked:
         return
-    seen.add((info.st_dev, info.st_ino))
+    if not unclassified:
+        seen.add((info.st_dev, info.st_ino))
     walk = Walk(
         run,
         directory,
@@ -2894,9 +2908,18 @@ def send_config_files(run, module, names, seen):
         resolved, risk = resolve_links(absolute)
         if risk:
             run.stream.record(module, "not_examined", {"path": absolute, "reason": risk})
-        elif resolved not in seen and os.path.lexists(path(absolute)):
+        elif not os.path.lexists(path(absolute)):
+            continue
+        elif resolved not in seen:
             seen.add(resolved)
             send_config_file(run, module, absolute, text_only=True)
+        else:
+            # Its target was sent already; the link itself is still evidence
+            # (/etc/profile -> /etc/rc.d/rc.local).
+            facts = path_facts(absolute)
+            if facts is not None and facts.get("type") == "l":
+                facts.update({"resolved": resolved, "already_sent": True})
+                run.stream.record(module, "config_link", facts)
 
 
 # Cron. RHEL keeps crontabs in /var/spool/cron/<user> and at jobs in
@@ -2989,6 +3012,8 @@ def module_cron(run):
 # systemd: unit directories in its search order, generators (programs that
 # write units at boot), and the manager's own settings.
 SYSTEMD_DIRS = (
+    "/etc/systemd/system.control",
+    "/run/systemd/system.control",
     "/etc/systemd/system",
     "/run/systemd/system",
     "/run/systemd/transient",
@@ -3004,10 +3029,12 @@ SYSTEMD_DIRS = (
     "/usr/lib/systemd/user",
     "/lib/systemd/user",
     "/etc/systemd/system-generators",
+    "/run/systemd/system-generators",
     "/usr/local/lib/systemd/system-generators",
     "/usr/lib/systemd/system-generators",
     "/lib/systemd/system-generators",
     "/etc/systemd/user-generators",
+    "/run/systemd/user-generators",
     "/usr/local/lib/systemd/user-generators",
     "/usr/lib/systemd/user-generators",
     "/lib/systemd/user-generators",
@@ -3017,7 +3044,11 @@ SYSTEMD_DIRS = (
 SYSTEMD_FILES = ("/etc/systemd/system.conf", "/etc/systemd/user.conf")
 # Users whose own units start at boot, without a login.
 LINGER_DIR = "/var/lib/systemd/linger"
-HOME_UNIT_DIRS = (".config/systemd/user", ".local/share/systemd/user")
+HOME_UNIT_DIRS = (
+    ".config/systemd/user.control",
+    ".config/systemd/user",
+    ".local/share/systemd/user",
+)
 
 
 def _no_text(relative):
@@ -3121,24 +3152,40 @@ HOME_STARTUP_DIRS = (".config/fish/conf.d", ".config/autostart")
 
 def home_file_facts(run, absolute):
     """path_facts of a file in a home, with its SHA-256 if it is a regular
-    file the protection rules allow hashing. None if it doesn't exist."""
+    file the protection rules allow hashing. A link (~/.bashrc ->
+    ~/.dotfiles/bashrc) keeps its own facts and gets the SHA-256 of the
+    regular file it leads to, as `resolved` and `target_sha256`, under the
+    same checks. Never any text. None if it doesn't exist."""
     facts = path_facts(absolute)
-    if facts is None or facts.get("type") != "-":
+    if facts is None or facts.get("type") not in ("-", "l"):
         return facts
+    target, key = absolute, "sha256"
+    if facts["type"] == "l":
+        target, risk = resolve_links(absolute)
+        if risk:
+            facts["target_not_examined"] = risk
+            return facts
+        facts["resolved"], key = target, "target_sha256"
     try:
-        info = os.lstat(path(absolute))
+        info = os.lstat(path(target))
+    except UnsafePath as exc:
+        facts["target_not_examined"] = exc.reason
+        return facts
     except OSError as exc:
         facts["hash_skipped"] = str(exc)
         return facts
-    refusal = run.refusal(absolute, info, key_file=True)
+    if not stat.S_ISREG(info.st_mode):
+        facts["hash_skipped"] = "not a regular file"
+        return facts
+    refusal = run.refusal(target, info, key_file=True)
     if refusal:
         facts["hash_skipped"] = refusal
     elif info.st_size > 8 << 20:
         facts["hash_skipped"] = "larger than 8388608 bytes"
     else:
-        digest, problem = hash_file(run, absolute, expect=info)
+        digest, problem = hash_file(run, target, expect=info)
         if digest:
-            facts["sha256"] = digest
+            facts[key] = digest
         else:
             facts["hash_skipped"] = problem
     return facts

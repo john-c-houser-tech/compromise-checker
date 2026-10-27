@@ -257,14 +257,16 @@ is recorded as a `config_link` and walked once at its real location
 (`/lib/systemd/system` is usually `/usr/lib/systemd/system`); every further
 link to it still gets its own `config_link` (with `already_walked`, and the
 home and accounts for a home's directory), so one user's unit directory
-linked to another's still shows. All text is
+linked to another's still shows. Likewise every link to a single file
+already sent (`/etc/profile` → `/etc/rc.d/rc.local`) gets a `config_link`
+marked `already_sent`. All text is
 masked, and the protection rules below decide what may be read at all.
 
 | Module | Sends as text | Walked without text |
 |---|---|---|
 | `cron` | `/etc/crontab`, `/etc/anacrontab`, `cron.allow`/`deny`, `at.allow`/`deny`; `/etc/cron.d` and `/etc/cron.{hourly,daily,weekly,monthly,yearly}`; every user's crontab (`/var/spool/cron/<user>` on RHEL, `/var/spool/cron/crontabs/<user>` on Ubuntu); queued `at` jobs (`/var/spool/at`, `/var/spool/cron/atjobs`), without their environment (below) | Running `at` jobs' output (`/var/spool/at/spool`, `/var/spool/cron/atspool`): anything a job printed |
-| `systemd` | `/etc/systemd/system.conf`, `user.conf` and their `.d` directories; system and user unit directories in `/etc`, `/run` (including `transient` and the generators' output) and `/usr/local/lib`, `/usr/lib`, `/lib`; generator directories (scripts as text, programs by hash) | `/var/lib/systemd/linger` (users whose own units start at boot); `~/.config/systemd/user` and `~/.local/share/systemd/user` in every home |
-| `startup` | `rc.local`, `/etc/init.d`, `/etc/rc.d`; `/etc/environment`, `/etc/security/pam_env.conf`; the system shell start-up files (`/etc/profile`, `profile.d`, `bashrc`/`bash.bashrc`, zsh, fish, csh) and `/etc/skel`; `/etc/update-motd.d`; `/etc/xdg/autostart`; `/etc/ld.so.preload`, `/etc/ld.so.conf` and `ld.so.conf.d` | `.config/fish/conf.d` and `.config/autostart` in every home; plus a `home_startup_file` record with the SHA-256 of each of `.profile`, `.bash_profile`, `.bash_login`, `.bashrc`, `.bash_logout`, zsh's, csh's and fish's start-up files, `.pam_environment`, `.xprofile`, `.xsession`, `.ssh/rc` and `.ssh/environment` |
+| `systemd` | `/etc/systemd/system.conf`, `user.conf` and their `.d` directories; system and user unit directories in `/etc`, `/run` (including `transient` and the generators' output) and `/usr/local/lib`, `/usr/lib`, `/lib`; the `system.control` drop-in directories in `/etc` and `/run`; generator directories in `/etc`, `/run`, `/usr/local/lib`, `/usr/lib`, `/lib` (scripts as text, programs by hash) | `/var/lib/systemd/linger` (users whose own units start at boot); `~/.config/systemd/user`, `~/.config/systemd/user.control` and `~/.local/share/systemd/user` in every home |
+| `startup` | `rc.local`, `/etc/init.d`, `/etc/rc.d`; `/etc/environment`, `/etc/security/pam_env.conf`; the system shell start-up files (`/etc/profile`, `profile.d`, `bashrc`/`bash.bashrc`, zsh, fish, csh) and `/etc/skel`; `/etc/update-motd.d`; `/etc/xdg/autostart`; `/etc/ld.so.preload`, `/etc/ld.so.conf` and `ld.so.conf.d` | `.config/fish/conf.d` and `.config/autostart` in every home; plus a `home_startup_file` record with the SHA-256 of each of `.profile`, `.bash_profile`, `.bash_login`, `.bashrc`, `.bash_logout`, zsh's, csh's and fish's start-up files, `.pam_environment`, `.xprofile`, `.xsession`, `.ssh/rc` and `.ssh/environment` — for one that is a link, the SHA-256 of the file it leads to (`resolved`, `target_sha256`), under the same checks |
 | `hooks` | `/etc/apt/apt.conf` and `apt.conf.d` (`DPkg::Pre-Invoke` and the like); `/etc/dpkg/dpkg.cfg` and `dpkg.cfg.d`; `/etc/dnf/dnf.conf`, `/etc/yum.conf`, `/etc/dnf/plugins` (including `post-transaction-actions.d`), `/etc/yum/pluginconf.d`, libdnf5's plugin directories, and the Python dnf plugins; udev rules in `/etc`, `/run`, `/usr/local/lib`, `/usr/lib` and `/lib` | — |
 
 Homes are found as in `accounts` (including domain users' homes), and each
@@ -289,7 +291,10 @@ comment giving their count and the variables' names; the header comments,
 `umask`, working directory and commands are sent. `at` escapes the spaces in
 a value, so no value can put a `cd … || {` line of its own into the file and
 end the environment early. A file not laid out this way keeps only its
-leading comment lines, and a note says the rest was withheld.
+leading comment lines, and a note says the rest was withheld. A spool
+directory reached through a link (`/var/spool/cron` → `/var/spool/at`) is
+listed and hashed without text, since its files can't be told apart by
+where they lie; its target still gets its own walk.
 
 ## Protected files
 

@@ -2207,6 +2207,62 @@ class PersistenceTests(FixtureRoot):
         self.assertEqual([r["path"] for r in refused], ["/usr/lib/systemd/system/x.service"])
         self.assertIn("hard-linked", refused[0]["reason"])
 
+    def test_spool_reached_through_a_link_is_not_classified_as_crontabs(self):
+        self.write("var/spool/at/a0000201c80375", AT_JOB)
+        self.write("var/spool/at/spool/a0000201c80375", b"CanarySpoolOutput\n")
+        Path(self.root, "var/spool").mkdir(parents=True, exist_ok=True)
+        os.symlink("at", Path(self.root, "var/spool/cron"))
+        records = collect(self.root, ["cron"])
+        starts = [r["name"] for r in records if r["type"] == "source_start"]
+        self.assertEqual(starts, ["/var/spool/at/a0000201c80375"])  # once, by at's walk
+        job = sources(records)["/var/spool/at/a0000201c80375"][1]
+        self.assertNotIn(b"line2", job)
+        self.assertNotIn("CanarySpoolOutput", json.dumps(records))
+        gaps = records_named(records, "not_examined")
+        self.assertEqual([g["path"] for g in gaps], ["/var/spool/cron"])
+
+    def test_every_link_to_a_sent_file_is_recorded(self):
+        self.write("etc/rc.d/rc.local", b"#!/bin/sh\n")
+        os.symlink("rc.d/rc.local", Path(self.root, "etc/rc.local"))
+        os.symlink("rc.d/rc.local", Path(self.root, "etc/profile"))
+        records = collect(self.root, ["startup"])
+        links = {r["path"]: r for r in records_named(records, "config_link")}
+        self.assertEqual(sorted(links), ["/etc/profile", "/etc/rc.local"])
+        self.assertTrue(links["/etc/profile"]["already_sent"])
+        starts = [r["name"] for r in records if r["type"] == "source_start"]
+        self.assertEqual(starts.count("/etc/rc.d/rc.local"), 1)
+
+    def test_control_drop_ins_and_runtime_generators(self):
+        self.write(
+            "etc/systemd/system.control/sshd.service.d/50-x.conf",
+            b"[Service]\nExecStartPost=/tmp/x\n",
+        )
+        self.write("run/systemd/system-generators/gen", b"#!/bin/sh\n/tmp/y\n")
+        self.write("run/systemd/user-generators/ugen", b"#!/bin/sh\n")
+        self.write("home/jch/.config/systemd/user.control/a.service.d/x.conf", b"[Service]\n")
+        records = collect(self.root, ["systemd"])
+        sent = sources(records)
+        self.assertIn("/etc/systemd/system.control/sshd.service.d/50-x.conf", sent)
+        self.assertIn("/run/systemd/system-generators/gen", sent)
+        self.assertIn("/run/systemd/user-generators/ugen", sent)
+        files = {f["path"] for f in records_named(records, "file")}
+        self.assertIn("/home/jch/.config/systemd/user.control/a.service.d/x.conf", files)
+
+    def test_linked_home_startup_file_hashes_its_target(self):
+        target = self.write("home/jch/.dotfiles/bashrc", b"export X=1\n")
+        os.symlink(".dotfiles/bashrc", Path(self.root, "home/jch/.bashrc"))
+        self.write("home/jch/.bash_history", b"ls\n")
+        os.symlink(".bash_history", Path(self.root, "home/jch/.zshrc"))
+        records = collect(self.root, ["startup"])
+        home = {f["path"]: f for f in records_named(records, "home_startup_file")}
+        bashrc = home["/home/jch/.bashrc"]
+        self.assertEqual(bashrc["type"], "l")
+        self.assertEqual(bashrc["resolved"], "/home/jch/.dotfiles/bashrc")
+        self.assertEqual(bashrc["target_sha256"], hashlib.sha256(target.read_bytes()).hexdigest())
+        self.assertNotIn("target_sha256", home["/home/jch/.zshrc"])
+        self.assertIn("never read", home["/home/jch/.zshrc"]["hash_skipped"])
+        self.assertEqual(sources(records), {})
+
     def test_linked_user_unit_directories_are_each_recorded(self):
         self.write(
             "etc/passwd",

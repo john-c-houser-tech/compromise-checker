@@ -313,7 +313,9 @@ itself reported.
 ### 5.4 Read-only command allow-list
 
 Where reading files directly is impractical, the collector may run these
-and only these: `journalctl` (read options only), `rpm -Va` / `rpm -qa`,
+and only these: `journalctl` (read options only), `rpm -Va` / `rpm -qa`
+(in practice rpm's database is read directly instead: run as root, rpm
+makes SQLite write `-shm`/`-wal` files),
 `dpkg-query`, `ss` only as a cross-check against `/proc/net`, `systemctl show` /
 `list-unit-files`, `sestatus` / `aa-status`, `iptables-save` / `nft list
 ruleset` (read), `docker`/`podman` `ps --all` and `inspect` (read). Each

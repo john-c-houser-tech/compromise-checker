@@ -443,17 +443,28 @@ ends with an error.
 package installed them: `ps`, `ls`, `ss`, `sshd`, `login`, `sudo`, `su`,
 PAM modules, the dynamic loader (DESIGN.md §8.5).
 
-**RHEL family** (an rpm database is present): lists the rpm database
-directory (`checksum_store` records: names, sizes, times; the database is
-large and changes on every install, so it isn't hashed), then runs
-`rpm -Va --noscripts --nodeps` and sends its output as a `command` source,
-masked. `--noscripts` stops rpm from running packages' own verify scripts,
-which could change the server; `--nodeps` skips dependency checks. rpm exits
-non-zero when it finds changes, which is its normal result, not a failure;
-a signal is.
+**RHEL family** (rpm's SQLite database is present): no rpm command is run.
+Running `rpm -Va` as root makes SQLite open the database's `-shm` and `-wal`
+files for writing — a change to the server, which the read-only proof caught
+— so the collector does rpm's checks itself. It opens `rpmdb.sqlite` in
+SQLite's `immutable` mode (no locks, no `-shm` or `-wal` created), reads each
+package's header (bounds-checked: a damaged header is counted, not
+followed), and for every installed file compares the digest (in the
+package's own algorithm), the mode (type and permission bits, so an added
+set-user-ID bit shows) and a symbolic link's target, honouring each file's
+verify flags: `%ghost` files are skipped, a missing `%missingok` file is
+fine, files not installed (excluded documentation, another architecture)
+are left out. Critical paths go first, as for dpkg. Changes still in
+SQLite's write-ahead log aren't seen by an immutable read, so the summary
+says when that log is not empty (`wal_pending`): recently changed packages
+may then look changed. The database directory is listed first
+(`checksum_store`: names, sizes, times; the database is large and changes
+on every install, so it isn't hashed).
 
 **Ubuntu** (dpkg's status file is present): lists `/var/lib/dpkg/info` with
-the SHA-256 of every file in it (`checksum_store`), then computes each
+the SHA-256 of every file in it, and dpkg's status file (which holds the
+configuration files' checksums) with its SHA-256 (`checksum_store`), then
+computes each
 package file's MD5 and compares it with dpkg's `.md5sums` lists, programs,
 PAM modules, the loader, libc and OpenSSH's helpers first, documentation,
 man pages, locales and firmware last, so a short time limit still covers
@@ -465,7 +476,15 @@ status file and reported apart (`conffile_changed`), since most changes are
 administrators' edits. **Sends:** only the differences
 (`package_file_changed`: changed, missing or unreadable, with the package)
 and a `package_verify_summary` (packages, files, how many of the critical
-ones were checked, results, whether time ran out). No file content is sent.
+ones were checked, results, whether time ran out, and `complete`: false
+when any package's files went unchecked — a checksum list unreadable or
+cut short, the status file cut short, the entry limit of 500,000 files or
+the time limit reached). An unreadable status file ends the module with an
+error. Every file is hashed under the protection rules: a list naming a
+protected file, a history file or a hard-linked file (or a diversion
+leading to one) gets `refused`, and the file is not read. `%config` files on
+RHEL are reported the same way as dpkg's configuration files. No file
+content is sent.
 
 **Limit: the checksums live on the same server.** Both rpm's database and
 dpkg's lists are files root can rewrite along with the program they
@@ -566,7 +585,7 @@ follow links too (see `ssh`); logs never do.
 Where a file can't practically be read directly, a module runs a command
 from the collector's fixed allow-list (DESIGN.md §5.4). The settings can't
 add to the list or change a command's arguments. Today the list is
-`journalctl` and `rpm`; the manifest carries the list as `commands_allowed`.
+`journalctl`; the manifest carries the list as `commands_allowed`.
 
 A command runs only from its absolute path (`/usr/bin/…` or `/bin/…`, never
 a search of `PATH`), and only if that file is owned by root and writable by

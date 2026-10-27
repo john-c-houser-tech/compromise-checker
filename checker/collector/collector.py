@@ -1148,7 +1148,6 @@ class Walk:
 # command line, the executable's hash, the exit status and its error output.
 COMMANDS = {
     "journalctl": ("/usr/bin/journalctl", "/bin/journalctl"),
-    "rpm": ("/usr/bin/rpm", "/bin/rpm"),
 }
 # A fixed, minimal environment: nothing from the login session reaches a command.
 _COMMAND_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C.UTF-8"}
@@ -1181,18 +1180,13 @@ def find_command(name):
     return None, None, "; ".join(reasons) or "not installed"
 
 
-def _exit_zero(code):
-    return code == 0
-
-
-def run_command(run, module, name, args, transform=None, accept=_exit_zero):
+def run_command(run, module, name, args, transform=None):
     """Run an allow-listed command and send its output as a source, masked
     line by line like a file. The command is killed when the module's time
     runs out or its output reaches the size cap. Returns its exit code, or
     None if it could not be run (recorded instead). After closing the
     source, raises ModuleTimeout if time ran out, or CommandFailed if the
-    command exited of its own accord with a status `accept` rejects (by
-    default any but 0; rpm -V exits non-zero when it finds changes)."""
+    command exited with a non-zero status of its own accord."""
     executable, info, problem = find_command(name)
     if executable is None:
         run.stream.record(module, "command_unavailable", {"command": name, "reason": problem})
@@ -1290,7 +1284,7 @@ def run_command(run, module, name, args, transform=None, accept=_exit_zero):
     writer.finish(truncated_reason, extra=extra)
     if truncated_reason == "time":
         raise ModuleTimeout()
-    if truncated_reason is None and not accept(exit_code):
+    if truncated_reason is None and exit_code != 0:
         raise CommandFailed(f"{name} exited with status {exit_code}")
     return exit_code
 
@@ -3976,8 +3970,8 @@ def module_kernel_modules(run):
 
 # --- Package verification (DESIGN.md §8.5) ------------------------------------------
 
-# rpm's databases, old and new locations.
-RPM_DATABASES = ("/var/lib/rpm", "/usr/lib/sysimage/rpm")
+# rpm's database (SQLite, RHEL 9 and later), at its old and new locations.
+RPM_DATABASES = ("/var/lib/rpm/rpmdb.sqlite", "/usr/lib/sysimage/rpm/rpmdb.sqlite")
 DPKG_STATUS = "/var/lib/dpkg/status"
 DPKG_INFO = "/var/lib/dpkg/info"
 DPKG_DIVERSIONS = "/var/lib/dpkg/diversions"
@@ -3992,22 +3986,6 @@ CRITICAL_PACKAGE_PATHS = re.compile(
 # Checked last: data that runs nowhere.
 BULK_PACKAGE_PATHS = re.compile(r"^/usr/(?:share/(?:doc|man|locale|i18n|icons)|lib/firmware)/")
 MAX_PACKAGE_FILES = 500000
-
-
-def _rpm_accept(code):
-    # rpm -V exits non-zero when it finds changes; a signal is a failure.
-    return code is not None and code >= 0
-
-
-def verify_rpm(run, module):
-    """rpm -Va, without the packages' own verify scripts (which could
-    change the server) and without dependency checks. Its output — one line
-    per changed file, with the attributes that changed — is the evidence.
-    The database it compares against is listed first (see
-    record_checksum_stores)."""
-    for directory in RPM_DATABASES:
-        record_checksum_stores(run, module, directory, hash_files=None)
-    run_command(run, module, "rpm", ["-Va", "--noscripts", "--nodeps"], accept=_rpm_accept)
 
 
 def record_checksum_stores(run, module, directory, hash_files):
@@ -4066,17 +4044,28 @@ def dpkg_excluded(filters, absolute):
     return excluded
 
 
-def md5_of(run, absolute):
-    """(hex digest, None) of a regular file, or (None, why not)."""
+REFUSED = "refused: "
+
+
+def digest_of(run, absolute, algorithm="md5"):
+    """(hex digest, None) of a regular file, or (None, why not): "missing",
+    "time", REFUSED + the reason for a protected file, or an error."""
     try:
-        raw, _ = open_regular_file(absolute)
+        raw, info = open_regular_file(absolute)
     except FileNotFoundError:
         return None, "missing"
     except UnsafePath as exc:
         return None, exc.reason
     except (OSError, ValueError) as exc:
         return None, str(exc)
-    digest = hashlib.md5(usedforsecurity=False)  # dpkg's own format, not a security choice
+    # A package list could name a protected file (or a diversion lead to
+    # one): the same rules as for any hash apply before a byte is read.
+    refusal = run.refusal(absolute, info, key_file=True)
+    if refusal:
+        raw.close()
+        return None, REFUSED + refusal
+    # The packages' own formats (dpkg: MD5), not a security choice.
+    digest = hashlib.new(algorithm, usedforsecurity=False)
     with raw:
         try:
             while True:
@@ -4099,11 +4088,14 @@ def _package_order(item):
 
 
 def dpkg_conffiles():
-    """[(package, path, md5)] of installed packages' configuration files,
-    from dpkg's status file (their md5sums aren't in the .md5sums lists)."""
-    text, _ = read_whole_lines(DPKG_STATUS, 64 * 1024 * 1024)
+    """([(package, path, md5)], truncated) of installed packages'
+    configuration files, from dpkg's status file (their md5sums aren't in
+    the .md5sums lists). Raises OSError if the status file can't be read."""
+    text, truncated = read_whole_lines(DPKG_STATUS, 64 * 1024 * 1024)
+    if text is None:
+        raise OSError(f"{DPKG_STATUS} could not be read")
     found, package, in_conffiles = [], None, False
-    for line in (text or "").splitlines():
+    for line in text.splitlines():
         if line.startswith("Package: "):
             package, in_conffiles = line[9:].strip(), False
         elif line.startswith("Conffiles:"):
@@ -4114,7 +4106,7 @@ def dpkg_conffiles():
                 found.append((package, parts[0], parts[1]))
         else:
             in_conffiles = False
-    return found
+    return found, truncated
 
 
 def verify_dpkg(run, module):
@@ -4123,18 +4115,37 @@ def verify_dpkg(run, module):
     the differences (`package_file_changed`, `conffile_changed`) and a
     summary; a changed configuration file is usually an administrator's
     edit, so it is kept apart."""
+    # The status file holds the configuration files' checksums: listed and
+    # hashed with the other stores, so a rewrite of either shows.
     record_checksum_stores(run, module, DPKG_INFO, hash_files="all")
+    status = path_facts(DPKG_STATUS) or {"path": DPKG_STATUS}
+    status["sha256"], problem = hash_file(run, DPKG_STATUS)
+    if problem:
+        status["hash_skipped"] = problem
+    run.stream.record(module, "checksum_store", status)
     names, listing_cut = list_directory(DPKG_INFO, MAX_PACKAGE_FILES, run)
     diversions = dpkg_diversions()
     filters = dpkg_path_filters()
     entries, packages, malformed = [], 0, 0
+    unreadable_lists, truncated_lists, cut = [], [], None
     for name in names:
         if not name.endswith(".md5sums"):
             continue
+        if run.out_of_time():
+            cut = "time"
+            break
+        if len(entries) >= MAX_PACKAGE_FILES:
+            listing_cut = True
+            break
         packages += 1
         package = name[: -len(".md5sums")].split(":", 1)[0]
-        text, _ = read_whole_lines(_join(DPKG_INFO, name), 16 * 1024 * 1024)
-        for line in (text or "").splitlines():
+        text, list_cut = read_whole_lines(_join(DPKG_INFO, name), 16 * 1024 * 1024)
+        if text is None:
+            unreadable_lists.append(name)  # its files go unchecked: a gap, said so
+            continue
+        if list_cut:
+            truncated_lists.append(name)
+        for line in text.splitlines():
             digest, _, relative = line.partition("  ")
             if len(digest) != 32 or not relative:
                 malformed += 1
@@ -4144,17 +4155,23 @@ def verify_dpkg(run, module):
                 listing_cut = True
                 break
     entries.sort(key=_package_order)
-    counts = {"checked": 0, "changed": 0, "missing": 0, "excluded": 0, "unreadable": 0}
-    cut = None
+    counts = {
+        "checked": 0,
+        "changed": 0,
+        "missing": 0,
+        "excluded": 0,
+        "unreadable": 0,
+        "refused": 0,
+    }
     critical_total = sum(1 for e in entries if _package_order(e) == 0)
     critical_checked = 0
-    for package, absolute, expected in entries:
+    for package, absolute, expected in entries if cut is None else ():
         if run.out_of_time():
             cut = "time"
             break
         diverted = diversions.get(absolute)
         actual_path = diverted[0] if diverted and diverted[1] != package else absolute
-        actual, problem = md5_of(run, actual_path)
+        actual, problem = digest_of(run, actual_path)
         if problem == "time":
             cut = "time"
             break
@@ -4167,6 +4184,8 @@ def verify_dpkg(run, module):
             counts["excluded"] += 1  # never installed: left out by path-exclude
             continue
         kind = "missing" if problem == "missing" else "unreadable" if problem else "changed"
+        if problem and problem.startswith(REFUSED):
+            kind = "refused"  # a protected file: never read, not even to hash
         counts[kind] += 1
         details = {"package": package, "path": absolute, "result": kind}
         if actual_path != absolute:
@@ -4174,21 +4193,27 @@ def verify_dpkg(run, module):
         if problem and problem != "missing":
             details["reason"] = problem
         run.stream.record(module, "package_file_changed", details)
-    conffiles = {"checked": 0, "changed": 0, "missing": 0}
+    conffiles = {"checked": 0, "changed": 0, "missing": 0, "unreadable": 0}
+    status_truncated = False
     if cut is None:
-        for package, absolute, expected in dpkg_conffiles():
+        found, status_truncated = dpkg_conffiles()
+        for package, absolute, expected in found:
             if run.out_of_time():
                 cut = "time"
                 break
-            actual, problem = md5_of(run, absolute)
+            actual, problem = digest_of(run, absolute)
+            if problem == "time":
+                cut = "time"
+                break
             conffiles["checked"] += 1
-            if actual == expected or problem == "time":
+            if actual == expected:
                 continue
-            kind = "missing" if problem == "missing" else "changed"
+            kind = "missing" if problem == "missing" else "unreadable" if problem else "changed"
             conffiles[kind] += 1
-            run.stream.record(
-                module, "conffile_changed", {"package": package, "path": absolute, "result": kind}
-            )
+            details = {"package": package, "path": absolute, "result": kind}
+            if kind == "unreadable":
+                details["reason"] = problem
+            run.stream.record(module, "conffile_changed", details)
     run.stream.record(
         module,
         "package_verify_summary",
@@ -4204,6 +4229,12 @@ def verify_dpkg(run, module):
             "diversions": len(diversions),
             "path_filters": len(filters),
             "listing_truncated": listing_cut,
+            "lists_unreadable": unreadable_lists,
+            "lists_truncated": truncated_lists,
+            "status_truncated": status_truncated,
+            # False when some package's files went unchecked for any reason.
+            "complete": cut is None
+            and not (listing_cut or unreadable_lists or truncated_lists or status_truncated),
             "truncated": cut is not None,
             "truncated_reason": cut,
         },
@@ -4212,17 +4243,260 @@ def verify_dpkg(run, module):
         raise ModuleTimeout()
 
 
+# rpm's header tags used here, and its file flags and verify flags.
+RPMTAG_NAME = 1000
+RPMTAG_FILEMODES = 1030
+RPMTAG_FILESTATES = 1029
+RPMTAG_FILEDIGESTS = 1035
+RPMTAG_FILELINKTOS = 1036
+RPMTAG_FILEFLAGS = 1037
+RPMTAG_FILEVERIFYFLAGS = 1045
+RPMTAG_DIRINDEXES = 1116
+RPMTAG_BASENAMES = 1117
+RPMTAG_DIRNAMES = 1118
+RPMTAG_FILEDIGESTALGO = 5011
+RPMFILE_CONFIG = 1 << 0
+RPMFILE_MISSINGOK = 1 << 3
+RPMFILE_GHOST = 1 << 6
+RPMVERIFY_FILEDIGEST = 1 << 0
+RPMVERIFY_LINKTO = 1 << 2
+RPMVERIFY_MODE = 1 << 6
+RPM_DIGESTS = {1: "md5", 2: "sha1", 8: "sha256", 9: "sha384", 10: "sha512", 11: "sha224"}
+
+
+class RpmHeader:
+    """One package header, as rpm stores it in its database: a count of
+    index entries and of data bytes, the entries (tag, type, offset,
+    count), then the data. Every read is bounds-checked: a damaged or
+    hostile header raises ValueError, never reads past its own data."""
+
+    def __init__(self, blob):
+        if len(blob) < 8:
+            raise ValueError("short header")
+        entries, size = struct.unpack(">II", blob[:8])
+        start = 8 + 16 * entries
+        if entries > 100000 or start + size > len(blob):
+            raise ValueError("header sizes don't fit")
+        self.data = blob[start : start + size]
+        self.tags = {}
+        for i in range(entries):
+            tag, kind, offset, count = struct.unpack(">iiii", blob[8 + 16 * i : 24 + 16 * i])
+            self.tags[tag] = (kind, offset, count)
+
+    def get(self, tag):
+        if tag not in self.tags:
+            return None
+        kind, offset, count = self.tags[tag]
+        if offset < 0 or count < 0 or offset > len(self.data):
+            raise ValueError("entry outside the header")
+        if kind == 6:  # one string
+            end = self.data.index(b"\0", offset)
+            return self.data[offset:end].decode("utf-8", errors="replace")
+        if kind in (8, 9):  # string array, translated strings
+            values, at = [], offset
+            for _ in range(count):
+                end = self.data.index(b"\0", at)
+                values.append(self.data[at:end].decode("utf-8", errors="surrogateescape"))
+                at = end + 1
+            return values
+        # char and int8 (file states), int16 (modes), int32, int64
+        widths = {1: "B", 2: "B", 3: "H", 4: "I", 5: "Q"}
+        if kind in widths:
+            item = struct.Struct(">" + widths[kind])
+            end = offset + item.size * count
+            if end > len(self.data):
+                raise ValueError("entry outside the header")
+            return [v[0] for v in item.iter_unpack(self.data[offset:end])]
+        return None
+
+
+def rpm_entries(run, module, database):
+    """Every packaged file's record from rpm's SQLite database, opened
+    immutable: SQLite then takes no locks and creates no -shm or -wal file
+    (running rpm itself as root does both). Returns (entries, packages,
+    malformed headers); each entry is (package, path, expected digest,
+    algorithm, mode, file flags, verify flags, link target)."""
+    import sqlite3  # standard library; only needed on rpm systems
+    from urllib.parse import quote
+
+    uri = "file:" + quote(path(database)) + "?immutable=1&mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    try:
+        rows = connection.execute("SELECT blob FROM Packages").fetchall()
+    finally:
+        connection.close()
+    entries, packages, malformed = [], 0, 0
+    for (blob,) in rows:
+        run.check_time()
+        try:
+            header = RpmHeader(bytes(blob))
+            names = header.get(RPMTAG_BASENAMES)
+            if not names:
+                continue  # gpg-pubkey and other file-less entries
+            packages += 1
+            package = header.get(RPMTAG_NAME) or "?"
+            dirs = header.get(RPMTAG_DIRNAMES)
+            indexes = header.get(RPMTAG_DIRINDEXES)
+            digests = header.get(RPMTAG_FILEDIGESTS) or [""] * len(names)
+            modes = header.get(RPMTAG_FILEMODES) or [0] * len(names)
+            states = header.get(RPMTAG_FILESTATES) or [0] * len(names)
+            flags = header.get(RPMTAG_FILEFLAGS) or [0] * len(names)
+            verify = header.get(RPMTAG_FILEVERIFYFLAGS) or [0xFFFFFFFF] * len(names)
+            links = header.get(RPMTAG_FILELINKTOS) or [""] * len(names)
+            algorithm = RPM_DIGESTS.get((header.get(RPMTAG_FILEDIGESTALGO) or [1])[0])
+            for i, name in enumerate(names):
+                if states[i] != 0:  # not installed (excluded docs, other arch)
+                    continue
+                entries.append(
+                    (
+                        package,
+                        dirs[indexes[i]] + name,
+                        digests[i],
+                        algorithm,
+                        modes[i],
+                        flags[i],
+                        verify[i],
+                        links[i],
+                    )
+                )
+        except (ValueError, IndexError, TypeError, struct.error):
+            malformed += 1
+    return entries, packages, malformed
+
+
+def verify_rpm(run, module, database):
+    """rpm -V's checks, done here from rpm's own database: digest, symlink
+    target and mode of every installed file, critical paths first. %ghost
+    files are skipped, a missing %missingok file is fine, and each file's
+    verify flags are honoured. Sends only the differences and a summary."""
+    try:
+        entries, packages, malformed = rpm_entries(run, module, database)
+    except ImportError:
+        run.stream.record(module, "package_verify_unsupported", {"reason": "no sqlite3 module"})
+        return
+    entries.sort(key=_package_order)
+    wal = path_facts(database + "-wal")
+    counts = {
+        "checked": 0,
+        "changed": 0,
+        "missing": 0,
+        "mode": 0,
+        "link": 0,
+        "unreadable": 0,
+        "refused": 0,
+    }
+    config = {"checked": 0, "changed": 0, "missing": 0}
+    critical_total = sum(1 for e in entries if _package_order(e) == 0 and not e[5] & RPMFILE_GHOST)
+    critical_checked, cut = 0, None
+    for package, absolute, expected, algorithm, mode, flags, verify, link in entries:
+        if run.out_of_time():
+            cut = "time"
+            break
+        if flags & RPMFILE_GHOST:
+            continue
+        is_config = bool(flags & RPMFILE_CONFIG)
+        tally = config if is_config else counts
+        tally["checked"] += 1
+        if _package_order((package, absolute)) == 0:
+            critical_checked += 1
+        try:
+            info = os.lstat(path(absolute))
+        except FileNotFoundError:
+            if not flags & RPMFILE_MISSINGOK:
+                tally["missing"] += 1
+                report_package_change(run, module, package, absolute, "missing", is_config)
+            continue
+        except OSError as exc:
+            counts["unreadable"] += 1
+            report_package_change(run, module, package, absolute, "unreadable", is_config, str(exc))
+            continue
+        if verify & RPMVERIFY_MODE and info.st_mode != mode:
+            counts["mode"] += 1
+            report_package_change(
+                run,
+                module,
+                package,
+                absolute,
+                "mode",
+                is_config,
+                expected_mode=format(mode, "o"),
+                mode=format(info.st_mode, "o"),
+            )
+        if stat.S_ISLNK(mode):
+            if verify & RPMVERIFY_LINKTO:
+                try:
+                    target = os.readlink(path(absolute))
+                except OSError:
+                    target = None
+                if target != link:
+                    counts["link"] += 1
+                    report_package_change(run, module, package, absolute, "link", is_config)
+            continue
+        if not (stat.S_ISREG(mode) and expected and algorithm and verify & RPMVERIFY_FILEDIGEST):
+            continue
+        actual, problem = digest_of(run, absolute, algorithm)
+        if problem == "time":
+            cut = "time"
+            break
+        if actual != expected:
+            if problem:
+                kind = "refused" if problem.startswith(REFUSED) else "unreadable"
+                counts[kind] += 1
+                report_package_change(run, module, package, absolute, kind, is_config, problem)
+            else:
+                tally["changed"] += 1
+                report_package_change(run, module, package, absolute, "changed", is_config)
+    run.stream.record(
+        module,
+        "package_verify_summary",
+        {
+            "manager": "rpm",
+            "database": database,
+            "packages": packages,
+            "files": len(entries),
+            "malformed_headers": malformed,
+            "critical_files": critical_total,
+            "critical_checked": critical_checked,
+            "files_result": counts,
+            "conffiles": config,
+            # Changes still in SQLite's write-ahead log aren't seen by an
+            # immutable read: recently changed packages may look stale.
+            "wal_pending": bool(wal and wal.get("size")),
+            "truncated": cut is not None,
+            "truncated_reason": cut,
+        },
+    )
+    if cut == "time":
+        raise ModuleTimeout()
+
+
+def report_package_change(run, module, package, absolute, result, is_config, reason=None, **extra):
+    details = {"package": package, "path": absolute, "result": result}
+    if reason and result in ("unreadable", "refused"):
+        details["reason"] = reason
+    details.update(extra)
+    run.stream.record(module, "conffile_changed" if is_config else "package_file_changed", details)
+
+
 def module_package_verify(run):
-    """Package verification: rpm -Va on the RHEL family, dpkg's checksums on
-    Ubuntu (DESIGN.md §8.5)."""
+    """Package verification: rpm's checks from its own database on the RHEL
+    family, dpkg's checksums on Ubuntu (DESIGN.md §8.5). No package-manager
+    command is run."""
     module = "package_verify"
-    has_rpm = any(os.path.isdir(path(d)) for d in RPM_DATABASES) and find_command("rpm")[0]
+    databases, seen = [], set()
+    for candidate in RPM_DATABASES:
+        resolved, risk = resolve_links(candidate)
+        if risk or resolved in seen or not os.path.isfile(path(resolved)):
+            continue
+        seen.add(resolved)
+        databases.append(resolved)
     has_dpkg = os.path.lexists(path(DPKG_STATUS))
-    run.stream.record(module, "package_managers", {"rpm": bool(has_rpm), "dpkg": has_dpkg})
+    run.stream.record(module, "package_managers", {"rpm": databases, "dpkg": has_dpkg})
     if has_dpkg:
         verify_dpkg(run, module)
-    if has_rpm:
-        verify_rpm(run, module)
+    for database in databases:
+        record_checksum_stores(run, module, os.path.dirname(database), hash_files=None)
+        verify_rpm(run, module, database)
 
 
 # Collection modules, by name, in their default order.

@@ -672,3 +672,14 @@ def test_an_error_in_a_module_marks_all_its_sections(tmp_path):
     snap = snapshot_of_records(host_records(extra=[error]), tmp_path)
     for section in ("accounts", "groups", "shell_history"):
         assert snap.sections[section].gaps == ["error: boom"]
+
+
+def test_a_listed_file_whose_content_was_refused_is_marked_on_its_item(tmp_path):
+    listed = rec("hooks", "file", path="/usr/lib/dnf/x.pyc", inode=5, size=9, mtime="t", uid=0)
+    refused = rec("hooks", "unreadable_file", path="/usr/lib/dnf/x.pyc", reason="hard link")
+    unlisted = rec("hooks", "unreadable_file", path="/etc/dnf/plugins/y.conf", reason="denied")
+    snap = snapshot_of_records(host_records(planned=ALL_MODULES, extra=[refused, listed]), tmp_path)
+    hooks = snap.sections["hooks"]
+    assert hooks.complete and hooks.items["/usr/lib/dnf/x.pyc"]["content_unread"] == "hard link"
+    snap = snapshot_of_records(host_records(extra=[unlisted]), tmp_path)
+    assert snap.sections["hooks"].gaps == ["unreadable_file: /etc/dnf/plugins/y.conf"]

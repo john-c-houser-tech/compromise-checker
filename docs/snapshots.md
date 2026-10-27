@@ -77,6 +77,13 @@ an unreadable key file (reported with its account) leaves
 all examined affect only what comes from them. An error in a module affects
 all of its sections.
 
+A file in a persistence directory whose content wasn't read — refused
+because it is hard-linked, say, as RHEL does with identical `.pyc` files —
+but which its directory walk still listed is marked on its own item
+(`content_unread`, with the reason): its inode, size and times still show a
+change. Only an unreadable file the walk didn't list leaves its section
+incomplete.
+
 A section a bundle didn't collect at all (a run with `--module`) is absent.
 A snapshot also says whether its bundle was a **full** collection (every
 module planned).

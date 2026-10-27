@@ -255,6 +255,7 @@ class SnapshotBuilder:
         self._password: dict[str, dict[str, Any]] = {}
         self._gaps: dict[str, list[tuple[str, set[str] | None]]] = {}
         self._names: dict[str, dict[str, int]] = {}
+        self._unread: list[tuple[str, dict[str, Any]]] = []
 
     def section(self, name: str) -> Section:
         return self.sections.setdefault(name, Section())
@@ -268,7 +269,9 @@ class SnapshotBuilder:
 
     def record(self, record: Record) -> None:
         module, name, data = record.module, record.name, record.data
-        if name in _GAPS:
+        if name == "unreadable_file" and module in _FILE_SECTIONS and data.get("path"):
+            self._unread.append((module, data))  # settled once every file is listed
+        elif name in _GAPS:
             where = data.get("path") or data.get("phase") or ""
             self._module_gap(module, f"{name}: {where}", name, data)
         elif name == "walk_summary":
@@ -501,7 +504,22 @@ class SnapshotBuilder:
     def _planned(self) -> set[str]:
         return set(self.manifest_data.modules_planned) if self.manifest_data else set()
 
+    def _settle_unread(self) -> None:
+        """A file whose content wasn't read (refused: hard-linked, say — RHEL
+        hard-links identical .pyc files) but which its walk still listed
+        is marked on its item: its inode, size and times still show any
+        change. Only one not listed at all leaves its section incomplete."""
+        for module, data in self._unread:
+            item = self.sections.get(_FILE_SECTIONS[module], Section()).items.get(data["path"])
+            if item is not None and "inode" in item:
+                item["content_unread"] = data.get("reason") or "unreadable"
+            else:
+                self._module_gap(
+                    module, f"unreadable_file: {data['path']}", "unreadable_file", data
+                )
+
     def finish(self) -> Snapshot:
+        self._settle_unread()
         self._listeners()
         planned = self._planned()
         results = self.trailer_data.modules if self.trailer_data else {}

@@ -231,10 +231,13 @@ _NOT_A_SECRET = (
 )
 
 _B64 = rb"[./0-9A-Za-z]"
+# A crypt salt can be empty and hold any character but "$" (and, in a shadow
+# line, ":"); bounded like every field here.
+_SALT = rb"[^$:\s]"
 _CRYPT_HASH = (
     rb"\$[156]\$(?:rounds=[0-9]{1,9}\$)?"
-    + _B64
-    + rb"{1,16}\$"
+    + _SALT
+    + rb"{0,16}\$"
     + _B64
     + rb"{16,86}"  # md5, sha-crypt
     + rb"|\$2[abxy]\$[0-9]{2}\$"
@@ -242,24 +245,26 @@ _CRYPT_HASH = (
     + rb"{53}"  # bcrypt
     + rb"|\$7\$"
     + _B64
-    + rb"{11,64}\$"
+    + rb"{11}"
+    + _SALT
+    + rb"{0,86}\$"
     + _B64
-    + rb"{43}"  # scrypt
+    + rb"{43}"  # scrypt: params, salt
     + rb"|\$g?y\$"
     + _B64
     + rb"{1,32}\$"
-    + _B64
-    + rb"{1,86}\$"
+    + _SALT
+    + rb"{0,86}\$"
     + _B64
     + rb"{16,86}"  # yescrypt
     + rb"|\$sha1\$[0-9]{1,10}\$"
-    + _B64
-    + rb"{1,64}\$"
+    + _SALT
+    + rb"{0,64}\$"
     + _B64
     + rb"{16,86}"
     + rb"|\$md5(?:,rounds=[0-9]{1,9})?\$"
-    + _B64
-    + rb"{1,16}\$\$?"
+    + _SALT
+    + rb"{0,16}\$\$?"
     + _B64
     + rb"{16,86}"
 )

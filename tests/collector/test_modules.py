@@ -517,6 +517,13 @@ class MaskingTests(unittest.TestCase):
             b"$7$CU..../....saltsalt$" + b"s" * 43,
             b"$y$j9T$abcdefghijklmnop$" + b"Q" * 43,
             b"$gy$j9T$abcdefghijklmnop$" + b"Q" * 43,
+            # Unusual but valid: empty and non-base64 salts, a long scrypt salt.
+            b"$6$$" + b"x" * 86,
+            b"$6$a-b_c$" + b"x" * 86,
+            b"$1$a_b$" + b"w" * 22,
+            b"$y$j9T$$" + b"Q" * 43,
+            b"$md5$$$" + b"m" * 22,
+            b"$7$CU..../...." + b"s" * 86 + b"$" + b"h" * 43,
         )
         for value in hashes:
             for line in (

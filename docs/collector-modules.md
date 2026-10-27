@@ -451,15 +451,18 @@ SQLite's `immutable` mode (no locks, no `-shm` or `-wal` created), reads each
 package's header (bounds-checked: a damaged header is counted, not
 followed), and for every installed file compares the digest (in the
 package's own algorithm), the mode (type and permission bits, so an added
-set-user-ID bit shows) and a symbolic link's target, honouring each file's
-verify flags: `%ghost` files are skipped, a missing `%missingok` file is
+set-user-ID bit shows), the owner and group (by name, as rpm does, through
+`/etc/passwd` and `/etc/group`) and a symbolic link's target, honouring
+each file's verify flags: `%ghost` files are skipped, a missing `%missingok` file is
 fine, files not installed (excluded documentation, another architecture)
 are left out. Critical paths go first, as for dpkg. Changes still in
 SQLite's write-ahead log aren't seen by an immutable read, so the summary
 says when that log is not empty (`wal_pending`): recently changed packages
 may then look changed. The database directory is listed first
 (`checksum_store`: names, sizes, times; the database is large and changes
-on every install, so it isn't hashed).
+on every install, so it isn't hashed). Not compared yet: file
+capabilities (rpm -V's `P`), which come with the capability decoding of
+the filesystem pass (Phase 1 plan, 1.4c).
 
 **Ubuntu** (dpkg's status file is present): lists `/var/lib/dpkg/info` with
 the SHA-256 of every file in it, and dpkg's status file (which holds the

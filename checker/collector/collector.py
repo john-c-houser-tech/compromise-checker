@@ -4250,6 +4250,8 @@ RPMTAG_FILESTATES = 1029
 RPMTAG_FILEDIGESTS = 1035
 RPMTAG_FILELINKTOS = 1036
 RPMTAG_FILEFLAGS = 1037
+RPMTAG_FILEUSERNAME = 1039
+RPMTAG_FILEGROUPNAME = 1040
 RPMTAG_FILEVERIFYFLAGS = 1045
 RPMTAG_DIRINDEXES = 1116
 RPMTAG_BASENAMES = 1117
@@ -4260,6 +4262,8 @@ RPMFILE_MISSINGOK = 1 << 3
 RPMFILE_GHOST = 1 << 6
 RPMVERIFY_FILEDIGEST = 1 << 0
 RPMVERIFY_LINKTO = 1 << 2
+RPMVERIFY_USER = 1 << 3
+RPMVERIFY_GROUP = 1 << 4
 RPMVERIFY_MODE = 1 << 6
 RPM_DIGESTS = {1: "md5", 2: "sha1", 8: "sha256", 9: "sha384", 10: "sha512", 11: "sha224"}
 
@@ -4322,9 +4326,13 @@ def rpm_entries(run, module, database):
     uri = "file:" + quote(path(database)) + "?immutable=1&mode=ro"
     connection = sqlite3.connect(uri, uri=True)
     try:
-        rows = connection.execute("SELECT blob FROM Packages").fetchall()
+        return _rpm_entries(run, connection.execute("SELECT blob FROM Packages"))
     finally:
         connection.close()
+
+
+def _rpm_entries(run, rows):
+    # Headers one at a time, so only the file entries are held in memory.
     entries, packages, malformed = [], 0, 0
     for (blob,) in rows:
         run.check_time()
@@ -4343,6 +4351,8 @@ def rpm_entries(run, module, database):
             flags = header.get(RPMTAG_FILEFLAGS) or [0] * len(names)
             verify = header.get(RPMTAG_FILEVERIFYFLAGS) or [0xFFFFFFFF] * len(names)
             links = header.get(RPMTAG_FILELINKTOS) or [""] * len(names)
+            users = header.get(RPMTAG_FILEUSERNAME) or [None] * len(names)
+            groups = header.get(RPMTAG_FILEGROUPNAME) or [None] * len(names)
             algorithm = RPM_DIGESTS.get((header.get(RPMTAG_FILEDIGESTALGO) or [1])[0])
             for i, name in enumerate(names):
                 if states[i] != 0:  # not installed (excluded docs, other arch)
@@ -4357,6 +4367,8 @@ def rpm_entries(run, module, database):
                         flags[i],
                         verify[i],
                         links[i],
+                        users[i],
+                        groups[i],
                     )
                 )
         except (ValueError, IndexError, TypeError, struct.error):
@@ -4366,7 +4378,9 @@ def rpm_entries(run, module, database):
 
 def verify_rpm(run, module, database):
     """rpm -V's checks, done here from rpm's own database: digest, symlink
-    target and mode of every installed file, critical paths first. %ghost
+    target, mode, owner and group of every installed file (owners compared
+    by name, as rpm does, through /etc/passwd and /etc/group), critical
+    paths first. File capabilities are not compared yet. %ghost
     files are skipped, a missing %missingok file is fine, and each file's
     verify flags are honoured. Sends only the differences and a summary."""
     try:
@@ -4381,6 +4395,8 @@ def verify_rpm(run, module, database):
         "changed": 0,
         "missing": 0,
         "mode": 0,
+        "owner": 0,
+        "group": 0,
         "link": 0,
         "unreadable": 0,
         "refused": 0,
@@ -4388,7 +4404,19 @@ def verify_rpm(run, module, database):
     config = {"checked": 0, "changed": 0, "missing": 0}
     critical_total = sum(1 for e in entries if _package_order(e) == 0 and not e[5] & RPMFILE_GHOST)
     critical_checked, cut = 0, None
-    for package, absolute, expected, algorithm, mode, flags, verify, link in entries:
+    uid_names, gid_names = local_id_names()
+    for (
+        package,
+        absolute,
+        expected,
+        algorithm,
+        mode,
+        flags,
+        verify,
+        link,
+        user,
+        group,
+    ) in entries:
         if run.out_of_time():
             cut = "time"
             break
@@ -4410,6 +4438,34 @@ def verify_rpm(run, module, database):
             counts["unreadable"] += 1
             report_package_change(run, module, package, absolute, "unreadable", is_config, str(exc))
             continue
+        owner = uid_names.get(info.st_uid)
+        if verify & RPMVERIFY_USER and user and owner != user:
+            counts["owner"] += 1
+            report_package_change(
+                run,
+                module,
+                package,
+                absolute,
+                "owner",
+                is_config,
+                expected_owner=user,
+                owner=owner,
+                uid=info.st_uid,
+            )
+        owning_group = gid_names.get(info.st_gid)
+        if verify & RPMVERIFY_GROUP and group and owning_group != group:
+            counts["group"] += 1
+            report_package_change(
+                run,
+                module,
+                package,
+                absolute,
+                "group",
+                is_config,
+                expected_group=group,
+                group=owning_group,
+                gid=info.st_gid,
+            )
         if verify & RPMVERIFY_MODE and info.st_mode != mode:
             counts["mode"] += 1
             report_package_change(
@@ -4468,6 +4524,22 @@ def verify_rpm(run, module, database):
     )
     if cut == "time":
         raise ModuleTimeout()
+
+
+def local_id_names():
+    """({uid: name}, {gid: name}) from /etc/passwd and /etc/group (the first
+    name for an id, as getpwuid would give)."""
+    accounts, _ = read_accounts()
+    uids = {}
+    for account in accounts or ():
+        uids.setdefault(account["uid"], account["name"])
+    gids = {}
+    text, _ = read_whole_lines("/etc/group", ACCOUNT_FILE_BYTES)
+    for line in (text or "").splitlines():
+        fields = line.split(":")
+        if len(fields) == 4 and fields[0]:
+            gids.setdefault(_days(fields[2]), fields[0])
+    return uids, gids
 
 
 def report_package_change(run, module, package, absolute, result, is_config, reason=None, **extra):

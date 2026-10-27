@@ -2965,6 +2965,8 @@ def rpm_package(name, files):
             (1117, 8, [f[0].rsplit("/", 1)[1] for f in files]),
             (1118, 8, dirs),
             (5011, 4, [8]),
+            (1039, 8, [f[6] if len(f) > 6 else "root" for f in files]),  # owners
+            (1040, 8, ["root"] * len(files)),  # groups
         ]
     )
 
@@ -2993,7 +2995,16 @@ class RpmVerifyTests(FixtureRoot):
             ("/etc/ssh/sshd_config", b"original\n", 0o100600, 1, ""),  # %config
             ("/usr/bin/vi", None, 0o120777, 0, "vim"),
             ("/usr/share/doc/x/README", b"x", 0o100644, 2, "", 2),  # not installed (nodocs)
+            ("/usr/bin/su", b"\x7fELF su", 0o100755, 0, "", 0, "daemon"),  # owner changed
         ]
+        self.write("usr/bin/su", b"\x7fELF su")
+        Path(self.root, "usr/bin/su").chmod(0o755)
+        # The files here belong to whoever runs the tests: call that root.
+        self.write(
+            "etc/passwd",
+            f"root:x:{os.getuid()}:{os.getgid()}::/root:/bin/bash\ndaemon:x:1:1::/:/sbin/nologin\n".encode(),
+        )
+        self.write("etc/group", f"root:x:{os.getgid()}:\n".encode())
         Path(self.root, "var/lib/rpm").mkdir(parents=True)
         database = Path(self.root, "var/lib/rpm/rpmdb.sqlite")
         connection = sqlite3.connect(database)
@@ -3023,8 +3034,13 @@ class RpmVerifyTests(FixtureRoot):
                 ("/usr/bin/gone", "missing"),
                 ("/usr/bin/passwd", "mode"),
                 ("/usr/bin/vi", "link"),
+                ("/usr/bin/su", "owner"),
             },
         )
+        owner = [
+            r for r in records_named(records, "package_file_changed") if r["result"] == "owner"
+        ][0]
+        self.assertEqual((owner["expected_owner"], owner["owner"]), ("daemon", "root"))
         mode = [r for r in records_named(records, "package_file_changed") if r["result"] == "mode"][
             0
         ]

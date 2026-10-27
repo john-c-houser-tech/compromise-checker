@@ -2596,6 +2596,53 @@ class HomeTextTests(FixtureRoot):
         reasons = {r["path"]: r["reason"] for r in records_named(records, "unreadable_file")}
         self.assertIn("/home/amy/.ssh/rc", reasons)
 
+    def test_a_covered_alias_never_opens_the_home_it_aliases(self):
+        with open(Path(self.root, "etc/passwd"), "a") as passwd:
+            passwd.write("svc:x:998:998::/srv/svc:/sbin/nologin\n")
+        Path(self.root, "srv").mkdir()
+        os.symlink("../home/amy", Path(self.root, "srv/svc"))
+        records = self.collect("privileged")
+        self.assertNotIn("# home/amy", json.dumps(records))
+
+    def test_linked_environment_entry_points_are_still_filtered(self):
+        self.write("home/jch/.config/env/ssh/environment", b"API=CanaryLinkedEnv\n")
+        os.symlink(".config/env/ssh", Path(self.root, "home/jch/.ssh"))
+        self.write("home/jch/.config/env/pam", b"TOKEN DEFAULT=CanaryPamEnv\n")
+        os.symlink(".config/env/pam", Path(self.root, "home/jch/.pam_environment"))
+        Path(self.root, "home/jch/.config/autostart").mkdir(parents=True)
+        os.symlink("../env/ssh/environment", Path(self.root, "home/jch/.config/autostart/e"))
+        records = self.collect("all")
+        raw = json.dumps(records)
+        self.assertNotIn("CanaryLinkedEnv", raw)
+        self.assertNotIn("CanaryPamEnv", raw)
+        self.assertIn("API [collector: value withheld]", raw)
+
+    def test_quoted_sudo_principals(self):
+        with open(Path(self.root, "etc/passwd"), "a") as passwd:
+            passwd.write("hal:x:1009:1009::/home/hal:/bin/bash\n")
+        self.write("home/hal/.bashrc", b"# hal\n")
+        self.write("etc/sudoers.d/quoted", b'"hal" ALL=(ALL) ALL\n')
+        self.assertIn("/home/hal/.bashrc", self.bashrcs(self.collect("privileged")))
+
+    def test_domain_members_of_admin_groups_are_covered(self):
+        self.write("etc/group", b"sudo:x:27:jch,dave@corp.example\nops:x:500:carl\n")
+        self.assertIn("/home/CORP/dave/.bashrc", self.bashrcs(self.collect("privileged")))
+
+    def test_an_uncovered_walk_never_hides_a_covered_one(self):
+        self.write("home/jch/.config/systemd/user/m.service", b"CanaryCoveredUnit\n")
+        Path(self.root, "home/amy/.config/systemd").mkdir(parents=True)
+        os.symlink(
+            "/home/jch/.config/systemd/user", Path(self.root, "home/amy/.config/systemd/user")
+        )
+        records = self.collect("privileged", modules=("systemd",))  # amy's home sorts first
+        self.assertIn("/home/jch/.config/systemd/user/m.service", sources(records))
+
+    def test_a_refused_route_never_hides_a_permitted_one(self):
+        os.remove(Path(self.root, "home/amy/.bashrc"))
+        os.symlink("/home/jch/.bashrc", Path(self.root, "home/amy/.bashrc"))
+        records = self.collect("all")  # amy's route to jch's file is refused, jch's isn't
+        self.assertIn("/home/jch/.bashrc", sources(records))
+
     def test_unknown_setting_is_refused(self):
         records = self.collect("everything")
         self.assertEqual(records[-1]["status"], "refused")

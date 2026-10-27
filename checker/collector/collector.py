@@ -490,6 +490,7 @@ class Run:
         self.source_bytes = int(settings["limits"]["source_bytes"])
         # Text of home start-up files and user units (policy §7), opt-in.
         self.home_text = settings.get("home_text") or "off"
+        self.environment_targets = set()  # see homes_for
         self.deadline = deadline
         self._protected = None
 
@@ -537,7 +538,9 @@ class Run:
                 return "is outside the home directory whose text is collected"
             # The most specific home wins: another home inside this one
             # (/srv/erin in /srv) stays closed unless covered itself.
-            if any(len(p) > own and opened.startswith(p) for p in others):
+            # An uncovered home at the very same path (aliased by a covered
+            # one: /srv/svc -> /home/amy) is closed too.
+            if any(len(p) >= own and opened.startswith(p) for p in others):
                 return "is inside another account's home, whose text is not collected"
             return None
         if spool:
@@ -2283,12 +2286,31 @@ def module_sudoers(run):
 ADMIN_GROUPS = ("sudo", "wheel", "admin")
 _SUDO_NOT_A_RULE = re.compile(r"^\s*(?:Defaults|Host_Alias|Runas_Alias|Cmnd_Alias|Cmd_Alias)\b")
 _SUDO_USER_ALIAS = re.compile(r"^\s*User_Alias\s+(.*)$")
-_SUDO_RULE_USERS = re.compile(r"^\s*((?:(?:\\.|[^\s,\\])+\s*,\s*)*(?:\\.|[^\s,\\])+)\s+\S[^=]*=")
-_SUDO_TOKEN_SPLIT = re.compile(r"(?<!\\),")
+_SUDO_NAME = r'(?:"[^"\n]*"|\\.|[^\s,\\"])+'
+_SUDO_RULE_USERS = re.compile(
+    r"^\s*((?:" + _SUDO_NAME + r"\s*,\s*)*" + _SUDO_NAME + r")\s+\S[^=]*="
+)
 
 
-def _sudo_unescape(token):
-    return re.sub(r"\\(.)", r"\1", token.strip())
+def _sudo_tokens(text):
+    """A sudoers list split at commas outside double quotes, each entry with
+    its quotes and backslash escapes removed: "bob", domain\\ admins."""
+    tokens, current, quoted, escaped = [], [], False, False
+    for char in text:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            quoted = not quoted
+        elif char == "," and not quoted:
+            tokens.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    tokens.append("".join(current).strip())
+    return [token for token in tokens if token]
 
 
 def sudo_grantees(run):
@@ -2330,17 +2352,13 @@ def sudo_grantees(run):
             if alias:
                 for definition in alias.group(1).split(":"):
                     name, _, members = definition.partition("=")
-                    aliases[name.strip()] = [
-                        _sudo_unescape(t) for t in _SUDO_TOKEN_SPLIT.split(members)
-                    ]
+                    aliases[name.strip()] = _sudo_tokens(members)
                 continue
             if _SUDO_NOT_A_RULE.match(line):
                 continue
             rule = _SUDO_RULE_USERS.match(line)
             if rule:
-                rule_tokens.extend(
-                    _sudo_unescape(t) for t in _SUDO_TOKEN_SPLIT.split(rule.group(1))
-                )
+                rule_tokens.extend(_sudo_tokens(rule.group(1)))
     everyone = False
     expanded, stack = set(), list(rule_tokens)
     while stack:
@@ -2402,8 +2420,9 @@ def privileged_accounts(run, accounts):
             members.update(m for m in fields[3].split(",") if m)
     # Short forms (alice for alice@corp.example) are only for homes with no
     # local account; a local account must be named exactly.
+    # Domain users listed in a local admin group count the same way.
     sudo_names = set()
-    for user in users:
+    for user in users | members:
         sudo_names |= _short_names(user)
     names = set()
     for account in accounts:
@@ -3024,7 +3043,10 @@ def collect_tree(
     # A spool listed through such a link leaves its target to its own,
     # classified walk.
     unclassified = spool and directory != top
-    walked = (info.st_dev, info.st_ino) in seen
+    # A walk with a home's text allowed is not the same visit as one
+    # without (or for another home): neither may stand in for the other.
+    visit = (info.st_dev, info.st_ino, home[0] if home else None)
+    walked = visit in seen
     if directory != top or walked:
         # Each alias is evidence of its own: a user's unit directory linked
         # to another's, or to a system one, still shows.
@@ -3038,7 +3060,7 @@ def collect_tree(
     if walked:
         return
     if not unclassified:
-        seen.add((info.st_dev, info.st_ino))
+        seen.add(visit)
     walk = Walk(
         run,
         directory,
@@ -3071,11 +3093,12 @@ def collect_tree(
         run.check_time()
         if absolute in seen:
             continue
-        seen.add(absolute)
         rewrite = None if what is True else what
-        if home is not None and is_environment_file(absolute):
+        if home is not None and is_environment_file(run, absolute):
             rewrite = environment_without_values  # e.g. a unit directory linked to ~/.ssh
-        send_file(
+        # Marked sent only once sent: a refused route (outside its home)
+        # must not stop a later, permitted one.
+        if send_file(
             run,
             module,
             absolute,
@@ -3084,7 +3107,8 @@ def collect_tree(
             spool=spool,
             walked=True,
             home=home,
-        )
+        ):
+            seen.add(absolute)
 
 
 def send_config_files(run, module, names, seen):
@@ -3284,6 +3308,14 @@ def homes_for(run, module):
     )
     for home in homes:
         home["text"] = (prefixes[home["home"]], closed) if home["home"] in covered else None
+    # Where every home's environment files really are, before any text is
+    # read, so no route to one escapes the value filter.
+    run.environment_targets = set()
+    for home in homes:
+        for relative in HOME_ENVIRONMENT_FILES:
+            target, risk = resolve_links(_join(home["home"], relative))
+            if not risk:
+                run.environment_targets.add(target)
     run.stream.record(module, "home_text", {"setting": run.home_text, "homes": sorted(covered)})
     return homes
 
@@ -3437,21 +3469,26 @@ def environment_without_values(data):
     return b"".join(out)
 
 
-def is_environment_file(absolute):
+def is_environment_file(run, absolute):
     """Whether a home file, by its resolved path, is an environment file:
-    however it was reached (.bashrc -> .ssh/environment, a unit directory
-    linked to ~/.ssh), its values are withheld."""
-    return absolute.endswith(tuple("/" + name for name in HOME_ENVIRONMENT_FILES))
+    named like one, or what some home's environment file resolves to (an
+    ~/.ssh linked to ~/.config/env/ssh). However it is reached (.bashrc ->
+    .ssh/environment, a unit directory linked to ~/.ssh), its values are
+    withheld."""
+    return absolute.endswith(tuple("/" + name for name in HOME_ENVIRONMENT_FILES)) or (
+        absolute in run.environment_targets
+    )
 
 
 def send_home_text(run, module, resolved, home, seen):
     """Send a home file's text under the opt-in, once per module, by its
-    resolved path (so each route to it gets the same treatment)."""
+    resolved path (so each route to it gets the same treatment); marked
+    sent only once sent."""
     if resolved in seen:
         return
-    seen.add(resolved)
-    rewrite = environment_without_values if is_environment_file(resolved) else None
-    send_file(run, module, resolved, text_only=True, rewrite=rewrite, home=home["text"])
+    rewrite = environment_without_values if is_environment_file(run, resolved) else None
+    if send_file(run, module, resolved, text_only=True, rewrite=rewrite, home=home["text"]):
+        seen.add(resolved)
 
 
 def module_startup(run):

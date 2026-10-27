@@ -34,6 +34,10 @@ What works today:
   settings, persistence files, listening sockets, kernel modules and more.
   The host's first analysis is its baseline; `checker baseline accept HOST
   --reason …` moves it after a reviewed change ([how](docs/snapshots.md)).
+- `checker analyze HOST|--all` — runs the checks (kernel and system health,
+  reboots, accounts and authentication so far) and lists the findings by
+  category and band, with what the collection couldn't see; each analysis
+  is stored encrypted ([checks](docs/checks.md)).
 
 **Read-only, proven:** on throwaway Ubuntu 24.04 and Rocky Linux 9 servers,
 with auditd recording every write by the scanner's session, the collector

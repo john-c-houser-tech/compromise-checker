@@ -138,6 +138,11 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
   beside the findings (DESIGN.md §2 principle 8).
 - `checker analyze HOST|--all [--bundle ID]`, storing an encrypted
   assessment.
+  *As built:* split into 1.7a (the findings framework, coverage, `checker
+  analyze`, assessments, and checks 8.1–8.3; docs/checks.md) and 1.7b
+  (checks 8.4–8.7). Not yet: configured maintenance windows for 8.2 (with
+  the whitelists), logins at unusual hours for 8.3 (needs a per-host
+  profile).
 
 **1.8 — HTML report and `checker report`.**
 - One self-contained HTML file per run: summary (hosts, findings by band,

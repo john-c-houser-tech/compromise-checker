@@ -456,6 +456,20 @@ CREATE TABLE IF NOT EXISTS baselines (
     controller TEXT NOT NULL,
     reason BLOB
 );
+-- Each analysis of a bundle: the checks' findings, encrypted beside the
+-- bundle. Kept, not replaced: a re-analysis with newer checks or another
+-- baseline doesn't erase what an earlier one said.
+CREATE TABLE IF NOT EXISTS assessments (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    bundle_id TEXT NOT NULL REFERENCES bundles(id),
+    host TEXT NOT NULL,
+    at TEXT NOT NULL,
+    checks_version INTEGER NOT NULL,
+    baseline_id TEXT,
+    path TEXT NOT NULL,
+    ciphertext_sha256 TEXT NOT NULL,
+    summary BLOB
+);
 -- Append-only, enforced by the database itself (DESIGN.md §3.4).
 CREATE TRIGGER IF NOT EXISTS bundles_no_update BEFORE UPDATE ON bundles
     BEGIN SELECT RAISE(ABORT, 'bundles are append-only'); END;
@@ -469,6 +483,10 @@ CREATE TRIGGER IF NOT EXISTS baselines_no_update BEFORE UPDATE ON baselines
     BEGIN SELECT RAISE(ABORT, 'baselines are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS baselines_no_delete BEFORE DELETE ON baselines
     BEGIN SELECT RAISE(ABORT, 'baselines are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS assessments_no_update BEFORE UPDATE ON assessments
+    BEGIN SELECT RAISE(ABORT, 'assessments are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS assessments_no_delete BEFORE DELETE ON assessments
+    BEGIN SELECT RAISE(ABORT, 'assessments are append-only'); END;
 """
 
 
@@ -580,6 +598,31 @@ class Store:
                 (host, bundle_id, datetime.now(UTC).isoformat(), how, operator, controller, reason),
             )
             self._custody(bundle_id, "baseline", operator, controller, {"how": how})
+
+    def record_assessment(self, row: dict[str, Any]) -> None:
+        operator, controller = who_and_where()
+        with self._db:
+            self._db.execute(
+                "INSERT INTO assessments (bundle_id, host, at, checks_version, baseline_id, path,"
+                " ciphertext_sha256, summary) VALUES (:bundle_id, :host, :at, :checks_version,"
+                " :baseline_id, :path, :ciphertext_sha256, :summary)",
+                row,
+            )
+            self._custody(
+                row["bundle_id"],
+                "analysed",
+                operator,
+                controller,
+                {"checks_version": row["checks_version"], "baseline": row["baseline_id"]},
+            )
+
+    def assessments(self, bundle_id: str) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM assessments WHERE bundle_id = ? ORDER BY seq", (bundle_id,)
+        ).fetchall()
+
+    def hosts(self) -> list[str]:
+        return [r[0] for r in self._db.execute("SELECT DISTINCT host FROM bundles ORDER BY host")]
 
     def baselines(self, host: str) -> list[sqlite3.Row]:
         return self._db.execute(

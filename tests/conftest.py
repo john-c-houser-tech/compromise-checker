@@ -136,3 +136,16 @@ async def server(tmp_path):
     yield env
     listener.close()
     await listener.wait_closed()
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    """A checker home with its evidence key and database: (path, store,
+    identity, config)."""
+    from checker.evidence import Store, database_file, initialise, load_identity
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    config, identity_path = initialise(tmp_path)
+    store = Store(database_file(tmp_path))
+    yield tmp_path, store, load_identity(identity_path), config
+    store.close()

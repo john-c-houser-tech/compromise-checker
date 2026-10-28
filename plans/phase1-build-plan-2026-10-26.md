@@ -206,7 +206,45 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
   - the proof survives Linode API timeouts, and deletes any server they
     leave.
 
-  Spend so far: about 5.5 server-hours, roughly 4 cents of the $10 cap.
+  *Results (1.9b, 2026-10-27, PR #31):* the detection proof
+  (`tests/integration/detection_proof.py`) catches all ten behaviours on
+  Ubuntu 24.04 and Rocky Linux 9, each at its band. The behaviours, all at
+  high unless noted:
+  - a second UID 0 account;
+  - a new key for root;
+  - a cron job and a systemd timer (medium);
+  - `/etc/ld.so.preload`;
+  - a set-user-ID shell in `/tmp`;
+  - a process running from a deleted program;
+  - a shell on a TCP socket;
+  - sshd allowing root login;
+  - a `pam_exec` line.
+
+  Every other medium or high finding was a second check catching the same
+  behaviours, or the proof's own setup. The first run caught nine of ten:
+  a set-user-ID file in a scratch place wasn't a privileged-file finding,
+  because `/tmp` is listed whole and the collector's privileged search
+  skips it. The check now covers listed scratch and web files.
+
+  The read-only proof passes again on all seven images after #30's review
+  fixes: the exemptions are stricter, and systemd's real login writes are
+  still recognised.
+
+  After the review of #31, the proof itself was made stricter:
+  - the deleted program runs from `/root`, so deletion must be noticed
+    (not the scratch place);
+  - the shell has only its input on the socket, so the shell must be
+    recognised;
+  - each planted process is checked to be really running.
+
+  The first stricter run missed the reverse shell. The fault was in the
+  proof, not detection: its listener check passed before the port was
+  bound, and a refused connection left bash running with no socket. That
+  was reproduced in a container and fixed. The final runs pass: all ten
+  behaviours on Ubuntu 24.04 and Rocky 9, and the read-only proof on all
+  seven images.
+
+  Spend for 1.9: about 13 server-hours, roughly 10 cents of the $10 cap.
 
 ## Explicitly gated on John
 

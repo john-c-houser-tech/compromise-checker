@@ -120,22 +120,7 @@ def _difference(path: str, item: dict) -> tuple[str, str, str] | None:
         else:
             consider("A package file differs from its package", "low", what)
     if "mode" in results:
-        now, expected = _mode(item.get("mode")), _mode(item.get("expected_mode"))
-        gained = (now or 0) & 0o6000 & ~(expected or 0)
-        detail = f"mode {item.get('expected_mode')} → {item.get('mode')}"
-        writable = (now or 0) & 0o022 & ~(expected or 0)
-        if gained:
-            consider("A package file gained set-user-ID or set-group-ID", "high", detail)
-        elif writable:
-            consider(
-                "A package file became writable by its group or everyone",
-                "high" if critical else "medium",
-                detail,
-            )
-        else:
-            # Read or execute bits only (an image shipping /boot/efi 755
-            # where the package says 700), or tightened: no write risk.
-            consider("A package file's mode changed", "low", detail)
+        consider(*_mode_change(path, item, critical))
     if "capabilities" in results:
         consider(
             "A package file's capabilities changed",
@@ -156,6 +141,46 @@ def _difference(path: str, item: dict) -> tuple[str, str, str] | None:
             f" {item.get('owner') or item.get('group')}",
         )
     return worst
+
+
+# Files whose contents are secret: reading them is the harm.
+SECRET_FILES = re.compile(r"^/etc/(?:g?shadow-?|sudoers(?:\.d/.*)?|ssh/ssh_host_.*_key)$")
+# Directories kept private (opening them exposes what is inside).
+PRIVATE_DIRS = re.compile(r"^/(?:root|home/[^/]+|etc/ssl/private|etc/sudoers\.d|var/lib/[^/]+)$")
+
+
+def _mode_change(path: str, item: dict, critical: bool) -> tuple[str, str, str]:
+    """How a package file's mode changed, rated by what it allows now."""
+    now, expected = _mode(item.get("mode")), _mode(item.get("expected_mode"))
+    detail = f"mode {item.get('expected_mode')} → {item.get('mode')}"
+    if now is None or expected is None:
+        return "A package file's mode changed (it couldn't be read)", "medium", detail
+    gained = now & ~expected
+    directory = (expected & 0o170000) == 0o040000
+    if (now ^ expected) & 0o170000:
+        return "A package file's type changed", "high" if critical else "medium", detail
+    if gained & 0o6000:
+        return "A package file gained set-user-ID or set-group-ID", "high", detail
+    if directory and expected & 0o1000 and not now & 0o1000:
+        return "A shared directory lost its sticky bit", "high", detail
+    if gained & 0o022:
+        return (
+            "A package file became writable by its group or everyone",
+            "high" if critical else "medium",
+            detail,
+        )
+    if gained & 0o044 and not directory:
+        secret = bool(SECRET_FILES.search(path))
+        return (
+            "A package file became readable by its group or everyone",
+            "high" if secret or critical else "medium",
+            detail,
+        )
+    if gained & 0o055 and directory and PRIVATE_DIRS.search(path):
+        return "A private directory was opened to others", "medium", detail
+    # Execute or read bits on an ordinary directory (an image shipping
+    # /boot/efi 755 where the package says 700), or permissions tightened.
+    return "A package file's mode changed", "low", detail
 
 
 @check("package.changed", "System files that differ from their package")
@@ -225,11 +250,26 @@ def package_changed(context: Context) -> list[Finding]:
 def privileged(context: Context) -> list[Finding]:
     findings = []
     owners = _owners_known(context)
-    diff = context.changes("privileged_files")
-    added = diff["added"] if diff else {}
-    changed = diff["changed"] if diff else {}
-    uncertain = context.uncertain("privileged_files")
-    for path, item in context.items("privileged_files").items():
+    # The scratch places and web roots are listed whole (unusual_file,
+    # web_file), so the privileged search skips them: a set-user-ID shell in
+    # /tmp is only there. Every listed file carrying privilege counts.
+    candidates: dict[str, tuple[str, dict]] = {}
+    for section in ("unusual_files", "web_files", "privileged_files"):
+        for path, item in context.items(section).items():
+            privileged = item.get("setuid") or item.get("setgid") or item.get("capabilities")
+            if section == "privileged_files" or privileged:
+                candidates[path] = (section, item)
+    # A file can sit in a different section at the baseline (a scratch
+    # place listed whole one time, cut short the next): it is new only if
+    # no section had it then.
+    added, removed, changed = set(), set(), {}
+    for section in ("unusual_files", "web_files", "privileged_files"):
+        diff = context.changes(section)
+        if diff:
+            added |= set(diff["added"])
+            removed |= set(diff["removed"])
+            changed[section] = diff["changed"]
+    for path, (section, item) in sorted(candidates.items()):
         if "error" in item or path.startswith(SYSTEMD_OWN):
             continue  # a walk error (a coverage gap), or systemd's own placeholders
         special = item.get("setuid") or item.get("setgid")
@@ -238,13 +278,14 @@ def privileged(context: Context) -> list[Finding]:
         device = item.get("type") in ("b", "c")
         outside = bool(item.get("place"))  # found outside the system directories
         unowned = not outside and owners and not item.get("package")
-        is_new = path in added
+        is_new = path in added and path not in removed
+        uncertain = context.uncertain(section)
         # More privilege on a file already listed: a capability added to
         # ping, a set-user-ID bit (dpkg doesn't record capabilities).
         gained = sorted(
             f
             for f in ("capabilities", "setuid", "setgid")
-            if f in changed.get(path, {}) and changed[path][f][1]
+            if changed.get(section, {}).get(path, {}).get(f, [None, None])[1]
         )
         what = ", ".join(
             w
@@ -279,12 +320,11 @@ def privileged(context: Context) -> list[Finding]:
                 + (f" (package {item['package']})" if item.get("package") else ""),
                 [f"path:{path}"],
                 [
-                    context.change_ref("privileged_files", path, "added" if is_new else "changed")
+                    context.change_ref(section, path, "added" if is_new else "changed")
                     if is_new or gained
-                    else {"item": ["privileged_files", path]}
+                    else {"item": [section, path]}
                 ],
-                new=(is_new or bool(gained))
-                and context.new_since_previous("privileged_files", path),
+                new=(is_new or bool(gained)) and context.new_since_previous(section, path),
                 uncertain=uncertain if is_new or gained else None,
             )
         )

@@ -660,7 +660,15 @@ def test_a_forked_process_inherits_its_parents_code():
     late = (T0 + timedelta(hours=1)).isoformat()
     live = {
         "processes": [
-            {**proc(1, "systemd", exe="/usr/lib/systemd/systemd"), "ppid": 0},
+            {
+                **proc(
+                    1,
+                    "systemd",
+                    exe="/usr/lib/systemd/systemd",
+                    suspicious_mappings=["/usr/lib/x86_64-linux-gnu/libaudit.so.1 (deleted)"],
+                ),
+                "ppid": 0,
+            },
             {
                 **proc(
                     1935,
@@ -673,8 +681,8 @@ def test_a_forked_process_inherits_its_parents_code():
             },
         ]
     }
-    [finding] = of(run([], snap(live, checksum_store=UPDATED)), "process.injected")
-    assert finding.band == "low" and finding.category == "hygiene"
+    found = of(run([], snap(live, checksum_store=UPDATED)), "process.injected")
+    assert [(f.band, f.category) for f in found] == [("low", "hygiene")] * 2
 
 
 def test_mode_changes_by_what_they_allow():
@@ -704,3 +712,87 @@ def test_mode_changes_by_what_they_allow():
         ("/usr/bin/sudo", "high"),
         ("/usr/share/x/data", "medium"),
     ]
+
+
+def test_a_process_that_ran_its_program_afresh_inherits_nothing():
+    # sshd re-executes itself per connection: the listener predates the
+    # update, but a child started after it can't hold a replaced library
+    # by inheritance unless the listener holds it too.
+    late = (T0 + timedelta(hours=1)).isoformat()
+    lib = "/usr/lib/x86_64-linux-gnu/libaudit.so.1 (deleted)"
+    live = {
+        "processes": [
+            {**proc(600, "sshd", exe="/usr/sbin/sshd"), "ppid": 1},
+            {
+                **proc(
+                    700, "sshd", exe="/usr/sbin/sshd", start_time=late, suspicious_mappings=[lib]
+                ),
+                "ppid": 600,
+            },
+        ]
+    }
+    [finding] = of(run([], snap(live, checksum_store=UPDATED)), "process.injected")
+    assert finding.band == "high"
+
+
+def test_mode_changes_that_open_things_up():
+    def mode(path, expected, now):
+        return {path: {"package": "p", "results": ["mode"], "expected_mode": expected, "mode": now}}
+
+    cases = {
+        **mode("/etc/shadow", "100000", "100644"),
+        **mode("/tmp", "41777", "40777"),
+        **mode("/root", "40550", "40555"),
+        **mode("/usr/lib/x/f", "100644", "10644"),  # a regular file became a FIFO
+        **mode("/usr/share/x/g", "100644", "?"),
+    }
+    found = of(run([], snap(package_changes=cases)), "package.changed")
+    assert sorted((f.summary.split(" ")[0], f.band) for f in found) == [
+        ("/etc/shadow", "high"),
+        ("/root", "medium"),
+        ("/tmp", "high"),
+        ("/usr/lib/x/f", "medium"),
+        ("/usr/share/x/g", "medium"),
+    ]
+
+
+def test_a_set_user_id_shell_in_a_scratch_place_is_a_privileged_file():
+    # /tmp is listed whole as unusual files, so the privileged search skips it.
+    items = {
+        "/tmp/.cc-sh": {"place": "/tmp", "type": "-", "kind": "elf", "setuid": True, "uid": 0},
+        "/tmp/plain": {"place": "/tmp", "type": "-", "kind": "elf"},
+    }
+    web = {
+        "/var/www/html/x.cgi": {"place": "/var/www", "type": "-", "capabilities": "cap_setuid=ep"}
+    }
+    found = of(run([], snap(OWNERS, unusual_files=items, web_files=web)), "files.privileged")
+    assert sorted((f.summary.split(":")[0], f.band) for f in found) == [
+        ("/tmp/.cc-sh", "high"),
+        ("/var/www/html/x.cgi", "high"),
+    ]
+    # And as new since the baseline, from its own section's changes.
+    before = snap(OWNERS, unusual_files={}, web_files={}, privileged_files={})
+    after = snap(OWNERS, unusual_files=items, web_files={}, privileged_files={})
+    [finding] = of(run([], after, baseline=before), "files.privileged")
+    assert finding.title == "A new privileged file since the baseline"
+    assert finding.evidence == [{"change": ["b0", "unusual_files", "/tmp/.cc-sh", "added"]}]
+
+
+def test_a_different_program_cannot_inherit_a_deleted_library():
+    # cron started after the update maps the old library: it can't have
+    # inherited it from PID 1 (it loaded its own) — someone swapped it back.
+    late = (T0 + timedelta(hours=1)).isoformat()
+    lib = "/usr/lib/systemd/libsystemd-shared.so (deleted)"
+    systemd = proc(1, "systemd", exe="/usr/lib/systemd/systemd", suspicious_mappings=[lib])
+    cron = proc(700, "cron", exe="/usr/sbin/cron", start_time=late, suspicious_mappings=[lib])
+    live = {"processes": [{**systemd, "ppid": 0}, {**cron, "ppid": 1}]}
+    found = of(run([], snap(live, checksum_store=UPDATED)), "process.injected")
+    assert {f.summary.split(" ")[0]: f.band for f in found} == {"systemd": "low", "cron": "high"}
+
+
+def test_a_privileged_file_moving_between_sections_is_not_new():
+    item = {"place": "/tmp", "type": "-", "kind": "elf", "setuid": True, "uid": 0}
+    before = snap(OWNERS, privileged_files={"/tmp/.x": item}, unusual_files={}, web_files={})
+    after = snap(OWNERS, privileged_files={}, unusual_files={"/tmp/.x": item}, web_files={})
+    [finding] = of(run([], after, baseline=before), "files.privileged")
+    assert finding.title == "A privileged file outside the system directories" and not finding.new

@@ -17,7 +17,7 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 3
+SNAPSHOT_VERSION = 4
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -469,8 +469,17 @@ class SnapshotBuilder:
 
     def _on_package_verify(self, name: str, data: dict[str, Any]) -> None:
         if name in ("package_file_changed", "conffile_changed") and data.get("path"):
-            item = dict(data, configuration=name == "conffile_changed")
-            self.section("package_changes").items[data["path"]] = _meta(item)
+            # rpm reports each difference apart (owner, then mode…): one item
+            # per file holding all of them, in `results`.
+            item = self.section("package_changes").items.setdefault(
+                data["path"], {"configuration": name == "conffile_changed", "results": []}
+            )
+            for key, value in _meta(data).items():
+                if key != "result":
+                    item.setdefault(key, value)
+            if data.get("result") not in item["results"]:
+                item["results"].append(data.get("result"))
+                item["results"].sort(key=str)
         elif name == "checksum_store" and data.get("path"):
             self.section("checksum_store").items[data["path"]] = _meta(data)
         elif name == "package_verify_summary":
@@ -495,7 +504,12 @@ class SnapshotBuilder:
             "privileged_file": "privileged_files",
         }
         if name in sections and data.get("path"):
-            self.section(sections[name]).items[data["path"]] = _meta(data)
+            item = _meta(data)
+            if name == "privileged_file":
+                # Found outside the system directories; a file right in /
+                # comes without a place.
+                item.setdefault("place", "/")
+            self.section(sections[name]).items[data["path"]] = item
 
     def _on_processes(self, name: str, data: dict[str, Any]) -> None:
         if name in ("process", "hidden_process") and isinstance(data.get("pid"), int):

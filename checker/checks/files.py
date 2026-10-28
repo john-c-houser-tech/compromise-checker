@@ -4,11 +4,12 @@ files."""
 
 from __future__ import annotations
 
+import posixpath
 import re
 
 from checker.checks import COMPROMISE, EXPOSURE, Context, Finding, check
 
-SCRATCH = ("/tmp", "/var/tmp", "/dev/shm")  # noqa: S108 - places on the target, as data
+SCRATCH = ("/tmp", "/var/tmp", "/dev/shm")
 DECEPTIVE = {
     "dots_or_spaces_only": ("a name of only dots or spaces", "high"),
     "leading_or_trailing_space": ("a name with a leading or trailing space", "high"),
@@ -21,6 +22,17 @@ SCRIPT = re.compile(
 )
 UPLOADS = re.compile(r"/(?:uploads?|files|media|images?|tmp|cache|wp-content/uploads)/", re.I)
 SECRET_FILES = {".env", ".htpasswd", ".git", ".svn", ".user.ini"}
+
+
+def _leaves(path: str, item: dict) -> bool:
+    """A link that leads out of its web root to somewhere a web server
+    shouldn't serve: not to a system program or library (a venv's python)."""
+    target = str(item.get("link_target"))
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
+    root = str(item.get("place") or "/").rstrip("/") + "/"
+    if resolved.startswith(root):
+        return False
+    return not resolved.startswith(("/usr/bin/", "/usr/lib", "/usr/local/bin/", "/bin/", "/lib"))
 
 
 def _executable(item: dict) -> bool:
@@ -92,6 +104,11 @@ def deceptive(context: Context) -> list[Finding]:
     for section in ("unusual_files", "web_files"):
         for path, item in context.items(section).items():
             flags = [f for f in item.get("name_flags") or [] if f in DECEPTIVE]
+            if "system_name" in flags and (
+                item.get("type") != "-" or "/bin/" in path or "/sbin/" in path
+            ):
+                # A venv's bin/python link, a build's bin/: where such names belong.
+                flags.remove("system_name")
             if not flags:
                 continue
             band = "high" if any(DECEPTIVE[f][1] == "high" for f in flags) else "medium"
@@ -113,6 +130,20 @@ def deceptive(context: Context) -> list[Finding]:
 def dev(context: Context) -> list[Finding]:
     findings = []
     for path, item in context.items("unusual_files").items():
+        if item.get("type") in ("b", "c") and item.get("place") != "/dev":
+            # mknod /dev/shm/.k c 1 1: a copy of /dev/mem anyone may read.
+            findings.append(
+                Finding(
+                    "files.dev",
+                    "A device node outside /dev",
+                    COMPROMISE,
+                    "high",
+                    f"{path} (type {item.get('type')}, owner UID {item.get('uid')})",
+                    [f"path:{path}"],
+                    [{"item": ["unusual_files", path]}],
+                )
+            )
+            continue
         if item.get("place") != "/dev":
             continue
         regular = item.get("type") == "-"
@@ -153,9 +184,7 @@ def web(context: Context) -> list[Finding]:
             reason, band = "A script in an upload directory", "high"
         elif script and double:
             reason, band = "A script hidden behind a second extension", "high"
-        elif item.get("link_target") and not str(item.get("link_target")).startswith(
-            str(item.get("place") or "/")
-        ):
+        elif item.get("link_target") and _leaves(path, item):
             reason, band = "A link out of the web root", "medium"
         elif name in SECRET_FILES:
             findings.append(

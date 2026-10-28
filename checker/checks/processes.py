@@ -5,12 +5,25 @@ code mapped from deleted or memory-only files."""
 
 from __future__ import annotations
 
+import ipaddress
+import re
 from collections import defaultdict
 from datetime import datetime
 
 from checker.checks import COMPROMISE, HYGIENE, Context, Finding, check
 
-SCRATCH = ("/tmp/", "/var/tmp/", "/dev/shm/")  # noqa: S108 - places on the target, as data
+# Places anyone can write: /dev/mqueue and /run/lock are world-writable too.
+SCRATCH = (
+    "/tmp/",
+    "/var/tmp/",
+    "/dev/shm/",
+    "/dev/mqueue/",
+    "/run/lock/",
+    "/var/lock/",
+    "/var/crash/",
+    "/run/user/",
+)
+SYSTEM = ("/usr/", "/bin/", "/sbin/", "/lib/", "/lib32/", "/lib64/", "/libx32/", "/opt/")
 HOMES = ("/home/", "/root/")
 SHELLS = {
     "sh",
@@ -42,20 +55,69 @@ BUSY = 0.5  # CPU seconds per second of life: half a core, sustained
 SETTLED = 600  # seconds alive before a CPU share means anything
 
 
-def _is_shell(comm: str) -> bool:
-    return comm in SHELLS or comm.startswith("python")
+def _is_shell(process: dict) -> bool:
+    """By its name, its program's name, or its argv[0]: a copied bash
+    called httpd still runs as bash."""
+    names = {
+        str(process.get("comm") or ""),
+        str(process.get("exe") or "").removesuffix(" (deleted)").rsplit("/", 1)[-1],
+        str(process.get("cmdline") or "").split(" ", 1)[0].rsplit("/", 1)[-1].lstrip("-"),
+    }
+    return any(n in SHELLS or n.startswith("python") for n in names)
+
+
+def _updated_since(context: Context, started: str | None) -> bool:
+    """Whether the package lists changed after a process started: a
+    program deleted under it was most likely replaced by that update."""
+    times = [
+        str(item.get("mtime"))
+        for item in context.items("checksum_store").values()
+        if item.get("mtime")
+    ]
+    try:
+        start = datetime.fromisoformat(str(started))
+        return any(datetime.fromisoformat(t) > start for t in times)
+    except ValueError:
+        return False
+
+
+# The collector as sudo runs it: python -I -B - (or -c with the bootstrap).
+COLLECTOR = re.compile(r"(?:^|/)python[\d.]*\s+-I\s+-B\s+-(?:c\b|\s|$)")
 
 
 def own_processes(context: Context) -> set[int]:
-    """The tool's own: its sshd process and everything it started (sudo,
-    the collector), from the PIDs its own SSH login was logged with."""
-    roots = {
+    """The tool's own processes: its sshd session process and everything
+    under it. Found from the running collector (root, its exact command
+    line), up its parents to the sshd session process — which must be one
+    whose login the logs show as the tool's own, and a child of the sshd
+    listener. A forged log line alone can't make anything the tool's own:
+    it would have to name a session that really runs the collector."""
+    logged = {
         e.fields.get("pid")
         for e in context.events
         if e.own_session and e.type == "ssh.login.accepted" and isinstance(e.fields.get("pid"), int)
     }
+    processes = {p.get("pid"): p for p in context.snapshot.live.get("processes", [])}
+    roots = set()
+    for process in processes.values():
+        uids = process.get("uids") or []
+        if not COLLECTOR.search(str(process.get("cmdline") or "")) or (uids[1:2] or [None])[0] != 0:
+            continue
+        seen, pid = set(), process.get("ppid")
+        while pid in processes and pid not in seen and pid != 1:
+            seen.add(pid)
+            current = processes[pid]
+            parent = processes.get(current.get("ppid"), {})
+            if (
+                pid in logged
+                and str(current.get("comm") or "").startswith("sshd")
+                and str(parent.get("comm") or "").startswith("sshd")
+            ):
+                roots.add(pid)
+                break
+            pid = current.get("ppid")
     children = defaultdict(list)
-    for process in context.snapshot.live.get("processes", []):
+    for process in processes.values():
         children[process.get("ppid")].append(process.get("pid"))
     own, stack = set(), list(roots)
     while stack:
@@ -137,7 +199,7 @@ def executable(context: Context) -> list[Finding]:
                         "process.executable", "A process whose program was deleted", "high", p, exe
                     )
                 )
-            elif path.startswith(("/usr/", "/bin/", "/sbin/", "/lib", "/opt/")):
+            elif path.startswith(SYSTEM) and _updated_since(context, p.get("start_time")):
                 # A package update replaced it under a running service.
                 findings.append(
                     _finding(
@@ -183,10 +245,16 @@ def reverse_shell(context: Context) -> list[Finding]:
     }
     findings = []
     for p in _processes(context):
-        comm = str(p.get("comm") or "")
-        if not _is_shell(comm):
+        streams = p.get("std_streams") or {}
+        stdin, stdout = (streams.get(fd) or {} for fd in ("0", "1"))
+        same = (
+            stdin.get("kind") == stdout.get("kind") == "socket"
+            and stdin.get("inode") == stdout.get("inode")
+            and str(stdin.get("inode")) in network
+        )
+        if not _is_shell(p) and not same:
             continue
-        for fd, stream in sorted((p.get("std_streams") or {}).items()):
+        for fd, stream in sorted(streams.items()):
             sock = network.get(str(stream.get("inode")))
             if stream.get("kind") != "socket" or sock is None:
                 continue
@@ -203,6 +271,13 @@ def reverse_shell(context: Context) -> list[Finding]:
             )
             break
     return findings
+
+
+def _global(address) -> bool:
+    try:
+        return ipaddress.ip_address(str(address)).is_global
+    except ValueError:
+        return False
 
 
 def _alive_seconds(process: dict, now: datetime | None) -> float | None:
@@ -222,7 +297,11 @@ def miner(context: Context) -> list[Finding]:
     ports_of = defaultdict(set)
     for s in context.snapshot.live.get("sockets", []):
         remote = s.get("remote") or []
-        if len(remote) == 2 and str(s.get("state") or "").lower() == "established":
+        if (
+            len(remote) == 2
+            and str(s.get("state") or "").lower() == "established"
+            and _global(remote[0])
+        ):
             for pid in s.get("pids") or []:
                 ports_of[pid].add(remote[1])
     findings = []
@@ -264,13 +343,16 @@ def injected(context: Context) -> list[Finding]:
         if not paths:
             continue
         bare = [x.removesuffix(" (deleted)") for x in paths]
+        replaced = _updated_since(context, p.get("start_time"))
         if any(x.startswith(SCRATCH + HOMES) for x in bare):
             title, band, category = (
                 "A process has code mapped from a scratch or home file",
                 "high",
                 COMPROMISE,
             )
-        elif any(not x.startswith(("/usr/", "/lib", "/opt/", "/memfd:")) for x in bare):
+        elif any(not x.startswith((*SYSTEM, "/memfd:")) for x in bare) or (
+            not replaced and any(x.startswith(SYSTEM) for x in bare)
+        ):
             title, band, category = (
                 "A process has code mapped from a deleted file",
                 "high",

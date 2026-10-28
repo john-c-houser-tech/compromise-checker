@@ -82,42 +82,97 @@ def _owners_known(context: Context) -> bool:
     return bool(summary.get("owners")) and summary.get("owners_complete") is not False
 
 
+def _mode(text) -> int | None:
+    try:
+        return int(str(text), 8)
+    except ValueError:
+        return None
+
+
+def _difference(path: str, item: dict) -> tuple[str, str, str] | None:
+    """(title, band, detail) for how a package file differs, the worst of
+    its results; None when it only couldn't be checked."""
+    results = set(item.get("results") or [item.get("result")])
+    critical = _critical(path)
+    program = critical or bool(PROGRAM_DIRS.search(path)) or ".so" in path.rsplit("/", 1)[-1]
+    worst = None
+
+    def consider(title, band, detail):
+        nonlocal worst
+        order = {"high": 0, "medium": 1, "low": 2, "info": 3}
+        if worst is None or order[band] < order[worst[1]]:
+            worst = (title, band, detail)
+
+    if results & {"changed", "missing"}:
+        what = "changed" if "changed" in results else "missing"
+        if critical:
+            consider("A critical system program or library differs from its package", "high", what)
+        elif program:
+            consider("A system program or library differs from its package", "medium", what)
+        else:
+            consider("A package file differs from its package", "low", what)
+    if "mode" in results:
+        now, expected = _mode(item.get("mode")), _mode(item.get("expected_mode"))
+        gained = (now or 0) & 0o6000 & ~(expected or 0)
+        detail = f"mode {item.get('expected_mode')} → {item.get('mode')}"
+        if gained:
+            consider("A package file gained set-user-ID or set-group-ID", "high", detail)
+        else:
+            consider("A package file's mode changed", "high" if critical else "medium", detail)
+    if "capabilities" in results:
+        consider(
+            "A package file's capabilities changed",
+            "high",
+            f"capabilities {item.get('expected_capabilities')} → {item.get('capabilities')}",
+        )
+    if "link" in results:
+        consider(
+            "A package's link points elsewhere",
+            "high" if program else "medium",
+            "its link target differs from the package's",
+        )
+    if results & {"owner", "group"}:
+        consider(
+            "A package file's owner or group changed",
+            "high" if critical else "medium",
+            f"owner {item.get('expected_owner') or item.get('expected_group')} →"
+            f" {item.get('owner') or item.get('group')}",
+        )
+    return worst
+
+
 @check("package.changed", "System files that differ from their package")
 def package_changed(context: Context) -> list[Finding]:
     findings = []
     uncertain = context.uncertain("package_changes")
     for path, item in context.items("package_changes").items():
-        result = item.get("result")
         package = item.get("package") or "?"
+        results = set(item.get("results") or [item.get("result")])
         if item.get("configuration"):
-            if result in ("changed", "missing"):
+            if results - {"unreadable", "refused"}:
                 findings.append(
                     Finding(
                         "package.changed",
                         "A package's configuration file was edited",
                         HYGIENE,
                         "info",
-                        f"{path} ({package}): {result}",
+                        f"{path} ({package}): {', '.join(sorted(results, key=str))}",
                         [f"path:{path}", f"package:{package}"],
                         [{"item": ["package_changes", path]}],
                     )
                 )
             continue
-        if result not in ("changed", "missing"):
+        found = _difference(path, item)
+        if found is None:
             continue  # unreadable or refused: coverage, not a finding
-        if _critical(path):
-            title, band = "A critical system program or library differs from its package", "high"
-        elif PROGRAM_DIRS.search(path) or ".so" in path.rsplit("/", 1)[-1]:
-            title, band = "A system program or library differs from its package", "medium"
-        else:
-            title, band = "A package file differs from its package", "low"
+        title, band, detail = found
         findings.append(
             Finding(
                 "package.changed",
                 title,
                 COMPROMISE,
                 band,
-                f"{path} ({package}): {result}"
+                f"{path} ({package}): {detail}"
                 + (f", {item['reason']}" if item.get("reason") else ""),
                 [f"path:{path}", f"package:{package}"],
                 [{"item": ["package_changes", path]}],
@@ -155,6 +210,7 @@ def privileged(context: Context) -> list[Finding]:
     owners = _owners_known(context)
     diff = context.changes("privileged_files")
     added = diff["added"] if diff else {}
+    changed = diff["changed"] if diff else {}
     uncertain = context.uncertain("privileged_files")
     for path, item in context.items("privileged_files").items():
         if "error" in item or path.startswith(SYSTEMD_OWN):
@@ -166,6 +222,13 @@ def privileged(context: Context) -> list[Finding]:
         outside = bool(item.get("place"))  # found outside the system directories
         unowned = not outside and owners and not item.get("package")
         is_new = path in added
+        # More privilege on a file already listed: a capability added to
+        # ping, a set-user-ID bit (dpkg doesn't record capabilities).
+        gained = sorted(
+            f
+            for f in ("capabilities", "setuid", "setgid")
+            if f in changed.get(path, {}) and changed[path][f][1]
+        )
         what = ", ".join(
             w
             for w in (
@@ -179,6 +242,8 @@ def privileged(context: Context) -> list[Finding]:
         )
         if is_new:
             title, band = "A new privileged file since the baseline", "high"
+        elif gained:
+            title, band = f"A file gained {' and '.join(gained)} since the baseline", "high"
         elif outside and (special or root_capability or device):
             title, band = "A privileged file outside the system directories", "high"
         elif unowned and (special or root_capability):
@@ -197,12 +262,13 @@ def privileged(context: Context) -> list[Finding]:
                 + (f" (package {item['package']})" if item.get("package") else ""),
                 [f"path:{path}"],
                 [
-                    context.change_ref("privileged_files", path, "added")
-                    if is_new
+                    context.change_ref("privileged_files", path, "added" if is_new else "changed")
+                    if is_new or gained
                     else {"item": ["privileged_files", path]}
                 ],
-                new=is_new and context.new_since_previous("privileged_files", path),
-                uncertain=uncertain if is_new else None,
+                new=(is_new or bool(gained))
+                and context.new_since_previous("privileged_files", path),
+                uncertain=uncertain if is_new or gained else None,
             )
         )
     return findings

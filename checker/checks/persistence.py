@@ -16,12 +16,26 @@ AT_SPOOLS = ("/var/spool/at/", "/var/spool/cron/atjobs/")
 HOMES = ("/home/", "/root/")
 
 
-def _band(path: str) -> str:
-    if path.startswith(("/etc/ld.so.preload", "/etc/ld.so.conf")):
+def _band(path: str, installing: bool) -> str:
+    """High for the loader's own configuration; low for a file packages
+    install when the package lists changed too (an update); else medium."""
+    if path in ("/etc/ld.so.preload", "/etc/ld.so.conf"):
         return "high"
-    if path.startswith(VENDOR):
+    if path.startswith(VENDOR) and installing:
         return "low"
     return "medium"
+
+
+def _installing(context: Context) -> bool:
+    """Whether packages were installed or updated since the baseline (their
+    checksum lists changed)."""
+    diff = context.changes("checksum_store") or {}
+    return any(diff.get(kind) for kind in ("added", "changed", "removed"))
+
+
+def _in_home(path: str, item: dict) -> bool:
+    # Collected from a home directory (wherever it is), or under /home, /root.
+    return bool(item.get("home")) or path.startswith(HOMES)
 
 
 def _is_file(item: dict) -> bool:
@@ -80,6 +94,7 @@ def ld_preload(context: Context) -> list[Finding]:
 )
 def changes(context: Context) -> list[Finding]:
     findings = []
+    installing = _installing(context)
     for section in SECTIONS:
         diff = context.changes(section)
         uncertain = context.uncertain(section)
@@ -91,7 +106,7 @@ def changes(context: Context) -> list[Finding]:
                     "persistence.changes",
                     f"A new {section} file",
                     COMPROMISE,
-                    _band(path),
+                    _band(path, installing),
                     path,
                     [f"path:{path}"],
                     [context.change_ref(section, path, "added")],
@@ -111,7 +126,7 @@ def changes(context: Context) -> list[Finding]:
                     "persistence.changes",
                     f"A {section} file changed",
                     COMPROMISE,
-                    _band(path),
+                    _band(path, installing),
                     f"{path}: {', '.join(what)}",
                     [f"path:{path}"],
                     [context.change_ref(section, path, "changed")],
@@ -148,7 +163,7 @@ def homes(context: Context) -> list[Finding]:
     can only name them; later analyses report any change."""
     findings = []
     for path, item in context.items("systemd").items():
-        if path.startswith(HOMES) and _is_file(item) and "/systemd/user" in path:
+        if _in_home(path, item) and _is_file(item) and "/systemd/user" in path:
             findings.append(
                 Finding(
                     "persistence.homes",
@@ -174,7 +189,7 @@ def homes(context: Context) -> list[Finding]:
                 )
             )
     for path, item in context.items("startup").items():
-        if path.startswith(HOMES) and _is_file(item) and "/.config/autostart/" in path:
+        if _in_home(path, item) and _is_file(item) and "/.config/autostart/" in path:
             findings.append(
                 Finding(
                     "persistence.homes",

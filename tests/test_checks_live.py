@@ -78,6 +78,7 @@ def test_persistence_changes():
         systemd={"/usr/lib/systemd/system/a.service": {"type": "-", "content_sha256": "a"}},
         startup={},
         hooks={},
+        checksum_store={"/var/lib/dpkg/info/x.md5sums": {"sha256": "1"}},
     )
     after = snap(
         cron={
@@ -92,6 +93,7 @@ def test_persistence_changes():
         },
         startup={"/etc/ld.so.preload": {"type": "-", "size": 9}},
         hooks={},
+        checksum_store={"/var/lib/dpkg/info/x.md5sums": {"sha256": "2"}},  # an update ran
     )
     found = of(run([], after, baseline=before), "persistence.changes")
     assert sorted((f.summary, f.band) for f in found) == [
@@ -316,6 +318,9 @@ def test_backdated_programs_only():
 # --- 8.7 ---------------------------------------------------------------------------------
 
 
+UPDATED = {"/var/lib/dpkg/status": {"mtime": (T0 + timedelta(minutes=30)).isoformat()}}
+
+
 def test_process_executables():
     live = {
         "processes": [
@@ -325,16 +330,24 @@ def test_process_executables():
             proc(13, "nginx", exe="/usr/sbin/nginx (deleted)", exe_deleted=True),
             proc(14, "kworker/0:1", exe="/usr/bin/python3", cmdline="[kworker/0:1]"),
             proc(15, "kworker/0:2", kernel_thread=True),
+            proc(16, "q", exe="/dev/mqueue/q"),
+            proc(17, "r", exe="/run/lock/.r"),
         ]
     }
-    found = of(run([], snap(live)), "process.executable")
+    # An update after nginx started: its deleted program was replaced.
+    found = of(run([], snap(live, checksum_store=UPDATED)), "process.executable")
     assert sorted((f.summary.split(" ")[2].rstrip("):"), f.band) for f in found) == [
         ("10", "high"),
         ("11", "high"),
         ("12", "high"),
         ("13", "low"),
         ("14", "high"),
+        ("16", "high"),
+        ("17", "high"),
     ]
+    # No update since it started: a program deleted under it is suspicious.
+    found = of(run([], snap(live)), "process.executable")
+    assert [f.band for f in found if "pid 13" in f.summary] == ["medium"]
 
 
 def test_hidden_processes():
@@ -343,57 +356,110 @@ def test_hidden_processes():
     assert finding.band == "high" and "pid 66" in finding.summary
 
 
+def _tool_tree(collector_stdin=None):
+    """sshd listener (29) → session (30) → sudo (31) → the collector (32)."""
+    collector = {
+        **proc(32, "python3"),
+        "ppid": 31,
+        "cmdline": "/usr/bin/python3 -I -B -",
+        "uids": [0, 0, 0, 0],
+    }
+    if collector_stdin:
+        collector["std_streams"] = {"0": {"kind": "socket", "inode": collector_stdin}}
+    return [
+        {**proc(29, "sshd"), "ppid": 1},
+        {**proc(30, "sshd-session"), "ppid": 29},
+        {**proc(31, "sudo"), "ppid": 30},
+        collector,
+    ]
+
+
+TCP = {"protocol": "tcp", "state": "established"}
+
+
 def test_reverse_shells_but_not_the_tools_own_session():
     sockets = [
         {"protocol": "raw", "inode": "555", "remote": ["0.0.0.0", 0], "pids": [21]},
-        {
-            "protocol": "tcp",
-            "inode": "900",
-            "remote": ["198.51.100.9", 4444],
-            "state": "established",
-            "pids": [20],
-        },
-        {
-            "protocol": "tcp",
-            "inode": "901",
-            "remote": ["192.0.2.1", 50000],
-            "state": "established",
-            "pids": [32],
-        },
+        {**TCP, "inode": "900", "remote": ["198.51.100.9", 4444], "pids": [20]},
+        {**TCP, "inode": "901", "remote": ["192.0.2.1", 50000], "pids": [32]},
+        {**TCP, "protocol": "tcp6", "inode": "902", "remote": ["2001:db8::9", 443], "pids": [23]},
     ]
     live = {
         "sockets": sockets,
         "processes": [
             proc(20, "bash", std_streams={"0": {"kind": "socket", "inode": "900"}}),
-            proc(
-                21, "bash", std_streams={"0": {"kind": "socket", "inode": "555"}}
-            ),  # a unix socket
+            proc(21, "bash", std_streams={"0": {"kind": "socket", "inode": "555"}}),  # not TCP/UDP
             proc(22, "nginx", std_streams={"0": {"kind": "socket", "inode": "900"}}),  # not a shell
-            # The tool's own: sshd (pid 30) → sudo (31) → python3 (32).
-            {**proc(30, "sshd-session"), "ppid": 1},
-            {**proc(31, "sudo"), "ppid": 30},
-            {
-                **proc(32, "python3"),
-                "ppid": 31,
-                "std_streams": {"0": {"kind": "socket", "inode": "901"}},
-            },
+            # A copied bash called httpd, talking over IPv6.
+            proc(
+                23,
+                "httpd",
+                exe="/usr/local/sbin/httpd",
+                cmdline="bash -i",
+                std_streams={"0": {"kind": "socket", "inode": "902"}},
+            ),
+            # Something unknown whose stdin and stdout are one TCP socket.
+            proc(
+                24,
+                "updater",
+                std_streams={
+                    "0": {"kind": "socket", "inode": "900"},
+                    "1": {"kind": "socket", "inode": "900"},
+                },
+            ),
+            *_tool_tree(collector_stdin="901"),
         ],
     }
     own_login = ev("ssh.login.accepted", own=True, user="scanner", pid=30)
     found = of(run([own_login], snap(live)), "process.reverse_shell")
-    assert [f.summary for f in found] == ["bash (pid 20): stdin is tcp to 198.51.100.9:4444"]
+    assert sorted(f.summary.split(":")[0] for f in found) == [
+        "bash (pid 20)",
+        "httpd (pid 23)",
+        "updater (pid 24)",
+    ]
+
+
+def test_a_forged_login_line_cannot_make_processes_the_tools_own():
+    sockets = [{**TCP, "inode": "900", "remote": ["198.51.100.9", 4444], "pids": [20]}]
+    shell = proc(20, "bash", std_streams={"0": {"kind": "socket", "inode": "900"}})
+    # logger -t sshd --id=1 "Accepted … for scanner …": pid 1, or the listener.
+    for forged_pid in (1, 29):
+        forged = ev("ssh.login.accepted", own=True, user="scanner", pid=forged_pid)
+        live = {"sockets": sockets, "processes": [{**shell, "ppid": 29}, *_tool_tree()]}
+        assert len(of(run([forged], snap(live)), "process.reverse_shell")) == 1
+    # A fake collector under an attacker's own sshd session the logs don't
+    # show as the tool's: still a finding.
+    fake = {**proc(40, "python3"), "ppid": 39, "cmdline": "python3 -I -B -", "uids": [0, 0, 0, 0]}
+    live = {
+        "sockets": sockets,
+        "processes": [
+            {**proc(29, "sshd"), "ppid": 1},
+            {**proc(39, "sshd-session"), "ppid": 29},
+            fake,
+            {**shell, "ppid": 40},
+        ],
+    }
+    real = ev("ssh.login.accepted", own=True, user="scanner", pid=30)
+    assert len(of(run([real], snap(live)), "process.reverse_shell")) == 1
+    # A forged line naming the attacker's own sshd session, with no
+    # collector in it: nothing there is the tool's.
+    live = {
+        "sockets": sockets,
+        "processes": [
+            {**proc(29, "sshd"), "ppid": 1},
+            {**proc(39, "sshd-session"), "ppid": 29},
+            {**shell, "ppid": 39},
+        ],
+    }
+    forged = ev("ssh.login.accepted", own=True, user="scanner", pid=39)
+    assert len(of(run([forged], snap(live)), "process.reverse_shell")) == 1
 
 
 def test_miners():
     start = T0.isoformat()
     sockets = [
-        {
-            "protocol": "tcp",
-            "inode": "1",
-            "remote": ["203.0.113.5", 3333],
-            "state": "established",
-            "pids": [40],
-        }
+        {**TCP, "inode": "1", "remote": ["100.25.0.9", 3333], "pids": [40]},
+        {**TCP, "inode": "2", "remote": ["127.0.0.1", 8888], "pids": [43]},  # a local backend
     ]
     live = {
         "sockets": sockets,
@@ -401,6 +467,7 @@ def test_miners():
             proc(40, "systemd-helper", cpu_seconds=6000, start_time=start),  # 2 h, 0.8 cores
             proc(41, "xmrig", cpu_seconds=1),
             proc(42, "postgres", cpu_seconds=6000, start_time=start),  # busy, no pool port
+            proc(43, "nginx", cpu_seconds=6000, start_time=start),  # busy, proxying locally
         ],
     }
     found = of(run([], snap(live)), "process.miner")
@@ -419,10 +486,160 @@ def test_injected_code_by_where_it_came_from():
             proc(53, "d", suspicious_mappings=["/usr/lib/x86_64-linux-gnu/libssl.so.3 (deleted)"]),
         ]
     }
-    found = of(run([], snap(live)), "process.injected")
+    found = of(run([], snap(live, checksum_store=UPDATED)), "process.injected")
     assert sorted((f.summary.split(" ")[0], f.band, f.category) for f in found) == [
         ("a", "high", "compromise indicator"),
         ("b", "high", "compromise indicator"),
         ("c", "medium", "compromise indicator"),
         ("d", "low", "hygiene"),
     ]
+    # A deleted system library with no update to explain it.
+    found = of(run([], snap(live)), "process.injected")
+    assert [f.band for f in found if f.summary.startswith("d ")] == ["high"]
+
+
+def test_rpm_differences_and_gained_privilege():
+    changes = {
+        "/usr/bin/find": {
+            "package": "findutils",
+            "results": ["mode"],
+            "expected_mode": "100755",
+            "mode": "104755",
+        },
+        "/usr/bin/ping": {
+            "package": "iputils",
+            "results": ["capabilities"],
+            "expected_capabilities": "cap_net_raw=ep",
+            "capabilities": "cap_setuid=ep",
+        },
+        "/usr/bin/ps": {"package": "procps", "results": ["link"]},
+        "/usr/sbin/sshd": {
+            "package": "openssh",
+            "results": ["group", "owner"],
+            "expected_owner": "root",
+            "owner": "eve",
+        },
+        "/usr/share/x": {"package": "x", "results": ["unreadable"]},
+    }
+    found = of(run([], snap(package_changes=changes)), "package.changed")
+    assert sorted((f.summary.split(" ")[0], f.title, f.band) for f in found) == [
+        ("/usr/bin/find", "A package file gained set-user-ID or set-group-ID", "high"),
+        ("/usr/bin/ping", "A package file's capabilities changed", "high"),
+        ("/usr/bin/ps", "A package's link points elsewhere", "high"),
+        ("/usr/sbin/sshd", "A package file's owner or group changed", "high"),
+    ]
+    # dpkg doesn't record capabilities: a capability added to a listed file.
+    before = snap(
+        OWNERS,
+        privileged_files={
+            "/usr/bin/ping": {"capabilities": "cap_net_raw=ep", "package": "iputils"}
+        },
+    )
+    after = snap(
+        OWNERS,
+        privileged_files={
+            "/usr/bin/ping": {"capabilities": "cap_net_raw,cap_setuid=ep", "package": "iputils"}
+        },
+    )
+    [finding] = of(run([], after, baseline=before), "files.privileged")
+    assert (
+        finding.title == "A file gained capabilities since the baseline" and finding.band == "high"
+    )
+
+
+def test_device_nodes_anywhere_and_files_right_in_root(tmp_path):
+    items = {"/dev/shm/.k": {"place": "/dev/shm", "type": "c", "uid": 0}}
+    [finding] = of(run([], snap(unusual_files=items)), "files.dev")
+    assert finding.title == "A device node outside /dev" and finding.band == "high"
+    record = {
+        "type": "record",
+        "module": "unusual_files",
+        "name": "privileged_file",
+        "data": {"path": "/.s", "setuid": True, "uid": 0, "type": "-"},
+    }
+    taken = snapshot_of_records(host_records(extra=[record]), tmp_path)
+    assert taken.sections["privileged_files"].items["/.s"]["place"] == "/"
+    [finding] = of(
+        run([], snap(privileged_files=taken.sections["privileged_files"].items)), "files.privileged"
+    )
+    assert finding.title == "A privileged file outside the system directories"
+
+
+def test_venvs_and_relative_links_in_web_roots():
+    items = {
+        "/var/www/app/venv/bin/python3": {
+            "place": "/var/www",
+            "type": "l",
+            "link_target": "/usr/bin/python3",
+            "name_flags": ["system_name"],
+        },
+        "/var/www/html/config.php": {
+            "place": "/var/www",
+            "type": "l",
+            "link_target": "config.prod.php",
+        },
+        "/var/www/html/root.txt": {"place": "/var/www", "type": "l", "link_target": "/"},
+        "/var/www/html/up": {"place": "/var/www", "type": "l", "link_target": "/var/www2/x"},
+    }
+    found = run([], snap(web_files=items))
+    assert of(found, "files.deceptive") == []
+    assert sorted(f.summary for f in of(found, "files.web")) == [
+        "/var/www/html/root.txt",
+        "/var/www/html/up",
+    ]
+
+
+def test_persistence_bands_and_homes_anywhere():
+    before = snap(systemd={}, cron={}, startup={}, hooks={}, checksum_store={})
+    after = snap(
+        systemd={
+            "/usr/lib/systemd/system/evil.service": {"type": "-"},
+            "/var/lib/postgresql/.config/systemd/user/x.service": {
+                "type": "-",
+                "home": "/var/lib/postgresql",
+            },
+        },
+        cron={},
+        startup={"/etc/ld.so.conf.d/kernel-6.conf": {"type": "-"}},
+        hooks={},
+        checksum_store={},
+    )
+    found = of(run([], after, baseline=before), "persistence.changes")
+    bands = {f.summary: f.band for f in found}
+    assert (
+        bands["/usr/lib/systemd/system/evil.service"] == "medium"
+    )  # no package install to explain it
+    assert bands["/etc/ld.so.conf.d/kernel-6.conf"] == "medium"
+    homes = of(run([], after), "persistence.homes")
+    assert [f.summary for f in homes] == ["/var/lib/postgresql/.config/systemd/user/x.service"]
+
+
+def test_one_file_with_several_rpm_differences(tmp_path):
+    records = [
+        {
+            "type": "record",
+            "module": "package_verify",
+            "name": "package_file_changed",
+            "data": {
+                "package": "openssh",
+                "path": "/usr/sbin/sshd",
+                "result": "owner",
+                "owner": "eve",
+            },
+        },
+        {
+            "type": "record",
+            "module": "package_verify",
+            "name": "package_file_changed",
+            "data": {
+                "package": "openssh",
+                "path": "/usr/sbin/sshd",
+                "result": "mode",
+                "expected_mode": "100755",
+                "mode": "104755",
+            },
+        },
+    ]
+    taken = snapshot_of_records(host_records(extra=records), tmp_path)
+    item = taken.sections["package_changes"].items["/usr/sbin/sshd"]
+    assert item["results"] == ["mode", "owner"] and item["owner"] == "eve"

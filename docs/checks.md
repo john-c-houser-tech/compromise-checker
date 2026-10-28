@@ -122,21 +122,24 @@ as root.
 | Check | What | Band | Baseline |
 |---|---|---|---|
 | `persistence.ld_preload` | a non-empty `/etc/ld.so.preload`; a process running with `LD_PRELOAD` or `LD_AUDIT` | high | no |
-| `persistence.changes` | new cron, systemd, start-up and hook files, and changes to what they run or who owns them (content, size, link, mode, owner — not times alone). Run-time systemd units only when they are services, timers, sockets or paths (every login makes a scope) | high for the loader's configuration; low for files packages install (`/usr/lib`, `/lib`, `/usr/share`: updates change them); else medium | yes |
+| `persistence.changes` | new cron, systemd, start-up and hook files, and changes to what they run or who owns them (content, size, link, mode, owner — not times alone). Run-time systemd units only when they are services, timers, sockets or paths (every login makes a scope) | high for `/etc/ld.so.preload` and `/etc/ld.so.conf`; low for files packages install (`/usr/lib`, `/lib`, `/usr/share`) when the package lists changed too (an update); else medium | yes |
 | `persistence.at_jobs` | queued `at` jobs | medium | no |
-| `persistence.homes` | users' own systemd units and autostart entries, by name (their contents are hashes only by default, policy §7; changes show in `persistence.changes`); lingering users, whose units start at boot (low) | info | no |
+| `persistence.homes` | users' own systemd units and autostart entries, by name, in any home directory (wherever it is) (their contents are hashes only by default, policy §7; changes show in `persistence.changes`); lingering users, whose units start at boot (low) | info | no |
 
 ### 8.5 System binary integrity
 
 | Check | What | Band | Baseline |
 |---|---|---|---|
-| `package.changed` | package files that differ from their package: programs intruders replace (`ps`, `ls`, `ss`, `sshd`, `sudo`, `su`, `login`, shells, `systemd`…), the loader, libc, libpam, PAM modules | high | no |
+| `package.changed` | package files whose content differs from their package: programs intruders replace (`ps`, `ls`, `ss`, `sshd`, `sudo`, `su`, `login`, shells, `systemd`…), the loader, libc, libpam, PAM modules | high | no |
 | | other programs and libraries | medium | no |
 | | other package files | low | no |
 | | edited configuration files (hygiene) | info | no |
+| | on RHEL, rpm's other differences: a set-user-ID or set-group-ID bit gained, capabilities changed, a link pointing elsewhere (high); another mode change, owner or group (high for critical programs, else medium) | | no |
 | | the package managers' checksum lists changed (expected after updates; a rewrite to hide a replaced file shows here too) | low | yes |
 | `files.privileged` | a set-user-ID, set-group-ID or capability file new since the baseline | high | yes |
 | | outside the system directories (or a device node there), or one no package installed with set-user-ID, set-group-ID or root-equivalent capabilities (`cap_setuid`, `cap_sys_admin`, `cap_dac_override`…) — only when package ownership was loaded completely | high | no |
+| | a file already listed that gained capabilities or set-user-ID or set-group-ID since the baseline (dpkg doesn't record capabilities) | high | yes |
+| | outside the system directories includes files right in `/` | | |
 | | a capability attribute that can't be read | medium | no |
 | `files.unowned` | executables in system directories no package installed (only when package ownership was loaded completely): new ones high (medium in `/usr/local`, `/opt`); others medium (info in `/usr/local`, `/opt`), on every analysis | | no |
 
@@ -149,27 +152,30 @@ errors are coverage gaps, not findings; systemd's own masking device nodes
 | Check | What | Band |
 |---|---|---|
 | `files.scratch` | programs (ELF) and scripts (`#!`) in `/tmp`, `/var/tmp` and `/dev/shm`, recognised by their first bytes — an execute bit alone isn't enough (unpacked files carry them) — and grouped by the directory directly under the scratch place | high for programs, medium for scripts |
-| `files.deceptive` | names of only dots or spaces, with leading or trailing spaces, posing as kernel threads or system programs (high), or with control characters (medium); a hidden name alone (`.X11-unix`) is not reported | |
-| `files.dev` | regular files under `/dev` (high); hidden or misplaced entries there (medium) | |
+| `files.deceptive` | names of only dots or spaces, with leading or trailing spaces, posing as kernel threads or system programs (high), or with control characters (medium); a hidden name alone (`.X11-unix`) is not reported, nor a system program's name on a link or in a `bin/` directory (a virtualenv's `python`) | |
+| `files.dev` | regular files under `/dev` (high); hidden or misplaced entries there (medium); a device node anywhere else (`mknod /dev/shm/.k c 1 1`, a copy of `/dev/mem`) (high) | |
 | `files.web` | a new script in a web root since the baseline; a program; a script in an upload directory; a script behind a second extension (`shell.php.jpg`) | high |
-| | a link out of the web root | medium |
+| | a link out of the web root (relative targets resolved), except to system programs and libraries | medium |
 | | `.env`, `.htpasswd`, `.git` and the like inside a web root (exposure) | medium |
 | `files.backdated` | programs and scripts changed long after their stated modification time (archives keep old times too, so weak alone; grouped by directory); impossible times | low |
 
 ### 8.7 Live process state
 
-The tool's own processes — its sshd process and everything it started —
-are left out, found from the process its own SSH login was logged with.
+The tool's own processes — its sshd session process and everything under
+it — are left out. They are found from the running collector itself (root,
+its exact command line), up its parents to the sshd session process, which
+must be one whose login the logs show as the tool's own and a child of the
+sshd listener. A forged log line alone can't make anything the tool's own.
 
 | Check | What | Band |
 |---|---|---|
 | `process.hidden` | a process that answers a direct `/proc/<pid>` lookup but isn't in the listing (what `ps` sees) | high |
-| `process.executable` | running from memory only, from a scratch directory, from a deleted file in a home; posing as a kernel thread (`[kworker/0:1]` with a real executable) | high |
+| `process.executable` | running from memory only, from a scratch directory (`/tmp`, `/var/tmp`, `/dev/shm`, `/dev/mqueue`, `/run/lock`, `/var/lock`, `/var/crash`, `/run/user`), from a deleted file in a home; posing as a kernel thread (`[kworker/0:1]` with a real executable) | high |
 | | from another deleted file | medium |
-| | a program a package update replaced under a running service (hygiene: restart it) | low |
-| `process.reverse_shell` | a shell or interpreter (sh, bash, python, perl, nc, socat…) whose standard input, output or error is a TCP or UDP socket | high |
-| `process.miner` | a known miner by name; or at least half a core on average over ten minutes or more, with a connection to a common mining-pool port | high |
-| `process.injected` | code mapped from a scratch or home file, or a deleted file outside the system directories (high); from memory only (medium: JITs do this too); replaced system libraries still in use (low hygiene) | |
+| | a deleted system program, when the package lists changed after the process started: an update replaced it under a running service (hygiene: restart it) | low |
+| `process.reverse_shell` | a shell or interpreter (sh, bash, python, perl, nc, socat…, by its name, its program's name or its argv[0], so a renamed copy still counts) whose standard input, output or error is a TCP or UDP socket; any process whose input and output are one TCP or UDP socket. Not seen: a shell joined to a socket through pipes (`mkfifo … \| sh \| nc`), where only `nc` holds the socket | high |
+| `process.miner` | a known miner by name; or at least half a core on average over ten minutes or more, with a connection to a common mining-pool port on a public address | high |
+| `process.injected` | code mapped from a scratch or home file, or a deleted file outside the system directories, or a deleted system library no update explains (high); from memory only (medium: JITs do this too); system libraries an update replaced, still in use (low hygiene) | |
 
 ## Coverage
 

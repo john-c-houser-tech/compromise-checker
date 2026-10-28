@@ -206,7 +206,31 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
   - the proof survives Linode API timeouts, and deletes any server they
     leave.
 
-  Spend so far: about 5.5 server-hours, roughly 4 cents of the $10 cap.
+  *Results (1.9b, 2026-10-27, PR #31):* the detection proof
+  (`tests/integration/detection_proof.py`) catches all ten behaviours on
+  Ubuntu 24.04 and Rocky Linux 9, each at its band. The behaviours, all at
+  high unless noted:
+  - a second UID 0 account;
+  - a new key for root;
+  - a cron job and a systemd timer (medium);
+  - `/etc/ld.so.preload`;
+  - a set-user-ID shell in `/tmp`;
+  - a process running from a deleted program;
+  - a shell on a TCP socket;
+  - sshd allowing root login;
+  - a `pam_exec` line.
+
+  Every other medium or high finding was a second check catching the same
+  behaviours, or the proof's own setup. The first run caught nine of ten:
+  a set-user-ID file in a scratch place wasn't a privileged-file finding,
+  because `/tmp` is listed whole and the collector's privileged search
+  skips it. The check now covers listed scratch and web files.
+
+  The read-only proof passes again on all seven images after #30's review
+  fixes: the exemptions are stricter, and systemd's real login writes are
+  still recognised.
+
+  Spend so far: about 8 server-hours, roughly 6 cents of the $10 cap.
 
 ## Explicitly gated on John
 

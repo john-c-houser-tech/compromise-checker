@@ -18,9 +18,9 @@ from pyrage import x25519
 from checker.analysis import load_events, parse_bundle, snapshot_of, store_parsed
 from checker.baseline import changes, usable_bundles
 from checker.checks import CHECKS_VERSION, Context, run_checks
-from checker.events import Event
+from checker.events import PARSER_VERSION, Event
 from checker.evidence import EvidenceError, Store, open_text, seal_text
-from checker.snapshot import FULL, Snapshot
+from checker.snapshot import FULL, SNAPSHOT_VERSION, Snapshot
 
 # Logs whose reach (how far back they go) the coverage reports.
 LOG_SOURCES = ("auth_log", "auth_journal", "system_journal", "login_records")
@@ -165,6 +165,11 @@ def analyze(
         "bundle_id": row["id"],
         "analysed_at": datetime.now(UTC).isoformat(),
         "checks_version": CHECKS_VERSION,
+        "versions": {
+            "checks": CHECKS_VERSION,
+            "parser": PARSER_VERSION,
+            "snapshot": SNAPSHOT_VERSION,
+        },
         "baseline_id": found.baseline_id,
         "baseline_set_now": found.baseline_set_now,
         "notes": notes,

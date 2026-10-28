@@ -345,7 +345,7 @@ def test_a_new_masking_version_is_noted(tmp_path):
 # --- Stored, and baselines ---------------------------------------------------------------------
 
 
-def add_bundle(home, name, minutes, records, status="complete", host="web01"):
+def add_bundle(home, name, minutes, records, status="complete", host="web01", summary=None):
     base, store, _, config = home
     keys = [x25519.Recipient.from_str(r) for r in config.recipients]
     plain = stream(records)
@@ -369,7 +369,7 @@ def add_bundle(home, name, minutes, records, status="complete", host="web01"):
             "ciphertext_bytes": len(cipher),
             "recipients": json.dumps(config.recipients),
             "session": None,
-            "summary": None,
+            "summary": summary,
             "problem": None,
         }
     )

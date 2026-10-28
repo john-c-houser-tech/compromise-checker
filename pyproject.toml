@@ -14,6 +14,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "asyncssh>=2.24.1",
+    "Jinja2>=3.1.6",
     "pydantic>=2.14.1",
     "pyrage>=1.4.0",
     "PyYAML>=6.0.3",
@@ -36,7 +37,7 @@ include = ["checker*"]
 [tool.setuptools.package-data]
 # The collector is shipped as a data file and streamed to targets as text;
 # the controller never imports it (DESIGN.md §5.1).
-checker = ["collector/collector.py"]
+checker = ["collector/collector.py", "templates/*.html.j2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

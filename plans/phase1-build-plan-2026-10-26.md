@@ -160,6 +160,11 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
 - Marked confidential (policy §8). Jinja2 templates, no external resources.
 - The report shows findings and bands only; it says plainly that a scored
   probability arrives in Phase 2.
+  *As built:* docs/report.md. Host text is escaped and its invisible
+  characters shown; the page loads nothing (CSP `default-src 'none'`).
+  The report file is owner-only but not encrypted. John's decision
+  (2026-10-27): keep it so for now, and revisit encrypting reports at rest
+  after the currently planned development phases are done.
 
 **1.9 — Distribution matrix and detection proof.**
 - The read-only proof extended to all seven distribution images.

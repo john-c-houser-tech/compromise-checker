@@ -94,7 +94,7 @@ with the evidence and share it only with people who need it.</p>
 {% if f.first_seen %}<div class="muted">Seen {{ f.first_seen[:19] }}{% if f.last_seen and f.last_seen != f.first_seen %} to {{ f.last_seen[:19] }}{% endif %} (controller clock, UTC)</div>{% endif %}
 {% if f.excerpts %}
 <table class="evidence">
-{% for e in f.excerpts %}<tr><td class="mono muted">{{ e.when[:19] }}</td><td class="muted">{{ e.where }}</td><td class="mono">{{ e.text }}</td></tr>{% endfor %}
+{% for e in f.excerpts %}<tr><td class="mono muted">{{ e.when }}</td><td class="muted">{{ e.where }}</td><td class="mono">{{ e.text }}</td></tr>{% endfor %}
 </table>
 {% endif %}
 </div>

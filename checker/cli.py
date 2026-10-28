@@ -487,7 +487,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             args.bundle,
             Path(args.output) if args.output else None,
         )
-    except EvidenceError as exc:
+    except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     finally:

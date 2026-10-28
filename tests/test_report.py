@@ -1,11 +1,13 @@
 """The HTML report (PR 1.8): confidential, self-contained, and safe with
 whatever text a host sent."""
 
+import json
 import re
 
 from test_snapshot import add_bundle, host_records, rec
 
 from checker import cli
+from checker.evidence import seal_text
 from checker.report import visible, write_report
 
 HOSTILE = "<script>alert(1)</script>evil\u202egnp.exe"
@@ -124,3 +126,76 @@ def test_an_existing_output_file_becomes_owner_only(home):
     target.chmod(0o644)
     write_report(store, ["web01"], identity, config.recipients, base / "reports", output=target)
     assert oct(target.stat().st_mode & 0o777) == "0o600"
+
+
+def test_visible_escapes_everything_that_hides_or_disguises():
+    hidden = "r\u0338o\ufe0fo\u3164t\u00a0x\u2800y\U000e0080z"
+    assert visible(hidden) == ("r\\u0338o\\ufe0fo\\u3164t\\u00a0x\\u2800y\\U000e0080z")
+    # A host can't fake an escape: its own backslash is doubled.
+    assert visible("evil\\u202egnp.exe") == "evil\\\\u202egnp.exe"
+    # Cut on whole escapes, the limit counting what is shown.
+    cut = visible("x" * 297 + "\u202e" * 5)
+    assert cut == "x" * 297 + "…" and len(visible("\u202e" * 100, 30)) <= 31
+
+
+def test_a_lone_surrogate_from_a_host_cannot_break_the_report(home):
+    base, store, identity, config = home
+    manifest = {"modules_planned": ["accounts", "a\ud800\u202e"], "masking_version": "\u202e6"}
+    summary = seal_text(json.dumps({"manifest": manifest}), config.recipients)
+    add_bundle(home, "b1", 0, host_records(), summary=summary)
+    target = base / "r.html"
+    target.write_text("previous report")
+    write_report(store, ["web01"], identity, config.recipients, base / "reports", output=target)
+    html = target.read_text()
+    assert "a\\ud800\\u202e" in html and "\\u202e6" in html and "\u202e" not in html
+
+
+def test_a_bundle_must_be_the_hosts_and_usable(home):
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    add_bundle(home, "d1", 0, host_records(), host="db01")
+    assert cli.main(["analyze", "db01"]) == 0
+    import pytest
+
+    from checker.evidence import EvidenceError
+
+    with pytest.raises(EvidenceError, match="from db01"):
+        write_report(store, ["web01"], identity, config.recipients, base / "reports", "d1")
+    assert [r["action"] for r in store.custody_of("d1")][-1] != "reported"
+
+
+def test_the_output_is_replaced_not_followed(home):
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    victim = base / "victim.txt"
+    victim.write_text("keep me")
+    victim.chmod(0o644)
+    link = base / "out.html"
+    link.symlink_to(victim)
+    write_report(store, ["web01"], identity, config.recipients, base / "reports", output=link)
+    assert victim.read_text() == "keep me" and oct(victim.stat().st_mode & 0o777) == "0o644"
+    assert not link.is_symlink() and oct(link.stat().st_mode & 0o777) == "0o600"
+    loose = base / "reports"
+    loose.mkdir(mode=0o755)
+    loose.chmod(0o755)
+    write_report(store, ["web01"], identity, config.recipients, loose)
+    assert oct(loose.stat().st_mode & 0o777) == "0o700"
+
+
+def test_an_assessment_from_an_older_parser_is_redone(home, monkeypatch):
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    assert cli.main(["analyze", "web01"]) == 0
+    import checker.report
+
+    versions = checker.report.current_versions()
+    monkeypatch.setattr(checker.report, "current_versions", lambda: dict(versions, parser=99))
+    before = len(store.assessments("b1"))
+    write_report(store, ["web01"], identity, config.recipients, base / "reports")
+    assert len(store.assessments("b1")) == before + 1
+
+
+def test_cli_report_into_a_missing_directory(home, capsys):
+    add_bundle(home, "b1", 0, host_records())
+    assert cli.main(["report", "web01", "--output", str(home[0] / "no" / "such" / "r.html")]) == 1
+    assert "checker:" in capsys.readouterr().err

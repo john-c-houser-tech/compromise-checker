@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -19,12 +20,13 @@ from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, PackageLoader, select_autoescape
+from markupsafe import Markup
 from pyrage import x25519
 
 from checker import __version__
 from checker.analysis import load_events, snapshot_of
 from checker.assess import analyze, events_of, load_assessment
-from checker.baseline import usable_bundles
+from checker.baseline import USABLE, usable_bundles
 from checker.checks import BANDS, CATEGORIES, CHECKS_VERSION
 from checker.evidence import EvidenceError, Store, open_text, who_and_where
 from checker.snapshot import Snapshot
@@ -34,19 +36,64 @@ MAX_TIMELINE = 300
 MAX_TEXT = 300
 
 
-def visible(value: Any, limit: int = MAX_TEXT) -> str:
-    """Host text made safe to show: control, format (bidirectional
-    overrides, zero-width) and other invisible characters become escapes
-    like \\u202e; long text is cut."""
+def current_versions() -> dict[str, int]:
+    """What an assessment's evidence references depend on."""
+    from checker.events import PARSER_VERSION
+    from checker.snapshot import SNAPSHOT_VERSION
+
+    return {"checks": CHECKS_VERSION, "parser": PARSER_VERSION, "snapshot": SNAPSHOT_VERSION}
+
+
+class Shown(str):
+    """Text already made visible: printed as it is (then HTML-escaped)."""
+
+
+# Characters that show as nothing, or change how what's around them looks:
+# controls, formats (bidirectional overrides, zero-width), private use,
+# surrogates, unassigned, combining and enclosing marks (an overlay can
+# strike a name through), separators and every space but the plain one.
+HIDDEN_CATEGORIES = {"Cc", "Cf", "Co", "Cs", "Cn", "Mn", "Me", "Zl", "Zp", "Zs"}
+# Letters that display as blanks (Hangul fillers, the braille blank).
+BLANK_LETTERS = {"\u115f", "\u1160", "\u3164", "\uffa0", "\u2800"}
+
+
+def _escape(char: str) -> str:
+    if char == "\\":
+        return "\\\\"  # so a host can't write a fake escape: \\u202e
+    if char != " " and (unicodedata.category(char) in HIDDEN_CATEGORIES or char in BLANK_LETTERS):
+        code = ord(char)
+        return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
+    return char
+
+
+def visible(value: Any, limit: int = MAX_TEXT) -> Shown:
+    """Host text made safe to show: every character that displays as
+    nothing or disguises what's around it becomes an escape like \\u202e (a
+    backslash itself is doubled, so an escape can't be faked); cut at
+    `limit` characters of output, never inside an escape."""
+    if isinstance(value, Shown):
+        return value
+    if value is None:
+        return Shown("")
     text = value if isinstance(value, str) else json.dumps(value, default=str, ensure_ascii=False)
-    out = []
-    for char in text[: limit + 1]:
-        if unicodedata.category(char) in ("Cc", "Cf", "Co", "Cs", "Zl", "Zp") and char != " ":
-            out.append(f"\\u{ord(char):04x}")
-        else:
-            out.append(char)
-    shown = "".join(out)
-    return shown if len(text) <= limit else shown[:limit] + "…"
+    out, length = [], 0
+    for char in text:
+        piece = _escape(char)
+        if length + len(piece) > limit:
+            out.append("…")
+            break
+        out.append(piece)
+        length += len(piece)
+    return Shown("".join(out))
+
+
+def _finalize(value: Any) -> Any:
+    """Jinja's last step for every printed value: the template's own markup
+    (macros) passes; everything else is made visible, whether or not the
+    template asked."""
+    if isinstance(value, Markup):
+        return value
+    return visible(value)
 
 
 def _brief(item: dict | None, limit: int = MAX_TEXT) -> str:
@@ -79,9 +126,13 @@ def _excerpts(
             event = events[ref["event"]]
             shown.append(
                 {
-                    "when": event.corrected or event.time or "",
+                    "when": event.corrected[:19]
+                    if event.corrected
+                    else (f"{event.time[:19]} (host clock)" if event.time else ""),
                     "where": visible(event.source, 80),
-                    "text": visible(event.line or f"{event.type} {_brief(event.fields)}"),
+                    "text": visible(event.line)
+                    if event.line
+                    else Shown(f"{event.type} {_brief(event.fields)}"),
                 }
             )
         elif "item" in ref:
@@ -89,7 +140,9 @@ def _excerpts(
             item = (
                 snapshot.sections.get(section).items if section in snapshot.sections else {}
             ).get(key)
-            shown.append({"when": "", "where": section, "text": f"{visible(key)}: {_brief(item)}"})
+            shown.append(
+                {"when": "", "where": section, "text": Shown(f"{visible(key)}: {_brief(item)}")}
+            )
         elif "change" in ref:
             against, section, key, how = ref["change"]
             now = snapshot.sections.get(section)
@@ -98,9 +151,9 @@ def _excerpts(
             then = before_snapshot.sections.get(section) if before_snapshot else None
             previous = (then.items if then else {}).get(key)
             if how == "added":
-                text = f"added: {visible(key)}: {_brief(current)}"
+                text = Shown(f"added: {visible(key)}: {_brief(current)}")
             elif how == "removed":
-                text = f"removed: {visible(key)}: {_brief(previous)}"
+                text = Shown(f"removed: {visible(key)}: {_brief(previous)}")
             else:
                 fields = sorted(set(current or {}) | set(previous or {}))
                 before, after = previous or {}, current or {}
@@ -109,7 +162,7 @@ def _excerpts(
                     for f in fields
                     if before.get(f) != after.get(f)
                 ]
-                text = f"changed: {visible(key)}: " + "; ".join(changes)
+                text = Shown(f"changed: {visible(key)}: " + "; ".join(changes))
             shown.append({"when": "", "where": f"{section}, since the baseline", "text": text})
         elif "live" in ref:
             _, pid = ref["live"]
@@ -137,8 +190,14 @@ def host_report(store: Store, host: str, identity, recipients, bundle_id=None) -
     if bundle_id is None and not rows:
         raise EvidenceError(f"no usable bundle for {host}")
     row = store.bundle(bundle_id) if bundle_id else rows[-1]
+    if row["host"] != host:
+        raise EvidenceError(f"bundle {row['id']} is from {row['host']}, not {host}")
+    if row["status"] not in USABLE:
+        raise EvidenceError(f"bundle {row['id']} is {row['status']}: nothing to report")
     assessment = load_assessment(store, row["id"], identity)
-    if assessment is None or assessment.get("checks_version") != CHECKS_VERSION:
+    # Its evidence points into one parse of the bundle (event numbers,
+    # snapshot keys): any newer parser or checks means analysing again.
+    if assessment is None or assessment.get("versions") != current_versions():
         assessment = analyze(store, host, identity, recipients, row["id"])
     parsed = load_events(store, row, identity)
     events = parsed.events if parsed else events_of(store, row, identity, recipients)
@@ -148,7 +207,12 @@ def host_report(store: Store, host: str, identity, recipients, bundle_id=None) -
         for ref in finding.get("evidence", []):
             against = (ref.get("change") or [None])[0]
             if against and against not in baselines:
-                baselines[against] = snapshot_of(store, store.bundle(against), identity, recipients)
+                try:
+                    baselines[against] = snapshot_of(
+                        store, store.bundle(against), identity, recipients
+                    )
+                except EvidenceError:
+                    baselines[against] = None  # gone: its excerpts show the current side only
     summary = json.loads(open_text(row["summary"], identity) or "{}")
     report = HostReport(
         host=host,
@@ -171,13 +235,26 @@ def host_report(store: Store, host: str, identity, recipients, bundle_id=None) -
                     {
                         "when": events[index].corrected,
                         "type": events[index].type,
-                        "text": visible(events[index].line or _brief(events[index].fields), 200),
+                        "text": visible(events[index].line, 200)
+                        if events[index].line
+                        else _brief(events[index].fields, 200),
                         "findings": [],
                     },
                 )
                 if finding["title"] not in entry["findings"]:
                     entry["findings"].append(finding["title"])
-    report.timeline = sorted(timeline.values(), key=lambda e: e["when"])[-MAX_TIMELINE:]
+    ordered = sorted(timeline.values(), key=lambda e: e["when"])
+    if len(ordered) > MAX_TIMELINE:
+        # The earliest events are often the first signs: keep both ends.
+        head, tail = ordered[: MAX_TIMELINE // 3], ordered[-(MAX_TIMELINE - MAX_TIMELINE // 3) :]
+        gap = {
+            "when": "",
+            "type": "",
+            "text": f"… {len(ordered) - len(head) - len(tail)} events not shown …",
+            "findings": [],
+        }
+        ordered = [*head, gap, *tail]
+    report.timeline = ordered
     return report
 
 
@@ -187,6 +264,7 @@ def render(reports: list[HostReport], generated_by: tuple[str, str]) -> str:
         autoescape=select_autoescape(["html", "j2"], default=True),
         trim_blocks=True,
         lstrip_blocks=True,
+        finalize=_finalize,
     )
     environment.filters["visible"] = visible
     template = environment.get_template("report.html.j2")
@@ -217,14 +295,26 @@ def write_report(
     html = render(reports, who_and_where())
     if output is None:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory.chmod(0o700)  # also when it was already there
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         name = hosts[0] if len(hosts) == 1 else f"{len(hosts)}-hosts"
         output = directory / f"report-{name}-{stamp}.html"
-    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as out:
-        out.write(html)
-    os.chmod(output, 0o600)
-    digest = hashlib.sha256(html.encode("utf-8")).hexdigest()
+    data = html.encode("utf-8", "backslashreplace")  # never fails on stray text
+    # Written whole beside its place (mkstemp makes it owner-only) and then
+    # moved there: a crash leaves the old file, a link at the path is
+    # replaced rather than followed, and no one holding the old file open
+    # can read the new.
+    fd, partial = tempfile.mkstemp(dir=output.parent, prefix=".report-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(partial, output)
+    except BaseException:
+        Path(partial).unlink(missing_ok=True)
+        raise
+    digest = hashlib.sha256(data).hexdigest()
     for report in reports:
         store.custody(report.row["id"], "reported", {"report_sha256": digest})
     return output

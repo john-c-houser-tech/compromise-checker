@@ -361,6 +361,15 @@ all seven images) and 2.4b (the checks, with their detection behaviours).
 Peers leave out connections accepted on the host's own listening ports
 (found while testing: an incoming SSH session looked like an outgoing
 connection to the client's port).
+After the 2.4a review, `nft` isn't run while nft_compat is loaded
+(iptables-nft rules: ufw, Docker), so those servers' live rules are a
+coverage gap. **Decided 2026-10-28 (John): the first step of 2.4b is an
+experiment** on Ubuntu 22.04, 24.04 and 26.04 with ufw enabled and Docker
+running (3 Nanodes, about 2 cents, approved): `nft list ruleset` and
+`iptables-nft-save`, several times each, with the kernel's module list
+compared around every run. If nothing ever loads, the collector reads
+those rules too and the proof keeps ufw and Docker on the Ubuntu images;
+if anything loads, the gap stays and the docs name it.
 
 ### 2.5 — Anti-forensics (8.10, ★ all)
 

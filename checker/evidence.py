@@ -470,24 +470,45 @@ CREATE TABLE IF NOT EXISTS assessments (
     ciphertext_sha256 TEXT NOT NULL,
     summary BLOB
 );
--- Append-only, enforced by the database itself (DESIGN.md §3.4).
-CREATE TRIGGER IF NOT EXISTS bundles_no_update BEFORE UPDATE ON bundles
-    BEGIN SELECT RAISE(ABORT, 'bundles are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS bundles_no_delete BEFORE DELETE ON bundles
-    BEGIN SELECT RAISE(ABORT, 'bundles are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS custody_no_update BEFORE UPDATE ON custody
-    BEGIN SELECT RAISE(ABORT, 'custody is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS custody_no_delete BEFORE DELETE ON custody
-    BEGIN SELECT RAISE(ABORT, 'custody is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS baselines_no_update BEFORE UPDATE ON baselines
-    BEGIN SELECT RAISE(ABORT, 'baselines are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS baselines_no_delete BEFORE DELETE ON baselines
-    BEGIN SELECT RAISE(ABORT, 'baselines are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS assessments_no_update BEFORE UPDATE ON assessments
-    BEGIN SELECT RAISE(ABORT, 'assessments are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS assessments_no_delete BEFORE DELETE ON assessments
-    BEGIN SELECT RAISE(ABORT, 'assessments are append-only'); END;
+-- Each purge (policy §8): what it removed, by identifiers and counts only,
+-- so a deleted bundle still shows it existed and why it is gone. Never
+-- purged itself.
+CREATE TABLE IF NOT EXISTS purges (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    controller TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    bundles TEXT NOT NULL,
+    counts TEXT NOT NULL,
+    baselines TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS purges_no_update BEFORE UPDATE ON purges
+    BEGIN SELECT RAISE(ABORT, 'purges are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS purges_no_delete BEFORE DELETE ON purges
+    BEGIN SELECT RAISE(ABORT, 'purges are append-only'); END;
 """
+
+
+# Append-only, enforced by the database itself (DESIGN.md §3.4). Only
+# `purge` lifts it, inside its own transaction (Store.purge).
+APPEND_ONLY = (
+    ("bundles", "bundles are"),
+    ("custody", "custody is"),
+    ("baselines", "baselines are"),
+    ("assessments", "assessments are"),
+)
+
+
+def _append_only_triggers() -> list[str]:
+    statements = []
+    for table, label in APPEND_ONLY:
+        for action in ("update", "delete"):
+            statements.append(
+                f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action} BEFORE {action.upper()}"
+                f" ON {table} BEGIN SELECT RAISE(ABORT, '{label} append-only'); END"
+            )
+    return statements
 
 
 BUNDLE_COLUMNS = (
@@ -529,7 +550,7 @@ class Store:
         self._db.execute("PRAGMA foreign_keys = ON")
         # So INSERT OR REPLACE's implicit delete fires the append-only triggers.
         self._db.execute("PRAGMA recursive_triggers = ON")
-        self._db.executescript(_SCHEMA)
+        self._db.executescript(_SCHEMA + "".join(f"{sql};\n" for sql in _append_only_triggers()))
 
     def close(self) -> None:
         self._db.close()
@@ -588,7 +609,7 @@ class Store:
         ).fetchone()
 
     def record_baseline(self, host: str, bundle_id: str, how: str, reason: bytes | None) -> None:
-        """A new baseline for `host` (how: first or accepted), with its
+        """A new baseline for `host` (how: first, accepted or after purge), with its
         custody entry, in one transaction."""
         operator, controller = who_and_where()
         with self._db:
@@ -633,6 +654,79 @@ class Store:
         return self._db.execute(
             "SELECT * FROM custody WHERE bundle_id = ? ORDER BY seq", (bundle_id,)
         ).fetchall()
+
+    def purge(
+        self, bundle_ids: list[str], scope: dict[str, Any], baselines: dict[str, str]
+    ) -> dict[str, int]:
+        """Delete these bundles and everything recorded about them, and add
+        a `purges` row saying what went (policy §8): the one sanctioned way
+        to delete. The append-only triggers are dropped and recreated inside
+        the same transaction, so a failure leaves them, and every row, in
+        place. `baselines` maps each host whose baseline goes to what
+        happens to it ("moved" or "emptied"). Returns the rows deleted per
+        table."""
+        if not bundle_ids:
+            raise ValueError("nothing to purge")
+        operator, controller = who_and_where()
+        marks = ", ".join("?" for _ in bundle_ids)
+        hosts = {}
+        counts: dict[str, int] = {}
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            for row in self._db.execute(
+                f"SELECT id, host FROM bundles WHERE id IN ({marks})",  # noqa: S608 - placeholders
+                bundle_ids,
+            ):
+                hosts[row["id"]] = row["host"]
+            if set(hosts) != set(bundle_ids):
+                missing = sorted(set(bundle_ids) - set(hosts))
+                raise EvidenceError(f"no bundle {missing[0]!r} to purge")
+            for table, _ in APPEND_ONLY:
+                for action in ("update", "delete"):
+                    self._db.execute(f"DROP TRIGGER {table}_no_{action}")
+            for table, column in (
+                ("assessments", "bundle_id"),
+                ("derived", "bundle_id"),
+                ("baselines", "bundle_id"),
+                ("custody", "bundle_id"),
+                ("bundles", "id"),
+            ):
+                counts[table] = self._db.execute(
+                    f"DELETE FROM {table} WHERE {column} IN ({marks})",  # noqa: S608 - fixed names
+                    bundle_ids,
+                ).rowcount
+            for sql in _append_only_triggers():
+                self._db.execute(sql)
+            self._db.execute(
+                "INSERT INTO purges (at, operator, controller, scope, bundles, counts, baselines)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    datetime.now(UTC).isoformat(),
+                    operator,
+                    controller,
+                    json.dumps(scope),
+                    json.dumps(sorted([b, hosts[b]] for b in bundle_ids)),
+                    json.dumps(counts),
+                    json.dumps(baselines),
+                ),
+            )
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+        return counts
+
+    def purges(self) -> list[sqlite3.Row]:
+        return self._db.execute("SELECT * FROM purges ORDER BY seq").fetchall()
+
+    def baseline_purged(self, host: str) -> bool:
+        """The host's baseline was purged and its bundles weren't all: its
+        next baseline is chosen again, and says why."""
+        for row in reversed(self.purges()):
+            what = json.loads(row["baselines"]).get(host)
+            if what is not None:
+                return what == "moved"
+        return False
 
 
 def bundle_id(host: str, started: datetime, run_id: str) -> str:

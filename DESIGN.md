@@ -170,6 +170,8 @@ sometimes secrets typed into shell commands.
 - **Retention.** The default is 90 days, configurable. A `purge` command
   deletes bundles, snapshots and reports for a host or a date range. A host
   removed from the inventory has its data purged after the retention period.
+  Automatic expiry keeps a host's current baseline until a newer one is
+  accepted, because later analyses compare with it (docs/retention.md).
 - **Reports are confidential documents** and are marked as such. They contain
   enough detail to help an attacker, so they should be handled like the
   evidence.
@@ -817,7 +819,7 @@ checker baseline accept web01 --reason "Planned upgrade to 24.04"
 checker whitelist test whitelist/groups/web.yaml
 checker packs pull && checker packs list
 checker advise web01                 # AI advisor on the latest assessment
-checker purge --host web01 --before 2026-07-01
+checker purge web01 --before 2026-07-01
 ```
 
 ---

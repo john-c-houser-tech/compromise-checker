@@ -86,5 +86,6 @@ Reports are confidential (policy §8): they describe weaknesses an attacker
 could use, and they repeat much of the evidence: file names, log lines,
 command lines (already masked). The report file itself is not encrypted, so
 keep the reports folder out of backups and synced folders, and delete
-reports you no longer need. Deleting them after the retention period is
-part of `purge`, still to come.
+reports you no longer need. `checker purge` deletes the reports in the
+reports folder that show a purged bundle; a report written elsewhere with
+`--output` is yours to delete ([retention](retention.md)).

@@ -30,6 +30,8 @@ from checker.evidence import (
     open_text,
 )
 from checker.inventory import Host, home, inventory_transaction, load_inventory
+from checker.purge import execute, expired_count, leftovers, parse_before
+from checker.purge import plan as purge_plan
 from checker.report import write_report
 from checker.transport import TransportError, fetch_host_key, trust_host_key
 
@@ -194,6 +196,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     succeeded = len(outcomes) == len(hosts) and all(
         outcome.status in ("complete", "partial") and outcome.error is None for outcome in outcomes
     )
+    _expired_notice(base)
     return 0 if succeeded else 1
 
 
@@ -459,6 +462,21 @@ def build_parser() -> argparse.ArgumentParser:
     accepting.add_argument("--bundle", help="this bundle rather than the host's latest")
     accepting.add_argument("--identity", help="the evidence private key file")
     accepting.set_defaults(handler=cmd_baseline_accept)
+    purging = commands.add_parser(
+        "purge", help="delete stored evidence for a host, before a date, or past retention"
+    )
+    purging.add_argument("host", nargs="?", help="only this host (alone: all of its evidence)")
+    purging.add_argument("--before", metavar="DATE", help="bundles collected before this date")
+    purging.add_argument(
+        "--expired",
+        action="store_true",
+        help="bundles past the retention period (each host's current baseline is kept)",
+    )
+    purging.add_argument(
+        "--dry-run", action="store_true", help="show what would go, delete nothing"
+    )
+    purging.add_argument("--yes", action="store_true", help="don't ask before deleting")
+    purging.set_defaults(handler=cmd_purge)
     return parser
 
 
@@ -530,6 +548,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         return 1
     finally:
         store.close()
+    _expired_notice(base)
     return status
 
 
@@ -675,7 +694,7 @@ def cmd_baseline_show(args: argparse.Namespace) -> int:
     for row in rows:
         reason = open_text(row["reason"], identity) if identity and row["reason"] else None
         who = f"{row['operator']}@{row['controller']}"
-        line = f"{row['at']}  {row['how']:8}  {row['bundle_id']}  by {who}"
+        line = f"{row['at']}  {row['how']:11}  {row['bundle_id']}  by {who}"
         print(line + (f"  — {reason}" if reason else ""))
     return 0
 
@@ -750,6 +769,104 @@ def cmd_events(args: argparse.Namespace) -> int:
         own = " [own session]" if event.own_session else ""
         print(f"{event.corrected or '-':32} {event.type:26} {detail}{own}")
     return 0
+
+
+def _expired_notice(base: Path) -> None:
+    """One line when stored evidence is past its retention period (policy
+    §8), so it isn't kept longer without anyone knowing. Never fails the
+    command it follows."""
+    try:
+        config = load_config(base)
+        store = Store(database_file(base))
+        try:
+            count = expired_count(
+                store, base, {h.name for h in load_inventory().hosts}, config.retention_days
+            )
+        finally:
+            store.close()
+    except Exception:  # noqa: BLE001 - a reminder must never break collect or analyze
+        return
+    if count:
+        print(
+            f"Note: {count} bundle(s) are older than the {config.retention_days}-day retention"
+            " period: `checker purge --expired` deletes them."
+        )
+
+
+def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> int:
+    """Delete stored evidence (policy §8), after showing what goes."""
+    base = home()
+    try:
+        config = load_config(base)
+        before = parse_before(args.before) if args.before else None
+        inventory = {h.name for h in load_inventory().hosts}
+    except (EvidenceError, ValueError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    store = Store(database_file(base))
+    try:
+        try:
+            chosen = purge_plan(
+                store, base, inventory, config.retention_days, args.host, before, args.expired
+            )
+        except ValueError as exc:
+            print(f"checker: {exc}", file=sys.stderr)
+            return 2
+        if args.host and not store.bundles(args.host):
+            print(f"checker: no stored bundles for {args.host}", file=sys.stderr)
+            return 2
+        for row in chosen.kept:
+            print(
+                f"Kept: {row['id']}, {row['host']}'s current baseline (older than the retention"
+                " period; it goes when a newer baseline is accepted)."
+            )
+        if chosen.outside:
+            print(
+                "checker: these bundles are stored outside this home's evidence folder, so"
+                " nothing was purged: " + ", ".join(chosen.outside),
+                file=sys.stderr,
+            )
+            return 1
+        left = leftovers(store, base)
+        if not chosen.bundles and not left:
+            print("Nothing to purge.")
+            return 0
+        if left:
+            print(f"{len(left)} file(s) an earlier purge couldn't delete will be deleted too.")
+        if chosen.bundles:
+            print(f"To purge: {len(chosen.bundles)} bundle(s), with their events, snapshots,")
+            print(
+                f"assessments and custody records; {len(chosen.files)} file(s) and"
+                f" {len(chosen.reports)} report(s)."
+            )
+        for row in chosen.bundles:
+            print(f"  {row['started_at']}  {row['host']:20} {row['id']}")
+        for host, what in sorted(chosen.baselines.items()):
+            if what == "moved":
+                print(
+                    f"Warning: {host}'s baseline goes too. Its next analysis takes its oldest"
+                    " remaining bundle as the baseline, and changes made before that bundle"
+                    " (accepted or not) will no longer show."
+                )
+        if args.dry_run:
+            print("Dry run: nothing deleted.")
+            return 0
+        if not args.yes and ask("Delete these permanently? Type 'purge' to go on: ") != "purge":
+            print("Nothing deleted.")
+            return 1
+        outcome = execute(store, base, chosen)
+    except (EvidenceError, OSError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print(f"Purged {outcome.counts['bundles']} bundle(s); {len(outcome.deleted)} file(s) deleted.")
+    for path, reason in outcome.failed:
+        print(
+            f"checker: couldn't delete {path} ({reason}); the next purge tries again",
+            file=sys.stderr,
+        )
+    return 1 if outcome.failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:

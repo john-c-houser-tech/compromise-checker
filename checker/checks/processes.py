@@ -66,25 +66,34 @@ def _is_shell(process: dict) -> bool:
     return any(n in SHELLS or n.startswith("python") for n in names)
 
 
-def _updated_since(context: Context, process: dict) -> bool:
-    """Whether the package lists changed after the process's code was
-    loaded: a program deleted under it was most likely replaced by that
-    update. A process forked without a new program ((sd-pam) from
-    systemd) runs code its ancestors loaded, so the earliest start among
-    its ancestors running the same program counts."""
+def _updated_since(context: Context, process: dict, mapping: str | None = None) -> bool:
+    """Whether the package lists changed after the process loaded the
+    deleted file (its program, or `mapping`): then an update replaced it
+    under the process. A process forked without a new program ((sd-pam)
+    from systemd) inherits what an ancestor loaded — but only an ancestor
+    that has the very same deleted file loaded proves it; one that runs
+    the same program may have started it afresh (sshd re-executes itself
+    for each connection), so then the process's own start counts."""
     times = [
         str(item.get("mtime"))
         for item in context.items("checksum_store").values()
         if item.get("mtime")
     ]
     processes = {p.get("pid"): p for p in context.snapshot.live.get("processes", [])}
+
+    def holds(candidate: dict) -> bool:
+        if mapping is not None:
+            return mapping in (candidate.get("suspicious_mappings") or [])
+        exe = str(candidate.get("exe") or "")
+        return bool(exe) and exe == str(process.get("exe") or "")
+
     starts, current, seen = [process.get("start_time")], process, set()
-    exe = str(process.get("exe") or "")
     while current.get("ppid") in processes and current.get("ppid") not in seen:
         seen.add(current.get("ppid"))
         current = processes[current.get("ppid")]
-        if str(current.get("exe") or "") == exe:
-            starts.append(current.get("start_time"))
+        if not holds(current):
+            break  # the chain of inheritance stops here
+        starts.append(current.get("start_time"))
     try:
         loaded = min(datetime.fromisoformat(str(t)) for t in starts if t)
         return any(datetime.fromisoformat(t) > loaded for t in times)
@@ -354,7 +363,11 @@ def injected(context: Context) -> list[Finding]:
         if not paths:
             continue
         bare = [x.removesuffix(" (deleted)") for x in paths]
-        replaced = _updated_since(context, p)
+        replaced = all(
+            _updated_since(context, p, mapping)
+            for mapping in paths
+            if mapping.removesuffix(" (deleted)").startswith(SYSTEM)
+        )
         if any(x.startswith(SCRATCH + HOMES) for x in bare):
             title, band, category = (
                 "A process has code mapped from a scratch or home file",

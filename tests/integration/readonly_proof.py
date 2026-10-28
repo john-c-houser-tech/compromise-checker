@@ -187,14 +187,26 @@ def sweep(api: Linode) -> None:
             api.delete(node["id"])
 
 
-def sweep_run(api: Linode, started: datetime) -> None:
+# Every server a run makes carries this run's token in its label, so the
+# end-of-run sweep deletes its own and never another run's.
+RUN = secrets.token_hex(3)
+
+
+def run_label(distro: str) -> str:
+    return f"{LABEL_PREFIX}{RUN}-{distro.replace('.', '')}-{secrets.token_hex(2)}"
+
+
+def sweep_run(api: Linode) -> None:
     """At the end of a run, delete any of its servers still there (one
-    whose creation answer was lost, a run cut short)."""
+    whose creation answer was lost, a run cut short). One failed delete
+    doesn't stop the others."""
     for node in api.tagged():
-        created = datetime.fromisoformat(node["created"]).replace(tzinfo=UTC)
-        if created >= started - timedelta(minutes=1):
+        if node["label"].startswith(f"{LABEL_PREFIX}{RUN}-"):
             print(f"sweep: deleting {node['label']}, left by this run")
-            api.delete(node["id"])
+            try:
+                api.delete(node["id"])
+            except Exception as exc:  # already gone, or the API is down: say so
+                print(f"sweep: could not delete {node['label']}: {exc}")
 
 
 # --- One distribution -------------------------------------------------------------------
@@ -317,7 +329,9 @@ def parse_audit(text: str, syscalls: dict[tuple[str, str], str] | None = None) -
     spaces or odd characters arrive hex-encoded instead of split. Each event
     has comm, exe, syscall (named via `syscalls`, keyed by arch and number)
     and its PATH records with their types, made absolute against the event's
-    working directory."""
+    working directory — which is only a guess for a relative name used
+    through a directory handle (mkdirat with a dirfd): each path also keeps
+    its raw name and its device, so a rule can tell."""
     records: dict[str, dict] = {}
     order: list[str] = []
     for line in text.splitlines():
@@ -340,19 +354,20 @@ def parse_audit(text: str, syscalls: dict[tuple[str, str], str] | None = None) -
         elif kind == "CWD":
             event["cwd"] = fields.get("cwd")
         elif kind == "PATH":
-            event["paths"].append((fields.get("name"), fields.get("nametype")))
+            event["paths"].append((fields.get("name"), fields.get("nametype"), fields.get("dev")))
     events = []
     for serial in order:
         event = records[serial]
         if event["syscall"] is None:
             raise ValueError(f"audit event {serial} has no SYSCALL record")
         paths = []
-        for name, kind in event["paths"]:
-            if name is None:
+        for raw, kind, dev in event["paths"]:
+            if raw is None:
                 continue
-            if not name.startswith("/") and kind != "UNKNOWN" and event["cwd"]:
-                name = event["cwd"].rstrip("/") + "/" + name
-            paths.append((name, kind))
+            name = raw
+            if not raw.startswith("/") and kind != "UNKNOWN" and event["cwd"]:
+                name = event["cwd"].rstrip("/") + "/" + raw
+            paths.append((name, kind, {"raw": raw, "dev": dev}))
         events.append(
             {
                 "syscall": event["syscall"],
@@ -372,6 +387,16 @@ class Verdict:
     sockets: list[str] = field(default_factory=list)  # informational
 
 
+def _in_memory(info: dict) -> bool:
+    """On an in-memory filesystem (tmpfs, proc, sysfs, cgroup: device
+    major 0), as the session's runtime areas are; not on a disk."""
+    return str(info.get("dev") or "").split(":")[0] in ("00", "0")
+
+
+def _in_memory_relative(info: dict) -> bool:
+    return not info["raw"].startswith("/") and _in_memory(info)
+
+
 def classify(events: list[dict]) -> Verdict:
     """Every event lands in exactly one place; nothing is silently dropped."""
     verdict = Verdict()
@@ -379,15 +404,16 @@ def classify(events: list[dict]) -> Verdict:
         who = f"{event['comm']} ({event['exe']}) {event['syscall']}"
         if event["comm"].startswith("python") or "python" in event["exe"]:
             # The collector itself must write nothing at all.
-            paths = [path for path, _ in event["paths"]] or ["-"]
+            paths = [path for path, _, _ in event["paths"]] or ["-"]
             verdict.collector.extend(f"{who} {path}" for path in paths)
             continue
         targets = [
             path
-            for path, kind in event["paths"]
+            for path, kind, _ in event["paths"]
             if kind != "PARENT"  # only names the directory looked in
             and not (kind == "UNKNOWN" and event["syscall"].startswith("symlink"))  # link content
         ]
+        facts = {path: info for path, _, info in event["paths"]}
         if not targets:
             if event["syscall"] in _SOCKET_CALLS:
                 verdict.sockets.append(who)
@@ -398,7 +424,11 @@ def classify(events: list[dict]) -> Verdict:
             else:
                 verdict.unexpected.append(f"{who} (no path)")
             continue
-        if event["exe"].startswith(_USER_GENERATORS) and event["syscall"].startswith("symlink"):
+        if (
+            event["exe"].startswith(_USER_GENERATORS)
+            and event["syscall"].startswith("symlink")
+            and all(_in_memory_relative(facts[path]) for path in targets)
+        ):
             verdict.disclosed.extend(
                 f"{who} {path}  — session setup: a user-unit generator's output (memory)"
                 for path in targets
@@ -408,9 +438,13 @@ def classify(events: list[dict]) -> Verdict:
         for path in targets:
             # A ".." could climb out of a disclosed prefix (/run/user/1000/../../etc):
             # never match those against the list.
-            if placeholder and path in _PLACEHOLDER_NAMES:
+            if placeholder and path in _PLACEHOLDER_NAMES and _in_memory_relative(facts[path]):
                 reason = PLACEHOLDERS
             elif ".." in path.split("/"):
+                reason = None
+            elif not facts[path]["raw"].startswith("/") and not _in_memory(facts[path]):
+                # A relative name through an unknown directory handle, on a
+                # disk: where it really is can't be told, so it isn't excused.
                 reason = None
             else:
                 reason = next((why for pattern, why in DISCLOSED if pattern.search(path)), None)
@@ -445,16 +479,22 @@ async def _create_server(api: Linode, *args) -> dict:
     creating = asyncio.ensure_future(asyncio.to_thread(api.create, *args))
     try:
         return await asyncio.shield(creating)
-    except (TimeoutError, OSError):
-        # The answer was lost, not necessarily the request: if the server
-        # was made, it has this run's unique label.
+    except (TimeoutError, OSError, RuntimeError):
+        # The answer was lost (a timeout, a 502), not necessarily the
+        # request: if the server was made, it has this run's unique label.
         label = args[0]
-        for _ in range(12):
-            await asyncio.sleep(5)
+        try:
+            for _ in range(12):
+                await asyncio.sleep(5)
+                node = await asyncio.to_thread(api.find, label)
+                if node is not None:
+                    print(f"create failed to answer, but {label} exists (id {node['id']})")
+                    return node
+        except asyncio.CancelledError:
             node = await asyncio.to_thread(api.find, label)
             if node is not None:
-                print(f"create timed out, but {label} exists (id {node['id']}): using it")
-                return node
+                await asyncio.to_thread(api.delete, node["id"])
+            raise
         raise
     except asyncio.CancelledError:
         try:
@@ -473,7 +513,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
     scanner_key = asyncssh.generate_private_key("ssh-ed25519")
     scanner_key_file = work / f"{distro}-scanner"
     scanner_key.write_private_key(scanner_key_file)
-    label = f"{LABEL_PREFIX}{distro.replace('.', '')}-{secrets.token_hex(3)}"
+    label = run_label(distro)
     try:
         node = await _create_server(
             api, label, IMAGES[distro], region, root_key.export_public_key().decode().strip()
@@ -751,7 +791,6 @@ async def main() -> int:
 
     api = Linode(linode_token())
     await asyncio.to_thread(sweep, api)
-    started = datetime.now(UTC)
     try:
         with tempfile.TemporaryDirectory(prefix="cc-proof-") as work:
             results = await asyncio.gather(
@@ -759,7 +798,7 @@ async def main() -> int:
             )
     finally:
         if not args.keep:
-            await asyncio.to_thread(sweep_run, api, started)
+            await asyncio.to_thread(sweep_run, api)
     return 0 if report(list(results)) else 1
 
 

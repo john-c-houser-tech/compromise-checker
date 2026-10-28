@@ -34,7 +34,7 @@ rules:
   - id: monitoring-agent
     match:
       check: process.injected
-      program: datadog-agent
+      exe: /opt/datadog-agent/**
     reason: "The monitoring agent maps JIT code."
     owner: ops
     expires: never
@@ -59,12 +59,24 @@ disable:
     (docs/checks.md);
   - `account`, `group`, `key`, `module`, `package`, `program`: an exact
     entity of the finding;
-  - `address`: an address or network (`203.0.113.0/24`);
-  - `path`: an anchored pattern: `*` and `?` stay within one directory,
-    `**` crosses directories, and anything else is literal (`[` included).
-- `broad: true`: required when `match` names nothing but the check (and
-  variant): such a rule suppresses every finding of that check, and should
-  look like it does.
+  - `address`: an address or network with its host bits zero
+    (`203.0.113.0/24`; `203.0.113.10/24` is refused as a likely typo); an
+    IPv4-mapped IPv6 address matches its IPv4 network;
+  - `path`, `exe` (a process's executable): an anchored pattern. `*` and
+    `?` stay within one directory, `**` stands for any number of whole
+    directories (`/a/**/b`, not `/a/x**`; at most four), anything else is
+    literal (`[` included).
+- `broad: true`: required when `match` names nothing that narrows it: only
+  the check (and variant), a process's own name (`program`), every address
+  (`0.0.0.0/0`, `::/0`) or every path (`/**`). Such a rule suppresses every
+  finding of that check, and should look like it does.
+
+A rule matches a finding only if, for each kind it names, it covers
+**every** entity of that kind the finding lists: a rule for the account
+`deploy` doesn't hide "3 logins as admin, deploy", and a rule for one file
+doesn't hide a group of files that also holds an unknown one. A finding
+that lists only some of its entities (a group of more than 20 files) is
+matched only by a broad rule.
 
 ## What a rule can't be tricked into
 
@@ -72,20 +84,29 @@ Rules read typed fields the checks set, never text from the host, so a log
 line can't make a finding look like another. Path patterns are anchored and
 match only plain absolute paths: `/var/www/**` doesn't match
 `/var/www/../../etc/shadow`, `/var/www/./x`, `/var/www//x`, or a name with
-a newline or control character in it.
+a control, bidi or line-separator character in it. They are matched without
+backtracking, so a crafted file name can't stall the analysis. A process's
+name (`comm`) is whatever the process says it is (`prctl` sets it), so
+`program` never narrows a rule by itself; match the executable (`exe`)
+instead, which is the file it runs.
 
 ## Invalid files stop the analysis
 
-Unknown keys, an unknown check or variant, a missing reason, owner or
-expiry, a bad address, a relative path, a duplicate id, a `disable` naming
-no wider rule, an unknown profile: `checker analyze` and `checker report`
-refuse to run, naming the file and, where it can, the line. Analysing with
+Unknown keys, a key given twice, an unknown check or variant, a missing
+reason, owner or expiry, a bad address, a relative path, a duplicate id, a
+`disable` naming no wider rule, a rule a narrower layer or profile brings
+back after a wider one switched it off, an unknown profile, a file that
+exists but can't be read, isn't a regular file, is a link to nothing, or
+is named `.yml`: `checker analyze` and `checker report` refuse to run,
+naming the file and, where it can, the line. Analysing with
 a half-read whitelist would hide or show findings no one decided on.
 
 ## Commands
 
-- `checker whitelist check` validates every file; `checker whitelist check
-  HOST` also shows the host's merged rules, narrowest first, with where each
+- `checker whitelist check` validates every file and builds every set the
+  files make (each inventory host, each group, each host file of a host no
+  longer in the inventory), so it catches what `analyze` would refuse;
+  `checker whitelist check HOST` also shows the host's merged rules, narrowest first, with where each
   comes from, its expiry, and the rules switched off.
 - `checker analyze HOST` counts suppressed findings; `--suppressed` lists
   them with their rule and reason.
@@ -98,6 +119,7 @@ a half-read whitelist would hide or show findings no one decided on.
 
 Each assessment records the merged rules it used, the rules switched off,
 the expired ones, how many findings each rule matched, and the set's
-SHA-256. When the whitelist changes, the next report applies the new one to
-the stored findings and scores them again (the checks don't run again), as
-a new assessment; the earlier one is kept.
+SHA-256, and the day it judged expiry on. When the whitelist changes, or a
+rule has expired since, the next report applies the current one to the
+stored findings and scores them again (the checks don't run again), as a
+new assessment; the earlier one is kept.

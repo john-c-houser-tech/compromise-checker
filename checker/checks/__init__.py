@@ -16,7 +16,7 @@ from typing import Any
 from checker.events import Event
 from checker.snapshot import Snapshot
 
-CHECKS_VERSION = 3  # 2: the critical band, variants; 3: more variants
+CHECKS_VERSION = 4  # 2: critical band, variants; 3: more variants; 4: exe, entities_complete
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"
@@ -46,6 +46,10 @@ class Finding:
     # Which of a check's kinds of finding this is, where they differ in
     # weight (scoring's overrides, whitelists).
     variant: str | None = None
+    # False when `entities` lists only some of what the finding is about (a
+    # group of many files): a whitelist rule naming an entity can't vouch
+    # for the ones not listed, so it doesn't match.
+    entities_complete: bool = True
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

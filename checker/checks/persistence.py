@@ -80,7 +80,8 @@ def ld_preload(context: Context) -> list[Finding]:
                 "high",
                 f"{process.get('comm')} (pid {pid}): "
                 + ", ".join(f"{k}={v}" for k, v in sorted(risky.items())),
-                [f"program:{process.get('comm')}", f"pid:{pid}"],
+                [f"program:{process.get('comm')}", f"pid:{pid}"]
+                + ([f"exe:{process.get('exe')}"] if process.get("exe") else []),
                 [{"live": ["processes", pid]}],
             )
         )

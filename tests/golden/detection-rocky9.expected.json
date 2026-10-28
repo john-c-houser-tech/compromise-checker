@@ -180,6 +180,7 @@
    "entities": [
     "account:cc-toor"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -205,6 +206,7 @@
    "entities": [
     "path:/etc/ld.so.preload"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -231,6 +233,7 @@
     "account:cc-toor",
     "group:root"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "change": [
@@ -258,6 +261,7 @@
    "entities": [
     "path:/tmp/.cc-sh"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "change": [
@@ -285,6 +289,7 @@
    "entities": [
     "path:/tmp/.cc-sh"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -311,6 +316,7 @@
     "path:/etc/pam.d/sshd",
     "module:pam_exec.so"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "change": [
@@ -338,6 +344,7 @@
    "entities": [
     "path:/etc/ld.so.preload"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "change": [
@@ -364,8 +371,10 @@
    "contribution": 2.9957,
    "entities": [
     "program:cc-sleep",
-    "pid:13036"
+    "pid:13036",
+    "exe:/root/cc-sleep (deleted)"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "live": [
@@ -390,8 +399,10 @@
    "contribution": 0.6931,
    "entities": [
     "program:cc-sleep",
-    "pid:13036"
+    "pid:13036",
+    "exe:/root/cc-sleep (deleted)"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "live": [
@@ -416,8 +427,10 @@
    "contribution": 2.9957,
    "entities": [
     "program:bash",
-    "pid:13048"
+    "pid:13048",
+    "exe:/usr/bin/bash"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "live": [
@@ -444,6 +457,7 @@
     "account:operator",
     "key:SHA256:wKY8WcMl5VjDsQArsmFrDiqPu4gV7jYmXV4Uc+HhN+w"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "change": [
@@ -472,6 +486,7 @@
     "account:root",
     "key:SHA256:wKY8WcMl5VjDsQArsmFrDiqPu4gV7jYmXV4Uc+HhN+w"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "change": [
@@ -499,6 +514,7 @@
    "entities": [
     "path:/etc/ssh/sshd_config.d/00-cc-proof.conf"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "change": [
@@ -526,6 +542,7 @@
    "entities": [
     "account:cc-toor"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "change": [
@@ -553,6 +570,7 @@
    "entities": [
     "account:cc-toor"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "event": 81
@@ -575,6 +593,7 @@
    "entities": [
     "account:proofuser"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "event": 68
@@ -604,6 +623,7 @@
    "entities": [
     "account:scanner"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "event": 65
@@ -633,6 +653,7 @@
    "entities": [
     "path:/var/spool/at/a0000101c80a97"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -665,6 +686,7 @@
    "entities": [
     "path:/etc/cron.d/cc-proof"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "change": [
@@ -692,6 +714,7 @@
    "entities": [
     "path:/etc/systemd/system/cc-proof.service"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "change": [
@@ -719,6 +742,7 @@
    "entities": [
     "path:/etc/systemd/system/cc-proof.timer"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "change": [
@@ -747,6 +771,7 @@
     "account:root",
     "address:203.0.113.15"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "event": 59
@@ -775,8 +800,10 @@
    "contribution": 0.4055,
    "entities": [
     "program:firewalld",
-    "pid:635"
+    "pid:635",
+    "exe:/usr/bin/python3.9"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "live": [
@@ -802,6 +829,7 @@
    "entities": [
     "path:/home/proofuser/.config/systemd/user/proof.service"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -828,6 +856,7 @@
     "path:/etc/NetworkManager/NetworkManager.conf",
     "package:NetworkManager"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -854,6 +883,7 @@
     "path:/etc/nsswitch.conf",
     "package:glibc"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -880,6 +910,7 @@
     "path:/etc/pam.d/fingerprint-auth",
     "package:pam"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -906,6 +937,7 @@
     "path:/etc/pam.d/password-auth",
     "package:pam"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -932,6 +964,7 @@
     "path:/etc/pam.d/postlogin",
     "package:pam"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -958,6 +991,7 @@
     "path:/etc/pam.d/smartcard-auth",
     "package:pam"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -984,6 +1018,7 @@
     "path:/etc/pam.d/sshd",
     "package:openssh-server"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -1010,6 +1045,7 @@
     "path:/etc/pam.d/system-auth",
     "package:pam"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -1036,6 +1072,7 @@
     "path:/etc/shadow",
     "package:setup"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -1062,6 +1099,7 @@
     "path:/etc/ssh/sshd_config",
     "package:openssh-server"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -1270,9 +1308,10 @@
   "version": 1
  },
  "whitelist": {
+  "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "a2e632497bf39d52efe3cffee1a427cd4b1ef368d87c684530ef62841e672182",
+  "hash": "8e0ac984a17fb8465862f2ffc6d7e2b9d783c762d92cead84abfd718a81ac5b8",
   "matched": {
    "host rocky9/proof-at-job-redhat": 1,
    "host rocky9/proof-proofuser-account": 1,
@@ -1290,6 +1329,7 @@
      "account": null,
      "address": null,
      "check": "persistence.at_jobs",
+     "exe": null,
      "group": null,
      "key": null,
      "module": null,
@@ -1311,6 +1351,7 @@
      "account": null,
      "address": null,
      "check": "persistence.at_jobs",
+     "exe": null,
      "group": null,
      "key": null,
      "module": null,
@@ -1332,6 +1373,7 @@
      "account": "root",
      "address": null,
      "check": "ssh.login",
+     "exe": null,
      "group": null,
      "key": null,
      "module": null,
@@ -1353,6 +1395,7 @@
      "account": "proofuser",
      "address": null,
      "check": "account.log_changes",
+     "exe": null,
      "group": null,
      "key": null,
      "module": null,
@@ -1374,6 +1417,7 @@
      "account": "scanner",
      "address": null,
      "check": "account.log_changes",
+     "exe": null,
      "group": null,
      "key": null,
      "module": null,

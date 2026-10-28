@@ -219,7 +219,12 @@ def _inventory_for_priors():
 def cmd_whitelist_check(args: argparse.Namespace) -> int:
     """Every file valid; with a host, its merged set, widest layer last."""
     base = home()
-    errors = check_all(base)
+    try:
+        inventory = _inventory_for_priors()
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    errors = check_all(base, inventory)
     for error in errors:
         print(f"checker: {error}", file=sys.stderr)
     if errors:
@@ -228,12 +233,14 @@ def cmd_whitelist_check(args: argparse.Namespace) -> int:
         print("Every whitelist file is valid.")
         return 0
     try:
-        merged = _whitelist_for(base, args.host, _inventory_for_priors())
+        merged = _whitelist_for(base, args.host, inventory)
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
-    if not merged.rules:
+    if merged is None or not merged.rules:
         print(f"No whitelist rules apply to {args.host}.")
+    if merged is None:
+        return 0
     today = datetime.now(UTC).date()
     for placed in merged.rules:
         rule = placed.rule

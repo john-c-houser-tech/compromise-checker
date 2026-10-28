@@ -15,7 +15,7 @@ from checker.whitelist import (
     build,
     load,
     matches,
-    path_pattern,
+    path_matches,
     read_layer,
 )
 
@@ -185,8 +185,10 @@ def test_path_patterns_are_anchored_and_dont_cross_directories():
         "/var/www/x\n/etc/shadow",
     ):
         assert not matches(deep, finding("files.web", [f"path:{sneaky}"]))
-    assert path_pattern("/a/[b].txt").fullmatch("/a/[b].txt")  # brackets are literal
-    assert not path_pattern("/a/[b].txt").fullmatch("/a/b.txt")
+    assert path_matches("/a/[b].txt", "/a/[b].txt")  # brackets are literal
+    assert not path_matches("/a/[b].txt", "/a/b.txt")
+    assert path_matches("/a/**/z", "/a/z") and path_matches("/a/**/z", "/a/b/c/z")
+    assert path_matches("/a/x?.log", "/a/x1.log") and not path_matches("/a/x?.log", "/a/x/.log")
 
 
 def test_expired_rules_stop_applying_and_are_listed(tmp_path):
@@ -291,3 +293,189 @@ def test_cli_whitelist_check(home, capsys):
     write(base, "groups/web.yaml", "rules: nope\n")
     assert cli.main(["whitelist", "check"]) == 1
     assert "groups/web.yaml" in capsys.readouterr().err
+
+
+# --- from the review of 2.2a ---------------------------------------------------------------
+
+
+def test_a_rule_must_cover_every_entity_of_the_kinds_it_names():
+    rule_match = m(check="ssh.login", variant="new_address", account="deploy")
+    both = finding("ssh.login", ["address:203.0.113.9", "account:admin", "account:deploy"])
+    both["variant"] = "new_address"
+    assert not matches(rule_match, both)
+    only = finding("ssh.login", ["address:203.0.113.9", "account:deploy"], "new_address")
+    assert matches(rule_match, only)
+    files = m(check="files.scratch", path="/tmp/build/known-tool")
+    group = finding("files.scratch", ["path:/tmp/build/known-tool", "path:/tmp/build/evil"])
+    assert not matches(files, group)
+
+
+def test_a_finding_listing_only_some_of_its_entities_matches_no_named_rule():
+    partial = finding("files.scratch", ["path:/tmp/a"], entities_complete=False)
+    assert not matches(m(check="files.scratch", path="/tmp/**"), partial)
+    broad = (
+        Layer.model_validate(
+            {
+                "rules": [
+                    {
+                        "id": "x",
+                        "match": {"check": "files.scratch"},
+                        "broad": True,
+                        "reason": "r",
+                        "owner": "o",
+                        "expires": "never",
+                    }
+                ]
+            }
+        )
+        .rules[0]
+        .match
+    )
+    assert matches(broad, partial)
+
+
+def test_a_process_name_alone_narrows_nothing(tmp_path):
+    path = tmp_path / "w.yaml"
+    path.write_text(rule(match="{check: process.injected, program: datadog-agent}"))
+    with pytest.raises(WhitelistError, match="program name"):
+        read_layer(path)
+    path.write_text(
+        rule(match="{check: process.injected, program: datadog-agent, exe: /opt/datadog/**}")
+    )
+    rule_match = read_layer(path).rules[0].match
+    real = finding(
+        "process.injected",
+        ["program:datadog-agent", "pid:7", "exe:/opt/datadog/bin/agent"],
+    )
+    fake = finding("process.injected", ["program:datadog-agent", "pid:8", "exe:/tmp/x"])
+    assert matches(rule_match, real) and not matches(rule_match, fake)
+
+
+@pytest.mark.parametrize(
+    "match",
+    [
+        "{check: ssh.login, address: 0.0.0.0/0}",
+        "{check: ssh.login, address: '::/0'}",
+        "{check: files.web, path: /**}",
+        "{check: files.web, path: /**/**}",
+    ],
+)
+def test_everything_patterns_need_broad(tmp_path, match):
+    path = tmp_path / "w.yaml"
+    path.write_text(rule(match=match))
+    with pytest.raises(WhitelistError, match="broad: true"):
+        read_layer(path)
+
+
+@pytest.mark.parametrize(
+    ("match", "message"),
+    [
+        ("{check: ssh.login, address: 203.0.113.10/24}", "host bits"),
+        ("{check: files.web, path: /var/www/x**}", "whole directories"),
+        ("{check: files.web, path: '/a/**/**/**/**/**/b'}", "at most four"),
+    ],
+)
+def test_ambiguous_patterns_are_refused(tmp_path, match, message):
+    path = tmp_path / "w.yaml"
+    path.write_text(rule(match=match))
+    with pytest.raises(WhitelistError, match=message):
+        read_layer(path)
+
+
+def test_matching_a_crafted_name_takes_no_time():
+    import time
+
+    start = time.monotonic()
+    assert not path_matches("/srv/**/x/**/x/**/y", "/srv/" + "x/" * 2000 + "z")
+    assert not path_matches("/tmp/*-*-*-*-*.log", "/tmp/" + "-" * 255)
+    assert time.monotonic() - start < 1
+
+
+def test_hidden_characters_in_a_path_never_match():
+    for name in ("/var/www/a\u2028b", "/var/www/a\u202eb", "/var/www/a\x85b"):
+        assert not matches(
+            m(check="files.web", path="/var/www/*"), finding("files.web", [f"path:{name}"])
+        )
+
+
+def test_ipv4_mapped_addresses_match_their_network():
+    rule_match = m(check="ssh.login", address="203.0.113.0/24")
+    assert matches(rule_match, finding("ssh.login", ["address:::ffff:203.0.113.5"]))
+
+
+def test_a_key_given_twice_is_refused(tmp_path):
+    path = tmp_path / "w.yaml"
+    path.write_text(rule(match="{check: files.web, path: /var/www/app/x, path: /tmp/*}"))
+    with pytest.raises(WhitelistError, match="given twice"):
+        read_layer(path)
+
+
+def test_unreadable_odd_and_misnamed_files_are_errors(tmp_path):
+    hosts = tmp_path / "whitelist" / "hosts"
+    hosts.mkdir(parents=True)
+    (hosts / "web01.yml").write_text(rule())
+    with pytest.raises(WhitelistError, match="named .yaml"):
+        load(tmp_path, "web01", None)
+    (hosts / "web01.yml").unlink()
+    (hosts / "web01.yaml").symlink_to(tmp_path / "nowhere")
+    with pytest.raises(WhitelistError, match="link to nothing"):
+        load(tmp_path, "web01", None)
+    (hosts / "web01.yaml").unlink()
+    (hosts / "web01.yaml").mkdir()
+    with pytest.raises(WhitelistError, match="not a regular file"):
+        load(tmp_path, "web01", None)
+    (hosts / "web01.yaml").rmdir()
+    (hosts / "web01.yaml").write_text(rule(expires="2027-13-45"))
+    with pytest.raises(WhitelistError, match="not valid YAML|expires"):
+        load(tmp_path, "web01", None)
+
+
+def test_a_switched_off_rule_stays_off(tmp_path, monkeypatch):
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    (profiles / "base.yaml").write_text(rule(id="from-profile"))
+    monkeypatch.setattr("checker.whitelist.PROFILES", profiles)
+    write(tmp_path, "global.yaml", rule(id="everywhere"))
+    write(tmp_path, "groups/web.yaml", "disable:\n  - {id: everywhere, reason: x, owner: y}\n")
+    write(tmp_path, "hosts/web01.yaml", "profiles: [base]\n" + rule(id="everywhere").lstrip("\n"))
+    with pytest.raises(WhitelistError, match="switched off by group web"):
+        load(tmp_path, "web01", "web")
+    write(tmp_path, "hosts/web01.yaml", "profiles: [base]\n" + rule(id="from-profile").lstrip("\n"))
+    with pytest.raises(WhitelistError, match="already used"):
+        load(tmp_path, "web01", "web")
+
+
+def test_whitelist_check_builds_every_set(home, capsys):
+    base = home[0]
+    write(base, "global.yaml", rule(id="same"))
+    write(base, "hosts/web01.yaml", rule(id="same"))
+    assert cli.main(["whitelist", "check"]) == 1
+    assert "already used" in capsys.readouterr().err
+
+
+def test_no_whitelist_file_means_no_whitelist(tmp_path):
+    assert load(tmp_path, "web01", None) is None
+
+
+def test_the_report_stops_suppressing_once_a_rule_expires(home, monkeypatch):
+    import checker.whitelist as wl
+
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records(accounts=UID0))
+    write(base, "hosts/web01.yaml", rule(expires="2026-11-15"))
+    merged = load(base, "web01", None)
+    first = analyze(store, "web01", identity, config.recipients, whitelist=merged)
+    assert first["whitelist"]["suppressed"] == 1  # live when analysed
+
+    class Later(wl.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return wl.datetime(2026, 11, 20, tzinfo=tz)
+
+    monkeypatch.setattr(wl, "datetime", Later)
+    write_report(
+        store, ["web01"], identity, config.recipients, base / "reports", whitelists=lambda _: merged
+    )
+    latest = load_assessment(store, "b1", identity)
+    assert latest["whitelist"]["expired"] == ["host web01/r1"]
+    assert not any(f.get("suppressed_by") for f in latest["findings"])

@@ -175,6 +175,7 @@
    "entities": [
     "account:proofuser"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "event": 68
@@ -204,6 +205,7 @@
    "entities": [
     "account:scanner"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "event": 65
@@ -233,6 +235,7 @@
    "entities": [
     "path:/var/spool/at/a0000101c80a97"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -266,6 +269,7 @@
     "account:root",
     "address:203.0.113.13"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "event": 59
@@ -294,8 +298,10 @@
    "contribution": 0.4055,
    "entities": [
     "program:firewalld",
-    "pid:635"
+    "pid:635",
+    "exe:/usr/bin/python3.9"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "live": [
@@ -321,6 +327,7 @@
    "entities": [
     "path:/home/proofuser/.config/systemd/user/proof.service"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -347,6 +354,7 @@
     "path:/etc/NetworkManager/NetworkManager.conf",
     "package:NetworkManager"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -373,6 +381,7 @@
     "path:/etc/nsswitch.conf",
     "package:glibc"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -399,6 +408,7 @@
     "path:/etc/pam.d/fingerprint-auth",
     "package:pam"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -425,6 +435,7 @@
     "path:/etc/pam.d/password-auth",
     "package:pam"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -451,6 +462,7 @@
     "path:/etc/pam.d/postlogin",
     "package:pam"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -477,6 +489,7 @@
     "path:/etc/pam.d/smartcard-auth",
     "package:pam"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -503,6 +516,7 @@
     "path:/etc/pam.d/system-auth",
     "package:pam"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -529,6 +543,7 @@
     "path:/etc/shadow",
     "package:setup"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -555,6 +570,7 @@
     "path:/etc/ssh/sshd_config",
     "package:openssh-server"
    ],
+   "entities_complete": true,
    "evidence": [
     {
      "item": [
@@ -601,9 +617,10 @@
   "version": 1
  },
  "whitelist": {
+  "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "a2e632497bf39d52efe3cffee1a427cd4b1ef368d87c684530ef62841e672182",
+  "hash": "8e0ac984a17fb8465862f2ffc6d7e2b9d783c762d92cead84abfd718a81ac5b8",
   "matched": {
    "host rocky9/proof-at-job-redhat": 1,
    "host rocky9/proof-proofuser-account": 1,
@@ -621,6 +638,7 @@
      "account": null,
      "address": null,
      "check": "persistence.at_jobs",
+     "exe": null,
      "group": null,
      "key": null,
      "module": null,
@@ -642,6 +660,7 @@
      "account": null,
      "address": null,
      "check": "persistence.at_jobs",
+     "exe": null,
      "group": null,
      "key": null,
      "module": null,
@@ -663,6 +682,7 @@
      "account": "root",
      "address": null,
      "check": "ssh.login",
+     "exe": null,
      "group": null,
      "key": null,
      "module": null,
@@ -684,6 +704,7 @@
      "account": "proofuser",
      "address": null,
      "check": "account.log_changes",
+     "exe": null,
      "group": null,
      "key": null,
      "module": null,
@@ -705,6 +726,7 @@
      "account": "scanner",
      "address": null,
      "check": "account.log_changes",
+     "exe": null,
      "group": null,
      "key": null,
      "module": null,

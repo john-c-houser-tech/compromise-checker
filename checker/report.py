@@ -251,8 +251,11 @@ def host_report(
     # snapshot keys): any newer parser or checks means analysing again.
     if assessment is None or assessment.get("versions") != current_versions():
         assessment = analyze(store, host, identity, recipients, row["id"], prior, whitelist)
-    elif (assessment["score"]["prior"], assessment["score"]["prior_source"]) != prior or (
-        whitelist_hash(assessment) != (whitelist.digest() if whitelist else None)
+    elif (
+        (assessment["score"]["prior"], assessment["score"]["prior_source"]) != prior
+        or whitelist_hash(assessment) != (whitelist.digest() if whitelist else None)
+        # A rule that has expired since the assessment stops suppressing.
+        or (whitelist and whitelist.expired() != assessment["whitelist"].get("expired"))
     ):
         assessment = reassess(store, row, recipients, assessment, prior, whitelist)
     parsed = load_events(store, row, identity)

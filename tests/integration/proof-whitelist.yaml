@@ -3,6 +3,12 @@
 # here, so a fresh server's report shows only what the image itself brings.
 # Copied into each proof home as its host's whitelist, and into the golden
 # cases (tests/golden).
+#
+# Deliberately wide for a throwaway server: every direct root login and
+# every queued at job is suppressed. So a root-login or at-job behaviour
+# can't be proven with this set (the detection judge ignores suppressed
+# findings, so it would show as missed, never as a false pass); a proof of
+# one needs a narrower whitelist.
 rules:
   - id: proof-scanner-account
     match: {check: account.log_changes, account: scanner}

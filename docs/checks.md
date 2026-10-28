@@ -1,6 +1,6 @@
 # Checks
 
-`checker analyze HOST` (or `--all`) runs every check on a host's latest
+`checker analyze HOST` (or `--all`) runs every check (DESIGN.md §8.1–8.7) on a host's latest
 bundle (or `--bundle ID`) and lists the findings, most serious first, with
 what the collection couldn't see. Each analysis is stored as an encrypted
 **assessment**. Checks read the bundle's [events](events.md) and
@@ -22,8 +22,8 @@ Each finding has:
 - **entities**: what it involves (`account:eve`, `address:203.0.113.9`,
   `path:…`, `module:…`, `program:…`, `boot:…`).
 - **evidence**: the events (by their index in the stored events), snapshot
-  items (`[section, key]`) and changes (`[baseline, section, key, how]`)
-  that show it.
+  items (`[section, key]`), changes (`[baseline, section, key, how]`) and
+  processes (`{"live": ["processes", pid]}`) that show it.
 - **first_seen**, **last_seen**: from its events, on the corrected clock.
 - **new**: for a change, it changed since the previous bundle, not only
   since the baseline (a change stays a finding on every analysis until an
@@ -116,6 +116,60 @@ phases): the provisioner's account creation (cloud-init's `useradd` and
 `sudo` membership) while those log lines are within reach, though they are
 not `new` after the first analysis; direct root logins where admins log in
 as root.
+
+### 8.4 Persistence
+
+| Check | What | Band | Baseline |
+|---|---|---|---|
+| `persistence.ld_preload` | a non-empty `/etc/ld.so.preload`; a process running with `LD_PRELOAD` or `LD_AUDIT` | high | no |
+| `persistence.changes` | new cron, systemd, start-up and hook files, and changes to what they run or who owns them (content, size, link, mode, owner — not times alone). Run-time systemd units only when they are services, timers, sockets or paths (every login makes a scope) | high for the loader's configuration; low for files packages install (`/usr/lib`, `/lib`, `/usr/share`: updates change them); else medium | yes |
+| `persistence.at_jobs` | queued `at` jobs | medium | no |
+| `persistence.homes` | users' own systemd units and autostart entries, by name (their contents are hashes only by default, policy §7; changes show in `persistence.changes`); lingering users, whose units start at boot (low) | info | no |
+
+### 8.5 System binary integrity
+
+| Check | What | Band | Baseline |
+|---|---|---|---|
+| `package.changed` | package files that differ from their package: programs intruders replace (`ps`, `ls`, `ss`, `sshd`, `sudo`, `su`, `login`, shells, `systemd`…), the loader, libc, libpam, PAM modules | high | no |
+| | other programs and libraries | medium | no |
+| | other package files | low | no |
+| | edited configuration files (hygiene) | info | no |
+| | the package managers' checksum lists changed (expected after updates; a rewrite to hide a replaced file shows here too) | low | yes |
+| `files.privileged` | a set-user-ID, set-group-ID or capability file new since the baseline | high | yes |
+| | outside the system directories (or a device node there), or one no package installed with set-user-ID, set-group-ID or root-equivalent capabilities (`cap_setuid`, `cap_sys_admin`, `cap_dac_override`…) — only when package ownership was loaded completely | high | no |
+| | a capability attribute that can't be read | medium | no |
+| `files.unowned` | executables in system directories no package installed (only when package ownership was loaded completely): new ones high (medium in `/usr/local`, `/opt`); others medium (info in `/usr/local`, `/opt`), on every analysis | | no |
+
+A package's own set-user-ID programs are ordinary and not reported; walk
+errors are coverage gaps, not findings; systemd's own masking device nodes
+(`/run/systemd/inaccessible`) are left out.
+
+### 8.6 Files in unusual places
+
+| Check | What | Band |
+|---|---|---|
+| `files.scratch` | programs (ELF) and scripts (`#!`) in `/tmp`, `/var/tmp` and `/dev/shm`, recognised by their first bytes — an execute bit alone isn't enough (unpacked files carry them) — and grouped by the directory directly under the scratch place | high for programs, medium for scripts |
+| `files.deceptive` | names of only dots or spaces, with leading or trailing spaces, posing as kernel threads or system programs (high), or with control characters (medium); a hidden name alone (`.X11-unix`) is not reported | |
+| `files.dev` | regular files under `/dev` (high); hidden or misplaced entries there (medium) | |
+| `files.web` | a new script in a web root since the baseline; a program; a script in an upload directory; a script behind a second extension (`shell.php.jpg`) | high |
+| | a link out of the web root | medium |
+| | `.env`, `.htpasswd`, `.git` and the like inside a web root (exposure) | medium |
+| `files.backdated` | programs and scripts changed long after their stated modification time (archives keep old times too, so weak alone; grouped by directory); impossible times | low |
+
+### 8.7 Live process state
+
+The tool's own processes — its sshd process and everything it started —
+are left out, found from the process its own SSH login was logged with.
+
+| Check | What | Band |
+|---|---|---|
+| `process.hidden` | a process that answers a direct `/proc/<pid>` lookup but isn't in the listing (what `ps` sees) | high |
+| `process.executable` | running from memory only, from a scratch directory, from a deleted file in a home; posing as a kernel thread (`[kworker/0:1]` with a real executable) | high |
+| | from another deleted file | medium |
+| | a program a package update replaced under a running service (hygiene: restart it) | low |
+| `process.reverse_shell` | a shell or interpreter (sh, bash, python, perl, nc, socat…) whose standard input, output or error is a TCP or UDP socket | high |
+| `process.miner` | a known miner by name; or at least half a core on average over ten minutes or more, with a connection to a common mining-pool port | high |
+| `process.injected` | code mapped from a scratch or home file, or a deleted file outside the system directories (high); from memory only (medium: JITs do this too); replaced system libraries still in use (low hygiene) | |
 
 ## Coverage
 

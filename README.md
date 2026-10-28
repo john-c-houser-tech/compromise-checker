@@ -35,7 +35,8 @@ What works today:
   The host's first analysis is its baseline; `checker baseline accept HOST
   --reason …` moves it after a reviewed change ([how](docs/snapshots.md)).
 - `checker analyze HOST|--all` — runs the checks (kernel and system health,
-  reboots, accounts and authentication so far) and lists the findings by
+  reboots, accounts and authentication, persistence, system binary
+  integrity, files in unusual places, live processes) and lists the findings by
   category and band, with what the collection couldn't see; each analysis
   is stored encrypted ([checks](docs/checks.md)).
 

@@ -572,7 +572,8 @@ def test_reboots_in_a_window_become_informational_and_undo_cleanly(tmp_path):
     applied = merged.apply(findings, today=date(2026, 11, 2))
     assert applied["maintenance"] == 2
     assert inside["band"] == "info" and inside["maintenance"]["band"] == "low"
-    assert unclean["band"] == "info" and unclean["maintenance"]["window"] == "patch-night"
+    # Unclean: one step down, still visible (John, 2026-10-28).
+    assert unclean["band"] == "low" and unclean["maintenance"]["window"] == "patch-night"
     assert outside["band"] == "low" and "maintenance" not in outside
     assert "maintenance" not in operator
     merged.apply(findings, today=date(2026, 11, 2))  # again: the same, not doubled
@@ -703,6 +704,9 @@ def test_a_maintained_reboot_scores_as_information_whatever_the_override(monkeyp
     found = outage("unexplained", "x", "x", band="info")
     found["maintenance"] = {"window": "w", "band": "low"}
     assert scoring.ratio(found) == 1.0
+    stepped = outage("unclean", "x", "x", band="low")
+    stepped["maintenance"] = {"window": "w", "band": "medium"}
+    assert scoring.ratio(stepped) == scoring.BAND_RATIOS["low"]
 
 
 def test_daylight_saving_days_follow_the_wall_clock():

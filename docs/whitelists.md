@@ -80,10 +80,14 @@ matched only by a broad rule.
 
 ## Maintenance windows
 
-Planned work explains reboots. A window in any layer turns an *unclean* or
-*unexplained* reboot inside it into an informational finding, marked with
-the window and the band it would have had (package changes join with plan
-2.6):
+Planned work explains reboots. Inside a window in any layer, an
+*unexplained* reboot (a clean shutdown no command explains) becomes
+informational, and an *unclean* one (no shutdown recorded: a crash, a
+power loss, a forced reset) drops one band, from medium to low, but stays
+a finding. The tool knows when an unclean reboot came back, not when the
+host went down, and a forced reset timed for the patch night must stay
+visible. Each is marked with the window and the band it would have had
+(package changes join with plan 2.6):
 
 ```yaml
 maintenance:
@@ -104,7 +108,8 @@ maintenance:
 ```
 
 The whole outage must be inside one window: the shutdown (the first thing
-the finding records) and the boot. A host that went down on Saturday
+the finding records) and the boot (for an unclean reboot, only the boot is
+known). A host that went down on Saturday
 evening and came back during Sunday's window is not maintenance. An
 expired window still explains the reboots it covered before its expiry, so
 scores don't jump on the day it expires; it stops covering new ones.

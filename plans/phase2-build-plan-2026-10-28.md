@@ -223,6 +223,11 @@ different checks take a 2% prior to about 72%.
 - **Maintenance windows:** reboots classified *unexplained* or *unclean*,
   and package changes (2.6), inside a window become informational, with
   the window named.
+  **Decided 2026-10-28 (John, after the 2.2b review):** an *unclean*
+  reboot inside a window drops one band (medium to low), never to
+  informational: its crash time is unknown, and a forced reset timed for
+  the patch night must stay visible. Unexplained reboots become
+  informational.
 - **Commands:**
   - `checker whitelist check [HOST]` validates, and prints the merged set
     for a host with each rule's origin;

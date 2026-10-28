@@ -829,7 +829,7 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
         if applied.get("maintenance"):
             print(
                 f"           {applied['maintenance']} reboot(s) in maintenance windows,"
-                " now informational" + ("" if args.info else " (--info lists them)")
+                " lowered (unexplained to info, unclean one step)"
             )
     order = {band: i for i, band in enumerate(BANDS)}
     findings = sorted(findings, key=lambda f: order[f["band"]])  # a window moves a band

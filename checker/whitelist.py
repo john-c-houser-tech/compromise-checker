@@ -166,10 +166,15 @@ class Disable(BaseModel):
 
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _CLOCK = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
-# What a maintenance window turns into information: findings planned work
-# explains (reboots now; package changes with plan 2.6), by check and
-# variant.
-MAINTENANCE = {("system.reboot", "unclean"), ("system.reboot", "unexplained")}
+# What a maintenance window does to the findings planned work explains
+# (reboots now; package changes with plan 2.6), by check and variant:
+# "info" makes them informational; "step" lowers them one band, never
+# below low. An unclean reboot (no shutdown recorded: a crash, a power
+# loss, a forced reset) only steps down: the tool knows when the host came
+# back, not when it went down, and a forced reset timed for the patch night
+# must stay visible (decided with John, 2026-10-28).
+MAINTENANCE = {("system.reboot", "unexplained"): "info", ("system.reboot", "unclean"): "step"}
+_STEP = {"critical": "high", "high": "medium", "medium": "low", "low": "low", "info": "info"}
 
 
 class Window(BaseModel):
@@ -311,15 +316,16 @@ class Whitelist:
         return [f"{p.layer}/{p.rule.id}" for p in [*self.rules, *self.windows] if not p.live(today)]
 
     def _maintenance(self, findings: list[dict[str, Any]], today: date) -> int:
-        """Planned work: a finding a live window covers, of a kind planned
-        work explains, becomes informational, keeping its band to show."""
+        """Planned work: a finding a window covers, of a kind planned work
+        explains, is lowered (MAINTENANCE), keeping its band to show."""
         changed = 0
         for finding in findings:
             # Applied afresh each time: undo an earlier application first.
             earlier = finding.pop("maintenance", None)
             if earlier:
                 finding["band"] = earlier["band"]
-            if (finding.get("check"), finding.get("variant")) not in MAINTENANCE:
+            effect = MAINTENANCE.get((finding.get("check"), finding.get("variant")))
+            if effect is None:
                 continue
             # The whole outage inside one window: the shutdown (or, for an
             # unclean reboot, the last thing logged before it) and the boot.
@@ -342,13 +348,16 @@ class Whitelist:
             )
             if window is None:
                 continue
+            lowered = "info" if effect == "info" else _STEP[finding["band"]]
+            if lowered == finding["band"]:
+                continue
             finding["maintenance"] = {
                 "window": window.rule.id,
                 "layer": window.layer,
                 "reason": window.rule.reason,
                 "band": finding["band"],
             }
-            finding["band"] = "info"
+            finding["band"] = lowered
             changed += 1
         return changed
 

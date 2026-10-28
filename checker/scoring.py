@@ -53,8 +53,9 @@ COMPROMISE = "compromise indicator"
 
 def ratio(finding: dict[str, Any]) -> float:
     if finding.get("maintenance"):
-        # Planned work explains it, whatever its check's override says.
-        return BAND_RATIOS["info"]
+        # Planned work lowered its band: the band's ratio, whatever the
+        # check's override says.
+        return BAND_RATIOS[finding["band"]]
     for key in ((finding["check"], finding.get("variant")), (finding["check"], None)):
         if key in OVERRIDES:
             return OVERRIDES[key]

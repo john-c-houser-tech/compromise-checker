@@ -270,11 +270,16 @@ if ! command -v auditctl >/dev/null 2>&1; then
         || dnf install -y -q audit >/dev/null
 fi
 systemctl enable --now auditd >/dev/null 2>&1 || service auditd start >/dev/null
-# A firewall as servers often have one: ufw on Ubuntu (iptables-nft rules,
-# so nft_compat is loaded and the collector must not list them with nft);
-# firewalld is already on Rocky and Alma (native nftables, listed).
+# A firewall as servers often have one: on Ubuntu, ufw enabled and Docker
+# running a container (iptables-nft rules: nft_compat is loaded, and the
+# collector lists them; the module check guards that it loads nothing);
+# firewalld is already on Rocky and Alma (native nftables).
 if command -v ufw >/dev/null 2>&1; then
     ufw allow 22/tcp >/dev/null && ufw --force enable >/dev/null
+    (apt-get install -y -qq docker.io >/dev/null 2>&1 \
+        && systemctl enable --now docker >/dev/null 2>&1 \
+        && docker run -d --name cc-proof-web docker.io/library/nginx:alpine >/dev/null 2>&1) \
+        || echo "proof setup: Docker not started" >&2
 fi
 # The scanner account, exactly as docs/scanner-account.md sets it up.
 useradd --create-home --shell /bin/sh --comment "Compromise Checker" scanner

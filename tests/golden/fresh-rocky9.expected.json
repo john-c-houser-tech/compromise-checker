@@ -84,6 +84,43 @@
    "status": "ran"
   },
   {
+   "check": "net.config",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "net.directory",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.listener",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "net.metadata",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.peer",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "net.promiscuous",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.transfer",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.tunnel",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "package.changed",
    "findings": 9,
    "status": "ran"

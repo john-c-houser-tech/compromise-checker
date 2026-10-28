@@ -86,6 +86,46 @@
    "status": "ran"
   },
   {
+   "check": "net.config",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.directory",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.listener",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "net.metadata",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.peer",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.promiscuous",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.transfer",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.tunnel",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "package.changed",
    "findings": 5,
    "status": "ran"
@@ -766,6 +806,34 @@
   },
   {
    "band": "low",
+   "category": "compromise indicator",
+   "check": "net.listener",
+   "contribution": 0.4055,
+   "entities": [
+    "program:python3"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261028T203832Z-82857a9b",
+      "listeners",
+      "tcp 127.0.0.1:4444 netns=net:[4026531840]",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 1.5,
+   "summary": "tcp 127.0.0.1:4444 netns=net:[4026531840]: python3",
+   "title": "A new listening port",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
    "category": "hygiene",
    "check": "process.injected",
    "contribution": 0.0,
@@ -1074,7 +1142,7 @@
     "contribution": 4.6052,
     "finding": 0,
     "ratio": 100.0,
-    "share": 0.1265,
+    "share": 0.1251,
     "title": "An account other than root has UID 0"
    },
    {
@@ -1083,7 +1151,7 @@
     "contribution": 4.6052,
     "finding": 1,
     "ratio": 100.0,
-    "share": 0.1265,
+    "share": 0.1251,
     "title": "/etc/ld.so.preload loads a library into every program"
    },
    {
@@ -1092,7 +1160,7 @@
     "contribution": 2.9957,
     "finding": 2,
     "ratio": 20.0,
-    "share": 0.0823,
+    "share": 0.0814,
     "title": "A new account whose primary group is root-equivalent"
    },
    {
@@ -1101,7 +1169,7 @@
     "contribution": 2.9957,
     "finding": 3,
     "ratio": 20.0,
-    "share": 0.0823,
+    "share": 0.0814,
     "title": "A new privileged file since the baseline"
    },
    {
@@ -1110,7 +1178,7 @@
     "contribution": 2.9957,
     "finding": 5,
     "ratio": 20.0,
-    "share": 0.0823,
+    "share": 0.0814,
     "title": "A PAM line was added that runs a program (pam_exec)"
    },
    {
@@ -1119,7 +1187,7 @@
     "contribution": 2.9957,
     "finding": 7,
     "ratio": 20.0,
-    "share": 0.0823,
+    "share": 0.0814,
     "title": "A process whose program was deleted"
    },
    {
@@ -1128,7 +1196,7 @@
     "contribution": 2.9957,
     "finding": 9,
     "ratio": 20.0,
-    "share": 0.0823,
+    "share": 0.0814,
     "title": "A shell talking to a network socket (a reverse shell)"
    },
    {
@@ -1137,7 +1205,7 @@
     "contribution": 2.9957,
     "finding": 10,
     "ratio": 20.0,
-    "share": 0.0823,
+    "share": 0.0814,
     "title": "A new authorized SSH key"
    },
    {
@@ -1146,7 +1214,7 @@
     "contribution": 2.9957,
     "finding": 11,
     "ratio": 20.0,
-    "share": 0.0823,
+    "share": 0.0814,
     "title": "An sshd setting was added"
    },
    {
@@ -1155,7 +1223,7 @@
     "contribution": 1.3863,
     "finding": 13,
     "ratio": 4.0,
-    "share": 0.0381,
+    "share": 0.0376,
     "title": "An account or group was changed (from the logs)"
    },
    {
@@ -1164,7 +1232,7 @@
     "contribution": 1.3863,
     "finding": 17,
     "ratio": 4.0,
-    "share": 0.0381,
+    "share": 0.0376,
     "title": "A new cron file"
    },
    {
@@ -1173,7 +1241,7 @@
     "contribution": 0.6931,
     "finding": 4,
     "ratio": 20.0,
-    "share": 0.019,
+    "share": 0.0188,
     "title": "A program in a scratch directory"
    },
    {
@@ -1182,7 +1250,7 @@
     "contribution": 0.6931,
     "finding": 6,
     "ratio": 20.0,
-    "share": 0.019,
+    "share": 0.0188,
     "title": "A new startup file"
    },
    {
@@ -1191,7 +1259,7 @@
     "contribution": 0.6931,
     "finding": 8,
     "ratio": 20.0,
-    "share": 0.019,
+    "share": 0.0188,
     "title": "A process has code mapped from a scratch or home file"
    },
    {
@@ -1200,8 +1268,17 @@
     "contribution": 0.6931,
     "finding": 12,
     "ratio": 4.0,
-    "share": 0.019,
+    "share": 0.0188,
     "title": "A new account"
+   },
+   {
+    "capped": null,
+    "check": "net.listener",
+    "contribution": 0.4055,
+    "finding": 21,
+    "ratio": 1.5,
+    "share": 0.011,
+    "title": "A new listening port"
    },
    {
     "capped": "family",
@@ -1209,7 +1286,7 @@
     "contribution": 0.3466,
     "finding": 18,
     "ratio": 4.0,
-    "share": 0.0095,
+    "share": 0.0094,
     "title": "A new systemd file"
    },
    {
@@ -1218,7 +1295,7 @@
     "contribution": 0.3466,
     "finding": 19,
     "ratio": 4.0,
-    "share": 0.0095,
+    "share": 0.0094,
     "title": "A new systemd file"
    }
   ],
@@ -1231,7 +1308,7 @@
     }
    }
   },
-  "log_odds": 32.527,
+  "log_odds": 32.9324,
   "prior": 0.02,
   "prior_source": "golden",
   "probability": 1.0,

@@ -185,6 +185,23 @@ sshd listener. A forged log line alone can't make anything the tool's own.
 | `process.miner` | a known miner by name; or at least half a core on average over ten minutes or more, with a connection to a common mining-pool port on a public address | high |
 | `process.injected` | code mapped from a scratch or home file, or a deleted file outside the system directories, or a deleted system library no update explains (high); from memory only (medium: JITs do this too; low when it is libffi's, as firewalld's on RHEL); system libraries an update replaced, still in use (low hygiene) | |
 
+### 8.8 Network and data transfer
+
+Connections are a sample: only those open when the collector looked.
+Without firewall or proxy logs, transfer evidence is weak.
+
+| Check | What | Band | Baseline |
+|---|---|---|---|
+| `net.listener` | a new listening port | low | yes |
+| `net.peer` | a new outgoing destination for a program (`new_destination`) | low | yes |
+| | over a Tor port (9001, 9030, 9050, 9051, 9150) or from `tor` (`tor`) | medium | yes |
+| `net.metadata` | a program other than a known cloud agent connected to 169.254.169.254 | medium | no |
+| `net.directory` | ★ a process running as a web-server account (`www-data`, `apache`, `nginx`…) connected to SMB, LDAP, Kerberos or WinRM; judged by the account, not a host role, so a domain-joined server's own lookups don't count | high | no |
+| `net.tunnel` | an `ssh` client with `-L`, `-R` or `-D`; an sshd session process (not the listener) holding a listening socket: a remote forward into this host | medium | no |
+| `net.config` | `/etc/hosts`, resolver, NSS, TCP-wrapper or firewall configuration files added, removed or changed (`file`); loaded firewall rules added or removed, one finding per direction (`firewall`) | medium | yes |
+| `net.promiscuous` | an interface in promiscuous mode that isn't a bridge or bridge port (low when a known capture tool holds a packet socket) | medium | no |
+| `net.transfer` | weak signs, mostly material for chains: an archive of 50 MB or more in a scratch place (`archive`); `curl`, `wget`, `scp`, `rsync`, `rclone`, `nc`… connected to a public address (`tool`); an interface that sent over 1 GB and ten times what it received (`counters`) | low | no |
+
 ## Coverage
 
 Beside the findings, each assessment says what the collection couldn't see

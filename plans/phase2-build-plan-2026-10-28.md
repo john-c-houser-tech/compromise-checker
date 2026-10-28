@@ -371,6 +371,21 @@ compared around every run. If nothing ever loads, the collector reads
 those rules too and the proof keeps ufw and Docker on the Ubuntu images;
 if anything loads, the gap stays and the docs name it.
 
+*Experiment result (2026-10-28, 3 Nanodes, about 2 cents, all deleted):*
+CLEAN on Ubuntu 22.04, 24.04 and 26.04 with ufw enabled and Docker
+running a container (nft_compat loaded on each): 5 rounds each of `nft
+list ruleset`, `iptables-nft-save` and `ip6tables-nft-save`, 45 listings,
+and the kernel's module list never changed around one. So 2.4b lists
+those rules (`nft`), and the read-only proof runs ufw and Docker on the
+Ubuntu images. Script: `tests/integration/nft_compat_experiment.py`.
+
+*2.4b as built:* `checker/checks/network.py`: `net.listener`, `net.peer`,
+`net.metadata`, `net.directory` (judged by the process's account, not a
+host role, which waits for 2.10's profiles), `net.tunnel`, `net.config`,
+`net.promiscuous`, `net.transfer`; documentation ranges count as public
+there (they stand in for real addresses in tests and golden cases). The
+detection proof gains the four network behaviours.
+
 *2.4a proof (2026-10-28, read-only, all seven images, 7 Nanodes, about 5
 cents, all deleted):* PASS on every image: the collector wrote nothing and
 no firewall module was loaded or unloaded during any collection.

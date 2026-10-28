@@ -6153,10 +6153,11 @@ def _built_in(module_name):
 
 
 def firewall_state():
-    """Which firewalls are loaded. nftables counts only when its rules are
-    native: with nft_compat loaded, iptables-nft rules (ufw, Docker) are in
-    it, and printing them asks the kernel about xtables extensions it may
-    load on demand, so `nft` isn't run then."""
+    """Which firewalls are loaded. nft_compat (iptables-nft rules: ufw,
+    Docker) is reported: the 2.4b experiment listed such rules 45 times on
+    Ubuntu 22.04, 24.04 and 26.04 with ufw and Docker running, and no
+    module was ever loaded, so they are listed too, and the read-only proof
+    keeps checking it."""
     nf_tables = os.path.isdir(path("/sys/module/nf_tables")) or _built_in("nf_tables")
     return {
         "nf_tables": nf_tables,
@@ -6232,17 +6233,7 @@ def module_network(run):
         )
     loaded = firewall_state()
     run.stream.record(module, "firewall_loaded", loaded)
-    if loaded["nf_tables"] and loaded["nft_compat"]:
-        run.stream.record(
-            module,
-            "not_examined",
-            {
-                "path": "nft list ruleset",
-                "reason": "nft_compat is loaded (iptables-nft rules): listing them could make"
-                " the kernel load extension modules, so they are not listed",
-            },
-        )
-    elif loaded["nf_tables"]:
+    if loaded["nf_tables"]:
         _firewall_command(run, module, "nft", ["list", "ruleset"], nft_sets_reduced())
     if loaded["ip_tables"]:
         _firewall_command(run, module, "iptables-legacy-save", [])

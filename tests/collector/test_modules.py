@@ -4584,18 +4584,15 @@ class NetworkTests(FixtureRoot):
         self.assertTrue(joined.startswith(b"\t\telements = { [10002 elements, sha256 "))
         self.assertEqual(joined.count(b"\n"), 1)
 
-    def test_iptables_nft_rules_are_not_listed_with_nft(self):
-        # nft_compat loaded: printing xtables rules may load extension
-        # modules, so nft doesn't run and the gap says why.
+    def test_iptables_nft_rules_are_listed_too(self):
+        # nft_compat loaded (ufw, Docker): listed, as the 2.4b experiment
+        # showed it loads nothing; the proof keeps checking that.
         self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
         Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
         Path(self.root, "sys/module/nft_compat").mkdir(parents=True)
         records = collect(self.root, ["network"])
-        self.assertFalse([n for n in sources(records) if "nft" in n])
-        [gap] = [
-            r for r in named(records, "not_examined") if r["data"]["path"] == "nft list ruleset"
-        ]
-        self.assertIn("nft_compat", gap["data"]["reason"])
+        self.assertTrue([n for n in sources(records) if "nft" in n])
+        self.assertTrue(named(records, "firewall_loaded")[0]["data"]["nft_compat"])
 
     def test_built_in_nf_tables_counts_as_loaded(self):
         self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)

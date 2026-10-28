@@ -1,0 +1,1208 @@
+{
+ "checks": [
+  {
+   "check": "account.changes",
+   "findings": 2,
+   "status": "ran"
+  },
+  {
+   "check": "account.log_changes",
+   "findings": 3,
+   "status": "ran"
+  },
+  {
+   "check": "account.password",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "account.uid0",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "files.backdated",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.deceptive",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.dev",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.privileged",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "files.scratch",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "files.unowned",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "files.web",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "group.privileged",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.core_dump",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.errors",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.oom_kill",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.segfault",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.taint",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "package.changed",
+   "findings": 5,
+   "status": "ran"
+  },
+  {
+   "check": "pam.changes",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.at_jobs",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.changes",
+   "findings": 4,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.homes",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.ld_preload",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "process.executable",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "process.hidden",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.injected",
+   "findings": 5,
+   "status": "ran"
+  },
+  {
+   "check": "process.miner",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.reverse_shell",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.authorized_keys",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.guessed",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.login",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "sshd.config",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "sudo.rules",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "system.reboot",
+   "findings": 0,
+   "status": "ran"
+  }
+ ],
+ "findings": [
+  {
+   "band": "critical",
+   "category": "compromise indicator",
+   "check": "account.uid0",
+   "contribution": 4.6052,
+   "entities": [
+    "account:cc-toor"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "accounts",
+      "cc-toor"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 100.0,
+   "summary": "cc-toor has UID 0: it is root under another name",
+   "title": "An account other than root has UID 0",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "critical",
+   "category": "compromise indicator",
+   "check": "persistence.ld_preload",
+   "contribution": 4.6052,
+   "entities": [
+    "path:/etc/ld.so.preload"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "startup",
+      "/etc/ld.so.preload"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 100.0,
+   "summary": "/etc/ld.so.preload (32 bytes)",
+   "title": "/etc/ld.so.preload loads a library into every program",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "account.changes",
+   "contribution": 2.9957,
+   "entities": [
+    "account:cc-toor",
+    "group:root"
+   ],
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261028T203832Z-82857a9b",
+      "accounts",
+      "cc-toor",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 20.0,
+   "summary": "cc-toor: primary group root (GID 0)",
+   "title": "A new account whose primary group is root-equivalent",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "files.privileged",
+   "contribution": 2.9957,
+   "entities": [
+    "path:/tmp/.cc-sh"
+   ],
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261028T203832Z-82857a9b",
+      "unusual_files",
+      "/tmp/.cc-sh",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 20.0,
+   "summary": "/tmp/.cc-sh: set-user-ID, owner UID 0",
+   "title": "A new privileged file since the baseline",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "files.scratch",
+   "contribution": 0.6931,
+   "entities": [
+    "path:/tmp/.cc-sh"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "unusual_files",
+      "/tmp/.cc-sh"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 20.0,
+   "summary": "/tmp/.cc-sh (owner UID 0)",
+   "title": "A program in a scratch directory",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "pam.changes",
+   "contribution": 2.9957,
+   "entities": [
+    "path:/etc/pam.d/sshd",
+    "module:pam_exec.so"
+   ],
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261028T203832Z-82857a9b",
+      "pam_rules",
+      "/etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 20.0,
+   "summary": "/etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true",
+   "title": "A PAM line was added that runs a program (pam_exec)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "persistence.changes",
+   "contribution": 0.6931,
+   "entities": [
+    "path:/etc/ld.so.preload"
+   ],
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261028T203832Z-82857a9b",
+      "startup",
+      "/etc/ld.so.preload",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 20.0,
+   "summary": "/etc/ld.so.preload",
+   "title": "A new startup file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "process.executable",
+   "contribution": 2.9957,
+   "entities": [
+    "program:cc-sleep",
+    "pid:2650"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      2650
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:39:36.740000+00:00",
+   "last_seen": "2026-10-28T20:39:36.740000+00:00",
+   "new": false,
+   "ratio": 20.0,
+   "summary": "cc-sleep (pid 2650): /root/cc-sleep (deleted)",
+   "title": "A process whose program was deleted",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "process.injected",
+   "contribution": 0.6931,
+   "entities": [
+    "program:cc-sleep",
+    "pid:2650"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      2650
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:39:36.740000+00:00",
+   "last_seen": "2026-10-28T20:39:36.740000+00:00",
+   "new": false,
+   "ratio": 20.0,
+   "summary": "cc-sleep (pid 2650): /root/cc-sleep (deleted)",
+   "title": "A process has code mapped from a scratch or home file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "process.reverse_shell",
+   "contribution": 2.9957,
+   "entities": [
+    "program:bash",
+    "pid:2662"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      2662
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:39:38.290000+00:00",
+   "last_seen": "2026-10-28T20:39:38.290000+00:00",
+   "new": false,
+   "ratio": 20.0,
+   "summary": "bash (pid 2662): stdin is tcp to 127.0.0.1:4444",
+   "title": "A shell talking to a network socket (a reverse shell)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "ssh.authorized_keys",
+   "contribution": 2.9957,
+   "entities": [
+    "account:root",
+    "key:SHA256:by73CbqA4Ms8MwgpLFe1DLOuLVV2Y1Rr8WGoATimkWY"
+   ],
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261028T203832Z-82857a9b",
+      "authorized_keys",
+      "root SHA256:by73CbqA4Ms8MwgpLFe1DLOuLVV2Y1Rr8WGoATimkWY /root/.ssh/authorized_keys",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 20.0,
+   "summary": "root: ssh-ed25519 SHA256:by73CbqA4Ms8MwgpLFe1DLOuLVV2Y1Rr8WGoATimkWY in /root/.ssh/authorized_keys",
+   "title": "A new authorized SSH key",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "sshd.config",
+   "contribution": 2.9957,
+   "entities": [
+    "path:/etc/ssh/sshd_config.d/00-cc-proof.conf"
+   ],
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261028T203832Z-82857a9b",
+      "sshd_config",
+      "/etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 20.0,
+   "summary": "/etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes",
+   "title": "An sshd setting was added",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.changes",
+   "contribution": 0.6931,
+   "entities": [
+    "account:cc-toor"
+   ],
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261028T203832Z-82857a9b",
+      "accounts",
+      "cc-toor",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 4.0,
+   "summary": "cc-toor (UID 0, shell /bin/bash)",
+   "title": "A new account",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 1.3863,
+   "entities": [
+    "account:cc-toor"
+   ],
+   "evidence": [
+    {
+     "event": 70
+    }
+   ],
+   "first_seen": "2026-10-28T20:39:37.600094+00:00",
+   "last_seen": "2026-10-28T20:39:37.600094+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: cc-toor UID 0",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.3466,
+   "entities": [
+    "account:proofuser"
+   ],
+   "evidence": [
+    {
+     "event": 53
+    }
+   ],
+   "first_seen": "2026-10-28T20:38:30.727534+00:00",
+   "last_seen": "2026-10-28T20:38:30.727534+00:00",
+   "new": false,
+   "ratio": 4.0,
+   "summary": "created: proofuser UID 1001",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.3466,
+   "entities": [
+    "account:scanner"
+   ],
+   "evidence": [
+    {
+     "event": 51
+    }
+   ],
+   "first_seen": "2026-10-28T20:38:24.920200+00:00",
+   "last_seen": "2026-10-28T20:38:24.920200+00:00",
+   "new": false,
+   "ratio": 4.0,
+   "summary": "created: scanner UID 1000",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.at_jobs",
+   "contribution": 1.3863,
+   "entities": [
+    "path:/var/spool/cron/atjobs/a0000101c80a8e"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "cron",
+      "/var/spool/cron/atjobs/a0000101c80a8e"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 4.0,
+   "summary": "/var/spool/cron/atjobs/a0000101c80a8e (owner UID 0)",
+   "title": "A queued at job",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.changes",
+   "contribution": 1.3863,
+   "entities": [
+    "path:/etc/cron.d/cc-proof"
+   ],
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261028T203832Z-82857a9b",
+      "cron",
+      "/etc/cron.d/cc-proof",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 4.0,
+   "summary": "/etc/cron.d/cc-proof",
+   "title": "A new cron file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.changes",
+   "contribution": 0.3466,
+   "entities": [
+    "path:/etc/systemd/system/cc-proof.service"
+   ],
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261028T203832Z-82857a9b",
+      "systemd",
+      "/etc/systemd/system/cc-proof.service",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 4.0,
+   "summary": "/etc/systemd/system/cc-proof.service",
+   "title": "A new systemd file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.changes",
+   "contribution": 0.3466,
+   "entities": [
+    "path:/etc/systemd/system/cc-proof.timer"
+   ],
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261028T203832Z-82857a9b",
+      "systemd",
+      "/etc/systemd/system/cc-proof.timer",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 4.0,
+   "summary": "/etc/systemd/system/cc-proof.timer",
+   "title": "A new systemd file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "ssh.login",
+   "contribution": 1.3863,
+   "entities": [
+    "account:root",
+    "address:203.0.113.11"
+   ],
+   "evidence": [
+    {
+     "event": 34
+    }
+   ],
+   "first_seen": "2026-10-28T20:37:58.631506+00:00",
+   "last_seen": "2026-10-28T20:37:58.631506+00:00",
+   "new": false,
+   "ratio": 4.0,
+   "summary": "root from 203.0.113.11 (publickey)",
+   "title": "A direct root login over SSH",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:(sd-pam)",
+    "pid:841"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      841
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:37:59.210000+00:00",
+   "last_seen": "2026-10-28T20:37:59.210000+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "(sd-pam) (pid 841): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:dbus-daemon",
+    "pid:664"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      664
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:37:54.580000+00:00",
+   "last_seen": "2026-10-28T20:37:54.580000+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "dbus-daemon (pid 664): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:systemd",
+    "pid:840"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      840
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:37:59.190000+00:00",
+   "last_seen": "2026-10-28T20:37:59.190000+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "systemd (pid 840): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:systemd-logind",
+    "pid:673"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      673
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:37:54.840000+00:00",
+   "last_seen": "2026-10-28T20:37:54.840000+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "systemd-logind (pid 673): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "files.unowned",
+   "contribution": 0.0,
+   "entities": [
+    "path:/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "unowned_executables",
+      "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache (SHA-256 c22c46421f20ce55\u2026)",
+   "title": "An executable no package installed (in /usr/local or /opt)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "persistence.homes",
+   "contribution": 0.0,
+   "entities": [
+    "path:/home/proofuser/.config/systemd/user/proof.service"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "systemd",
+      "/home/proofuser/.config/systemd/user/proof.service"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/home/proofuser/.config/systemd/user/proof.service",
+   "title": "A user's own systemd unit",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf",
+    "package:modemmanager"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf (modemmanager): missing",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf",
+    "package:packagekit"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf (packagekit): missing",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/init/thermald.conf",
+    "package:thermald"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/init/thermald.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/init/thermald.conf (thermald): missing",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/sshd",
+    "package:openssh-server"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/sshd"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/sshd (openssh-server): changed",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/thermald/thermal-cpu-cdev-order.xml",
+    "package:thermald"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/thermald/thermal-cpu-cdev-order.xml"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/thermald/thermal-cpu-cdev-order.xml (thermald): changed",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  }
+ ],
+ "score": {
+  "band": "Critical",
+  "contributors": [
+   {
+    "capped": null,
+    "check": "account.uid0",
+    "contribution": 4.6052,
+    "finding": 0,
+    "ratio": 100.0,
+    "share": 0.1155,
+    "title": "An account other than root has UID 0"
+   },
+   {
+    "capped": null,
+    "check": "persistence.ld_preload",
+    "contribution": 4.6052,
+    "finding": 1,
+    "ratio": 100.0,
+    "share": 0.1155,
+    "title": "/etc/ld.so.preload loads a library into every program"
+   },
+   {
+    "capped": null,
+    "check": "account.changes",
+    "contribution": 2.9957,
+    "finding": 2,
+    "ratio": 20.0,
+    "share": 0.0751,
+    "title": "A new account whose primary group is root-equivalent"
+   },
+   {
+    "capped": null,
+    "check": "files.privileged",
+    "contribution": 2.9957,
+    "finding": 3,
+    "ratio": 20.0,
+    "share": 0.0751,
+    "title": "A new privileged file since the baseline"
+   },
+   {
+    "capped": null,
+    "check": "pam.changes",
+    "contribution": 2.9957,
+    "finding": 5,
+    "ratio": 20.0,
+    "share": 0.0751,
+    "title": "A PAM line was added that runs a program (pam_exec)"
+   },
+   {
+    "capped": null,
+    "check": "process.executable",
+    "contribution": 2.9957,
+    "finding": 7,
+    "ratio": 20.0,
+    "share": 0.0751,
+    "title": "A process whose program was deleted"
+   },
+   {
+    "capped": null,
+    "check": "process.reverse_shell",
+    "contribution": 2.9957,
+    "finding": 9,
+    "ratio": 20.0,
+    "share": 0.0751,
+    "title": "A shell talking to a network socket (a reverse shell)"
+   },
+   {
+    "capped": null,
+    "check": "ssh.authorized_keys",
+    "contribution": 2.9957,
+    "finding": 10,
+    "ratio": 20.0,
+    "share": 0.0751,
+    "title": "A new authorized SSH key"
+   },
+   {
+    "capped": null,
+    "check": "sshd.config",
+    "contribution": 2.9957,
+    "finding": 11,
+    "ratio": 20.0,
+    "share": 0.0751,
+    "title": "An sshd setting was added"
+   },
+   {
+    "capped": null,
+    "check": "account.log_changes",
+    "contribution": 1.3863,
+    "finding": 13,
+    "ratio": 4.0,
+    "share": 0.0348,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": null,
+    "check": "persistence.at_jobs",
+    "contribution": 1.3863,
+    "finding": 16,
+    "ratio": 4.0,
+    "share": 0.0348,
+    "title": "A queued at job"
+   },
+   {
+    "capped": null,
+    "check": "persistence.changes",
+    "contribution": 1.3863,
+    "finding": 17,
+    "ratio": 4.0,
+    "share": 0.0348,
+    "title": "A new cron file"
+   },
+   {
+    "capped": null,
+    "check": "ssh.login",
+    "contribution": 1.3863,
+    "finding": 20,
+    "ratio": 4.0,
+    "share": 0.0348,
+    "title": "A direct root login over SSH"
+   },
+   {
+    "capped": "group",
+    "check": "files.scratch",
+    "contribution": 0.6931,
+    "finding": 4,
+    "ratio": 20.0,
+    "share": 0.0174,
+    "title": "A program in a scratch directory"
+   },
+   {
+    "capped": "group",
+    "check": "persistence.changes",
+    "contribution": 0.6931,
+    "finding": 6,
+    "ratio": 20.0,
+    "share": 0.0174,
+    "title": "A new startup file"
+   },
+   {
+    "capped": "group",
+    "check": "process.injected",
+    "contribution": 0.6931,
+    "finding": 8,
+    "ratio": 20.0,
+    "share": 0.0174,
+    "title": "A process has code mapped from a scratch or home file"
+   },
+   {
+    "capped": "family",
+    "check": "account.changes",
+    "contribution": 0.6931,
+    "finding": 12,
+    "ratio": 4.0,
+    "share": 0.0174,
+    "title": "A new account"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.3466,
+    "finding": 14,
+    "ratio": 4.0,
+    "share": 0.0087,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.3466,
+    "finding": 15,
+    "ratio": 4.0,
+    "share": 0.0087,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "persistence.changes",
+    "contribution": 0.3466,
+    "finding": 18,
+    "ratio": 4.0,
+    "share": 0.0087,
+    "title": "A new systemd file"
+   },
+   {
+    "capped": "family",
+    "check": "persistence.changes",
+    "contribution": 0.3466,
+    "finding": 19,
+    "ratio": 4.0,
+    "share": 0.0087,
+    "title": "A new systemd file"
+   }
+  ],
+  "hygiene_and_exposure": {
+   "band": "low",
+   "counts": {
+    "hygiene": {
+     "info": 5,
+     "low": 4
+    }
+   }
+  },
+  "log_odds": 35.9927,
+  "prior": 0.02,
+  "prior_source": "golden",
+  "probability": 1.0,
+  "version": 1
+ }
+}

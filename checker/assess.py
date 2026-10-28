@@ -111,6 +111,17 @@ def coverage(
     return {"gaps": gaps, "log_reach": reach}
 
 
+def evaluate(
+    context: Context, prior: tuple[float, str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """The checks over a context, and their score: the findings (as
+    stored), which checks ran, and the score. What `analyze` stores, and
+    what the golden reports pin (tests/golden)."""
+    findings, ran = run_checks(context)
+    found = [f.as_dict() for f in findings]
+    return found, ran, score(found, prior[0]) | {"prior_source": prior[1]}
+
+
 def analyze(
     store: Store,
     host: str,
@@ -172,12 +183,10 @@ def analyze(
         previous_time=previous_time,
         no_baseline=no_baseline,
     )
-    findings, ran = run_checks(context)
-    found_dicts = [f.as_dict() for f in findings]
-    scored = score(found_dicts, prior[0]) | {"prior_source": prior[1]}
+    found_dicts, ran, scored = evaluate(context, prior)
     counts: dict[str, int] = {}
-    for finding in findings:
-        key = f"{finding.category}/{finding.band}"
+    for finding in found_dicts:
+        key = f"{finding['category']}/{finding['band']}"
         counts[key] = counts.get(key, 0) + 1
     assessment = {
         "format": ASSESSMENT_FORMAT,

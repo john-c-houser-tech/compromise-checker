@@ -1,0 +1,611 @@
+{
+ "checks": [
+  {
+   "check": "account.changes",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "account.log_changes",
+   "findings": 2,
+   "status": "ran"
+  },
+  {
+   "check": "account.password",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "account.uid0",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.backdated",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.deceptive",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.dev",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.privileged",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.scratch",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.unowned",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.web",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "group.privileged",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "kernel.core_dump",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.errors",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.oom_kill",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.segfault",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.taint",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "package.changed",
+   "findings": 9,
+   "status": "ran"
+  },
+  {
+   "check": "pam.changes",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.at_jobs",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.changes",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "persistence.homes",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.ld_preload",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.executable",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.hidden",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.injected",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "process.miner",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.reverse_shell",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.authorized_keys",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.guessed",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.login",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "sshd.config",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "sudo.rules",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "system.reboot",
+   "findings": 0,
+   "status": "ran"
+  }
+ ],
+ "findings": [
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 1.3863,
+   "entities": [
+    "account:proofuser"
+   ],
+   "evidence": [
+    {
+     "event": 68
+    }
+   ],
+   "first_seen": "2026-10-28T20:47:13.258646+00:00",
+   "last_seen": "2026-10-28T20:47:13.258646+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: proofuser UID 1001",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.6931,
+   "entities": [
+    "account:scanner"
+   ],
+   "evidence": [
+    {
+     "event": 65
+    }
+   ],
+   "first_seen": "2026-10-28T20:38:40.199922+00:00",
+   "last_seen": "2026-10-28T20:38:40.199922+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: scanner UID 1000",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.at_jobs",
+   "contribution": 1.3863,
+   "entities": [
+    "path:/var/spool/at/a0000101c80a97"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "cron",
+      "/var/spool/at/a0000101c80a97"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 4.0,
+   "summary": "/var/spool/at/a0000101c80a97 (owner UID 0)",
+   "title": "A queued at job",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "ssh.login",
+   "contribution": 1.3863,
+   "entities": [
+    "account:root",
+    "address:203.0.113.13"
+   ],
+   "evidence": [
+    {
+     "event": 59
+    }
+   ],
+   "first_seen": "2026-10-28T20:38:39.232627+00:00",
+   "last_seen": "2026-10-28T20:38:39.232627+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "root from 203.0.113.13 (publickey)",
+   "title": "A direct root login over SSH",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "process.injected",
+   "contribution": 0.4055,
+   "entities": [
+    "program:firewalld",
+    "pid:635"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      635
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:38:27.750000+00:00",
+   "last_seen": "2026-10-28T20:38:27.750000+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "firewalld (pid 635): /memfd:libffi (deleted)",
+   "title": "A process has libffi code mapped from memory only",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "persistence.homes",
+   "contribution": 0.0,
+   "entities": [
+    "path:/home/proofuser/.config/systemd/user/proof.service"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "systemd",
+      "/home/proofuser/.config/systemd/user/proof.service"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/home/proofuser/.config/systemd/user/proof.service",
+   "title": "A user's own systemd unit",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/NetworkManager/NetworkManager.conf",
+    "package:NetworkManager"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/NetworkManager/NetworkManager.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/NetworkManager/NetworkManager.conf (NetworkManager): changed",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/nsswitch.conf",
+    "package:glibc"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/nsswitch.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/nsswitch.conf (glibc): mode",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/fingerprint-auth",
+    "package:pam"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/fingerprint-auth"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/fingerprint-auth (pam): mode, unreadable",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/password-auth",
+    "package:pam"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/password-auth"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/password-auth (pam): mode, unreadable",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/postlogin",
+    "package:pam"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/postlogin"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/postlogin (pam): mode, unreadable",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/smartcard-auth",
+    "package:pam"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/smartcard-auth"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/smartcard-auth (pam): mode, unreadable",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/system-auth",
+    "package:pam"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/system-auth"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/system-auth (pam): mode, unreadable",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/shadow",
+    "package:setup"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/shadow"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/shadow (setup): mode",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/ssh/sshd_config",
+    "package:openssh-server"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/ssh/sshd_config"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/ssh/sshd_config (openssh-server): changed",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  }
+ ],
+ "score": {
+  "band": "High",
+  "contributors": [
+   {
+    "capped": null,
+    "check": "account.log_changes",
+    "contribution": 1.3863,
+    "finding": 0,
+    "ratio": 4.0,
+    "share": 0.2637,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": null,
+    "check": "persistence.at_jobs",
+    "contribution": 1.3863,
+    "finding": 2,
+    "ratio": 4.0,
+    "share": 0.2637,
+    "title": "A queued at job"
+   },
+   {
+    "capped": null,
+    "check": "ssh.login",
+    "contribution": 1.3863,
+    "finding": 3,
+    "ratio": 4.0,
+    "share": 0.2637,
+    "title": "A direct root login over SSH"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.6931,
+    "finding": 1,
+    "ratio": 4.0,
+    "share": 0.1318,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": null,
+    "check": "process.injected",
+    "contribution": 0.4055,
+    "finding": 4,
+    "ratio": 1.5,
+    "share": 0.0771,
+    "title": "A process has libffi code mapped from memory only"
+   }
+  ],
+  "hygiene_and_exposure": {
+   "band": "none",
+   "counts": {
+    "hygiene": {
+     "info": 9
+    }
+   }
+  },
+  "log_odds": 1.3657,
+  "prior": 0.02,
+  "prior_source": "golden",
+  "probability": 0.7967,
+  "version": 1
+ }
+}

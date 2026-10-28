@@ -91,6 +91,11 @@ The collector (`checker/collector/collector.py`) must stay Python 3.9
 compatible and standard-library only; CI runs its tests with the system
 `python3` of each supported distribution.
 
+Golden reports (`tests/golden/`) pin the findings and score of real
+analyses; after a deliberate change to checks or scoring,
+`python scripts/update_golden.py` rewrites them and shows what moved
+([scoring](docs/scoring.md#golden-reports)).
+
 ## Licence
 
 AGPL-3.0 (see [LICENSE](LICENSE)). Threat packs, when they exist, are

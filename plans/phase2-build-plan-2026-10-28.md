@@ -166,6 +166,16 @@ set by the checks themselves (five cases), so the table maps bands to
 ratios and `OVERRIDES` starts empty; `variant` is set where a check's
 kinds weigh differently (`kernel.taint` so far) and grows with 2.2.
 
+*2.1b results (2026-10-28):* one detection-proof run with `--golden` on
+Ubuntu 24.04 and Rocky 9 (2 Nanodes, about 1 cent; both deleted): all ten
+behaviours detected on both. Golden cases and expectations are in
+`tests/golden/` (0.9 MB). Scores: compromised servers 100% Critical; fresh
+servers High (Ubuntu 72%, Rocky 80%), entirely from the proof's own setup
+(the `scanner` and `proofuser` accounts it creates, its root login, its
+`at` job: four mediums). 2.2's whitelist for that setup should bring them
+to Low (done-means 2). A calibration note for 2.10: four mediums from
+different checks take a 2% prior to about 72%.
+
 ### 2.2 — Whitelists
 
 - **Files**, in the configuration directory:

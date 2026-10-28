@@ -1,7 +1,7 @@
 # Phase 2 build plan — 2026-10-28
 
-> **Status: PROPOSED** — outline agreed with John 2026-10-28; details
-> waiting for his review. Nothing built yet.
+> **Status: AGREED 2026-10-28** — outline and details reviewed by John;
+> decisions 1–5 settled. Nothing built yet.
 
 **Goal (DESIGN.md §18, Phase 2):** the tool says how likely it is that a
 host is compromised, and an operator can make a real server's report quiet
@@ -484,7 +484,7 @@ assessments tables are append-only, enforced by triggers.
   data the policy doesn't yet name (decision 3).
 - New allow-listed commands on targets beyond decision 2's two.
 - Spending on throwaway servers: each slice's proof and 2.10's calibration
-  runs (decision 5). Each run still needs his OK, with its server count.
+  runs, one approval per PR within the $10 cap (decision 5).
 - Running the tool against nouriloop-prod.
 
 ## Decisions to confirm with John (one at a time, before the PR that needs it)
@@ -529,10 +529,14 @@ assessments tables are append-only, enforced by triggers.
    Only the listed fields leave the server; the environment never does.
    Running state cross-checked with live processes; an unrecognised file
    layout is a coverage gap, never "no containers".
-5. **Before the first proof run — budget.** Proposed: a $10 cap for all of
-   Phase 2, as for 1.9 (which spent about 10 cents). Slices with a web
-   stack or containers take a few minutes longer to set up, so expect
-   under $1 in all.
+5. ~~Before the first proof run — budget.~~ **Decided 2026-10-28:** a $10
+   cap for all of Phase 2 (estimate: 90–100 server-hours, about $1); at $5
+   spent, stop and tell John before going on. One approval per PR: asked
+   once when its proof is ready (servers, images, expected cost), covering
+   that PR's reruns after review fixes within the cap. After each run:
+   servers used, cost, and a check that no tagged Linode is left. Runs
+   outside a PR's stated scope, and any run against a real server, still
+   need their own OK.
 
 ## After Phase 2
 

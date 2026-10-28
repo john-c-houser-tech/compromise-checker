@@ -35,13 +35,15 @@ class Changes:
     bundle_id: str
     baseline_id: str
     baseline_set_now: bool  # the host had no baseline: this call set it
+    # It had one, but `purge` removed it: this call chose the next.
+    after_purge: bool = False
     comparisons: list[Comparison] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     @property
     def first(self) -> bool:
         """This bundle is the host's first baseline, set just now."""
-        return self.baseline_set_now and self.baseline_id == self.bundle_id
+        return self.baseline_set_now and not self.after_purge and self.baseline_id == self.bundle_id
 
 
 def usable_bundles(store: Store, host: str) -> list[Any]:
@@ -79,8 +81,9 @@ def changes(
     host's oldest usable bundle becomes it (and the result says so)."""
     target = _pick(store, host, bundle_id)
     baseline = current_baseline(store, host)
-    set_now, notes = False, []
-    if baseline is None:
+    set_now, after_purge, notes = False, False, []
+    after_purge = store.baseline_purged(host, baseline["at"] if baseline else None)
+    if baseline is None or after_purge:
         # The oldest full collection; a run limited to some modules can't
         # stand for the whole host. If there is none, the oldest at all.
         rows = usable_bundles(store, host)
@@ -94,10 +97,16 @@ def changes(
                 "no bundle of this host collected every module, so the baseline covers only"
                 " what its bundle collected"
             )
-        store.record_baseline(host, chosen["id"], "first", None)
+        store.record_baseline(host, chosen["id"], "after purge" if after_purge else "first", None)
         baseline = current_baseline(store, host)
         set_now = True
-    result = Changes(host, target["id"], baseline["bundle_id"], set_now, notes=notes)
+    if baseline["how"] == "after purge":
+        # On every analysis against it, not only the one that chose it.
+        notes.append(
+            f"the host's earlier baseline was purged; {baseline['bundle_id']}, then its oldest"
+            " remaining bundle, is the baseline, so changes made before it don't show"
+        )
+    result = Changes(host, target["id"], baseline["bundle_id"], set_now, after_purge, notes=notes)
     snapshot = snapshot_of(store, target, identity, recipients)
     earlier = [r for r in usable_bundles(store, host) if r["started_at"] < target["started_at"]]
     others = []

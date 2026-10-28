@@ -167,8 +167,13 @@ include access tokens, and sometimes secrets typed into commands.
   collections are never modified.
 - **Retention.** Evidence, snapshots and reports are kept for 90 days by
   default. You can change the period. A `purge` command deletes everything for
-  a server or a date range, and data for a server removed from the inventory
-  is deleted when its retention period ends.
+  a server or a date range, and `purge --expired`, which you can run on a
+  schedule, deletes whatever is past its retention period; the tool reminds
+  you when anything is due. One exception: a server's current baseline, the
+  collection later checks compare against, is kept until a newer one is
+  accepted, because deleting it would hide changes made since. Data for a
+  server removed from the inventory has no such exception. Each purge is
+  recorded by identifiers, times and counts only, never content.
 - **Reports are confidential documents.** They describe weaknesses an attacker
   could use. Handle them like the evidence.
 

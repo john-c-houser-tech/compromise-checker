@@ -42,6 +42,10 @@ What works today:
 - `checker report HOST|--all` — writes one self-contained, confidential HTML
   report: findings with their evidence, a timeline, coverage, and the
   collection's hashes and chain of custody ([report](docs/report.md)).
+- `checker purge HOST | --before DATE | --expired` — deletes stored evidence,
+  reports included, and records what went by identifiers and counts only.
+  `--expired` keeps each host's current baseline until a newer one is
+  accepted ([retention](docs/retention.md)).
 
 **Read-only, proven:** on throwaway Ubuntu 22.04, 24.04 and 26.04, Rocky
 Linux 9 and 10, and AlmaLinux 9 and 10 servers, with auditd recording every

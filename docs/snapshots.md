@@ -123,8 +123,14 @@ always run from the older bundle to the newer.
 - **Asking about an older bundle.** `checker changes HOST --bundle ID` with
   a bundle older than the baseline compares it forwards, to the baseline,
   and says the baseline is the newer one.
+- **After a purge.** Automatic expiry (`checker purge --expired`) never
+  takes a host's current baseline. An explicit purge can, and then the
+  host's next analysis takes its oldest remaining usable bundle as the
+  baseline (how: `after purge`); every analysis against that baseline says
+  so, because changes made before it no longer show
+  ([retention](retention.md)).
 - **Recorded.** Baselines are kept in an append-only table, enforced by the
-  database: host, bundle, time, how (`first` or `accepted`), the operator
+  database: host, bundle, time, how (`first`, `accepted` or `after purge`), the operator
   and the controller; the reason is encrypted to the evidence key, like
   everything else that could describe the host. Each new baseline also adds
   a `baseline` entry to its bundle's chain of custody. `checker baseline

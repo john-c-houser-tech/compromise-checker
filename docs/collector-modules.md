@@ -707,25 +707,36 @@ firewall changes, promiscuous interfaces.
   `/etc/sysconfig/nftables.d`, `/etc/firewalld` (three levels), ufw's
   files under `/etc/ufw` and `/etc/default/ufw`, `/etc/iptables/rules.v4`
   and `rules.v6`, `/etc/sysconfig/iptables` and `ip6tables`;
-- per interface in `/sys/class/net` (at most 256): flags (promiscuous),
-  state, type, whether it is a bridge or a bridge port, and its received
-  and sent byte counters. Not its hardware (MAC) address;
-- `/proc/net/route` and `/proc/net/ipv6_route` (at most 2,000 lines each);
-- whether a firewall is loaded: `/sys/module/nf_tables` exists, or
-  `/proc/net/ip_tables_names` / `ip6_tables_names` list tables.
+- per interface in `/sys/class/net` (at most 256): its name (bytes that
+  aren't UTF-8 escaped), flags (promiscuous), state, type, whether it is a
+  bridge or a bridge port, and its received and sent byte counters. Not its
+  hardware (MAC) address;
+- `/proc/net/route` and `/proc/net/ipv6_route` (up to 1 MB and 2,000 lines
+  each; `truncated` says when cut);
+- whether a firewall is loaded: nf_tables (`/sys/module/nf_tables`, or
+  built into the kernel per `modules.builtin`), nft_compat
+  (`/sys/module/nft_compat`), and legacy tables
+  (`/proc/net/ip_tables_names`, `ip6_tables_names`).
 
 **Runs** (decision 2 of the Phase 2 plan), only for a firewall that is
 already loaded, so listing it never loads a kernel module:
-- `nft list ruleset` when nf_tables is loaded. A set with more than 50
-  elements (a fail2ban or CrowdSec blocklist) is sent as one line with its
-  element count and SHA-256, never element by element, and its lines are
-  not held in memory past that limit;
+- `nft list ruleset` when nf_tables is loaded **and nft_compat isn't**.
+  With nft_compat loaded the rules are iptables-nft rules (ufw, Docker),
+  and printing them asks the kernel about xtables extensions it may load on
+  demand; they are not listed, and a `not_examined` record says why. A set
+  with more than 50 elements or lines (a fail2ban or CrowdSec blocklist) is
+  sent as one line with its element count and a SHA-256 of its masked
+  lines, never element by element; its lines aren't held past 50 or
+  256 KB. Every line sent or hashed is masked first;
 - `iptables-legacy-save` / `ip6tables-legacy-save` when legacy tables
   exist.
 
-A command that can't run is a `command_unavailable` record and leaves the
-`firewall_rules` section incomplete. The read-only proof checks that the
-kernel's module list is the same before and after every collection.
+A command that can't run (`command_unavailable`), fails
+(`command_failed`: the other listings still run) or ends inside a set
+(`set_unterminated`) leaves only the `firewall_rules` section incomplete.
+The read-only proof enables ufw on the Ubuntu images (Rocky and Alma run
+firewalld), and checks that no firewall module is loaded or unloaded
+during any collection.
 
 ## Protected files
 

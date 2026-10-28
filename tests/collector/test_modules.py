@@ -4540,7 +4540,8 @@ class NetworkTests(FixtureRoot):
         records = collect(self.root, ["network"])
         [loaded] = named(records, "firewall_loaded")
         self.assertEqual(
-            loaded["data"], {"nf_tables": False, "ip_tables": False, "ip6_tables": False}
+            loaded["data"],
+            {"nf_tables": False, "nft_compat": False, "ip_tables": False, "ip6_tables": False},
         )
         self.assertFalse([n for n in sources(records) if "nft" in n])
 
@@ -4582,6 +4583,68 @@ class NetworkTests(FixtureRoot):
         joined = b"".join(out)
         self.assertTrue(joined.startswith(b"\t\telements = { [10002 elements, sha256 "))
         self.assertEqual(joined.count(b"\n"), 1)
+
+    def test_iptables_nft_rules_are_not_listed_with_nft(self):
+        # nft_compat loaded: printing xtables rules may load extension
+        # modules, so nft doesn't run and the gap says why.
+        self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        Path(self.root, "sys/module/nft_compat").mkdir(parents=True)
+        records = collect(self.root, ["network"])
+        self.assertFalse([n for n in sources(records) if "nft" in n])
+        [gap] = [
+            r for r in named(records, "not_examined") if r["data"]["path"] == "nft list ruleset"
+        ]
+        self.assertIn("nft_compat", gap["data"]["reason"])
+
+    def test_built_in_nf_tables_counts_as_loaded(self):
+        self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
+        release = __import__("platform").release()
+        self.write(
+            f"lib/modules/{release}/modules.builtin",
+            b"kernel/net/netfilter/nf_tables.ko\n",
+        )
+        records = collect(self.root, ["network"])
+        self.assertTrue(named(records, "firewall_loaded")[0]["data"]["nf_tables"])
+        self.assertTrue([n for n in sources(records) if "nft" in n])
+
+    def test_a_failing_nft_doesnt_stop_the_iptables_listings(self):
+        self.write("usr/sbin/nft", b"#!/bin/sh\necho broken >&2\nexit 1\n").chmod(0o755)
+        self.write("usr/sbin/ip6tables-legacy-save", b"#!/bin/sh\necho '*filter'\n").chmod(0o755)
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        self.write("proc/net/ip6_tables_names", b"filter\n")
+        records = collect(self.root, ["network"])
+        self.assertEqual(named(records, "command_failed")[0]["data"]["command"], "nft")
+        self.assertTrue([n for n in sources(records) if "ip6tables-legacy-save" in n])
+
+    def test_a_secret_in_a_small_set_is_masked(self):
+        collector = load_collector(self.root)
+        masker = collector.Masker()
+        transform = collector.nft_sets_reduced()
+        out = transform(b'\t\telements = { 192.0.2.1 comment "password=hunter2" }\n', masker)
+        self.assertNotIn(b"hunter2", out)
+
+    def test_a_short_set_over_many_lines_is_hashed_and_an_open_set_is_reported(self):
+        collector = load_collector(self.root)
+        masker = collector.Masker()
+        transform = collector.nft_sets_reduced()
+        out = [transform(b"\t\telements = {\n", masker)]
+        out += [transform(b"\n", masker) for _ in range(60)]
+        out.append(transform(b"\t\t\t192.0.2.1 }\n", masker))
+        self.assertIn(b"[1 elements, sha256 ", b"".join(out))
+        self.assertFalse(transform.open())
+        transform(b"\t\telements = { 192.0.2.1,\n", masker)
+        self.assertTrue(transform.open())
+
+    def test_odd_interface_names_and_long_route_tables(self):
+        Path(self.root, "sys/class/net", os.fsdecode(b"bad\xffname")).mkdir(parents=True)
+        self.write("proc/net/route", b"x\n" * 3000)
+        records = collect(self.root, ["network"])
+        names = [r["data"]["name"] for r in named(records, "interface")]
+        self.assertIn("bad\\xffname", names)
+        [route] = [r for r in named(records, "routes") if r["data"]["table"] == "/proc/net/route"]
+        self.assertTrue(route["data"]["truncated"])
+        self.assertEqual(records[-1]["modules"]["network"]["status"], "ok")
 
 
 if __name__ == "__main__":

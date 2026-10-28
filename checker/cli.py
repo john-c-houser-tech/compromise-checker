@@ -30,6 +30,7 @@ from checker.evidence import (
     open_text,
 )
 from checker.inventory import Host, home, inventory_transaction, load_inventory
+from checker.report import write_report
 from checker.transport import TransportError, fetch_host_key, trust_host_key
 
 # What `checker init --home-text` means, as `init` reports it.
@@ -424,6 +425,16 @@ def build_parser() -> argparse.ArgumentParser:
     analysing.add_argument("--info", action="store_true", help="also list informational findings")
     analysing.add_argument("--identity", help="the evidence private key file")
     analysing.set_defaults(handler=cmd_analyze)
+    reporting = commands.add_parser(
+        "report", help="write the confidential HTML report for hosts' latest bundles"
+    )
+    chosen = reporting.add_mutually_exclusive_group(required=True)
+    chosen.add_argument("host", nargs="?")
+    chosen.add_argument("--all", action="store_true", help="every host with a usable bundle")
+    reporting.add_argument("--bundle", help="this bundle rather than the host's latest")
+    reporting.add_argument("--output", help="the file to write (default: reports/ in the home)")
+    reporting.add_argument("--identity", help="the evidence private key file")
+    reporting.set_defaults(handler=cmd_report)
     changed = commands.add_parser(
         "changes", help="what changed on a host since its previous bundle and its baseline"
     )
@@ -452,6 +463,41 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 SHOWN = 20  # items listed per kind and section without --all
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """Write the HTML report: owner-only, confidential (policy §8)."""
+    base = home()
+    store = Store(database_file(base))
+    try:
+        if args.all:
+            if args.bundle:
+                raise EvidenceError("--bundle names one host's bundle: give the host instead")
+            hosts = [h for h in store.hosts() if usable_bundles(store, h)]
+            if not hosts:
+                raise EvidenceError("no host has a usable bundle yet: collect first")
+        else:
+            hosts = [args.host]
+        path = write_report(
+            store,
+            hosts,
+            _identity(args, base),
+            load_config(base).recipients,
+            base / "reports",
+            args.bundle,
+            Path(args.output) if args.output else None,
+        )
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print(f"Report written to {path}")
+    print(
+        "It is confidential: it describes weaknesses an attacker could use."
+        " Handle it like the evidence."
+    )
+    return 0
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:

@@ -39,6 +39,9 @@ What works today:
   integrity, files in unusual places, live processes) and lists the findings by
   category and band, with what the collection couldn't see; each analysis
   is stored encrypted ([checks](docs/checks.md)).
+- `checker report HOST|--all` — writes one self-contained, confidential HTML
+  report: findings with their evidence, a timeline, coverage, and the
+  collection's hashes and chain of custody ([report](docs/report.md)).
 
 **Read-only, proven:** on throwaway Ubuntu 24.04 and Rocky Linux 9 servers,
 with auditd recording every write by the scanner's session, the collector

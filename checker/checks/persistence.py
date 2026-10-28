@@ -60,7 +60,7 @@ def ld_preload(context: Context) -> list[Finding]:
                 "persistence.ld_preload",
                 "/etc/ld.so.preload loads a library into every program",
                 COMPROMISE,
-                "high",
+                "critical",
                 f"/etc/ld.so.preload ({item.get('size')} bytes)",
                 ["path:/etc/ld.so.preload"],
                 [{"item": ["startup", "/etc/ld.so.preload"]}],

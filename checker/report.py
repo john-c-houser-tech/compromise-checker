@@ -14,6 +14,7 @@ import json
 import os
 import tempfile
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ from checker.assess import analyze, events_of, load_assessment
 from checker.baseline import USABLE, usable_bundles
 from checker.checks import BANDS, CATEGORIES, CHECKS_VERSION
 from checker.evidence import EvidenceError, Store, open_text, who_and_where
+from checker.scoring import DEFAULT_PRIOR
 from checker.snapshot import Snapshot
 
 MAX_EVIDENCE = 5  # excerpts shown per finding
@@ -39,9 +41,15 @@ MAX_TEXT = 300
 def current_versions() -> dict[str, int]:
     """What an assessment's evidence references depend on."""
     from checker.events import PARSER_VERSION
+    from checker.scoring import SCORING_VERSION
     from checker.snapshot import SNAPSHOT_VERSION
 
-    return {"checks": CHECKS_VERSION, "parser": PARSER_VERSION, "snapshot": SNAPSHOT_VERSION}
+    return {
+        "checks": CHECKS_VERSION,
+        "parser": PARSER_VERSION,
+        "snapshot": SNAPSHOT_VERSION,
+        "scoring": SCORING_VERSION,
+    }
 
 
 class Shown(str):
@@ -183,9 +191,17 @@ def _excerpts(
     return shown
 
 
-def host_report(store: Store, host: str, identity, recipients, bundle_id=None) -> HostReport:
+def host_report(
+    store: Store,
+    host: str,
+    identity,
+    recipients,
+    bundle_id=None,
+    prior: tuple[float, str] = (DEFAULT_PRIOR, "default"),
+) -> HostReport:
     """A host's latest (or a given) bundle, analysed with the current
-    checks if its stored assessment is missing or older."""
+    checks and scored from `prior` if its stored assessment is missing,
+    older, or scored from another prior."""
     rows = usable_bundles(store, host)
     if bundle_id is None and not rows:
         raise EvidenceError(f"no usable bundle for {host}")
@@ -197,8 +213,12 @@ def host_report(store: Store, host: str, identity, recipients, bundle_id=None) -
     assessment = load_assessment(store, row["id"], identity)
     # Its evidence points into one parse of the bundle (event numbers,
     # snapshot keys): any newer parser or checks means analysing again.
-    if assessment is None or assessment.get("versions") != current_versions():
-        assessment = analyze(store, host, identity, recipients, row["id"])
+    if (
+        assessment is None
+        or assessment.get("versions") != current_versions()
+        or assessment["score"]["prior"] != prior[0]
+    ):
+        assessment = analyze(store, host, identity, recipients, row["id"], prior)
     parsed = load_events(store, row, identity)
     events = parsed.events if parsed else events_of(store, row, identity, recipients)
     snapshot = snapshot_of(store, row, identity, recipients)
@@ -288,10 +308,12 @@ def write_report(
     directory: Path,
     bundle_id: str | None = None,
     output: Path | None = None,
+    priors: Callable[[str], tuple[float, str]] | None = None,
 ) -> Path:
     """Write the report (owner-only, like the evidence) and add a
     `reported` entry, with the report's hash, to each bundle's custody."""
-    reports = [host_report(store, h, identity, recipients, bundle_id) for h in hosts]
+    priors = priors or (lambda _: (DEFAULT_PRIOR, "default"))
+    reports = [host_report(store, h, identity, recipients, bundle_id, priors(h)) for h in hosts]
     html = render(reports, who_and_where())
     if output is None:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)

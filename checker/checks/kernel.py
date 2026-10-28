@@ -181,7 +181,7 @@ def kernel_taint(context: Context) -> list[Finding]:
                 "kernel.taint",
                 "Kernel taint that no loaded module explains",
                 COMPROMISE,
-                "medium" if gone else "high",
+                "medium" if gone else "critical",
                 f"tainted by a module ({describe(unexplained)}), but no listed module carries"
                 " that flag: "
                 + (
@@ -192,6 +192,7 @@ def kernel_taint(context: Context) -> list[Finding]:
                 [],
                 [{"item": ["host", "kernel_taint"]}],
                 uncertain=context.uncertain("kernel_modules"),
+                variant="unloaded" if gone else "unexplained",
             )
         )
     # Changes since the baseline.

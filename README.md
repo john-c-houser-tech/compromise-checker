@@ -37,8 +37,10 @@ What works today:
 - `checker analyze HOST|--all` — runs the checks (kernel and system health,
   reboots, accounts and authentication, persistence, system binary
   integrity, files in unusual places, live processes) and lists the findings by
-  category and band, with what the collection couldn't see; each analysis
-  is stored encrypted ([checks](docs/checks.md)).
+  category and band, with what the collection couldn't see, and scores the
+  host: a probability of compromise with its band and what drove it, from
+  a prior set per host, group or configuration; each analysis is stored
+  encrypted ([checks](docs/checks.md), [scoring](docs/scoring.md)).
 - `checker report HOST|--all` — writes one self-contained, confidential HTML
   report: findings with their evidence, a timeline, coverage, and the
   collection's hashes and chain of custody ([report](docs/report.md)).

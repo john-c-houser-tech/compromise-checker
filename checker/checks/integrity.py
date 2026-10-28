@@ -107,14 +107,16 @@ def _difference(path: str, item: dict) -> tuple[str, str, str] | None:
 
     def consider(title, band, detail):
         nonlocal worst
-        order = {"high": 0, "medium": 1, "low": 2, "info": 3}
+        order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
         if worst is None or order[band] < order[worst[1]]:
             worst = (title, band, detail)
 
     if results & {"changed", "missing"}:
         what = "changed" if "changed" in results else "missing"
         if critical:
-            consider("A critical system program or library differs from its package", "high", what)
+            consider(
+                "A critical system program or library differs from its package", "critical", what
+            )
         elif program:
             consider("A system program or library differs from its package", "medium", what)
         else:

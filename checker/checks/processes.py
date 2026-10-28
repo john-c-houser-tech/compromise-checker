@@ -182,7 +182,7 @@ def hidden(context: Context) -> list[Finding]:
         _finding(
             "process.hidden",
             "A process hidden from /proc's listing (what ps sees)",
-            "high",
+            "critical",
             p,
             f"answers a direct lookup but isn't listed; exe {p.get('exe')},"
             f" command {str(p.get('cmdline') or '')[:120]}",

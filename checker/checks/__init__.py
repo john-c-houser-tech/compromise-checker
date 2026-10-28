@@ -1,8 +1,8 @@
 """Checks (DESIGN.md §8): small rules over a bundle's events and snapshot,
 and its changes since the host's baseline, each producing findings.
 
-A finding says what was seen, how much it matters (a band: the likelihood
-ratios behind the bands are Phase 2), whether it is a sign of compromise,
+A finding says what was seen, how much it matters (a band, and the
+likelihood ratio scoring gives it, checker/scoring.py), whether it is a sign of compromise,
 of poor hygiene or of exposure (principle 9), what it involves, and which
 events, snapshot items and changes show it."""
 
@@ -22,7 +22,10 @@ COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"
 EXPOSURE = "exposure"
 CATEGORIES = (COMPROMISE, EXPOSURE, HYGIENE)
-BANDS = ("high", "medium", "low", "info")  # high: DESIGN.md §8's ★ checks
+# critical: the strongest signs (DESIGN.md §11.1's critical examples);
+# high: DESIGN.md §8's ★ checks. The likelihood ratio behind each band is
+# in checker/scoring.py.
+BANDS = ("critical", "high", "medium", "low", "info")
 
 
 @dataclass
@@ -40,6 +43,9 @@ class Finding:
     last_seen: str | None = None
     new: bool = False  # changed since the previous bundle, not only since the baseline
     uncertain: str | None = None  # why it may be wrong (a section not fully collected)
+    # Which of a check's kinds of finding this is, where they differ in
+    # weight (scoring's overrides, whitelists).
+    variant: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

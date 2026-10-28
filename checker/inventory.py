@@ -56,6 +56,9 @@ class Host(BaseModel):
     python: str = "python3"
     # Web roots to list for web shells instead of the common defaults.
     web_roots: list[str] | None = None
+    # This host's prior probability of compromise, if not its group's or
+    # the configuration's (DESIGN.md §11.2).
+    prior: float | None = Field(default=None, gt=0, lt=1)
 
     @field_validator("name")
     @classmethod

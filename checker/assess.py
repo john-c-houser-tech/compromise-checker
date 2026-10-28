@@ -19,12 +19,27 @@ from checker.analysis import load_events, parse_bundle, snapshot_of, store_parse
 from checker.baseline import changes, usable_bundles
 from checker.checks import CHECKS_VERSION, Context, run_checks
 from checker.events import PARSER_VERSION, Event
-from checker.evidence import EvidenceError, Store, open_text, seal_text
+from checker.evidence import Config, EvidenceError, Store, open_text, seal_text
+from checker.inventory import Inventory
+from checker.scoring import DEFAULT_PRIOR, SCORING_VERSION, score
 from checker.snapshot import FULL, SNAPSHOT_VERSION, Snapshot
 
 # Logs whose reach (how far back they go) the coverage reports.
 LOG_SOURCES = ("auth_log", "auth_journal", "system_journal", "login_records")
 LARGE_CLOCK_OFFSET = 120  # seconds
+# 2: scored (prior, each finding's ratio and contribution, the score).
+ASSESSMENT_FORMAT = 2
+
+
+def prior_for(host: str, config: Config, inventory: Inventory) -> tuple[float, str]:
+    """The prior a host's score starts from, and where it comes from: the
+    host's own in the inventory, its group's, or the configuration's."""
+    entry = next((h for h in inventory.hosts if h.name == host), None)
+    if entry is not None and entry.prior is not None:
+        return entry.prior, "host"
+    if entry is not None and entry.group in config.group_priors:
+        return config.group_priors[entry.group], f"group {entry.group}"
+    return config.prior, "configuration"
 
 
 def events_of(store: Store, row: Any, identity, recipients: list[str]) -> list[Event]:
@@ -102,9 +117,11 @@ def analyze(
     identity: x25519.Identity,
     recipients: list[str],
     bundle_id: str | None = None,
+    prior: tuple[float, str] = (DEFAULT_PRIOR, "default"),
 ) -> dict[str, Any]:
-    """Run every check on a host's bundle (by default its latest) and store
-    the assessment; returns it."""
+    """Run every check on a host's bundle (by default its latest), score
+    the findings from `prior` (value, source) and store the assessment;
+    returns it."""
     found = changes(store, host, identity, recipients, bundle_id)
     row = store.bundle(found.bundle_id)
     snapshot = snapshot_of(store, row, identity, recipients)
@@ -156,11 +173,14 @@ def analyze(
         no_baseline=no_baseline,
     )
     findings, ran = run_checks(context)
+    found_dicts = [f.as_dict() for f in findings]
+    scored = score(found_dicts, prior[0]) | {"prior_source": prior[1]}
     counts: dict[str, int] = {}
     for finding in findings:
         key = f"{finding.category}/{finding.band}"
         counts[key] = counts.get(key, 0) + 1
     assessment = {
+        "format": ASSESSMENT_FORMAT,
         "host": host,
         "bundle_id": row["id"],
         "analysed_at": datetime.now(UTC).isoformat(),
@@ -169,12 +189,14 @@ def analyze(
             "checks": CHECKS_VERSION,
             "parser": PARSER_VERSION,
             "snapshot": SNAPSHOT_VERSION,
+            "scoring": SCORING_VERSION,
         },
         "baseline_id": found.baseline_id,
         "baseline_set_now": found.baseline_set_now,
         "notes": notes,
         "counts": counts,
-        "findings": [f.as_dict() for f in findings],
+        "score": scored,
+        "findings": found_dicts,
         "checks": ran,
         "coverage": coverage(row, identity, parsed.events, parsed.summary, snapshot),
     }
@@ -210,7 +232,16 @@ def store_assessment(store: Store, row: Any, recipients: list[str], assessment: 
             "baseline_id": assessment["baseline_id"],
             "path": str(target),
             "ciphertext_sha256": digest,
-            "summary": seal_text(json.dumps(assessment["counts"]), recipients),
+            "summary": seal_text(
+                json.dumps(
+                    {
+                        "counts": assessment["counts"],
+                        "probability": assessment["score"]["probability"],
+                        "band": assessment["score"]["band"],
+                    }
+                ),
+                recipients,
+            ),
         }
     )
     return target

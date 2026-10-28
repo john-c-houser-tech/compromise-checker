@@ -104,7 +104,7 @@ def uid0(context: Context) -> list[Finding]:
                     "account.uid0",
                     "An account other than root has UID 0",
                     COMPROMISE,
-                    "high",
+                    "critical",
                     f"{key} has UID 0: it is root under another name",
                     [f"account:{key}"],
                     [{"item": ["accounts", key]}],

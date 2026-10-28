@@ -173,8 +173,8 @@ def test_package_changes_by_importance():
     found = of(run([], snap(package_changes=changes)), "package.changed")
     bands = {f.summary.split(" ")[0]: (f.band, f.category) for f in found}
     assert bands == {
-        "/usr/bin/ps": ("high", "compromise indicator"),
-        "/usr/lib/x86_64-linux-gnu/security/pam_unix.so": ("high", "compromise indicator"),
+        "/usr/bin/ps": ("critical", "compromise indicator"),
+        "/usr/lib/x86_64-linux-gnu/security/pam_unix.so": ("critical", "compromise indicator"),
         "/usr/lib/x86_64-linux-gnu/libfoo.so.1": ("medium", "compromise indicator"),
         "/usr/share/doc/x/README": ("low", "compromise indicator"),
         "/etc/ssh/sshd_config": ("info", "hygiene"),
@@ -353,7 +353,7 @@ def test_process_executables():
 def test_hidden_processes():
     live = {"processes": [proc(66, "x", hidden=True, exe="/x"), proc(67, "y", hidden=False)]}
     [finding] = of(run([], snap(live)), "process.hidden")
-    assert finding.band == "high" and "pid 66" in finding.summary
+    assert finding.band == "critical" and "pid 66" in finding.summary
 
 
 def _tool_tree(collector_stdin=None):

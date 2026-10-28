@@ -9,10 +9,10 @@
 <title>CONFIDENTIAL — Compromise check: {% if reports|length == 1 %}{{ reports[0].host|visible(80) }}{% else %}{{ reports|length }} hosts{% endif %}</title>
 <style>
 :root { --ink: #1d232a; --muted: #5b6672; --line: #d6dbe0; --paper: #ffffff; --soft: #f4f6f8;
-  --high: #a4161a; --medium: #b85c00; --low: #44617b; --info: #6b7280; --ok: #2d6a4f; }
+  --critical: #6a040f; --high: #a4161a; --medium: #b85c00; --low: #44617b; --info: #6b7280; --ok: #2d6a4f; }
 @media (prefers-color-scheme: dark) {
   :root { --ink: #e6e9ec; --muted: #a3acb6; --line: #39424c; --paper: #15191d; --soft: #1e242a;
-    --high: #ff6b6b; --medium: #ffa94d; --low: #8fb3d9; --info: #a3acb6; --ok: #69db7c; }
+    --critical: #ff8fa3; --high: #ff6b6b; --medium: #ffa94d; --low: #8fb3d9; --info: #a3acb6; --ok: #69db7c; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink);
@@ -31,7 +31,10 @@ th { font-weight: 600; color: var(--muted); font-size: .85rem; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .band { display: inline-block; min-width: 4.5em; text-align: center; border-radius: 4px; padding: 0 6px;
   font-size: .78rem; font-weight: 700; color: #fff; }
-.band.high { background: var(--high); } .band.medium { background: var(--medium); }
+.band.critical { background: var(--critical); }
+.score { font-weight: 700; padding: 1px 8px; border-radius: 4px; color: #fff; background: var(--low); white-space: nowrap; }
+.score.elevated { background: var(--medium); } .score.high { background: var(--high); } .score.critical { background: var(--critical); }
+.scoreline { font-size: 1.1rem; } .band.high { background: var(--high); } .band.medium { background: var(--medium); }
 .band.low { background: var(--low); } .band.info { background: var(--info); }
 .finding { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin: 10px 0; }
 .finding .title { font-weight: 600; }
@@ -55,8 +58,10 @@ footer { margin-top: 48px; color: var(--muted); font-size: .85rem; border-top: 1
 checker {{ version }} · checks version {{ checks_version }}</p>
 
 <div class="notice">
-<p><strong>Findings and bands only.</strong> This report lists what the checks found, each with a
-band (high, medium, low, info). A scored probability of compromise comes in Phase 2.</p>
+<p><strong>The probability is an estimate, not a measurement.</strong> Each host's probability of
+compromise combines its findings' likelihood ratios with a prior (DESIGN.md §11), and is shown with a
+band (Low, Elevated, High, Critical) for that reason. Hygiene and exposure are rated separately and
+never move it. Low coverage doesn't lower it: read it beside the coverage section.</p>
 <p><strong>No findings is not proof of a clean server.</strong> Attackers can avoid or remove
 evidence, logs may be missing, and no set of checks covers every technique. Check the coverage
 section for each host. A high band is a reason to investigate, not proof of an intrusion.</p>
@@ -66,8 +71,8 @@ with the evidence and share it only with people who need it.</p>
 
 <h2>Summary</h2>
 <div class="wrap"><table>
-<tr><th>Host</th><th>Collected</th><th>Bundle</th>
-<th class="num">High</th><th class="num">Medium</th><th class="num">Low</th>
+<tr><th>Host</th><th>Collected</th><th>Bundle</th><th>Probability</th>
+<th class="num">Critical</th><th class="num">High</th><th class="num">Medium</th><th class="num">Low</th>
 <th class="num">Hygiene</th><th class="num">Exposure</th><th class="num">Coverage gaps</th></tr>
 {% for r in reports %}
 {% set c = r.counts.get("compromise indicator", {}) %}
@@ -75,7 +80,8 @@ with the evidence and share it only with people who need it.</p>
 <td><a href="#host-{{ loop.index }}">{{ r.host|visible(60) }}</a></td>
 <td class="mono">{{ r.row["started_at"][:16] }}</td>
 <td class="mono">{{ r.row["status"] }}</td>
-<td class="num">{{ c.get("high", 0) }}</td><td class="num">{{ c.get("medium", 0) }}</td><td class="num">{{ c.get("low", 0) }}</td>
+<td><span class="score {{ r.assessment.score.band|lower }}">{{ "%.0f"|format(r.assessment.score.probability * 100) }}% {{ r.assessment.score.band }}</span></td>
+<td class="num">{{ c.get("critical", 0) }}</td><td class="num">{{ c.get("high", 0) }}</td><td class="num">{{ c.get("medium", 0) }}</td><td class="num">{{ c.get("low", 0) }}</td>
 <td class="num">{{ r.counts.get("hygiene", {}).values()|sum }}</td>
 <td class="num">{{ r.counts.get("exposure", {}).values()|sum }}</td>
 <td class="num">{{ r.assessment.coverage.gaps|length }}</td>
@@ -108,6 +114,23 @@ with the evidence and share it only with people who need it.</p>
 {% if facts.get("kernel") %}kernel {{ facts["kernel"]|visible(60) }} · {% endif %}
 baseline <span class="mono">{{ r.assessment.baseline_id|visible(120) }}</span>{% if r.assessment.baseline_set_now %} (set at this analysis){% endif %}</p>
 {% for note in r.assessment.notes %}<div class="notice">{{ note|visible(400) }}</div>{% endfor %}
+
+{% set s = r.assessment.score %}
+<h3>Probability of compromise</h3>
+<p class="scoreline"><span class="score {{ s.band|lower }}">{{ "%.0f"|format(s.probability * 100) }}% · {{ s.band }}</span>
+<span class="muted">from a prior of {{ "%.0f"|format(s.prior * 100) }}% ({{ s.prior_source|visible(60) }});
+{{ r.assessment.coverage.gaps|length }} coverage gap(s) below. Hygiene and exposure, rated separately: {{ s.hygiene_and_exposure.band }}.</span></p>
+{% if s.contributors %}
+<div class="wrap"><table>
+<tr><th>Contributor</th><th>Check</th><th class="num">Likelihood ratio</th><th class="num">Share</th><th>Capped</th></tr>
+{% for c in s.contributors %}
+<tr><td>{{ c.title|visible(200) }}</td><td class="mono">{{ c.check }}</td><td class="num">×{{ "%g"|format(c.ratio) }}</td>
+<td class="num">{{ "%.0f"|format(c.share * 100) }}%</td><td class="muted">{{ c.capped or "" }}</td></tr>
+{% endfor %}
+</table></div>
+<p class="muted">Findings about the same file or process count once in full; one check's repeated findings add at most a doubling;
+uncertain findings count half. Suppressed and informational findings don't count.</p>
+{% else %}<p class="muted">No compromise indicators: the probability is the prior.</p>{% endif %}
 
 <h3>Compromise indicators</h3>
 {% set shown = r.findings.get("compromise indicator", [])|rejectattr("band", "equalto", "info")|list %}

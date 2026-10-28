@@ -195,7 +195,7 @@
    },
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
-   "variant": null
+   "variant": "created"
   },
   {
    "band": "medium",
@@ -225,7 +225,7 @@
    },
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
-   "variant": null
+   "variant": "created"
   },
   {
    "band": "medium",
@@ -591,6 +591,7 @@
  ],
  "score": {
   "band": "Low",
+  "chains": [],
   "contributors": [
    {
     "capped": null,
@@ -614,7 +615,7 @@
   "prior": 0.02,
   "prior_source": "golden",
   "probability": 0.0297,
-  "version": 1
+  "version": 2
  },
  "whitelist": {
   "as_of": "2026-10-28",

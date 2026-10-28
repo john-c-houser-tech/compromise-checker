@@ -38,6 +38,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from checker.checks import load_checks
+from checker.correlate import EVENT_TYPES, MAX_WITHIN, WRITERS, correlated, parse_duration
 
 PROFILES = Path(__file__).parent / "profiles"
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
@@ -54,6 +55,69 @@ class WhitelistError(Exception):
     """A whitelist file is invalid; the message says which file and where."""
 
 
+class Correlation(BaseModel):
+    """`correlated_with`: every event the finding cites must have a partner
+    (checker/correlate.py)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: str
+    within: str
+    direction: Literal["after", "before", "either"] = "after"
+    same: list[Literal["account", "address"]] = ["account"]
+    command: str | None = None  # the partner's command (sudo.command), * and ?
+
+    @field_validator("event")
+    @classmethod
+    def _known(cls, value: str) -> str:
+        if value not in EVENT_TYPES:
+            raise ValueError(f"no event type {value!r} (docs/events.md lists them)")
+        return value
+
+    @field_validator("within")
+    @classmethod
+    def _within(cls, value: str) -> str:
+        if parse_duration(value) > MAX_WITHIN:
+            raise ValueError("at most 1d")
+        return value
+
+    @field_validator("command")
+    @classmethod
+    def _command(cls, value: str | None) -> str | None:
+        if value is not None and (
+            not value.strip("*?") or any(unicodedata.category(c) in _HIDDEN for c in value)
+        ):
+            raise ValueError("name the command: plain text, not only wildcards")
+        return value
+
+    @model_validator(mode="after")
+    def _tied(self) -> Correlation:
+        if not self.same:
+            raise ValueError("same: account, address or both (a partner by anyone isn't one)")
+        carried = WRITERS[self.event][1]
+        missing = [name for name in self.same if name not in carried]
+        if missing:
+            raise ValueError(
+                f"{self.event} events carry no {', '.join(missing)}: `same` can't use it"
+            )
+        if self.command is not None and self.event not in ("sudo.command",):
+            raise ValueError("only sudo.command events carry a command")
+        if self.command is not None and not self.names_a_program():
+            raise ValueError(
+                "a command starts with the program's full path, no wildcards in it:"
+                " /usr/bin/git -C /srv/app pull, not *git pull"
+            )
+        return self
+
+    def names_a_program(self) -> bool:
+        """The command starts with a program's full path, no wildcard in it:
+        `/usr/bin/git -C /srv/app pull`, not `*git*` or `/*`."""
+        if self.command is None:
+            return False
+        program = self.command.split(" ", 1)[0]
+        return program.startswith("/") and len(program) > 1 and not set(program) & {"*", "?"}
+
+
 class Match(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -68,6 +132,7 @@ class Match(BaseModel):
     address: str | None = None  # an address or a network, host bits zero
     path: str | None = None  # an anchored pattern: * within a directory, ** across
     exe: str | None = None  # a process's executable, as a path pattern
+    correlated_with: Correlation | None = None
 
     @field_validator("address")
     @classmethod
@@ -83,6 +148,19 @@ class Match(BaseModel):
         if value is not None:
             check_pattern(value)
         return value
+
+    @model_validator(mode="after")
+    def _condition_names_the_account(self) -> Match:
+        # A condition reads what the host logged: whoever holds the account
+        # can run the same command. So it may only ever explain one named
+        # account, never every account (broad or not).
+        if self.correlated_with is not None and self.account is None:
+            raise ValueError(
+                "a rule with correlated_with must name the account (and, where the deploys"
+                " come from a known network, an address): whoever holds an account can run"
+                " the same command"
+            )
+        return self
 
     @model_validator(mode="after")
     def _known_check(self) -> Match:
@@ -361,7 +439,12 @@ class Whitelist:
             changed += 1
         return changed
 
-    def apply(self, findings: list[dict[str, Any]], today: date | None = None) -> dict[str, Any]:
+    def apply(
+        self,
+        findings: list[dict[str, Any]],
+        today: date | None = None,
+        events: list | None = None,
+    ) -> dict[str, Any]:
         """Mark each finding a live rule matches with `suppressed_by` (the
         first match, narrowest layer first); returns what the assessment
         records: the set's hash, its rules, the expired ones, and counts."""
@@ -369,10 +452,11 @@ class Whitelist:
         maintenance = self._maintenance(findings, today)
         live = [p for p in self.rules if p.live(today)]
         matched: dict[str, int] = {}
+        partners: dict = {}  # each condition's partners, worked out once
         for finding in findings:
             finding.pop("suppressed_by", None)
             for placed in live:
-                if matches(placed.rule.match, finding):
+                if matches(placed.rule.match, finding, events, partners):
                     finding["suppressed_by"] = {
                         "rule": placed.rule.id,
                         "layer": placed.layer,
@@ -397,12 +481,15 @@ class Whitelist:
 
 
 def reapply(
-    findings: list[dict[str, Any]], whitelist: Whitelist | None, today: date | None = None
+    findings: list[dict[str, Any]],
+    whitelist: Whitelist | None,
+    today: date | None = None,
+    events: list | None = None,
 ) -> dict[str, Any] | None:
     """Stored findings under another whitelist (or none): earlier
     suppressions and maintenance undone, then this one applied."""
     if whitelist is not None:
-        return whitelist.apply(findings, today)
+        return whitelist.apply(findings, today, events)
     for finding in findings:
         finding.pop("suppressed_by", None)
         earlier = finding.pop("maintenance", None)
@@ -424,7 +511,9 @@ def _moment(text: str | None) -> datetime | None:
 # --- Matching ----------------------------------------------------------------------------
 
 
-def matches(match: Match, finding: dict[str, Any]) -> bool:
+def matches(
+    match: Match, finding: dict[str, Any], events: list | None = None, cache: dict | None = None
+) -> bool:
     """Every field the rule gives must match, and must cover every entity of
     its kind the finding names (one known file doesn't vouch for another in
     the same finding); a finding whose entity list is partial matches no
@@ -453,6 +542,8 @@ def matches(match: Match, finding: dict[str, Any]) -> bool:
             ok = all(path_matches(wanted, v) for v in values)
         if not ok:
             return False
+    if match.correlated_with is not None:
+        return correlated(match.correlated_with, finding, events, cache)
     return True
 
 

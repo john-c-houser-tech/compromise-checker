@@ -78,6 +78,46 @@ doesn't hide a group of files that also holds an unknown one. A finding
 that lists only some of its entities (a group of more than 20 files) is
 matched only by a broad rule.
 
+## Conditions: `correlated_with`
+
+A rule can require a partner event: a login from a new address is
+explained only when the same account runs the deploy command right after.
+
+```yaml
+  - id: deploy-after-login
+    match:
+      check: ssh.login
+      variant: new_address
+      account: deploy            # required with correlated_with
+      # address: 198.51.100.0/24 # recommended where deploys come from a known network
+      correlated_with:
+        event: sudo.command      # any type in docs/events.md
+        within: 30s              # 1s … 1d
+        direction: after         # after (default), before, either
+        same: [account]          # account (default), address, or both
+        command: "/usr/bin/git -C /srv/app pull"   # full program path; * and ? after it
+    reason: "Deploys log in from wherever John is, then pull at once."
+    owner: john
+    expires: never
+```
+
+**Every** event the finding cites (each login, for a finding about
+several) needs its own partner: of that type, recorded by the journal from
+the program that writes it, running as root (a line written with `logger
+-t sudo`, or found only in a log file, is not a partner), not the tool's
+own session, within the time on the given side, by the same account (and
+from the same address, when asked), running a matching command when one
+is named. An event is never its own partner, and a finding's own events
+don't vouch for each other. A rule with a condition must name the
+`account`; a `command` must start with the program's full path.
+
+**The limit, plainly:** a condition reads what the server logged, so it
+explains, it doesn't prove. Whoever holds the deploy account's key can log
+in from anywhere and run the same `git pull`, and that login is hidden
+like a real deploy. Add an `address` range wherever the deploys come from
+a known network, keep `within` short and the command exact, and treat a
+stolen deploy key as the risk this rule accepts.
+
 ## Maintenance windows
 
 Planned work explains reboots. Inside a window in any layer, an

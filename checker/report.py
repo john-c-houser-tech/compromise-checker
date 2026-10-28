@@ -29,6 +29,7 @@ from checker.analysis import load_events, snapshot_of
 from checker.assess import analyze, count, events_of, load_assessment, store_assessment
 from checker.baseline import USABLE, usable_bundles
 from checker.checks import BANDS, CATEGORIES, CHECKS_VERSION
+from checker.correlate import find_chains
 from checker.evidence import EvidenceError, Store, open_text, who_and_where
 from checker.scoring import DEFAULT_PRIOR, percent, score
 from checker.snapshot import Snapshot
@@ -200,15 +201,20 @@ def reassess(
     assessment: dict,
     prior: tuple[float, str],
     whitelist: Whitelist | None,
+    events: list,
 ) -> dict:
     """The assessment's findings with another whitelist or prior: the
-    whitelist applied again and the findings scored again, without running
-    the checks (which could see another baseline by now). Stored as a new
-    assessment; the earlier one is kept."""
+    whitelist applied again, chains found again and the findings scored
+    again, without running the checks (which could see another baseline by
+    now). Stored as a new assessment; the earlier one is kept."""
     again = json.loads(json.dumps(assessment))
     again["analysed_at"] = datetime.now(UTC).isoformat()
-    again["whitelist"] = reapply(again["findings"], whitelist)
-    again["score"] = score(again["findings"], prior[0]) | {"prior_source": prior[1]}
+    again["whitelist"] = reapply(again["findings"], whitelist, events=events)
+    chains = find_chains(again["findings"], events, assessment.get("previous_time"))
+    again["score"] = score(again["findings"], prior[0], chains) | {
+        "prior_source": prior[1],
+        "chains": chains,
+    }
     again["counts"] = count(again["findings"])
     store_assessment(store, row, recipients, again)
     return again
@@ -249,7 +255,9 @@ def host_report(
         # A rule that has expired since the assessment stops suppressing.
         or (whitelist and whitelist.expired() != assessment["whitelist"].get("expired"))
     ):
-        assessment = reassess(store, row, recipients, assessment, prior, whitelist)
+        parsed = load_events(store, row, identity)
+        events = parsed.events if parsed else events_of(store, row, identity, recipients)
+        assessment = reassess(store, row, recipients, assessment, prior, whitelist, events)
     parsed = load_events(store, row, identity)
     events = parsed.events if parsed else events_of(store, row, identity, recipients)
     snapshot = snapshot_of(store, row, identity, recipients)

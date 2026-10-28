@@ -251,7 +251,7 @@
    "summary": "cc-toor: primary group root (GID 0)",
    "title": "A new account whose primary group is root-equivalent",
    "uncertain": null,
-   "variant": null
+   "variant": "root_group"
   },
   {
    "band": "high",
@@ -475,7 +475,7 @@
    "summary": "operator: ssh-ed25519 SHA256:wKY8WcMl5VjDsQArsmFrDiqPu4gV7jYmXV4Uc+HhN+w in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
-   "variant": null
+   "variant": "new_key"
   },
   {
    "band": "high",
@@ -504,7 +504,7 @@
    "summary": "root: ssh-ed25519 SHA256:wKY8WcMl5VjDsQArsmFrDiqPu4gV7jYmXV4Uc+HhN+w in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
-   "variant": null
+   "variant": "new_key"
   },
   {
    "band": "high",
@@ -560,7 +560,7 @@
    "summary": "cc-toor (UID 0, shell /bin/bash)",
    "title": "A new account",
    "uncertain": null,
-   "variant": null
+   "variant": "new"
   },
   {
    "band": "medium",
@@ -583,7 +583,7 @@
    "summary": "created: cc-toor UID 0",
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
-   "variant": null
+   "variant": "created"
   },
   {
    "band": "medium",
@@ -613,7 +613,7 @@
    },
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
-   "variant": null
+   "variant": "created"
   },
   {
    "band": "medium",
@@ -643,7 +643,7 @@
    },
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
-   "variant": null
+   "variant": "created"
   },
   {
    "band": "medium",
@@ -1120,6 +1120,7 @@
  ],
  "score": {
   "band": "Critical",
+  "chains": [],
   "contributors": [
    {
     "capped": null,
@@ -1305,7 +1306,7 @@
   "prior": 0.02,
   "prior_source": "golden",
   "probability": 1.0,
-  "version": 1
+  "version": 2
  },
  "whitelist": {
   "as_of": "2026-10-28",

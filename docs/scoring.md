@@ -65,6 +65,45 @@ reason recorded here.
   until a new baseline is accepted, and counts each time; the report marks
   which findings are new.
 
+## Chains
+
+Findings that together tell an attack's story earn a bonus on top of what
+each counts alone (DESIGN.md §11.3; `CHAINS` in `checker/correlate.py`,
+data like the ratios):
+
+| Chain | Steps, for one account | Within | Bonus |
+|---|---|---|---|
+| `new-account-escalated-used` | a *new* account or key → a sudo rule, privileged group or group membership for it → a login by it | 7 days | ×5 |
+| `guessed-then-entrenched` | a login after repeated failures → a new key, sudo rule or privileged group for it | 24 hours | ×5 |
+
+- Each chain counts **once**, however many accounts complete it.
+- Only findings the score counts are steps: compromise indicators, not
+  suppressed (a whitelisted step is explained), not informational (a
+  maintenance window may have made them so).
+- Each step is a different finding, citing different log lines: one
+  `usermod -aG sudo alice` is not both "a new account" and "privilege".
+  Adding an existing user to a privileged group isn't a new account, so
+  ordinary onboarding of an existing user doesn't complete the first chain.
+- A step from the logs must fall within the chain's time of its first
+  step (before or after it), and the login must come after the first
+  timed step; when every earlier step is about state (a snapshot change,
+  which has no time, and counts only if new since the previous bundle),
+  the login must come after the previous bundle. With no previous bundle,
+  such a chain can't be told and isn't counted.
+- The tool's own account (the one its current session logged in as)
+  never completes a chain: its earlier visits' logins are in the logs.
+- A new administrator account that is created, given sudo and used is
+  exactly what the first chain describes. Where that is routine (a
+  provisioner), whitelist one of its steps for that account.
+- The bonus shows in the contributors as its own line (`chain:<id>`),
+  with the findings that made it listed under it in the report; the
+  assessment records each chain's findings and events.
+
+More chains arrive with the checks they need: a web worker's child, a file
+in a scratch place and an outbound connection (2.4, 2.8); anything high,
+then logging stopped or history wiped (2.5); a new web script, then
+successful requests to it (2.8).
+
 ## The prior
 
 The prior is the probability of compromise before any evidence: 2% by

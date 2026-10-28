@@ -314,6 +314,9 @@ def cmd_whitelist_test(args: argparse.Namespace) -> int:
         return 0
     changed = 0
     for r in results:
+        if r.get("skipped"):
+            print(f"{r['bundle']}  skipped: {r['skipped']} (run checker analyze first)")
+            continue
         (p0, b0), (p1, b1) = r["before"], r["after"]
         moved = r["hidden"] or r["revealed"] or r["rebanded"]
         changed += bool(moved)
@@ -324,7 +327,8 @@ def cmd_whitelist_test(args: argparse.Namespace) -> int:
             print(f"  would reveal   {line}")
         for line in r["rebanded"]:
             print(f"  would reband   {line}")
-    print(f"{changed} of {len(results)} analyses would change. Nothing was saved.")
+    compared = sum(1 for r in results if not r.get("skipped"))
+    print(f"{changed} of {compared} analyses would change. Nothing was saved.")
     return 0
 
 

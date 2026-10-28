@@ -18,6 +18,7 @@ from pyrage import x25519
 from checker.analysis import load_events, parse_bundle, snapshot_of, store_parsed
 from checker.baseline import changes, usable_bundles
 from checker.checks import CHECKS_VERSION, Context, run_checks
+from checker.correlate import find_chains
 from checker.events import PARSER_VERSION, Event
 from checker.evidence import Config, EvidenceError, Store, open_text, seal_text
 from checker.inventory import Inventory
@@ -135,8 +136,10 @@ def evaluate(
     what the golden reports pin (tests/golden)."""
     findings, ran = run_checks(context)
     found = [f.as_dict() for f in findings]
-    applied = whitelist.apply(found, today) if whitelist is not None else None
-    return found, ran, score(found, prior[0]) | {"prior_source": prior[1]}, applied
+    applied = whitelist.apply(found, today, context.events) if whitelist is not None else None
+    chains = find_chains(found, context.events, context.previous_time)
+    scored = score(found, prior[0], chains) | {"prior_source": prior[1], "chains": chains}
+    return found, ran, scored, applied
 
 
 def analyze(
@@ -217,6 +220,7 @@ def analyze(
         },
         "baseline_id": found.baseline_id,
         "baseline_set_now": found.baseline_set_now,
+        "previous_time": previous_time,
         "notes": notes,
         "counts": counts,
         "score": scored,

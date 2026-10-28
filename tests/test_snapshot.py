@@ -18,10 +18,6 @@ from checker.baseline import accept, changes, current_baseline
 from checker.bundle import walk_bundle
 from checker.evidence import (
     EvidenceError,
-    Store,
-    database_file,
-    initialise,
-    load_identity,
     open_text,
 )
 from checker.snapshot import FULL, SnapshotBuilder, compare, sshd_lines, sudoers_lines
@@ -347,15 +343,6 @@ def test_a_new_masking_version_is_noted(tmp_path):
 
 
 # --- Stored, and baselines ---------------------------------------------------------------------
-
-
-@pytest.fixture
-def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
-    config, identity_path = initialise(tmp_path)
-    store = Store(database_file(tmp_path))
-    yield tmp_path, store, load_identity(identity_path), config
-    store.close()
 
 
 def add_bundle(home, name, minutes, records, status="complete", host="web01"):

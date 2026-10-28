@@ -34,8 +34,16 @@ from pathlib import Path
 import asyncssh
 
 from checker.analysis import parse_bundle
+from checker.assess import analyze
 from checker.collect import collect_hosts
-from checker.evidence import Store, database_file, initialise, load_identity, open_bundle
+from checker.evidence import (
+    Store,
+    database_file,
+    initialise,
+    load_config,
+    load_identity,
+    open_bundle,
+)
 from checker.inventory import Host
 from checker.protocol import Limits
 from checker.transport import fetch_host_key, trust_host_key
@@ -187,6 +195,10 @@ class Result:
     own_login_found: bool | None = None
     own_events: int = 0
     events: int = 0
+    # `checker analyze` on a fresh server: no check may fail; its findings
+    # (informational) show the false alarms a clean server raises.
+    checks_failed: list[str] = field(default_factory=list)  # must stay empty
+    findings: list[str] = field(default_factory=list)
     error: str | None = None
 
 
@@ -526,6 +538,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             and result.home_text_files > 0
             and not result.missing
             and not result.snapshot
+            and not result.checks_failed
         )
     except Exception as exc:  # report it; the server is still deleted below
         result.error = f"{type(exc).__name__}: {exc}"
@@ -559,10 +572,23 @@ def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path,
     """Parse the bundle as the controller does and check its snapshot holds
     what the setup put on the server."""
     store = Store(database_file(home))
+    identity = load_identity(identity_file)
     try:
-        parsed = parse_bundle(store.bundle(bundle_id), load_identity(identity_file))
+        row = store.bundle(bundle_id)
+        parsed = parse_bundle(row, identity)
+        assessment = analyze(store, row["host"], identity, load_config(home).recipients)
     finally:
         store.close()
+    result.checks_failed = [
+        f"{c['check']}: {c['status']}"
+        for c in assessment["checks"]
+        if c["status"].startswith("failed")
+    ]
+    result.findings = [
+        f"{f['band']} {f['category']}: {f['title']} — {f['summary'][:120]}"
+        for f in assessment["findings"]
+        if f["band"] != "info"
+    ]
     result.events = len(parsed.events)
     result.own_events = parsed.summary.get("own_session") or 0
     result.own_login_found = parsed.summary.get("own_login_found")
@@ -631,6 +657,11 @@ def report(results: list[Result]) -> bool:
                 print(f"  FAIL: snapshot: {problem}")
             for gap in r.snapshot_incomplete:
                 print(f"  snapshot section incomplete: {gap}")
+            for failed in r.checks_failed:
+                print(f"  FAIL: check {failed}")
+            print(f"  findings on a fresh server (false alarms to tune): {len(r.findings)}")
+            for finding in r.findings:
+                print(f"    {finding}")
         for source in r.sources:
             print(f"  collected {source}")
         audit = r.audit

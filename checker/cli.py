@@ -11,7 +11,9 @@ from pydantic import ValidationError
 
 from checker import __version__
 from checker.analysis import load_events, parse_bundle, store_parsed
-from checker.baseline import accept, changes
+from checker.assess import analyze
+from checker.baseline import accept, changes, usable_bundles
+from checker.checks import BANDS, CATEGORIES
 from checker.collect import collect_hosts
 from checker.credentials import password_for
 from checker.evidence import (
@@ -412,6 +414,16 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--reparse", action="store_true", help="parse again even if stored")
     events.add_argument("--identity", help="the evidence private key file")
     events.set_defaults(handler=cmd_events)
+    analysing = commands.add_parser(
+        "analyze", help="run the checks on a host's latest bundle and list the findings"
+    )
+    target = analysing.add_mutually_exclusive_group(required=True)
+    target.add_argument("host", nargs="?")
+    target.add_argument("--all", action="store_true", help="every host with a usable bundle")
+    analysing.add_argument("--bundle", help="this bundle rather than the host's latest")
+    analysing.add_argument("--info", action="store_true", help="also list informational findings")
+    analysing.add_argument("--identity", help="the evidence private key file")
+    analysing.set_defaults(handler=cmd_analyze)
     changed = commands.add_parser(
         "changes", help="what changed on a host since its previous bundle and its baseline"
     )
@@ -440,6 +452,91 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 SHOWN = 20  # items listed per kind and section without --all
+
+
+def cmd_analyze(args: argparse.Namespace) -> int:
+    """Run the checks and list the findings, most serious first, with
+    what the collection couldn't see."""
+    base = home()
+    store = Store(database_file(base))
+    status = 0
+    try:
+        identity = _identity(args, base)
+        recipients = load_config(base).recipients
+        if args.all:
+            hosts = [h for h in store.hosts() if usable_bundles(store, h)]
+            if args.bundle:
+                raise EvidenceError("--bundle names one host's bundle: give the host instead")
+            if not hosts:
+                raise EvidenceError("no host has a usable bundle yet: collect first")
+        else:
+            hosts = [args.host]
+        for number, host in enumerate(hosts):
+            if number:
+                print()
+            try:
+                _print_assessment(analyze(store, host, identity, recipients, args.bundle), args)
+            except EvidenceError as exc:
+                print(f"checker: {host}: {exc}", file=sys.stderr)
+                status = 1
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    return status
+
+
+HEADINGS = {
+    "compromise indicator": "Compromise indicators",
+    "exposure": "Exposure",
+    "hygiene": "Hygiene",
+}
+
+
+def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
+    findings = assessment["findings"]
+    print(f"Host       {assessment['host']}")
+    print(f"Bundle     {assessment['bundle_id']}")
+    print(
+        f"Baseline   {assessment['baseline_id']}"
+        + (" (set just now)" if assessment["baseline_set_now"] else "")
+    )
+    for note in assessment["notes"]:
+        print(f"Note       {note}")
+    by_band = {band: sum(f["band"] == band for f in findings) for band in BANDS}
+    print("Findings   " + ", ".join(f"{n} {band}" for band, n in by_band.items()))
+    for category in CATEGORIES:
+        shown = [
+            f for f in findings if f["category"] == category and (args.info or f["band"] != "info")
+        ]
+        if not shown:
+            continue
+        print(f"\n{HEADINGS[category]}:")
+        for f in shown:
+            marks = (" [new]" if f["new"] else "") + (" [uncertain]" if f["uncertain"] else "")
+            print(f"  {f['band'].upper():6} {f['title']}{marks}")
+            print(f"         {f['summary'][:200]}")
+            if f["uncertain"]:
+                print(f"         uncertain: {f['uncertain'][:200]}")
+    hidden = sum(f["band"] == "info" for f in findings)
+    if hidden and not args.info:
+        print(f"\n({hidden} informational findings: --info lists them)")
+    coverage = assessment["coverage"]
+    print("\nCoverage:")
+    for name, reach in coverage["log_reach"].items():
+        print(f"  {name:15} {reach['from'][:16]} to {reach['to'][:16]} ({reach['days']} days)")
+    for gap in coverage["gaps"]:
+        print(f"  gap: {gap[:200]}")
+    for c in assessment["checks"]:
+        if c["status"].startswith("failed"):
+            print(f"  check {c['check']} {c['status']}")
+    waiting: dict[str, list[str]] = {}
+    for c in assessment["checks"]:
+        if c["status"] not in ("ran",) and not c["status"].startswith("failed"):
+            waiting.setdefault(c["status"], []).append(c["check"])
+    for why, names in waiting.items():
+        print(f"  not run ({why}): {', '.join(names)}")
 
 
 def _brief(item: dict) -> str:

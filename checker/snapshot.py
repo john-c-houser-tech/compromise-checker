@@ -17,7 +17,7 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 1
+SNAPSHOT_VERSION = 2
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -34,6 +34,7 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "sshd_config": ("sshd configuration lines, per file and Match block", ("ssh",)),
     "ssh_files": ("sshd configuration files, key files and .ssh directories", ("ssh",)),
     "pam": ("PAM configuration and module files", ("pam",)),
+    "pam_rules": ("PAM configuration lines, per file", ("pam",)),
     "cron": ("cron and at files", ("cron",)),
     "systemd": ("systemd units, drop-ins and generators", ("systemd",)),
     "startup": ("start-up scripts and shell start-up files", ("startup",)),
@@ -64,6 +65,7 @@ FULL = frozenset(m for _, modules in SECTIONS.values() for m in modules)
 # version can change them without any change on the host.
 _MASKED = {
     "sudo_rules",
+    "pam_rules",
     "sshd_config",
     "sudo_files",
     "ssh_files",
@@ -127,6 +129,12 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
         if name in ("homes", "authorized_keys_file") or "account" in data or "home" in data:
             return {"authorized_keys", "ssh_files"}
         return {"sshd_config", "ssh_files"}
+    if module == "pam":
+        # /etc/pam.d and pam.conf hold the lines; the module directories
+        # (walked, or not examined) hold the module files.
+        if name in ("config_dir", "source") or str(path or "").startswith("/etc/"):
+            return {"pam_rules", "pam"}
+        return {"pam"}
     if module == "unusual_files":
         return {"unusual_files", "web_files", "privileged_files"}
     if module == "system_files":
@@ -203,6 +211,25 @@ def sudoers_lines(lines: list[str]) -> list[str]:
     pending = ""
     for raw in lines:
         line = _without_comment(raw).rstrip()
+        if line.endswith("\\"):
+            pending += line[:-1] + " "
+            continue
+        line = (pending + line).strip()
+        pending = ""
+        if line:
+            out.append(" ".join(line.split()))
+    if pending.strip():
+        out.append(" ".join(pending.split()))
+    return out
+
+
+def pam_lines(lines: list[str]) -> list[str]:
+    """PAM configuration lines as Linux-PAM reads them: a `#` anywhere
+    starts a comment, continuations joined, spaces collapsed."""
+    out: list[str] = []
+    pending = ""
+    for raw in lines:
+        line = raw.split("#", 1)[0].rstrip()
         if line.endswith("\\"):
             pending += line[:-1] + " "
             continue
@@ -309,7 +336,7 @@ class SnapshotBuilder:
 
     def source_start(self, start: SourceStart) -> None:
         wanted = start.kind == "file" and start.module in _FILE_SECTIONS
-        lines: list[str] | None = [] if start.module in ("sudoers", "ssh") else None
+        lines: list[str] | None = [] if start.module in ("sudoers", "ssh", "pam") else None
         if wanted:
             self._text[start.source_id] = ((start, hashlib.sha256()), lines)
 
@@ -356,6 +383,10 @@ class SnapshotBuilder:
             # Keyed by text: a line moved within its file isn't a change; the
             # same line twice is one rule.
             for text in sudoers_lines(lines):
+                rules.items[f"{start.name}: {text}"] = {"path": start.name}
+        elif start.module == "pam":
+            rules = self.section("pam_rules")
+            for text in pam_lines(lines):
                 rules.items[f"{start.name}: {text}"] = {"path": start.name}
         else:
             config = self.section("sshd_config")

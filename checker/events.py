@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-PARSER_VERSION = 1
+PARSER_VERSION = 2
 MAX_EVENT_LINE = 2048  # characters of the source line kept on each event
 
 _MONTHS = {m: i for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)}
@@ -491,7 +491,11 @@ class EventBuilder:
                 extra[name] = entry[key]
         # Fields the journal itself sets ("trusted"): who really logged it,
         # whatever name the message gives itself.
-        for key, name in (("_SYSTEMD_UNIT", "systemd_unit"), ("_COMM", "comm"), ("_UID", "uid")):
+        for key, name in (
+            ("_SYSTEMD_UNIT", "systemd_unit"),
+            ("_COMM", "journal_comm"),
+            ("_UID", "journal_uid"),
+        ):
             if isinstance(entry.get(key), str):
                 extra[name] = entry[key]
         pid = entry.get("SYSLOG_PID") or entry.get("_PID")
@@ -552,8 +556,8 @@ _SOURCE_ONLY = {
     "audit_session",
     "boot_id",
     "systemd_unit",
-    "comm",
-    "uid",
+    "journal_comm",
+    "journal_uid",
     "year_inferred",
     "time_uncertain",
     "source_cut",
@@ -725,7 +729,8 @@ def mark_own_session(events: list[Event], session: dict[str, Any] | None) -> int
                 continue
             if event.type == "logind.session_new" and f.get("user") != user:
                 continue
-            if "comm" in f and (f["comm"] != "systemd-logind" or f.get("uid") != "0"):
+            trusted = f.get("journal_comm"), f.get("journal_uid")
+            if "journal_comm" in f and trusted != ("systemd-logind", "0"):
                 continue
             mark(event)
         elif event.type in ("unit.started", "unit.stopped") and f.get("what") in scopes:

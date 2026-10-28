@@ -6213,6 +6213,8 @@ def module_network(run):
                 "type": _read_int(f"{base}/type"),
                 "bridge": os.path.isdir(path(f"{base}/bridge")),
                 "bridge_port": os.path.isdir(path(f"{base}/brport")),
+                # Enslaved to a bridge, bond or Open vSwitch: promiscuous by design.
+                "master": os.path.lexists(path(f"{base}/master")),
                 "rx_bytes": _read_int(f"{base}/statistics/rx_bytes"),
                 "tx_bytes": _read_int(f"{base}/statistics/tx_bytes"),
             },

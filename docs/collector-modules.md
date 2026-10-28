@@ -725,7 +725,10 @@ already loaded, so listing it never loads a kernel module:
   about the xtables extensions they use, so it was measured first: on
   Ubuntu 22.04, 24.04 and 26.04 with ufw and Docker running, 45 listings
   with `nft`, `iptables-nft-save` and `ip6tables-nft-save` loaded no
-  module (plan 2.4b), and the read-only proof keeps checking it. A set
+  module (plan 2.4b), and the read-only proof keeps checking it (on the
+  Ubuntu images; Docker on RHEL-family hosts also uses iptables-nft, which
+  the proof doesn't run there: Rocky and Alma are proved with firewalld's
+  native nftables). A set
   with more than 50 elements or lines (a fail2ban or CrowdSec blocklist) is
   sent as one line with its element count and a SHA-256 of its masked
   lines, never element by element; its lines aren't held past 50 or

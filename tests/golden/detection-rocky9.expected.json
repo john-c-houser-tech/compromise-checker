@@ -101,6 +101,11 @@
    "status": "ran"
   },
   {
+   "check": "net.managed_chain",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "net.metadata",
    "findings": 0,
    "status": "ran"
@@ -839,7 +844,9 @@
    "check": "net.listener",
    "contribution": 0.4055,
    "entities": [
-    "program:python3"
+    "program:python3",
+    "address:127.0.0.1",
+    "account:root"
    ],
    "entities_complete": true,
    "evidence": [

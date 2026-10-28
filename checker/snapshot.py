@@ -127,6 +127,13 @@ _VOLATILE = (
     (re.compile(r"\[\d+:\d+\]"), ""),
     (re.compile(r"\[\d+ elements, sha256 [0-9a-f]+\]"), "[a large set: elements not compared]"),
 )
+# Chains other software rewrites all the time (Docker, Kubernetes, CNI
+# plugins, fail2ban): one line saying they're there, not their rules.
+# DOCKER-USER is where administrators put their own rules: compared.
+_MANAGED_CHAIN = re.compile(
+    r"^(?!DOCKER-USER$)(?:DOCKER|KUBE-|cali-|CILIUM|f2b-|FLANNEL|CNI-|LIBVIRT_|ts-)",
+    re.IGNORECASE,
+)
 _NFT_TABLE = re.compile(r"^table (\S+ \S+) \{$")
 _NFT_CHAIN = re.compile(r"^(chain|set|map|flowtable|counter|quota) (\S+) \{$")
 
@@ -158,8 +165,15 @@ def firewall_lines(lines: list[str]) -> list[str]:
             else:
                 table = ""
             continue
-        where = " / ".join(p for p in (table, block) if p)
+        chain = block.split(" ", 1)[1] if block.startswith("chain ") else ""
+        if text.startswith(("-A ", "-I ")):  # iptables-save: the chain is in the line
+            chain = text.split()[1]
+        if chain and _MANAGED_CHAIN.match(chain):
+            text = "(managed by other software: rules not compared)"
+        where = " / ".join(p for p in (table, block or (f"chain {chain}" if chain else "")) if p)
         key = f"[{where}] {text}" if where else text
+        if text.startswith("(managed") and key in seen:
+            continue
         seen[key] = seen.get(key, 0) + 1
         out.append(key if seen[key] == 1 else f"{key} #{seen[key]}")
     return out
@@ -617,7 +631,7 @@ class SnapshotBuilder:
             if not str(data["name"]).startswith("veth"):
                 self.section("interfaces").items[data["name"]] = {
                     k: data.get(k)
-                    for k in ("promiscuous", "state", "type", "bridge", "bridge_port")
+                    for k in ("promiscuous", "state", "type", "bridge", "bridge_port", "master")
                 }
             # Counters change all the time: seen, never compared.
             self.live.setdefault("interfaces", []).append(data)

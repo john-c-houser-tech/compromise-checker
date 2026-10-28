@@ -385,6 +385,15 @@ host role, which waits for 2.10's profiles), `net.tunnel`, `net.config`,
 `net.promiscuous`, `net.transfer`; documentation ranges count as public
 there (they stand in for real addresses in tests and golden cases). The
 detection proof gains the four network behaviours.
+After the 2.4b review (2 High): LDAP and Kerberos from web accounts are
+medium (SMB and WinRM stay high); the metadata check knows agents by the
+file they run (and AWS's IPv6 address); managed chains (Docker, Kubernetes,
+fail2ban…) are summarised; ssh options parsed as ssh does; X11 forwards
+left out; container restarts aren't new listeners; entities for whitelist
+rules; Open vSwitch ports; container bridges out of the counters. John's
+side note: a chain named like a managed one is only summarised, so a new
+check, `net.managed_chain`, flags such a chain whose owner isn't running,
+and `DOCKER-USER` is compared rule by rule.
 
 *2.4a proof (2026-10-28, read-only, all seven images, 7 Nanodes, about 5
 cents, all deleted):* PASS on every image: the collector wrote nothing and

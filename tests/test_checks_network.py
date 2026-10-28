@@ -1,10 +1,15 @@
 """Network and data transfer checks (PR 2.4b, DESIGN.md §8.8)."""
 
+import pytest
 from test_checks import accounts, of, run
 from test_checks_live import proc, snap
 
+from checker.checks.network import ssh_forwarding
 
-def sock(remote, pids, state="established", protocol="tcp", local=("10.0.0.5", 40000)):
+ROOT = [0, 0, 0, 0]
+
+
+def sock(remote, pids, state="established", protocol="tcp", local=("10.0.0.5", 40000), uid=0):
     return {
         "protocol": protocol,
         "local": list(local),
@@ -12,6 +17,7 @@ def sock(remote, pids, state="established", protocol="tcp", local=("10.0.0.5", 4
         "state": state,
         "pids": list(pids),
         "netns": "net:[1]",
+        "uid": uid,
     }
 
 
@@ -19,78 +25,169 @@ def live(processes, sockets, **more):
     return {"processes": processes, "sockets": sockets, **more}
 
 
-def test_the_metadata_address_from_anything_but_the_cloud_agent():
-    found = of(
-        run(
-            [],
-            snap(
-                live(
-                    [proc(5, "bash", uids=[0, 0, 0, 0]), proc(6, "cloud-init", uids=[0, 0, 0, 0])],
-                    [sock(["169.254.169.254", 80], [5]), sock(["169.254.169.254", 80], [6])],
-                ),
-                accounts=accounts(),
-            ),
-        ),
-        "net.metadata",
+def found(check, processes=(), sockets=(), **sections):
+    return of(
+        run([], snap(live(list(processes), list(sockets)), accounts=accounts(), **sections)),
+        check,
     )
-    assert [f.summary.split(" ")[0] for f in found] == ["bash"] and found[0].band == "medium"
 
 
-def test_a_web_server_account_reaching_directory_services_is_high():
+# --- the metadata address ---------------------------------------------------------------------
+
+
+def test_metadata_by_the_file_a_process_runs_not_its_name():
     processes = [
-        proc(7, "php-fpm", uids=[33, 33, 33, 33]),
-        proc(8, "sssd_be", uids=[0, 0, 0, 0]),
+        proc(5, "bash", exe="/usr/bin/bash", uids=ROOT),
+        proc(
+            6,
+            "cloud-init",
+            exe="/usr/bin/python3",
+            cmdline="/usr/bin/python3 /usr/bin/cloud-init",
+            uids=ROOT,
+        ),
+        proc(
+            7,
+            "python3",
+            exe="/usr/bin/python3",
+            cmdline="python3 -u /usr/sbin/waagent -run-exthandlers",
+            uids=ROOT,
+        ),
+        # A copy of curl renamed to look like the agent, outside the system dirs.
+        proc(8, "cloud-init", exe="/tmp/cloud-init", uids=ROOT),
+        proc(9, "aws", exe="/usr/local/bin/aws", uids=ROOT),
+    ]
+    sockets = [sock(["169.254.169.254", 80], [p["pid"]]) for p in processes]
+    bands = {
+        f.summary.split(" (")[0] + f" {f.summary.split('pid ')[1].split(',')[0]}": f.band
+        for f in found("net.metadata", processes, sockets)
+    }
+    assert bands == {"bash 5": "low", "cloud-init 8": "medium", "aws 9": "low"}
+
+
+def test_the_ipv6_metadata_address_and_mapped_forms():
+    processes = [proc(5, "x", exe="/home/eve/x", uids=[1000] * 4)]
+    for remote in ("fd00:ec2::254", "::ffff:169.254.169.254"):
+        assert found("net.metadata", processes, [sock([remote, 80], [5])])[0].band == "medium"
+
+
+def test_a_closing_connection_counts_but_a_listener_doesnt():
+    processes = [proc(5, "x", exe="/home/eve/x", uids=[1000] * 4)]
+    assert found("net.metadata", processes, [sock(["169.254.169.254", 80], [5], "close_wait")])
+    assert not found("net.metadata", processes, [sock(["169.254.169.254", 80], [5], "time_wait")])
+
+
+def test_a_socket_whose_process_isnt_visible_still_counts():
+    [finding] = found("net.metadata", [], [sock(["169.254.169.254", 80], [], uid=33)])
+    assert "an unseen process" in finding.summary and "account:www-data" in finding.entities
+
+
+# --- directory services -------------------------------------------------------------------------
+
+
+def test_smb_and_winrm_from_a_web_account_are_high_ldap_and_kerberos_medium():
+    processes = [
+        proc(7, "php-fpm", exe="/usr/sbin/php-fpm8.3", uids=[33] * 4),
+        proc(8, "sssd_be", exe="/usr/libexec/sssd/sssd_be", uids=ROOT),
     ]
     sockets = [
         sock(["192.0.2.10", 445], [7], state="syn_sent"),
+        sock(["192.0.2.10", 389], [7]),
         sock(["192.0.2.10", 389], [8]),  # a domain-joined host's own lookup
     ]
-    found = of(run([], snap(live(processes, sockets), accounts=accounts())), "net.directory")
-    assert len(found) == 1 and found[0].band == "high" and "SMB" in found[0].title
-    assert "account:www-data" in found[0].entities
+    bands = sorted((f.variant, f.band) for f in found("net.directory", processes, sockets))
+    assert bands == [("ldap_kerberos", "medium"), ("smb_winrm", "high")]
 
 
-def test_ssh_tunnels():
+def test_the_effective_uid_decides_the_account():
+    # Judged by the effective uid: a setuid helper run by www-data acts as root.
+    processes = [proc(7, "x", exe="/usr/bin/x", uids=[33, 0, 0, 0])]
+    assert not found("net.directory", processes, [sock(["192.0.2.10", 445], [7])])
+
+
+# --- tunnels ------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("cmdline", "forwards"),
+    [
+        ("ssh -N -R 2222:localhost:22 root@203.0.113.9", "-R 2222:localhost:22"),
+        ("ssh -fNR 2222:localhost:22 h", "-R 2222:localhost:22"),
+        ("ssh -Llocalhost:80:intranet:80 h", "-L localhost:80:intranet:80"),
+        ("ssh -D 1080 h", "-D 1080"),
+        ("ssh -J jump h", "-J jump"),
+        ("ssh -W intranet:22 h", "-W intranet:22"),
+        ("ssh -o RemoteForward=2222:localhost:22 h", "-o RemoteForward=2222:localhost:22"),
+        ("ssh -p 2222 -i /root/k -o LocalForward=8080:x:80 h", "-o LocalForward=8080:x:80"),
+        ("ssh admin@h ls -lR", None),
+        ("ssh h cp -R a b", None),
+        ("ssh -p 2222 h grep -RD x", None),
+        ("ssh -o ServerAliveInterval=30 h", None),
+        ("ssh h", None),
+    ],
+)
+def test_ssh_forwarding_is_read_as_ssh_reads_its_options(cmdline, forwards):
+    assert ssh_forwarding(cmdline) == forwards
+
+
+def test_tunnels_client_and_remote_forward_but_not_x11():
     processes = [
-        proc(9, "ssh", cmdline="ssh -N -R 2222:localhost:22 root@203.0.113.9", uids=[0] * 4),
-        proc(10, "ssh", cmdline="ssh admin@203.0.113.9 uptime", uids=[0] * 4),
+        proc(9, "ssh", exe="/usr/bin/ssh", cmdline="ssh -N -R 2222:localhost:22 root@h", uids=ROOT),
+        proc(10, "ssh", exe="/usr/bin/ssh", cmdline="ssh admin@h uptime", uids=ROOT),
         proc(11, "sshd", ppid=1),
-        {**proc(12, "sshd"), "ppid": 11},
+        {**proc(12, "sshd-session"), "ppid": 11},
     ]
     sockets = [
         sock(["0.0.0.0", 0], [11], state="listen", local=("0.0.0.0", 22)),
         sock(["0.0.0.0", 0], [12], state="listen", local=("127.0.0.1", 2222)),
+        sock(["0.0.0.0", 0], [12], state="listen", local=("127.0.0.1", 6010)),  # X11
     ]
-    found = of(run([], snap(live(processes, sockets), accounts=accounts())), "net.tunnel")
-    titles = sorted(f.title for f in found)
+    titles = sorted(f.title for f in found("net.tunnel", processes, sockets))
     assert titles == [
         "An SSH client forwarding ports (a tunnel)",
         "An SSH session listening on a port (a remote forward)",
     ]
 
 
+# --- baseline-based ------------------------------------------------------------------------------
+
+
 def test_new_listeners_peers_and_tor():
-    before = snap(listeners={}, peers={"curl 203.0.113.0/24 port 443": {"program": "curl"}})
+    before = snap(
+        listeners={"tcp 0.0.0.0:8080 netns=net:[1]": {"programs": ["docker-proxy"]}},
+        peers={"curl 203.0.113.0/24 port 443": {"program": "curl"}},
+    )
     after = snap(
-        listeners={"tcp 0.0.0.0:31337 netns=x": {"programs": ["nc"], "uids": [0], "sockets": 1}},
+        listeners={
+            "tcp 0.0.0.0:8080 netns=net:[2]": {"programs": ["docker-proxy"]},  # restarted
+            "tcp 0.0.0.0:31337 netns=net:[1]": {"programs": ["nc"], "uids": [0], "sockets": 1},
+        },
         peers={
             "curl 203.0.113.0/24 port 443": {"program": "curl"},
             "python3 198.51.100.0/24 port 8443": {"program": "python3"},
+            "minio 198.51.100.0/24 port 9001": {"program": "minio"},
             "tor 198.51.100.0/24 port 9001": {"program": "tor"},
         },
+        accounts=accounts(),
     )
-    found = run([], after, baseline=before)
-    assert [(f.band, f.summary.split(":")[0]) for f in of(found, "net.listener")] == [
-        ("low", "tcp 0.0.0.0")
+    results = run([], after, baseline=before)
+    listeners = of(results, "net.listener")
+    assert [f.summary.split(":")[0] + ":" + f.summary.split(":")[1] for f in listeners] == [
+        "tcp 0.0.0.0:31337 netns=net"
     ]
-    peers = {f.variant: f for f in of(found, "net.peer")}
-    assert peers["new_destination"].band == "low" and peers["tor"].band == "medium"
+    assert "address:0.0.0.0" in listeners[0].entities and "account:root" in listeners[0].entities
+    peers = {f.summary.split(" ")[0]: f for f in of(results, "net.peer")}
+    assert peers["tor"].band == "medium" and peers["tor"].variant == "tor"
+    assert peers["minio"].band == "low" and "Tor relay port" in peers["minio"].summary
+    assert "address:198.51.100.0" in peers["python3"].entities
 
 
-def test_resolver_and_firewall_changes():
+def test_resolver_and_firewall_changes_both_directions():
     before = snap(
         network_files={"/etc/hosts": {"content_sha256": "a"}},
-        firewall_rules={"nft: [inet filter / chain input] tcp dport 22 accept": {}},
+        firewall_rules={
+            "nft: [inet filter / chain input] tcp dport 22 accept": {},
+            "nft: [inet filter / chain input] tcp dport 23 accept": {},
+        },
     )
     after = snap(
         network_files={"/etc/hosts": {"content_sha256": "b"}},
@@ -99,55 +196,90 @@ def test_resolver_and_firewall_changes():
             "nft: [inet filter / chain input] tcp dport 31337 accept": {},
         },
     )
-    found = of(run([], after, baseline=before), "net.config")
-    assert sorted(f.variant for f in found) == ["file", "firewall"]
-    firewall = [f for f in found if f.variant == "firewall"][0]
-    assert "31337" in firewall.summary and not firewall.entities_complete
+    results = of(run([], after, baseline=before), "net.config")
+    assert sorted(f.title for f in results) == [
+        "A network configuration file was changed",
+        "Firewall rules added since the baseline",
+        "Firewall rules removed since the baseline",
+    ]
+
+
+# --- interfaces and transfer ---------------------------------------------------------------------
 
 
 def test_promiscuous_interfaces():
-    found = of(
-        run(
-            [],
-            snap(
-                live([proc(3, "tcpdump")], [sock([], [3], state="", protocol="packet")]),
-                interfaces={
-                    "eth0": {"promiscuous": True},
-                    "docker0": {"promiscuous": True, "bridge": True},
-                    "veth": {"promiscuous": True, "bridge_port": True},
-                    "eth1": {"promiscuous": False},
-                },
-            ),
-        ),
-        "net.promiscuous",
-    )
-    assert [(f.summary.split(" ")[0], f.band) for f in found] == [("eth0", "low")]
-    found = of(run([], snap(interfaces={"eth0": {"promiscuous": True}})), "net.promiscuous")
-    assert found[0].band == "medium"
+    processes = [proc(3, "tcpdump", exe="/usr/bin/tcpdump")]
+    sockets = [sock([], [3], state="", protocol="packet")]
+    interfaces = {
+        "eth0": {"promiscuous": True},
+        "docker0": {"promiscuous": True, "bridge": True},
+        "vethx": {"promiscuous": True, "bridge_port": True},
+        "ovs-port": {"promiscuous": True, "master": True},
+        "eth1": {"promiscuous": False},
+    }
+    results = found("net.promiscuous", processes, sockets, interfaces=interfaces)
+    assert [(f.summary.split(" ")[0], f.band) for f in results] == [("eth0", "low")]
+    # A sniffer merely named tcpdump doesn't lower anything.
+    fake = [proc(3, "tcpdump", exe="/tmp/x")]
+    assert found("net.promiscuous", fake, sockets, interfaces=interfaces)[0].band == "medium"
 
 
 def test_weak_transfer_signs():
-    processes = [proc(4, "rclone", uids=[1000] * 4)]
+    processes = [proc(4, "rclone", exe="/usr/bin/rclone", uids=[1000] * 4)]
     sockets = [sock(["203.0.113.5", 443], [4]), sock(["10.0.0.9", 443], [4])]
-    found = of(
+    interfaces = [
+        {"name": "eth0", "rx_bytes": 10 * 1024**2, "tx_bytes": 5 * 1024**3},
+        {"name": "docker0", "rx_bytes": 1, "tx_bytes": 5 * 1024**3},
+        {"name": "lo", "rx_bytes": 1, "tx_bytes": 5 * 1024**3},
+        {"name": "eth1", "rx_bytes": 1, "tx_bytes": 900 * 1024**2},  # under 1 GB
+    ]
+    results = of(
         run(
             [],
             snap(
-                live(
-                    processes,
-                    sockets,
-                    interfaces=[
-                        {"name": "eth0", "rx_bytes": 10 * 1024**2, "tx_bytes": 5 * 1024**3}
-                    ],
-                ),
+                live(processes, sockets, interfaces=interfaces),
                 accounts=accounts(),
                 unusual_files={
-                    "/tmp/dump.tar.gz": {"size": 200 * 1024**2},
+                    "/tmp/dump.tar.zst": {"size": 200 * 1024**2},
                     "/tmp/small.zip": {"size": 1024},
                 },
             ),
         ),
         "net.transfer",
     )
-    assert sorted(f.variant for f in found) == ["archive", "counters", "tool"]
-    assert all(f.band == "low" for f in found)
+    assert sorted((f.variant, f.summary.split(":")[0].split(" ")[0]) for f in results) == [
+        ("archive", "/tmp/dump.tar.zst"),
+        ("counters", "eth0"),
+        ("tool", "rclone"),
+    ]
+
+
+def test_a_managed_looking_chain_whose_owner_isnt_running():
+    rules = {
+        "nft: [ip filter / chain DOCKER] (managed by other software: rules not compared)": {},
+        "nft: [ip filter / chain f2b-x] (managed by other software: rules not compared)": {},
+    }
+    dockerd = proc(2, "dockerd", exe="/usr/bin/dockerd", uids=ROOT)
+    results = found("net.managed_chain", [dockerd], [], firewall_rules=rules)
+    assert [f.summary.split(":")[0] for f in results] == ["f2b-x"]
+    # A process merely named fail2ban-server doesn't vouch for the chain.
+    fake = proc(3, "fail2ban-server", exe="/tmp/x", uids=ROOT)
+    assert len(found("net.managed_chain", [dockerd, fake], [], firewall_rules=rules)) == 1
+    real = proc(
+        4,
+        "fail2ban-server",
+        exe="/usr/bin/python3",
+        cmdline="/usr/bin/python3 /usr/bin/fail2ban-server -xf start",
+        uids=ROOT,
+    )
+    assert not found("net.managed_chain", [dockerd, real], [], firewall_rules=rules)
+
+
+def test_docker_user_is_compared_rule_by_rule():
+    from checker.snapshot import firewall_lines
+
+    out = firewall_lines(["*filter", "-A DOCKER-USER -p tcp --dport 31337 -j ACCEPT"])
+    assert out == [
+        "[filter] *filter",
+        "[filter / chain DOCKER-USER] -A DOCKER-USER -p tcp --dport 31337 -j ACCEPT",
+    ]

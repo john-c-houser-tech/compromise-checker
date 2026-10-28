@@ -97,6 +97,11 @@
    "status": "this bundle is the baseline"
   },
   {
+   "check": "net.managed_chain",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "net.metadata",
    "findings": 0,
    "status": "ran"

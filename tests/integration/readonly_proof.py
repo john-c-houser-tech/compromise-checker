@@ -721,6 +721,15 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             and not result.snapshot
             and not result.checks_failed
             and not result.modules_changed
+            # On Ubuntu, ufw (and Docker) put the rules through nft_compat:
+            # that path must really have been exercised.
+            and (
+                not distro.startswith("ubuntu")
+                or (
+                    (result.firewall_loaded or {}).get("nft_compat") is True
+                    and any(s.startswith("/usr/sbin/nft") for s in result.sources)
+                )
+            )
         )
     except Exception as exc:  # report it; the server is still deleted below
         result.error = f"{type(exc).__name__}: {exc}"
@@ -862,6 +871,11 @@ def report(results: list[Result]) -> bool:
             for failed in r.checks_failed:
                 print(f"  FAIL: check {failed}")
             print(f"  firewall loaded (so its rules were listed): {r.firewall_loaded}")
+            if r.distro.startswith("ubuntu") and not (r.firewall_loaded or {}).get("nft_compat"):
+                print(
+                    "  FAIL: ufw/Docker rules weren't in place, so the nft_compat path"
+                    " went unproven"
+                )
             if r.modules_changed:
                 print(f"  FAIL: firewall modules changed during collection: {r.modules_changed}")
             else:

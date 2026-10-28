@@ -838,7 +838,8 @@ def test_firewall_lines_keep_their_place_and_drop_what_changes_by_itself():
         "-A INPUT -j ACCEPT",
     ]
     out = firewall_lines(ipt)
-    assert "[filter] -A INPUT -j ACCEPT" in out and "[nat] -A INPUT -j ACCEPT" in out
+    assert "[filter / chain INPUT] -A INPUT -j ACCEPT" in out
+    assert "[nat / chain INPUT] -A INPUT -j ACCEPT" in out
 
 
 def test_peers_are_open_owned_tcp_connections_v4_and_v6(tmp_path):
@@ -933,3 +934,29 @@ def test_an_open_connection_no_process_holds_is_not_a_peer(tmp_path):
         ]
     )
     assert snapshot_of_records(records, tmp_path).sections["peers"].items == {}
+
+
+def test_chains_other_software_manages_are_summarised():
+    from checker.snapshot import firewall_lines
+
+    nft = [
+        "table ip filter {",
+        "\tchain DOCKER {",
+        "\t\tip daddr 172.17.0.2 tcp dport 80 accept",
+        "\t\tip daddr 172.17.0.3 tcp dport 443 accept",
+        "\t}",
+        "\tchain f2b-sshd {",
+        "\t\tip saddr 192.0.2.9 reject",
+        "\t}",
+        "\tchain INPUT {",
+        "\t\ttcp dport 22 accept",
+        "\t}",
+        "}",
+    ]
+    out = firewall_lines(nft)
+    assert "[ip filter / chain DOCKER] (managed by other software: rules not compared)" in out
+    assert not any("172.17.0" in line or "192.0.2.9" in line for line in out)
+    assert "[ip filter / chain INPUT] tcp dport 22 accept" in out
+    ipt = ["*nat", "-A KUBE-SEP-ABC -s 10.244.1.5/32 -j KUBE-MARK-MASQ", "-A OUTPUT -j ACCEPT"]
+    out = firewall_lines(ipt)
+    assert "[nat / chain KUBE-SEP-ABC] (managed by other software: rules not compared)" in out

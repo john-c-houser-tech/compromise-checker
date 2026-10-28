@@ -156,6 +156,9 @@ class Linode:
     def delete(self, linode_id: int) -> None:
         self.call("DELETE", f"/linode/instances/{linode_id}")
 
+    def find(self, label: str) -> dict | None:
+        return next((n for n in self.tagged() if n["label"] == label), None)
+
     def tagged(self) -> list[dict]:
         return [
             node
@@ -171,6 +174,16 @@ def sweep(api: Linode) -> None:
         created = datetime.fromisoformat(node["created"]).replace(tzinfo=UTC)
         if now - created > SWEEP_AFTER:
             print(f"sweep: deleting leftover {node['label']} (created {node['created']})")
+            api.delete(node["id"])
+
+
+def sweep_run(api: Linode, started: datetime) -> None:
+    """At the end of a run, delete any of its servers still there (one
+    whose creation answer was lost, a run cut short)."""
+    for node in api.tagged():
+        created = datetime.fromisoformat(node["created"]).replace(tzinfo=UTC)
+        if created >= started - timedelta(minutes=1):
+            print(f"sweep: deleting {node['label']}, left by this run")
             api.delete(node["id"])
 
 
@@ -413,6 +426,17 @@ async def _create_server(api: Linode, *args) -> dict:
     creating = asyncio.ensure_future(asyncio.to_thread(api.create, *args))
     try:
         return await asyncio.shield(creating)
+    except (TimeoutError, OSError):
+        # The answer was lost, not necessarily the request: if the server
+        # was made, it has this run's unique label.
+        label = args[0]
+        for _ in range(12):
+            await asyncio.sleep(5)
+            node = await asyncio.to_thread(api.find, label)
+            if node is not None:
+                print(f"create timed out, but {label} exists (id {node['id']}): using it")
+                return node
+        raise
     except asyncio.CancelledError:
         try:
             node = await creating
@@ -431,9 +455,13 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
     scanner_key_file = work / f"{distro}-scanner"
     scanner_key.write_private_key(scanner_key_file)
     label = f"{LABEL_PREFIX}{distro.replace('.', '')}-{secrets.token_hex(3)}"
-    node = await _create_server(
-        api, label, IMAGES[distro], region, root_key.export_public_key().decode().strip()
-    )
+    try:
+        node = await _create_server(
+            api, label, IMAGES[distro], region, root_key.export_public_key().decode().strip()
+        )
+    except Exception as exc:  # this distribution fails; the others go on
+        result.error = f"could not create the server: {type(exc).__name__}: {exc}"
+        return result
     print(f"{distro}: created {label} (id {node['id']})")
     try:
         deadline = time.monotonic() + 600
@@ -704,10 +732,15 @@ async def main() -> int:
 
     api = Linode(linode_token())
     await asyncio.to_thread(sweep, api)
-    with tempfile.TemporaryDirectory(prefix="cc-proof-") as work:
-        results = await asyncio.gather(
-            *(prove(api, distro, args.region, args.keep, Path(work)) for distro in args.distro)
-        )
+    started = datetime.now(UTC)
+    try:
+        with tempfile.TemporaryDirectory(prefix="cc-proof-") as work:
+            results = await asyncio.gather(
+                *(prove(api, distro, args.region, args.keep, Path(work)) for distro in args.distro)
+            )
+    finally:
+        if not args.keep:
+            await asyncio.to_thread(sweep_run, api, started)
     return 0 if report(list(results)) else 1
 
 

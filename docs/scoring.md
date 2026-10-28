@@ -121,12 +121,20 @@ after, and the findings added or gone. Commit those with the change, so
 the review shows what moved.
 
 New cases come from `tests/integration/detection_proof.py --golden
-tests/golden`. The repository is public, so before a case is written every
-public address in it is replaced by a documentation address (203.0.113.x,
-2001:db8::x), consistently and also in reverse-DNS names; the controller's
-and the server's addresses must not survive, or the export fails. The
-dotted quads left (version numbers, usually) are printed for a person to
-check before committing.
+tests/golden`, which picks the bundles and their baseline the way
+`analyze` does. The repository is public, so before a case is written
+every public IPv4 and IPv6 address in it, wherever and however it is
+written (log text, `address:port`, IPv4-mapped, any case, reverse-DNS
+dashes), is replaced by a documentation address (203.0.113.x,
+2001:db8::x), consistently; a version number that happens to parse as a
+public address is replaced too. The export then fails if any public
+address survives, or if the controller's or the server's address survives
+in any form it knows (also `/proc/net` hex), and fails if the replacement
+changed what the checks find (a check that tells public addresses from
+others), so a case stays faithful to the real analysis.
+
+Cases hold parsed events and snapshots: they pin the checks and the
+scoring, not the parsers or the collector.
 
 ## Calibration
 

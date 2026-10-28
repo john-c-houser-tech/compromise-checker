@@ -36,6 +36,12 @@ def test_there_are_cases_from_both_families_fresh_and_compromised():
 # --- scrubbing ---------------------------------------------------------------------------
 
 
+def scrubbed(case, protect=()):
+    text = golden.scrub(json.dumps(case), list(protect))
+    golden.check_scrubbed(text, list(protect))
+    return text
+
+
 def test_public_addresses_are_replaced_consistently_and_private_ones_kept():
     case = {
         "events": [
@@ -43,46 +49,100 @@ def test_public_addresses_are_replaced_consistently_and_private_ones_kept():
             {"fields": {"address": "10.0.0.5"}, "line": "from 10.0.0.5"},
         ],
         "snapshot": {"remote": ["2606:4700::1111", 443], "host": "li-8-8-8-8.example"},
-        "version": "kernel 5.15.0.105 and 1.2.3.4-ubuntu",
     }
-    text = golden.scrub(json.dumps(case), protect=["1.1.1.1"])
+    text = scrubbed(case)
     assert "8.8.8.8" not in text and "8-8-8-8" not in text and "2606:4700::1111" not in text
-    assert text.count("203.0.113.") == 2  # the same address, both times
-    assert "203-0-113-" in text  # the reverse-DNS form too
-    assert "2001:db8::" in text
+    assert text.count("203.0.113.1") == 2 and "203-0-113-1." in text
+    assert "2001:db8::1" in text
     assert "10.0.0.5" in text  # private: kept
-    assert "5.15.0.105" in text  # a version, not after an address word: kept
 
 
-def test_a_protected_address_anywhere_is_replaced():
-    text = golden.scrub(json.dumps({"x": "x9.9.9.9", "y": "ok 9.9.9.9"}), protect=["9.9.9.9"])
-    assert "9.9.9.9" not in text.replace("x9.9.9.9", "")
+@pytest.mark.parametrize(
+    "line",
+    [
+        "stdin is tcp to 8.8.8.8:4444",
+        "Connection closed by 8.8.8.8 port 22",
+        "authenticating user root 8.8.8.8 port 5",
+        "listening on 8.8.8.8",
+        "peer=::ffff:8.8.8.8",
+        "kernel 8.8.8.8 then from 8.8.8.8",
+        "v18.8.8.8 from 8.8.8.8",
+        "client [2606:4700::1111]:443 and 2606:4700:0:0:0:0:0:1111 and 2606:4700::1111 upper",
+        "upper 2606:4700::ABCD",
+    ],
+)
+def test_addresses_in_free_text_are_replaced_however_they_are_written(line):
+    text = scrubbed({"line": line})
+    assert "8.8.8.8" not in text and "4700" not in text
 
 
-def test_leftovers_are_listed_for_review():
-    assert golden.leftover_addresses('{"v": "5.15.0.105"}') == ["5.15.0.105"]
+def test_a_loopback_address_with_a_port_is_left_alone():
+    assert "::1:323" in scrubbed({"listen": "::1:323"})
+
+
+def test_dashed_forms_are_replaced_only_whole():
+    text = scrubbed({"a": "1.2.3.4", "pkg": "11-2-3-45", "host": "x-1-2-3-4.example"})
+    assert "11-2-3-45" in text and "1-2-3-4." not in text
+
+
+def test_a_protected_address_in_any_known_form_fails_the_export():
+    for leaked in ("9-9-9-9", "09090909"):
+        with pytest.raises(ValueError, match="protected"):
+            golden.check_scrubbed(json.dumps({"x": leaked}), ["9.9.9.9"])
+    with pytest.raises(ValueError, match="survived"):
+        golden.check_scrubbed(json.dumps({"x": "from 8.8.8.8"}), [])
 
 
 # --- the harness is analyze ------------------------------------------------------------------
 
 
-def test_an_exported_case_gives_what_analyze_gave(home, tmp_path):
+@pytest.mark.parametrize("bundles", [1, 2, 3])
+def test_an_exported_case_gives_what_analyze_gave(home, tmp_path, bundles):
+    # 1: the host's first bundle, its own baseline; 2: against the previous
+    # bundle, which is the baseline; 3: against a previous bundle that
+    # isn't the baseline.
     from test_snapshot import add_bundle, host_records
 
     from checker.assess import analyze
 
     _, store, identity, config = home
-    add_bundle(home, "b1", 0, host_records())
     accounts = (("root", 0), ("jch", 1000), ("toor", 0))
-    add_bundle(home, "b2", 10, host_records(accounts=accounts))
-    add_bundle(home, "b3", 20, host_records(accounts=accounts))
-    analysed = analyze(store, "web01", identity, config.recipients, "b3")
-    path, _ = golden.export_case(
-        store, "web01", identity, config.recipients, "b3", "t", [], tmp_path
+    add_bundle(home, "b1", 0, host_records())
+    for n in range(2, bundles + 1):
+        add_bundle(home, f"b{n}", 10 * n, host_records(accounts=accounts))
+    target = f"b{bundles}"
+    # Analysed once first, as the proof does: a host's very first analysis
+    # says "no baseline yet", every later one "this bundle is the baseline".
+    analyze(store, "web01", identity, config.recipients, target)
+    path = golden.export_case(
+        store, "web01", identity, config.recipients, target, "t", [], tmp_path
     )
-    result = golden.run_case(golden.load_case(path))
+    analysed = analyze(store, "web01", identity, config.recipients, target)
+    result = json.loads(json.dumps(golden.run_case(golden.load_case(path)), sort_keys=True))
+    analysed = json.loads(json.dumps(analysed, sort_keys=True))
     assert result["findings"] == analysed["findings"]
-    assert result["score"]["probability"] == analysed["score"]["probability"]
-    assert json.loads(golden.expected_path(path).read_text())["score"] == json.loads(
-        json.dumps(result["score"], sort_keys=True)
-    )
+    assert result["checks"] == analysed["checks"]
+    assert {k: v for k, v in result["score"].items() if k != "prior_source"} == {
+        k: v for k, v in analysed["score"].items() if k != "prior_source"
+    }
+
+
+def test_an_export_that_would_change_the_findings_fails(home, tmp_path, monkeypatch):
+    from test_snapshot import add_bundle, host_records
+
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records(accounts=(("root", 0), ("toor", 0))))
+    monkeypatch.setattr(golden, "scrub", lambda text, protect: text.replace('"uid": 0', '"uid": 7'))
+    with pytest.raises(ValueError, match="changed what the checks find"):
+        golden.export_case(store, "web01", identity, config.recipients, "b1", "t", [], tmp_path)
+
+
+def test_an_export_whose_scrubbing_missed_an_address_fails(home, tmp_path, monkeypatch):
+    from test_snapshot import add_bundle, host_records
+
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    monkeypatch.setattr(golden, "scrub", lambda text, protect: text + " from 8.8.8.8")
+    with pytest.raises(ValueError, match="survived"):
+        golden.export_case(store, "web01", identity, config.recipients, "b1", "t", [], tmp_path)
+    assert not (tmp_path / "t.json.gz").exists()

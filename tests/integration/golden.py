@@ -8,7 +8,10 @@ earlier bundles. Cases come from throwaway servers (the detection proof's
 `--golden DIR`), so nothing in them is about a real system; and because
 the repository is public, every public address in them, the controller's
 own above all, is replaced by a documentation address before they are
-written. Run `python scripts/update_golden.py` after a deliberate change
+written, and the export fails if any public address survives in a form
+it knows or if the replacement changed what the checks find. Cases hold
+parsed events and snapshots, so they pin the checks and scoring, not the
+parsers. Run `python scripts/update_golden.py` after a deliberate change
 to write the new expectations and see what moved."""
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from typing import Any
 
 from checker.analysis import load_events, parse_bundle, snapshot_of, store_parsed
 from checker.assess import evaluate
-from checker.baseline import current_baseline, usable_bundles
+from checker.baseline import changes, usable_bundles
 from checker.checks import Context
 from checker.events import Event
 from checker.evidence import Store
@@ -45,25 +48,31 @@ def export_case(
     name: str,
     protect: list[str],
     directory: Path = CASES,
-) -> tuple[Path, list[str]]:
-    """Write one case: the inputs `analyze` uses for this bundle, with every
-    public address replaced. `protect` lists addresses that must not
-    survive (the controller's, the server's); finding one is an error.
-    Returns the file and any address-like text left, for a person to
-    look at before committing."""
-    rows = usable_bundles(store, host)
+) -> Path:
+    """Write one case: the inputs `analyze` uses for this bundle, chosen the
+    way `analyze` chooses them (baseline.changes), with every public
+    address replaced. Fails if a protected address (the controller's, the
+    server's) or any public address survives in any form, or if replacing
+    them changed what the checks find."""
+    found = changes(store, host, identity, recipients, bundle_id)
+    if any(c.newer for c in found.comparisons):
+        raise ValueError(f"{name}: the baseline is newer than the bundle; not a useful case")
     target = store.bundle(bundle_id)
-    earlier = [r for r in rows if r["started_at"] < target["started_at"]]
-    previous = earlier[-1] if earlier else None
-    baseline = current_baseline(store, host)
-    baseline_id = baseline["bundle_id"] if baseline else bundle_id
+    previous = next((c.bundle_id for c in found.comparisons if c.label == "previous"), None)
+    earlier = [r for r in usable_bundles(store, host) if r["started_at"] < target["started_at"]]
+    no_baseline = (
+        "this bundle is the baseline"
+        if found.baseline_id == bundle_id and not found.first
+        else "no baseline yet"
+    )
     case: dict[str, Any] = {
         "format": CASE_FORMAT,
         "name": name,
         "host": host,
         "target": bundle_id,
-        "previous": previous["id"] if previous else None,
-        "baseline": baseline_id,
+        "previous": previous,
+        "baseline": found.baseline_id,
+        "no_baseline": no_baseline,
         "earlier": [r["id"] for r in earlier],
         "started": {},
         "snapshots": {},
@@ -72,19 +81,31 @@ def export_case(
     for row in [*earlier, target]:
         case["started"][row["id"]] = row["started_at"]
         case["events"][row["id"]] = [e.as_dict() for e in _events(store, row, identity, recipients)]
-    for wanted in {bundle_id, baseline_id, *(r["id"] for r in earlier[-1:])}:
+    for wanted in {bundle_id, found.baseline_id, *([previous] if previous else [])}:
         case["snapshots"][wanted] = snapshot_of(
             store, store.bundle(wanted), identity, recipients
         ).as_dict()
-    text = scrub(json.dumps(case, sort_keys=True), protect)
-    for address in protect:
-        if address in text or _dashed(address) in text:
-            raise ValueError(f"a protected address survived scrubbing in case {name}")
+    real = json.dumps(case, sort_keys=True)
+    text = scrub(real, protect)
+    check_scrubbed(text, protect)
+    if shape(run_case(json.loads(real))) != shape(run_case(json.loads(text))):
+        raise ValueError(
+            f"{name}: replacing the addresses changed what the checks find (a check that"
+            " tells public addresses from others?); not a faithful case"
+        )
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.json.gz"
     path.write_bytes(gzip.compress(text.encode(), mtime=0))
     write_expected(path)
-    return path, leftover_addresses(text)
+    return path
+
+
+def shape(result: dict[str, Any]) -> list[tuple]:
+    """What the checks found, apart from the address text in summaries."""
+    return sorted(
+        (f["check"], f["band"], f["category"], f.get("variant"), f["ratio"])
+        for f in result["findings"]
+    ) + [("probability", result["score"]["probability"])]
 
 
 def _events(store, row, identity, recipients) -> list[Event]:
@@ -95,7 +116,13 @@ def _events(store, row, identity, recipients) -> list[Event]:
     return parsed.events
 
 
-_IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+# An IPv4 address: a following ":" is allowed (address:port).
+_IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d]|\.\d)")
+# IPv6 candidates (validated by ipaddress): hex groups and colons, any case,
+# compressed or not, possibly ending in an IPv4 address.
+_IPV6 = re.compile(
+    r"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,7}(?:(?:\d{1,3}\.){3}\d{1,3}|[0-9A-Fa-f]{1,4})?(?![\w:.])"
+)
 
 
 def _public(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -103,60 +130,81 @@ def _public(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
         address = ipaddress.ip_address(text.strip("[]"))
     except ValueError:
         return None
-    return address if address.is_global else None
+    if not address.is_global:
+        return None
+    if address.version == 6:
+        # "::1:323" is chrony's loopback listener written as address:port,
+        # not a public address; a public address with a port stays public.
+        head, _, port = text.rpartition(":")
+        if port.isdigit() and int(port) <= 65535 and _parses_not_global(head):
+            return None
+    return address
 
 
-def _strings(value: Any):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for k, v in value.items():
-            yield k
-            yield from _strings(v)
-    elif isinstance(value, list):
-        for v in value:
-            yield from _strings(v)
+def _parses_not_global(text: str) -> bool:
+    try:
+        return not ipaddress.ip_address(text).is_global
+    except ValueError:
+        return False
 
 
 def _dashed(address: str) -> str:
     return address.replace(".", "-").replace(":", "-")
 
 
+def _hex_forms(address: str) -> list[str]:
+    """How /proc/net writes an IPv4 address (both byte orders)."""
+    try:
+        packed = ipaddress.ip_address(address).packed
+    except ValueError:
+        return []
+    return [packed.hex().upper(), packed[::-1].hex().upper()] if len(packed) == 4 else []
+
+
 def scrub(text: str, protect: list[str]) -> str:
-    """Every public address in the case's values, and the protected ones,
-    replaced everywhere (also as a reverse-DNS name's dashed form) by a
-    documentation address, consistently, so the case still links the same
-    address across events and snapshots."""
-    found = {str(a) for s in _strings(json.loads(text)) if (a := _public(s))}
-    for s in _strings(json.loads(text)):
-        for token in _IPV4.findall(s):
-            if (a := _public(token)) and _looks_like_an_address(s, token):
-                found.add(str(a))
-    found |= set(protect)
-    v4 = sorted(a for a in found if ":" not in a)
-    v6 = sorted(a for a in found if ":" in a)
-    mapping = {
-        a: f"203.0.113.{10 + i}" if i < 240 else f"198.51.100.{i - 230}" for i, a in enumerate(v4)
-    }
-    mapping |= {a: f"2001:db8::{i + 1:x}" for i, a in enumerate(v6)}
-    for real in sorted(mapping, key=len, reverse=True):
-        fake = mapping[real]
-        text = re.sub(rf"(?<![\w.:]){re.escape(real)}(?![\w:]|\.\d)", fake, text)
-        text = text.replace(_dashed(real), _dashed(fake))
+    """Every public IPv4 and IPv6 address anywhere in the text (values, log
+    lines, settings, address:port), and the protected ones, replaced by a
+    documentation address, consistently (the same address always becomes
+    the same documentation one, so the case still links it across events
+    and snapshots), also in a reverse-DNS name's dashed form. Version
+    numbers that happen to parse as public addresses are replaced too:
+    leaking nothing matters more than keeping them."""
+    found: dict[str, ipaddress.IPv4Address | ipaddress.IPv6Address] = {}
+    for token in _IPV4.findall(text) + _IPV6.findall(text) + list(protect):
+        if (address := _public(token)) is not None:
+            found[token] = address
+    canonical = sorted({str(a) for a in found.values()}, key=lambda a: (":" in a, a))
+    fakes: dict[str, str] = {}
+    v4 = v6 = 0
+    for address in canonical:
+        if ":" in address:
+            v6 += 1
+            fakes[address] = f"2001:db8::{v6:x}"
+        else:
+            fakes[address] = f"203.0.113.{v4 + 1}" if v4 < 250 else f"198.51.100.{v4 - 249}"
+            v4 += 1
+    for token in sorted(found, key=len, reverse=True):
+        fake = fakes[str(found[token])]
+        pattern = _IPV6.pattern if ":" in token else _IPV4.pattern
+        text = re.sub(
+            pattern, lambda m, t=token, f=fake: f if m.group(0) == t else m.group(0), text
+        )
+        dashed = _dashed(token)
+        text = re.sub(rf"(?<![\d])(?<!\d-){re.escape(dashed)}(?![\d])(?!-\d)", _dashed(fake), text)
     return text
 
 
-def _looks_like_an_address(text: str, token: str) -> bool:
-    """A dotted quad in a log line or setting, not a version number: it
-    follows a word that introduces an address, or a separator."""
-    before = text[: text.index(token)].rstrip()
-    return bool(re.search(r"(from|to|rhost=|host=|addr=|address|@|=|\[|\(|,|^)$", before))
-
-
-def leftover_addresses(text: str) -> list[str]:
-    """Dotted quads still in the case that parse as public addresses: version
-    numbers, usually; a person checks them before the case is committed."""
-    return sorted({t for t in _IPV4.findall(text) if _public(t)})
+def check_scrubbed(text: str, protect: list[str]) -> None:
+    """The post-condition: no public address in any form we know of, and
+    no protected one, plain, dashed or in /proc/net hex."""
+    left = sorted({t for t in _IPV4.findall(text) + _IPV6.findall(text) if _public(t) is not None})
+    if left:
+        raise ValueError(f"public addresses survived scrubbing: {left[:5]}")
+    upper = text.upper()
+    for address in protect:
+        forms = [address, _dashed(address), *_hex_forms(address)]
+        if any(form.upper() in upper for form in forms if form):
+            raise ValueError("a protected address survived scrubbing")
 
 
 # --- Running -----------------------------------------------------------------------------
@@ -178,11 +226,12 @@ def run_case(case: dict[str, Any]) -> dict[str, Any]:
     snapshot = snapshots[target]
     since_previous = compare(snapshots[previous], snapshot) if previous else None
     if baseline == target:
-        since_baseline, no_baseline = None, "this bundle is the baseline"
+        since_baseline = None
     elif baseline == previous:
-        since_baseline, no_baseline = since_previous, "no baseline yet"
+        since_baseline = since_previous
     else:
-        since_baseline, no_baseline = compare(snapshots[baseline], snapshot), "no baseline yet"
+        since_baseline = compare(snapshots[baseline], snapshot)
+    no_baseline = case["no_baseline"]
     context = Context(
         host=case["host"],
         bundle_id=target,
@@ -211,3 +260,9 @@ def write_expected(case_path: Path) -> dict[str, Any]:
 
 def cases() -> list[Path]:
     return sorted(CASES.glob("*.json.gz"))
+
+
+def orphans() -> list[Path]:
+    """Expectations whose case is gone."""
+    have = {expected_path(p) for p in cases()}
+    return [p for p in sorted(CASES.glob("*.expected.json")) if p not in have]

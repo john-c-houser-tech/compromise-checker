@@ -25,6 +25,7 @@ import golden
 import readonly_proof as proof
 
 from checker.assess import analyze
+from checker.baseline import usable_bundles
 from checker.collect import collect_hosts
 from checker.evidence import Store, database_file, initialise, load_config, load_identity
 from checker.inventory import Host
@@ -263,9 +264,10 @@ async def detect(
                 # The fresh server (the first bundle, its own baseline) and
                 # the compromised one (the second, against it).
                 protect = [controller.split()[0], address, *node.get("ipv6", "").split("/")[:1]]
-                first, second = (r["id"] for r in store.bundles(distro))
-                for name, bundle in ((f"fresh-{distro}", first), (f"detection-{distro}", second)):
-                    path, left = golden.export_case(
+                rows = usable_bundles(store, distro)
+                first, last = rows[0]["id"], rows[-1]["id"]
+                for name, bundle in ((f"fresh-{distro}", first), (f"detection-{distro}", last)):
+                    path = golden.export_case(
                         store,
                         distro,
                         identity,
@@ -276,8 +278,6 @@ async def detect(
                         golden_dir,
                     )
                     print(f"{distro}: golden case {path}")
-                    if left:
-                        print(f"{distro}:   dotted quads left to review: {', '.join(left)}")
         finally:
             store.close()
         failed = [c for c in assessment["checks"] if c["status"].startswith("failed")]

@@ -92,7 +92,7 @@ compatible and standard-library only; CI runs its tests with the system
 `python3` of each supported distribution.
 
 Golden reports (`tests/golden/`) pin the findings and score of real
-analyses; after a deliberate change to checks or scoring,
+analyses of throwaway servers; after a deliberate change to checks or scoring,
 `python scripts/update_golden.py` rewrites them and shows what moved
 ([scoring](docs/scoring.md#golden-reports)).
 

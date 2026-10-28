@@ -1,9 +1,11 @@
 # The report
 
 `checker report HOST` (or `--all`) writes one self-contained HTML file for
-the hosts' latest bundles (or `--bundle ID`), from each one's latest
-assessment. If a bundle has no assessment, or one made by older checks,
-it is analysed first.
+the hosts' latest bundles (or `--bundle ID`, which must be that host's and
+usable), from each one's latest assessment. If a bundle has no assessment,
+or one made by older checks, an older event parser or an older snapshot
+version (its evidence points into one parse of the bundle), it is analysed
+first.
 
 ## What it holds
 
@@ -18,7 +20,9 @@ it is analysed first.
     folded away);
   - its exposure and hygiene findings, in a section of their own (DESIGN.md
     §2 principle 9);
-  - a timeline of the logged events behind the findings;
+  - a timeline of the logged events behind the findings (past 300, the
+    first 100 and the last 200, with a note of how many are left out:
+    the earliest are often the first signs);
   - its coverage: each log's reach, the gaps, and the checks that didn't run.
   
   Each finding shows up to five excerpts of its evidence: the log line, the
@@ -39,11 +43,23 @@ may have chosen them. The report:
 
 - **HTML-escapes everything.** Jinja2's autoescaping covers the whole
   template.
-- **Shows invisible characters.** Control, format and other invisible
-  characters become visible escapes, such as `‮`. A right-to-left
-  override can't make `evil‮gnp.exe` display as `evilexe.png`, and a
-  zero-width space can't hide in a name.
-- **Cuts long text.**
+- **Passes every value through one filter.** Jinja's `finalize` runs the
+  visible-character filter on every value the template prints, whether or
+  not the template asks for it.
+- **Shows invisible characters as escapes.** These include controls,
+  formats (bidirectional overrides, zero-width characters), private use,
+  surrogates, unassigned characters, combining and enclosing marks, line and
+  paragraph separators, every space but the plain one, and the letters that
+  display as blanks (Hangul fillers, the braille blank). Characters past
+  U+FFFF become `\U000e0080`.
+
+  So a right-to-left override (written here as its escape, `\u202e`) can't
+  make a file name display as another, an overlay can't strike a name
+  through, and nothing can hide in a name.
+- **Doubles the host's own backslash.** A host can't fake an escape.
+- **Cuts long text** by what is shown, never inside an escape.
+- **Doesn't catch look-alike letters.** A Cyrillic "о" in "rооt" isn't
+  escaped. The collector flags non-ASCII file names (`name_flags`).
 - **Has no scripts and loads nothing.** A Content-Security-Policy of
   `default-src 'none'` forbids all loading, so even an escaping mistake
   couldn't load a script, an image or a font. The file opens the same
@@ -54,8 +70,15 @@ may have chosen them. The report:
 - **Location.** By default the report goes to `reports/` in the checker's
   home (a directory only its owner can open). `--output` writes it anywhere
   else.
-- **Owner-only.** The file is created that way, and an existing file it
-  replaces is made so.
+- **Written whole, then moved into place.** The report is written to an
+  owner-only temporary file beside its destination and then moved there,
+  so:
+  - a crash leaves any earlier file intact;
+  - a symbolic link at the path is replaced, not followed;
+  - no one holding the old file open can read the new report.
+  
+  The `reports/` directory is made owner-only, also when it already
+  existed.
 - **Custody.** Each bundle in the report gets a `reported` entry in its
   chain of custody, with the report's SHA-256.
 

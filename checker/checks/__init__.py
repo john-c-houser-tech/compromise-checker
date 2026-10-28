@@ -33,8 +33,8 @@ class Finding:
     band: str
     summary: str  # one line: what, who, where
     entities: list[str] = field(default_factory=list)  # "account:eve", "address:203.0.113.9"
-    # What shows it: {"event": index}, {"item": [section, key]} or
-    # {"change": [against, section, key, how]}.
+    # What shows it: {"event": index}, {"item": [section, key]},
+    # {"change": [against, section, key, how]} or {"live": ["processes", pid]}.
     evidence: list[dict[str, Any]] = field(default_factory=list)
     first_seen: str | None = None
     last_seen: str | None = None
@@ -143,7 +143,15 @@ def check(id: str, title: str, *, needs_baseline: bool = False):
 def run_checks(context: Context) -> tuple[list[Finding], list[dict[str, Any]]]:
     """Every check's findings, most serious first, and a line per check:
     whether it ran, was skipped (no baseline yet) or failed."""
-    from checker.checks import accounts, kernel, reboots  # noqa: F401 - they register
+    from checker.checks import (  # noqa: F401 - they register
+        accounts,
+        files,
+        integrity,
+        kernel,
+        persistence,
+        processes,
+        reboots,
+    )
 
     findings: list[Finding] = []
     ran: list[dict[str, Any]] = []

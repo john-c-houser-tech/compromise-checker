@@ -17,7 +17,7 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 2
+SNAPSHOT_VERSION = 4
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -158,6 +158,10 @@ class Section:
 class Snapshot:
     meta: dict[str, Any]
     sections: dict[str, Section]
+    # What was running at collection time (processes, sockets) and the
+    # modules' summaries: read by the checks, never compared — it changes
+    # by itself between any two runs.
+    live: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -166,6 +170,7 @@ class Snapshot:
                 name: {"complete": s.complete, "gaps": s.gaps, "items": s.items}
                 for name, s in self.sections.items()
             },
+            "live": self.live,
         }
 
     @classmethod
@@ -176,6 +181,7 @@ class Snapshot:
                 name: Section(s["items"], s["complete"], s["gaps"])
                 for name, s in data["sections"].items()
             },
+            data.get("live") or {},
         )
 
     def items(self) -> int:
@@ -278,6 +284,7 @@ class SnapshotBuilder:
         self.trailer_data: Trailer | None = None
         self._text: dict[int, tuple[Any, list[str] | None]] = {}
         self._processes: dict[int, str] = {}
+        self.live: dict[str, Any] = {"processes": [], "sockets": []}
         self._sockets: list[dict[str, Any]] = []
         self._password: dict[str, dict[str, Any]] = {}
         self._gaps: dict[str, list[tuple[str, set[str] | None]]] = {}
@@ -462,8 +469,17 @@ class SnapshotBuilder:
 
     def _on_package_verify(self, name: str, data: dict[str, Any]) -> None:
         if name in ("package_file_changed", "conffile_changed") and data.get("path"):
-            item = dict(data, configuration=name == "conffile_changed")
-            self.section("package_changes").items[data["path"]] = _meta(item)
+            # rpm reports each difference apart (owner, then mode…): one item
+            # per file holding all of them, in `results`.
+            item = self.section("package_changes").items.setdefault(
+                data["path"], {"configuration": name == "conffile_changed", "results": []}
+            )
+            for key, value in _meta(data).items():
+                if key != "result":
+                    item.setdefault(key, value)
+            if data.get("result") not in item["results"]:
+                item["results"].append(data.get("result"))
+                item["results"].sort(key=str)
         elif name == "checksum_store" and data.get("path"):
             self.section("checksum_store").items[data["path"]] = _meta(data)
         elif name == "package_verify_summary":
@@ -476,7 +492,9 @@ class SnapshotBuilder:
             self.section("privileged_files").items[data["path"]] = _meta(data)
         elif name == "unowned_executable" and data.get("path"):
             self.section("unowned_executables").items[data["path"]] = _meta(data)
-        elif name == "system_files_summary" and data.get("truncated"):
+        elif name == "system_files_summary":
+            self.live["system_files_summary"] = data
+        if name == "system_files_summary" and data.get("truncated"):
             self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 
     def _on_unusual_files(self, name: str, data: dict[str, Any]) -> None:
@@ -486,14 +504,22 @@ class SnapshotBuilder:
             "privileged_file": "privileged_files",
         }
         if name in sections and data.get("path"):
-            self.section(sections[name]).items[data["path"]] = _meta(data)
+            item = _meta(data)
+            if name == "privileged_file":
+                # Found outside the system directories; a file right in /
+                # comes without a place.
+                item.setdefault("place", "/")
+            self.section(sections[name]).items[data["path"]] = item
 
     def _on_processes(self, name: str, data: dict[str, Any]) -> None:
         if name in ("process", "hidden_process") and isinstance(data.get("pid"), int):
             self._processes[data["pid"]] = data.get("comm") or "?"
+            self.live["processes"].append(dict(data, hidden=name == "hidden_process"))
         elif name == "socket":
             self._sockets.append(data)
+            self.live["sockets"].append(data)
         elif name == "process_summary":
+            self.live["process_summary"] = data
             if data.get("sockets_truncated"):
                 self._module_gap("processes", "socket list cut short")
             if data.get("listing_complete") is False:
@@ -583,7 +609,7 @@ class SnapshotBuilder:
             "modules_planned": sorted(planned),
             "full": FULL <= planned,
         }
-        return Snapshot(meta, dict(sorted(self.sections.items())))
+        return Snapshot(meta, dict(sorted(self.sections.items())), self.live)
 
 
 # --- Comparing two ---------------------------------------------------------------------------

@@ -140,7 +140,8 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
   assessment.
   *As built:* split into 1.7a (the findings framework, coverage, `checker
   analyze`, assessments, and checks 8.1–8.3; docs/checks.md) and 1.7b
-  (checks 8.4–8.7). Not yet: configured maintenance windows for 8.2 (with
+  (checks 8.4–8.7, with the snapshot's uncompared `live` part for
+  processes and sockets). Not yet: configured maintenance windows for 8.2 (with
   the whitelists), logins at unusual hours for 8.3 (needs a per-host
   profile).
 - **Decision needed before `purge` is built:** the policy (§8) promises

@@ -44,9 +44,12 @@ added.
 | `web_files` | path: executable and script files in web roots | `unusual_files` |
 | `listeners` | protocol, address and port (for a packet socket: its type, ethertype and interface), network namespace: listening TCP, unconnected UDP, raw and packet sockets, with the owning UIDs, the programs holding them (hidden processes included) and how many sockets share the key | `processes` |
 
-Running processes, logins and anything else that changes by itself between
-two runs are not in a snapshot; checks read them from the bundle as they
-were.
+Running processes, sockets and anything else that changes by itself
+between two runs are kept apart, in the snapshot's **live** part: the
+processes (hidden ones marked), the sockets, and the `processes` and
+`system_files` summaries (whether package ownership was loaded). The
+checks read it (DESIGN.md §8.5, §8.7); it is never compared. Logins are
+events.
 
 Files under `/run` (transient units, generators' output) are remade at
 every boot, so their inode and times are left out; their content hash,

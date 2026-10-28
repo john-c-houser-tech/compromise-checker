@@ -78,6 +78,35 @@ doesn't hide a group of files that also holds an unknown one. A finding
 that lists only some of its entities (a group of more than 20 files) is
 matched only by a broad rule.
 
+## Maintenance windows
+
+Planned work explains reboots. A window in any layer turns an *unclean* or
+*unexplained* reboot inside it into an informational finding, marked with
+the window and the band it would have had (package changes join with plan
+2.6):
+
+```yaml
+maintenance:
+  - id: patch-night            # ids are shared with rules
+    every: [sun]               # mon … sun
+    from: "02:00"              # quoted: YAML reads 02:00 as a number
+    to: "04:00"                # the end is outside; to < from crosses midnight
+    tz: America/Los_Angeles    # default UTC
+    reason: "Weekly patching."
+    owner: ops
+    expires: never
+  - id: kernel-upgrade
+    start: 2026-11-05T01:00:00-08:00   # once; both times with their offset
+    end: 2026-11-05T03:00:00-08:00
+    reason: "Kernel upgrade, change 1234."
+    owner: john
+    expires: 2026-12-31
+```
+
+Windows expire like rules and can be switched off with `disable`. Operator
+reboots, power-button and planned (automatic updater) reboots are already
+informational and are left alone.
+
 ## What a rule can't be tricked into
 
 Rules read typed fields the checks set, never text from the host, so a log
@@ -110,10 +139,18 @@ a half-read whitelist would hide or show findings no one decided on.
   comes from, its expiry, and the rules switched off.
 - `checker analyze HOST` counts suppressed findings; `--suppressed` lists
   them with their rule and reason.
-- Coming in plan 2.2b: `checker whitelist test` (what a change would hide,
-  on stored assessments, before it is saved), `checker whitelist stale`
-  (rules that matched nothing in 90 days, or are about to expire), and
-  maintenance windows.
+- `checker whitelist test HOST --file F [--as host|group|global]`: the
+  proposed file read in place of the host's (or its group's, or the global)
+  file, applied to the host's stored analyses in the retention period. For
+  each it prints the probability before and after and the findings the
+  change would hide, reveal or move into or out of a maintenance window.
+  It reads stored assessments and changes nothing: no file is written and
+  no assessment is added.
+- `checker whitelist stale [--days 90]`: rules no analysis of any
+  inventory host recorded a match for in that time (a rule counts once,
+  by its file and id, however many hosts share it), and rules and windows
+  expired or expiring within 30 days. Stale rules are candidates for
+  removal: a rule that matches nothing still hides what it would match.
 
 ## What is recorded
 

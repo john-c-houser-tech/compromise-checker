@@ -253,6 +253,11 @@ point from firewalld's libffi code), the compromised ones still 100%
 Critical, and the detection proof ignores suppressed findings, so the
 whitelist can't hide a behaviour.
 
+*2.2b as built:* maintenance windows (weekly in a time zone, or once with
+offsets; ids shared with rules, so `disable` and expiry work the same);
+`checker whitelist test` reads stored assessments only and adds nothing;
+`checker whitelist stale` counts a rule once by file and id across hosts.
+
 ### 2.3 — Correlation
 
 - **Engine** (`checker/correlate.py`): a time-ordered view of a bundle's

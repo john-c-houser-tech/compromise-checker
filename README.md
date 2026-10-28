@@ -44,8 +44,12 @@ What works today:
 - `checker report HOST|--all` — writes one self-contained, confidential HTML
   report: findings with their evidence, a timeline, coverage, and the
   collection's hashes and chain of custody ([report](docs/report.md)).
-- `checker whitelist check [HOST]` — validates the whitelist files (global,
-  per group, per host) and shows a host's merged rules. A rule suppresses
+- `checker whitelist check [HOST]`, `test HOST --file F`, `stale` —
+  validate the whitelist files (global, per group, per host) and show a
+  host's merged rules; show what a proposed file would hide or reveal on
+  stored analyses before it is saved; list rules that matched nothing
+  lately or are expiring. Maintenance windows make planned reboots
+  informational. A rule suppresses
   a finding an operator has explained, with a reason, an owner and an
   expiry; suppressed findings are kept and listed in the report's appendix,
   and count for nothing in the score ([whitelists](docs/whitelists.md)).

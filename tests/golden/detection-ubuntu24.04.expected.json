@@ -1240,7 +1240,8 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "0602df131439faebdb2992c033b81f44f966037d110b0a69543e1fbec2b2464d",
+  "hash": "211bfa37aba7ae800df272b2eb367c8ce89eaa86d9a45c479611b886eb40c87a",
+  "maintenance": 0,
   "matched": {
    "host ubuntu24.04/proof-at-job-debian": 1,
    "host ubuntu24.04/proof-proofuser-account": 1,
@@ -1255,17 +1256,8 @@
     "id": "proof-at-job-redhat",
     "layer": "host ubuntu24.04",
     "match": {
-     "account": null,
-     "address": null,
      "check": "persistence.at_jobs",
-     "exe": null,
-     "group": null,
-     "key": null,
-     "module": null,
-     "package": null,
-     "path": "/var/spool/at/*",
-     "program": null,
-     "variant": null
+     "path": "/var/spool/at/*"
     },
     "owner": "compromise-checker proofs",
     "reason": "The proof queues an at job for the persistence modules to find."
@@ -1277,17 +1269,8 @@
     "id": "proof-at-job-debian",
     "layer": "host ubuntu24.04",
     "match": {
-     "account": null,
-     "address": null,
      "check": "persistence.at_jobs",
-     "exe": null,
-     "group": null,
-     "key": null,
-     "module": null,
-     "package": null,
-     "path": "/var/spool/cron/atjobs/*",
-     "program": null,
-     "variant": null
+     "path": "/var/spool/cron/atjobs/*"
     },
     "owner": "compromise-checker proofs",
     "reason": "The proof queues an at job for the persistence modules to find."
@@ -1300,15 +1283,7 @@
     "layer": "host ubuntu24.04",
     "match": {
      "account": "root",
-     "address": null,
      "check": "ssh.login",
-     "exe": null,
-     "group": null,
-     "key": null,
-     "module": null,
-     "package": null,
-     "path": null,
-     "program": null,
      "variant": "root_login"
     },
     "owner": "compromise-checker proofs",
@@ -1322,16 +1297,7 @@
     "layer": "host ubuntu24.04",
     "match": {
      "account": "proofuser",
-     "address": null,
-     "check": "account.log_changes",
-     "exe": null,
-     "group": null,
-     "key": null,
-     "module": null,
-     "package": null,
-     "path": null,
-     "program": null,
-     "variant": null
+     "check": "account.log_changes"
     },
     "owner": "compromise-checker proofs",
     "reason": "The proof creates proofuser to give the persistence modules something to find."
@@ -1344,21 +1310,13 @@
     "layer": "host ubuntu24.04",
     "match": {
      "account": "scanner",
-     "address": null,
-     "check": "account.log_changes",
-     "exe": null,
-     "group": null,
-     "key": null,
-     "module": null,
-     "package": null,
-     "path": null,
-     "program": null,
-     "variant": null
+     "check": "account.log_changes"
     },
     "owner": "compromise-checker proofs",
     "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up."
    }
   ],
-  "suppressed": 4
+  "suppressed": 4,
+  "windows": []
  }
 }

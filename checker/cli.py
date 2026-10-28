@@ -6,7 +6,7 @@ import json
 import sqlite3
 import sys
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 
@@ -40,6 +40,9 @@ from checker.scoring import percent
 from checker.transport import TransportError, fetch_host_key, trust_host_key
 from checker.whitelist import WhitelistError, check_all
 from checker.whitelist import for_host as whitelist_for_host
+from checker.whitelist import load_with as whitelist_load_with
+from checker.whitelist_review import compare as whitelist_compare
+from checker.whitelist_review import stale as whitelist_stale
 
 # What `checker init --home-text` means, as `init` reports it.
 HOME_TEXT = {
@@ -255,6 +258,75 @@ def cmd_whitelist_check(args: argparse.Namespace) -> int:
         print(f"{'':20} {rule.reason}  ({rule.owner})")
     for item in merged.disabled:
         print(f"{item['by']:20} switched off {item['id']}: {item['reason']}  ({item['owner']})")
+    return 0
+
+
+def cmd_whitelist_test(args: argparse.Namespace) -> int:
+    """A proposed file against the host's stored analyses in the retention
+    period: the score before and after, and what it would hide or reveal.
+    Nothing is saved."""
+    base = home()
+    store = Store(database_file(base))
+    try:
+        config = load_config(base)
+        identity = _identity(args, base)
+        inventory = _inventory_for_priors()
+        entry = next((h for h in inventory.hosts if h.name == args.host), None)
+        group = entry.group if entry else None
+        current = _whitelist_for(base, args.host, inventory)
+        try:
+            proposed = whitelist_load_with(base, args.host, group, args.layer, Path(args.file))
+        except WhitelistError as exc:
+            raise EvidenceError(f"the proposed file: {exc}") from None
+        since = datetime.now(UTC) - timedelta(days=config.retention_days)
+        results = whitelist_compare(store, args.host, identity, current, proposed, since)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    if not results:
+        print(f"No scored analyses of {args.host} in the last {config.retention_days} days.")
+        return 0
+    changed = 0
+    for r in results:
+        (p0, b0), (p1, b1) = r["before"], r["after"]
+        moved = r["hidden"] or r["revealed"] or r["rebanded"]
+        changed += bool(moved)
+        print(f"{r['bundle']}  {percent(p0)} {b0} -> {percent(p1)} {b1}")
+        for line in r["hidden"]:
+            print(f"  would hide     {line}")
+        for line in r["revealed"]:
+            print(f"  would reveal   {line}")
+        for line in r["rebanded"]:
+            print(f"  would reband   {line}")
+    print(f"{changed} of {len(results)} analyses would change. Nothing was saved.")
+    return 0
+
+
+def cmd_whitelist_stale(args: argparse.Namespace) -> int:
+    """Rules no recent analysis needed, and rules expired or expiring."""
+    base = home()
+    store = Store(database_file(base))
+    try:
+        identity = _identity(args, base)
+        inventory = _inventory_for_priors()
+        sets = {h.name: _whitelist_for(base, h.name, inventory) for h in inventory.hosts}
+        found = whitelist_stale(store, identity, sets, args.days)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    headings = {
+        "stale": f"No match in the last {args.days} days",
+        "expired": "Expired (no longer applied)",
+        "expiring": "Expiring within 30 days",
+    }
+    for kind, heading in headings.items():
+        print(f"{heading}:")
+        for line in found[kind] or ["none"]:
+            print(f"  {line}")
     return 0
 
 
@@ -549,6 +621,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     checking.add_argument("host", nargs="?")
     checking.set_defaults(handler=cmd_whitelist_check)
+    testing = whitelist_commands.add_parser(
+        "test", help="what a proposed whitelist file would hide or reveal, on stored analyses"
+    )
+    testing.add_argument("host")
+    testing.add_argument("--file", required=True, help="the proposed file")
+    testing.add_argument(
+        "--as",
+        dest="layer",
+        choices=["host", "group", "global"],
+        default="host",
+        help="which of the host's files it would replace (default: the host's)",
+    )
+    testing.add_argument("--identity", help="the evidence private key file")
+    testing.set_defaults(handler=cmd_whitelist_test)
+    staling = whitelist_commands.add_parser(
+        "stale", help="rules that matched nothing lately, and rules expired or expiring"
+    )
+    staling.add_argument("--days", type=int, default=90, help="how far back (default 90)")
+    staling.add_argument("--identity", help="the evidence private key file")
+    staling.set_defaults(handler=cmd_whitelist_stale)
     purging = commands.add_parser(
         "purge", help="delete stored evidence for a host, before a date, or past retention"
     )
@@ -705,6 +797,9 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
         print(f"\n{HEADINGS[category]}:")
         for f in shown:
             marks = (" [new]" if f["new"] else "") + (" [uncertain]" if f["uncertain"] else "")
+            if f.get("maintenance"):
+                m = f["maintenance"]
+                marks += f" [maintenance {m['window']}, was {m['band']}]"
             print(f"  {f['band'].upper():8} {f['title']}{marks}")
             print(f"           {f['summary'][:200]}")
             if f["uncertain"]:

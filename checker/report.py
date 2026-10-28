@@ -32,7 +32,7 @@ from checker.checks import BANDS, CATEGORIES, CHECKS_VERSION
 from checker.evidence import EvidenceError, Store, open_text, who_and_where
 from checker.scoring import DEFAULT_PRIOR, percent, score
 from checker.snapshot import Snapshot
-from checker.whitelist import Whitelist
+from checker.whitelist import Whitelist, reapply
 
 MAX_EVIDENCE = 5  # excerpts shown per finding
 MAX_TIMELINE = 300
@@ -207,19 +207,11 @@ def reassess(
     assessment; the earlier one is kept."""
     again = json.loads(json.dumps(assessment))
     again["analysed_at"] = datetime.now(UTC).isoformat()
-    again["whitelist"] = rewhitelist(again["findings"], whitelist)
+    again["whitelist"] = reapply(again["findings"], whitelist)
     again["score"] = score(again["findings"], prior[0]) | {"prior_source": prior[1]}
     again["counts"] = count(again["findings"])
     store_assessment(store, row, recipients, again)
     return again
-
-
-def rewhitelist(findings: list[dict], whitelist: Whitelist | None) -> dict | None:
-    if whitelist is None:
-        for finding in findings:
-            finding.pop("suppressed_by", None)
-        return None
-    return whitelist.apply(findings)
 
 
 def whitelist_hash(assessment: dict) -> str | None:

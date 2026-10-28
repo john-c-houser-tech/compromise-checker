@@ -67,7 +67,7 @@ review (from 2026-11-01), before it is called ready. Also:
 
 ## Pull requests
 
-### 2.0 — `purge` and retention (needs decision 1 first)
+### 2.0 — `purge` and retention (decision 1: decided)
 
 Policy §8 promises: evidence, snapshots and reports kept 90 days by default,
 the period configurable, a `purge` command for a server or a date range, and
@@ -485,10 +485,11 @@ assessments tables are append-only, enforced by triggers.
 
 ## Decisions to confirm with John (one at a time, before the PR that needs it)
 
-1. **Before 2.0 — purge vs append-only.** Proposed: `purge` is the one
-   sanctioned way to delete; it drops the triggers inside its transaction,
-   deletes, restores them, and records what it removed (by identifiers and
-   counts only) in an append-only `purges` table.
+1. ~~Before 2.0 — purge vs append-only.~~ **Decided 2026-10-28:** `purge`
+   is the one sanctioned way to delete; it drops the triggers inside its
+   transaction, deletes, restores them, and records what it removed (by
+   identifiers and counts only) in an append-only `purges` table. A purged
+   baseline moves to the host's oldest remaining usable bundle.
 2. **Before 2.4 — firewall rules.** Allow-list `nft list ruleset` and
    `iptables-save` (read-only, fixed arguments, through 1.1's command
    runner), or skip firewall rules and say so in coverage.

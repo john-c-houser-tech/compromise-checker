@@ -694,6 +694,39 @@ rootkit's traces, where it leaves any, are in `kernel_modules` (the
 kernel's taint flags, unsigned or out-of-tree modules) and
 `system_journal` (module loads).
 
+## `network`
+
+**Why:** check 8.8 (network and data transfer): resolver and hosts changes,
+firewall changes, promiscuous interfaces.
+
+**Reads:**
+- `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`,
+  `/etc/hosts.allow`, `/etc/hosts.deny`, as masked text;
+- firewall configuration, as masked text: `/etc/nftables.conf`,
+  `/etc/sysconfig/nftables.conf`, `/etc/nftables.d`,
+  `/etc/sysconfig/nftables.d`, `/etc/firewalld` (three levels), ufw's
+  files under `/etc/ufw` and `/etc/default/ufw`, `/etc/iptables/rules.v4`
+  and `rules.v6`, `/etc/sysconfig/iptables` and `ip6tables`;
+- per interface in `/sys/class/net` (at most 256): flags (promiscuous),
+  state, type, whether it is a bridge or a bridge port, and its received
+  and sent byte counters. Not its hardware (MAC) address;
+- `/proc/net/route` and `/proc/net/ipv6_route` (at most 2,000 lines each);
+- whether a firewall is loaded: `/sys/module/nf_tables` exists, or
+  `/proc/net/ip_tables_names` / `ip6_tables_names` list tables.
+
+**Runs** (decision 2 of the Phase 2 plan), only for a firewall that is
+already loaded, so listing it never loads a kernel module:
+- `nft list ruleset` when nf_tables is loaded. A set with more than 50
+  elements (a fail2ban or CrowdSec blocklist) is sent as one line with its
+  element count and SHA-256, never element by element, and its lines are
+  not held in memory past that limit;
+- `iptables-legacy-save` / `ip6tables-legacy-save` when legacy tables
+  exist.
+
+A command that can't run is a `command_unavailable` record and leaves the
+`firewall_rules` section incomplete. The read-only proof checks that the
+kernel's module list is the same before and after every collection.
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,
@@ -785,7 +818,8 @@ follow links too (see `ssh`); logs never do.
 Where a file can't practically be read directly, a module runs a command
 from the collector's fixed allow-list (DESIGN.md §5.4). The settings can't
 add to the list or change a command's arguments. Today the list is
-`journalctl`; the manifest carries the list as `commands_allowed`.
+`journalctl`, `nft`, `iptables-legacy-save` and `ip6tables-legacy-save`;
+the manifest carries the list as `commands_allowed`.
 
 A command runs only from its absolute path (`/usr/bin/…` or `/bin/…`, never
 a search of `PATH`), and only if that file is owned by root and writable by

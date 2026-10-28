@@ -354,6 +354,14 @@ account. SCORING_VERSION 2, CHECKS_VERSION 6.
   sits in `SYN_SENT`); an `ssh -R` forward to localhost; `/etc/hosts`
   rewritten.
 
+*As built:* split into 2.4a (the collector's `network` module, the
+`network_files`, `interfaces`, `firewall_rules` and `peers` snapshot
+sections, and the read-only proof's module-list check; proof: read-only on
+all seven images) and 2.4b (the checks, with their detection behaviours).
+Peers leave out connections accepted on the host's own listening ports
+(found while testing: an incoming SSH session looked like an outgoing
+connection to the client's port).
+
 ### 2.5 — Anti-forensics (8.10, ★ all)
 
 - **Collector, new module `logging_state`:** a manifest of `/var/log` and

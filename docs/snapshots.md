@@ -42,6 +42,10 @@ added.
 | `unowned_executables` | path: executables in system directories that no package installed | `system_files` |
 | `unusual_files` | path: unusual files in writable and web directories | `unusual_files` |
 | `web_files` | path: executable and script files in web roots | `unusual_files` |
+| `network_files` | path: resolver, hosts, TCP-wrapper and firewall configuration files, and the SHA-256 of their (masked) text | `network` |
+| `interfaces` | interface name: promiscuous, state, type, bridge, bridge port (byte counters are in the uncompared `live` part) | `network` |
+| `firewall_rules` | program and line: the loaded rules from `nft` or `iptables-legacy-save`, counters and comments left out, spaces collapsed | `network` |
+| `peers` | program, remote network (/24 or /48) and port: outgoing TCP connections open at collection (not loopback or link-local; connections accepted on one of the host's listening ports are incoming and left out), with how many | `processes` |
 | `listeners` | protocol, address and port (for a packet socket: its type, ethertype and interface), network namespace: listening TCP, unconnected UDP, raw and packet sockets, with the owning UIDs, the programs holding them (hidden processes included) and how many sockets share the key | `processes` |
 
 Running processes, sockets and anything else that changes by itself

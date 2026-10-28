@@ -1198,6 +1198,11 @@ class Walk:
 # command line, the executable's hash, the exit status and its error output.
 COMMANDS = {
     "journalctl": ("/usr/bin/journalctl", "/bin/journalctl"),
+    # Firewall rules, read only, and only when the firewall is already
+    # loaded (module_network), so listing them never loads a kernel module.
+    "nft": ("/usr/sbin/nft", "/sbin/nft"),
+    "iptables-legacy-save": ("/usr/sbin/iptables-legacy-save", "/sbin/iptables-legacy-save"),
+    "ip6tables-legacy-save": ("/usr/sbin/ip6tables-legacy-save", "/sbin/ip6tables-legacy-save"),
 }
 # A fixed, minimal environment: nothing from the login session reaches a command.
 _COMMAND_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C.UTF-8"}
@@ -6037,6 +6042,141 @@ def module_processes(run):
 
 
 # Collection modules, by name, in their default order.
+# --- Network (DESIGN.md §8.8) ----------------------------------------------------------
+
+NETWORK_FILES = (
+    "/etc/hosts",
+    "/etc/resolv.conf",
+    "/etc/nsswitch.conf",
+    "/etc/hosts.allow",
+    "/etc/hosts.deny",
+    # Firewall configuration: what loads at boot.
+    "/etc/nftables.conf",
+    "/etc/sysconfig/nftables.conf",
+    "/etc/iptables/rules.v4",
+    "/etc/iptables/rules.v6",
+    "/etc/sysconfig/iptables",
+    "/etc/sysconfig/ip6tables",
+    "/etc/default/ufw",
+    "/etc/ufw/ufw.conf",
+    "/etc/ufw/before.rules",
+    "/etc/ufw/after.rules",
+    "/etc/ufw/user.rules",
+    "/etc/ufw/before6.rules",
+    "/etc/ufw/after6.rules",
+    "/etc/ufw/user6.rules",
+)
+NETWORK_DIRS = ("/etc/firewalld", "/etc/nftables.d", "/etc/sysconfig/nftables.d")
+IFF_PROMISC = 0x100
+# A set with more elements than this (a fail2ban or CrowdSec blocklist) is
+# sent as its element count and a hash, not element by element.
+NFT_SET_LIMIT = 50
+_NFT_ELEMENTS = re.compile(rb"^(\s*)elements = \{")
+
+
+def nft_sets_reduced():
+    """A transform for `nft list ruleset` lines: a set whose elements fit in
+    NFT_SET_LIMIT elements and lines goes as it is; a longer one becomes one
+    line with its element count and SHA-256 (its lines aren't kept past the
+    limit, however long it is). Stateful: one per command run."""
+    state = {"open": None}
+
+    def transform(line, masker):
+        held = state["open"]
+        if held is None:
+            match = _NFT_ELEMENTS.match(line)
+            if not match:
+                return masker.line(line)
+            held = {"indent": match.group(1), "lines": [], "count": 0, "digest": hashlib.sha256()}
+            state["open"] = held
+            body = line.split(b"{", 1)[1]
+        else:
+            body = line
+        held["digest"].update(line)
+        held["count"] += len([e for e in body.split(b"}")[0].split(b",") if e.strip()])
+        if held["lines"] is not None:
+            held["lines"].append(line)
+            if len(held["lines"]) > NFT_SET_LIMIT or held["count"] > NFT_SET_LIMIT:
+                held["lines"] = None  # too long to send: count and hash only
+        if b"}" not in line:
+            return b""
+        state["open"] = None
+        if held["lines"] is not None:
+            return b"".join(masker.line(kept) for kept in held["lines"])
+        return held["indent"] + b"elements = { [%d elements, sha256 %s] }\n" % (
+            held["count"],
+            held["digest"].hexdigest().encode(),
+        )
+
+    return transform
+
+
+def _read_int(absolute):
+    text = read_small(absolute, 64)
+    try:
+        return int(text.strip(), 0) if text is not None else None
+    except ValueError:
+        return None
+
+
+def module_network(run):
+    """Resolver, hosts and TCP-wrapper files; firewall configuration;
+    interfaces (flags, state, byte counters), routes; and the firewall's
+    loaded rules, read with `nft` or `iptables-legacy-save` only when that
+    firewall is already loaded: listing an unloaded one could make the
+    kernel load its module."""
+    module = "network"
+    seen = set()
+    send_config_files(run, module, NETWORK_FILES, seen)
+    for directory in NETWORK_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=3)
+    try:
+        names = sorted(os.listdir(path("/sys/class/net")))
+    except OSError as exc:
+        run.stream.record(module, "not_examined", {"path": "/sys/class/net", "reason": str(exc)})
+        names = []
+    for name in names[:256]:
+        run.check_time()
+        if "/" in name or name in (".", ".."):
+            continue
+        base = f"/sys/class/net/{name}"
+        flags = _read_int(f"{base}/flags")
+        state = read_small(f"{base}/operstate", 64)
+        run.stream.record(
+            module,
+            "interface",
+            {
+                "name": name,
+                "flags": flags,
+                "promiscuous": bool(flags & IFF_PROMISC) if flags is not None else None,
+                "state": state.strip() if state else None,
+                "type": _read_int(f"{base}/type"),
+                "bridge": os.path.isdir(path(f"{base}/bridge")),
+                "bridge_port": os.path.isdir(path(f"{base}/brport")),
+                "rx_bytes": _read_int(f"{base}/statistics/rx_bytes"),
+                "tx_bytes": _read_int(f"{base}/statistics/tx_bytes"),
+            },
+        )
+    if len(names) > 256:
+        run.stream.record(module, "listing_truncated", {"path": "/sys/class/net"})
+    for table in ("/proc/net/route", "/proc/net/ipv6_route"):
+        text = read_small(table, 1024 * 1024)
+        if text is not None:
+            run.stream.record(module, "routes", {"table": table, "lines": text.splitlines()[:2000]})
+    loaded = {
+        "nf_tables": os.path.isdir(path("/sys/module/nf_tables")),
+        "ip_tables": bool((read_small("/proc/net/ip_tables_names", 4096) or "").strip()),
+        "ip6_tables": bool((read_small("/proc/net/ip6_tables_names", 4096) or "").strip()),
+    }
+    run.stream.record(module, "firewall_loaded", loaded)
+    if loaded["nf_tables"]:
+        run_command(run, module, "nft", ["list", "ruleset"], transform=nft_sets_reduced())
+    if loaded["ip_tables"]:
+        run_command(run, module, "iptables-legacy-save", [])
+    if loaded["ip6_tables"]:
+        run_command(run, module, "ip6tables-legacy-save", [])
+
+
 MODULES = {
     "host_facts": module_host_facts,
     "auth_log": module_auth_log,
@@ -6058,6 +6198,7 @@ MODULES = {
     "system_files": module_system_files,
     "unusual_files": module_unusual_files,
     "processes": module_processes,
+    "network": module_network,
 }
 
 

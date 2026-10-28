@@ -230,7 +230,21 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
   fixes: the exemptions are stricter, and systemd's real login writes are
   still recognised.
 
-  Spend so far: about 8 server-hours, roughly 6 cents of the $10 cap.
+  After the review of #31, the proof itself was made stricter:
+  - the deleted program runs from `/root`, so deletion must be noticed
+    (not the scratch place);
+  - the shell has only its input on the socket, so the shell must be
+    recognised;
+  - each planted process is checked to be really running.
+
+  The first stricter run missed the reverse shell. The fault was in the
+  proof, not detection: its listener check passed before the port was
+  bound, and a refused connection left bash running with no socket. That
+  was reproduced in a container and fixed. The final runs pass: all ten
+  behaviours on Ubuntu 24.04 and Rocky 9, and the read-only proof on all
+  seven images.
+
+  Spend for 1.9: about 13 server-hours, roughly 10 cents of the $10 cap.
 
 ## Explicitly gated on John
 

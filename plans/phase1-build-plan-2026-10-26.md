@@ -197,8 +197,8 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
 3. ~~Before 1.5 — web roots.~~ **Decided 2026-10-27:** common paths by
    default (`/var/www`, `/srv/www`, `/srv/http`, `/usr/share/nginx/html`),
    replaced by a per-host list where one is set.
-4. **Before 1.9 — budget:** confirm the spend for the full matrix and
-   scenario runs.
+4. ~~Before 1.9 — budget.~~ **Decided 2026-10-27:** a $10 cap for all of
+   1.9; each run still needs John's OK, with its server count reported.
 
 **As built:** 1.4 was split into 1.4a (logs and boots, #20), 1.4b (package
 verification) and 1.4c (SUID/SGID files, file capabilities, unowned

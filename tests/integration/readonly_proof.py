@@ -11,7 +11,7 @@ Run by hand, not in CI: it spends money (a Nanode is $0.0075 an hour) and
 needs a Linode API token with Linodes: Read/Write only, from $LINODE_TOKEN or
 1Password: name the item and vault in $CC_LINODE_OP_ITEM and $CC_LINODE_OP_VAULT.
 
-    python tests/integration/readonly_proof.py [--distro ubuntu24.04 rocky9] [--keep]
+    python tests/integration/readonly_proof.py [--distro ubuntu24.04 rocky9 | all] [--keep]
 """
 
 import argparse
@@ -55,6 +55,7 @@ NANODE = "g6-nanode-1"
 IMAGES = {
     "ubuntu24.04": "linode/ubuntu24.04",
     "ubuntu22.04": "linode/ubuntu22.04",
+    "ubuntu26.04": "linode/ubuntu26.04",
     "rocky9": "linode/rocky9",
     "rocky10": "linode/rocky10",
     "alma9": "linode/almalinux9",
@@ -691,10 +692,14 @@ def _cancel_on_sigterm() -> None:
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--distro", nargs="+", default=["ubuntu24.04", "rocky9"], choices=IMAGES)
+    parser.add_argument(
+        "--distro", nargs="+", default=["ubuntu24.04", "rocky9"], choices=[*IMAGES, "all"]
+    )
     parser.add_argument("--region", default="us-sea")
     parser.add_argument("--keep", action="store_true", help="don't delete the servers")
     args = parser.parse_args()
+    if "all" in args.distro:
+        args.distro = list(IMAGES)  # the whole matrix Linode offers (no RHEL there)
     _cancel_on_sigterm()
 
     api = Linode(linode_token())

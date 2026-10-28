@@ -43,12 +43,24 @@ What works today:
   report: findings with their evidence, a timeline, coverage, and the
   collection's hashes and chain of custody ([report](docs/report.md)).
 
-**Read-only, proven:** on throwaway Ubuntu 24.04 and Rocky Linux 9 servers,
-with auditd recording every write by the scanner's session, the collector
-wrote nothing at all, and every write by the system's own login machinery
-matched the traces disclosed in the policy
+**Read-only, proven:** on throwaway Ubuntu 22.04, 24.04 and 26.04, Rocky
+Linux 9 and 10, and AlmaLinux 9 and 10 servers, with auditd recording every
+write by the scanner's session, the collector wrote nothing at all, and
+every write by the system's own login machinery matched the traces
+disclosed in the policy
 ([proof script](tests/integration/readonly_proof.py),
-[results](plans/phase0-build-plan-2026-10-25.md#results)).
+[results](plans/phase1-build-plan-2026-10-26.md)).
+
+**Detection, proven:** on throwaway Ubuntu 24.04 and Rocky Linux 9 servers,
+ten scripted compromise behaviours each produced their finding: a second
+UID 0 account, a backdoor key for root, cron and systemd persistence,
+`/etc/ld.so.preload`, a set-user-ID shell in `/tmp`, a process running from
+a deleted program, a reverse shell, sshd allowing root login, and a
+`pam_exec` line ([detection proof](tests/integration/detection_proof.py)).
+
+**RHEL itself hasn't been tested:** Rocky Linux and AlmaLinux, built from
+the same sources, stand in for it. Red Hat's own subscription and Insights
+services, which they lack, may raise findings no run has seen yet.
 
 Set up a server for it with [docs/scanner-account.md](docs/scanner-account.md).
 

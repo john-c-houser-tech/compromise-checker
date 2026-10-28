@@ -180,7 +180,10 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
   *Results (1.9a, 2026-10-27, PR #30):* the read-only proof passes on all
   seven images Linode offers. The collector wrote nothing on any of them,
   and the snapshot and `checker analyze` passes held. Linode has no RHEL
-  images.
+  images. **Decided (John, 2026-10-27):** Rocky Linux and AlmaLinux stand in
+  for RHEL in Phase 1, and the README says so. A real RHEL image comes
+  later, and only if there is interest in the software (see "After Phase
+  1").
 
   | Image | Collector | Peak memory | Medium+ findings on a fresh server | Low / hygiene |
   |---|---|---|---|---|
@@ -274,6 +277,11 @@ verification) and 1.4c (SUID/SGID files, file capabilities, unowned
 executables), to keep each review small.
 
 ## After Phase 1
+
+- **A RHEL proof run, only if there is interest in the software**
+  (decided 2026-10-27). Build a RHEL 9/10 image for Linode with a free Red
+  Hat Developer subscription, run the read-only and detection proofs on it,
+  and tune any findings from Red Hat's subscription and Insights services.
 
 - **Package verification against vendor packages** (noted during 1.4b): rpm's
   database and dpkg's lists live on the server, so root can rewrite them with

@@ -300,6 +300,16 @@ backtracking). Chains count once each; state steps (no time) must be new
 since the previous bundle. `sudo.rules` findings now name the account or
 group a rule grants to, so the first chain can follow it. No chain fires
 on the golden cases (fresh or detection); the proofs stage chains in 2.10.
+After the 2.3 review (2 High): a condition's partner must be trusted (the
+journal's own `_COMM` and root `_UID`, not a `logger -t sudo` line), and
+`sudo.rules` entities cover the whole user list. John's side note
+(2026-10-28): a stolen deploy key can still log in and run the same
+command, so a rule with `correlated_with` must name the account, a command
+must start with the program's full path, and docs/whitelists.md states the
+limit and recommends an address range. Chains use variants (new accounts
+and keys only), distinct findings and log lines per step, a login after
+the previous bundle when no step is timed, and never the tool's own
+account. SCORING_VERSION 2, CHECKS_VERSION 6.
 
 ### 2.4 — Network and data transfer (8.8)
 

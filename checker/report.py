@@ -210,7 +210,7 @@ def reassess(
     again = json.loads(json.dumps(assessment))
     again["analysed_at"] = datetime.now(UTC).isoformat()
     again["whitelist"] = reapply(again["findings"], whitelist, events=events)
-    chains = find_chains(again["findings"], events)
+    chains = find_chains(again["findings"], events, assessment.get("previous_time"))
     again["score"] = score(again["findings"], prior[0], chains) | {
         "prior_source": prior[1],
         "chains": chains,

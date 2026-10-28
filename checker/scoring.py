@@ -18,7 +18,7 @@ import math
 from collections import defaultdict
 from typing import Any
 
-SCORING_VERSION = 1
+SCORING_VERSION = 2  # 2: chains
 
 DEFAULT_PRIOR = 0.02  # DESIGN.md §11.2
 

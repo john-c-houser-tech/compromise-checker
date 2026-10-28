@@ -137,7 +137,7 @@ def evaluate(
     findings, ran = run_checks(context)
     found = [f.as_dict() for f in findings]
     applied = whitelist.apply(found, today, context.events) if whitelist is not None else None
-    chains = find_chains(found, context.events)
+    chains = find_chains(found, context.events, context.previous_time)
     scored = score(found, prior[0], chains) | {"prior_source": prior[1], "chains": chains}
     return found, ran, scored, applied
 
@@ -220,6 +220,7 @@ def analyze(
         },
         "baseline_id": found.baseline_id,
         "baseline_set_now": found.baseline_set_now,
+        "previous_time": previous_time,
         "notes": notes,
         "counts": counts,
         "score": scored,

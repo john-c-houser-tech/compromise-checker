@@ -17,8 +17,9 @@ from checker.events import Event
 from checker.snapshot import Snapshot
 
 # 2: the critical band, variants; 3: more variants; 4: exe entities and
-# entities_complete; 5: sudo.rules name the account or group.
-CHECKS_VERSION = 5
+# entities_complete; 5: sudo.rules name the account or group; 6: account
+# and key variants.
+CHECKS_VERSION = 6
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"

@@ -38,7 +38,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from checker.checks import load_checks
-from checker.correlate import EVENT_TYPES, MAX_WITHIN, correlated, parse_duration
+from checker.correlate import EVENT_TYPES, MAX_WITHIN, WRITERS, correlated, parse_duration
 
 PROFILES = Path(__file__).parent / "profiles"
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
@@ -94,7 +94,28 @@ class Correlation(BaseModel):
     def _tied(self) -> Correlation:
         if not self.same:
             raise ValueError("same: account, address or both (a partner by anyone isn't one)")
+        carried = WRITERS[self.event][1]
+        missing = [name for name in self.same if name not in carried]
+        if missing:
+            raise ValueError(
+                f"{self.event} events carry no {', '.join(missing)}: `same` can't use it"
+            )
+        if self.command is not None and self.event not in ("sudo.command",):
+            raise ValueError("only sudo.command events carry a command")
+        if self.command is not None and not self.names_a_program():
+            raise ValueError(
+                "a command starts with the program's full path, no wildcards in it:"
+                " /usr/bin/git -C /srv/app pull, not *git pull"
+            )
         return self
+
+    def names_a_program(self) -> bool:
+        """The command starts with a program's full path, no wildcard in it:
+        `/usr/bin/git -C /srv/app pull`, not `*git*` or `/*`."""
+        if self.command is None:
+            return False
+        program = self.command.split(" ", 1)[0]
+        return program.startswith("/") and len(program) > 1 and not set(program) & {"*", "?"}
 
 
 class Match(BaseModel):
@@ -129,6 +150,19 @@ class Match(BaseModel):
         return value
 
     @model_validator(mode="after")
+    def _condition_names_the_account(self) -> Match:
+        # A condition reads what the host logged: whoever holds the account
+        # can run the same command. So it may only ever explain one named
+        # account, never every account (broad or not).
+        if self.correlated_with is not None and self.account is None:
+            raise ValueError(
+                "a rule with correlated_with must name the account (and, where the deploys"
+                " come from a known network, an address): whoever holds an account can run"
+                " the same command"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _known_check(self) -> Match:
         checks = load_checks()
         if self.check not in checks:
@@ -151,8 +185,6 @@ class Match(BaseModel):
     def narrow(self) -> bool:
         """Names something that limits it: not only the check, a process's
         own name, every address (/0) or every path (/**)."""
-        if self.correlated_with is not None and self.correlated_with.command is not None:
-            return True  # only when that account then runs that command
         for name in NARROWING:
             value = getattr(self, name)
             if value is None:
@@ -420,10 +452,11 @@ class Whitelist:
         maintenance = self._maintenance(findings, today)
         live = [p for p in self.rules if p.live(today)]
         matched: dict[str, int] = {}
+        partners: dict = {}  # each condition's partners, worked out once
         for finding in findings:
             finding.pop("suppressed_by", None)
             for placed in live:
-                if matches(placed.rule.match, finding, events):
+                if matches(placed.rule.match, finding, events, partners):
                     finding["suppressed_by"] = {
                         "rule": placed.rule.id,
                         "layer": placed.layer,
@@ -478,7 +511,9 @@ def _moment(text: str | None) -> datetime | None:
 # --- Matching ----------------------------------------------------------------------------
 
 
-def matches(match: Match, finding: dict[str, Any], events: list | None = None) -> bool:
+def matches(
+    match: Match, finding: dict[str, Any], events: list | None = None, cache: dict | None = None
+) -> bool:
     """Every field the rule gives must match, and must cover every entity of
     its kind the finding names (one known file doesn't vouch for another in
     the same finding); a finding whose entity list is partial matches no
@@ -508,7 +543,7 @@ def matches(match: Match, finding: dict[str, Any], events: list | None = None) -
         if not ok:
             return False
     if match.correlated_with is not None:
-        return correlated(match.correlated_with, finding, events)
+        return correlated(match.correlated_with, finding, events, cache)
     return True
 
 

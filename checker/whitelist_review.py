@@ -13,6 +13,7 @@ from checker.assess import load_assessment
 from checker.baseline import usable_bundles
 from checker.correlate import find_chains
 from checker.evidence import Store
+from checker.report import current_versions
 from checker.scoring import score
 from checker.whitelist import Whitelist, reapply
 
@@ -39,6 +40,11 @@ def compare(
         stored = load_assessment(store, row["id"], identity)
         if stored is None or "score" not in stored:
             continue
+        if stored.get("versions") != current_versions():
+            # Its findings cite events by number in an older parse: they
+            # can't be paired with today's events. `analyze` makes it current.
+            results.append({"bundle": row["id"], "skipped": "analysed with older checks"})
+            continue
         prior = stored["score"]["prior"]
         # Read only: a bundle not parsed yet isn't parsed here (that would
         # store its events); correlated rules and chains then see none.
@@ -48,8 +54,9 @@ def compare(
         after = json.loads(json.dumps(stored["findings"]))
         reapply(before, current, events=events)
         reapply(after, proposed, events=events)
-        was = score(before, prior, find_chains(before, events))
-        now = score(after, prior, find_chains(after, events))
+        previous = stored.get("previous_time")
+        was = score(before, prior, find_chains(before, events, previous))
+        now = score(after, prior, find_chains(after, events, previous))
         hidden, revealed, rebanded = [], [], []
         for b, a in zip(before, after, strict=True):
             if not b.get("suppressed_by") and a.get("suppressed_by"):
@@ -113,8 +120,8 @@ def stale(
             if datetime.fromisoformat(row["started_at"]) < since:
                 continue
             stored = load_assessment(store, row["id"], identity)
-            if not stored:
-                continue
+            if not stored or stored.get("versions") != current_versions():
+                continue  # its event numbers belong to an older parse
             findings = json.loads(json.dumps(stored["findings"]))
             parsed = load_events(store, row, identity)
             reapply(findings, merged, today, parsed.events if parsed else [])

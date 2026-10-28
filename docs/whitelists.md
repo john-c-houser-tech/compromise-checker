@@ -88,27 +88,35 @@ explained only when the same account runs the deploy command right after.
     match:
       check: ssh.login
       variant: new_address
+      account: deploy            # required with correlated_with
+      # address: 198.51.100.0/24 # recommended where deploys come from a known network
       correlated_with:
         event: sudo.command      # any type in docs/events.md
         within: 30s              # 1s … 1d
         direction: after         # after (default), before, either
         same: [account]          # account (default), address, or both
-        command: "/usr/bin/git -C /srv/app pull"   # * and ?, the whole command
+        command: "/usr/bin/git -C /srv/app pull"   # full program path; * and ? after it
     reason: "Deploys log in from wherever John is, then pull at once."
     owner: john
     expires: never
 ```
 
 **Every** event the finding cites (each login, for a finding about
-several) needs its own partner: of that type, not the tool's own session,
-within the time on the given side, by the same account (and from the same
-address, when asked), running a matching command when one is named. An
-event is never its own partner. A condition naming a command makes a rule
-narrow; one without needs `broad: true` or another narrowing field.
+several) needs its own partner: of that type, recorded by the journal from
+the program that writes it, running as root (a line written with `logger
+-t sudo`, or found only in a log file, is not a partner), not the tool's
+own session, within the time on the given side, by the same account (and
+from the same address, when asked), running a matching command when one
+is named. An event is never its own partner, and a finding's own events
+don't vouch for each other. A rule with a condition must name the
+`account`; a `command` must start with the program's full path.
 
-A condition reads what the host logged, so it explains, it doesn't prove:
-whoever holds the account can also run the command. Keep it as specific as
-the deploy is.
+**The limit, plainly:** a condition reads what the server logged, so it
+explains, it doesn't prove. Whoever holds the deploy account's key can log
+in from anywhere and run the same `git pull`, and that login is hidden
+like a real deploy. Add an `address` range wherever the deploys come from
+a known network, keep `within` short and the command exact, and treat a
+stolen deploy key as the risk this rule accepts.
 
 ## Maintenance windows
 

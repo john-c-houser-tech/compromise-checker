@@ -4,9 +4,11 @@ together in time.
 Two uses:
 
 - **Whitelist conditions** (`correlated_with`): a finding is suppressed
-  only when every event behind it is followed (or preceded) by an expected
-  event: a login from a new address, then that same account's
-  `sudo -u deploy git pull` within 30 seconds.
+  only when every event behind it has a partner event: a login from a new
+  address, then that same account's `sudo -u deploy git pull` within 30
+  seconds. A condition lowers the score, so its partner must be real: an
+  event the journal recorded from the program that writes it, running as
+  root. A line anyone can write with `logger -t sudo` is not a partner.
 - **Chains**: findings that together tell an attack's story (a new account
   given privilege and then used; a guessed password followed by a new key
   or privilege) earn a bonus in the score, once per chain, on top of what
@@ -14,8 +16,7 @@ Two uses:
 
 Times are the corrected event times (docs/events.md). A finding about
 state (a snapshot change) has no time of its own: it joins a chain only
-when it is new since the previous bundle, and its place in the order is
-not checked."""
+when it is new since the previous bundle."""
 
 from __future__ import annotations
 
@@ -27,22 +28,47 @@ from typing import Any
 
 from checker.events import Event
 
-# Event types a whitelist condition may name (docs/events.md).
-EVENT_TYPES = frozenset(
-    """
-    ssh.login.accepted ssh.login.failed ssh.invalid_user ssh.login.too_many_failures
-    ssh.login.abandoned session.opened session.closed auth.failure sudo.command sudo.failed
-    sudo.denied su.switch su.failed account.created account.deleted account.modified
-    account.renamed account.locked account.unlocked account.password_changed group.created
-    group.member_added group.member_removed group.members_set logind.session_new
-    logind.session_end system.shutdown_requested system.shutdown unit.started unit.stopped
-    unit.failed login.session login.ended
-    """.split()
-)
+# Event types a condition may name, the programs that write them (as the
+# journal knows them, _COMM, not the name a message gives itself), and the
+# fields they carry for `same`.
+WRITERS: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+for _types, _programs, _fields in (
+    ("sudo.command sudo.failed sudo.denied", "sudo", "account"),
+    ("su.switch su.failed", "su", "account"),
+    (
+        "ssh.login.accepted ssh.login.failed ssh.invalid_user ssh.login.too_many_failures"
+        " ssh.login.abandoned",
+        "sshd sshd-session sshd-auth",
+        "account address",
+    ),
+    (
+        "session.opened session.closed",
+        "sshd sshd-session sudo su login cron crond systemd",
+        "account",
+    ),
+    (
+        "account.created account.deleted account.modified account.renamed account.locked"
+        " account.unlocked account.password_changed",
+        "useradd userdel usermod passwd chpasswd chage",
+        "account",
+    ),
+    (
+        "group.created group.member_added group.member_removed group.members_set",
+        "groupadd groupmod gpasswd usermod useradd",
+        "account",
+    ),
+    ("logind.session_new logind.session_end", "systemd-logind", "account"),
+):
+    for _type in _types.split():
+        WRITERS[_type] = (frozenset(_programs.split()), frozenset(_fields.split()))
+EVENT_TYPES = frozenset(WRITERS)
+SAME_FIELD = {"account": "user", "address": "address"}
+
 MAX_WITHIN = timedelta(days=1)  # for whitelist conditions
+MAX_PARTNERS = 5000  # more candidate partners than this: the condition fails closed
+MAX_COMMAND = 2048
 _DURATION = re.compile(r"([1-9]\d{0,5})([smhd])")
 _UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
-MAX_COMMAND = 2048
 
 
 def parse_duration(text: str) -> timedelta:
@@ -53,16 +79,18 @@ def parse_duration(text: str) -> timedelta:
 
 
 def time_of(text: str | None) -> datetime | None:
+    """An ISO time with its offset; a naive one can't be placed, so None."""
     try:
-        return datetime.fromisoformat(text) if text else None
+        moment = datetime.fromisoformat(text) if text else None
     except ValueError:
         return None
+    return moment if moment is not None and moment.tzinfo is not None else None
 
 
 def command_matches(pattern: str, text: str) -> bool:
     """The whole command against a pattern: `*` any run of characters
     (spaces and slashes too), `?` one, the rest literal. Without
-    backtracking, so a crafted command costs at most len × len."""
+    backtracking: at most len × len."""
     if len(text) > MAX_COMMAND:
         return False
     previous = [True] + [False] * len(text)
@@ -77,58 +105,102 @@ def command_matches(pattern: str, text: str) -> bool:
     return previous[-1]
 
 
+def trusted(event: Event) -> bool:
+    """Recorded by the journal from the program that writes this kind of
+    event, running as root. An event from a log file alone, or one whose
+    sender only named itself after the program, is not."""
+    writers = WRITERS.get(event.type)
+    if writers is None:
+        return False
+    return (
+        event.fields.get("journal_comm") in writers[0]
+        and str(event.fields.get("journal_uid")) == "0"
+    )
+
+
 # --- Whitelist conditions ----------------------------------------------------------------
 
 
-def correlated(condition, finding: dict[str, Any], events: list[Event] | None) -> bool:
-    """Every event the finding cites has a partner event: of the condition's
-    type, not the tool's own, within its time, on the side it says, by the
-    same account (and from the same address, when asked), running a
-    matching command when it names one. No events, or a finding citing
-    none: no match."""
+class Partners:
+    """A condition's candidate partners in one bundle's events, worked out
+    once (type, provenance, command), however many findings it is tried
+    on."""
+
+    def __init__(self, condition, events: list[Event]) -> None:
+        self.condition = condition
+        self.within = parse_duration(condition.within)
+        found = []
+        for i, e in enumerate(events):
+            if e.type != condition.event or e.own_session or not trusted(e):
+                continue
+            when = time_of(e.corrected)
+            if when is None:
+                continue
+            found.append((i, e, when))
+            if len(found) > MAX_PARTNERS:
+                break
+        self.failed_closed = len(found) > MAX_PARTNERS
+        if self.failed_closed:
+            found = []
+        if condition.command is not None:
+            found = [
+                (i, e, t)
+                for i, e, t in found
+                if command_matches(condition.command, str(e.fields.get("command") or ""))
+            ]
+        self.found = found
+
+
+def correlated(
+    condition, finding: dict[str, Any], events: list[Event] | None, cache: dict | None = None
+) -> bool:
+    """Every event the finding cites has a partner: a trusted event of the
+    condition's type, not the tool's own, within its time on the side it
+    says, by the same account (and from the same address, when asked),
+    running a matching command when it names one, and not itself one of
+    the events the finding cites. No events, or a finding citing none: no
+    match."""
     if not events:
         return False
-    cited = [
-        events[ref["event"]]
+    cited_at = [
+        ref["event"]
         for ref in finding.get("evidence") or []
         if isinstance(ref.get("event"), int) and 0 <= ref["event"] < len(events)
     ]
-    if not cited:
+    if not cited_at:
         return False
-    within = parse_duration(condition.within)
-    partners = [e for e in events if e.type == condition.event and not e.own_session]
-    return all(_partnered(condition, e, partners, within) for e in cited)
+    if cache is None:
+        cache = {}
+    key = id(condition)
+    if key not in cache:
+        cache[key] = Partners(condition, events)
+    partners = cache[key]
+    cited = set(cited_at)
+    return all(_partnered(partners, events[i], cited) for i in cited_at)
 
 
-def _partnered(condition, event: Event, partners: list[Event], within: timedelta) -> bool:
+def _partnered(partners: Partners, event: Event, cited: set[int]) -> bool:
+    condition = partners.condition
     at = time_of(event.corrected)
     if at is None:
         return False
-    for other in partners:
-        if other is event:
-            continue  # an event is never its own partner
-        when = time_of(other.corrected)
-        if when is None:
-            continue
+    wanted = {}
+    for name in condition.same:
+        value = event.fields.get(SAME_FIELD[name])
+        if not value:
+            return False  # nothing to be the same as
+        wanted[SAME_FIELD[name]] = value
+    for index, other, when in partners.found:
+        if index in cited:
+            continue  # a finding's own events don't vouch for each other
         gap = when - at
-        if condition.direction == "after" and not timedelta(0) <= gap <= within:
+        if condition.direction == "after" and not timedelta(0) <= gap <= partners.within:
             continue
-        if condition.direction == "before" and not -within <= gap <= timedelta(0):
+        if condition.direction == "before" and not -partners.within <= gap <= timedelta(0):
             continue
-        if condition.direction == "either" and abs(gap) > within:
+        if condition.direction == "either" and abs(gap) > partners.within:
             continue
-        if "account" in condition.same and (
-            not event.fields.get("user") or other.fields.get("user") != event.fields.get("user")
-        ):
-            continue
-        if "address" in condition.same and (
-            not event.fields.get("address")
-            or other.fields.get("address") != event.fields.get("address")
-        ):
-            continue
-        if condition.command is not None and not command_matches(
-            condition.command, str(other.fields.get("command") or "")
-        ):
+        if any(other.fields.get(f) != v for f, v in wanted.items()):
             continue
         return True
     return False
@@ -139,12 +211,16 @@ def _partnered(condition, event: Event, partners: list[Event], within: timedelta
 
 @dataclass(frozen=True)
 class Step:
-    """Findings of these checks (and, if given, variants) about the
-    account, or events of this type by it."""
+    """Findings of these (check, variant) kinds about the account (a
+    variant of None: any of the check's), or events of this type by it."""
 
     title: str
-    checks: tuple[str, ...] = ()
+    kinds: tuple[tuple[str, str | None], ...] = ()
     event: str | None = None
+
+    def takes(self, finding: dict[str, Any]) -> bool:
+        check = finding["check"]
+        return (check, finding.get("variant")) in self.kinds or (check, None) in self.kinds
 
 
 @dataclass(frozen=True)
@@ -156,6 +232,13 @@ class Chain:
     ratio: float  # the bonus likelihood ratio, once per chain
 
 
+PRIVILEGE = (
+    ("sudo.rules", None),
+    ("group.privileged", None),
+    ("account.log_changes", "group_member_added"),
+    ("account.log_changes", "group_members_set"),
+)
+
 CHAINS = (
     Chain(
         "new-account-escalated-used",
@@ -163,9 +246,14 @@ CHAINS = (
         (
             Step(
                 "a new account or key",
-                ("account.changes", "account.log_changes", "ssh.authorized_keys"),
+                (
+                    ("account.changes", "new"),
+                    ("account.changes", "root_group"),
+                    ("account.log_changes", "created"),
+                    ("ssh.authorized_keys", "new_key"),
+                ),
             ),
-            Step("privilege for it", ("sudo.rules", "group.privileged")),
+            Step("privilege for it", PRIVILEGE),
             Step("a login by it", event="ssh.login.accepted"),
         ),
         timedelta(days=7),
@@ -175,11 +263,8 @@ CHAINS = (
         "guessed-then-entrenched",
         "A guessed login, then a new key or privilege for that account",
         (
-            Step("a login after repeated failures", ("ssh.guessed",)),
-            Step(
-                "a new key or privilege",
-                ("ssh.authorized_keys", "sudo.rules", "group.privileged"),
-            ),
+            Step("a login after repeated failures", (("ssh.guessed", None),)),
+            Step("a new key or privilege", (("ssh.authorized_keys", "new_key"), *PRIVILEGE)),
         ),
         timedelta(hours=24),
         5.0,
@@ -209,59 +294,82 @@ def _accounts(finding: dict[str, Any]) -> set[str]:
     return {e.split(":", 1)[1] for e in finding.get("entities") or [] if e.startswith("account:")}
 
 
+def _counted(finding: dict[str, Any]) -> bool:
+    """What the score counts: compromise indicators, not suppressed, not
+    informational (a maintenance window may have made them so)."""
+    return (
+        finding.get("category") == "compromise indicator"
+        and not finding.get("suppressed_by")
+        and finding.get("band") != "info"
+    )
+
+
 def find_chains(
-    findings: list[dict[str, Any]], events: list[Event], chains=CHAINS
+    findings: list[dict[str, Any]],
+    events: list[Event],
+    previous_time: str | None = None,
+    chains=CHAINS,
 ) -> list[dict[str, Any]]:
     """Each chain at most once (for the first account, by name, that
-    completes it). Suppressed findings don't count: a whitelisted step is
-    explained."""
+    completes it), from the findings the score counts. The tool's own
+    account (the one its current session logged in as) never completes
+    one: its earlier visits' logins are in the logs too."""
+    own = {e.fields.get("user") for e in events if e.own_session and e.type == "ssh.login.accepted"}
+    live = [(i, f) for i, f in enumerate(findings) if _counted(f)]
+    accounts = sorted(set().union(*(_accounts(f) for _, f in live)) - own) if live else []
     found = []
-    live = [(i, f) for i, f in enumerate(findings) if not f.get("suppressed_by")]
     for chain in chains:
-        accounts = sorted(set().union(*(_accounts(f) for _, f in live)) if live else set())
         for account in accounts:
-            hit = _complete(chain, account, live, events)
+            hit = _complete(chain, account, live, events, time_of(previous_time))
             if hit is not None:
                 found.append(hit.as_dict())
                 break
     return found
 
 
-def _complete(chain: Chain, account: str, live, events: list[Event]) -> Found | None:
+def _complete(chain, account, live, events, previous: datetime | None) -> Found | None:
     hit = Found(chain, account)
     anchor: datetime | None = None
-    for number, step in enumerate(chain.steps):
+    used_events: set[int] = set()
+    for step in chain.steps:
         if step.event is not None:
-            candidates = [
-                (i, time_of(e.corrected))
-                for i, e in enumerate(events)
-                if e.type == step.event and not e.own_session and e.fields.get("user") == account
-            ]
-            candidates = [
-                (i, t)
-                for i, t in candidates
-                if t is not None and (anchor is None or anchor <= t <= anchor + chain.within)
-            ]
-            if not candidates:
+            # After the chain's first timed step; with none, after the
+            # previous bundle (the state steps are new since then).
+            after = anchor if anchor is not None else previous
+            if after is None:
                 return None
-            hit.events.append(candidates[0][0])
+            login = None
+            for i, e in enumerate(events):
+                if e.type != step.event or e.own_session or e.fields.get("user") != account:
+                    continue
+                when = time_of(e.corrected)
+                if when is not None and after <= when <= after + chain.within:
+                    login = i
+                    break
+            if login is None:
+                return None
+            hit.events.append(login)
             continue
         matching = []
         for i, f in live:
-            if f["check"] not in step.checks or account not in _accounts(f):
+            if not step.takes(f) or account not in _accounts(f) or i in hit.findings:
                 continue
+            cites = {r["event"] for r in f.get("evidence") or [] if "event" in r}
+            if cites & used_events:
+                continue  # one log line is one step, not two
             when = time_of(f.get("first_seen"))
             if when is None:
                 if f.get("new"):  # state, changed since the previous bundle
-                    matching.append((i, None))
+                    matching.append((i, None, cites))
             elif anchor is None or anchor - chain.within <= when <= anchor + chain.within:
-                matching.append((i, when))
+                matching.append((i, when, cites))
         if not matching:
             return None
-        hit.findings.append(matching[0][0])
-        if number == 0 or anchor is None:
-            timed = [t for _, t in matching if t is not None]
-            anchor = min(timed) if timed else anchor
+        index, when, cites = matching[0]
+        hit.findings.append(index)
+        used_events |= cites
+        if anchor is None and when is not None:
+            anchor = when
     return hit
 
 

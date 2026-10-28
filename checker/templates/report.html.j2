@@ -125,7 +125,8 @@ baseline <span class="mono">{{ r.assessment.baseline_id|visible(120) }}</span>{%
 <div class="wrap"><table>
 <tr><th>Contributor</th><th>Check</th><th class="num">Likelihood ratio</th><th class="num">Share</th><th>Capped</th></tr>
 {% for c in s.contributors %}
-<tr><td>{{ c.title|visible(200) }}</td><td class="mono">{{ c.check }}</td><td class="num">×{{ "%g"|format(c.ratio) }}</td>
+<tr><td>{{ c.title|visible(200) }}{% if c.chain %}<div class="muted">a chain of:
+{% for i in c.chain.findings %}{{ r.assessment.findings[i].title|visible(120) }}; {% endfor %}{% for i in c.chain.events %}a login{% if not loop.last %}; {% endif %}{% endfor %}</div>{% endif %}</td><td class="mono">{{ c.check }}</td><td class="num">×{{ "%g"|format(c.ratio) }}</td>
 <td class="num">{{ c.share|percent }}</td><td class="muted">{{ c.capped or "" }}</td></tr>
 {% endfor %}
 </table></div>

@@ -133,6 +133,7 @@ def uid0(context: Context) -> list[Finding]:
     "account.changes",
     "New and removed accounts; service accounts able to log in",
     needs_baseline=True,
+    variants=("new", "removed", "root_group", "service_login"),
 )
 def account_changes(context: Context) -> list[Finding]:
     diff = context.changes("accounts")
@@ -152,6 +153,7 @@ def account_changes(context: Context) -> list[Finding]:
                 [context.change_ref("accounts", key, "added")],
                 new=context.new_since_previous("accounts", key),
                 uncertain=uncertain,
+                variant="new",
             )
         )
     if diff["comparable"]:
@@ -166,6 +168,7 @@ def account_changes(context: Context) -> list[Finding]:
                     [f"account:{base_name(key)}"],
                     [context.change_ref("accounts", key, "removed")],
                     new=context.new_since_previous("accounts", key),
+                    variant="removed",
                 )
             )
     accounts = context.items("accounts")
@@ -191,6 +194,7 @@ def account_changes(context: Context) -> list[Finding]:
                 [context.change_ref("accounts", key, how)],
                 new=context.new_since_previous("accounts", key),
                 uncertain=uncertain,
+                variant="root_group",
             )
         )
 
@@ -235,12 +239,31 @@ def account_changes(context: Context) -> list[Finding]:
                     [context.change_ref("accounts", key, "changed")],
                     new=context.new_since_previous("accounts", key),
                     uncertain=uncertain,
+                    variant="service_login",
                 )
             )
     return findings
 
 
-@check("account.log_changes", "Account and group changes recorded in the logs")
+LOG_CHANGE_VARIANTS = (
+    "created",
+    "deleted",
+    "modified",
+    "renamed",
+    "locked",
+    "unlocked",
+    "group_created",
+    "group_member_added",
+    "group_member_removed",
+    "group_members_set",
+)
+
+
+@check(
+    "account.log_changes",
+    "Account and group changes recorded in the logs",
+    variants=LOG_CHANGE_VARIANTS,
+)
 def log_changes(context: Context) -> list[Finding]:
     findings = []
     for index, event in context.of("account.", "group."):
@@ -288,6 +311,7 @@ def log_changes(context: Context) -> list[Finding]:
                 [{"event": index}],
                 event.corrected,
                 event.corrected,
+                variant=event.type.replace("account.", "").replace("group.", "group_"),
             )
         )
     return findings
@@ -297,15 +321,25 @@ _SUDO_USER = re.compile(r"[a-z_][a-z0-9_.-]{0,31}\$?")
 
 
 def _sudo_who(rule: str) -> list[str]:
-    """Who a sudoers line grants to, when it names one user (`eve ALL=…`)
-    or one group (`%wheel ALL=…`): an entity, so a chain can follow the
-    account. Aliases, lists, Defaults and includes name no one plainly."""
-    first = rule.split(None, 1)[0] if rule.strip() else ""
-    if first.startswith("%") and _SUDO_USER.fullmatch(first[1:]):
-        return [f"group:{first[1:]}"]
-    if first != "Defaults" and _SUDO_USER.fullmatch(first):
-        return [f"account:{first}"]
-    return []
+    """Everyone a sudoers line grants to, as entities, so a chain can follow
+    the account and a whitelist rule must cover them all: its user list
+    (`eve, bob ALL=…`, `%wheel ALL=…`), when every member is a plain user
+    or `%group`. A list with anything else (an alias, `ALL`, `#uid`,
+    `+netgroup`, `!negation`) names no one plainly: no entities, so only a
+    broad rule can match it."""
+    head = rule.split("=", 1)[0]
+    if not head.strip() or head.split(None, 1)[0] in ("Defaults", "#include", "#includedir"):
+        return []
+    users = re.sub(r"\s*,\s*", ",", head.strip()).split(None, 1)[0]
+    found = []
+    for member in users.split(","):
+        if member.startswith("%") and _SUDO_USER.fullmatch(member[1:]):
+            found.append(f"group:{member[1:]}")
+        elif _SUDO_USER.fullmatch(member):
+            found.append(f"account:{member}")
+        else:
+            return []
+    return found
 
 
 @check("sudo.rules", "New sudo rights", needs_baseline=True)
@@ -370,7 +404,11 @@ def privileged_groups(context: Context) -> list[Finding]:
 # --- SSH keys and logins ----------------------------------------------------------------
 
 
-@check("ssh.authorized_keys", "New, changed or unattributed authorized SSH keys")
+@check(
+    "ssh.authorized_keys",
+    "New, changed or unattributed authorized SSH keys",
+    variants=("unattributed", "new_key", "options"),
+)
 def authorized_keys(context: Context) -> list[Finding]:
     findings = []
     uncertain = context.uncertain("authorized_keys")
@@ -385,6 +423,7 @@ def authorized_keys(context: Context) -> list[Finding]:
                     f"{item.get('fingerprint')} in {item.get('path')}",
                     [f"key:{item.get('fingerprint')}", f"path:{item.get('path')}"],
                     [{"item": ["authorized_keys", key]}],
+                    variant="unattributed",
                 )
             )
     diff = context.changes("authorized_keys")
@@ -403,6 +442,7 @@ def authorized_keys(context: Context) -> list[Finding]:
                 [context.change_ref("authorized_keys", key, "added")],
                 new=context.new_since_previous("authorized_keys", key),
                 uncertain=uncertain,
+                variant="new_key",
             )
         )
     for key, fields in diff["changed"].items():
@@ -418,6 +458,7 @@ def authorized_keys(context: Context) -> list[Finding]:
                 [context.change_ref("authorized_keys", key, "changed")],
                 new=context.new_since_previous("authorized_keys", key),
                 uncertain=uncertain,
+                variant="options",
             )
         )
     return findings

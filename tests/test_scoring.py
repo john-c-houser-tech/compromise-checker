@@ -192,7 +192,7 @@ def test_an_assessment_is_scored_and_stored_with_its_score(home):
     add_bundle(home, "b1", 0, host_records())
     add_bundle(home, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))))
     assessment = analyze(store, "web01", identity, config.recipients, prior=(0.05, "host"))
-    assert assessment["format"] == 2 and assessment["versions"]["scoring"] == 1
+    assert assessment["format"] == 2 and assessment["versions"]["scoring"] == 2
     scored = assessment["score"]
     assert scored["prior"] == 0.05 and scored["prior_source"] == "host"
     assert scored["contributors"][0]["check"] == "account.uid0"

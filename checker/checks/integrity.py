@@ -77,6 +77,14 @@ def _critical(path: str) -> bool:
     )
 
 
+# Files packages generate after installing (so no package lists them).
+GENERATED = re.compile(r"/(?:dist|site)-packages/.*\.(?:cache|pyc)$|/__pycache__/")
+
+
+def _generated(path: str) -> bool:
+    return bool(GENERATED.search(path))
+
+
 def _owners_known(context: Context) -> bool:
     summary = context.snapshot.live.get("system_files_summary") or {}
     return bool(summary.get("owners")) and summary.get("owners_complete") is not False
@@ -284,6 +292,8 @@ def unowned(context: Context) -> list[Finding]:
     for path, item in context.items("unowned_executables").items():
         local = bool(item.get("local"))
         is_new = path in added
+        if _generated(path):
+            local = True  # made by a package after install: reported apart, like /usr/local
         # Reported on every analysis, not only when new: the baseline's own
         # bundle may never have been analysed.
         if is_new:

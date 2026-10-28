@@ -643,3 +643,12 @@ def test_one_file_with_several_rpm_differences(tmp_path):
     taken = snapshot_of_records(host_records(extra=records), tmp_path)
     item = taken.sections["package_changes"].items["/usr/sbin/sshd"]
     assert item["results"] == ["mode", "owner"] and item["owner"] == "eve"
+
+
+def test_fresh_server_false_alarms_are_tuned_down():
+    items = {"/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache": {"sha256": "c2" * 32}}
+    [finding] = of(run([], snap(OWNERS, unowned_executables=items)), "files.unowned")
+    assert finding.band == "info"
+    live = {"processes": [proc(635, "firewalld", suspicious_mappings=["/memfd:libffi (deleted)"])]}
+    [finding] = of(run([], snap(live)), "process.injected")
+    assert finding.band == "low"

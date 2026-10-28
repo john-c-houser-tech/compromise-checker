@@ -358,6 +358,14 @@ def injected(context: Context) -> list[Finding]:
                 "high",
                 COMPROMISE,
             )
+        elif all(x.startswith("/memfd:libffi") for x in bare):
+            # libffi makes its closures this way (firewalld on RHEL); the
+            # name is the creator's choice, so it isn't dropped.
+            title, band, category = (
+                "A process has libffi code mapped from memory only",
+                "low",
+                COMPROMISE,
+            )
         elif any(x.startswith("/memfd:") for x in bare):
             # JITs and libffi use memory-only code too, so less sure.
             title, band, category = (

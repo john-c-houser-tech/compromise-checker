@@ -141,7 +141,7 @@ as root.
 | | a file already listed that gained capabilities or set-user-ID or set-group-ID since the baseline (dpkg doesn't record capabilities) | high | yes |
 | | outside the system directories includes files right in `/` | | |
 | | a capability attribute that can't be read | medium | no |
-| `files.unowned` | executables in system directories no package installed (only when package ownership was loaded completely): new ones high (medium in `/usr/local`, `/opt`); others medium (info in `/usr/local`, `/opt`), on every analysis | | no |
+| `files.unowned` | executables in system directories no package installed (only when package ownership was loaded completely): new ones high (medium in `/usr/local`, `/opt`, and for files packages generate after installing, such as Python caches); others medium (info for those), on every analysis | | no |
 
 A package's own set-user-ID programs are ordinary and not reported; walk
 errors are coverage gaps, not findings; systemd's own masking device nodes
@@ -175,7 +175,7 @@ sshd listener. A forged log line alone can't make anything the tool's own.
 | | a deleted system program, when the package lists changed after the process started: an update replaced it under a running service (hygiene: restart it) | low |
 | `process.reverse_shell` | a shell or interpreter (sh, bash, python, perl, nc, socat…, by its name, its program's name or its argv[0], so a renamed copy still counts) whose standard input, output or error is a TCP or UDP socket; any process whose input and output are one TCP or UDP socket. Not seen: a shell joined to a socket through pipes (`mkfifo … \| sh \| nc`), where only `nc` holds the socket | high |
 | `process.miner` | a known miner by name; or at least half a core on average over ten minutes or more, with a connection to a common mining-pool port on a public address | high |
-| `process.injected` | code mapped from a scratch or home file, or a deleted file outside the system directories, or a deleted system library no update explains (high); from memory only (medium: JITs do this too); system libraries an update replaced, still in use (low hygiene) | |
+| `process.injected` | code mapped from a scratch or home file, or a deleted file outside the system directories, or a deleted system library no update explains (high); from memory only (medium: JITs do this too; low when it is libffi's, as firewalld's on RHEL); system libraries an update replaced, still in use (low hygiene) | |
 
 ## Coverage
 

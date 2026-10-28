@@ -14,8 +14,11 @@ come in Phase 1, the AI advisor in Phase 3 (see [DESIGN.md §18](DESIGN.md)).
 
 What works today:
 
-- `checker init` — sets up the evidence key, database and configuration.
-- `checker hosts add|list|remove` and `checker trust` — the inventory, and
+- `checker init` — sets up the evidence key, database and configuration;
+  `--home-text privileged|all` opts in to collecting the masked text of
+  start-up files and user units in home directories (policy §7).
+- `checker hosts add|list|remove` and `checker trust` — the inventory
+  (`--web-root DIR`, repeatable, sets a host's own web roots), and
   verified SSH host keys (no way to switch verification off).
 - `checker collect` — logs in (key, agent or password; sudo with or without a
   password, or root), runs the collector read-only, and stores the result as
@@ -23,13 +26,41 @@ What works today:
   facts and the authentication log, with secrets masked before they leave
   the server.
 - `checker bundle list|show|verify` — inspect and re-check stored evidence.
+- `checker events BUNDLE` — parse a bundle into events (logins, sudo, account
+  changes, kernel and systemd messages, login records), with the tool's own
+  session recognised and left out ([how](docs/events.md)).
+- `checker changes HOST` — what changed on a host since its previous bundle
+  and since its baseline: accounts, sudo rules, authorized keys, sshd
+  settings, persistence files, listening sockets, kernel modules and more.
+  The host's first analysis is its baseline; `checker baseline accept HOST
+  --reason …` moves it after a reviewed change ([how](docs/snapshots.md)).
+- `checker analyze HOST|--all` — runs the checks (kernel and system health,
+  reboots, accounts and authentication, persistence, system binary
+  integrity, files in unusual places, live processes) and lists the findings by
+  category and band, with what the collection couldn't see; each analysis
+  is stored encrypted ([checks](docs/checks.md)).
+- `checker report HOST|--all` — writes one self-contained, confidential HTML
+  report: findings with their evidence, a timeline, coverage, and the
+  collection's hashes and chain of custody ([report](docs/report.md)).
 
-**Read-only, proven:** on throwaway Ubuntu 24.04 and Rocky Linux 9 servers,
-with auditd recording every write by the scanner's session, the collector
-wrote nothing at all, and every write by the system's own login machinery
-matched the traces disclosed in the policy
+**Read-only, proven:** on throwaway Ubuntu 22.04, 24.04 and 26.04, Rocky
+Linux 9 and 10, and AlmaLinux 9 and 10 servers, with auditd recording every
+write by the scanner's session, the collector wrote nothing at all, and
+every write by the system's own login machinery matched the traces
+disclosed in the policy
 ([proof script](tests/integration/readonly_proof.py),
-[results](plans/phase0-build-plan-2026-10-25.md#results)).
+[results](plans/phase1-build-plan-2026-10-26.md)).
+
+**Detection, proven:** on throwaway Ubuntu 24.04 and Rocky Linux 9 servers,
+ten scripted compromise behaviours each produced their finding: a second
+UID 0 account, a backdoor key for root, cron and systemd persistence,
+`/etc/ld.so.preload`, a set-user-ID shell in `/tmp`, a process running from
+a deleted program, a reverse shell, sshd allowing root login, and a
+`pam_exec` line ([detection proof](tests/integration/detection_proof.py)).
+
+**RHEL itself hasn't been tested:** Rocky Linux and AlmaLinux, built from
+the same sources, stand in for it. Red Hat's own subscription and Insights
+services, which they lack, may raise findings no run has seen yet.
 
 Set up a server for it with [docs/scanner-account.md](docs/scanner-account.md).
 

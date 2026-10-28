@@ -48,7 +48,9 @@ def program():
     settings = Settings(
         run_id="r1",
         since=datetime(2026, 9, 25, tzinfo=UTC),
-        modules=None,  # all the collector has
+        # One light module: the fake target runs the collector on the machine
+        # hosting the tests, where heavy modules (package verification) take minutes.
+        modules=["host_facts"],
         limits=Limits(overall_seconds=60, module_seconds=30, source_bytes=1 << 20),
     )
     return build_program(settings)
@@ -78,6 +80,10 @@ async def test_key_login_runs_the_collector_and_records_the_session(server):
     assert session.bytes_received == len(data)
     assert session.remote_port == server.port
     assert session.ended_at >= session.started_at
+    # What the own-session filter needs: the exact command, and when the
+    # first bytes came (the controller's side of the clock offset).
+    assert session.command == server.target.commands[0]
+    assert session.started_at <= session.first_data_at <= session.ended_at
 
 
 async def test_password_login_as_root(server):

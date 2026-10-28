@@ -62,6 +62,15 @@ stores it with the evidence; the manifest carries the version string only.
   and an empty list means none.
 - `limits` — time limits and the per-source byte cap. A source that reaches
   its cap is cut off and marked truncated.
+- `home_text` — optional: `"off"` (the default), `"privileged"` or `"all"`;
+  whether the masked text of home start-up files and user units is sent
+  (`checker init --home-text`; see collector-modules.md). Any other value is
+  refused.
+- `web_roots` — optional: a list of absolute paths (no `..`, at most 64)
+  listed for web shells by `unusual_files`, replacing its defaults; omitted
+  or `null` means the defaults (`/var/www`, `/srv/www`, `/srv/http`,
+  `/usr/share/nginx/html`). Set per host with `checker hosts add
+  --web-root`.
 
 ## 3. Result stream
 
@@ -92,14 +101,18 @@ says so in the report.
  "effective_uid": 0,
  "settings": { … as received … },
  "modules_planned": ["host_facts", "auth_log"],
- "masking_version": 1,
- "priority": {"nice": 19, "io": "idle"}}
+ "masking_version": 4,
+ "priority": {"nice": 19, "io": "idle"},
+ "commands_allowed": {"journalctl": ["/usr/bin/journalctl", "/bin/journalctl"]}}
 ```
 
 - `masking_version` — version of the secret-masking rules applied to every
   text chunk (DESIGN.md §3.4); reports cite it.
 - `priority` — what the collector achieved when lowering its own priority:
   the resulting nice value, and `idle` or `unchanged` for disk I/O.
+- `commands_allowed` — the collector's fixed command allow-list: each
+  command and the absolute paths it may be run from
+  (docs/collector-modules.md, "Commands").
 
 The collector flushes the stream right after the manifest, so it reaches the
 controller before any module runs. `started_at` is the **target's** clock. The controller records its own clock
@@ -137,7 +150,8 @@ chunks.
 - `kind` — `file`, `command` (`name` is the command line), or `proc` (a file
   under `/proc`, read as it was at that moment).
 - `meta` — for files: size, modification time, mode, owner, inode, and the
-  compression the collector undid, if any. For commands: `exit_code`.
+  compression the collector undid, if any. For commands: `argv`, and the
+  executable's size, times, mode, owner, inode and `executable_sha256`.
 - `chunk.seq` — 0, 1, 2… with no gaps. `encoding` is `utf-8` when the bytes
   are valid UTF-8, otherwise `base64`. Chunks hold whole lines, masked whole,
   up to 64 KiB of original bytes; a single longer line (up to 1 MiB) travels
@@ -147,7 +161,11 @@ chunks.
   masking). `truncated` is true when the source hit the byte cap (the last
   line that would not fit whole is left out) or a time limit;
   `truncated_reason` then says which. `masked` counts masked secrets by kind
-  (DESIGN.md §3.4). `error` is set if reading failed part-way.
+  (DESIGN.md §3.4). `error` is set if reading failed part-way. For
+  commands, `exit_code` is the exit status (negative: killed by that signal,
+  as when the collector stops it at a limit) and `stderr` the first 4 KiB of
+  its error output, masked, with `stderr_truncated: true` when there was
+  more (the line the limit cut is left out).
 
 ### 3.4 `error`
 
@@ -166,7 +184,9 @@ such as a refusal.
  "duration_seconds": 4.75, "status": "complete",
  "counts": {"records": 6, "sources": 4, "chunks": 31, "errors": 0},
  "modules": {"host_facts": {"status": "ok", "seconds": 0.02},
-             "auth_log": {"status": "ok", "seconds": 4.6}}}
+             "auth_log": {"status": "ok", "seconds": 4.6}},
+ "resources": {"peak_rss_kb": 21116, "cpu_seconds": 0.19,
+               "commands_peak_rss_kb": 22116, "commands_cpu_seconds": 0.05}}
 ```
 
 - `status` — `complete` (every planned module finished), `partial` (some
@@ -174,6 +194,9 @@ such as a refusal.
 - `counts` — totals of each record type in the stream, so the controller can
   check nothing was lost.
 - `modules` — per module: `ok`, `error`, `timeout` or `skipped`, and seconds.
+- `resources` — the collector's own peak memory (KiB) and CPU time, and
+  separately the largest peak and total CPU time of the commands it ran;
+  `null` where the server's Python lacks the `resource` module.
 
 ### 3.6 Refusal
 

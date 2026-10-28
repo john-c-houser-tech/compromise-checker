@@ -28,6 +28,7 @@ from pyrage import x25519
 from checker.files import atomic_write, locked
 from checker.protocol import (
     Error,
+    HomeText,
     IncompleteStream,
     Manifest,
     ProtocolError,
@@ -52,6 +53,8 @@ class Config(BaseModel):
     recipients: list[str]  # age public keys bundles are encrypted to
     identity_file: str | None = None  # where the matching private key is, if here
     retention_days: int = 90
+    # Opt-in chosen in `checker init` (policy §7); see protocol HomeText.
+    home_text: HomeText = "off"
 
 
 def config_file(home: Path) -> Path:
@@ -69,7 +72,9 @@ def load_config(home: Path) -> Config:
     return Config.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
 
 
-def initialise(home: Path, recipient: str | None = None) -> tuple[Config, Path | None]:
+def initialise(
+    home: Path, recipient: str | None = None, home_text: HomeText = "off"
+) -> tuple[Config, Path | None]:
     """Create the tool's directory, evidence key and database. With
     `recipient`, bundles are encrypted to that key and its private half stays
     wherever the organization keeps it; otherwise a key pair is made here."""
@@ -79,10 +84,12 @@ def initialise(home: Path, recipient: str | None = None) -> tuple[Config, Path |
     with locked(config_file(home)):
         if config_file(home).exists():
             raise EvidenceError(f"already set up ({config_file(home)}); nothing changed")
-        return _initialise(home, recipient)
+        return _initialise(home, recipient, home_text)
 
 
-def _initialise(home: Path, recipient: str | None) -> tuple[Config, Path | None]:
+def _initialise(
+    home: Path, recipient: str | None, home_text: HomeText
+) -> tuple[Config, Path | None]:
     identity_path = None
     if recipient:
         try:
@@ -104,7 +111,9 @@ def _initialise(home: Path, recipient: str | None) -> tuple[Config, Path | None]
         )
         recipients = [public]
     config = Config(
-        recipients=recipients, identity_file=str(identity_path) if identity_path else None
+        recipients=recipients,
+        identity_file=str(identity_path) if identity_path else None,
+        home_text=home_text,
     )
     Store(database_file(home)).close()
     atomic_write(config_file(home), yaml.safe_dump(config.model_dump(), sort_keys=False))
@@ -420,6 +429,47 @@ CREATE TABLE IF NOT EXISTS custody (
     controller TEXT NOT NULL,
     detail TEXT
 );
+-- What the controller derived from a bundle (events, snapshots): files
+-- encrypted to the evidence key like the bundle, regenerable from it, so
+-- replaced when a newer parser runs (not append-only, unlike the bundle).
+CREATE TABLE IF NOT EXISTS derived (
+    bundle_id TEXT NOT NULL REFERENCES bundles(id),
+    kind TEXT NOT NULL,
+    parser_version INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    items INTEGER NOT NULL,
+    ciphertext_sha256 TEXT NOT NULL,
+    summary BLOB,
+    PRIMARY KEY (bundle_id, kind)
+);
+-- Each host's baseline over time: the snapshot later ones are compared
+-- with (DESIGN.md §7). The first is set automatically; each later one is an
+-- operator's accepted change, with who, where and (encrypted) why.
+CREATE TABLE IF NOT EXISTS baselines (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    host TEXT NOT NULL,
+    bundle_id TEXT NOT NULL REFERENCES bundles(id),
+    at TEXT NOT NULL,
+    how TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    controller TEXT NOT NULL,
+    reason BLOB
+);
+-- Each analysis of a bundle: the checks' findings, encrypted beside the
+-- bundle. Kept, not replaced: a re-analysis with newer checks or another
+-- baseline doesn't erase what an earlier one said.
+CREATE TABLE IF NOT EXISTS assessments (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    bundle_id TEXT NOT NULL REFERENCES bundles(id),
+    host TEXT NOT NULL,
+    at TEXT NOT NULL,
+    checks_version INTEGER NOT NULL,
+    baseline_id TEXT,
+    path TEXT NOT NULL,
+    ciphertext_sha256 TEXT NOT NULL,
+    summary BLOB
+);
 -- Append-only, enforced by the database itself (DESIGN.md §3.4).
 CREATE TRIGGER IF NOT EXISTS bundles_no_update BEFORE UPDATE ON bundles
     BEGIN SELECT RAISE(ABORT, 'bundles are append-only'); END;
@@ -429,6 +479,14 @@ CREATE TRIGGER IF NOT EXISTS custody_no_update BEFORE UPDATE ON custody
     BEGIN SELECT RAISE(ABORT, 'custody is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS custody_no_delete BEFORE DELETE ON custody
     BEGIN SELECT RAISE(ABORT, 'custody is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS baselines_no_update BEFORE UPDATE ON baselines
+    BEGIN SELECT RAISE(ABORT, 'baselines are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS baselines_no_delete BEFORE DELETE ON baselines
+    BEGIN SELECT RAISE(ABORT, 'baselines are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS assessments_no_update BEFORE UPDATE ON assessments
+    BEGIN SELECT RAISE(ABORT, 'assessments are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS assessments_no_delete BEFORE DELETE ON assessments
+    BEGIN SELECT RAISE(ABORT, 'assessments are append-only'); END;
 """
 
 
@@ -514,6 +572,62 @@ class Store:
             query = "SELECT * FROM bundles WHERE host = ? ORDER BY started_at"
             return self._db.execute(query, (host,)).fetchall()
         return self._db.execute("SELECT * FROM bundles ORDER BY started_at").fetchall()
+
+    def record_derived(self, row: dict[str, Any]) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO derived (bundle_id, kind, parser_version, path,"
+                " created_at, items, ciphertext_sha256, summary) VALUES (:bundle_id, :kind,"
+                " :parser_version, :path, :created_at, :items, :ciphertext_sha256, :summary)",
+                row,
+            )
+
+    def derived(self, bundle_id: str, kind: str) -> sqlite3.Row | None:
+        return self._db.execute(
+            "SELECT * FROM derived WHERE bundle_id = ? AND kind = ?", (bundle_id, kind)
+        ).fetchone()
+
+    def record_baseline(self, host: str, bundle_id: str, how: str, reason: bytes | None) -> None:
+        """A new baseline for `host` (how: first or accepted), with its
+        custody entry, in one transaction."""
+        operator, controller = who_and_where()
+        with self._db:
+            self._db.execute(
+                "INSERT INTO baselines (host, bundle_id, at, how, operator, controller, reason)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (host, bundle_id, datetime.now(UTC).isoformat(), how, operator, controller, reason),
+            )
+            self._custody(bundle_id, "baseline", operator, controller, {"how": how})
+
+    def record_assessment(self, row: dict[str, Any]) -> None:
+        operator, controller = who_and_where()
+        with self._db:
+            self._db.execute(
+                "INSERT INTO assessments (bundle_id, host, at, checks_version, baseline_id, path,"
+                " ciphertext_sha256, summary) VALUES (:bundle_id, :host, :at, :checks_version,"
+                " :baseline_id, :path, :ciphertext_sha256, :summary)",
+                row,
+            )
+            self._custody(
+                row["bundle_id"],
+                "analysed",
+                operator,
+                controller,
+                {"checks_version": row["checks_version"], "baseline": row["baseline_id"]},
+            )
+
+    def assessments(self, bundle_id: str) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM assessments WHERE bundle_id = ? ORDER BY seq", (bundle_id,)
+        ).fetchall()
+
+    def hosts(self) -> list[str]:
+        return [r[0] for r in self._db.execute("SELECT DISTINCT host FROM bundles ORDER BY host")]
+
+    def baselines(self, host: str) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM baselines WHERE host = ? ORDER BY seq", (host,)
+        ).fetchall()
 
     def custody_of(self, bundle_id: str) -> list[sqlite3.Row]:
         return self._db.execute(

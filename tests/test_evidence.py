@@ -35,11 +35,14 @@ from checker.inventory import Host
 from checker.protocol import MAX_RECORD, Limits, Settings, StreamReader, build_program
 
 LIMITS = Limits(overall_seconds=60, module_seconds=30, source_bytes=1 << 20)
+# One light module: the fake target runs the collector on the machine hosting
+# the tests, where the heavy modules (package verification) take minutes.
+MODULES = ["host_facts"]
 
 
 def real_stream(run_id: str = "evidence-run") -> bytes:
     settings = Settings(
-        run_id=run_id, since=datetime(2026, 9, 25, tzinfo=UTC), modules=None, limits=LIMITS
+        run_id=run_id, since=datetime(2026, 9, 25, tzinfo=UTC), modules=MODULES, limits=LIMITS
     )
     result = subprocess.run(
         [sys.executable, "-I", "-B", "-"],
@@ -180,7 +183,12 @@ def target_host(server, **overrides):
 async def test_collect_store_show_verify_and_detect_tampering(server, checker_home, capsys):
     config, _ = initialise(checker_home)
     outcomes = await collect_hosts(
-        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+        checker_home,
+        config,
+        [target_host(server)],
+        known_hosts=server.known,
+        limits=LIMITS,
+        modules=MODULES,
     )
     [outcome] = outcomes
     assert outcome.status == "complete" and outcome.error is None
@@ -233,7 +241,12 @@ async def test_failed_runs_are_recorded_with_their_session(server, checker_home)
     config, _ = initialise(checker_home)
     server.target.sudo_n_refuses = True
     [outcome] = await collect_hosts(
-        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+        checker_home,
+        config,
+        [target_host(server)],
+        known_hosts=server.known,
+        limits=LIMITS,
+        modules=MODULES,
     )
     assert outcome.status == "empty"
     assert "a password is required" in outcome.error
@@ -248,7 +261,12 @@ async def test_failed_runs_are_recorded_with_their_session(server, checker_home)
 async def test_the_index_holds_no_readable_details(server, checker_home):
     config, _ = initialise(checker_home)
     await collect_hosts(
-        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+        checker_home,
+        config,
+        [target_host(server)],
+        known_hosts=server.known,
+        limits=LIMITS,
+        modules=MODULES,
     )
     database = database_file(checker_home).read_bytes()
     # (The custody log names the controller's own host, as the policy says; the
@@ -273,6 +291,7 @@ async def test_one_unreachable_host_does_not_stop_the_others(server, checker_hom
         [target_host(server), unreachable],
         known_hosts=server.known,
         limits=LIMITS,
+        modules=MODULES,
     )
     by_host = {o.host: o for o in outcomes}
     assert by_host["web01"].status == "complete"
@@ -347,7 +366,12 @@ async def test_verify_checks_every_sidecar_field_and_survives_a_damaged_one(
 ):
     config, _ = initialise(checker_home)
     [outcome] = await collect_hosts(
-        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+        checker_home,
+        config,
+        [target_host(server)],
+        known_hosts=server.known,
+        limits=LIMITS,
+        modules=MODULES,
     )
     sidecar = checker_home / "evidence/web01" / f"{outcome.bundle_id}.json"
     original = json.loads(sidecar.read_text())
@@ -377,7 +401,12 @@ async def test_hosts_whose_bundle_cannot_be_recorded_are_reported(
 
     monkeypatch.setattr(collect_module, "BundleWriter", broken_writer)
     [outcome] = await collect_hosts(
-        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+        checker_home,
+        config,
+        [target_host(server)],
+        known_hosts=server.known,
+        limits=LIMITS,
+        modules=MODULES,
     )
     assert outcome.status == "not_recorded"
     assert "disk full" in outcome.error
@@ -454,6 +483,7 @@ async def test_refused_login_keeps_what_was_tried(server, checker_home):
         [target_host(server, key_path=str(stranger_key))],
         known_hosts=server.known,
         limits=LIMITS,
+        modules=MODULES,
     )
     assert "login refused" in outcome.error
     store = Store(database_file(checker_home))
@@ -468,7 +498,12 @@ async def test_verify_reports_an_unreadable_bundle_instead_of_crashing(
 ):
     config, _ = initialise(checker_home)
     [outcome] = await collect_hosts(
-        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+        checker_home,
+        config,
+        [target_host(server)],
+        known_hosts=server.known,
+        limits=LIMITS,
+        modules=MODULES,
     )
     path = checker_home / "evidence/web01" / f"{outcome.bundle_id}.age"
     path.unlink()
@@ -522,7 +557,12 @@ async def test_show_displays_why_a_run_failed(server, checker_home, capsys):
     config, _ = initialise(checker_home)
     server.target.sudo_n_refuses = True
     [outcome] = await collect_hosts(
-        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+        checker_home,
+        config,
+        [target_host(server)],
+        known_hosts=server.known,
+        limits=LIMITS,
+        modules=MODULES,
     )
     args = cli.build_parser().parse_args(["bundle", "show", outcome.bundle_id])
     assert cli.cmd_bundle_show(args) == 0
@@ -532,7 +572,12 @@ async def test_show_displays_why_a_run_failed(server, checker_home, capsys):
 async def test_verify_fails_when_the_named_key_cannot_be_loaded(server, checker_home, capsys):
     config, _ = initialise(checker_home)
     [outcome] = await collect_hosts(
-        checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+        checker_home,
+        config,
+        [target_host(server)],
+        known_hosts=server.known,
+        limits=LIMITS,
+        modules=MODULES,
     )
     missing = checker_home / "no-such-key.txt"
     args = cli.build_parser().parse_args(
@@ -553,6 +598,7 @@ async def test_refused_login_records_both_endpoints(server, checker_home):
         [target_host(server, key_path=str(stranger_key))],
         known_hosts=server.known,
         limits=LIMITS,
+        modules=MODULES,
     )
     store = Store(database_file(checker_home))
     identity = load_identity(checker_home / "keys/evidence-identity.txt")
@@ -581,8 +627,55 @@ async def test_sealing_does_not_block_other_hosts(server, checker_home, monkeypa
     monkeypatch.setattr(collect_module.BundleWriter, "seal", slow_seal)
     await asyncio.gather(
         collect_hosts(
-            checker_home, config, [target_host(server)], known_hosts=server.known, limits=LIMITS
+            checker_home,
+            config,
+            [target_host(server)],
+            known_hosts=server.known,
+            limits=LIMITS,
+            modules=MODULES,
         ),
         ticker(),
     )
     assert max(gaps) < 0.3  # the loop kept turning while the bundle was sealed
+
+
+async def test_collect_sends_the_configured_home_text(server, checker_home, monkeypatch):
+    sent = []
+    real = collect_module.build_program
+
+    def capture(settings):
+        sent.append(settings)
+        return real(settings)
+
+    monkeypatch.setattr(collect_module, "build_program", capture)
+    config, _ = initialise(checker_home, home_text="privileged")
+    await collect_hosts(
+        checker_home,
+        config,
+        [target_host(server)],
+        known_hosts=server.known,
+        limits=LIMITS,
+        modules=MODULES,
+    )
+    assert [s.home_text for s in sent] == ["privileged"]
+
+
+async def test_each_host_gets_its_own_web_roots(server, checker_home, monkeypatch):
+    sent = []
+    real = collect_module.build_program
+
+    def capture(settings):
+        sent.append(settings)
+        return real(settings)
+
+    monkeypatch.setattr(collect_module, "build_program", capture)
+    config, _ = initialise(checker_home)
+    await collect_hosts(
+        checker_home,
+        config,
+        [target_host(server, web_roots=["/srv/app"])],
+        known_hosts=server.known,
+        limits=LIMITS,
+        modules=MODULES,
+    )
+    assert [s.web_roots for s in sent] == [["/srv/app"]]

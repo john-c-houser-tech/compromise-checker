@@ -116,8 +116,10 @@ first.
 **Never done:** removing, editing, or suppressing any of those traces.
 Changing logs on a system that may be compromised destroys evidence, and it
 is exactly what an attacker does. Instead the analyzer recognises the tool's
-own sessions (by connection time, source address and key fingerprint, which
-the controller records) and leaves them out of the findings.
+own sessions and leaves them out of the findings. Each trace is tied to the
+tool's own connection (its source port, key and exact command, which the
+controller records, and the process and audit-session numbers the logs link
+them by), never to the account or the time alone (docs/events.md).
 
 ### 3.3 Credentials
 
@@ -156,7 +158,7 @@ sometimes secrets typed into shell commands.
   redaction mode.
 - **Secret scrubbing at source.** Before evidence leaves the target, the
   collector masks well-known secret patterns: private key blocks, `password=`
-  style arguments, bearer tokens, and cloud access keys. The masking rules
+  style arguments, password hashes, bearer tokens, and cloud access keys. The masking rules
   are published, and the report says that masking ran.
 - **Encrypted at rest.** Evidence bundles are encrypted on the controller
   (age, to a key the organization holds). The database index keeps only
@@ -313,7 +315,9 @@ itself reported.
 ### 5.4 Read-only command allow-list
 
 Where reading files directly is impractical, the collector may run these
-and only these: `journalctl` (read options only), `rpm -Va` / `rpm -qa`,
+and only these: `journalctl` (read options only), `rpm -Va` / `rpm -qa`
+(in practice rpm's database is read directly instead: run as root, rpm
+makes SQLite write `-shm`/`-wal` files),
 `dpkg-query`, `ss` only as a cross-check against `/proc/net`, `systemctl show` /
 `list-unit-files`, `sestatus` / `aa-status`, `iptables-save` / `nft list
 ruleset` (read), `docker`/`podman` `ps --all` and `inspect` (read). Each
@@ -374,7 +378,8 @@ are files; everything else is in the database.
   window since the last run, with an overlap.
 - An operator can **accept** a snapshot as the new baseline after reviewing a
   change (for example, after a planned upgrade). Acceptance is recorded with
-  who and why.
+  who and why. Until then, the baseline is the host's oldest analysed
+  snapshot, so slow changes show against it (docs/snapshots.md).
 - A baseline taken from a host that was already compromised would hide the
   compromise. The first-run report therefore runs every check that does not
   need a baseline (integrity, anti-forensics, live process checks, known-bad
@@ -431,11 +436,25 @@ units, `rc.local`, `/etc/profile.d`, shell start-up files, Ubuntu
 `update-motd.d`, apt and dnf hooks, udev rules. ★ `/etc/ld.so.preload` and
 `LD_PRELOAD` in any process environment.
 
+Files in home directories (start-up files, user units) are collected as
+hashes only by default (policy §7), so a first check has no baseline for
+them. That check reports a home start-up file that differs from its
+`/etc/skel` counterpart as customised, and every user unit or autostart entry
+by name; it can't say what they run. Later checks report any change. An
+opt-in chosen in `checker init` (`--home-text privileged` or `all`) also
+collects their masked text, for root, service and administrator accounts or
+for everyone.
+
 ### 8.5 System binary integrity
 
 ★ Package verification failures for system binaries (`ps`, `ls`, `ss`,
-`sshd`, `login`, `sudo`, `su`, PAM modules). New SUID/SGID files, and SUID
-files no package owns. File capabilities such as `cap_setuid`. Executables in
+`sshd`, `login`, `sudo`, `su`, PAM modules). The checksums verified against live
+on the server itself (rpm's database, dpkg's lists), so root can rewrite them
+too: a clean result is "unchanged or covered up". Their own hashes and
+change times are collected so a rewrite shows against the baseline;
+comparing with the vendor's signed packages is a later addition. New SUID/SGID files, and SUID
+files no package owns (in the system directories; elsewhere they are
+§8.6's). File capabilities such as `cap_setuid`. Executables in
 system directories that no package owns.
 
 ### 8.6 Files in unusual places
@@ -449,8 +468,10 @@ Timestomping (modification time much older than change time).
 
 ★ Processes running from deleted files or from `memfd`. Processes running
 from temporary directories. Names imitating kernel threads (`[kworker/…]`)
-with a real executable behind them. Processes visible in `/proc` but hidden
-from `ps`. ★ A shell whose stdin or stdout is a network socket (reverse
+with a real executable behind them. Processes that answer a direct
+`/proc/<pid>` lookup but are hidden from `/proc`'s listing (what `ps` sees). (A kernel
+rootkit can hide from the lookup too: its traces are in the kernel's taint
+flags and module list, §8.1.) ★ A shell whose stdin or stdout is a network socket (reverse
 shell). Sustained high CPU with connections to mining-pool ports.
 
 ### 8.8 Network and data transfer

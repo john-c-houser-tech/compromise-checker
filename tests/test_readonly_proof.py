@@ -30,6 +30,8 @@ SYSCALLS = {
     (X86, "91"): "fchmod",
     (X86, "257"): "openat",
     (X86, "258"): "mkdirat",
+    (X86, "259"): "mknodat",
+    (X86, "265"): "linkat",
     (X86, "266"): "symlinkat",
 }
 NUMBERS = {name: number for (_, number), name in SYSCALLS.items()}
@@ -54,13 +56,19 @@ def event(comm, exe, syscall, *paths, cwd=None):
     ]
     if cwd:
         lines.append(f"type=CWD {stamp}: cwd={quoted_or_hex(cwd)}")
-    for n, (name, kind) in enumerate(paths):
-        lines.append(f"type=PATH {stamp}: item={n} name={quoted_or_hex(name)} nametype={kind}")
+    for n, (name, kind, *dev) in enumerate(paths):
+        device = f" dev={dev[0]}" if dev else ""
+        lines.append(
+            f"type=PATH {stamp}: item={n} name={quoted_or_hex(name)}{device} nametype={kind}"
+        )
     return "\n".join(lines) + "\n"
 
 
-def judge(text):
-    return proof.classify(proof.parse_audit(text, SYSCALLS))
+MEMORY, DISK = "00:2a", "fd:01"  # tmpfs (/run/user/…), and a disk
+
+
+def judge(text, memory=frozenset({MEMORY})):
+    return proof.classify(proof.parse_audit(text, SYSCALLS), set(memory))
 
 
 SUDO, SSHD, SYSTEMD = "/usr/bin/sudo", "/usr/sbin/sshd", "/usr/lib/systemd/systemd"
@@ -191,3 +199,113 @@ async def test_cancelling_during_creation_still_deletes_the_server():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert deleted == [42]
+
+
+def test_the_user_managers_placeholders_and_generators_are_disclosed():
+    """systemd 256+: at login the user manager makes its placeholder nodes
+    through a directory handle (bare names, on the runtime area's tmpfs),
+    and the user-unit generators link units into their output directory."""
+    generator = "/usr/lib/systemd/user-generators/systemd-xdg-autostart-generator"
+    text = "".join(
+        [
+            event("systemd", SYSTEMD, "mkdirat", ("inaccessible", "CREATE", MEMORY), cwd="/"),
+            event("systemd", SYSTEMD, "mknodat", ("chr", "CREATE", MEMORY), cwd="/"),
+            event("systemd", SYSTEMD, "linkat", ("", "CREATE", MEMORY), cwd="/"),
+            # Ubuntu 26.04: an unnamed file linked into the runtime area.
+            event(
+                "systemd",
+                SYSTEMD,
+                "linkat",
+                ("", "NORMAL", MEMORY),
+                ("/run/user/1000/systemd/inaccessible/reg", "CREATE", MEMORY),
+                cwd="/",
+            ),
+            event(
+                "systemd-xdg-aut",
+                generator,
+                "symlinkat",
+                ("/x.desktop", "UNKNOWN"),
+                ("../app-x@autostart.service", "CREATE", MEMORY),
+                cwd="/",
+            ),
+        ]
+    )
+    verdict = judge(text)
+    assert verdict.unexpected == [] and len(verdict.disclosed) == 5  # one linkat / twice
+
+
+def test_placeholders_and_generators_excuse_nothing_on_a_disk():
+    generator = "/usr/lib/systemd/user-generators/x"
+    verdict = judge(
+        # The names, but absolute (a real /sock in /), or on a disk.
+        event("systemd", SYSTEMD, "mknodat", ("/sock", "CREATE", MEMORY), cwd="/")
+        + event("systemd", SYSTEMD, "mkdirat", ("dir", "CREATE", DISK), cwd="/")
+        # A generator's link anywhere but its in-memory output.
+        + event("x", generator, "symlinkat", ("t", "UNKNOWN"), ("/etc/cron.d/evil", "CREATE", DISK))
+        + event("x", generator, "symlinkat", ("t", "UNKNOWN"), ("evil", "CREATE", DISK), cwd="/")
+        # A relative name joined to a runtime-area cwd but written on a disk
+        # (through an /etc directory handle).
+        + event("sshd", SSHD, "openat", ("passwd", "CREATE", DISK), cwd="/run/user/1000")
+    )
+    assert sorted(verdict.unexpected) == [
+        "sshd (/usr/sbin/sshd) openat /run/user/1000/passwd",
+        "systemd (/usr/lib/systemd/systemd) mkdirat /dir",
+        "systemd (/usr/lib/systemd/systemd) mknodat /sock",
+        "x (/usr/lib/systemd/user-generators/x) symlinkat /etc/cron.d/evil",
+        "x (/usr/lib/systemd/user-generators/x) symlinkat /evil",
+    ]
+
+
+def test_the_end_of_run_sweep_deletes_only_this_runs_servers():
+    class Fake:
+        deleted = []
+
+        def tagged(self):
+            mine = proof.run_label("rocky9")
+            return [
+                {"id": 1, "label": mine},
+                {"id": 2, "label": mine + "x"},  # also this run's (same prefix)
+                {"id": 3, "label": "cc-test-zzzzzz-rocky9-ab12"},  # another run's
+            ]
+
+        def delete(self, linode_id):
+            if linode_id == 1:
+                raise RuntimeError("404: already gone")
+            self.deleted.append(linode_id)
+
+    api = Fake()
+    proof.sweep_run(api)
+    assert api.deleted == [2]  # the failed delete didn't stop it; run 3 untouched
+
+
+def test_placeholder_names_are_accepted_from_the_session_manager_only():
+    verdict = judge(
+        event("sshd", SSHD, "mknodat", ("chr", "CREATE", MEMORY), cwd="/")
+        + event("systemd", SYSTEMD, "mknodat", ("evil", "CREATE", MEMORY), cwd="/")
+        + event("systemd", SYSTEMD, "openat", ("dir", "CREATE", DISK), cwd="/")
+    )
+    assert verdict.unexpected == [
+        "sshd (/usr/sbin/sshd) mknodat /chr",
+        "systemd (/usr/lib/systemd/systemd) mknodat /evil",
+        "systemd (/usr/lib/systemd/systemd) openat /dir",
+    ]
+    collector = event("python3", "/usr/bin/python3", "mknodat", ("chr", "CREATE"), cwd="/")
+    assert judge(collector).collector == ["python3 (/usr/bin/python3) mknodat /chr"]
+
+
+def test_in_memory_comes_from_the_mount_table_not_the_device_number():
+    mountinfo = "\n".join(
+        [
+            "25 1 0:22 / /run rw - tmpfs tmpfs rw",
+            "26 25 0:42 / /run/user/1000 rw - tmpfs tmpfs rw",
+            "27 1 0:31 / / rw - btrfs /dev/vda2 rw",  # anonymous device, on disk
+            "28 1 253:1 / /boot rw - xfs /dev/vda1 rw",
+        ]
+    )
+    memory = proof.memory_devices(mountinfo)
+    assert memory == {"00:16", "00:2a"}
+    btrfs = event("systemd", SYSTEMD, "mknodat", ("chr", "CREATE", "00:1f"), cwd="/")
+    assert judge(btrfs, memory).unexpected == ["systemd (/usr/lib/systemd/systemd) mknodat /chr"]
+    # Without a mount table nothing is in memory: relative names aren't excused.
+    tmpfs = event("systemd", SYSTEMD, "mknodat", ("chr", "CREATE", MEMORY), cwd="/")
+    assert judge(tmpfs, set()).unexpected == ["systemd (/usr/lib/systemd/systemd) mknodat /chr"]

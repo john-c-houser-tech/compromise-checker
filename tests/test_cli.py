@@ -126,3 +126,57 @@ def test_same_key_is_a_no_op(checker_home, monkeypatch, capsys):
     key = asyncssh.generate_private_key("ssh-ed25519")
     assert trust(monkeypatch, key, "n", [key.get_fingerprint("sha256")]) == 0
     assert "already trusted" in capsys.readouterr().out
+
+
+def test_init_records_the_home_text_choice(checker_home, capsys):
+    from checker.evidence import load_config
+
+    assert main(["init", "--home-text", "privileged"]) == 0
+    assert load_config(checker_home).home_text == "privileged"
+    assert "root, service and administrator accounts" in capsys.readouterr().out
+
+
+def test_init_home_text_defaults_to_off(checker_home):
+    from checker.evidence import load_config
+
+    assert main(["init"]) == 0
+    assert load_config(checker_home).home_text == "off"
+
+
+def test_hosts_add_records_web_roots(checker_home):
+    assert (
+        main(
+            [
+                "hosts",
+                "add",
+                "web02",
+                "--address",
+                "192.0.2.11",
+                "--user",
+                "scanner",
+                "--web-root",
+                "/srv/app/public",
+                "--web-root",
+                "/var/www/shop",
+            ]
+        )
+        == 0
+    )
+    [host] = [h for h in load_inventory().hosts if h.name == "web02"]
+    assert host.web_roots == ["/srv/app/public", "/var/www/shop"]
+    assert (
+        main(
+            [
+                "hosts",
+                "add",
+                "web03",
+                "--address",
+                "192.0.2.12",
+                "--user",
+                "scanner",
+                "--web-root",
+                "relative",
+            ]
+        )
+        == 2
+    )

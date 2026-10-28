@@ -44,6 +44,7 @@ async def collect_hosts(
     password_provider: PasswordProvider | None = None,
     known_hosts: Path | None = None,
     limits: Limits = DEFAULT_LIMITS,
+    modules: list[str] | None = None,
 ) -> list[Outcome]:
     """Collect from every host and store each result, failures included: a
     failed run still left traces on its host, so its session is kept too."""
@@ -51,10 +52,10 @@ async def collect_hosts(
     settings = Settings(
         run_id=str(uuid.uuid4()),
         since=started - timedelta(days=days),
-        modules=None,
+        modules=modules,  # None: every module
         limits=limits,
+        home_text=config.home_text,
     )
-    program = build_program(settings)
     fingerprint = collector_sha256()
     store = Store(database_file(home))
     outcomes: list[Outcome] = []
@@ -63,6 +64,8 @@ async def collect_hosts(
         run_started = datetime.now(UTC)
         identifier = bundle_id(host.name, run_started, settings.run_id)
         writer = BundleWriter(bundle_path(home, host.name, identifier), config.recipients)
+        # The host's own web roots, if it has any, replace the defaults.
+        program = build_program(settings.model_copy(update={"web_roots": host.web_roots}))
         session: Session | None = None
         error: TransportError | None = None
         try:

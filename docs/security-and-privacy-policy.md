@@ -119,15 +119,34 @@ include access tokens, and sometimes secrets typed into commands.
   chooses this during setup, and then only for root, service accounts and
   accounts with administrator rights unless you also enable it for ordinary
   users.
+- **Scheduled jobs and start-up files.** Crontabs and queued `at` jobs are
+  collected as masked text, but each `at` job's stored copy of the
+  submitting user's environment is left out; only the variable names are
+  kept. Start-up files and systemd units in home directories are collected
+  as metadata and a SHA-256 fingerprint only, unless your organization
+  chooses during setup to collect their text too; then only for root,
+  service accounts and accounts with administrator rights, unless you also
+  enable it for ordinary users. Secret masking always applies.
 - **Secret masking.** Before evidence leaves the server, the collector
   replaces text matching these patterns with a marker such as
   `[MASKED:password]`:
-  - private key blocks (`-----BEGIN … PRIVATE KEY-----` to the matching end);
+  - private key blocks (`-----BEGIN … PRIVATE KEY-----` to the matching end,
+    for as long as the lines look like key material, so a fake start line
+    cannot hide the lines after it);
   - values of settings and command options named like password, passwd, pwd,
     secret, token, api key, access key or auth (including `-p<password>` for
     MySQL clients);
   - HTTP `Authorization` headers and bearer tokens;
   - passwords inside web addresses (`scheme://user:password@host`);
+  - password hashes in the standard crypt formats (`$1$`, `$2b$`, `$5$`,
+    `$6$`, `$y$` and similar);
+  - user names in failed-login records and messages that don't match a
+    local account (a password is sometimes typed into the user-name box by
+    mistake);
+  - passwords given to command-line options that take one without saying
+    so (for example `sshpass -p`, `redis-cli -a`, `curl -u user:password`,
+    `docker login -p`, openssl's `pass:` and `htpasswd -b`), and values
+    after key names such as `aws_secret_access_key`;
   - well-known credential formats, including cloud access keys, GitHub,
     Slack, Stripe and Anthropic API keys, and signed web tokens (JWTs).
 

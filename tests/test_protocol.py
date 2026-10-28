@@ -30,6 +30,8 @@ def make_settings(**overrides):
     values = {
         "run_id": "run-1",
         "since": datetime(2026, 9, 25, tzinfo=UTC),
+        # One light module: these run on the machine hosting the tests.
+        "modules": ["host_facts"],
         "limits": Limits(overall_seconds=60, module_seconds=30, source_bytes=1 << 20),
     }
     values.update(overrides)
@@ -262,9 +264,28 @@ def test_modules_output_matches_the_models(tmp_path):
     records = read_stream(run_program(program))
 
     assert records[0].host.os_id == "ubuntu"
-    assert records[0].masking_version == 1
+    assert records[0].masking_version == 6
     assert records[-1].status == "complete"
     assert set(records[-1].modules) == {"host_facts", "auth_log"}
     chunks = [r for r in records if isinstance(r, Chunk)]
     assert {c.encoding for c in chunks} == {"utf-8", "base64"}
     assert all("Secret1" not in c.data for c in chunks)
+
+
+def test_home_text_setting_reaches_the_collector():
+    for value in ("off", "privileged", "all"):
+        records = read_stream(run_program(build_program(make_settings(home_text=value))))
+        assert records[0].settings["home_text"] == value
+        assert records[-1].status == "complete"
+    with pytest.raises(ValueError):
+        make_settings(home_text="everyone")
+
+
+def test_web_roots_setting():
+    assert make_settings(web_roots=["/srv/app"]).web_roots == ["/srv/app"]
+    assert make_settings().web_roots is None  # the collector's defaults
+    for bad in (["relative/path"], ["/srv/../etc"], ["/a\0b"], ["/x"] * 65):
+        with pytest.raises(ValueError):
+            make_settings(web_roots=bad)
+    records = read_stream(run_program(build_program(make_settings(web_roots=["/srv/app"]))))
+    assert records[0].settings["web_roots"] == ["/srv/app"]

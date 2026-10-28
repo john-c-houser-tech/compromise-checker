@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>CONFIDENTIAL — Compromise check: {% if reports|length == 1 %}{{ reports[0].host|visible(80) }}{% else %}{{ reports|length }} hosts{% endif %}</title>
+<style>
+:root { --ink: #1d232a; --muted: #5b6672; --line: #d6dbe0; --paper: #ffffff; --soft: #f4f6f8;
+  --high: #a4161a; --medium: #b85c00; --low: #44617b; --info: #6b7280; --ok: #2d6a4f; }
+@media (prefers-color-scheme: dark) {
+  :root { --ink: #e6e9ec; --muted: #a3acb6; --line: #39424c; --paper: #15191d; --soft: #1e242a;
+    --high: #ff6b6b; --medium: #ffa94d; --low: #8fb3d9; --info: #a3acb6; --ok: #69db7c; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 0 16px 48px; }
+.banner { background: var(--high); color: #fff; text-align: center; font-weight: 700;
+  letter-spacing: .08em; padding: 6px 16px; position: sticky; top: 0; z-index: 1; }
+h1 { font-size: 1.6rem; margin: 24px 0 4px; }
+h2 { font-size: 1.3rem; margin: 40px 0 8px; padding-top: 8px; border-top: 2px solid var(--line); }
+h3 { font-size: 1.05rem; margin: 24px 0 8px; }
+.meta, .muted { color: var(--muted); }
+.notice { background: var(--soft); border-left: 4px solid var(--medium); padding: 10px 14px; margin: 16px 0; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: .85rem; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.band { display: inline-block; min-width: 4.5em; text-align: center; border-radius: 4px; padding: 0 6px;
+  font-size: .78rem; font-weight: 700; color: #fff; }
+.band.high { background: var(--high); } .band.medium { background: var(--medium); }
+.band.low { background: var(--low); } .band.info { background: var(--info); }
+.finding { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin: 10px 0; }
+.finding .title { font-weight: 600; }
+.tag { font-size: .75rem; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; margin-left: 6px; color: var(--muted); }
+.evidence { margin: 8px 0 0; font-size: .85rem; }
+.evidence td { border: 0; padding: 2px 8px 2px 0; }
+code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .85em;
+  overflow-wrap: anywhere; word-break: break-word; }
+details { margin: 8px 0; } summary { cursor: pointer; color: var(--muted); }
+.wrap { overflow-x: auto; }
+footer { margin-top: 48px; color: var(--muted); font-size: .85rem; border-top: 1px solid var(--line); padding-top: 12px; }
+@media print { .banner { position: static; } details { display: block; } details > summary { display: none; }
+  h2 { break-before: page; } .finding { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<div class="banner">CONFIDENTIAL — handle like the evidence it describes</div>
+<main>
+<h1>Compromise check report</h1>
+<p class="meta">Generated {{ generated_at }} by {{ operator|visible(60) }} on {{ controller|visible(60) }} ·
+checker {{ version }} · checks version {{ checks_version }}</p>
+
+<div class="notice">
+<p><strong>Findings and bands only.</strong> This report lists what the checks found, each with a
+band (high, medium, low, info). A scored probability of compromise comes in Phase 2.</p>
+<p><strong>No findings is not proof of a clean server.</strong> Attackers can avoid or remove
+evidence, logs may be missing, and no set of checks covers every technique. Check the coverage
+section for each host. A high band is a reason to investigate, not proof of an intrusion.</p>
+<p><strong>Confidential.</strong> This report describes weaknesses an attacker could use. Keep it
+with the evidence and share it only with people who need it.</p>
+</div>
+
+<h2>Summary</h2>
+<div class="wrap"><table>
+<tr><th>Host</th><th>Collected</th><th>Bundle</th>
+<th class="num">High</th><th class="num">Medium</th><th class="num">Low</th>
+<th class="num">Hygiene</th><th class="num">Exposure</th><th class="num">Coverage gaps</th></tr>
+{% for r in reports %}
+{% set c = r.counts.get("compromise indicator", {}) %}
+<tr>
+<td><a href="#host-{{ loop.index }}">{{ r.host|visible(60) }}</a></td>
+<td class="mono">{{ r.row["started_at"][:16] }}</td>
+<td class="mono">{{ r.row["status"] }}</td>
+<td class="num">{{ c.get("high", 0) }}</td><td class="num">{{ c.get("medium", 0) }}</td><td class="num">{{ c.get("low", 0) }}</td>
+<td class="num">{{ r.counts.get("hygiene", {}).values()|sum }}</td>
+<td class="num">{{ r.counts.get("exposure", {}).values()|sum }}</td>
+<td class="num">{{ r.assessment.coverage.gaps|length }}</td>
+</tr>
+{% endfor %}
+</table></div>
+
+{% macro finding_card(f) %}
+<div class="finding">
+<div><span class="band {{ f.band }}">{{ f.band|upper }}</span>
+<span class="title">{{ f.title|visible(200) }}</span>
+{% if f.new %}<span class="tag">new</span>{% endif %}
+<span class="tag mono">{{ f.check }}</span></div>
+<div class="mono">{{ f.summary|visible(400) }}</div>
+{% if f.uncertain %}<div class="muted">Uncertain: {{ f.uncertain|visible(300) }}</div>{% endif %}
+{% if f.first_seen %}<div class="muted">Seen {{ f.first_seen[:19] }}{% if f.last_seen and f.last_seen != f.first_seen %} to {{ f.last_seen[:19] }}{% endif %} (controller clock, UTC)</div>{% endif %}
+{% if f.excerpts %}
+<table class="evidence">
+{% for e in f.excerpts %}<tr><td class="mono muted">{{ e.when }}</td><td class="muted">{{ e.where }}</td><td class="mono">{{ e.text }}</td></tr>{% endfor %}
+</table>
+{% endif %}
+</div>
+{% endmacro %}
+
+{% for r in reports %}
+<h2 id="host-{{ loop.index }}">{{ r.host|visible(80) }}</h2>
+{% set facts = r.manifest.get("host") or {} %}
+<p class="meta">Bundle <span class="mono">{{ r.row["id"]|visible(120) }}</span> · collected {{ r.row["started_at"][:19] }} ·
+{% if facts.get("os_pretty_name") %}{{ facts["os_pretty_name"]|visible(80) }} · {% endif %}
+{% if facts.get("kernel") %}kernel {{ facts["kernel"]|visible(60) }} · {% endif %}
+baseline <span class="mono">{{ r.assessment.baseline_id|visible(120) }}</span>{% if r.assessment.baseline_set_now %} (set at this analysis){% endif %}</p>
+{% for note in r.assessment.notes %}<div class="notice">{{ note|visible(400) }}</div>{% endfor %}
+
+<h3>Compromise indicators</h3>
+{% set shown = r.findings.get("compromise indicator", [])|rejectattr("band", "equalto", "info")|list %}
+{% if shown %}{% for f in shown %}{{ finding_card(f) }}{% endfor %}
+{% else %}<p class="muted">None found. See the coverage below for what could not be seen.</p>{% endif %}
+{% set infos = r.findings.get("compromise indicator", [])|selectattr("band", "equalto", "info")|list %}
+{% if infos %}<details><summary>{{ infos|length }} informational findings (reboots by operators, su use, user units…)</summary>
+{% for f in infos %}{{ finding_card(f) }}{% endfor %}</details>{% endif %}
+
+<h3>Exposure and hygiene</h3>
+<p class="muted">Risks worth fixing, not evidence that anyone got in (they are reported apart from compromise indicators).</p>
+{% set other = r.findings.get("exposure", []) + r.findings.get("hygiene", []) %}
+{% if other %}{% for f in other %}{{ finding_card(f) }}{% endfor %}
+{% else %}<p class="muted">None found.</p>{% endif %}
+
+<h3>Timeline</h3>
+{% if r.timeline %}
+<div class="wrap"><table>
+<tr><th>When (UTC, controller clock)</th><th>Event</th><th>Finding</th></tr>
+{% for e in r.timeline %}<tr><td class="mono">{{ e.when[:19] }}</td><td class="mono">{{ e.type }} · {{ e.text }}</td><td>{{ e.findings|join("; ")|visible(200) }}</td></tr>{% endfor %}
+</table></div>
+{% else %}<p class="muted">No logged events behind the findings.</p>{% endif %}
+
+<h3>Coverage</h3>
+{% if r.assessment.coverage.log_reach %}
+<table><tr><th>Log</th><th>From</th><th>To</th><th class="num">Days</th></tr>
+{% for name, reach in r.assessment.coverage.log_reach.items() %}<tr><td class="mono">{{ name }}</td><td class="mono">{{ reach["from"][:16] }}</td><td class="mono">{{ reach["to"][:16] }}</td><td class="num">{{ reach["days"] }}</td></tr>{% endfor %}
+</table>
+<p class="muted">From the events the checks use: a quiet log may reach further back.</p>
+{% endif %}
+{% if r.assessment.coverage.gaps %}<ul>{% for g in r.assessment.coverage.gaps %}<li>{{ g|visible(400) }}</li>{% endfor %}</ul>
+{% else %}<p class="muted">No gaps recorded.</p>{% endif %}
+{% set waiting = r.assessment.checks|rejectattr("status", "equalto", "ran")|list %}
+{% if waiting %}<p>Checks not run: {% for c in waiting %}<span class="mono">{{ c.check }}</span> ({{ c.status|visible(200) }}){% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+{% endfor %}
+
+<h2>Appendix</h2>
+<p class="muted">Suppressed findings: none (whitelists come in a later version).</p>
+{% for r in reports %}
+<h3>{{ r.host|visible(80) }}: collection and custody</h3>
+<table>
+<tr><th>Bundle</th><td class="mono">{{ r.row["id"]|visible(120) }}</td></tr>
+<tr><th>Status</th><td>{{ r.row["status"] }}</td></tr>
+<tr><th>Collected</th><td class="mono">{{ r.row["started_at"] }} to {{ r.row["ended_at"] }} (controller clock)</td></tr>
+<tr><th>Collector</th><td class="mono">version {{ r.row["collector_version"]|visible(40) }}, SHA-256 {{ r.row["collector_sha256"] }}</td></tr>
+<tr><th>Content</th><td class="mono">{{ r.row["plaintext_bytes"] }} bytes, SHA-256 {{ r.row["plaintext_sha256"] }}</td></tr>
+<tr><th>Encrypted file</th><td class="mono">{{ r.row["ciphertext_bytes"] }} bytes, SHA-256 {{ r.row["ciphertext_sha256"] }}</td></tr>
+<tr><th>Host</th><td class="mono">{{ r.manifest.get("host", {})|visible(400) }}</td></tr>
+<tr><th>Modules</th><td class="mono">{{ r.manifest.get("modules_planned", [])|join(", ") }}</td></tr>
+<tr><th>Masking</th><td>version {{ r.manifest.get("masking_version") }}: secrets were masked on the server before anything left it</td></tr>
+<tr><th>Analysis</th><td class="mono">{{ r.assessment.analysed_at }}, checks version {{ r.assessment.checks_version }}</td></tr>
+</table>
+<details open><summary>Chain of custody ({{ r.custody|length }} entries)</summary>
+<div class="wrap"><table>
+<tr><th>#</th><th>When (UTC)</th><th>Action</th><th>Who</th><th>From</th><th>Detail</th></tr>
+{% for c in r.custody %}<tr><td class="num">{{ c["seq"] }}</td><td class="mono">{{ c["at"][:19] }}</td><td>{{ c["action"] }}</td><td>{{ c["operator"]|visible(60) }}</td><td>{{ c["controller"]|visible(60) }}</td><td class="mono">{{ (c["detail"] or "")|visible(200) }}</td></tr>{% endfor %}
+</table></div>
+</details>
+{% endfor %}
+
+<footer>
+CONFIDENTIAL. Produced by Compromise Checker {{ version }}, read-only collection over SSH.
+Text from the servers is shown as collected (already masked); invisible and control characters
+appear as escapes such as <code>&#92;u202e</code>. This file loads nothing from anywhere.
+</footer>
+</main>
+</body>
+</html>

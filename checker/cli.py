@@ -10,6 +10,10 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from checker import __version__
+from checker.analysis import load_events, parse_bundle, store_parsed
+from checker.assess import analyze
+from checker.baseline import accept, changes, usable_bundles
+from checker.checks import BANDS, CATEGORIES
 from checker.collect import collect_hosts
 from checker.credentials import password_for
 from checker.evidence import (
@@ -26,7 +30,15 @@ from checker.evidence import (
     open_text,
 )
 from checker.inventory import Host, home, inventory_transaction, load_inventory
+from checker.report import write_report
 from checker.transport import TransportError, fetch_host_key, trust_host_key
+
+# What `checker init --home-text` means, as `init` reports it.
+HOME_TEXT = {
+    "off": "not collected (hashes only)",
+    "privileged": "collected, masked, for root, service and administrator accounts",
+    "all": "collected, masked, for every account",
+}
 
 
 def cmd_hosts_add(args: argparse.Namespace) -> int:
@@ -42,6 +54,7 @@ def cmd_hosts_add(args: argparse.Namespace) -> int:
             password_source=args.password_source,
             group=args.group,
             python=args.python,
+            web_roots=args.web_root,
         )
         with inventory_transaction() as inventory:
             inventory.add(host)
@@ -126,7 +139,7 @@ def cmd_trust(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
 def cmd_init(args: argparse.Namespace) -> int:
     base = home()
     try:
-        config, identity_path = initialise(base, args.recipient)
+        config, identity_path = initialise(base, args.recipient, args.home_text)
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
@@ -138,6 +151,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("cannot be read, by you or anyone else.")
     else:
         print("Its private key is not on this machine; use --identity to read bundles.")
+    print(
+        f"Text of start-up files and user units in home directories: {HOME_TEXT[config.home_text]}"
+    )
     print("Next: `checker hosts add`, then `checker trust`, then `checker collect`.")
     return 0
 
@@ -329,6 +345,15 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--password-source", choices=["prompt", "keyring"], default="prompt")
     add.add_argument("--group", help="a group name, e.g. web")
     add.add_argument("--python", default="python3", help="the interpreter on the host")
+    add.add_argument(
+        "--web-root",
+        action="append",
+        metavar="DIR",
+        help=(
+            "a web root to list for web shells (repeatable); replaces the defaults"
+            " /var/www, /srv/www, /srv/http and /usr/share/nginx/html"
+        ),
+    )
     add.set_defaults(handler=cmd_hosts_add)
 
     hosts_commands.add_parser("list", help="list hosts").set_defaults(handler=cmd_hosts_list)
@@ -348,6 +373,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--recipient",
         metavar="AGE_PUBLIC_KEY",
         help="encrypt evidence to this key (its private half kept elsewhere)",
+    )
+    init.add_argument(
+        "--home-text",
+        choices=sorted(HOME_TEXT),
+        default="off",
+        help=(
+            "also collect the masked text of start-up files and user units in home"
+            " directories: off (hashes only, the default), privileged (root, service"
+            " and administrator accounts) or all"
+        ),
     )
     init.set_defaults(handler=cmd_init)
 
@@ -373,7 +408,348 @@ def build_parser() -> argparse.ArgumentParser:
         action.add_argument("bundle", help="bundle id")
         action.add_argument("--identity", help="the evidence private key file")
         action.set_defaults(handler=handler)
+    events = commands.add_parser("events", help="parse a bundle into events and list them")
+    events.add_argument("bundle", help="bundle id")
+    events.add_argument("--type", help="only events whose type starts with this, e.g. ssh.")
+    events.add_argument("--own", action="store_true", help="include this tool's own session")
+    events.add_argument("--reparse", action="store_true", help="parse again even if stored")
+    events.add_argument("--identity", help="the evidence private key file")
+    events.set_defaults(handler=cmd_events)
+    analysing = commands.add_parser(
+        "analyze", help="run the checks on a host's latest bundle and list the findings"
+    )
+    target = analysing.add_mutually_exclusive_group(required=True)
+    target.add_argument("host", nargs="?")
+    target.add_argument("--all", action="store_true", help="every host with a usable bundle")
+    analysing.add_argument("--bundle", help="this bundle rather than the host's latest")
+    analysing.add_argument("--info", action="store_true", help="also list informational findings")
+    analysing.add_argument("--identity", help="the evidence private key file")
+    analysing.set_defaults(handler=cmd_analyze)
+    reporting = commands.add_parser(
+        "report", help="write the confidential HTML report for hosts' latest bundles"
+    )
+    chosen = reporting.add_mutually_exclusive_group(required=True)
+    chosen.add_argument("host", nargs="?")
+    chosen.add_argument("--all", action="store_true", help="every host with a usable bundle")
+    reporting.add_argument("--bundle", help="this bundle rather than the host's latest")
+    reporting.add_argument("--output", help="the file to write (default: reports/ in the home)")
+    reporting.add_argument("--identity", help="the evidence private key file")
+    reporting.set_defaults(handler=cmd_report)
+    changed = commands.add_parser(
+        "changes", help="what changed on a host since its previous bundle and its baseline"
+    )
+    changed.add_argument("host")
+    changed.add_argument("--bundle", help="this bundle rather than the host's latest")
+    changed.add_argument("--all", action="store_true", help="list every item, not the first 20")
+    changed.add_argument("--identity", help="the evidence private key file")
+    changed.set_defaults(handler=cmd_changes)
+    baseline = commands.add_parser("baseline", help="show or accept a host's baseline")
+    baseline_commands = baseline.add_subparsers(
+        dest="baseline_command", metavar="ACTION", required=True
+    )
+    show = baseline_commands.add_parser("show", help="a host's baselines, oldest first")
+    show.add_argument("host")
+    show.add_argument("--identity", help="the evidence private key file (to show reasons)")
+    show.set_defaults(handler=cmd_baseline_show)
+    accepting = baseline_commands.add_parser(
+        "accept", help="make a reviewed bundle (by default the latest) the host's baseline"
+    )
+    accepting.add_argument("host")
+    accepting.add_argument("--reason", required=True, help="why the change is accepted")
+    accepting.add_argument("--bundle", help="this bundle rather than the host's latest")
+    accepting.add_argument("--identity", help="the evidence private key file")
+    accepting.set_defaults(handler=cmd_baseline_accept)
     return parser
+
+
+SHOWN = 20  # items listed per kind and section without --all
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """Write the HTML report: owner-only, confidential (policy §8)."""
+    base = home()
+    store = Store(database_file(base))
+    try:
+        if args.all:
+            if args.bundle:
+                raise EvidenceError("--bundle names one host's bundle: give the host instead")
+            hosts = [h for h in store.hosts() if usable_bundles(store, h)]
+            if not hosts:
+                raise EvidenceError("no host has a usable bundle yet: collect first")
+        else:
+            hosts = [args.host]
+        path = write_report(
+            store,
+            hosts,
+            _identity(args, base),
+            load_config(base).recipients,
+            base / "reports",
+            args.bundle,
+            Path(args.output) if args.output else None,
+        )
+    except (EvidenceError, OSError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print(f"Report written to {path}")
+    print(
+        "It is confidential: it describes weaknesses an attacker could use."
+        " Handle it like the evidence."
+    )
+    return 0
+
+
+def cmd_analyze(args: argparse.Namespace) -> int:
+    """Run the checks and list the findings, most serious first, with
+    what the collection couldn't see."""
+    base = home()
+    store = Store(database_file(base))
+    status = 0
+    try:
+        identity = _identity(args, base)
+        recipients = load_config(base).recipients
+        if args.all:
+            hosts = [h for h in store.hosts() if usable_bundles(store, h)]
+            if args.bundle:
+                raise EvidenceError("--bundle names one host's bundle: give the host instead")
+            if not hosts:
+                raise EvidenceError("no host has a usable bundle yet: collect first")
+        else:
+            hosts = [args.host]
+        for number, host in enumerate(hosts):
+            if number:
+                print()
+            try:
+                _print_assessment(analyze(store, host, identity, recipients, args.bundle), args)
+            except EvidenceError as exc:
+                print(f"checker: {host}: {exc}", file=sys.stderr)
+                status = 1
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    return status
+
+
+HEADINGS = {
+    "compromise indicator": "Compromise indicators",
+    "exposure": "Exposure",
+    "hygiene": "Hygiene",
+}
+
+
+def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
+    findings = assessment["findings"]
+    print(f"Host       {assessment['host']}")
+    print(f"Bundle     {assessment['bundle_id']}")
+    print(
+        f"Baseline   {assessment['baseline_id']}"
+        + (" (set just now)" if assessment["baseline_set_now"] else "")
+    )
+    for note in assessment["notes"]:
+        print(f"Note       {note}")
+    by_band = {band: sum(f["band"] == band for f in findings) for band in BANDS}
+    print("Findings   " + ", ".join(f"{n} {band}" for band, n in by_band.items()))
+    for category in CATEGORIES:
+        shown = [
+            f for f in findings if f["category"] == category and (args.info or f["band"] != "info")
+        ]
+        if not shown:
+            continue
+        print(f"\n{HEADINGS[category]}:")
+        for f in shown:
+            marks = (" [new]" if f["new"] else "") + (" [uncertain]" if f["uncertain"] else "")
+            print(f"  {f['band'].upper():6} {f['title']}{marks}")
+            print(f"         {f['summary'][:200]}")
+            if f["uncertain"]:
+                print(f"         uncertain: {f['uncertain'][:200]}")
+    hidden = sum(f["band"] == "info" for f in findings)
+    if hidden and not args.info:
+        print(f"\n({hidden} informational findings: --info lists them)")
+    coverage = assessment["coverage"]
+    print("\nCoverage:")
+    for name, reach in coverage["log_reach"].items():
+        print(f"  {name:15} {reach['from'][:16]} to {reach['to'][:16]} ({reach['days']} days)")
+    for gap in coverage["gaps"]:
+        print(f"  gap: {gap[:200]}")
+    for c in assessment["checks"]:
+        if c["status"].startswith("failed"):
+            print(f"  check {c['check']} {c['status']}")
+    waiting: dict[str, list[str]] = {}
+    for c in assessment["checks"]:
+        if c["status"] not in ("ran",) and not c["status"].startswith("failed"):
+            waiting.setdefault(c["status"], []).append(c["check"])
+    for why, names in waiting.items():
+        print(f"  not run ({why}): {', '.join(names)}")
+
+
+def _brief(item: dict) -> str:
+    text = " ".join(f"{k}={v}" for k, v in item.items() if v not in (None, "", [], {}))
+    return text if len(text) <= 100 else text[:99] + "…"
+
+
+def cmd_changes(args: argparse.Namespace) -> int:
+    """What changed on a host: its latest (or a given) bundle's snapshot
+    against the previous bundle's and the baseline's."""
+    base = home()
+    store = Store(database_file(base))
+    try:
+        found = changes(
+            store,
+            args.host,
+            _identity(args, base),
+            load_config(base).recipients,
+            args.bundle,
+        )
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print(f"Host       {found.host}")
+    print(f"Bundle     {found.bundle_id}")
+    if found.baseline_set_now:
+        print(
+            f"Baseline   {found.baseline_id}: set just now, at the host's first analysis;"
+            " change-based checks start from it"
+        )
+    else:
+        print(f"Baseline   {found.baseline_id}")
+    for note in found.notes:
+        print(f"Note       {note}")
+    if not found.comparisons:
+        print("Nothing else to compare with.")
+    for comparison in found.comparisons:
+        if comparison.newer:
+            print(
+                f"\nFrom this bundle to the {comparison.label} bundle, {comparison.bundle_id},"
+                " which is newer:"
+            )
+        else:
+            print(f"\nSince the {comparison.label} bundle, {comparison.bundle_id}:")
+        if not comparison.differences:
+            print("  no changes")
+        for name, diff in comparison.differences.items():
+            counts = ", ".join(
+                f"{len(diff[k])} {k}" for k in ("added", "removed", "changed") if diff[k]
+            )
+            print(f"  {name}: {counts or 'no changes'}")
+            for note in diff["notes"]:
+                print(f"    not comparable: {note}")
+            limit = None if args.all else SHOWN
+            for mark, kind in (("+", "added"), ("-", "removed")):
+                keys = list(diff[kind])
+                for key in keys[:limit]:
+                    print(f"    {mark} {key}  {_brief(diff[kind][key])}".rstrip())
+                if limit is not None and len(keys) > limit:
+                    print(f"    … {len(keys) - limit} more {kind} (--all lists them)")
+            keys = list(diff["changed"])
+            for key in keys[:limit]:
+                fields = "; ".join(
+                    f"{f}: {old} → {new}" for f, (old, new) in diff["changed"][key].items()
+                )
+                print(f"    ~ {key}  {fields[:200]}")
+            if limit is not None and len(keys) > limit:
+                print(f"    … {len(keys) - limit} more changed (--all lists them)")
+    return 0
+
+
+def cmd_baseline_show(args: argparse.Namespace) -> int:
+    base = home()
+    store = Store(database_file(base))
+    try:
+        rows = store.baselines(args.host)
+        identity = (
+            _identity(args, base) if args.identity or load_config(base).identity_file else None
+        )
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    if not rows:
+        print(f"No baseline for {args.host} yet: `checker changes {args.host}` sets the first.")
+        return 0
+    for row in rows:
+        reason = open_text(row["reason"], identity) if identity and row["reason"] else None
+        who = f"{row['operator']}@{row['controller']}"
+        line = f"{row['at']}  {row['how']:8}  {row['bundle_id']}  by {who}"
+        print(line + (f"  — {reason}" if reason else ""))
+    return 0
+
+
+def cmd_baseline_accept(args: argparse.Namespace) -> int:
+    base = home()
+    store = Store(database_file(base))
+    try:
+        row, notes = accept(
+            store,
+            args.host,
+            args.reason,
+            _identity(args, base),
+            load_config(base).recipients,
+            args.bundle,
+        )
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print(f"{args.host}: baseline is now {row['id']}; later changes are compared with it.")
+    for note in notes:
+        print(f"Note: {note}.")
+    return 0
+
+
+def cmd_events(args: argparse.Namespace) -> int:
+    """Parse a bundle into events (or load its stored parse) and list them."""
+    base = home()
+    store = Store(database_file(base))
+    try:
+        row = store.bundle(args.bundle)
+        identity = _identity(args, base)
+        parsed = None if args.reparse else load_events(store, row, identity)
+        if parsed is None:
+            parsed = parse_bundle(row, identity)
+            store_parsed(store, row, load_config(base).recipients, parsed)
+        else:
+            store.custody(row["id"], "viewed", {"events": True})
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    summary = parsed.summary
+    offset = summary.get("clock_offset_seconds")
+    zone = summary.get("time_zone")
+    assumed = " (assumed)" if summary.get("time_zone_assumed") else ""
+    print(f"Bundle     {row['id']}")
+    print(
+        f"Events     {summary.get('events')} ({summary.get('own_session')} from this tool's"
+        " own session, shown with --own)"
+    )
+    print(
+        f"Clock      offset {offset if offset is not None else 'unknown'} s; zone {zone}{assumed}"
+    )
+    if summary.get("problem"):
+        print(f"Problem    {summary['problem']}")
+    if summary.get("own_login_found") is False:
+        print(
+            "Note       this tool's own SSH login was not found in the logs, so it and what"
+            " followed from it are listed as findings (a NAT between the controller and"
+            " the host changes the source port it is recognised by)"
+        )
+    for event in parsed.events:
+        if event.own_session and not args.own:
+            continue
+        if args.type and not event.type.startswith(args.type):
+            continue
+        detail = " ".join(f"{k}={v}" for k, v in event.fields.items())
+        own = " [own session]" if event.own_session else ""
+        print(f"{event.corrected or '-':32} {event.type:26} {detail}{own}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

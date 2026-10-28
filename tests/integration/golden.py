@@ -20,8 +20,11 @@ import gzip
 import ipaddress
 import json
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from checker.analysis import load_events, parse_bundle, snapshot_of, store_parsed
 from checker.assess import evaluate
@@ -30,10 +33,21 @@ from checker.checks import Context
 from checker.events import Event
 from checker.evidence import Store
 from checker.snapshot import Snapshot, compare
+from checker.whitelist import Layer, build
 
 CASES = Path(__file__).resolve().parent.parent / "golden"
 CASE_FORMAT = 1
 PRIOR = (0.02, "golden")
+# Whitelist expiry is judged on this day, so the expectations don't change
+# with the calendar.
+TODAY = date(2026, 10, 28)
+PROOF_WHITELIST = Path(__file__).resolve().parent / "proof-whitelist.yaml"
+
+
+def proof_layers(host: str) -> list[list[Any]]:
+    """The proofs' own whitelist as a case's host layer."""
+    data = yaml.safe_load(PROOF_WHITELIST.read_text(encoding="utf-8"))
+    return [[f"host {host}", "tests/integration/proof-whitelist.yaml", data]]
 
 
 # --- Export ------------------------------------------------------------------------------
@@ -74,6 +88,7 @@ def export_case(
         "baseline": found.baseline_id,
         "no_baseline": no_baseline,
         "earlier": [r["id"] for r in earlier],
+        "whitelist": proof_layers(host),
         "started": {},
         "snapshots": {},
         "events": {},
@@ -244,8 +259,14 @@ def run_case(case: dict[str, Any]) -> dict[str, Any]:
         previous_time=case["started"][previous] if previous else None,
         no_baseline=no_baseline,
     )
-    findings, ran, scored = evaluate(context, PRIOR)
-    return {"findings": findings, "checks": ran, "score": scored}
+    whitelist = build(
+        [
+            (label, file, Layer.model_validate(data))
+            for label, file, data in case.get("whitelist", [])
+        ]
+    )
+    findings, ran, scored, applied = evaluate(context, PRIOR, whitelist, TODAY)
+    return {"findings": findings, "checks": ran, "score": scored, "whitelist": applied}
 
 
 def expected_path(case_path: Path) -> Path:

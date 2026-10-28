@@ -20,7 +20,11 @@ OPERATOR_WINDOW = timedelta(minutes=15)
 UPDATER_WINDOW = timedelta(minutes=60)
 
 
-@check("system.reboot", "Reboots: unclean, unexplained, by an operator or planned")
+@check(
+    "system.reboot",
+    "Reboots: unclean, unexplained, by an operator or planned",
+    variants=("unclean", "operator", "power_button", "planned", "unexplained"),
+)
 def reboots(context: Context) -> list[Finding]:
     boots = sorted(
         ((parse_time(e.corrected), i, e) for i, e in context.of("system.boot_journal")),
@@ -78,6 +82,7 @@ def reboots(context: Context) -> list[Finding]:
                     [{"event": index}],
                     started.isoformat(),
                     started.isoformat(),
+                    variant="unclean",
                 )
             )
             continue
@@ -93,22 +98,22 @@ def reboots(context: Context) -> list[Finding]:
         planned = [u for u in updates if when - UPDATER_WINDOW <= u[0] <= when]
         if by:
             users = sorted({c[2].fields.get("user", "?") for c in by})
-            title, band = "A reboot by an operator", "info"
+            title, band, variant = "A reboot by an operator", "info", "operator"
             summary = f"booted {started.isoformat()}, after `sudo` by {', '.join(users)}"
             entities += [f"account:{u}" for u in users]
             evidence += [{"event": c[1]} for c in by]
         elif button:
-            title, band = "A reboot by the power button", "info"
+            title, band, variant = "A reboot by the power button", "info", "power_button"
             summary = (
                 f"booted {started.isoformat()}, after the power button was pressed (or a"
                 " provider console's power-off)"
             )
         elif planned:
-            title, band = "A planned reboot (automatic updates)", "info"
+            title, band, variant = "A planned reboot (automatic updates)", "info", "planned"
             summary = f"booted {started.isoformat()}, after an automatic update"
             evidence += [{"event": u[1]} for u in planned]
         else:
-            title, band = "An unexplained reboot", "low"
+            title, band, variant = "An unexplained reboot", "low", "unexplained"
             summary = (
                 f"booted {started.isoformat()} after a clean shutdown that no operator command"
                 " or automatic update explains"
@@ -124,6 +129,7 @@ def reboots(context: Context) -> list[Finding]:
                 evidence,
                 when.isoformat(),
                 started.isoformat(),
+                variant=variant,
             )
         )
     return findings

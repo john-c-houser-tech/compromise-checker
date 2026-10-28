@@ -1,0 +1,31 @@
+# The proofs' own setup (readonly_proof.SETUP): what they do to a fresh
+# throwaway server before the tool looks at it. Correct findings, explained
+# here, so a fresh server's report shows only what the image itself brings.
+# Copied into each proof home as its host's whitelist, and into the golden
+# cases (tests/golden).
+rules:
+  - id: proof-scanner-account
+    match: {check: account.log_changes, account: scanner}
+    reason: "The proof creates the scanner account, as docs/scanner-account.md sets it up."
+    owner: compromise-checker proofs
+    expires: never
+  - id: proof-proofuser-account
+    match: {check: account.log_changes, account: proofuser}
+    reason: "The proof creates proofuser to give the persistence modules something to find."
+    owner: compromise-checker proofs
+    expires: never
+  - id: proof-root-login
+    match: {check: ssh.login, variant: root_login, account: root}
+    reason: "The proof logs in as root to set the server up."
+    owner: compromise-checker proofs
+    expires: never
+  - id: proof-at-job-debian
+    match: {check: persistence.at_jobs, path: /var/spool/cron/atjobs/*}
+    reason: "The proof queues an at job for the persistence modules to find."
+    owner: compromise-checker proofs
+    expires: never
+  - id: proof-at-job-redhat
+    match: {check: persistence.at_jobs, path: /var/spool/at/*}
+    reason: "The proof queues an at job for the persistence modules to find."
+    owner: compromise-checker proofs
+    expires: never

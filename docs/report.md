@@ -42,7 +42,9 @@ first.
     SHA-256, the host facts, the modules, the masking version;
   - the analysis's time and checks version;
   - the full chain of custody;
-  - suppressed findings (none until whitelists exist).
+  - each host's suppressed findings, with the rule, layer, reason and
+    owner that suppressed them, the whitelist's hash, and any expired rules
+    ([whitelists](whitelists.md)).
 
 ## Host text is untrusted
 

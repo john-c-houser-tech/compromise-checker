@@ -6,6 +6,7 @@ import json
 import sqlite3
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
@@ -37,6 +38,8 @@ from checker.purge import plan as purge_plan
 from checker.report import write_report
 from checker.scoring import percent
 from checker.transport import TransportError, fetch_host_key, trust_host_key
+from checker.whitelist import WhitelistError, check_all
+from checker.whitelist import for_host as whitelist_for_host
 
 # What `checker init --home-text` means, as `init` reports it.
 HOME_TEXT = {
@@ -211,6 +214,50 @@ def _inventory_for_priors():
         return load_inventory()
     except (ValidationError, ValueError) as exc:
         raise EvidenceError(f"the inventory ({hosts_file()}) is invalid: {exc}") from None
+
+
+def cmd_whitelist_check(args: argparse.Namespace) -> int:
+    """Every file valid; with a host, its merged set, widest layer last."""
+    base = home()
+    errors = check_all(base)
+    for error in errors:
+        print(f"checker: {error}", file=sys.stderr)
+    if errors:
+        return 1
+    if not args.host:
+        print("Every whitelist file is valid.")
+        return 0
+    try:
+        merged = _whitelist_for(base, args.host, _inventory_for_priors())
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    if not merged.rules:
+        print(f"No whitelist rules apply to {args.host}.")
+    today = datetime.now(UTC).date()
+    for placed in merged.rules:
+        rule = placed.rule
+        expired = rule.expires != "never" and rule.expires < today
+        fields = ", ".join(f"{k}={v}" for k, v in rule.match.entity_fields().items())
+        print(
+            f"{placed.layer:20} {rule.id:30} {rule.match.check}"
+            + (f"/{rule.match.variant}" if rule.match.variant else "")
+            + (f" [{fields}]" if fields else " [broad]")
+            + (f" EXPIRED {rule.expires}" if expired else f" until {rule.expires}")
+        )
+        print(f"{'':20} {rule.reason}  ({rule.owner})")
+    for item in merged.disabled:
+        print(f"{item['by']:20} switched off {item['id']}: {item['reason']}  ({item['owner']})")
+    return 0
+
+
+def _whitelist_for(base: Path, host: str, inventory):
+    """A host's merged whitelist; an invalid file stops the analysis, with
+    the file and line (DESIGN.md §9: never analyse with a broken set)."""
+    try:
+        return whitelist_for_host(base, host, inventory)
+    except WhitelistError as exc:
+        raise EvidenceError(f"whitelist: {exc}") from None
 
 
 def _identity(args: argparse.Namespace, base: Path):
@@ -447,6 +494,9 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("--all", action="store_true", help="every host with a usable bundle")
     analysing.add_argument("--bundle", help="this bundle rather than the host's latest")
     analysing.add_argument("--info", action="store_true", help="also list informational findings")
+    analysing.add_argument(
+        "--suppressed", action="store_true", help="also list findings the whitelist suppressed"
+    )
     analysing.add_argument("--identity", help="the evidence private key file")
     analysing.set_defaults(handler=cmd_analyze)
     reporting = commands.add_parser(
@@ -483,6 +533,15 @@ def build_parser() -> argparse.ArgumentParser:
     accepting.add_argument("--bundle", help="this bundle rather than the host's latest")
     accepting.add_argument("--identity", help="the evidence private key file")
     accepting.set_defaults(handler=cmd_baseline_accept)
+    whitelisting = commands.add_parser("whitelist", help="check the whitelist files")
+    whitelist_commands = whitelisting.add_subparsers(
+        dest="whitelist_command", metavar="ACTION", required=True
+    )
+    checking = whitelist_commands.add_parser(
+        "check", help="validate every whitelist file; with a host, show its merged rules"
+    )
+    checking.add_argument("host", nargs="?")
+    checking.set_defaults(handler=cmd_whitelist_check)
     purging = commands.add_parser(
         "purge", help="delete stored evidence for a host, before a date, or past retention"
     )
@@ -517,6 +576,8 @@ def cmd_report(args: argparse.Namespace) -> int:
                 raise EvidenceError("no host has a usable bundle yet: collect first")
         else:
             hosts = [args.host]
+        inventory = _inventory_for_priors()
+        whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
         path = write_report(
             store,
             hosts,
@@ -525,7 +586,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             base / "reports",
             args.bundle,
             Path(args.output) if args.output else None,
-            partial(prior_for, config=load_config(base), inventory=_inventory_for_priors()),
+            partial(prior_for, config=load_config(base), inventory=inventory),
+            whitelists.get,
         )
     except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -559,13 +621,18 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 raise EvidenceError("no host has a usable bundle yet: collect first")
         else:
             hosts = [args.host]
+        # All of them before any analysis: one broken file stops the run.
+        whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
         for number, host in enumerate(hosts):
             if number:
                 print()
             try:
                 prior = prior_for(host, config, inventory)
                 _print_assessment(
-                    analyze(store, host, identity, recipients, args.bundle, prior), args
+                    analyze(
+                        store, host, identity, recipients, args.bundle, prior, whitelists[host]
+                    ),
+                    args,
                 )
             except EvidenceError as exc:
                 print(f"checker: {host}: {exc}", file=sys.stderr)
@@ -610,6 +677,16 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
             print(f"           and {rest} more")
         rating = scored["hygiene_and_exposure"]
         print(f"Hygiene    rated separately: {rating['band']}")
+    suppressed = [f for f in findings if f.get("suppressed_by")]
+    findings = [f for f in findings if not f.get("suppressed_by")]
+    applied = assessment.get("whitelist")
+    if applied:
+        expired = f", {len(applied['expired'])} expired" if applied["expired"] else ""
+        print(
+            f"Whitelist  {len(applied['rules'])} rule(s){expired}; {len(suppressed)} finding(s)"
+            " suppressed"
+            + (" (--suppressed lists them)" if suppressed and not args.suppressed else "")
+        )
     by_band = {band: sum(f["band"] == band for f in findings) for band in BANDS}
     print("Findings   " + ", ".join(f"{n} {band}" for band, n in by_band.items()))
     for category in CATEGORIES:
@@ -628,6 +705,13 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
     hidden = sum(f["band"] == "info" for f in findings)
     if hidden and not args.info:
         print(f"\n({hidden} informational findings: --info lists them)")
+    if suppressed and args.suppressed:
+        print("\nSuppressed by the whitelist:")
+        for f in suppressed:
+            rule = f["suppressed_by"]
+            print(f"  {f['band'].upper():8} {f['title']}")
+            print(f"           {f['summary'][:200]}")
+            print(f"           by {rule['layer']} / {rule['rule']}: {rule['reason'][:150]}")
     coverage = assessment["coverage"]
     print("\nCoverage:")
     for name, reach in coverage["log_reach"].items():

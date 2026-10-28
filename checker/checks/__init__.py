@@ -16,7 +16,7 @@ from typing import Any
 from checker.events import Event
 from checker.snapshot import Snapshot
 
-CHECKS_VERSION = 2  # 2: the critical band, variants
+CHECKS_VERSION = 3  # 2: the critical band, variants; 3: more variants
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"
@@ -131,24 +131,26 @@ class Check:
     title: str
     needs_baseline: bool
     run: Callable[[Context], list[Finding]]
+    # The kinds of finding it reports, where they weigh differently or a
+    # whitelist rule may want one only (Finding.variant).
+    variants: tuple[str, ...] = ()
 
 
 REGISTRY: list[Check] = []
 
 
-def check(id: str, title: str, *, needs_baseline: bool = False):
+def check(id: str, title: str, *, needs_baseline: bool = False, variants: tuple[str, ...] = ()):
     """Register a check: a function from a Context to findings."""
 
     def register(run: Callable[[Context], list[Finding]]):
-        REGISTRY.append(Check(id, title, needs_baseline, run))
+        REGISTRY.append(Check(id, title, needs_baseline, run, variants))
         return run
 
     return register
 
 
-def run_checks(context: Context) -> tuple[list[Finding], list[dict[str, Any]]]:
-    """Every check's findings, most serious first, and a line per check:
-    whether it ran, was skipped (no baseline yet) or failed."""
+def load_checks() -> dict[str, Check]:
+    """Every check, by id (importing the modules registers them)."""
     from checker.checks import (  # noqa: F401 - they register
         accounts,
         files,
@@ -159,6 +161,13 @@ def run_checks(context: Context) -> tuple[list[Finding], list[dict[str, Any]]]:
         reboots,
     )
 
+    return {c.id: c for c in REGISTRY}
+
+
+def run_checks(context: Context) -> tuple[list[Finding], list[dict[str, Any]]]:
+    """Every check's findings, most serious first, and a line per check:
+    whether it ran, was skipped (no baseline yet) or failed."""
+    load_checks()
     findings: list[Finding] = []
     ran: list[dict[str, Any]] = []
     # By id: the registry's order is whatever order the modules happened to

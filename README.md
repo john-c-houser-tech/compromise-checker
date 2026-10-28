@@ -44,6 +44,11 @@ What works today:
 - `checker report HOST|--all` — writes one self-contained, confidential HTML
   report: findings with their evidence, a timeline, coverage, and the
   collection's hashes and chain of custody ([report](docs/report.md)).
+- `checker whitelist check [HOST]` — validates the whitelist files (global,
+  per group, per host) and shows a host's merged rules. A rule suppresses
+  a finding an operator has explained, with a reason, an owner and an
+  expiry; suppressed findings are kept and listed in the report's appendix,
+  and count for nothing in the score ([whitelists](docs/whitelists.md)).
 - `checker purge HOST | --before DATE | --expired` — deletes stored evidence,
   reports included, and records what went by identifiers and counts only.
   `--expired` keeps each host's current baseline until a newer one is

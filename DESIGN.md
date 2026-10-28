@@ -555,26 +555,37 @@ or switch off a group rule (with a reason).
 
 ```yaml
 # whitelist/groups/web.yaml
-- id: deploy-after-login
-  match:
-    rule: ssh.login.new_source
-    correlated_with:
-      event: git.pull
-      path: /var/www/*
-      within: 30s
-      same_user: true
-  reason: "Deploys log in from wherever John happens to be, then pull at once."
-  owner: john
-  expires: never
-
-- id: home-office
-  match:
-    rule: ssh.login.new_source
-    source: 203.0.113.10
-  reason: "Home office."
-  owner: john
-  expires: 2027-10-25
+profiles: [web]                  # shipped rule sets (plan 2.10)
+rules:
+  - id: home-office
+    match:
+      check: ssh.login
+      variant: new_address
+      address: 203.0.113.10/32
+    reason: "Home office."
+    owner: john
+    expires: 2027-10-25
+  - id: deploy-after-login       # correlated_with arrives with plan 2.3
+    match:
+      check: ssh.login
+      variant: new_address
+      correlated_with:
+        event: sudo.command      # e.g. sudo -u deploy git pull
+        within: 30s
+        same_user: true
+    reason: "Deploys log in from wherever John happens to be, then pull at once."
+    owner: john
+    expires: never
+disable:                         # switch off a rule from a wider layer
+  - id: global-rule-id
+    reason: "Not on these hosts."
+    owner: john
 ```
+
+Rules match typed fields only: the check, its variant, and the finding's
+entities (account, group, key, module, package, program, an address or
+network, an anchored path pattern), never free text from the host. The
+full reference is docs/whitelists.md.
 
 - Every rule needs a `reason` and an `owner`. `expires` is required; `never`
   must be written out.

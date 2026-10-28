@@ -171,7 +171,7 @@
    "band": "medium",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 1.3863,
+   "contribution": 0.0,
    "entities": [
     "account:proofuser"
    ],
@@ -185,6 +185,13 @@
    "new": true,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates proofuser to give the persistence modules something to find.",
+    "rule": "proof-proofuser-account"
+   },
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": null
@@ -193,7 +200,7 @@
    "band": "medium",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.6931,
+   "contribution": 0.0,
    "entities": [
     "account:scanner"
    ],
@@ -207,6 +214,13 @@
    "new": true,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up.",
+    "rule": "proof-scanner-account"
+   },
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": null
@@ -215,7 +229,7 @@
    "band": "medium",
    "category": "compromise indicator",
    "check": "persistence.at_jobs",
-   "contribution": 1.3863,
+   "contribution": 0.0,
    "entities": [
     "path:/var/spool/cron/atjobs/a0000101c80a8e"
    ],
@@ -232,6 +246,13 @@
    "new": false,
    "ratio": 4.0,
    "summary": "/var/spool/cron/atjobs/a0000101c80a8e (owner UID 0)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof queues an at job for the persistence modules to find.",
+    "rule": "proof-at-job-debian"
+   },
    "title": "A queued at job",
    "uncertain": null,
    "variant": null
@@ -240,7 +261,7 @@
    "band": "medium",
    "category": "compromise indicator",
    "check": "ssh.login",
-   "contribution": 1.3863,
+   "contribution": 0.0,
    "entities": [
     "account:root",
     "address:203.0.113.11"
@@ -255,9 +276,16 @@
    "new": true,
    "ratio": 4.0,
    "summary": "root from 203.0.113.11 (publickey)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof logs in as root to set the server up.",
+    "rule": "proof-root-login"
+   },
    "title": "A direct root login over SSH",
    "uncertain": null,
-   "variant": null
+   "variant": "root_login"
   },
   {
    "band": "low",
@@ -545,45 +573,8 @@
   }
  ],
  "score": {
-  "band": "High",
-  "contributors": [
-   {
-    "capped": null,
-    "check": "account.log_changes",
-    "contribution": 1.3863,
-    "finding": 0,
-    "ratio": 4.0,
-    "share": 0.2857,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": null,
-    "check": "persistence.at_jobs",
-    "contribution": 1.3863,
-    "finding": 2,
-    "ratio": 4.0,
-    "share": 0.2857,
-    "title": "A queued at job"
-   },
-   {
-    "capped": null,
-    "check": "ssh.login",
-    "contribution": 1.3863,
-    "finding": 3,
-    "ratio": 4.0,
-    "share": 0.2857,
-    "title": "A direct root login over SSH"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.6931,
-    "finding": 1,
-    "ratio": 4.0,
-    "share": 0.1429,
-    "title": "An account or group was changed (from the logs)"
-   }
-  ],
+  "band": "Low",
+  "contributors": [],
   "hygiene_and_exposure": {
    "band": "low",
    "counts": {
@@ -593,10 +584,129 @@
     }
    }
   },
-  "log_odds": 0.9602,
+  "log_odds": -3.8918,
   "prior": 0.02,
   "prior_source": "golden",
-  "probability": 0.7232,
+  "probability": 0.02,
   "version": 1
+ },
+ "whitelist": {
+  "disabled": [],
+  "expired": [],
+  "hash": "3e46ce8868b57d9bf6e1bb75a133b494688445d0dd3dbd584715dc2fca67b603",
+  "matched": {
+   "host ubuntu24.04/proof-at-job-debian": 1,
+   "host ubuntu24.04/proof-proofuser-account": 1,
+   "host ubuntu24.04/proof-root-login": 1,
+   "host ubuntu24.04/proof-scanner-account": 1
+  },
+  "rules": [
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-at-job-redhat",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "account": null,
+     "address": null,
+     "check": "persistence.at_jobs",
+     "group": null,
+     "key": null,
+     "module": null,
+     "package": null,
+     "path": "/var/spool/at/*",
+     "program": null,
+     "variant": null
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof queues an at job for the persistence modules to find."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-at-job-debian",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "account": null,
+     "address": null,
+     "check": "persistence.at_jobs",
+     "group": null,
+     "key": null,
+     "module": null,
+     "package": null,
+     "path": "/var/spool/cron/atjobs/*",
+     "program": null,
+     "variant": null
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof queues an at job for the persistence modules to find."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-root-login",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "account": "root",
+     "address": null,
+     "check": "ssh.login",
+     "group": null,
+     "key": null,
+     "module": null,
+     "package": null,
+     "path": null,
+     "program": null,
+     "variant": "root_login"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof logs in as root to set the server up."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-proofuser-account",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "account": "proofuser",
+     "address": null,
+     "check": "account.log_changes",
+     "group": null,
+     "key": null,
+     "module": null,
+     "package": null,
+     "path": null,
+     "program": null,
+     "variant": null
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates proofuser to give the persistence modules something to find."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-scanner-account",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "account": "scanner",
+     "address": null,
+     "check": "account.log_changes",
+     "group": null,
+     "key": null,
+     "module": null,
+     "package": null,
+     "path": null,
+     "program": null,
+     "variant": null
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up."
+   }
+  ],
+  "suppressed": 4
  }
 }

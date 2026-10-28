@@ -43,3 +43,10 @@ def test_a_title_can_be_required_too():
     scratch = finding("process.executable", "high", summary, "A process running from a scratch dir")
     deleted = finding("process.executable", "high", summary, "A process whose program was deleted")
     assert detection.judge([scratch], [want])[1] and not detection.judge([deleted], [want])[1]
+
+
+def test_a_suppressed_finding_is_not_a_detection():
+    hidden = finding("account.uid0", "critical", "cc-toor has UID 0")
+    hidden["suppressed_by"] = {"rule": "x"}
+    found, missing, _ = detection.judge([hidden], detection.expectations("SHA256:x")[:1])
+    assert found == [] and len(missing) == 1

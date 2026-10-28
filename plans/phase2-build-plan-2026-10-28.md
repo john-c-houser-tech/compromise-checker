@@ -360,15 +360,15 @@ assessments tables are append-only, enforced by triggers.
 - **Detection behaviours:** `nmap` installed; a repository file added with
   a new key.
 
-### 2.7 — Outgoing mail (8.9) (needs decision 3)
+### 2.7 — Outgoing mail (8.9) (decision 3: decided)
 
 - **Collector, new module `mail`:** Postfix (`main.cf`, `master.cf`) and
   Exim configuration as masked text, never `sasl_passwd` or other secret
   maps; mail log lines from the journal (Postfix and Exim units) or
   `/var/log/mail.log`/`maillog` within the look-back, with recipient and
-  sender addresses masked on the server per decision 3 (proposed: the
-  domain kept, the local part replaced by a short keyed hash so the same
-  address can be counted without being shown); queue size by counting files
+  sender addresses masked on the server per decision 3 (the domain kept,
+  the local part replaced by a keyed hash, so the same address can be
+  counted without being shown); queue size by counting files
   in the spool directories, never by running `mailq`.
 - **Events:** `mail.sent`, `mail.deferred`, `mail.bounced`,
   `mail.submitted` (with the submitting UID from Postfix's `pickup`).
@@ -388,15 +388,16 @@ assessments tables are append-only, enforced by triggers.
 - **Detection behaviour:** a burst of local mail submitted as `www-data`
   (`apache` on Rocky) to documentation domains, which Postfix defers.
 
-### 2.8 — Web applications (8.12) (needs decision 3)
+### 2.8 — Web applications (8.12) (decision 3: decided)
 
 - **Collector, new module `web_logs`:** web server configuration (nginx,
   Apache) to find access and error logs, defaulting to `/var/log/nginx`,
   `/var/log/apache2`, `/var/log/httpd`; access and error log lines within the
-  look-back, bounded by bytes, with query-string values masked (keys kept)
-  per decision 3; PHP-FPM logs. From `audit.log`, where auditd runs:
-  `SYSCALL` (execve), `EXECVE` and `PROCTITLE` records within the look-back,
-  masked like command lines (masking v6).
+  look-back, bounded by bytes, only when the organization opted in, masked
+  per decision 3; PHP-FPM logs and error logs always. From `audit.log`,
+  where auditd runs: `SYSCALL` (execve), `EXECVE` and `PROCTITLE` records
+  within the look-back for web-server accounts (more with decision 3's
+  opt-ins), masked like command lines (masking v6).
 - **Parsers:** combined and common formats, and nginx's default; any other
   format is a coverage gap ("access log format not recognised"), not a
   silent skip. Audit records are joined by their serial into one
@@ -501,10 +502,24 @@ assessments tables are append-only, enforced by triggers.
    says no firewall is loaded. Both through 1.1's command runner with fixed
    arguments. Large sets (fail2ban, CrowdSec blocklists) sent as counts and
    a hash. The read-only proof also checks the module list is unchanged.
-3. **Before 2.7 and 2.8 — mail and web logs.** Proposed: mail addresses
-   kept as domain plus a keyed hash of the local part; client addresses
-   kept (they are the evidence); query-string values masked, keys kept;
-   user agents kept, bounded. Needs new policy §7 wording.
+3. ~~Before 2.7 and 2.8 — mail and web logs.~~ **Decided 2026-10-28:**
+   - *Web access logs* are opt-in in `checker init`, as policy §7 already
+     promises; off, the web checks use live processes, audit records and
+     error logs, and coverage says which checks didn't run. On: client
+     addresses kept; query-string and referrer values masked, keys kept,
+     except that a value matching an exploit pattern is replaced by a
+     marker naming the pattern; user agents cut to 256 characters.
+   - *Mail logs* always collected (8.9 needs them): every address's local
+     part replaced on the server by an HMAC with a per-organization key
+     made at `checker init` (`h:3f9a1c2e@example.org`), domain kept; a
+     `checker` helper hashes a known address for an investigator.
+   - *Audit exec records* by default only for web-server accounts
+     (`www-data`, `apache`, `nginx`, and any configured). John asked for an
+     option to collect more, shaped like the shell-history opt-in: also
+     root, service and administrator accounts; and, only with that, also
+     ordinary users. Arguments always masked (masking v6).
+   - Policy §7 gets matching bullets, worded in the 2.7 and 2.8 PRs for
+     John's approval.
 4. **Before 2.9 — containers.** Read the runtimes' state files, keeping only
    the listed fields (proposed), or ask the runtime over its socket (more
    complete, but talks to a daemon and its API).

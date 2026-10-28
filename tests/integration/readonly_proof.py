@@ -236,6 +236,12 @@ class Result:
     # (informational) show the false alarms a clean server raises.
     checks_failed: list[str] = field(default_factory=list)  # must stay empty
     findings: list[str] = field(default_factory=list)
+    # Decision 2 (plan 2.4): reading the firewall never loads a kernel
+    # module. Modules loaded or unloaded during the collection: must stay
+    # empty. And which firewall was loaded, so which commands ran.
+    modules_changed: list[str] = field(default_factory=list)
+    modules_other: list[str] = field(default_factory=list)  # informational
+    firewall_loaded: dict | None = None
     error: str | None = None
 
 
@@ -251,6 +257,8 @@ EXPECTED_RECORDS = (
     ("unusual_files", "walk_summary"),  # /tmp exists everywhere
     ("processes", "process"),
     ("processes", "socket"),  # sshd listens on every server
+    ("network", "interface"),
+    ("network", "firewall_loaded"),
 )
 EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal")
 
@@ -262,6 +270,12 @@ if ! command -v auditctl >/dev/null 2>&1; then
         || dnf install -y -q audit >/dev/null
 fi
 systemctl enable --now auditd >/dev/null 2>&1 || service auditd start >/dev/null
+# A firewall as servers often have one: ufw on Ubuntu (iptables-nft rules,
+# so nft_compat is loaded and the collector must not list them with nft);
+# firewalld is already on Rocky and Alma (native nftables, listed).
+if command -v ufw >/dev/null 2>&1; then
+    ufw allow 22/tcp >/dev/null && ufw --force enable >/dev/null
+fi
 # The scanner account, exactly as docs/scanner-account.md sets it up.
 useradd --create-home --shell /bin/sh --comment "Compromise Checker" scanner
 passwd -l scanner >/dev/null
@@ -559,6 +573,17 @@ async def _create_server(api: Linode, *args) -> dict:
         raise
 
 
+FIREWALL_MODULES = re.compile(
+    r"(nf_|nft_|xt_|x_tables|ip6?t_|ip6?table_|ip6?_tables|ebt|arpt|ipt_)"
+)
+
+
+async def _kernel_modules(conn) -> set[str]:
+    """The kernel's loaded modules, by name."""
+    listed = await conn.run("cut -d' ' -f1 /proc/modules", check=True, timeout=60)
+    return set(listed.stdout.split())
+
+
 async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -> Result:
     result = Result(distro)
     root_key = asyncssh.generate_private_key("ssh-ed25519")
@@ -616,6 +641,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 key_path=str(scanner_key_file),
                 sudo="nopasswd",
             )
+            loaded_before = await _kernel_modules(conn)
             [outcome] = await collect_hosts(
                 home,
                 config,
@@ -626,6 +652,15 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             result.status = outcome.status
             if outcome.error:
                 result.error = outcome.error
+            loaded_after = await _kernel_modules(conn)
+            changed = sorted(
+                [f"+{m}" for m in loaded_after - loaded_before]
+                + [f"-{m}" for m in loaded_before - loaded_after]
+            )
+            # Only firewall modules could come from the collector's listing;
+            # anything else (udev, the session) is reported, not failed.
+            result.modules_changed = [m for m in changed if FIREWALL_MODULES.match(m[1:])]
+            result.modules_other = [m for m in changed if m not in result.modules_changed]
             await asyncio.sleep(2)  # let auditd flush
 
             # --input-logs: without a terminal, ausearch would otherwise wait
@@ -680,6 +715,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             and not result.missing
             and not result.snapshot
             and not result.checks_failed
+            and not result.modules_changed
         )
     except Exception as exc:  # report it; the server is still deleted below
         result.error = f"{type(exc).__name__}: {exc}"
@@ -749,6 +785,8 @@ def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path,
         if f["band"] != "info" and not f.get("suppressed_by")
     ]
     result.events = len(parsed.events)
+    if parsed.snapshot is not None:
+        result.firewall_loaded = parsed.snapshot.live.get("firewall_loaded")
     result.own_events = parsed.summary.get("own_session") or 0
     result.own_login_found = parsed.summary.get("own_login_found")
     sections = parsed.snapshot.sections
@@ -818,6 +856,13 @@ def report(results: list[Result]) -> bool:
                 print(f"  snapshot section incomplete: {gap}")
             for failed in r.checks_failed:
                 print(f"  FAIL: check {failed}")
+            print(f"  firewall loaded (so its rules were listed): {r.firewall_loaded}")
+            if r.modules_changed:
+                print(f"  FAIL: firewall modules changed during collection: {r.modules_changed}")
+            else:
+                print("  firewall modules unchanged by the collection")
+            if r.modules_other:
+                print(f"  other modules changed meanwhile (not the collector's): {r.modules_other}")
             print(f"  findings on a fresh server (false alarms to tune): {len(r.findings)}")
             for finding in r.findings:
                 print(f"    {finding}")

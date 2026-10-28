@@ -1198,6 +1198,11 @@ class Walk:
 # command line, the executable's hash, the exit status and its error output.
 COMMANDS = {
     "journalctl": ("/usr/bin/journalctl", "/bin/journalctl"),
+    # Firewall rules, read only, and only when the firewall is already
+    # loaded (module_network), so listing them never loads a kernel module.
+    "nft": ("/usr/sbin/nft", "/sbin/nft"),
+    "iptables-legacy-save": ("/usr/sbin/iptables-legacy-save", "/sbin/iptables-legacy-save"),
+    "ip6tables-legacy-save": ("/usr/sbin/ip6tables-legacy-save", "/sbin/ip6tables-legacy-save"),
 }
 # A fixed, minimal environment: nothing from the login session reaches a command.
 _COMMAND_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C.UTF-8"}
@@ -6037,6 +6042,214 @@ def module_processes(run):
 
 
 # Collection modules, by name, in their default order.
+# --- Network (DESIGN.md §8.8) ----------------------------------------------------------
+
+NETWORK_FILES = (
+    "/etc/hosts",
+    "/etc/resolv.conf",
+    "/etc/nsswitch.conf",
+    "/etc/hosts.allow",
+    "/etc/hosts.deny",
+    # Firewall configuration: what loads at boot.
+    "/etc/nftables.conf",
+    "/etc/sysconfig/nftables.conf",
+    "/etc/iptables/rules.v4",
+    "/etc/iptables/rules.v6",
+    "/etc/sysconfig/iptables",
+    "/etc/sysconfig/ip6tables",
+    "/etc/default/ufw",
+    "/etc/ufw/ufw.conf",
+    "/etc/ufw/before.rules",
+    "/etc/ufw/after.rules",
+    "/etc/ufw/user.rules",
+    "/etc/ufw/before6.rules",
+    "/etc/ufw/after6.rules",
+    "/etc/ufw/user6.rules",
+)
+NETWORK_DIRS = ("/etc/firewalld", "/etc/nftables.d", "/etc/sysconfig/nftables.d")
+IFF_PROMISC = 0x100
+# A set with more elements or lines than this (a fail2ban or CrowdSec
+# blocklist) is sent as its element count and a SHA-256 of its masked
+# lines, never element by element; nor are its lines held past these.
+NFT_SET_LIMIT = 50
+NFT_SET_HELD_BYTES = 256 * 1024
+_NFT_ELEMENTS = re.compile(rb"^(\s*)elements = \{")
+ROUTE_BYTES = 1024 * 1024
+ROUTE_LINES = 2000
+
+
+def nft_sets_reduced():
+    """A transform for `nft list ruleset` lines: a set whose elements fit in
+    the limits goes as it is; a longer one becomes one line with its element
+    count and a SHA-256 of its masked lines. Every line sent or hashed is
+    masked first. Stateful (one per command run); `transform.open()` says
+    whether a set was still open when the output ended."""
+    state = {"open": None}
+
+    def transform(line, masker):
+        held = state["open"]
+        if held is None:
+            match = _NFT_ELEMENTS.match(line)
+            if not match:
+                return masker.line(line)
+            held = {
+                "indent": match.group(1),
+                "lines": [],
+                "bytes": 0,
+                "count": 0,
+                "digest": hashlib.sha256(),
+            }
+            state["open"] = held
+            body = line.split(b"{", 1)[1]
+        else:
+            body = line
+        masked = masker.line(line)
+        held["digest"].update(masked)
+        held["count"] += len([e for e in body.split(b"}")[0].split(b",") if e.strip()])
+        if held["lines"] is not None:
+            held["lines"].append(masked)
+            held["bytes"] += len(masked)
+            if (
+                len(held["lines"]) > NFT_SET_LIMIT
+                or held["count"] > NFT_SET_LIMIT
+                or held["bytes"] > NFT_SET_HELD_BYTES
+            ):
+                held["lines"] = None  # too long to send: count and hash only
+        if b"}" not in line:
+            return b""
+        state["open"] = None
+        if held["lines"] is not None:
+            return b"".join(held["lines"])
+        return held["indent"] + b"elements = { [%d elements, sha256 %s] }\n" % (
+            held["count"],
+            held["digest"].hexdigest().encode(),
+        )
+
+    transform.open = lambda: state["open"] is not None
+    return transform
+
+
+def _read_int(absolute):
+    text = read_small(absolute, 64)
+    try:
+        return int(text.strip(), 0) if text is not None else None
+    except ValueError:
+        return None
+
+
+def _printable(name):
+    """A file name as text: bytes that aren't UTF-8 escaped, so they can be
+    sent (an interface name may hold any byte but '/', ':' and spaces)."""
+    return name.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+
+
+def _built_in(module_name):
+    """Whether the running kernel has this module built in (so listing its
+    rules can't load it): modules.builtin lists it."""
+    text = read_small(f"/lib/modules/{platform.release()}/modules.builtin", 4 * 1024 * 1024)
+    if not text:
+        return False
+    return any(line.rsplit("/", 1)[-1] == module_name + ".ko" for line in text.splitlines())
+
+
+def firewall_state():
+    """Which firewalls are loaded. nftables counts only when its rules are
+    native: with nft_compat loaded, iptables-nft rules (ufw, Docker) are in
+    it, and printing them asks the kernel about xtables extensions it may
+    load on demand, so `nft` isn't run then."""
+    nf_tables = os.path.isdir(path("/sys/module/nf_tables")) or _built_in("nf_tables")
+    return {
+        "nf_tables": nf_tables,
+        "nft_compat": os.path.isdir(path("/sys/module/nft_compat")),
+        "ip_tables": bool((read_small("/proc/net/ip_tables_names", 4096) or "").strip()),
+        "ip6_tables": bool((read_small("/proc/net/ip6_tables_names", 4096) or "").strip()),
+    }
+
+
+def _firewall_command(run, module, name, args, transform=None):
+    """One firewall listing; a failure is recorded and the others still run."""
+    try:
+        run_command(run, module, name, args, transform=transform)
+    except CommandFailed as exc:
+        run.stream.record(module, "command_failed", {"command": name, "reason": str(exc)})
+    if transform is not None and transform.open():
+        run.stream.record(module, "set_unterminated", {"command": name})
+
+
+def module_network(run):
+    """Resolver, hosts and TCP-wrapper files; firewall configuration;
+    interfaces (flags, state, byte counters), routes; and the firewall's
+    loaded rules, read with `nft` or `iptables-legacy-save` only when that
+    firewall is already loaded (decision 2): listing an unloaded one could
+    make the kernel load its module."""
+    module = "network"
+    seen = set()
+    send_config_files(run, module, NETWORK_FILES, seen)
+    for directory in NETWORK_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=3)
+    try:
+        names, truncated = list_directory("/sys/class/net", 256, run)
+    except OSError as exc:
+        run.stream.record(module, "not_examined", {"path": "/sys/class/net", "reason": str(exc)})
+        names, truncated = [], False
+    if truncated:
+        run.stream.record(module, "listing_truncated", {"path": "/sys/class/net"})
+    for name in names:
+        run.check_time()
+        if "/" in name or name in (".", ".."):
+            continue
+        base = f"/sys/class/net/{name}"
+        flags = _read_int(f"{base}/flags")
+        state = read_small(f"{base}/operstate", 64)
+        run.stream.record(
+            module,
+            "interface",
+            {
+                "name": _printable(name),
+                "flags": flags,
+                "promiscuous": bool(flags & IFF_PROMISC) if flags is not None else None,
+                "state": state.strip() if state else None,
+                "type": _read_int(f"{base}/type"),
+                "bridge": os.path.isdir(path(f"{base}/bridge")),
+                "bridge_port": os.path.isdir(path(f"{base}/brport")),
+                "rx_bytes": _read_int(f"{base}/statistics/rx_bytes"),
+                "tx_bytes": _read_int(f"{base}/statistics/tx_bytes"),
+            },
+        )
+    for table in ("/proc/net/route", "/proc/net/ipv6_route"):
+        text, cut = read_whole_lines(table, ROUTE_BYTES)
+        if text is None:
+            continue
+        lines = text.splitlines()
+        run.stream.record(
+            module,
+            "routes",
+            {
+                "table": table,
+                "lines": lines[:ROUTE_LINES],
+                "truncated": cut or len(lines) > ROUTE_LINES,
+            },
+        )
+    loaded = firewall_state()
+    run.stream.record(module, "firewall_loaded", loaded)
+    if loaded["nf_tables"] and loaded["nft_compat"]:
+        run.stream.record(
+            module,
+            "not_examined",
+            {
+                "path": "nft list ruleset",
+                "reason": "nft_compat is loaded (iptables-nft rules): listing them could make"
+                " the kernel load extension modules, so they are not listed",
+            },
+        )
+    elif loaded["nf_tables"]:
+        _firewall_command(run, module, "nft", ["list", "ruleset"], nft_sets_reduced())
+    if loaded["ip_tables"]:
+        _firewall_command(run, module, "iptables-legacy-save", [])
+    if loaded["ip6_tables"]:
+        _firewall_command(run, module, "ip6tables-legacy-save", [])
+
+
 MODULES = {
     "host_facts": module_host_facts,
     "auth_log": module_auth_log,
@@ -6058,6 +6271,7 @@ MODULES = {
     "system_files": module_system_files,
     "unusual_files": module_unusual_files,
     "processes": module_processes,
+    "network": module_network,
 }
 
 

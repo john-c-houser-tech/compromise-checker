@@ -1163,7 +1163,18 @@ class ResourceTests(FixtureRoot):
         manifest = collect(self.root, [])[0]
         self.assertEqual(
             manifest["commands_allowed"],
-            {"journalctl": ["/usr/bin/journalctl", "/bin/journalctl"]},
+            {
+                "journalctl": ["/usr/bin/journalctl", "/bin/journalctl"],
+                "nft": ["/usr/sbin/nft", "/sbin/nft"],
+                "iptables-legacy-save": [
+                    "/usr/sbin/iptables-legacy-save",
+                    "/sbin/iptables-legacy-save",
+                ],
+                "ip6tables-legacy-save": [
+                    "/usr/sbin/ip6tables-legacy-save",
+                    "/sbin/ip6tables-legacy-save",
+                ],
+            },
         )
 
 
@@ -4470,6 +4481,170 @@ class CanaryTests(FixtureRoot):
         self.assertIn(CANARIES["userunit"], text)
         trailer = json.loads(raw.splitlines()[-1])
         self.assertEqual(trailer["status"], "complete", trailer["modules"])
+
+
+# --- PR 2.4a: network ------------------------------------------------------------------
+
+BIG_SET = "".join(f"192.0.2.{i}, " for i in range(1, 120))
+FAKE_NFT = (
+    "#!/bin/sh\n"
+    "cat <<'EOF'\n"
+    "table inet filter {\n"
+    "\tset f2b {\n"
+    "\t\ttype ipv4_addr\n"
+    "\t\telements = { "
+    + BIG_SET.replace(", 192.0.2.60, ", ",\n\t\t\t     192.0.2.60, ")
+    + "192.0.2.200 }\n"
+    "\t}\n"
+    "\tset small {\n"
+    "\t\ttype ipv4_addr\n"
+    "\t\telements = { 198.51.100.1, 198.51.100.2 }\n"
+    "\t}\n"
+    "\tchain input {\n"
+    "\t\ttcp dport 22 counter packets 12 bytes 3456 accept\n"
+    "\t}\n"
+    "}\n"
+    "EOF\n"
+    'echo "args $*" >&2\n'
+).encode()
+
+
+class NetworkTests(FixtureRoot):
+    def setUp(self):
+        super().setUp()
+        self.write("etc/hosts", b"127.0.0.1 localhost\n")
+        self.write("etc/resolv.conf", b"nameserver 192.0.2.53\n")
+        self.write("etc/firewalld/zones/public.xml", b"<zone><service name='ssh'/></zone>\n")
+        self.write("sys/class/net/eth0/flags", b"0x1103\n")
+        self.write("sys/class/net/eth0/operstate", b"up\n")
+        self.write("sys/class/net/eth0/type", b"1\n")
+        self.write("sys/class/net/eth0/statistics/rx_bytes", b"1000\n")
+        self.write("sys/class/net/eth0/statistics/tx_bytes", b"2000\n")
+        self.write("sys/class/net/lo/flags", b"0x9\n")
+        self.write("proc/net/route", b"Iface\tDestination\tGateway\n")
+
+    def test_files_interfaces_and_routes(self):
+        records = collect(self.root, ["network"])
+        sent = sources(records)
+        self.assertIn("/etc/hosts", sent)
+        self.assertIn("/etc/resolv.conf", sent)
+        self.assertIn("/etc/firewalld/zones/public.xml", sent)
+        interfaces = {r["data"]["name"]: r["data"] for r in named(records, "interface")}
+        self.assertTrue(interfaces["eth0"]["promiscuous"])
+        self.assertFalse(interfaces["lo"]["promiscuous"])
+        self.assertEqual(interfaces["eth0"]["tx_bytes"], 2000)
+        self.assertEqual(named(records, "routes")[0]["data"]["table"], "/proc/net/route")
+
+    def test_no_firewall_command_runs_unless_the_firewall_is_loaded(self):
+        self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
+        records = collect(self.root, ["network"])
+        [loaded] = named(records, "firewall_loaded")
+        self.assertEqual(
+            loaded["data"],
+            {"nf_tables": False, "nft_compat": False, "ip_tables": False, "ip6_tables": False},
+        )
+        self.assertFalse([n for n in sources(records) if "nft" in n])
+
+    def test_a_loaded_nftables_is_listed_with_big_sets_reduced(self):
+        self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        records = collect(self.root, ["network"])
+        [(start, content, end)] = [v for n, v in sources(records).items() if "nft" in n]
+        self.assertEqual(start["meta"]["argv"], ["/usr/sbin/nft", "list", "ruleset"])
+        text = content.decode()
+        self.assertIn("elements = { [120 elements, sha256 ", text)
+        self.assertNotIn("192.0.2.7,", text)  # the blocklist itself isn't sent
+        self.assertIn("198.51.100.1, 198.51.100.2", text)  # a small set is
+        self.assertIn("counter packets 12 bytes 3456 accept", text)
+        trailer = records[-1]
+        self.assertEqual(trailer["modules"]["network"]["status"], "ok")
+
+    def test_legacy_iptables_only_when_its_tables_exist(self):
+        self.write("usr/sbin/iptables-legacy-save", b"#!/bin/sh\necho '*filter'\n").chmod(0o755)
+        records = collect(self.root, ["network"])
+        self.assertFalse([n for n in sources(records) if "iptables" in n])
+        self.write("proc/net/ip_tables_names", b"filter\n")
+        records = collect(self.root, ["network"])
+        self.assertTrue([n for n in sources(records) if "iptables-legacy-save" in n])
+
+    def test_a_huge_set_is_hashed_without_being_held(self):
+        collector = load_collector(self.root)
+        transform = collector.nft_sets_reduced()
+
+        class Masker:
+            def line(self, line):
+                return line
+
+        masker = Masker()
+        out = [transform(b"\t\telements = { 192.0.2.1,\n", masker)]
+        for i in range(10000):
+            out.append(transform(b"\t\t\t192.0.2.%d,\n" % (i % 250), masker))
+        out.append(transform(b"\t\t\t192.0.2.9 }\n", masker))
+        joined = b"".join(out)
+        self.assertTrue(joined.startswith(b"\t\telements = { [10002 elements, sha256 "))
+        self.assertEqual(joined.count(b"\n"), 1)
+
+    def test_iptables_nft_rules_are_not_listed_with_nft(self):
+        # nft_compat loaded: printing xtables rules may load extension
+        # modules, so nft doesn't run and the gap says why.
+        self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        Path(self.root, "sys/module/nft_compat").mkdir(parents=True)
+        records = collect(self.root, ["network"])
+        self.assertFalse([n for n in sources(records) if "nft" in n])
+        [gap] = [
+            r for r in named(records, "not_examined") if r["data"]["path"] == "nft list ruleset"
+        ]
+        self.assertIn("nft_compat", gap["data"]["reason"])
+
+    def test_built_in_nf_tables_counts_as_loaded(self):
+        self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
+        release = __import__("platform").release()
+        self.write(
+            f"lib/modules/{release}/modules.builtin",
+            b"kernel/net/netfilter/nf_tables.ko\n",
+        )
+        records = collect(self.root, ["network"])
+        self.assertTrue(named(records, "firewall_loaded")[0]["data"]["nf_tables"])
+        self.assertTrue([n for n in sources(records) if "nft" in n])
+
+    def test_a_failing_nft_doesnt_stop_the_iptables_listings(self):
+        self.write("usr/sbin/nft", b"#!/bin/sh\necho broken >&2\nexit 1\n").chmod(0o755)
+        self.write("usr/sbin/ip6tables-legacy-save", b"#!/bin/sh\necho '*filter'\n").chmod(0o755)
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        self.write("proc/net/ip6_tables_names", b"filter\n")
+        records = collect(self.root, ["network"])
+        self.assertEqual(named(records, "command_failed")[0]["data"]["command"], "nft")
+        self.assertTrue([n for n in sources(records) if "ip6tables-legacy-save" in n])
+
+    def test_a_secret_in_a_small_set_is_masked(self):
+        collector = load_collector(self.root)
+        masker = collector.Masker()
+        transform = collector.nft_sets_reduced()
+        out = transform(b'\t\telements = { 192.0.2.1 comment "password=hunter2" }\n', masker)
+        self.assertNotIn(b"hunter2", out)
+
+    def test_a_short_set_over_many_lines_is_hashed_and_an_open_set_is_reported(self):
+        collector = load_collector(self.root)
+        masker = collector.Masker()
+        transform = collector.nft_sets_reduced()
+        out = [transform(b"\t\telements = {\n", masker)]
+        out += [transform(b"\n", masker) for _ in range(60)]
+        out.append(transform(b"\t\t\t192.0.2.1 }\n", masker))
+        self.assertIn(b"[1 elements, sha256 ", b"".join(out))
+        self.assertFalse(transform.open())
+        transform(b"\t\telements = { 192.0.2.1,\n", masker)
+        self.assertTrue(transform.open())
+
+    def test_odd_interface_names_and_long_route_tables(self):
+        Path(self.root, "sys/class/net", os.fsdecode(b"bad\xffname")).mkdir(parents=True)
+        self.write("proc/net/route", b"x\n" * 3000)
+        records = collect(self.root, ["network"])
+        names = [r["data"]["name"] for r in named(records, "interface")]
+        self.assertIn("bad\\xffname", names)
+        [route] = [r for r in named(records, "routes") if r["data"]["table"] == "/proc/net/route"]
+        self.assertTrue(route["data"]["truncated"])
+        self.assertEqual(records[-1]["modules"]["network"]["status"], "ok")
 
 
 if __name__ == "__main__":

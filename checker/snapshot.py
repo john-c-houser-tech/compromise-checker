@@ -11,13 +11,14 @@ reports what is merely missing from it as removed."""
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 4
+SNAPSHOT_VERSION = 5  # 5: network_files, interfaces, firewall_rules, peers
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -55,6 +56,16 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "unusual_files": ("unusual files in writable and web directories", ("unusual_files",)),
     "web_files": ("executable or script files in web roots", ("unusual_files",)),
     "listeners": ("listening and raw sockets, with their programs", ("processes",)),
+    "peers": (
+        "outbound connections open at collection, by program and remote network and port",
+        ("processes",),
+    ),
+    "network_files": (
+        "resolver, hosts, TCP-wrapper and firewall configuration files",
+        ("network",),
+    ),
+    "interfaces": ("network interfaces: flags, state, bridges", ("network",)),
+    "firewall_rules": ("the firewall's loaded rules, line by line", ("network",)),
 }
 
 # Every module the sections come from: a bundle that planned them all is a
@@ -64,6 +75,8 @@ FULL = frozenset(m for _, modules in SECTIONS.values() for m in modules)
 # Sections holding masked text, hashes of it, or masked names: a new masking
 # version can change them without any change on the host.
 _MASKED = {
+    "firewall_rules",
+    "network_files",
     "sudo_rules",
     "pam_rules",
     "sshd_config",
@@ -91,6 +104,7 @@ _FILE_SECTIONS = {
     "startup": "startup",
     "hooks": "hooks",
     "crash_dumps": "crash_dumps",
+    "network": "network_files",
 }
 _FILE_RECORDS = {
     "file",
@@ -101,6 +115,71 @@ _FILE_RECORDS = {
     "ssh_dir",
     "include_dir",
 }
+# What changes in the firewall's output without the rules changing:
+# counters, quotas used, timeouts running down, last-used times, and a big
+# set's elements (a blocklist): left out of the compared lines.
+_VOLATILE = (
+    (re.compile(r"\bcounter packets \d+ bytes \d+"), "counter"),
+    (re.compile(r"\bpackets \d+ bytes \d+"), ""),
+    (re.compile(r"\bused \d+ \w+"), ""),
+    (re.compile(r"\bexpires \S+"), ""),
+    (re.compile(r"\blast used \S+(?: ago)?"), ""),
+    (re.compile(r"\[\d+:\d+\]"), ""),
+    (re.compile(r"\[\d+ elements, sha256 [0-9a-f]+\]"), "[a large set: elements not compared]"),
+)
+_NFT_TABLE = re.compile(r"^table (\S+ \S+) \{$")
+_NFT_CHAIN = re.compile(r"^(chain|set|map|flowtable|counter|quota) (\S+) \{$")
+
+
+def firewall_lines(lines: list[str]) -> list[str]:
+    """The loaded rules as comparable lines, each with where it is (an nft
+    table and chain or set, an iptables table), so the same rule added to
+    another chain is a change; volatile parts, comments and blank lines left
+    out, spaces collapsed; a line repeated in one place numbered."""
+    out: list[str] = []
+    seen: dict[str, int] = {}
+    table = block = ""
+    for line in lines:
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        for pattern, replacement in _VOLATILE:
+            text = pattern.sub(replacement, text)
+        text = " ".join(text.split())
+        if match := _NFT_TABLE.match(text):
+            table, block = match.group(1), ""
+        elif match := _NFT_CHAIN.match(text):
+            block = f"{match.group(1)} {match.group(2)}"
+        elif text.startswith("*"):  # iptables-save: a table
+            table, block = text[1:], ""
+        elif text == "}":
+            if block:
+                block = ""
+            else:
+                table = ""
+            continue
+        where = " / ".join(p for p in (table, block) if p)
+        key = f"[{where}] {text}" if where else text
+        seen[key] = seen.get(key, 0) + 1
+        out.append(key if seen[key] == 1 else f"{key} #{seen[key]}")
+    return out
+
+
+def remote_network(address: str) -> str | None:
+    """A remote address's network (/24 for IPv4, /48 for IPv6); None for
+    loopback, link-local and unspecified addresses."""
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return None
+    if parsed.version == 6 and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
+    if parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified:
+        return None
+    prefix = 24 if parsed.version == 4 else 48
+    return str(ipaddress.ip_network(f"{parsed}/{prefix}", strict=False))
+
+
 # Records that mean some of a module's data is missing.
 _GAPS = {
     "unreadable_file",
@@ -139,6 +218,14 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
         return {"unusual_files", "web_files", "privileged_files"}
     if module == "system_files":
         return {"privileged_files", "unowned_executables"}
+    if module == "network":
+        if name in ("command_unavailable", "command_failed", "set_unterminated", "source") or (
+            name == "not_examined" and path == "nft list ruleset"
+        ):
+            return {"firewall_rules"}
+        if path == "/sys/class/net":
+            return {"interfaces"}
+        return {"network_files"}
     return None
 
 
@@ -342,6 +429,10 @@ class SnapshotBuilder:
                     item.pop(volatile, None)
 
     def source_start(self, start: SourceStart) -> None:
+        if start.kind == "command" and start.module == "network":
+            # The firewall's loaded rules (nft, iptables-legacy-save).
+            self._text[start.source_id] = ((start, hashlib.sha256()), [])
+            return
         wanted = start.kind == "file" and start.module in _FILE_SECTIONS
         lines: list[str] | None = [] if start.module in ("sudoers", "ssh", "pam") else None
         if wanted:
@@ -375,6 +466,14 @@ class SnapshotBuilder:
         if held is None:
             return
         (_, digest), lines = held
+        if start.kind == "command":
+            program = (start.name.split(" ", 1)[0]).rsplit("/", 1)[-1]
+            section = self.section("firewall_rules")
+            for text in firewall_lines(lines or []):
+                section.items[f"{program}: {text}"] = {"program": program}
+            if cut:
+                self._module_gap("network", f"{program} output cut short", "source", {})
+            return
         section = _FILE_SECTIONS[start.module]
         item = self.section(section).items.setdefault(start.name, {})
         for key, value in (start.meta or {}).items():
@@ -511,6 +610,26 @@ class SnapshotBuilder:
                 item.setdefault("place", "/")
             self.section(sections[name]).items[data["path"]] = item
 
+    def _on_network(self, name: str, data: dict[str, Any]) -> None:
+        if name == "interface" and data.get("name"):
+            # A container's veth pair is renamed with every restart: seen
+            # (live), not compared.
+            if not str(data["name"]).startswith("veth"):
+                self.section("interfaces").items[data["name"]] = {
+                    k: data.get(k)
+                    for k in ("promiscuous", "state", "type", "bridge", "bridge_port")
+                }
+            # Counters change all the time: seen, never compared.
+            self.live.setdefault("interfaces", []).append(data)
+        elif name == "routes":
+            self.live.setdefault("routes", []).append(data)
+        elif name == "firewall_loaded":
+            self.live["firewall_loaded"] = data
+        elif name in ("command_unavailable", "command_failed", "set_unterminated"):
+            self._module_gap(
+                "network", f"{name}: {data.get('command')} {data.get('reason') or ''}", name, data
+            )
+
     def _on_processes(self, name: str, data: dict[str, Any]) -> None:
         if name in ("process", "hidden_process") and isinstance(data.get("pid"), int):
             self._processes[data["pid"]] = data.get("comm") or "?"
@@ -558,6 +677,48 @@ class SnapshotBuilder:
             programs = {self._processes.get(pid, "?") for pid in sock.get("pids") or []}
             item["programs"] = sorted(set(item["programs"]) | programs)
 
+    def _peers(self) -> None:
+        """Outgoing connections open at collection, by program and remote
+        network (/24, /48) and port: a new destination is new for that
+        program, not a new ephemeral address."""
+        if not self._sockets and "processes" not in self._planned():
+            return
+        section = self.section("peers")
+        # A connection accepted on one of the host's listening ports came in:
+        # its remote port is the client's, not a destination.
+        listening = {
+            (str(s.get("protocol")), (s.get("local") or [None, None])[1], s.get("netns"))
+            for s in self._sockets
+            if str(s.get("state") or "").lower() == "listen"
+        }
+        for sock in self._sockets:
+            local = sock.get("local") or [None, None]
+            port = local[1] if len(local) == 2 else None
+            if (str(sock.get("protocol")), port, sock.get("netns")) in listening:
+                continue
+            # Open connections only, held by a process: a closing socket
+            # (TIME_WAIT and the like) has no owner and comes and goes.
+            if str(sock.get("state") or "").lower() not in ("established", "syn_sent"):
+                continue
+            if not sock.get("pids"):
+                continue
+            protocol = str(sock.get("protocol") or "?")
+            remote = sock.get("remote") or []
+            if not protocol.startswith("tcp") or len(remote) != 2 or not remote[1]:
+                continue
+            if str(sock.get("state") or "").lower() == "listen":
+                continue
+            network = remote_network(str(remote[0]))
+            if network is None:
+                continue
+            programs = sorted({self._processes.get(pid, "?") for pid in sock.get("pids") or []})
+            for program in programs:
+                key = f"{program} {network} port {remote[1]}"
+                section.items.setdefault(key, {"program": program})
+                # How many: changes all the time (pools, keep-alives), not compared.
+                counts = self.live.setdefault("peer_connections", {})
+                counts[key] = counts.get(key, 0) + 1
+
     def _planned(self) -> set[str]:
         return set(self.manifest_data.modules_planned) if self.manifest_data else set()
 
@@ -578,6 +739,7 @@ class SnapshotBuilder:
     def finish(self) -> Snapshot:
         self._settle_unread()
         self._listeners()
+        self._peers()
         planned = self._planned()
         results = self.trailer_data.modules if self.trailer_data else {}
         for section_name, (_, modules) in SECTIONS.items():

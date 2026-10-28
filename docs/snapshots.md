@@ -42,6 +42,10 @@ added.
 | `unowned_executables` | path: executables in system directories that no package installed | `system_files` |
 | `unusual_files` | path: unusual files in writable and web directories | `unusual_files` |
 | `web_files` | path: executable and script files in web roots | `unusual_files` |
+| `network_files` | path: resolver, hosts, TCP-wrapper and firewall configuration files, and the SHA-256 of their (masked) text | `network` |
+| `interfaces` | interface name: promiscuous, state, type, bridge, bridge port (byte counters, and containers' `veth` interfaces, which are renamed at every restart, are in the uncompared `live` part) | `network` |
+| `firewall_rules` | program, table and chain (or set), and line: the loaded rules from `nft` or `iptables-legacy-save`, with what changes by itself left out (counters, quotas used, expiry timers, last-used times, a large set's elements), comments dropped, spaces collapsed, a line repeated in one place numbered | `network` |
+| `peers` | program, remote network (/24 or /48) and port: outgoing TCP connections open at collection, established or connecting, held by a process (not loopback or link-local; connections accepted on one of the host's listening ports, in the same network namespace, are incoming and left out). How many is in the uncompared `live` part | `processes` |
 | `listeners` | protocol, address and port (for a packet socket: its type, ethertype and interface), network namespace: listening TCP, unconnected UDP, raw and packet sockets, with the owning UIDs, the programs holding them (hidden processes included) and how many sockets share the key | `processes` |
 
 Running processes, sockets and anything else that changes by itself

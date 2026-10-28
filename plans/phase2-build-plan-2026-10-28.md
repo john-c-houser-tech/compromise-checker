@@ -354,6 +354,43 @@ account. SCORING_VERSION 2, CHECKS_VERSION 6.
   sits in `SYN_SENT`); an `ssh -R` forward to localhost; `/etc/hosts`
   rewritten.
 
+*As built:* split into 2.4a (the collector's `network` module, the
+`network_files`, `interfaces`, `firewall_rules` and `peers` snapshot
+sections, and the read-only proof's module-list check; proof: read-only on
+all seven images) and 2.4b (the checks, with their detection behaviours).
+Peers leave out connections accepted on the host's own listening ports
+(found while testing: an incoming SSH session looked like an outgoing
+connection to the client's port).
+After the 2.4a review, `nft` isn't run while nft_compat is loaded
+(iptables-nft rules: ufw, Docker), so those servers' live rules are a
+coverage gap. **Decided 2026-10-28 (John): the first step of 2.4b is an
+experiment** on Ubuntu 22.04, 24.04 and 26.04 with ufw enabled and Docker
+running (3 Nanodes, about 2 cents, approved): `nft list ruleset` and
+`iptables-nft-save`, several times each, with the kernel's module list
+compared around every run. If nothing ever loads, the collector reads
+those rules too and the proof keeps ufw and Docker on the Ubuntu images;
+if anything loads, the gap stays and the docs name it.
+
+*2.4a proof (2026-10-28, read-only, all seven images, 7 Nanodes, about 5
+cents, all deleted):* PASS on every image: the collector wrote nothing and
+no firewall module was loaded or unloaded during any collection.
+
+| Image | Firewall | Rules listed | Collector | Peak memory |
+|---|---|---|---|---|
+| Ubuntu 22.04 | ufw (nft_compat) | no: gap, as designed | 57 s | 47 MB |
+| Ubuntu 24.04 | ufw (nft_compat) | no: gap, as designed | 71 s | 53 MB |
+| Ubuntu 26.04 | ufw (nft_compat) | no: gap, as designed | 66 s | 60 MB |
+| Rocky Linux 9 | firewalld (native nftables) | yes, `nft` | 54 s | 68 MB |
+| Rocky Linux 10 | none loaded | nothing to list | 54 s | 63 MB |
+| AlmaLinux 9 | firewalld (native nftables) | yes, `nft` | 56 s | 69 MB |
+| AlmaLinux 10 | none loaded | nothing to list | 45 s | 65 MB |
+
+For 2.10's calibration: on Ubuntu 22.04 one `(sd-pam)` process was a
+*high* "code mapped from a deleted file" (libaudit, replaced when the
+proof installs auditd), beside the known low hygiene findings for the same
+library; the 1.9 ancestor rule for forks without a new program didn't
+cover it this time.
+
 ### 2.5 — Anti-forensics (8.10, ★ all)
 
 - **Collector, new module `logging_state`:** a manifest of `/var/log` and

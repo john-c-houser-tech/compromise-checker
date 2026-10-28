@@ -64,17 +64,22 @@ setsid -f python3 -c 'import socket,time
 s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("127.0.0.1", 4444)); s.listen(1); c, _ = s.accept(); time.sleep(7200)' \
     </dev/null >/dev/null 2>&1
-pgrep -f '127.0.0.1", 4444' >/dev/null || fail listener
-# Only its input on the socket (output elsewhere), so it is the shell's
-# name that has to be recognised, not one socket on both streams.
-for _ in 1 2 3 4 5; do
-    setsid -f bash -c \
-        'exec 0<>/dev/tcp/127.0.0.1/4444 1>/dev/null 2>&1; while :; do sleep 3600; done' \
-        </dev/null >/dev/null 2>&1
-    sleep 1
-    pgrep -f 'dev/tcp/127.0.0.1/4444' >/dev/null && break
+# Wait until it is really listening (127.0.0.1:4444 is 0100007F:115C in
+# /proc/net/tcp, state 0A), not merely started.
+for _ in $(seq 20); do
+    grep -q ' 0100007F:115C 00000000:0000 0A ' /proc/net/tcp && break
+    sleep 0.5
 done
-pgrep -f 'dev/tcp/127.0.0.1/4444' >/dev/null || fail reverse-shell
+grep -q ' 0100007F:115C 00000000:0000 0A ' /proc/net/tcp || fail listener
+# Only its input on the socket (output elsewhere), so it is the shell's
+# name that has to be recognised, not one socket on both streams. A failed
+# redirection doesn't stop bash, so it exits itself.
+setsid -f bash -c \
+    'exec 0<>/dev/tcp/127.0.0.1/4444 1>/dev/null 2>&1 || exit 1; while :; do sleep 3600; done' \
+    </dev/null >/dev/null 2>&1
+sleep 1
+shell=$(pgrep -f 'dev/tcp/127.0.0.1/4444' | head -1)
+[ -n "$shell" ] && readlink "/proc/$shell/fd/0" | grep -q '^socket:' || fail reverse-shell
 # sshd configured to allow root login (not reloaded: the file is the evidence).
 mkdir -p /etc/ssh/sshd_config.d
 grep -qi '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config \

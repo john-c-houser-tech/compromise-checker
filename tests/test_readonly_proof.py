@@ -205,6 +205,15 @@ def test_the_user_managers_placeholders_and_generators_are_disclosed():
             event("systemd", SYSTEMD, "mkdirat", ("inaccessible", "CREATE"), cwd="/"),
             event("systemd", SYSTEMD, "mknodat", ("chr", "CREATE"), cwd="/"),
             event("systemd", SYSTEMD, "linkat", ("", "CREATE"), cwd="/"),
+            # Ubuntu 26.04: an unnamed file linked into the runtime area.
+            event(
+                "systemd",
+                SYSTEMD,
+                "linkat",
+                ("", "NORMAL"),
+                ("/run/user/1000/systemd/inaccessible/reg", "CREATE"),
+                cwd="/",
+            ),
             event(
                 "systemd-xdg-aut",
                 generator,
@@ -216,7 +225,7 @@ def test_the_user_managers_placeholders_and_generators_are_disclosed():
         ]
     )
     verdict = judge(text)
-    assert verdict.unexpected == [] and len(verdict.disclosed) == 4
+    assert verdict.unexpected == [] and len(verdict.disclosed) == 5  # one linkat / twice
 
 
 def test_placeholder_names_are_accepted_from_the_session_manager_only():

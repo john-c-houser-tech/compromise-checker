@@ -103,6 +103,7 @@ _PLACEHOLDER_NAMES = {"/", "/inaccessible", "/dir", "/reg", "/chr", "/blk", "/fi
 # The user-unit generators write links into their output directory under
 # /run/user/<uid>/systemd, also through a handle.
 _USER_GENERATORS = "/usr/lib/systemd/user-generators/"
+PLACEHOLDERS = "session setup: the user manager's placeholder nodes in its runtime area (memory)"
 
 
 # --- Linode API ------------------------------------------------------------------
@@ -397,27 +398,19 @@ def classify(events: list[dict]) -> Verdict:
             else:
                 verdict.unexpected.append(f"{who} (no path)")
             continue
-        if (
-            event["exe"] == _SESSION_MANAGER
-            and event["syscall"] in _PLACEHOLDER_CALLS
-            and all(path in _PLACEHOLDER_NAMES for path in targets)
-        ):
-            verdict.disclosed.extend(
-                f"{who} {path}  — session setup: the user manager's placeholder nodes in its"
-                " runtime area (memory)"
-                for path in targets
-            )
-            continue
         if event["exe"].startswith(_USER_GENERATORS) and event["syscall"].startswith("symlink"):
             verdict.disclosed.extend(
                 f"{who} {path}  — session setup: a user-unit generator's output (memory)"
                 for path in targets
             )
             continue
+        placeholder = event["exe"] == _SESSION_MANAGER and event["syscall"] in _PLACEHOLDER_CALLS
         for path in targets:
             # A ".." could climb out of a disclosed prefix (/run/user/1000/../../etc):
             # never match those against the list.
-            if ".." in path.split("/"):
+            if placeholder and path in _PLACEHOLDER_NAMES:
+                reason = PLACEHOLDERS
+            elif ".." in path.split("/"):
                 reason = None
             else:
                 reason = next((why for pattern, why in DISCLOSED if pattern.search(path)), None)

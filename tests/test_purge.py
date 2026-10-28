@@ -367,3 +367,109 @@ def test_analyze_reminds_about_expired_evidence(home, capsys):
     assert cli.main(["analyze", "web01"]) == 0
     out = capsys.readouterr().out
     assert "1 bundle(s) are older than the 90-day retention period" in out
+
+
+# --- from the review of 2.0 ------------------------------------------------------------
+
+
+class FailingAt:
+    """The store's connection, failing at the first statement matching."""
+
+    def __init__(self, db, text):
+        self._db, self._text = db, text
+
+    def execute(self, sql, *args):
+        if self._text in sql:
+            raise sqlite3.OperationalError("injected")
+        return self._db.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+
+def test_a_purge_failing_midway_leaves_rows_and_triggers(home):
+    base, store, _, _ = home
+    add(home, "b1", 30)
+    analysed(home)
+    before = triggers(store)
+    real = store._db
+    store._db = FailingAt(real, "DELETE FROM custody")  # after the triggers are dropped
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="injected"):
+            store.purge(["b1"], {"host": "web01"}, {"web01": "emptied"})
+    finally:
+        store._db = real
+    assert triggers(store) == before
+    assert all(rows(store, table, "b1") for table in ("bundles", "custody", "baselines"))
+    assert store.purges() == []
+
+
+def test_an_older_accepted_baseline_does_not_come_back_after_a_purge(home):
+    base, store, identity, config = home
+    for name, days in (("b1", 40), ("b2", 30), ("b3", 20), ("b4", 10)):
+        add(home, name, days)
+    analysed(home)  # b1 first
+    accept(store, "web01", "Upgrade", identity, config.recipients, "b4")
+    accept(store, "web01", "Back to b2", identity, config.recipients, "b2")
+    chosen = plan(store, base, {"web01"}, 90, before=NOW - timedelta(days=25))
+    assert [r["id"] for r in chosen.bundles] == ["b1", "b2"]
+    assert chosen.baselines == {"web01": "moved"}
+    execute(store, base, chosen)
+    assert current_baseline(store, "web01")["bundle_id"] == "b4"  # the surviving older row
+
+    found = changes(store, "web01", identity, config.recipients)
+    assert found.after_purge and found.baseline_id == "b3"
+    assert current_baseline(store, "web01")["how"] == "after purge"
+    again = changes(store, "web01", identity, config.recipients)  # chosen once, then kept
+    assert not again.after_purge and again.baseline_id == "b3"
+    assert any("earlier baseline was purged" in note for note in again.notes)
+
+
+def test_a_baseline_set_after_planning_stops_the_purge(home):
+    base, store, identity, config = home
+    add(home, "b1", 200)
+    add(home, "b2", 5)
+    chosen = plan(store, base, {"web01"}, 90, expired=True)  # no baseline yet
+    assert [r["id"] for r in chosen.bundles] == ["b1"]
+    changes(store, "web01", identity, config.recipients)  # b1 becomes the baseline
+    with pytest.raises(Exception, match="changed while the purge was being planned"):
+        execute(store, base, chosen)
+    assert rows(store, "bundles", "b1") == 1 and files_of(home, "b1")
+    assert store.purges() == []
+
+
+def test_cli_expired_refuses_without_an_inventory(home, capsys):
+    _, store, _, _ = home
+    add(home, "b1", 200)
+    add(home, "b2", 5)
+    analysed(home)
+    assert cli.main(["purge", "--expired", "--yes"]) == 2
+    assert "--expired needs the inventory" in capsys.readouterr().err
+    assert rows(store, "bundles", "b1") == 1
+
+
+def test_cli_reports_a_locked_database_without_a_traceback(home, capsys, monkeypatch):
+    add(home, "b1", 40)
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("checker.evidence.Store.purge", locked)
+    assert cli.main(["purge", "web01", "--yes"]) == 1
+    assert "database is locked" in capsys.readouterr().err
+
+
+def test_the_reminder_never_breaks_the_command(home, capsys):
+    base = home[0]
+    (base / "config.yaml").write_text("retention_days: [not, a, number]\n")
+    cli._expired_notice(base)
+    assert capsys.readouterr().out == ""
+
+
+def test_retention_days_must_be_positive():
+    from pydantic import ValidationError
+
+    from checker.evidence import Config
+
+    with pytest.raises(ValidationError):
+        Config(recipients=["x"], retention_days=0)

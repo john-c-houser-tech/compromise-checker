@@ -33,6 +33,9 @@ class Plan:
     files: list[Path] = field(default_factory=list)
     reports: list[Path] = field(default_factory=list)
     outside: list[str] = field(default_factory=list)  # paths not under the evidence folder
+    # Each affected host's Store.purge_state when planned; the purge itself
+    # re-checks it, so a baseline set meanwhile isn't purged unprotected.
+    expect: dict[str, list[Any]] = field(default_factory=dict)
 
 
 def parse_before(text: str) -> datetime:
@@ -89,6 +92,7 @@ def plan(
             doomed = [r for r in doomed if r["id"] != baseline["bundle_id"]]
         if not doomed:
             continue
+        result.expect[name] = store.purge_state(name)
         result.bundles.extend(doomed)
         gone = {r["id"] for r in doomed}
         if len(gone) == len(rows):
@@ -162,8 +166,9 @@ def execute(store: Store, base: Path, chosen: Plan) -> Outcome:
     if chosen.bundles:
         counts = store.purge(
             [r["id"] for r in chosen.bundles],
-            chosen.scope | {"files": len(chosen.files)},
+            chosen.scope | {"files_planned": len(chosen.files)},
             chosen.baselines,
+            chosen.expect,
         )
     else:
         counts = {"bundles": 0}

@@ -82,8 +82,8 @@ def changes(
     target = _pick(store, host, bundle_id)
     baseline = current_baseline(store, host)
     set_now, after_purge, notes = False, False, []
-    if baseline is None:
-        after_purge = store.baseline_purged(host)
+    after_purge = store.baseline_purged(host, baseline["at"] if baseline else None)
+    if baseline is None or after_purge:
         # The oldest full collection; a run limited to some modules can't
         # stand for the whole host. If there is none, the oldest at all.
         rows = usable_bundles(store, host)

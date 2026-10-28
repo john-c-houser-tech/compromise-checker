@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import sqlite3
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -29,7 +30,7 @@ from checker.evidence import (
     open_bundle,
     open_text,
 )
-from checker.inventory import Host, home, inventory_transaction, load_inventory
+from checker.inventory import Host, home, hosts_file, inventory_transaction, load_inventory
 from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
 from checker.report import write_report
@@ -812,6 +813,15 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
         except ValueError as exc:
             print(f"checker: {exc}", file=sys.stderr)
             return 2
+        if args.expired and not inventory:
+            # Expiry keeps inventoried hosts' baselines: with no inventory (a
+            # lost or moved hosts file) it would take every one.
+            print(
+                f"checker: --expired needs the inventory ({hosts_file()} is missing or empty), or"
+                " it would purge every host's baseline; purge a removed host by name instead",
+                file=sys.stderr,
+            )
+            return 2
         if args.host and not store.bundles(args.host):
             print(f"checker: no stored bundles for {args.host}", file=sys.stderr)
             return 2
@@ -855,7 +865,7 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
             print("Nothing deleted.")
             return 1
         outcome = execute(store, base, chosen)
-    except (EvidenceError, OSError) as exc:
+    except (EvidenceError, OSError, sqlite3.Error) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     finally:

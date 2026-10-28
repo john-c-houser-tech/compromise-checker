@@ -22,7 +22,7 @@ from typing import Any
 
 import pyrage
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pyrage import x25519
 
 from checker.files import atomic_write, locked
@@ -52,7 +52,7 @@ class Config(BaseModel):
 
     recipients: list[str]  # age public keys bundles are encrypted to
     identity_file: str | None = None  # where the matching private key is, if here
-    retention_days: int = 90
+    retention_days: int = Field(default=90, ge=1)
     # Opt-in chosen in `checker init` (policy §7); see protocol HomeText.
     home_text: HomeText = "off"
 
@@ -655,16 +655,31 @@ class Store:
             "SELECT * FROM custody WHERE bundle_id = ? ORDER BY seq", (bundle_id,)
         ).fetchall()
 
+    def purge_state(self, host: str) -> list[Any]:
+        """What a purge plan for `host` depends on: its current baseline
+        (the latest row's sequence number) and how many bundles it has."""
+        latest = self._db.execute(
+            "SELECT MAX(seq) FROM baselines WHERE host = ?", (host,)
+        ).fetchone()[0]
+        count = self._db.execute("SELECT COUNT(*) FROM bundles WHERE host = ?", (host,)).fetchone()
+        return [latest, count[0]]
+
     def purge(
-        self, bundle_ids: list[str], scope: dict[str, Any], baselines: dict[str, str]
+        self,
+        bundle_ids: list[str],
+        scope: dict[str, Any],
+        baselines: dict[str, str],
+        expect: dict[str, list[Any]] | None = None,
     ) -> dict[str, int]:
         """Delete these bundles and everything recorded about them, and add
         a `purges` row saying what went (policy §8): the one sanctioned way
         to delete. The append-only triggers are dropped and recreated inside
         the same transaction, so a failure leaves them, and every row, in
         place. `baselines` maps each host whose baseline goes to what
-        happens to it ("moved" or "emptied"). Returns the rows deleted per
-        table."""
+        happens to it ("moved" or "emptied"). `expect` is each affected
+        host's purge_state when the purge was planned: if another command
+        changed it since (a new baseline, a new bundle), nothing is deleted.
+        Returns the rows deleted per table."""
         if not bundle_ids:
             raise ValueError("nothing to purge")
         operator, controller = who_and_where()
@@ -681,6 +696,12 @@ class Store:
             if set(hosts) != set(bundle_ids):
                 missing = sorted(set(bundle_ids) - set(hosts))
                 raise EvidenceError(f"no bundle {missing[0]!r} to purge")
+            for host, state in (expect or {}).items():
+                if self.purge_state(host) != list(state):
+                    raise EvidenceError(
+                        f"{host}'s stored evidence changed while the purge was being planned"
+                        " (a new bundle or baseline); nothing was deleted: run it again"
+                    )
             for table, _ in APPEND_ONLY:
                 for action in ("update", "delete"):
                     self._db.execute(f"DROP TRIGGER {table}_no_{action}")
@@ -719,13 +740,15 @@ class Store:
     def purges(self) -> list[sqlite3.Row]:
         return self._db.execute("SELECT * FROM purges ORDER BY seq").fetchall()
 
-    def baseline_purged(self, host: str) -> bool:
-        """The host's baseline was purged and its bundles weren't all: its
-        next baseline is chosen again, and says why."""
+    def baseline_purged(self, host: str, since: str | None = None) -> bool:
+        """The host's current baseline was purged (after `since`, the time
+        of its latest remaining baseline row) and its bundles weren't all:
+        its next baseline is chosen again, and says why. An older baseline
+        row that survived the purge doesn't come back into force."""
         for row in reversed(self.purges()):
             what = json.loads(row["baselines"]).get(host)
             if what is not None:
-                return what == "moved"
+                return what == "moved" and (since is None or row["at"] > since)
         return False
 
 

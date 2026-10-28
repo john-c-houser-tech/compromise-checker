@@ -425,9 +425,10 @@ assessments tables are append-only, enforced by triggers.
   shell, requested a few times with `curl`; auditd installed with the
   shipped rules so the historical path is proved too.
 
-### 2.9 — Containers (8.13) (needs decision 4)
+### 2.9 — Containers (8.13) (decision 4: decided)
 
-- **Collector, new module `containers`**, reading files only (proposed):
+- **Collector, new module `containers`**, reading files only (decision 4),
+  locations from Docker's `daemon.json` and Podman's `storage.conf`:
   Docker's `/var/lib/docker/containers/<id>/config.v2.json` and
   `hostconfig.json`; Podman's
   `/var/lib/containers/storage/overlay-containers/containers.json` and each
@@ -520,9 +521,14 @@ assessments tables are append-only, enforced by triggers.
      ordinary users. Arguments always masked (masking v6).
    - Policy §7 gets matching bullets, worded in the 2.7 and 2.8 PRs for
      John's approval.
-4. **Before 2.9 — containers.** Read the runtimes' state files, keeping only
-   the listed fields (proposed), or ask the runtime over its socket (more
-   complete, but talks to a daemon and its API).
+4. ~~Before 2.9 — containers.~~ **Decided 2026-10-28:** the runtimes'
+   state files only, never their sockets (Podman's is usually
+   socket-activated, so connecting would start `podman.service`). Docker's
+   directory from `data-root` in `/etc/docker/daemon.json` (and its
+   userns-remap subdirectory), Podman's from `/etc/containers/storage.conf`.
+   Only the listed fields leave the server; the environment never does.
+   Running state cross-checked with live processes; an unrecognised file
+   layout is a coverage gap, never "no containers".
 5. **Before the first proof run — budget.** Proposed: a $10 cap for all of
    Phase 2, as for 1.9 (which spent about 10 cents). Slices with a web
    stack or containers take a few minutes longer to set up, so expect

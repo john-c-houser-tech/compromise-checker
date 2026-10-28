@@ -35,3 +35,11 @@ def test_each_behaviour_needs_its_finding_at_its_band():
 def test_the_attacks_use_the_runs_backdoor_key():
     assert "{root_key}" in detection.ATTACKS
     assert detection.ATTACKS.count("fail ") >= 8  # each step says when it couldn't be done
+
+
+def test_a_title_can_be_required_too():
+    [want] = [e for e in detection.expectations("k") if e.check == "process.executable"]
+    summary = "cc-sleep (pid 9): /root/cc-sleep (deleted)"
+    scratch = finding("process.executable", "high", summary, "A process running from a scratch dir")
+    deleted = finding("process.executable", "high", summary, "A process whose program was deleted")
+    assert detection.judge([scratch], [want])[1] and not detection.judge([deleted], [want])[1]

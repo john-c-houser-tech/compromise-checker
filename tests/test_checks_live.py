@@ -776,3 +776,23 @@ def test_a_set_user_id_shell_in_a_scratch_place_is_a_privileged_file():
     [finding] = of(run([], after, baseline=before), "files.privileged")
     assert finding.title == "A new privileged file since the baseline"
     assert finding.evidence == [{"change": ["b0", "unusual_files", "/tmp/.cc-sh", "added"]}]
+
+
+def test_a_different_program_cannot_inherit_a_deleted_library():
+    # cron started after the update maps the old library: it can't have
+    # inherited it from PID 1 (it loaded its own) — someone swapped it back.
+    late = (T0 + timedelta(hours=1)).isoformat()
+    lib = "/usr/lib/systemd/libsystemd-shared.so (deleted)"
+    systemd = proc(1, "systemd", exe="/usr/lib/systemd/systemd", suspicious_mappings=[lib])
+    cron = proc(700, "cron", exe="/usr/sbin/cron", start_time=late, suspicious_mappings=[lib])
+    live = {"processes": [{**systemd, "ppid": 0}, {**cron, "ppid": 1}]}
+    found = of(run([], snap(live, checksum_store=UPDATED)), "process.injected")
+    assert {f.summary.split(" ")[0]: f.band for f in found} == {"systemd": "low", "cron": "high"}
+
+
+def test_a_privileged_file_moving_between_sections_is_not_new():
+    item = {"place": "/tmp", "type": "-", "kind": "elf", "setuid": True, "uid": 0}
+    before = snap(OWNERS, privileged_files={"/tmp/.x": item}, unusual_files={}, web_files={})
+    after = snap(OWNERS, privileged_files={}, unusual_files={"/tmp/.x": item}, web_files={})
+    [finding] = of(run([], after, baseline=before), "files.privileged")
+    assert finding.title == "A privileged file outside the system directories" and not finding.new

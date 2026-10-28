@@ -387,18 +387,59 @@ class Verdict:
     sockets: list[str] = field(default_factory=list)  # informational
 
 
-def _in_memory(info: dict) -> bool:
-    """On an in-memory filesystem (tmpfs, proc, sysfs, cgroup: device
-    major 0), as the session's runtime areas are; not on a disk."""
-    return str(info.get("dev") or "").split(":")[0] in ("00", "0")
+# Filesystems that live in memory, as the session's runtime areas do. A
+# device number alone can't tell: btrfs, overlayfs, NFS and FUSE use
+# anonymous (major 0) devices too.
+MEMORY_FILESYSTEMS = {
+    "tmpfs",
+    "ramfs",
+    "proc",
+    "sysfs",
+    "cgroup",
+    "cgroup2",
+    "devtmpfs",
+    "devpts",
+    "mqueue",
+    "securityfs",
+    "debugfs",
+    "tracefs",
+    "configfs",
+    "bpf",
+    "pstore",
+    "hugetlbfs",
+    "fusectl",
+}
 
 
-def _in_memory_relative(info: dict) -> bool:
-    return not info["raw"].startswith("/") and _in_memory(info)
+def memory_devices(mountinfo: str) -> set[str]:
+    """The devices of the in-memory filesystems in /proc/self/mountinfo,
+    written as audit writes them (hex major:minor, `00:2a`)."""
+    devices = set()
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        if " - " not in line or len(fields) < 3:
+            continue
+        fstype = line.split(" - ", 1)[1].split()[0]
+        major, _, minor = fields[2].partition(":")
+        if fstype in MEMORY_FILESYSTEMS and major.isdigit() and minor.isdigit():
+            devices.add(f"{int(major):02x}:{int(minor):02x}")
+    return devices
 
 
-def classify(events: list[dict]) -> Verdict:
-    """Every event lands in exactly one place; nothing is silently dropped."""
+def _in_memory(info: dict, memory: set[str]) -> bool:
+    """On an in-memory filesystem, by the server's own mount table; with
+    none known, nothing is (fail closed)."""
+    return str(info.get("dev") or "").lower() in memory
+
+
+def _in_memory_relative(info: dict, memory: set[str]) -> bool:
+    return not info["raw"].startswith("/") and _in_memory(info, memory)
+
+
+def classify(events: list[dict], memory: set[str] | None = None) -> Verdict:
+    """Every event lands in exactly one place; nothing is silently dropped.
+    `memory`: the devices of the server's in-memory filesystems."""
+    memory = memory or set()
     verdict = Verdict()
     for event in events:
         who = f"{event['comm']} ({event['exe']}) {event['syscall']}"
@@ -427,7 +468,7 @@ def classify(events: list[dict]) -> Verdict:
         if (
             event["exe"].startswith(_USER_GENERATORS)
             and event["syscall"].startswith("symlink")
-            and all(_in_memory_relative(facts[path]) for path in targets)
+            and all(_in_memory_relative(facts[path], memory) for path in targets)
         ):
             verdict.disclosed.extend(
                 f"{who} {path}  — session setup: a user-unit generator's output (memory)"
@@ -438,11 +479,15 @@ def classify(events: list[dict]) -> Verdict:
         for path in targets:
             # A ".." could climb out of a disclosed prefix (/run/user/1000/../../etc):
             # never match those against the list.
-            if placeholder and path in _PLACEHOLDER_NAMES and _in_memory_relative(facts[path]):
+            if (
+                placeholder
+                and path in _PLACEHOLDER_NAMES
+                and _in_memory_relative(facts[path], memory)
+            ):
                 reason = PLACEHOLDERS
             elif ".." in path.split("/"):
                 reason = None
-            elif not facts[path]["raw"].startswith("/") and not _in_memory(facts[path]):
+            elif not facts[path]["raw"].startswith("/") and not _in_memory(facts[path], memory):
                 # A relative name through an unknown directory handle, on a
                 # disk: where it really is can't be told, so it isn't excused.
                 reason = None
@@ -479,9 +524,12 @@ async def _create_server(api: Linode, *args) -> dict:
     creating = asyncio.ensure_future(asyncio.to_thread(api.create, *args))
     try:
         return await asyncio.shield(creating)
-    except (TimeoutError, OSError, RuntimeError):
-        # The answer was lost (a timeout, a 502), not necessarily the
+    except (TimeoutError, OSError, RuntimeError) as exc:
+        # The answer was lost (a timeout, a 5xx), not necessarily the
         # request: if the server was made, it has this run's unique label.
+        # A 4xx means it was refused: nothing was made.
+        if isinstance(exc, RuntimeError) and not re.search(r": 5\d\d ", str(exc)):
+            raise
         label = args[0]
         try:
             for _ in range(12):
@@ -491,9 +539,12 @@ async def _create_server(api: Linode, *args) -> dict:
                     print(f"create failed to answer, but {label} exists (id {node['id']})")
                     return node
         except asyncio.CancelledError:
-            node = await asyncio.to_thread(api.find, label)
-            if node is not None:
-                await asyncio.to_thread(api.delete, node["id"])
+            try:
+                node = await asyncio.to_thread(api.find, label)
+                if node is not None:
+                    await asyncio.to_thread(api.delete, node["id"])
+            except Exception as cleanup:  # the final sweep still runs
+                print(f"cancelled: could not check for {label}: {cleanup}")
             raise
         raise
     except asyncio.CancelledError:
@@ -590,7 +641,8 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             if not events:
                 # A login always causes some writes; none means no usable evidence.
                 raise RuntimeError("the audit log holds no events for the scanner's session")
-            result.audit = classify(events)
+            mounts = await conn.run("cat /proc/self/mountinfo", check=True, timeout=60)
+            result.audit = classify(events, memory_devices(mounts.stdout))
 
         bundle = home / "evidence" / distro / f"{outcome.bundle_id}.age"
         if bundle.exists():

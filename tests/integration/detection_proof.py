@@ -40,8 +40,8 @@ fail() { echo "ATTACK FAILED: $1" >&2; }
 # A second UID 0 account.
 useradd -o -u 0 -g 0 -M -s /bin/bash cc-toor || fail uid0
 # A new key for root.
-install -d -m 700 /root/.ssh
-echo '{root_key} cc-proof-backdoor' >> /root/.ssh/authorized_keys || fail key
+install -d -m 700 /root/.ssh && echo '{root_key} cc-proof-backdoor' >> /root/.ssh/authorized_keys \
+    || fail key
 # A cron job, and a systemd timer with its service.
 echo '*/5 * * * * root /usr/bin/true cc-proof' > /etc/cron.d/cc-proof || fail cron
 printf '[Unit]\nDescription=cc proof\n[Service]\nExecStart=/usr/bin/true\n' \
@@ -54,17 +54,27 @@ lib=$(ldconfig -p | awk '/libm\.so\.6 .*x86-64/ {print $NF; exit}')
 [ -n "$lib" ] && echo "$lib" > /etc/ld.so.preload || fail preload
 # A set-user-ID copy of a shell in /tmp.
 cp /bin/bash /tmp/.cc-sh && chmod 4755 /tmp/.cc-sh || fail suid
-# A process running from a deleted program.
-cp "$(command -v sleep)" /tmp/cc-sleep && setsid -f /tmp/cc-sleep 7200 </dev/null >/dev/null 2>&1
-sleep 1; rm -f /tmp/cc-sleep
+# A process running from a deleted program (in root's home, not a scratch
+# place, so it is the deletion that has to be noticed).
+cp "$(command -v sleep)" /root/cc-sleep && setsid -f /root/cc-sleep 7200 </dev/null >/dev/null 2>&1
+sleep 1; rm -f /root/cc-sleep
+pgrep -f '^/root/cc-sleep 7200' >/dev/null || fail deleted-program
 # A shell whose input and output are a TCP socket (to a local listener).
 setsid -f python3 -c 'import socket,time
 s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("127.0.0.1", 4444)); s.listen(1); c, _ = s.accept(); time.sleep(7200)' \
     </dev/null >/dev/null 2>&1
-sleep 1
-setsid -f bash -c 'exec 0<>/dev/tcp/127.0.0.1/4444 1>&0 2>&0; while :; do sleep 3600; done' \
-    || fail reverse-shell
+pgrep -f '127.0.0.1", 4444' >/dev/null || fail listener
+# Only its input on the socket (output elsewhere), so it is the shell's
+# name that has to be recognised, not one socket on both streams.
+for _ in 1 2 3 4 5; do
+    setsid -f bash -c \
+        'exec 0<>/dev/tcp/127.0.0.1/4444 1>/dev/null 2>&1; while :; do sleep 3600; done' \
+        </dev/null >/dev/null 2>&1
+    sleep 1
+    pgrep -f 'dev/tcp/127.0.0.1/4444' >/dev/null && break
+done
+pgrep -f 'dev/tcp/127.0.0.1/4444' >/dev/null || fail reverse-shell
 # sshd configured to allow root login (not reloaded: the file is the evidence).
 mkdir -p /etc/ssh/sshd_config.d
 grep -qi '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config \
@@ -82,6 +92,7 @@ class Expected:
     check: str
     marker: str  # in the finding's summary (lower case compared)
     band: str  # at least this
+    title: str = ""  # and this in its title, where the check has several rules
 
 
 def expectations(root_fingerprint: str) -> list[Expected]:
@@ -98,13 +109,18 @@ def expectations(root_fingerprint: str) -> list[Expected]:
         Expected("/etc/ld.so.preload set", "persistence.ld_preload", "/etc/ld.so.preload", "high"),
         Expected("a set-user-ID shell in /tmp", "files.privileged", "/tmp/.cc-sh", "high"),
         Expected(
-            "a process running from a deleted program", "process.executable", "cc-sleep", "high"
+            "a process running from a deleted program",
+            "process.executable",
+            "/root/cc-sleep (deleted)",
+            "high",
+            "deleted",
         ),
         Expected(
             "a shell with its input on a socket",
             "process.reverse_shell",
-            "127.0.0.1:4444",
+            "bash (pid",
             "high",
+            "shell",
         ),
         Expected("sshd allowing root login", "sshd.config", "permitrootlogin yes", "high"),
         Expected("a pam_exec line added", "pam.changes", "pam_exec.so", "high"),
@@ -129,6 +145,7 @@ def judge(findings: list[dict], expected: list[Expected]) -> tuple[list, list, l
             for i, f in enumerate(findings)
             if f["check"] == want.check
             and want.marker.lower() in f["summary"].lower()
+            and want.title.lower() in f["title"].lower()
             and BANDS[f["band"]] >= BANDS[want.band]
         ]
         if hits:
@@ -221,7 +238,10 @@ async def detect(api, distro: str, region: str, keep: bool, work: Path) -> Resul
             await collect(home, config, scanner, known)
             print(f"{distro}: baseline collected; planting the behaviours")
             attacks = ATTACKS.replace("{root_key}", backdoor.export_public_key().decode().strip())
-            done = await conn.run(attacks, timeout=300)
+            # On standard input, not as `bash -c <script>`: otherwise the
+            # script's own shell would carry every pattern its pgrep checks
+            # look for, and they would always succeed.
+            done = await conn.run("bash -s", input=attacks, timeout=300)
             for line in done.stderr.splitlines():
                 if line.startswith("ATTACK FAILED"):
                     result.missing.append(line)
@@ -250,8 +270,11 @@ async def detect(api, distro: str, region: str, keep: bool, work: Path) -> Resul
         if keep:
             print(f"{distro}: --keep: leaving {label} running (id {node['id']})")
         else:
-            await asyncio.to_thread(api.delete, node["id"])
-            print(f"{distro}: deleted {label}")
+            try:
+                await asyncio.to_thread(api.delete, node["id"])
+                print(f"{distro}: deleted {label}")
+            except Exception as exc:  # the end-of-run sweep tries again
+                print(f"{distro}: could not delete {label}: {exc}")
     return result
 
 

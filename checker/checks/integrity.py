@@ -146,7 +146,7 @@ def _difference(path: str, item: dict) -> tuple[str, str, str] | None:
 # Files whose contents are secret: reading them is the harm.
 SECRET_FILES = re.compile(r"^/etc/(?:g?shadow-?|sudoers(?:\.d/.*)?|ssh/ssh_host_.*_key)$")
 # Directories kept private (opening them exposes what is inside).
-PRIVATE_DIRS = re.compile(r"^/(?:root|home/[^/]+|etc/ssl/private|var/lib/[^/]+)$")
+PRIVATE_DIRS = re.compile(r"^/(?:root|home/[^/]+|etc/ssl/private|etc/sudoers\.d|var/lib/[^/]+)$")
 
 
 def _mode_change(path: str, item: dict, critical: bool) -> tuple[str, str, str]:
@@ -259,13 +259,16 @@ def privileged(context: Context) -> list[Finding]:
             privileged = item.get("setuid") or item.get("setgid") or item.get("capabilities")
             if section == "privileged_files" or privileged:
                 candidates[path] = (section, item)
-    added, changed = {}, {}
+    # A file can sit in a different section at the baseline (a scratch
+    # place listed whole one time, cut short the next): it is new only if
+    # no section had it then.
+    added, removed, changed = set(), set(), {}
     for section in ("unusual_files", "web_files", "privileged_files"):
         diff = context.changes(section)
         if diff:
-            added.update({k: section for k in diff["added"]})
-            changed.update(diff["changed"])
-    uncertain = context.uncertain("privileged_files")
+            added |= set(diff["added"])
+            removed |= set(diff["removed"])
+            changed[section] = diff["changed"]
     for path, (section, item) in sorted(candidates.items()):
         if "error" in item or path.startswith(SYSTEMD_OWN):
             continue  # a walk error (a coverage gap), or systemd's own placeholders
@@ -275,13 +278,14 @@ def privileged(context: Context) -> list[Finding]:
         device = item.get("type") in ("b", "c")
         outside = bool(item.get("place"))  # found outside the system directories
         unowned = not outside and owners and not item.get("package")
-        is_new = path in added
+        is_new = path in added and path not in removed
+        uncertain = context.uncertain(section)
         # More privilege on a file already listed: a capability added to
         # ping, a set-user-ID bit (dpkg doesn't record capabilities).
         gained = sorted(
             f
             for f in ("capabilities", "setuid", "setgid")
-            if f in changed.get(path, {}) and changed[path][f][1]
+            if changed.get(section, {}).get(path, {}).get(f, [None, None])[1]
         )
         what = ", ".join(
             w

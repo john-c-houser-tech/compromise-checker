@@ -82,10 +82,13 @@ def _updated_since(context: Context, process: dict, mapping: str | None = None) 
     processes = {p.get("pid"): p for p in context.snapshot.live.get("processes", [])}
 
     def holds(candidate: dict) -> bool:
-        if mapping is not None:
-            return mapping in (candidate.get("suspicious_mappings") or [])
+        # A fork without a new program (the same exe), holding the file too:
+        # one that started a program loaded its libraries afresh.
         exe = str(candidate.get("exe") or "")
-        return bool(exe) and exe == str(process.get("exe") or "")
+        same_program = bool(exe) and exe == str(process.get("exe") or "")
+        if mapping is not None:
+            return same_program and mapping in (candidate.get("suspicious_mappings") or [])
+        return same_program
 
     starts, current, seen = [process.get("start_time")], process, set()
     while current.get("ppid") in processes and current.get("ppid") not in seen:

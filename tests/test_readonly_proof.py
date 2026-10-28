@@ -64,8 +64,11 @@ def event(comm, exe, syscall, *paths, cwd=None):
     return "\n".join(lines) + "\n"
 
 
-def judge(text):
-    return proof.classify(proof.parse_audit(text, SYSCALLS))
+MEMORY, DISK = "00:2a", "fd:01"  # tmpfs (/run/user/…), and a disk
+
+
+def judge(text, memory=frozenset({MEMORY})):
+    return proof.classify(proof.parse_audit(text, SYSCALLS), set(memory))
 
 
 SUDO, SSHD, SYSTEMD = "/usr/bin/sudo", "/usr/sbin/sshd", "/usr/lib/systemd/systemd"
@@ -198,9 +201,6 @@ async def test_cancelling_during_creation_still_deletes_the_server():
     assert deleted == [42]
 
 
-MEMORY, DISK = "00:2a", "fd:01"  # tmpfs (/run/user/…), and a disk
-
-
 def test_the_user_managers_placeholders_and_generators_are_disclosed():
     """systemd 256+: at login the user manager makes its placeholder nodes
     through a directory handle (bare names, on the runtime area's tmpfs),
@@ -291,3 +291,21 @@ def test_placeholder_names_are_accepted_from_the_session_manager_only():
     ]
     collector = event("python3", "/usr/bin/python3", "mknodat", ("chr", "CREATE"), cwd="/")
     assert judge(collector).collector == ["python3 (/usr/bin/python3) mknodat /chr"]
+
+
+def test_in_memory_comes_from_the_mount_table_not_the_device_number():
+    mountinfo = "\n".join(
+        [
+            "25 1 0:22 / /run rw - tmpfs tmpfs rw",
+            "26 25 0:42 / /run/user/1000 rw - tmpfs tmpfs rw",
+            "27 1 0:31 / / rw - btrfs /dev/vda2 rw",  # anonymous device, on disk
+            "28 1 253:1 / /boot rw - xfs /dev/vda1 rw",
+        ]
+    )
+    memory = proof.memory_devices(mountinfo)
+    assert memory == {"00:16", "00:2a"}
+    btrfs = event("systemd", SYSTEMD, "mknodat", ("chr", "CREATE", "00:1f"), cwd="/")
+    assert judge(btrfs, memory).unexpected == ["systemd (/usr/lib/systemd/systemd) mknodat /chr"]
+    # Without a mount table nothing is in memory: relative names aren't excused.
+    tmpfs = event("systemd", SYSTEMD, "mknodat", ("chr", "CREATE", MEMORY), cwd="/")
+    assert judge(tmpfs, set()).unexpected == ["systemd (/usr/lib/systemd/systemd) mknodat /chr"]

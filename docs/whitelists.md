@@ -78,6 +78,38 @@ doesn't hide a group of files that also holds an unknown one. A finding
 that lists only some of its entities (a group of more than 20 files) is
 matched only by a broad rule.
 
+## Conditions: `correlated_with`
+
+A rule can require a partner event: a login from a new address is
+explained only when the same account runs the deploy command right after.
+
+```yaml
+  - id: deploy-after-login
+    match:
+      check: ssh.login
+      variant: new_address
+      correlated_with:
+        event: sudo.command      # any type in docs/events.md
+        within: 30s              # 1s … 1d
+        direction: after         # after (default), before, either
+        same: [account]          # account (default), address, or both
+        command: "/usr/bin/git -C /srv/app pull"   # * and ?, the whole command
+    reason: "Deploys log in from wherever John is, then pull at once."
+    owner: john
+    expires: never
+```
+
+**Every** event the finding cites (each login, for a finding about
+several) needs its own partner: of that type, not the tool's own session,
+within the time on the given side, by the same account (and from the same
+address, when asked), running a matching command when one is named. An
+event is never its own partner. A condition naming a command makes a rule
+narrow; one without needs `broad: true` or another narrowing field.
+
+A condition reads what the host logged, so it explains, it doesn't prove:
+whoever holds the account can also run the command. Keep it as specific as
+the deploy is.
+
 ## Maintenance windows
 
 Planned work explains reboots. Inside a window in any layer, an

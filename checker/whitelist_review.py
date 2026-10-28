@@ -8,8 +8,10 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from checker.analysis import load_events
 from checker.assess import load_assessment
 from checker.baseline import usable_bundles
+from checker.correlate import find_chains
 from checker.evidence import Store
 from checker.scoring import score
 from checker.whitelist import Whitelist, reapply
@@ -38,11 +40,16 @@ def compare(
         if stored is None or "score" not in stored:
             continue
         prior = stored["score"]["prior"]
+        # Read only: a bundle not parsed yet isn't parsed here (that would
+        # store its events); correlated rules and chains then see none.
+        parsed = load_events(store, row, identity)
+        events = parsed.events if parsed else []
         before = json.loads(json.dumps(stored["findings"]))
         after = json.loads(json.dumps(stored["findings"]))
-        reapply(before, current)
-        reapply(after, proposed)
-        was, now = score(before, prior), score(after, prior)
+        reapply(before, current, events=events)
+        reapply(after, proposed, events=events)
+        was = score(before, prior, find_chains(before, events))
+        now = score(after, prior, find_chains(after, events))
         hidden, revealed, rebanded = [], [], []
         for b, a in zip(before, after, strict=True):
             if not b.get("suppressed_by") and a.get("suppressed_by"):
@@ -109,7 +116,8 @@ def stale(
             if not stored:
                 continue
             findings = json.loads(json.dumps(stored["findings"]))
-            reapply(findings, merged, today)
+            parsed = load_events(store, row, identity)
+            reapply(findings, merged, today, parsed.events if parsed else [])
             for finding in findings:
                 rule = finding.get("suppressed_by")
                 if rule:

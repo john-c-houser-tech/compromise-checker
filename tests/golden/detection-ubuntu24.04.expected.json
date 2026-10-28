@@ -1066,6 +1066,7 @@
  ],
  "score": {
   "band": "Critical",
+  "chains": [],
   "contributors": [
    {
     "capped": null,

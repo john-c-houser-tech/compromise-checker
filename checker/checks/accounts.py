@@ -293,6 +293,21 @@ def log_changes(context: Context) -> list[Finding]:
     return findings
 
 
+_SUDO_USER = re.compile(r"[a-z_][a-z0-9_.-]{0,31}\$?")
+
+
+def _sudo_who(rule: str) -> list[str]:
+    """Who a sudoers line grants to, when it names one user (`eve ALL=…`)
+    or one group (`%wheel ALL=…`): an entity, so a chain can follow the
+    account. Aliases, lists, Defaults and includes name no one plainly."""
+    first = rule.split(None, 1)[0] if rule.strip() else ""
+    if first.startswith("%") and _SUDO_USER.fullmatch(first[1:]):
+        return [f"group:{first[1:]}"]
+    if first != "Defaults" and _SUDO_USER.fullmatch(first):
+        return [f"account:{first}"]
+    return []
+
+
 @check("sudo.rules", "New sudo rights", needs_baseline=True)
 def sudo_rules(context: Context) -> list[Finding]:
     diff = context.changes("sudo_rules")
@@ -308,7 +323,7 @@ def sudo_rules(context: Context) -> list[Finding]:
                 COMPROMISE,
                 "high",
                 f"{item.get('path')}: {rule}",
-                [f"path:{item.get('path')}"],
+                [f"path:{item.get('path')}", *_sudo_who(rule)],
                 [context.change_ref("sudo_rules", key, "added")],
                 new=context.new_since_previous("sudo_rules", key),
                 uncertain=uncertain,

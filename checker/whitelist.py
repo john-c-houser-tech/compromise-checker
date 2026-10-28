@@ -38,6 +38,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from checker.checks import load_checks
+from checker.correlate import EVENT_TYPES, MAX_WITHIN, correlated, parse_duration
 
 PROFILES = Path(__file__).parent / "profiles"
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
@@ -54,6 +55,48 @@ class WhitelistError(Exception):
     """A whitelist file is invalid; the message says which file and where."""
 
 
+class Correlation(BaseModel):
+    """`correlated_with`: every event the finding cites must have a partner
+    (checker/correlate.py)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: str
+    within: str
+    direction: Literal["after", "before", "either"] = "after"
+    same: list[Literal["account", "address"]] = ["account"]
+    command: str | None = None  # the partner's command (sudo.command), * and ?
+
+    @field_validator("event")
+    @classmethod
+    def _known(cls, value: str) -> str:
+        if value not in EVENT_TYPES:
+            raise ValueError(f"no event type {value!r} (docs/events.md lists them)")
+        return value
+
+    @field_validator("within")
+    @classmethod
+    def _within(cls, value: str) -> str:
+        if parse_duration(value) > MAX_WITHIN:
+            raise ValueError("at most 1d")
+        return value
+
+    @field_validator("command")
+    @classmethod
+    def _command(cls, value: str | None) -> str | None:
+        if value is not None and (
+            not value.strip("*?") or any(unicodedata.category(c) in _HIDDEN for c in value)
+        ):
+            raise ValueError("name the command: plain text, not only wildcards")
+        return value
+
+    @model_validator(mode="after")
+    def _tied(self) -> Correlation:
+        if not self.same:
+            raise ValueError("same: account, address or both (a partner by anyone isn't one)")
+        return self
+
+
 class Match(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -68,6 +111,7 @@ class Match(BaseModel):
     address: str | None = None  # an address or a network, host bits zero
     path: str | None = None  # an anchored pattern: * within a directory, ** across
     exe: str | None = None  # a process's executable, as a path pattern
+    correlated_with: Correlation | None = None
 
     @field_validator("address")
     @classmethod
@@ -107,6 +151,8 @@ class Match(BaseModel):
     def narrow(self) -> bool:
         """Names something that limits it: not only the check, a process's
         own name, every address (/0) or every path (/**)."""
+        if self.correlated_with is not None and self.correlated_with.command is not None:
+            return True  # only when that account then runs that command
         for name in NARROWING:
             value = getattr(self, name)
             if value is None:
@@ -361,7 +407,12 @@ class Whitelist:
             changed += 1
         return changed
 
-    def apply(self, findings: list[dict[str, Any]], today: date | None = None) -> dict[str, Any]:
+    def apply(
+        self,
+        findings: list[dict[str, Any]],
+        today: date | None = None,
+        events: list | None = None,
+    ) -> dict[str, Any]:
         """Mark each finding a live rule matches with `suppressed_by` (the
         first match, narrowest layer first); returns what the assessment
         records: the set's hash, its rules, the expired ones, and counts."""
@@ -372,7 +423,7 @@ class Whitelist:
         for finding in findings:
             finding.pop("suppressed_by", None)
             for placed in live:
-                if matches(placed.rule.match, finding):
+                if matches(placed.rule.match, finding, events):
                     finding["suppressed_by"] = {
                         "rule": placed.rule.id,
                         "layer": placed.layer,
@@ -397,12 +448,15 @@ class Whitelist:
 
 
 def reapply(
-    findings: list[dict[str, Any]], whitelist: Whitelist | None, today: date | None = None
+    findings: list[dict[str, Any]],
+    whitelist: Whitelist | None,
+    today: date | None = None,
+    events: list | None = None,
 ) -> dict[str, Any] | None:
     """Stored findings under another whitelist (or none): earlier
     suppressions and maintenance undone, then this one applied."""
     if whitelist is not None:
-        return whitelist.apply(findings, today)
+        return whitelist.apply(findings, today, events)
     for finding in findings:
         finding.pop("suppressed_by", None)
         earlier = finding.pop("maintenance", None)
@@ -424,7 +478,7 @@ def _moment(text: str | None) -> datetime | None:
 # --- Matching ----------------------------------------------------------------------------
 
 
-def matches(match: Match, finding: dict[str, Any]) -> bool:
+def matches(match: Match, finding: dict[str, Any], events: list | None = None) -> bool:
     """Every field the rule gives must match, and must cover every entity of
     its kind the finding names (one known file doesn't vouch for another in
     the same finding); a finding whose entity list is partial matches no
@@ -453,6 +507,8 @@ def matches(match: Match, finding: dict[str, Any]) -> bool:
             ok = all(path_matches(wanted, v) for v in values)
         if not ok:
             return False
+    if match.correlated_with is not None:
+        return correlated(match.correlated_with, finding, events)
     return True
 
 

@@ -293,6 +293,14 @@ report reassesses it once (no checks run).
 - Tests: each chain present, absent, outside its window, and with a
   different account; a whitelisted step doesn't count towards a chain.
 
+*As built:* `checker/correlate.py`. Whitelist conditions require a partner
+for every event the finding cites (never itself), with `same` account
+and/or address and an optional command pattern (matched without
+backtracking). Chains count once each; state steps (no time) must be new
+since the previous bundle. `sudo.rules` findings now name the account or
+group a rule grants to, so the first chain can follow it. No chain fires
+on the golden cases (fresh or detection); the proofs stage chains in 2.10.
+
 ### 2.4 — Network and data transfer (8.8)
 
 - **Collector, new module `network`** (files, plus the two firewall

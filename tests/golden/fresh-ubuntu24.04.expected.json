@@ -594,6 +594,7 @@
  ],
  "score": {
   "band": "Low",
+  "chains": [],
   "contributors": [],
   "hygiene_and_exposure": {
    "band": "low",

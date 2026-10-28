@@ -70,7 +70,11 @@ def probability_band(probability: float) -> str:
     return next(name for floor, name in PROBABILITY_BANDS if probability >= floor)
 
 
-def score(findings: list[dict[str, Any]], prior: float = DEFAULT_PRIOR) -> dict[str, Any]:
+def score(
+    findings: list[dict[str, Any]],
+    prior: float = DEFAULT_PRIOR,
+    chains: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """The score of one assessment's findings (dicts, as stored). Sets
     `ratio` and `contribution` on each finding and returns the score:
     prior, log-odds, probability, band, contributors (largest first) and
@@ -91,9 +95,14 @@ def score(findings: list[dict[str, Any]], prior: float = DEFAULT_PRIOR) -> dict[
         counted.append(index)
         finding["contribution"] = weight
     capped = _apply_caps(findings, counted)
-    log_odds = logit(prior) + sum(findings[i]["contribution"] for i in counted)
+    # Chains (checker/correlate.py): findings that together tell an attack's
+    # story add their chain's bonus, once per chain, on top.
+    bonus = [(c, math.log(c["ratio"])) for c in chains or []]
+    log_odds = (
+        logit(prior) + sum(findings[i]["contribution"] for i in counted) + sum(b for _, b in bonus)
+    )
     probability = 1 / (1 + math.exp(-log_odds))
-    total = sum(findings[i]["contribution"] for i in counted)
+    total = sum(findings[i]["contribution"] for i in counted) + sum(b for _, b in bonus)
     contributors = sorted(
         (
             {
@@ -110,6 +119,20 @@ def score(findings: list[dict[str, Any]], prior: float = DEFAULT_PRIOR) -> dict[
         ),
         key=lambda c: (-c["contribution"], c["finding"]),
     )
+    contributors += [
+        {
+            "finding": None,
+            "check": f"chain:{c['chain']}",
+            "title": f"{c['title']} ({c['account']})",
+            "ratio": c["ratio"],
+            "contribution": round(b, 4),
+            "share": round(b / total, 4) if total else 0.0,
+            "capped": None,
+            "chain": c,
+        }
+        for c, b in bonus
+    ]
+    contributors.sort(key=lambda c: -c["contribution"])
     for finding in findings:
         finding["contribution"] = round(finding["contribution"], 4)
     return {

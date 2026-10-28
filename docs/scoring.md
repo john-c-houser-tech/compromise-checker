@@ -65,6 +65,33 @@ reason recorded here.
   until a new baseline is accepted, and counts each time; the report marks
   which findings are new.
 
+## Chains
+
+Findings that together tell an attack's story earn a bonus on top of what
+each counts alone (DESIGN.md §11.3; `CHAINS` in `checker/correlate.py`,
+data like the ratios):
+
+| Chain | Steps, for one account | Within | Bonus |
+|---|---|---|---|
+| `new-account-escalated-used` | a new account or key → a sudo rule or privileged group for it → a login by it | 7 days | ×5 |
+| `guessed-then-entrenched` | a login after repeated failures → a new key, sudo rule or privileged group for it | 24 hours | ×5 |
+
+- Each chain counts **once**, however many accounts complete it.
+- A suppressed finding doesn't count as a step: a whitelisted step is
+  explained.
+- A step from the logs must fall within the chain's time of its first
+  step, and a login must come after it. A step about state (a snapshot
+  change, which has no time) counts only if it is new since the previous
+  bundle.
+- The bonus shows in the contributors as its own line (`chain:<id>`), and
+  the assessment lists each chain with the findings and events that made
+  it.
+
+More chains arrive with the checks they need: a web worker's child, a file
+in a scratch place and an outbound connection (2.4, 2.8); anything high,
+then logging stopped or history wiped (2.5); a new web script, then
+successful requests to it (2.8).
+
 ## The prior
 
 The prior is the probability of compromise before any evidence: 2% by

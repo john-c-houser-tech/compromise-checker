@@ -21,8 +21,12 @@ Each finding has:
   DESIGN.md §8's ★ checks. Each band has a likelihood ratio, and the
   findings' ratios make the host's score ([scoring](scoring.md)).
 - **variant**: which of a check's kinds of finding this is, where they
-  weigh differently (`kernel.taint`: `unexplained` or `unloaded`); used by
-  scoring's per-check overrides and, later, by whitelists.
+  weigh differently, declared by the check; used by scoring's per-check
+  overrides and by whitelist rules. So far: `ssh.login` (`root_login`,
+  `new_address`), `system.reboot` (`unclean`, `operator`, `power_button`,
+  `planned`, `unexplained`), `kernel.taint` (`unexplained`, `unloaded`).
+- **suppressed_by**: set when a whitelist rule matched: the rule, its
+  layer and file, its reason and owner ([whitelists](whitelists.md)).
 - **entities**: what it involves (`account:eve`, `address:203.0.113.9`,
   `path:…`, `module:…`, `program:…`, `boot:…`).
 - **evidence**: the events (by their index in the stored events), snapshot

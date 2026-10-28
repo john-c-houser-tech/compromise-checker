@@ -145,6 +145,9 @@ class Result:
 
 
 def judge(findings: list[dict], expected: list[Expected]) -> tuple[list, list, list]:
+    # A suppressed finding doesn't count: the proof's whitelist covers its
+    # own setup only, and a behaviour it hid would be a miss.
+    findings = [f for f in findings if not f.get("suppressed_by")]
     found, missing, explained = [], [], set()
     for want in expected:
         hits = [
@@ -259,7 +262,9 @@ async def detect(
         try:
             identity = load_identity(Path(config.identity_file))
             recipients = load_config(home).recipients
-            assessment = analyze(store, distro, identity, recipients)
+            assessment = analyze(
+                store, distro, identity, recipients, whitelist=proof.proof_whitelist(home, distro)
+            )
             if golden_dir is not None:
                 # The fresh server (the first bundle, its own baseline) and
                 # the compromised one (the second, against it).

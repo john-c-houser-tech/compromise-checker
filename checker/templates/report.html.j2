@@ -169,7 +169,27 @@ uncertain findings count half. Suppressed and informational findings don't count
 {% endfor %}
 
 <h2>Appendix</h2>
-<p class="muted">Suppressed findings: none (whitelists come in a later version).</p>
+{% for r in reports %}
+{% set w = r.assessment.whitelist %}
+<h3>{{ r.host|visible(80) }}: suppressed findings</h3>
+{% if not w %}<p class="muted">No whitelist applied.</p>
+{% else %}
+<p class="muted">Whitelist <span class="mono">{{ w.hash[:16] }}</span>: {{ w.rules|length }} rule(s){% if w.disabled %}, {{ w.disabled|length }} switched off{% endif %}.
+Suppressed findings are kept, here, and count for nothing in the probability.</p>
+{% if w.expired %}<div class="notice">Expired rules, no longer applied: {% for e in w.expired %}<span class="mono">{{ e|visible(120) }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</div>{% endif %}
+{% if r.suppressed %}
+<div class="wrap"><table>
+<tr><th>Band</th><th>Finding</th><th>Rule</th><th>Reason</th><th>Owner</th></tr>
+{% for f in r.suppressed %}
+<tr><td><span class="band {{ f.band }}">{{ f.band|upper }}</span></td>
+<td>{{ f.title|visible(200) }}<div class="mono muted">{{ f.summary|visible(300) }}</div></td>
+<td class="mono">{{ f.suppressed_by.layer|visible(80) }} / {{ f.suppressed_by.rule|visible(80) }}</td>
+<td>{{ f.suppressed_by.reason|visible(300) }}</td><td>{{ f.suppressed_by.owner|visible(80) }}</td></tr>
+{% endfor %}
+</table></div>
+{% else %}<p class="muted">No finding matched a rule.</p>{% endif %}
+{% endif %}
+{% endfor %}
 {% for r in reports %}
 <h3>{{ r.host|visible(80) }}: collection and custody</h3>
 <table>

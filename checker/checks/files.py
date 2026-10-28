@@ -67,6 +67,7 @@ def _grouped(check_id, title, category, band, section, members, detail) -> Findi
         shown,
         [f"path:{p}" for p in paths[:20]],
         [{"item": [section, p]} for p in paths[:50]],
+        entities_complete=len(paths) <= 20,
     )
 
 

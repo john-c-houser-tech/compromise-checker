@@ -8,7 +8,7 @@ import gzip
 import hashlib
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,7 @@ from checker.evidence import Config, EvidenceError, Store, open_text, seal_text
 from checker.inventory import Inventory
 from checker.scoring import DEFAULT_PRIOR, SCORING_VERSION, score
 from checker.snapshot import FULL, SNAPSHOT_VERSION, Snapshot
+from checker.whitelist import Whitelist
 
 # Logs whose reach (how far back they go) the coverage reports.
 LOG_SOURCES = ("auth_log", "auth_journal", "system_journal", "login_records")
@@ -111,15 +112,31 @@ def coverage(
     return {"gaps": gaps, "log_reach": reach}
 
 
+def count(findings: list[dict[str, Any]]) -> dict[str, int]:
+    """Findings by category and band, suppressed ones left out."""
+    counts: dict[str, int] = {}
+    for finding in findings:
+        if finding.get("suppressed_by"):
+            continue
+        key = f"{finding['category']}/{finding['band']}"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def evaluate(
-    context: Context, prior: tuple[float, str]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    """The checks over a context, and their score: the findings (as
-    stored), which checks ran, and the score. What `analyze` stores, and
+    context: Context,
+    prior: tuple[float, str],
+    whitelist: Whitelist | None = None,
+    today: date | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
+    """The checks over a context, the whitelist over their findings, and the
+    score: the findings (as stored, suppressed ones marked), which checks
+    ran, the score, and what the whitelist did. What `analyze` stores, and
     what the golden reports pin (tests/golden)."""
     findings, ran = run_checks(context)
     found = [f.as_dict() for f in findings]
-    return found, ran, score(found, prior[0]) | {"prior_source": prior[1]}
+    applied = whitelist.apply(found, today) if whitelist is not None else None
+    return found, ran, score(found, prior[0]) | {"prior_source": prior[1]}, applied
 
 
 def analyze(
@@ -129,6 +146,7 @@ def analyze(
     recipients: list[str],
     bundle_id: str | None = None,
     prior: tuple[float, str] = (DEFAULT_PRIOR, "default"),
+    whitelist: Whitelist | None = None,
 ) -> dict[str, Any]:
     """Run every check on a host's bundle (by default its latest), score
     the findings from `prior` (value, source) and store the assessment;
@@ -183,11 +201,8 @@ def analyze(
         previous_time=previous_time,
         no_baseline=no_baseline,
     )
-    found_dicts, ran, scored = evaluate(context, prior)
-    counts: dict[str, int] = {}
-    for finding in found_dicts:
-        key = f"{finding['category']}/{finding['band']}"
-        counts[key] = counts.get(key, 0) + 1
+    found_dicts, ran, scored, applied = evaluate(context, prior, whitelist)
+    counts = count(found_dicts)
     assessment = {
         "format": ASSESSMENT_FORMAT,
         "host": host,
@@ -205,6 +220,7 @@ def analyze(
         "notes": notes,
         "counts": counts,
         "score": scored,
+        "whitelist": applied,
         "findings": found_dicts,
         "checks": ran,
         "coverage": coverage(row, identity, parsed.events, parsed.summary, snapshot),

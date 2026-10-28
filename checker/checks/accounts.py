@@ -464,7 +464,11 @@ def guessed(context: Context) -> list[Finding]:
     return findings
 
 
-@check("ssh.login", "Direct root logins; logins from sources never seen before")
+@check(
+    "ssh.login",
+    "Direct root logins; logins from sources never seen before",
+    variants=("root_login", "new_address"),
+)
 def logins(context: Context) -> list[Finding]:
     accepted = list(context.of("ssh.login.accepted"))
     findings = []
@@ -482,6 +486,7 @@ def logins(context: Context) -> list[Finding]:
                     [{"event": index}],
                     event.corrected,
                     event.corrected,
+                    variant="root_login",
                 )
             )
     if not accepted:
@@ -513,6 +518,7 @@ def logins(context: Context) -> list[Finding]:
                 [{"event": i} for i, _ in hits],
                 first,
                 last,
+                variant="new_address",
             )
         )
     return findings

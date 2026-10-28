@@ -47,6 +47,7 @@ from checker.evidence import (
 from checker.inventory import Host
 from checker.protocol import Limits
 from checker.transport import fetch_host_key, trust_host_key
+from checker.whitelist import load as whitelist_load
 
 API = "https://api.linode.com/v4"
 TAG = "compromise-checker-test"
@@ -708,6 +709,18 @@ COMPLETE_SECTIONS = (
 )
 
 
+PROOF_WHITELIST = Path(__file__).resolve().parent / "proof-whitelist.yaml"
+
+
+def proof_whitelist(home: Path, host: str):
+    """The proofs' own whitelist (their setup, explained), installed as the
+    host's whitelist file in the proof's home, as an operator would."""
+    target = home / "whitelist" / "hosts" / f"{host}.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(PROOF_WHITELIST.read_text(encoding="utf-8"), encoding="utf-8")
+    return whitelist_load(home, host, None)
+
+
 def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path, key) -> None:
     """Parse the bundle as the controller does and check its snapshot holds
     what the setup put on the server."""
@@ -716,7 +729,13 @@ def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path,
     try:
         row = store.bundle(bundle_id)
         parsed = parse_bundle(row, identity)
-        assessment = analyze(store, row["host"], identity, load_config(home).recipients)
+        assessment = analyze(
+            store,
+            row["host"],
+            identity,
+            load_config(home).recipients,
+            whitelist=proof_whitelist(home, row["host"]),
+        )
     finally:
         store.close()
     result.checks_failed = [
@@ -727,7 +746,7 @@ def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path,
     result.findings = [
         f"{f['band']} {f['category']}: {f['title']} — {f['summary'][:120]}"
         for f in assessment["findings"]
-        if f["band"] != "info"
+        if f["band"] != "info" and not f.get("suppressed_by")
     ]
     result.events = len(parsed.events)
     result.own_events = parsed.summary.get("own_session") or 0

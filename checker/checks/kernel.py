@@ -159,7 +159,11 @@ def kernel_errors(context: Context) -> list[Finding]:
     return findings
 
 
-@check("kernel.taint", "Kernel taint: out-of-tree or unsigned modules, taint changes")
+@check(
+    "kernel.taint",
+    "Kernel taint: out-of-tree or unsigned modules, taint changes",
+    variants=("unexplained", "unloaded"),
+)
 def kernel_taint(context: Context) -> list[Finding]:
     findings = []
     host = context.items("host")

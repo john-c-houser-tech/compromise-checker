@@ -162,13 +162,15 @@ def _processes(context: Context):
 def _finding(check_id, title, band, process, detail, category=COMPROMISE) -> Finding:
     pid = process.get("pid")
     comm = process.get("comm") or "?"
+    exe = str(process.get("exe") or "")
     return Finding(
         check_id,
         title,
         category,
         band,
         f"{comm} (pid {pid}): {detail}",
-        [f"program:{comm}", f"pid:{pid}"],
+        # comm is a name the process chose; exe is the file it runs.
+        [f"program:{comm}", f"pid:{pid}"] + ([f"exe:{exe}"] if exe else []),
         [{"live": ["processes", pid]}],
         process.get("start_time"),
         process.get("start_time"),

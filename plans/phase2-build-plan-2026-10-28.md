@@ -241,6 +241,18 @@ different checks take a 2% prior to about 72%.
   file named `x/../y` or with `*` in it doesn't widen a match); expiry;
   `test` output; a window boundary.
 
+*As built:* split into 2.2a (files, validation with file and line, layers
+and `disable`, matching, suppression in `analyze` and the report, `checker
+whitelist check`, the proofs' own whitelist) and 2.2b (`whitelist test`,
+`whitelist stale`, maintenance windows). Checks now declare their variants
+(`ssh.login`, `system.reboot`, `kernel.taint` so far), so a rule naming an
+unknown variant is an error. The proofs' setup is whitelisted by
+`tests/integration/proof-whitelist.yaml`, also carried by the golden cases:
+the fresh servers now score Low (Ubuntu 2.0%, Rocky 3.0%, the remaining
+point from firewalld's libffi code), the compromised ones still 100%
+Critical, and the detection proof ignores suppressed findings, so the
+whitelist can't hide a behaviour.
+
 ### 2.3 — Correlation
 
 - **Engine** (`checker/correlate.py`): a time-ordered view of a bundle's

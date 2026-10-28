@@ -26,12 +26,13 @@ from pyrage import x25519
 
 from checker import __version__
 from checker.analysis import load_events, snapshot_of
-from checker.assess import analyze, events_of, load_assessment, store_assessment
+from checker.assess import analyze, count, events_of, load_assessment, store_assessment
 from checker.baseline import USABLE, usable_bundles
 from checker.checks import BANDS, CATEGORIES, CHECKS_VERSION
 from checker.evidence import EvidenceError, Store, open_text, who_and_where
 from checker.scoring import DEFAULT_PRIOR, percent, score
 from checker.snapshot import Snapshot
+from checker.whitelist import Whitelist
 
 MAX_EVIDENCE = 5  # excerpts shown per finding
 MAX_TIMELINE = 300
@@ -120,6 +121,7 @@ class HostReport:
     manifest: dict
     custody: list
     findings: dict[str, list[dict]] = field(default_factory=dict)  # by category
+    suppressed: list[dict] = field(default_factory=list)  # whitelisted, for the appendix
     timeline: list[dict] = field(default_factory=list)
     counts: dict[str, dict[str, int]] = field(default_factory=dict)
 
@@ -191,14 +193,37 @@ def _excerpts(
     return shown
 
 
-def rescore(store: Store, row, recipients, assessment: dict, prior: tuple[float, str]) -> dict:
-    """The assessment's findings scored from another prior, stored as a new
-    assessment (the earlier one is kept)."""
+def reassess(
+    store: Store,
+    row,
+    recipients,
+    assessment: dict,
+    prior: tuple[float, str],
+    whitelist: Whitelist | None,
+) -> dict:
+    """The assessment's findings with another whitelist or prior: the
+    whitelist applied again and the findings scored again, without running
+    the checks (which could see another baseline by now). Stored as a new
+    assessment; the earlier one is kept."""
     again = json.loads(json.dumps(assessment))
     again["analysed_at"] = datetime.now(UTC).isoformat()
+    again["whitelist"] = rewhitelist(again["findings"], whitelist)
     again["score"] = score(again["findings"], prior[0]) | {"prior_source": prior[1]}
+    again["counts"] = count(again["findings"])
     store_assessment(store, row, recipients, again)
     return again
+
+
+def rewhitelist(findings: list[dict], whitelist: Whitelist | None) -> dict | None:
+    if whitelist is None:
+        for finding in findings:
+            finding.pop("suppressed_by", None)
+        return None
+    return whitelist.apply(findings)
+
+
+def whitelist_hash(assessment: dict) -> str | None:
+    return (assessment.get("whitelist") or {}).get("hash")
 
 
 def host_report(
@@ -208,10 +233,11 @@ def host_report(
     recipients,
     bundle_id=None,
     prior: tuple[float, str] = (DEFAULT_PRIOR, "default"),
+    whitelist: Whitelist | None = None,
 ) -> HostReport:
     """A host's latest (or a given) bundle, analysed with the current
-    checks and scored from `prior` if its stored assessment is missing,
-    older, or scored from another prior."""
+    checks, whitelist and prior: analysed again if its stored assessment is
+    missing or older, reassessed if only the whitelist or prior changed."""
     rows = usable_bundles(store, host)
     if bundle_id is None and not rows:
         raise EvidenceError(f"no usable bundle for {host}")
@@ -224,11 +250,14 @@ def host_report(
     # Its evidence points into one parse of the bundle (event numbers,
     # snapshot keys): any newer parser or checks means analysing again.
     if assessment is None or assessment.get("versions") != current_versions():
-        assessment = analyze(store, host, identity, recipients, row["id"], prior)
-    elif (assessment["score"]["prior"], assessment["score"]["prior_source"]) != prior:
-        # Only the prior changed: score the same findings again, without
-        # running the checks (which could see another baseline by now).
-        assessment = rescore(store, row, recipients, assessment, prior)
+        assessment = analyze(store, host, identity, recipients, row["id"], prior, whitelist)
+    elif (
+        (assessment["score"]["prior"], assessment["score"]["prior_source"]) != prior
+        or whitelist_hash(assessment) != (whitelist.digest() if whitelist else None)
+        # A rule that has expired since the assessment stops suppressing.
+        or (whitelist and whitelist.expired() != assessment["whitelist"].get("expired"))
+    ):
+        assessment = reassess(store, row, recipients, assessment, prior, whitelist)
     parsed = load_events(store, row, identity)
     events = parsed.events if parsed else events_of(store, row, identity, recipients)
     snapshot = snapshot_of(store, row, identity, recipients)
@@ -254,6 +283,9 @@ def host_report(
     timeline = {}
     for finding in assessment["findings"]:
         finding = dict(finding, excerpts=_excerpts(finding, events, snapshot, baselines))
+        if finding.get("suppressed_by"):
+            report.suppressed.append(finding)
+            continue  # in the appendix, with its rule; not in the timeline
         report.findings.setdefault(finding["category"], []).append(finding)
         counts = report.counts.setdefault(finding["category"], dict.fromkeys(BANDS, 0))
         counts[finding["band"]] += 1
@@ -320,11 +352,16 @@ def write_report(
     bundle_id: str | None = None,
     output: Path | None = None,
     priors: Callable[[str], tuple[float, str]] | None = None,
+    whitelists: Callable[[str], Whitelist | None] | None = None,
 ) -> Path:
     """Write the report (owner-only, like the evidence) and add a
     `reported` entry, with the report's hash, to each bundle's custody."""
     priors = priors or (lambda _: (DEFAULT_PRIOR, "default"))
-    reports = [host_report(store, h, identity, recipients, bundle_id, priors(h)) for h in hosts]
+    whitelists = whitelists or (lambda _: None)
+    reports = [
+        host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h))
+        for h in hosts
+    ]
     html = render(reports, who_and_where())
     if output is None:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)

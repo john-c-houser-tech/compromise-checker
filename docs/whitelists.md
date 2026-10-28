@@ -78,6 +78,50 @@ doesn't hide a group of files that also holds an unknown one. A finding
 that lists only some of its entities (a group of more than 20 files) is
 matched only by a broad rule.
 
+## Maintenance windows
+
+Planned work explains reboots. Inside a window in any layer, an
+*unexplained* reboot (a clean shutdown no command explains) becomes
+informational, and an *unclean* one (no shutdown recorded: a crash, a
+power loss, a forced reset) drops one band, from medium to low, but stays
+a finding. The tool knows when an unclean reboot came back, not when the
+host went down, and a forced reset timed for the patch night must stay
+visible. Each is marked with the window and the band it would have had
+(package changes join with plan 2.6):
+
+```yaml
+maintenance:
+  - id: patch-night            # ids are shared with rules
+    every: [sun]               # mon … sun
+    from: "02:00"              # quoted: YAML reads 02:00 as a number
+    to: "04:00"                # the end is outside; to < from crosses midnight
+    tz: America/Los_Angeles    # default UTC
+    reason: "Weekly patching."
+    owner: ops
+    expires: never
+  - id: kernel-upgrade
+    start: 2026-11-05T01:00:00-08:00   # once; both times with their offset
+    end: 2026-11-05T03:00:00-08:00
+    reason: "Kernel upgrade, change 1234."
+    owner: john
+    expires: 2026-12-31
+```
+
+The whole outage must be inside one window: the shutdown (the first thing
+the finding records) and the boot (for an unclean reboot, only the boot is
+known). A host that went down on Saturday
+evening and came back during Sunday's window is not maintenance. An
+expired window still explains the reboots it covered before its expiry, so
+scores don't jump on the day it expires; it stops covering new ones.
+Windows can be switched off with `disable`. Operator reboots, power-button
+and planned (automatic updater) reboots are already informational and are
+left alone.
+
+Times are the window's wall clock in its `tz`. On the day clocks go
+forward, a window inside the skipped hour covers nothing; on the day they
+go back, the repeated hour is covered twice. One-off windows carry their
+offsets and take no `tz`.
+
 ## What a rule can't be tricked into
 
 Rules read typed fields the checks set, never text from the host, so a log
@@ -110,10 +154,25 @@ a half-read whitelist would hide or show findings no one decided on.
   comes from, its expiry, and the rules switched off.
 - `checker analyze HOST` counts suppressed findings; `--suppressed` lists
   them with their rule and reason.
-- Coming in plan 2.2b: `checker whitelist test` (what a change would hide,
-  on stored assessments, before it is saved), `checker whitelist stale`
-  (rules that matched nothing in 90 days, or are about to expire), and
-  maintenance windows.
+- `checker whitelist test HOST --file F [--as host|group|global]`: the
+  proposed file read in place of the host's (or its group's, or the global)
+  file, applied to the host's stored analyses in the retention period. For
+  each it prints the probability before and after and the findings the
+  change would hide, reveal or move into or out of a maintenance window.
+  It reads stored assessments and changes nothing: no file is written and
+  no assessment or custody entry is added. If the host's current file is
+  broken, it still runs (comparing with no whitelist), so a fix can be
+  tested. `--as global` or `--as group` shows the effect on this host only;
+  the change reaches every host that uses that file.
+- `checker whitelist stale [--days 90]` (1 to 36500): live rules that
+  match no stored finding of any inventory host in that time, with the
+  current files applied to the stored findings (so a rule added since the
+  last analysis is judged fairly). A rule counts once, by its file and id,
+  however many hosts share it. Group files no host belongs to, and host
+  files of hosts no longer in the inventory, are included: their rules
+  match nothing. Expired rules and windows are listed apart, as are those
+  expiring within 30 days. Stale rules are candidates for
+  removal: a rule that matches nothing still hides what it would match.
 
 ## What is recorded
 

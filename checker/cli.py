@@ -6,10 +6,11 @@ import json
 import sqlite3
 import sys
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 
+import pyrage
 from pydantic import ValidationError
 
 from checker import __version__
@@ -40,6 +41,10 @@ from checker.scoring import percent
 from checker.transport import TransportError, fetch_host_key, trust_host_key
 from checker.whitelist import WhitelistError, check_all
 from checker.whitelist import for_host as whitelist_for_host
+from checker.whitelist import load_with as whitelist_load_with
+from checker.whitelist import other_sets as whitelist_other_sets
+from checker.whitelist_review import compare as whitelist_compare
+from checker.whitelist_review import stale as whitelist_stale
 
 # What `checker init --home-text` means, as `init` reports it.
 HOME_TEXT = {
@@ -237,8 +242,8 @@ def cmd_whitelist_check(args: argparse.Namespace) -> int:
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
-    if merged is None or not merged.rules:
-        print(f"No whitelist rules apply to {args.host}.")
+    if merged is None or not (merged.rules or merged.windows):
+        print(f"No whitelist rules or maintenance windows apply to {args.host}.")
     if merged is None:
         return 0
     today = datetime.now(UTC).date()
@@ -253,8 +258,113 @@ def cmd_whitelist_check(args: argparse.Namespace) -> int:
             + (f" EXPIRED {rule.expires}" if expired else f" until {rule.expires}")
         )
         print(f"{'':20} {rule.reason}  ({rule.owner})")
+    for placed in merged.windows:
+        window = placed.rule
+        expired = window.expires != "never" and window.expires < today
+        when = (
+            f"every {','.join(window.every)} {window.start_time}-{window.end_time}"
+            f" {window.tz or 'UTC'}"
+            if window.every
+            else f"{window.start.isoformat()} to {window.end.isoformat()}"
+        )
+        print(
+            f"{placed.layer:20} {window.id:30} maintenance {when}"
+            + (f" EXPIRED {window.expires}" if expired else f" until {window.expires}")
+        )
+        print(f"{'':20} {window.reason}  ({window.owner})")
     for item in merged.disabled:
         print(f"{item['by']:20} switched off {item['id']}: {item['reason']}  ({item['owner']})")
+    return 0
+
+
+def cmd_whitelist_test(args: argparse.Namespace) -> int:
+    """A proposed file against the host's stored analyses in the retention
+    period: the score before and after, and what it would hide or reveal.
+    Nothing is saved."""
+    base = home()
+    store = Store(database_file(base))
+    try:
+        config = load_config(base)
+        identity = _identity(args, base)
+        inventory = _inventory_for_priors()
+        entry = next((h for h in inventory.hosts if h.name == args.host), None)
+        group = entry.group if entry else None
+        try:
+            current = _whitelist_for(base, args.host, inventory)
+        except EvidenceError as exc:
+            # Testing the fix for a broken file must still work.
+            print(f"Note: the current set is invalid ({exc}); comparing with no whitelist.")
+            current = None
+        try:
+            proposed = whitelist_load_with(base, args.host, group, args.layer, Path(args.file))
+        except WhitelistError as exc:
+            raise EvidenceError(f"the proposed file: {exc}") from None
+        since = datetime.now(UTC) - timedelta(days=config.retention_days)
+        results = whitelist_compare(store, args.host, identity, current, proposed, since)
+    except (pyrage.DecryptError, OSError) as exc:
+        print(f"checker: can't read the stored analyses: {exc}", file=sys.stderr)
+        return 1
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    if not results:
+        print(f"No scored analyses of {args.host} in the last {config.retention_days} days.")
+        return 0
+    changed = 0
+    for r in results:
+        (p0, b0), (p1, b1) = r["before"], r["after"]
+        moved = r["hidden"] or r["revealed"] or r["rebanded"]
+        changed += bool(moved)
+        print(f"{r['bundle']}  {percent(p0)} {b0} -> {percent(p1)} {b1}")
+        for line in r["hidden"]:
+            print(f"  would hide     {line}")
+        for line in r["revealed"]:
+            print(f"  would reveal   {line}")
+        for line in r["rebanded"]:
+            print(f"  would reband   {line}")
+    print(f"{changed} of {len(results)} analyses would change. Nothing was saved.")
+    return 0
+
+
+def _days(text: str) -> int:
+    try:
+        days = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("a whole number of days") from None
+    if not 1 <= days <= 36500:
+        raise argparse.ArgumentTypeError("between 1 and 36500")
+    return days
+
+
+def cmd_whitelist_stale(args: argparse.Namespace) -> int:
+    """Rules no recent analysis needed, and rules expired or expiring."""
+    base = home()
+    store = Store(database_file(base))
+    try:
+        identity = _identity(args, base)
+        inventory = _inventory_for_priors()
+        sets = {h.name: _whitelist_for(base, h.name, inventory) for h in inventory.hosts}
+        sets |= whitelist_other_sets(base, inventory)
+        found = whitelist_stale(store, identity, sets, args.days)
+    except (pyrage.DecryptError, OSError) as exc:
+        print(f"checker: can't read the stored analyses: {exc}", file=sys.stderr)
+        return 1
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    headings = {
+        "stale": f"No match in the last {args.days} days",
+        "expired": "Expired (no longer applied)",
+        "expiring": "Expiring within 30 days",
+    }
+    for kind, heading in headings.items():
+        print(f"{heading}:")
+        for line in found[kind] or ["none"]:
+            print(f"  {line}")
     return 0
 
 
@@ -549,6 +659,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     checking.add_argument("host", nargs="?")
     checking.set_defaults(handler=cmd_whitelist_check)
+    testing = whitelist_commands.add_parser(
+        "test", help="what a proposed whitelist file would hide or reveal, on stored analyses"
+    )
+    testing.add_argument("host")
+    testing.add_argument("--file", required=True, help="the proposed file")
+    testing.add_argument(
+        "--as",
+        dest="layer",
+        choices=["host", "group", "global"],
+        default="host",
+        help="which of the host's files it would replace (default: the host's)",
+    )
+    testing.add_argument("--identity", help="the evidence private key file")
+    testing.set_defaults(handler=cmd_whitelist_test)
+    staling = whitelist_commands.add_parser(
+        "stale", help="rules that matched nothing lately, and rules expired or expiring"
+    )
+    staling.add_argument(
+        "--days", type=_days, default=90, help="how far back, 1 to 36500 (default 90)"
+    )
+    staling.add_argument("--identity", help="the evidence private key file")
+    staling.set_defaults(handler=cmd_whitelist_stale)
     purging = commands.add_parser(
         "purge", help="delete stored evidence for a host, before a date, or past retention"
     )
@@ -694,6 +826,13 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
             " suppressed"
             + (" (--suppressed lists them)" if suppressed and not args.suppressed else "")
         )
+        if applied.get("maintenance"):
+            print(
+                f"           {applied['maintenance']} reboot(s) in maintenance windows,"
+                " lowered (unexplained to info, unclean one step)"
+            )
+    order = {band: i for i, band in enumerate(BANDS)}
+    findings = sorted(findings, key=lambda f: order[f["band"]])  # a window moves a band
     by_band = {band: sum(f["band"] == band for f in findings) for band in BANDS}
     print("Findings   " + ", ".join(f"{n} {band}" for band, n in by_band.items()))
     for category in CATEGORIES:
@@ -705,6 +844,9 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
         print(f"\n{HEADINGS[category]}:")
         for f in shown:
             marks = (" [new]" if f["new"] else "") + (" [uncertain]" if f["uncertain"] else "")
+            if f.get("maintenance"):
+                m = f["maintenance"]
+                marks += f" [maintenance {m['window']}, was {m['band']}]"
             print(f"  {f['band'].upper():8} {f['title']}{marks}")
             print(f"           {f['summary'][:200]}")
             if f["uncertain"]:

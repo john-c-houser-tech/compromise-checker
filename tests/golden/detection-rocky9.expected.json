@@ -1311,7 +1311,8 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "8e0ac984a17fb8465862f2ffc6d7e2b9d783c762d92cead84abfd718a81ac5b8",
+  "hash": "268f59cd3433e6e4838efff3a6da228f714210280703adcb93827ad794b26b7c",
+  "maintenance": 0,
   "matched": {
    "host rocky9/proof-at-job-redhat": 1,
    "host rocky9/proof-proofuser-account": 1,
@@ -1326,17 +1327,8 @@
     "id": "proof-at-job-redhat",
     "layer": "host rocky9",
     "match": {
-     "account": null,
-     "address": null,
      "check": "persistence.at_jobs",
-     "exe": null,
-     "group": null,
-     "key": null,
-     "module": null,
-     "package": null,
-     "path": "/var/spool/at/*",
-     "program": null,
-     "variant": null
+     "path": "/var/spool/at/*"
     },
     "owner": "compromise-checker proofs",
     "reason": "The proof queues an at job for the persistence modules to find."
@@ -1348,17 +1340,8 @@
     "id": "proof-at-job-debian",
     "layer": "host rocky9",
     "match": {
-     "account": null,
-     "address": null,
      "check": "persistence.at_jobs",
-     "exe": null,
-     "group": null,
-     "key": null,
-     "module": null,
-     "package": null,
-     "path": "/var/spool/cron/atjobs/*",
-     "program": null,
-     "variant": null
+     "path": "/var/spool/cron/atjobs/*"
     },
     "owner": "compromise-checker proofs",
     "reason": "The proof queues an at job for the persistence modules to find."
@@ -1371,15 +1354,7 @@
     "layer": "host rocky9",
     "match": {
      "account": "root",
-     "address": null,
      "check": "ssh.login",
-     "exe": null,
-     "group": null,
-     "key": null,
-     "module": null,
-     "package": null,
-     "path": null,
-     "program": null,
      "variant": "root_login"
     },
     "owner": "compromise-checker proofs",
@@ -1393,16 +1368,7 @@
     "layer": "host rocky9",
     "match": {
      "account": "proofuser",
-     "address": null,
-     "check": "account.log_changes",
-     "exe": null,
-     "group": null,
-     "key": null,
-     "module": null,
-     "package": null,
-     "path": null,
-     "program": null,
-     "variant": null
+     "check": "account.log_changes"
     },
     "owner": "compromise-checker proofs",
     "reason": "The proof creates proofuser to give the persistence modules something to find."
@@ -1415,21 +1381,13 @@
     "layer": "host rocky9",
     "match": {
      "account": "scanner",
-     "address": null,
-     "check": "account.log_changes",
-     "exe": null,
-     "group": null,
-     "key": null,
-     "module": null,
-     "package": null,
-     "path": null,
-     "program": null,
-     "variant": null
+     "check": "account.log_changes"
     },
     "owner": "compromise-checker proofs",
     "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up."
    }
   ],
-  "suppressed": 4
+  "suppressed": 4,
+  "windows": []
  }
 }

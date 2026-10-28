@@ -223,6 +223,11 @@ different checks take a 2% prior to about 72%.
 - **Maintenance windows:** reboots classified *unexplained* or *unclean*,
   and package changes (2.6), inside a window become informational, with
   the window named.
+  **Decided 2026-10-28 (John, after the 2.2b review):** an *unclean*
+  reboot inside a window drops one band (medium to low), never to
+  informational: its crash time is unknown, and a forced reset timed for
+  the patch night must stay visible. Unexplained reboots become
+  informational.
 - **Commands:**
   - `checker whitelist check [HOST]` validates, and prints the merged set
     for a host with each rule's origin;
@@ -252,6 +257,15 @@ the fresh servers now score Low (Ubuntu 2.0%, Rocky 3.0%, the remaining
 point from firewalld's libffi code), the compromised ones still 100%
 Critical, and the detection proof ignores suppressed findings, so the
 whitelist can't hide a behaviour.
+
+*2.2b as built:* maintenance windows (weekly in a time zone, or once with
+offsets; ids shared with rules, so `disable` and expiry work the same);
+`checker whitelist test` reads stored assessments only and adds nothing;
+`checker whitelist stale` counts a rule once by file and id across hosts.
+A window must hold the whole outage (shutdown and boot); an expired window
+still explains what it covered. The whitelist record now leaves out unset
+fields, so every 2.2a assessment's whitelist hash differs and the next
+report reassesses it once (no checks run).
 
 ### 2.3 — Correlation
 

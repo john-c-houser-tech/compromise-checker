@@ -86,8 +86,8 @@ does) whose preceding time is within the logs' reach, and classifies it:
   dnf-automatic) ran within the hour before;
 - **unexplained** (low): a clean shutdown that neither explains.
 
-Configured maintenance windows (DESIGN.md §8.2) come with the whitelist
-work.
+Maintenance windows in the whitelist files make unclean and unexplained
+reboots inside them informational ([whitelists](whitelists.md#maintenance-windows)).
 
 ### 8.3 Accounts and authentication
 

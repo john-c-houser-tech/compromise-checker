@@ -21,9 +21,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import asyncssh
+import golden
 import readonly_proof as proof
 
 from checker.assess import analyze
+from checker.baseline import usable_bundles
 from checker.collect import collect_hosts
 from checker.evidence import Store, database_file, initialise, load_config, load_identity
 from checker.inventory import Host
@@ -186,7 +188,9 @@ async def collect(home: Path, config, scanner: Host, known: Path):
     return outcome
 
 
-async def detect(api, distro: str, region: str, keep: bool, work: Path) -> Result:
+async def detect(
+    api, distro: str, region: str, keep: bool, work: Path, golden_dir: Path | None = None
+) -> Result:
     result = Result(distro)
     root_key = asyncssh.generate_private_key("ssh-ed25519")
     scanner_key = asyncssh.generate_private_key("ssh-ed25519")
@@ -253,12 +257,27 @@ async def detect(api, distro: str, region: str, keep: bool, work: Path) -> Resul
         await collect(home, config, scanner, known)
         store = Store(database_file(home))
         try:
-            assessment = analyze(
-                store,
-                distro,
-                load_identity(Path(config.identity_file)),
-                load_config(home).recipients,
-            )
+            identity = load_identity(Path(config.identity_file))
+            recipients = load_config(home).recipients
+            assessment = analyze(store, distro, identity, recipients)
+            if golden_dir is not None:
+                # The fresh server (the first bundle, its own baseline) and
+                # the compromised one (the second, against it).
+                protect = [controller.split()[0], address, *node.get("ipv6", "").split("/")[:1]]
+                rows = usable_bundles(store, distro)
+                first, last = rows[0]["id"], rows[-1]["id"]
+                for name, bundle in ((f"fresh-{distro}", first), (f"detection-{distro}", last)):
+                    path = golden.export_case(
+                        store,
+                        distro,
+                        identity,
+                        recipients,
+                        bundle,
+                        name,
+                        [p for p in protect if p],
+                        golden_dir,
+                    )
+                    print(f"{distro}: golden case {path}")
         finally:
             store.close()
         failed = [c for c in assessment["checks"] if c["status"].startswith("failed")]
@@ -307,6 +326,12 @@ async def main() -> int:
     )
     parser.add_argument("--region", default="us-sea")
     parser.add_argument("--keep", action="store_true", help="don't delete the servers")
+    parser.add_argument(
+        "--golden",
+        metavar="DIR",
+        type=Path,
+        help="also write golden cases (tests/golden) for each distribution, addresses replaced",
+    )
     args = parser.parse_args()
     if "all" in args.distro:
         args.distro = list(proof.IMAGES)
@@ -316,7 +341,10 @@ async def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="cc-detect-") as work:
             results = await asyncio.gather(
-                *(detect(api, d, args.region, args.keep, Path(work)) for d in args.distro)
+                *(
+                    detect(api, d, args.region, args.keep, Path(work), args.golden)
+                    for d in args.distro
+                )
             )
     finally:
         if not args.keep:

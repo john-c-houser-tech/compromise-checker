@@ -1,0 +1,602 @@
+{
+ "checks": [
+  {
+   "check": "account.changes",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "account.log_changes",
+   "findings": 2,
+   "status": "ran"
+  },
+  {
+   "check": "account.password",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "account.uid0",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.backdated",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.deceptive",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.dev",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.privileged",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.scratch",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.unowned",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "files.web",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "group.privileged",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "kernel.core_dump",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.errors",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.oom_kill",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.segfault",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.taint",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "package.changed",
+   "findings": 4,
+   "status": "ran"
+  },
+  {
+   "check": "pam.changes",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.at_jobs",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.changes",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "persistence.homes",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.ld_preload",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.executable",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.hidden",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.injected",
+   "findings": 5,
+   "status": "ran"
+  },
+  {
+   "check": "process.miner",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.reverse_shell",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.authorized_keys",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.guessed",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.login",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "sshd.config",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "sudo.rules",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "system.reboot",
+   "findings": 0,
+   "status": "ran"
+  }
+ ],
+ "findings": [
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 1.3863,
+   "entities": [
+    "account:proofuser"
+   ],
+   "evidence": [
+    {
+     "event": 53
+    }
+   ],
+   "first_seen": "2026-10-28T20:38:32.159748+00:00",
+   "last_seen": "2026-10-28T20:38:32.159748+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: proofuser UID 1001",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.6931,
+   "entities": [
+    "account:scanner"
+   ],
+   "evidence": [
+    {
+     "event": 51
+    }
+   ],
+   "first_seen": "2026-10-28T20:38:26.352414+00:00",
+   "last_seen": "2026-10-28T20:38:26.352414+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: scanner UID 1000",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.at_jobs",
+   "contribution": 1.3863,
+   "entities": [
+    "path:/var/spool/cron/atjobs/a0000101c80a8e"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "cron",
+      "/var/spool/cron/atjobs/a0000101c80a8e"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 4.0,
+   "summary": "/var/spool/cron/atjobs/a0000101c80a8e (owner UID 0)",
+   "title": "A queued at job",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "ssh.login",
+   "contribution": 1.3863,
+   "entities": [
+    "account:root",
+    "address:203.0.113.11"
+   ],
+   "evidence": [
+    {
+     "event": 34
+    }
+   ],
+   "first_seen": "2026-10-28T20:38:00.063720+00:00",
+   "last_seen": "2026-10-28T20:38:00.063720+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "root from 203.0.113.11 (publickey)",
+   "title": "A direct root login over SSH",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:(sd-pam)",
+    "pid:841"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      841
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:37:59.210000+00:00",
+   "last_seen": "2026-10-28T20:37:59.210000+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "(sd-pam) (pid 841): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:dbus-daemon",
+    "pid:664"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      664
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:37:54.580000+00:00",
+   "last_seen": "2026-10-28T20:37:54.580000+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "dbus-daemon (pid 664): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:sshd",
+    "pid:835"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      835
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:37:58.910000+00:00",
+   "last_seen": "2026-10-28T20:37:58.910000+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "sshd (pid 835): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:systemd",
+    "pid:840"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      840
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:37:59.190000+00:00",
+   "last_seen": "2026-10-28T20:37:59.190000+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "systemd (pid 840): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:systemd-logind",
+    "pid:673"
+   ],
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      673
+     ]
+    }
+   ],
+   "first_seen": "2026-10-28T20:37:54.840000+00:00",
+   "last_seen": "2026-10-28T20:37:54.840000+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "systemd-logind (pid 673): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "files.unowned",
+   "contribution": 0.0,
+   "entities": [
+    "path:/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "unowned_executables",
+      "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache (SHA-256 c22c46421f20ce55\u2026)",
+   "title": "An executable no package installed (in /usr/local or /opt)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "persistence.homes",
+   "contribution": 0.0,
+   "entities": [
+    "path:/home/proofuser/.config/systemd/user/proof.service"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "systemd",
+      "/home/proofuser/.config/systemd/user/proof.service"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/home/proofuser/.config/systemd/user/proof.service",
+   "title": "A user's own systemd unit",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf",
+    "package:modemmanager"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf (modemmanager): missing",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf",
+    "package:packagekit"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf (packagekit): missing",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/init/thermald.conf",
+    "package:thermald"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/init/thermald.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/init/thermald.conf (thermald): missing",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/thermald/thermal-cpu-cdev-order.xml",
+    "package:thermald"
+   ],
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/thermald/thermal-cpu-cdev-order.xml"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/thermald/thermal-cpu-cdev-order.xml (thermald): changed",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  }
+ ],
+ "score": {
+  "band": "High",
+  "contributors": [
+   {
+    "capped": null,
+    "check": "account.log_changes",
+    "contribution": 1.3863,
+    "finding": 0,
+    "ratio": 4.0,
+    "share": 0.2857,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": null,
+    "check": "persistence.at_jobs",
+    "contribution": 1.3863,
+    "finding": 2,
+    "ratio": 4.0,
+    "share": 0.2857,
+    "title": "A queued at job"
+   },
+   {
+    "capped": null,
+    "check": "ssh.login",
+    "contribution": 1.3863,
+    "finding": 3,
+    "ratio": 4.0,
+    "share": 0.2857,
+    "title": "A direct root login over SSH"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.6931,
+    "finding": 1,
+    "ratio": 4.0,
+    "share": 0.1429,
+    "title": "An account or group was changed (from the logs)"
+   }
+  ],
+  "hygiene_and_exposure": {
+   "band": "low",
+   "counts": {
+    "hygiene": {
+     "info": 4,
+     "low": 5
+    }
+   }
+  },
+  "log_odds": 0.9602,
+  "prior": 0.02,
+  "prior_source": "golden",
+  "probability": 0.7232,
+  "version": 1
+ }
+}

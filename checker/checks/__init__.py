@@ -161,7 +161,9 @@ def run_checks(context: Context) -> tuple[list[Finding], list[dict[str, Any]]]:
 
     findings: list[Finding] = []
     ran: list[dict[str, Any]] = []
-    for item in REGISTRY:
+    # By id: the registry's order is whatever order the modules happened to
+    # be imported in, and the list of what ran must not depend on that.
+    for item in sorted(REGISTRY, key=lambda c: c.id):
         if item.needs_baseline and context.since_baseline is None:
             ran.append({"check": item.id, "status": context.no_baseline})
             continue

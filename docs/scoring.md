@@ -103,6 +103,39 @@ versions; an older assessment is analysed again when the report needs it,
 or when the host's prior has changed since. The index's encrypted summary
 gains the probability and band.
 
+## Golden reports
+
+`tests/golden/` holds real analyses from throwaway servers: for each of
+Ubuntu 24.04 and Rocky Linux 9, a fresh server (`fresh-*`, its own
+baseline) and the same server after the detection proof's ten behaviours
+(`detection-*`). Each case is what `analyze` reads for one bundle (its
+events and snapshot, the previous bundle's and the baseline's snapshots,
+earlier bundles' events), gzipped JSON, beside its expected assessment
+(`*.expected.json`: findings, which checks ran, the score).
+
+CI analyses every case through the same `evaluate` that `analyze` uses and
+fails on any difference. After a deliberate change to the checks, the
+ratios or the whitelists, run `python scripts/update_golden.py`: it
+rewrites the expectations and prints each case's probability before and
+after, and the findings added or gone. Commit those with the change, so
+the review shows what moved.
+
+New cases come from `tests/integration/detection_proof.py --golden
+tests/golden`, which picks the bundles and their baseline the way
+`analyze` does. The repository is public, so before a case is written
+every public IPv4 and IPv6 address in it, wherever and however it is
+written (log text, `address:port`, IPv4-mapped, any case, reverse-DNS
+dashes), is replaced by a documentation address (203.0.113.x,
+2001:db8::x), consistently; a version number that happens to parse as a
+public address is replaced too. The export then fails if any public
+address survives, or if the controller's or the server's address survives
+in any form it knows (also `/proc/net` hex), and fails if the replacement
+changed what the checks find (a check that tells public addresses from
+others), so a case stays faithful to the real analysis.
+
+Cases hold parsed events and snapshots: they pin the checks and the
+scoring, not the parsers or the collector.
+
 ## Calibration
 
 The ratios are expert estimates. Plan 2.10 tunes them against fresh

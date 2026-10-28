@@ -249,12 +249,14 @@ assessments tables are append-only, enforced by triggers.
 
 ### 2.4 — Network and data transfer (8.8)
 
-- **Collector, new module `network`** (all files, no commands unless
-  decision 2 allows): `/etc/hosts`, `/etc/resolv.conf`, `nsswitch.conf`,
+- **Collector, new module `network`** (files, plus the two firewall
+  commands of decision 2): `/etc/hosts`, `/etc/resolv.conf`, `nsswitch.conf`,
   `/etc/hosts.allow` and `hosts.deny`; per interface from `/sys/class/net`:
   flags (promiscuous), state and byte counters; routes from `/proc/net`.
-  Firewall rules per decision 2. Existing: listeners, and each process's
-  sockets, from 1.5b.
+  Firewall rules per decision 2: the configuration files, and the loaded
+  rules only where the firewall is already loaded; loaded rules that differ
+  from the configuration are a `net.config` finding. Existing: listeners,
+  and each process's sockets, from 1.5b.
 - **Snapshot:** `network_files`, `interfaces` (compared), and a compared
   `peers` summary from the live sockets: program, remote port and remote
   network (/24 or /48), so "new destination" means new for that program,
@@ -478,7 +480,7 @@ assessments tables are append-only, enforced by triggers.
 - Any change to the security and privacy policy's wording. 2.0 may tighten
   §8's retention lines to match what is built; 2.7 and 2.8 collect personal
   data the policy doesn't yet name (decision 3).
-- New allow-listed commands on targets (decision 2).
+- New allow-listed commands on targets beyond decision 2's two.
 - Spending on throwaway servers: each slice's proof and 2.10's calibration
   runs (decision 5). Each run still needs his OK, with its server count.
 - Running the tool against nouriloop-prod.
@@ -490,9 +492,15 @@ assessments tables are append-only, enforced by triggers.
    transaction, deletes, restores them, and records what it removed (by
    identifiers and counts only) in an append-only `purges` table. A purged
    baseline moves to the host's oldest remaining usable bundle.
-2. **Before 2.4 — firewall rules.** Allow-list `nft list ruleset` and
-   `iptables-save` (read-only, fixed arguments, through 1.1's command
-   runner), or skip firewall rules and say so in coverage.
+2. ~~Before 2.4 — firewall rules.~~ **Decided 2026-10-28:** configuration
+   files always (`/etc/nftables.conf`, `/etc/sysconfig/nftables.conf`,
+   `/etc/firewalld/`, `/etc/ufw/*.rules`, `/etc/iptables/rules.v4`);
+   `nft -j list ruleset` only when `/sys/module/nf_tables` exists, and
+   `iptables-legacy-save` only when `/proc/net/ip_tables_names` lists
+   tables, so running them never loads a kernel module; otherwise coverage
+   says no firewall is loaded. Both through 1.1's command runner with fixed
+   arguments. Large sets (fail2ban, CrowdSec blocklists) sent as counts and
+   a hash. The read-only proof also checks the module list is unchanged.
 3. **Before 2.7 and 2.8 — mail and web logs.** Proposed: mail addresses
    kept as domain plus a keyed hash of the local part; client addresses
    kept (they are the evidence); query-string values masked, keys kept;

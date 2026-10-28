@@ -17,10 +17,6 @@ from checker.whitelist import Whitelist, reapply
 EXPIRING = timedelta(days=30)
 
 
-def _key(finding: dict[str, Any]) -> tuple:
-    return (finding["check"], finding.get("variant"), finding["summary"])
-
-
 def compare(
     store: Store,
     host: str,
@@ -80,10 +76,12 @@ def stale(
     days: int = 90,
     now: datetime | None = None,
 ) -> dict[str, list[str]]:
-    """Across hosts (`sets`: each host's current whitelist): rules no
-    assessment of the last `days` days records a match for, rules and
-    windows expired, and ones expiring within 30 days. A rule counts once,
-    by its file and id, however many hosts share it."""
+    """Across hosts (`sets`: each host's current whitelist): live rules that
+    match no stored finding of the last `days` days (the current set applied
+    to the stored findings, so a rule added since counts too), and rules and
+    windows expired, or expiring within 30 days. A rule counts once, by its
+    file and id, however many hosts share it; a set no host uses (a group
+    file with no hosts) matches nothing."""
     now = now or datetime.now(UTC)
     since = now - timedelta(days=days)
     today = now.date()
@@ -93,25 +91,29 @@ def stale(
     for host, merged in sets.items():
         if merged is None:
             continue
-        by_label = {}
         for placed in [*merged.rules, *merged.windows]:
-            key = (placed.file, placed.rule.id)
             name = f"{placed.rule.id} ({placed.layer}, {placed.file})"
-            by_label[f"{placed.layer}/{placed.rule.id}"] = key
             if placed.rule.expires != "never":
                 if placed.rule.expires < today:
                     expired.add(f"{name}: expired {placed.rule.expires}")
-                elif placed.rule.expires <= today + EXPIRING:
+                    continue
+                if placed.rule.expires <= today + EXPIRING:
                     expiring.add(f"{name}: expires {placed.rule.expires}")
-            if placed in merged.rules:
-                rules[key] = name
+        live = {(p.file, p.rule.id): p for p in merged.rules if p.live(today)}
+        for key, placed in live.items():
+            rules[key] = f"{placed.rule.id} ({placed.layer}, {placed.file})"
         for row in usable_bundles(store, host):
             if datetime.fromisoformat(row["started_at"]) < since:
                 continue
             stored = load_assessment(store, row["id"], identity)
-            for label in ((stored or {}).get("whitelist") or {}).get("matched", {}):
-                if label in by_label:
-                    used.add(by_label[label])
+            if not stored:
+                continue
+            findings = json.loads(json.dumps(stored["findings"]))
+            reapply(findings, merged, today)
+            for finding in findings:
+                rule = finding.get("suppressed_by")
+                if rule:
+                    used.add((rule["file"], rule["rule"]))
     return {
         "stale": sorted(name for key, name in rules.items() if key not in used),
         "expired": sorted(expired),

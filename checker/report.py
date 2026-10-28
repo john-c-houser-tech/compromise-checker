@@ -297,6 +297,9 @@ def host_report(
                 )
                 if finding["title"] not in entry["findings"]:
                     entry["findings"].append(finding["title"])
+    order = {band: i for i, band in enumerate(BANDS)}
+    for listed in report.findings.values():
+        listed.sort(key=lambda f: order[f["band"]])  # a maintenance window moves a band
     ordered = sorted(timeline.values(), key=lambda e: e["when"])
     if len(ordered) > MAX_TIMELINE:
         # The earliest events are often the first signs: keep both ends.

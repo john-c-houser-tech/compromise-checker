@@ -257,6 +257,10 @@ whitelist can't hide a behaviour.
 offsets; ids shared with rules, so `disable` and expiry work the same);
 `checker whitelist test` reads stored assessments only and adds nothing;
 `checker whitelist stale` counts a rule once by file and id across hosts.
+A window must hold the whole outage (shutdown and boot); an expired window
+still explains what it covered. The whitelist record now leaves out unset
+fields, so every 2.2a assessment's whitelist hash differs and the next
+report reassesses it once (no checks run).
 
 ### 2.3 — Correlation
 

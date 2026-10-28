@@ -103,9 +103,19 @@ maintenance:
     expires: 2026-12-31
 ```
 
-Windows expire like rules and can be switched off with `disable`. Operator
-reboots, power-button and planned (automatic updater) reboots are already
-informational and are left alone.
+The whole outage must be inside one window: the shutdown (the first thing
+the finding records) and the boot. A host that went down on Saturday
+evening and came back during Sunday's window is not maintenance. An
+expired window still explains the reboots it covered before its expiry, so
+scores don't jump on the day it expires; it stops covering new ones.
+Windows can be switched off with `disable`. Operator reboots, power-button
+and planned (automatic updater) reboots are already informational and are
+left alone.
+
+Times are the window's wall clock in its `tz`. On the day clocks go
+forward, a window inside the skipped hour covers nothing; on the day they
+go back, the repeated hour is covered twice. One-off windows carry their
+offsets and take no `tz`.
 
 ## What a rule can't be tricked into
 
@@ -145,11 +155,18 @@ a half-read whitelist would hide or show findings no one decided on.
   each it prints the probability before and after and the findings the
   change would hide, reveal or move into or out of a maintenance window.
   It reads stored assessments and changes nothing: no file is written and
-  no assessment is added.
-- `checker whitelist stale [--days 90]`: rules no analysis of any
-  inventory host recorded a match for in that time (a rule counts once,
-  by its file and id, however many hosts share it), and rules and windows
-  expired or expiring within 30 days. Stale rules are candidates for
+  no assessment or custody entry is added. If the host's current file is
+  broken, it still runs (comparing with no whitelist), so a fix can be
+  tested. `--as global` or `--as group` shows the effect on this host only;
+  the change reaches every host that uses that file.
+- `checker whitelist stale [--days 90]` (1 to 36500): live rules that
+  match no stored finding of any inventory host in that time, with the
+  current files applied to the stored findings (so a rule added since the
+  last analysis is judged fairly). A rule counts once, by its file and id,
+  however many hosts share it. Group files no host belongs to, and host
+  files of hosts no longer in the inventory, are included: their rules
+  match nothing. Expired rules and windows are listed apart, as are those
+  expiring within 30 days. Stale rules are candidates for
   removal: a rule that matches nothing still hides what it would match.
 
 ## What is recorded

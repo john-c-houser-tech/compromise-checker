@@ -29,7 +29,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -183,7 +183,7 @@ class Window(BaseModel):
     every: list[Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]] | None = None
     start_time: str | None = Field(default=None, alias="from")
     end_time: str | None = Field(default=None, alias="to")
-    tz: str = "UTC"
+    tz: str | None = None  # weekly windows: their time zone (UTC if not given)
     start: datetime | None = None
     end: datetime | None = None
     reason: str = Field(min_length=1)
@@ -209,7 +209,9 @@ class Window(BaseModel):
 
     @field_validator("tz")
     @classmethod
-    def _zone(cls, value: str) -> str:
+    def _zone(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
         try:
             ZoneInfo(value)
         except (ZoneInfoNotFoundError, ValueError):
@@ -232,6 +234,8 @@ class Window(BaseModel):
         else:
             if self.start is None or self.end is None:
                 raise ValueError("a one-off window needs start and end")
+            if self.tz is not None:
+                raise ValueError("a one-off window's times carry their offsets: no tz")
             if self.start.tzinfo is None or self.end.tzinfo is None:
                 raise ValueError("start and end need their UTC offset (2026-11-01T02:00:00-07:00)")
             if self.end <= self.start:
@@ -241,7 +245,10 @@ class Window(BaseModel):
     def covers(self, moment: datetime) -> bool:
         if self.start is not None and self.end is not None:
             return self.start <= moment < self.end
-        local = moment.astimezone(ZoneInfo(self.tz))
+        # Local wall-clock time. On the day clocks go forward, a window inside
+        # the skipped hour covers nothing; on the day they go back, the
+        # repeated hour is covered twice (docs/whitelists.md).
+        local = moment.astimezone(ZoneInfo(self.tz or "UTC"))
         clock = local.strftime("%H:%M")
         day = WEEKDAYS[local.weekday()]
         before = WEEKDAYS[(local.weekday() - 1) % 7]
@@ -306,7 +313,6 @@ class Whitelist:
     def _maintenance(self, findings: list[dict[str, Any]], today: date) -> int:
         """Planned work: a finding a live window covers, of a kind planned
         work explains, becomes informational, keeping its band to show."""
-        live = [p for p in self.windows if p.live(today)]
         changed = 0
         for finding in findings:
             # Applied afresh each time: undo an earlier application first.
@@ -315,8 +321,25 @@ class Whitelist:
                 finding["band"] = earlier["band"]
             if (finding.get("check"), finding.get("variant")) not in MAINTENANCE:
                 continue
-            when = _moment(finding.get("last_seen") or finding.get("first_seen"))
-            window = next((p for p in live if when and p.rule.covers(when)), None)
+            # The whole outage inside one window: the shutdown (or, for an
+            # unclean reboot, the last thing logged before it) and the boot.
+            start = _moment(finding.get("first_seen"))
+            end = _moment(finding.get("last_seen"))
+            if start is None or end is None or not timedelta(0) <= end - start < timedelta(days=1):
+                continue
+            # A window counts for events up to its expiry: an expired window
+            # still explains the reboots it covered (scores don't jump on
+            # its expiry day).
+            window = next(
+                (
+                    p
+                    for p in self.windows
+                    if (p.rule.expires == "never" or p.rule.expires >= end.date())
+                    and p.rule.covers(start)
+                    and p.rule.covers(end)
+                ),
+                None,
+            )
             if window is None:
                 continue
             finding["maintenance"] = {
@@ -676,6 +699,25 @@ def for_host(home: Path, host: str, inventory) -> Whitelist | None:
     isn't in it)."""
     entry = next((h for h in inventory.hosts if h.name == host), None)
     return load(home, host, entry.group if entry else None)
+
+
+def other_sets(home: Path, inventory) -> dict[str, Whitelist | None]:
+    """Sets no inventory host uses: each host file of a host no longer in
+    the inventory, and each group file no host belongs to (labelled
+    "group <name>")."""
+    base = directory(home)
+    hosts = {h.name for h in inventory.hosts}
+    groups = {h.group for h in inventory.hosts if h.group}
+    found: dict[str, Whitelist | None] = {}
+    for path in sorted((base / "hosts").glob("*.yaml")):
+        if path.stem not in hosts:
+            found[path.stem] = load(home, path.stem, None)
+    for path in sorted((base / "groups").glob("*.yaml")):
+        if path.stem not in groups:
+            found[f"group {path.stem}"] = build(
+                [(f"group {path.stem}", str(path), read_layer(path))]
+            )
+    return found
 
 
 def check_all(home: Path, inventory) -> list[str]:

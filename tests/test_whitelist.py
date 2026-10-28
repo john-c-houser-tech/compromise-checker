@@ -648,9 +648,182 @@ def test_cli_whitelist_stale(home, capsys):
         + rule(id="gone", match="{check: ssh.login, account: y}", expires="2020-01-01")[8:],
     )
     analyze(store, "web01", identity, config.recipients, whitelist=load(base, "web01", None))
-    assert cli.main(["whitelist", "stale", "--days", "100000"]) == 0
+    assert cli.main(["whitelist", "stale", "--days", "36500"]) == 0
     out = capsys.readouterr().out
     stale_part = out.split("Expired")[0]
     assert "unused" in stale_part and "used (" not in stale_part.replace("unused", "")
     assert "gone (host web01" in out.split("Expired")[1]
     assert "Expiring within 30 days:\n  none" in out
+
+
+# --- from the review of 2.2b -----------------------------------------------------------------
+
+
+def outage(variant, start, end, band="low"):
+    return {
+        "check": "system.reboot",
+        "variant": variant,
+        "band": band,
+        "entities": ["boot:x"],
+        "first_seen": start,
+        "last_seen": end,
+    }
+
+
+def weekly_set(tmp_path, expires="never"):
+    write(
+        tmp_path,
+        "hosts/web01.yaml",
+        WEEKLY.format(start="02:00", end="04:00", tz="UTC").replace("never", expires),
+    )
+    return load(tmp_path, "web01", None)
+
+
+def test_the_whole_outage_must_be_inside_the_window(tmp_path):
+    merged = weekly_set(tmp_path)
+    inside = outage("unexplained", "2026-11-01T02:00:00+00:00", "2026-11-01T02:10:00+00:00")
+    started_before = outage("unexplained", "2026-10-31T18:00:00+00:00", "2026-11-01T02:10:00+00:00")
+    merged.apply([inside, started_before], today=date(2026, 11, 2))
+    assert inside["band"] == "info"  # the window's first minute counts
+    assert started_before["band"] == "low"
+
+
+def test_an_expired_window_still_explains_what_it_covered(tmp_path):
+    merged = weekly_set(tmp_path, expires="2026-11-15")
+    then = outage("unexplained", "2026-11-01T02:10:00+00:00", "2026-11-01T02:20:00+00:00")
+    later = outage("unexplained", "2026-11-22T02:10:00+00:00", "2026-11-22T02:20:00+00:00")
+    merged.apply([then, later], today=date(2026, 12, 1))
+    assert then["band"] == "info" and later["band"] == "low"
+
+
+def test_a_maintained_reboot_scores_as_information_whatever_the_override(monkeypatch):
+    from checker import scoring
+
+    monkeypatch.setitem(scoring.OVERRIDES, ("system.reboot", None), 9.0)
+    found = outage("unexplained", "x", "x", band="info")
+    found["maintenance"] = {"window": "w", "band": "low"}
+    assert scoring.ratio(found) == 1.0
+
+
+def test_daylight_saving_days_follow_the_wall_clock():
+    w = window(every=["sun"], **{"from": "02:00", "to": "03:00"}, tz="America/Los_Angeles")
+    # 2026-03-08: 02:00-03:00 doesn't exist; nothing in it.
+    assert not w.covers(at("2026-03-08T10:30:00+00:00"))  # 03:30 PDT
+    late = window(every=["sun"], **{"from": "01:00", "to": "02:00"}, tz="America/Los_Angeles")
+    # 2026-11-01: 01:00-02:00 happens twice; both are covered.
+    assert late.covers(at("2026-11-01T08:30:00+00:00"))  # 01:30 PDT
+    assert late.covers(at("2026-11-01T09:30:00+00:00"))  # 01:30 PST
+
+
+def test_a_one_off_window_takes_no_time_zone():
+    with pytest.raises(ValueError, match="no tz"):
+        window(start="2026-11-05T01:00:00Z", end="2026-11-05T03:00:00Z", tz="UTC")
+
+
+def test_whitelist_check_lists_windows(home, capsys):
+    base = home[0]
+    write(base, "hosts/web01.yaml", WEEKLY.format(start="02:00", end="04:00", tz="UTC"))
+    assert cli.main(["whitelist", "check", "web01"]) == 0
+    assert "patch-night" in capsys.readouterr().out
+
+
+def test_whitelist_test_works_while_the_current_file_is_broken(home, capsys):
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records(accounts=UID0))
+    analyze(store, "web01", identity, config.recipients)
+    write(base, "hosts/web01.yaml", rule(match="{check: no.such, account: x}"))
+    fixed = base / "fixed.yaml"
+    fixed.write_text(rule())
+    assert cli.main(["whitelist", "test", "web01", "--file", str(fixed)]) == 0
+    out = capsys.readouterr().out
+    assert "the current set is invalid" in out and "would hide" in out
+
+
+def test_whitelist_test_replaces_the_named_layer(home, capsys):
+    from checker.inventory import Host, inventory_transaction
+
+    base, store, identity, config = home
+    with inventory_transaction() as hosts:
+        hosts.add(Host(name="web01", address="192.0.2.1", user="u", group="web"))
+    add_bundle(home, "b1", 0, host_records(accounts=UID0))
+    write(base, "groups/web.yaml", rule(id="group-rule"))
+    analyze(store, "web01", identity, config.recipients, whitelist=load(base, "web01", "web"))
+    empty = base / "empty.yaml"
+    empty.write_text("rules: []\n")
+    assert cli.main(["whitelist", "test", "web01", "--file", str(empty), "--as", "group"]) == 0
+    assert "would reveal" in capsys.readouterr().out
+    assert cli.main(["whitelist", "test", "web01", "--file", str(empty), "--as", "global"]) == 0
+    assert "0 of 1 analyses would change" in capsys.readouterr().out
+
+
+def test_whitelist_test_shows_rebanding(home, capsys):
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    analyze(store, "web01", identity, config.recipients)
+    stored = load_assessment(store, "b1", identity)
+    stored["findings"].append(
+        outage("unexplained", "2026-11-01T02:10:00+00:00", "2026-11-01T02:20:00+00:00")
+        | {"title": "An unexplained reboot", "category": "compromise indicator", "summary": "s"}
+    )
+    from checker.assess import store_assessment
+
+    store_assessment(store, store.bundle("b1"), config.recipients, stored)
+    windows = base / "windows.yaml"
+    windows.write_text(WEEKLY.format(start="02:00", end="04:00", tz="UTC"))
+    assert cli.main(["whitelist", "test", "web01", "--file", str(windows)]) == 0
+    assert "would reband   info system.reboot: s (low -> info)" in capsys.readouterr().out
+
+
+def test_whitelist_commands_report_a_wrong_key_without_a_traceback(home, capsys, tmp_path):
+    from pyrage import x25519
+
+    add_bundle(home, "b1", 0, host_records())
+    analyze(home[1], "web01", home[2], home[3].recipients)
+    other = tmp_path / "other.key"
+    other.write_text(str(x25519.Identity.generate()) + "\n")
+    proposed = tmp_path / "p.yaml"
+    proposed.write_text("rules: []\n")
+    args = ["whitelist", "test", "web01", "--file", str(proposed), "--identity", str(other)]
+    assert cli.main(args) == 1
+    assert "can't read the stored analyses" in capsys.readouterr().err
+
+
+def test_stale_days_are_bounded(home):
+    with pytest.raises(SystemExit):
+        cli.main(["whitelist", "stale", "--days", "0"])
+    with pytest.raises(SystemExit):
+        cli.main(["whitelist", "stale", "--days", "99999999999"])
+
+
+def test_stale_counts_shared_rules_once_skips_expired_and_windows_and_sees_orphans(home):
+    from datetime import UTC as _UTC
+
+    from checker.inventory import Host, inventory_transaction
+    from checker.whitelist import other_sets
+    from checker.whitelist_review import stale
+
+    base, store, identity, config = home
+    with inventory_transaction() as hosts:
+        for name in ("web01", "web02"):
+            hosts.add(Host(name=name, address="192.0.2.1", user="u"))
+    add_bundle(home, "b1", 0, host_records(accounts=UID0))  # web01 only
+    write(
+        base,
+        "global.yaml",
+        rule(id="shared")
+        + rule(id="soon", match="{check: ssh.login, account: x}", expires="2027-01-20")[8:]
+        + rule(id="gone", match="{check: ssh.login, account: y}", expires="2020-01-01")[8:]
+        + WEEKLY.format(start="02:00", end="04:00", tz="UTC"),
+    )
+    write(base, "groups/db.yaml", rule(id="nobody-uses", match="{check: ssh.login, account: z}"))
+    analyze(store, "web01", identity, config.recipients)  # no whitelist then: a new rule
+    from checker.inventory import load_inventory
+
+    sets = {h: load(base, h, None) for h in ("web01", "web02")} | other_sets(base, load_inventory())
+    found = stale(store, identity, sets, 36500, now=datetime(2027, 1, 2, 13, 0, tzinfo=_UTC))
+    ids = {line.split(" ")[0] for line in found["stale"]}
+    assert "shared" not in ids  # used on web01; web02's lack of use doesn't count
+    assert "gone" not in ids and "patch-night" not in ids
+    assert ids == {"soon", "nobody-uses"}
+    assert any(e.startswith("gone") for e in found["expired"])
+    assert any(e.startswith("soon") for e in found["expiring"])

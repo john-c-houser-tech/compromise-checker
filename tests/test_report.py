@@ -45,7 +45,7 @@ def test_the_report_is_confidential_self_contained_and_escaped(home):
     html = path.read_text()
     assert oct(path.stat().st_mode & 0o777) == "0o600"
     assert oct(path.parent.stat().st_mode & 0o777) == "0o700"
-    assert "CONFIDENTIAL" in html and "Phase 2" in html
+    assert "CONFIDENTIAL" in html and "probability is an estimate" in html
     assert "default-src 'none'" in html
     # Nothing loaded from anywhere: no script, no remote URL.
     assert "<script" not in html

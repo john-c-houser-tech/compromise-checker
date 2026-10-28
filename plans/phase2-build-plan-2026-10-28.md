@@ -156,6 +156,16 @@ assessments tables are append-only, enforced by triggers.
   an LR 5 → 67%); group and family caps; uncertain halving; hygiene never in
   the probability; band edges.
 
+*As built:* split into 2.1a (scoring, priors, assessments v2, the CLI and
+the report, `docs/scoring.md`) and 2.1b (golden reports). The 1.9 proof
+data no longer exists (the proofs ran in temporary folders), so 2.1b needs
+one run of each proof on Ubuntu 24.04 and Rocky 9 under decision 5, with
+the proofs saving their derived data, public addresses replaced by
+documentation addresses (the repository is public). The `critical` band is
+set by the checks themselves (five cases), so the table maps bands to
+ratios and `OVERRIDES` starts empty; `variant` is set where a check's
+kinds weigh differently (`kernel.taint` so far) and grows with 2.2.
+
 ### 2.2 — Whitelists
 
 - **Files**, in the configuration directory:

@@ -29,7 +29,7 @@ from checker.evidence import Store, database_file, initialise, load_config, load
 from checker.inventory import Host
 from checker.protocol import Limits
 
-BANDS = {"high": 3, "medium": 2, "low": 1, "info": 0}
+BANDS = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
 # The behaviours, done as root after the baseline. {root_key} is a public
 # key made for this run. Long-running processes are started with setsid so
@@ -168,7 +168,7 @@ def judge(findings: list[dict], expected: list[Expected]) -> tuple[list, list, l
     other = [
         f"{f['band']} {f['check']}: {f['title']} — {f['summary'][:100]}"
         for i, f in enumerate(findings)
-        if i not in explained and f["band"] in ("high", "medium")
+        if i not in explained and f["band"] in ("critical", "high", "medium")
     ]
     return found, missing, other
 

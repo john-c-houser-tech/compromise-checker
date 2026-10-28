@@ -6,13 +6,14 @@ import json
 import sqlite3
 import sys
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from checker import __version__
 from checker.analysis import load_events, parse_bundle, store_parsed
-from checker.assess import analyze
+from checker.assess import analyze, prior_for
 from checker.baseline import accept, changes, usable_bundles
 from checker.checks import BANDS, CATEGORIES
 from checker.collect import collect_hosts
@@ -34,6 +35,7 @@ from checker.inventory import Host, home, hosts_file, inventory_transaction, loa
 from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
 from checker.report import write_report
+from checker.scoring import percent
 from checker.transport import TransportError, fetch_host_key, trust_host_key
 
 # What `checker init --home-text` means, as `init` reports it.
@@ -58,6 +60,7 @@ def cmd_hosts_add(args: argparse.Namespace) -> int:
             group=args.group,
             python=args.python,
             web_roots=args.web_root,
+            prior=args.prior,
         )
         with inventory_transaction() as inventory:
             inventory.add(host)
@@ -199,6 +202,15 @@ def cmd_collect(args: argparse.Namespace) -> int:
     )
     _expired_notice(base)
     return 0 if succeeded else 1
+
+
+def _inventory_for_priors():
+    """The inventory, for hosts' priors; an invalid one is an error the
+    operator can read, not a traceback."""
+    try:
+        return load_inventory()
+    except (ValidationError, ValueError) as exc:
+        raise EvidenceError(f"the inventory ({hosts_file()}) is invalid: {exc}") from None
 
 
 def _identity(args: argparse.Namespace, base: Path):
@@ -358,6 +370,14 @@ def build_parser() -> argparse.ArgumentParser:
             " /var/www, /srv/www, /srv/http and /usr/share/nginx/html"
         ),
     )
+    add.add_argument(
+        "--prior",
+        type=float,
+        help=(
+            "this host's prior probability of compromise, e.g. 0.05"
+            " (default: its group's, else the configuration's)"
+        ),
+    )
     add.set_defaults(handler=cmd_hosts_add)
 
     hosts_commands.add_parser("list", help="list hosts").set_defaults(handler=cmd_hosts_list)
@@ -505,6 +525,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             base / "reports",
             args.bundle,
             Path(args.output) if args.output else None,
+            partial(prior_for, config=load_config(base), inventory=_inventory_for_priors()),
         )
     except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -527,7 +548,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     status = 0
     try:
         identity = _identity(args, base)
-        recipients = load_config(base).recipients
+        config = load_config(base)
+        recipients = config.recipients
+        inventory = _inventory_for_priors()
         if args.all:
             hosts = [h for h in store.hosts() if usable_bundles(store, h)]
             if args.bundle:
@@ -540,7 +563,10 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             if number:
                 print()
             try:
-                _print_assessment(analyze(store, host, identity, recipients, args.bundle), args)
+                prior = prior_for(host, config, inventory)
+                _print_assessment(
+                    analyze(store, host, identity, recipients, args.bundle, prior), args
+                )
             except EvidenceError as exc:
                 print(f"checker: {host}: {exc}", file=sys.stderr)
                 status = 1
@@ -570,6 +596,20 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
     )
     for note in assessment["notes"]:
         print(f"Note       {note}")
+    scored = assessment.get("score")
+    if scored:
+        print(
+            f"Score      {percent(scored['probability'])} probability of compromise:"
+            f" {scored['band']} (prior {percent(scored['prior'])}, {scored['prior_source']})"
+        )
+        for c in scored["contributors"][:5]:
+            capped = f", capped ({c['capped']})" if c["capped"] else ""
+            print(f"           {percent(c['share']):>4}  {c['title']} (×{c['ratio']:g}{capped})")
+        rest = len(scored["contributors"]) - 5
+        if rest > 0:
+            print(f"           and {rest} more")
+        rating = scored["hygiene_and_exposure"]
+        print(f"Hygiene    rated separately: {rating['band']}")
     by_band = {band: sum(f["band"] == band for f in findings) for band in BANDS}
     print("Findings   " + ", ".join(f"{n} {band}" for band, n in by_band.items()))
     for category in CATEGORIES:
@@ -581,10 +621,10 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
         print(f"\n{HEADINGS[category]}:")
         for f in shown:
             marks = (" [new]" if f["new"] else "") + (" [uncertain]" if f["uncertain"] else "")
-            print(f"  {f['band'].upper():6} {f['title']}{marks}")
-            print(f"         {f['summary'][:200]}")
+            print(f"  {f['band'].upper():8} {f['title']}{marks}")
+            print(f"           {f['summary'][:200]}")
             if f["uncertain"]:
-                print(f"         uncertain: {f['uncertain'][:200]}")
+                print(f"           uncertain: {f['uncertain'][:200]}")
     hidden = sum(f["band"] == "info" for f in findings)
     if hidden and not args.info:
         print(f"\n({hidden} informational findings: --info lists them)")

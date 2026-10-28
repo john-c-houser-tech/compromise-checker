@@ -16,9 +16,13 @@ Each finding has:
 - **category**: a *compromise indicator*, *exposure* or *hygiene*. Hygiene
   is not compromise (DESIGN.md §2 principle 9): an unattributed key is a
   risk, not evidence that someone got in.
-- **band**: `high`, `medium`, `low` or `info`. `high` is for DESIGN.md
-  §8's ★ checks. The likelihood ratios behind the bands, and the score, are
-  Phase 2.
+- **band**: `critical`, `high`, `medium`, `low` or `info`. `critical` is
+  for the strongest signs (DESIGN.md §11.1's critical examples), `high` for
+  DESIGN.md §8's ★ checks. Each band has a likelihood ratio, and the
+  findings' ratios make the host's score ([scoring](scoring.md)).
+- **variant**: which of a check's kinds of finding this is, where they
+  weigh differently (`kernel.taint`: `unexplained` or `unloaded`); used by
+  scoring's per-check overrides and, later, by whitelists.
 - **entities**: what it involves (`account:eve`, `address:203.0.113.9`,
   `path:…`, `module:…`, `program:…`, `boot:…`).
 - **evidence**: the events (by their index in the stored events), snapshot
@@ -55,7 +59,7 @@ is newer than this bundle). Every other check runs on every bundle
 | `kernel.oom_kill` | out-of-memory kills, per program | medium for security and logging services (sshd, auditd, rsyslogd, journald, fail2ban…), else low hygiene |
 | `kernel.segfault` | segfaults in a program holding a listening socket, or of any program 3 times or more | medium if network-facing and repeated, else low |
 | `kernel.errors` | kernel oops/BUG (low, compromise), hung tasks and machine checks (low, hygiene) | low |
-| `kernel.taint` | taint by a module that no listed module explains (a module hiding itself) | high; medium when the logs show a tainting module loaded and since unloaded |
+| `kernel.taint` | taint by a module that no listed module explains (a module hiding itself) | critical; medium when the logs show a tainting module loaded and since unloaded |
 | | the kernel tainted since the baseline | high if by a module (P, F, R, O, E), else low |
 | | an out-of-tree, unsigned, proprietary or force-loaded module | high if loaded since the baseline; otherwise medium, on every analysis (the baseline's own bundle may never have been analysed) |
 | | a tainting module load in the kernel log | medium |
@@ -85,7 +89,7 @@ work.
 
 | Check | What | Band | Baseline |
 |---|---|---|---|
-| `account.uid0` | an account other than root with UID 0; a name listed twice in `/etc/passwd` | high | no |
+| `account.uid0` | an account other than root with UID 0 (critical); a name listed twice in `/etc/passwd` (high) | | no |
 | | accounts sharing a UID | medium | no |
 | `account.changes` | new accounts | medium | yes |
 | | removed accounts (only when both sides were fully collected) | low | yes |
@@ -121,7 +125,7 @@ as root.
 
 | Check | What | Band | Baseline |
 |---|---|---|---|
-| `persistence.ld_preload` | a non-empty `/etc/ld.so.preload`; a process running with `LD_PRELOAD` or `LD_AUDIT` | high | no |
+| `persistence.ld_preload` | a non-empty `/etc/ld.so.preload` (critical); a process running with `LD_PRELOAD` or `LD_AUDIT` (high: jemalloc and test tools use it too) | | no |
 | `persistence.changes` | new cron, systemd, start-up and hook files, and changes to what they run or who owns them (content, size, link, mode, owner — not times alone). Run-time systemd units only when they are services, timers, sockets or paths (every login makes a scope) | high for `/etc/ld.so.preload` and `/etc/ld.so.conf`; low for files packages install (`/usr/lib`, `/lib`, `/usr/share`) when the package lists changed too (an update); else medium | yes |
 | `persistence.at_jobs` | queued `at` jobs | medium | no |
 | `persistence.homes` | users' own systemd units and autostart entries, by name, in any home directory (wherever it is) (their contents are hashes only by default, policy §7; changes show in `persistence.changes`); lingering users, whose units start at boot (low) | info | no |
@@ -130,7 +134,7 @@ as root.
 
 | Check | What | Band | Baseline |
 |---|---|---|---|
-| `package.changed` | package files whose content differs from their package: programs intruders replace (`ps`, `ls`, `ss`, `sshd`, `sudo`, `su`, `login`, shells, `systemd`…), the loader, libc, libpam, PAM modules | high | no |
+| `package.changed` | package files whose content differs from their package: programs intruders replace (`ps`, `ls`, `ss`, `sshd`, `sudo`, `su`, `login`, shells, `systemd`…), the loader, libc, libpam, PAM modules | critical | no |
 | | other programs and libraries | medium | no |
 | | other package files | low | no |
 | | edited configuration files (hygiene) | info | no |
@@ -169,7 +173,7 @@ sshd listener. A forged log line alone can't make anything the tool's own.
 
 | Check | What | Band |
 |---|---|---|
-| `process.hidden` | a process that answers a direct `/proc/<pid>` lookup but isn't in the listing (what `ps` sees) | high |
+| `process.hidden` | a process that answers a direct `/proc/<pid>` lookup but isn't in the listing (what `ps` sees) | critical |
 | `process.executable` | running from memory only, from a scratch directory (`/tmp`, `/var/tmp`, `/dev/shm`, `/dev/mqueue`, `/run/lock`, `/var/lock`, `/var/crash`, `/run/user`), from a deleted file in a home; posing as a kernel thread (`[kworker/0:1]` with a real executable) | high |
 | | from another deleted file | medium |
 | | a deleted system program, when the package lists changed after the process started: an update replaced it under a running service (hygiene: restart it) | low |

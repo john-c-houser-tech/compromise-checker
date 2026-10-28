@@ -177,6 +177,37 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
 - A clean-host run on each image to count false positives, reported in the
   plan's results.
 
+  *Results (1.9a, 2026-10-27, PR #30):* the read-only proof passes on all
+  seven images Linode offers. The collector wrote nothing on any of them,
+  and the snapshot and `checker analyze` passes held. Linode has no RHEL
+  images.
+
+  | Image | Collector | Peak memory | Medium+ findings on a fresh server | Low / hygiene |
+  |---|---|---|---|---|
+  | Ubuntu 22.04 | 61 s | 47 MB | 4 (the proof's own setup) | 13 services on a replaced `libaudit` |
+  | Ubuntu 24.04 | 73 s | 53 MB | 4 (the proof's own setup) | 5 services on a replaced `libaudit` |
+  | Ubuntu 26.04 | 64 s | 60 MB | 4 (the proof's own setup) | none |
+  | Rocky Linux 9 | 52 s | 68 MB | 4 (the proof's own setup) | firewalld's libffi code |
+  | Rocky Linux 10 | 73 s | 63 MB | 4 (the proof's own setup) | none |
+  | AlmaLinux 9 | 56 s | 67 MB | 4 (the proof's own setup) | firewalld's libffi code |
+  | AlmaLinux 10 | 41 s | 59 MB | 4 (the proof's own setup) | `/boot/efi` 755 where the package says 700 |
+
+  The proof's own setup is a direct root login, the `scanner` and
+  `proofuser` accounts it creates, and the `at` job it queues: correct
+  findings, not false alarms. So every image is clean of false alarms at
+  medium and above.
+
+  The matrix runs turned up these fixes:
+  - systemd 256+ login placeholders added to the proof's disclosed writes;
+  - processes forked without a new program, like `(sd-pam)`, judged by
+    their ancestors' start;
+  - mode changes rated by what they allow;
+  - Python caches and libffi tuned down (in #28);
+  - the proof survives Linode API timeouts, and deletes any server they
+    leave.
+
+  Spend so far: about 5.5 server-hours, roughly 4 cents of the $10 cap.
+
 ## Explicitly gated on John
 
 - Any change to the security and privacy policy's wording. None is expected:
@@ -197,8 +228,8 @@ own policy §7 wording, approved by John before the PR. After 1.3 merges.
 3. ~~Before 1.5 — web roots.~~ **Decided 2026-10-27:** common paths by
    default (`/var/www`, `/srv/www`, `/srv/http`, `/usr/share/nginx/html`),
    replaced by a per-host list where one is set.
-4. **Before 1.9 — budget:** confirm the spend for the full matrix and
-   scenario runs.
+4. ~~Before 1.9 — budget.~~ **Decided 2026-10-27:** a $10 cap for all of
+   1.9; each run still needs John's OK, with its server count reported.
 
 **As built:** 1.4 was split into 1.4a (logs and boots, #20), 1.4b (package
 verification) and 1.4c (SUID/SGID files, file capabilities, unowned

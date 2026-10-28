@@ -123,10 +123,19 @@ def _difference(path: str, item: dict) -> tuple[str, str, str] | None:
         now, expected = _mode(item.get("mode")), _mode(item.get("expected_mode"))
         gained = (now or 0) & 0o6000 & ~(expected or 0)
         detail = f"mode {item.get('expected_mode')} → {item.get('mode')}"
+        writable = (now or 0) & 0o022 & ~(expected or 0)
         if gained:
             consider("A package file gained set-user-ID or set-group-ID", "high", detail)
+        elif writable:
+            consider(
+                "A package file became writable by its group or everyone",
+                "high" if critical else "medium",
+                detail,
+            )
         else:
-            consider("A package file's mode changed", "high" if critical else "medium", detail)
+            # Read or execute bits only (an image shipping /boot/efi 755
+            # where the package says 700), or tightened: no write risk.
+            consider("A package file's mode changed", "low", detail)
     if "capabilities" in results:
         consider(
             "A package file's capabilities changed",

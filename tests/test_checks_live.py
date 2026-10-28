@@ -652,3 +652,55 @@ def test_fresh_server_false_alarms_are_tuned_down():
     live = {"processes": [proc(635, "firewalld", suspicious_mappings=["/memfd:libffi (deleted)"])]}
     [finding] = of(run([], snap(live)), "process.injected")
     assert finding.band == "low"
+
+
+def test_a_forked_process_inherits_its_parents_code():
+    # (sd-pam) is systemd forked without a new program: it maps what PID 1
+    # loaded before the update, though it started after.
+    late = (T0 + timedelta(hours=1)).isoformat()
+    live = {
+        "processes": [
+            {**proc(1, "systemd", exe="/usr/lib/systemd/systemd"), "ppid": 0},
+            {
+                **proc(
+                    1935,
+                    "(sd-pam)",
+                    exe="/usr/lib/systemd/systemd",
+                    start_time=late,
+                    suspicious_mappings=["/usr/lib/x86_64-linux-gnu/libaudit.so.1 (deleted)"],
+                ),
+                "ppid": 1,
+            },
+        ]
+    }
+    [finding] = of(run([], snap(live, checksum_store=UPDATED)), "process.injected")
+    assert finding.band == "low" and finding.category == "hygiene"
+
+
+def test_mode_changes_by_what_they_allow():
+    changes = {
+        "/boot/efi": {
+            "package": "efi-filesystem",
+            "results": ["mode"],
+            "expected_mode": "40700",
+            "mode": "40755",
+        },
+        "/usr/share/x/data": {
+            "package": "x",
+            "results": ["mode"],
+            "expected_mode": "100644",
+            "mode": "100666",
+        },
+        "/usr/bin/sudo": {
+            "package": "sudo",
+            "results": ["mode"],
+            "expected_mode": "100755",
+            "mode": "100775",
+        },
+    }
+    found = of(run([], snap(package_changes=changes)), "package.changed")
+    assert sorted((f.summary.split(" ")[0], f.band) for f in found) == [
+        ("/boot/efi", "low"),
+        ("/usr/bin/sudo", "high"),
+        ("/usr/share/x/data", "medium"),
+    ]

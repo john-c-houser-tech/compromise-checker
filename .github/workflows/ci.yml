@@ -51,6 +51,7 @@ jobs:
           - rockylinux/rockylinux:10
           - ubuntu:22.04              # python3 3.10
           - ubuntu:24.04
+          - ubuntu:26.04              # python3 3.14
     steps:
       - name: Install python3 (Ubuntu images ship without it)
         if: startsWith(matrix.image, 'ubuntu')

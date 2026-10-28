@@ -30,6 +30,8 @@ SYSCALLS = {
     (X86, "91"): "fchmod",
     (X86, "257"): "openat",
     (X86, "258"): "mkdirat",
+    (X86, "259"): "mknodat",
+    (X86, "265"): "linkat",
     (X86, "266"): "symlinkat",
 }
 NUMBERS = {name: number for (_, number), name in SYSCALLS.items()}
@@ -191,3 +193,51 @@ async def test_cancelling_during_creation_still_deletes_the_server():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert deleted == [42]
+
+
+def test_the_user_managers_placeholders_and_generators_are_disclosed():
+    """systemd 256+: at login the user manager makes its placeholder nodes
+    through a directory handle (bare names joined to cwd /), and the
+    user-unit generators link units into their output directory."""
+    generator = "/usr/lib/systemd/user-generators/systemd-xdg-autostart-generator"
+    text = "".join(
+        [
+            event("systemd", SYSTEMD, "mkdirat", ("inaccessible", "CREATE"), cwd="/"),
+            event("systemd", SYSTEMD, "mknodat", ("chr", "CREATE"), cwd="/"),
+            event("systemd", SYSTEMD, "linkat", ("", "CREATE"), cwd="/"),
+            # Ubuntu 26.04: an unnamed file linked into the runtime area.
+            event(
+                "systemd",
+                SYSTEMD,
+                "linkat",
+                ("", "NORMAL"),
+                ("/run/user/1000/systemd/inaccessible/reg", "CREATE"),
+                cwd="/",
+            ),
+            event(
+                "systemd-xdg-aut",
+                generator,
+                "symlinkat",
+                ("/x.desktop", "UNKNOWN"),
+                ("../app-x@autostart.service", "CREATE"),
+                cwd="/",
+            ),
+        ]
+    )
+    verdict = judge(text)
+    assert verdict.unexpected == [] and len(verdict.disclosed) == 5  # one linkat / twice
+
+
+def test_placeholder_names_are_accepted_from_the_session_manager_only():
+    verdict = judge(
+        event("sshd", SSHD, "mknodat", ("chr", "CREATE"), cwd="/")
+        + event("systemd", SYSTEMD, "mknodat", ("evil", "CREATE"), cwd="/")
+        + event("systemd", SYSTEMD, "openat", ("dir", "CREATE"), cwd="/")
+    )
+    assert verdict.unexpected == [
+        "sshd (/usr/sbin/sshd) mknodat /chr",
+        "systemd (/usr/lib/systemd/systemd) mknodat /evil",
+        "systemd (/usr/lib/systemd/systemd) openat /dir",
+    ]
+    collector = event("python3", "/usr/bin/python3", "mknodat", ("chr", "CREATE"), cwd="/")
+    assert judge(collector).collector == ["python3 (/usr/bin/python3) mknodat /chr"]

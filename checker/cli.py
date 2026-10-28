@@ -35,6 +35,7 @@ from checker.inventory import Host, home, hosts_file, inventory_transaction, loa
 from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
 from checker.report import write_report
+from checker.scoring import percent
 from checker.transport import TransportError, fetch_host_key, trust_host_key
 
 # What `checker init --home-text` means, as `init` reports it.
@@ -201,6 +202,15 @@ def cmd_collect(args: argparse.Namespace) -> int:
     )
     _expired_notice(base)
     return 0 if succeeded else 1
+
+
+def _inventory_for_priors():
+    """The inventory, for hosts' priors; an invalid one is an error the
+    operator can read, not a traceback."""
+    try:
+        return load_inventory()
+    except (ValidationError, ValueError) as exc:
+        raise EvidenceError(f"the inventory ({hosts_file()}) is invalid: {exc}") from None
 
 
 def _identity(args: argparse.Namespace, base: Path):
@@ -515,7 +525,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             base / "reports",
             args.bundle,
             Path(args.output) if args.output else None,
-            partial(prior_for, config=load_config(base), inventory=load_inventory()),
+            partial(prior_for, config=load_config(base), inventory=_inventory_for_priors()),
         )
     except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -540,7 +550,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         identity = _identity(args, base)
         config = load_config(base)
         recipients = config.recipients
-        inventory = load_inventory()
+        inventory = _inventory_for_priors()
         if args.all:
             hosts = [h for h in store.hosts() if usable_bundles(store, h)]
             if args.bundle:
@@ -589,12 +599,12 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
     scored = assessment.get("score")
     if scored:
         print(
-            f"Score      {scored['probability']:.0%} probability of compromise:"
-            f" {scored['band']} (prior {scored['prior']:.0%}, {scored['prior_source']})"
+            f"Score      {percent(scored['probability'])} probability of compromise:"
+            f" {scored['band']} (prior {percent(scored['prior'])}, {scored['prior_source']})"
         )
         for c in scored["contributors"][:5]:
             capped = f", capped ({c['capped']})" if c["capped"] else ""
-            print(f"           {c['share']:4.0%}  {c['title']} (×{c['ratio']:g}{capped})")
+            print(f"           {percent(c['share']):>4}  {c['title']} (×{c['ratio']:g}{capped})")
         rest = len(scored["contributors"]) - 5
         if rest > 0:
             print(f"           and {rest} more")

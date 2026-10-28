@@ -46,10 +46,17 @@ reason recorded here.
   set-user-ID shell in `/tmp` is both `files.scratch` and
   `files.privileged`, and is one behaviour. Shared accounts and program
   names don't group: a new key for root and a direct root login are two
-  pieces of evidence.
+  pieces of evidence. Among equally strong members, the group is led by
+  the one whose check has the fewest other findings, so a second,
+  separate file that check caught still counts in full.
 - **Volume isn't evidence.** All of one check's findings together add at
   most a doubling beyond its strongest, so fifty logins from new addresses
-  weigh twice one, not fifty times.
+  weigh twice one, not fifty times. This applies to each group's lead;
+  the rest of a group is capped by the group alone.
+- **Order never matters.** Ties are broken by what findings say, never by
+  where they are in the list, so the same findings always give the same
+  score. The contributors' table marks a finding "capped" only when a cap
+  cut it.
 - **Uncertain findings count half** their log ratio: the section they
   come from wasn't fully collected on one side.
 - **Suppressed findings don't count** (whitelists, plan 2.2), and are
@@ -78,8 +85,12 @@ an exploitation window.
 | 90% and above | Critical |
 
 From the default 2% prior: one high finding gives 29% (Elevated); one
-critical, 67% (High); two highs, 89% (High); a high and a critical, 98%
-(Critical). DESIGN.md §11.3's worked example: one ratio-20 finding gives
+critical, 67% (High); two highs from different checks, about different
+things, 89% (High); a high and a critical, 98% (Critical). Two highs from
+one check give 45% (Elevated): the family cap counts the second as a
+doubling. Percentages are shown rounded down, so the number shown is never
+across a band's edge from its band (0.4999 is 49%, Elevated), and priors
+under 1% keep a decimal. DESIGN.md §11.3's worked example: one ratio-20 finding gives
 29%, and adding a ratio-5 finding gives 67%.
 
 ## What is stored

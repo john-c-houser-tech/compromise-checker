@@ -16,7 +16,7 @@ from typing import Any
 from checker.events import Event
 from checker.snapshot import Snapshot
 
-CHECKS_VERSION = 1
+CHECKS_VERSION = 2  # 2: the critical band, variants
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"

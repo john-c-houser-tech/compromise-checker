@@ -22,7 +22,8 @@ first.
     came from), the hygiene and exposure rating, and the contributors:
     each finding's likelihood ratio and share of the score, largest first,
     and whether a cap cut it. A stored assessment scored from another
-    prior than the host's current one is analysed again;
+    prior than the host's current one is scored again from its stored
+    findings (the checks don't run again) and kept as a new assessment;
   - its compromise indicators, most serious first (informational ones
     folded away);
   - its exposure and hygiene findings, in a section of their own (DESIGN.md

@@ -236,8 +236,8 @@ def store_assessment(store: Store, row: Any, recipients: list[str], assessment: 
                 json.dumps(
                     {
                         "counts": assessment["counts"],
-                        "probability": assessment["score"]["probability"],
-                        "band": assessment["score"]["band"],
+                        "probability": (assessment.get("score") or {}).get("probability"),
+                        "band": (assessment.get("score") or {}).get("band"),
                     }
                 ),
                 recipients,

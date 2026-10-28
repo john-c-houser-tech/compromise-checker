@@ -80,7 +80,7 @@ with the evidence and share it only with people who need it.</p>
 <td><a href="#host-{{ loop.index }}">{{ r.host|visible(60) }}</a></td>
 <td class="mono">{{ r.row["started_at"][:16] }}</td>
 <td class="mono">{{ r.row["status"] }}</td>
-<td><span class="score {{ r.assessment.score.band|lower }}">{{ "%.0f"|format(r.assessment.score.probability * 100) }}% {{ r.assessment.score.band }}</span></td>
+<td><span class="score {{ r.assessment.score.band|lower }}">{{ r.assessment.score.probability|percent }} {{ r.assessment.score.band }}</span></td>
 <td class="num">{{ c.get("critical", 0) }}</td><td class="num">{{ c.get("high", 0) }}</td><td class="num">{{ c.get("medium", 0) }}</td><td class="num">{{ c.get("low", 0) }}</td>
 <td class="num">{{ r.counts.get("hygiene", {}).values()|sum }}</td>
 <td class="num">{{ r.counts.get("exposure", {}).values()|sum }}</td>
@@ -117,18 +117,19 @@ baseline <span class="mono">{{ r.assessment.baseline_id|visible(120) }}</span>{%
 
 {% set s = r.assessment.score %}
 <h3>Probability of compromise</h3>
-<p class="scoreline"><span class="score {{ s.band|lower }}">{{ "%.0f"|format(s.probability * 100) }}% · {{ s.band }}</span>
-<span class="muted">from a prior of {{ "%.0f"|format(s.prior * 100) }}% ({{ s.prior_source|visible(60) }});
+<p class="scoreline"><span class="score {{ s.band|lower }}">{{ s.probability|percent }} · {{ s.band }}</span>
+<span class="muted">from a prior of {{ s.prior|percent }} ({{ s.prior_source|visible(60) }});
 {{ r.assessment.coverage.gaps|length }} coverage gap(s) below. Hygiene and exposure, rated separately: {{ s.hygiene_and_exposure.band }}.</span></p>
 {% if s.contributors %}
 <div class="wrap"><table>
 <tr><th>Contributor</th><th>Check</th><th class="num">Likelihood ratio</th><th class="num">Share</th><th>Capped</th></tr>
 {% for c in s.contributors %}
 <tr><td>{{ c.title|visible(200) }}</td><td class="mono">{{ c.check }}</td><td class="num">×{{ "%g"|format(c.ratio) }}</td>
-<td class="num">{{ "%.0f"|format(c.share * 100) }}%</td><td class="muted">{{ c.capped or "" }}</td></tr>
+<td class="num">{{ c.share|percent }}</td><td class="muted">{{ c.capped or "" }}</td></tr>
 {% endfor %}
 </table></div>
 <p class="muted">Findings about the same file or process count once in full; one check's repeated findings add at most a doubling;
+"capped" marks a finding a cap cut;
 uncertain findings count half. Suppressed and informational findings don't count.</p>
 {% else %}<p class="muted">No compromise indicators: the probability is the prior.</p>{% endif %}
 

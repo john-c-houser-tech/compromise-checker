@@ -86,16 +86,7 @@ def score(findings: list[dict[str, Any]], prior: float = DEFAULT_PRIOR) -> dict[
             weight *= UNCERTAIN_WEIGHT
         counted.append(index)
         finding["contribution"] = weight
-    capped: dict[int, str] = {}
-    for members in _groups(findings, counted):
-        if _cap(findings, members):
-            capped.update(dict.fromkeys(members, "group"))
-    families = defaultdict(list)
-    for index in counted:
-        families[findings[index]["check"]].append(index)
-    for members in families.values():
-        if _cap(findings, members):
-            capped.update(dict.fromkeys(members, "family"))
+    capped = _apply_caps(findings, counted)
     log_odds = logit(prior) + sum(findings[i]["contribution"] for i in counted)
     probability = 1 / (1 + math.exp(-log_odds))
     total = sum(findings[i]["contribution"] for i in counted)
@@ -128,8 +119,55 @@ def score(findings: list[dict[str, Any]], prior: float = DEFAULT_PRIOR) -> dict[
     }
 
 
+def _key(finding: dict[str, Any]) -> tuple:
+    """Content, never list position: the score mustn't depend on the order
+    findings come in."""
+    return (
+        -finding["contribution"],
+        finding["check"],
+        finding.get("summary") or "",
+        finding["title"],
+        tuple(finding.get("entities") or ()),
+    )
+
+
+def _apply_caps(findings: list[dict[str, Any]], counted: list[int]) -> dict[int, str]:
+    """Groups first: each group (findings about one file or process) is one
+    behaviour, led by its strongest finding, the rest adding at most EXTRA.
+    Then families, over the leads only: one check's leads add at most EXTRA
+    beyond its strongest. A lead is chosen, among equally strong members,
+    from the check with the fewest other leads, so a second, separate
+    behaviour of that check isn't cut because the first was also seen by
+    another check. Returns which findings a cap cut, and which cap."""
+    by_check: dict[str, int] = defaultdict(int)
+    for i in counted:
+        by_check[findings[i]["check"]] += 1
+    capped: dict[int, str] = {}
+    leads = []
+    for members in _groups(findings, counted):
+        outside = {
+            i: by_check[findings[i]["check"]]
+            - sum(findings[m]["check"] == findings[i]["check"] for m in members)
+            for i in members
+        }
+        ordered = sorted(
+            members,
+            key=lambda i: (-findings[i]["contribution"], outside[i], *_key(findings[i])[1:]),
+        )
+        leads.append(ordered[0])
+        capped.update(dict.fromkeys(_cap(findings, ordered), "group"))
+    families = defaultdict(list)
+    for i in leads:
+        families[findings[i]["check"]].append(i)
+    for members in families.values():
+        ordered = sorted(members, key=lambda i: _key(findings[i]))
+        capped.update(dict.fromkeys(_cap(findings, ordered), "family"))
+    return capped
+
+
 def _groups(findings: list[dict[str, Any]], counted: list[int]) -> list[list[int]]:
-    """Counted findings joined by a shared path or process (transitively)."""
+    """Counted findings joined by a shared path or process (transitively);
+    a finding sharing neither is a group of its own."""
     parent = {i: i for i in counted}
 
     def root(i: int) -> int:
@@ -149,21 +187,31 @@ def _groups(findings: list[dict[str, Any]], counted: list[int]) -> list[list[int
     groups = defaultdict(list)
     for i in counted:
         groups[root(i)].append(i)
-    return [members for members in groups.values() if len(members) > 1]
+    return list(groups.values())
 
 
-def _cap(findings: list[dict[str, Any]], members: list[int]) -> bool:
-    """Let members add at most EXTRA beyond their strongest, scaling the
-    rest down evenly. Whether it cut anything."""
-    ordered = sorted(members, key=lambda i: -findings[i]["contribution"])
+def _cap(findings: list[dict[str, Any]], ordered: list[int]) -> list[int]:
+    """Let the rest of `ordered` (strongest first) add at most EXTRA beyond
+    the first, scaled down evenly. Returns the ones it cut."""
     rest = ordered[1:]
     extra = sum(findings[i]["contribution"] for i in rest)
     if extra <= EXTRA:
-        return False
+        return []
     scale = EXTRA / extra
     for i in rest:
         findings[i]["contribution"] *= scale
-    return True
+    return rest
+
+
+def percent(probability: float) -> str:
+    """A probability as people read it, never rounded up across a band's
+    edge (0.4999 is 49%, Elevated, not 50%), and small priors not shown as
+    0%."""
+    if probability >= 0.01:
+        return f"{math.floor(probability * 100)}%"
+    if probability >= 0.001:
+        return f"{math.floor(probability * 1000) / 10:g}%"
+    return "<0.1%"
 
 
 def _rating(findings: list[dict[str, Any]]) -> dict[str, Any]:

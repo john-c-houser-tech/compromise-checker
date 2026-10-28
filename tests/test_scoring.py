@@ -15,6 +15,7 @@ from checker.scoring import (
     BAND_RATIOS,
     EXTRA,
     logit,
+    percent,
     probability_band,
     score,
 )
@@ -96,7 +97,7 @@ def test_one_file_seen_by_two_checks_counts_once_plus_a_little():
     ]
     result = score(findings, 0.02)
     assert result["log_odds"] - logit(0.02) == pytest.approx(math.log(20) + EXTRA, abs=1e-3)
-    assert {c["capped"] for c in result["contributors"]} == {"group"}
+    assert [c["capped"] for c in result["contributors"]] == [None, "group"]
 
 
 def test_groups_join_through_a_shared_process_transitively():
@@ -226,3 +227,152 @@ def test_the_report_shows_the_score_and_rescores_for_a_new_prior(home):
     )
     assert len(store.assessments("b1")) == before + 1
     assert load_assessment(store, "b1", identity)["score"]["prior"] == 0.5
+
+
+# --- from the review of 2.1a --------------------------------------------------------------
+
+
+def test_the_score_never_depends_on_the_order_of_the_findings():
+    import itertools
+
+    findings = [
+        f("files.scratch", "high", entities=["path:/tmp/.sh"]),
+        f("files.privileged", "high", entities=["path:/tmp/.sh"]),
+        f("files.privileged", "high", entities=["path:/usr/local/bin/x"]),
+        f("ssh.login", "medium", entities=["address:198.51.100.1"]),
+        f("ssh.login", "medium", entities=["address:198.51.100.2"], uncertain="partial"),
+    ]
+    results = {
+        score([dict(x) for x in order], 0.02)["log_odds"]
+        for order in itertools.permutations(findings)
+    }
+    assert len(results) == 1
+    # The shell is one behaviour (high + a doubling); the second privileged
+    # file is another, in full; the logins are a medium and its family's
+    # doubling at most.
+    expected = math.log(20) + EXTRA + math.log(20) + math.log(4) + math.log(4) / 2
+    assert results.pop() - logit(0.02) == pytest.approx(expected, abs=1e-3)
+
+
+def test_only_findings_a_cap_cut_are_marked():
+    findings = [f("a", "high"), f("a", "low")]  # the low adds less than a doubling
+    result = score(findings, 0.02)
+    assert [c["capped"] for c in result["contributors"]] == [None, None]
+
+
+def test_the_rating_leaves_out_suppressed_findings():
+    findings = [f(band="high", category="hygiene", suppressed_by={"rule": "x"})]
+    assert score(findings, 0.02)["hygiene_and_exposure"] == {"band": "none", "counts": {}}
+
+
+@pytest.mark.parametrize(
+    ("p", "shown"),
+    [
+        (0.4999, "49%"),
+        (0.8994, "89%"),
+        (0.0996, "9%"),
+        (0.02, "2%"),
+        (0.004, "0.4%"),
+        (0.0004, "<0.1%"),
+        (0.9999, "99%"),
+    ],
+)
+def test_percentages_never_cross_a_band_edge(p, shown):
+    assert percent(p) == shown
+    if shown[0] != "<":
+        assert probability_band(float(shown.rstrip("%")) / 100) == probability_band(p)
+
+
+def inventory_with(**prior):
+    from checker.inventory import inventory_transaction
+
+    with inventory_transaction() as hosts:
+        hosts.add(Host(name="web01", address="192.0.2.1", user="scanner", **prior))
+
+
+def test_cli_analyze_and_report_use_the_hosts_prior(home, capsys):
+    base, store, identity, config = home
+    inventory_with(prior=0.2)
+    add_bundle(home, "b1", 0, host_records())
+    assert cli.main(["analyze", "web01"]) == 0
+    assert "(prior 20%, host)" in capsys.readouterr().out
+    assert cli.main(["report", "web01", "--output", str(base / "r.html")]) == 0
+    assert "from a prior of 20% (host)" in (base / "r.html").read_text()
+
+
+def test_hosts_add_keeps_its_prior(home):
+    from checker.inventory import load_inventory
+
+    args = ["hosts", "add", "web01", "--address", "192.0.2.1", "--user", "u", "--prior", "0.05"]
+    assert cli.main(args) == 0
+    assert load_inventory().get("web01").prior == 0.05
+
+
+def test_an_invalid_inventory_is_an_error_not_a_traceback(home, capsys):
+    from checker.inventory import hosts_file
+
+    add_bundle(home, "b1", 0, host_records())
+    hosts_file().write_text("hosts:\n- {name: web01, address: 192.0.2.1, user: u, prior: 1.5}\n")
+    assert cli.main(["analyze", "web01"]) == 1
+    err = capsys.readouterr().err
+    assert "the inventory" in err and "is invalid" in err
+    assert cli.main(["report", "web01"]) == 1
+    assert "is invalid" in capsys.readouterr().err
+
+
+def test_the_index_summary_holds_the_probability_and_band(home):
+    import json as _json
+
+    from checker.evidence import open_text
+
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    analyze(store, "web01", identity, config.recipients)
+    summary = _json.loads(open_text(store.assessments("b1")[-1]["summary"], identity))
+    assert summary["band"] == "Low" and summary["probability"] == pytest.approx(0.02)
+
+
+def test_a_new_prior_rescores_without_running_the_checks(home, monkeypatch):
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    analyze(store, "web01", identity, config.recipients)
+
+    def no_analysis(*args, **kwargs):
+        raise AssertionError("the checks ran again")
+
+    monkeypatch.setattr("checker.report.analyze", no_analysis)
+    write_report(
+        store,
+        ["web01"],
+        identity,
+        config.recipients,
+        base / "reports",
+        priors=lambda _: (0.3, "group web"),
+    )
+    latest = load_assessment(store, "b1", identity)["score"]
+    assert (latest["prior"], latest["prior_source"]) == (0.3, "group web")
+
+
+def test_a_format_1_assessment_is_analysed_again(home):
+    from checker.assess import store_assessment
+
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    old = analyze(store, "web01", identity, config.recipients)
+    del old["score"], old["format"]
+    old["versions"] = {"checks": 1, "parser": old["versions"]["parser"], "snapshot": 1}
+    store_assessment(store, store.bundle("b1"), config.recipients, old)
+    write_report(store, ["web01"], identity, config.recipients, base / "reports")
+    assert load_assessment(store, "b1", identity)["format"] == 2
+
+
+def test_contributor_titles_are_escaped(home):
+    from checker.report import host_report, render
+
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    add_bundle(home, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))))
+    report = host_report(store, "web01", identity, config.recipients)
+    report.assessment["score"]["contributors"][0]["title"] = "<script>alert(1)</script>"
+    html = render([report], ("op", "ctl"))
+    assert "<script>alert(1)" not in html and "&lt;script&gt;" in html

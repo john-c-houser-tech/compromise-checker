@@ -26,11 +26,11 @@ from pyrage import x25519
 
 from checker import __version__
 from checker.analysis import load_events, snapshot_of
-from checker.assess import analyze, events_of, load_assessment
+from checker.assess import analyze, events_of, load_assessment, store_assessment
 from checker.baseline import USABLE, usable_bundles
 from checker.checks import BANDS, CATEGORIES, CHECKS_VERSION
 from checker.evidence import EvidenceError, Store, open_text, who_and_where
-from checker.scoring import DEFAULT_PRIOR
+from checker.scoring import DEFAULT_PRIOR, percent, score
 from checker.snapshot import Snapshot
 
 MAX_EVIDENCE = 5  # excerpts shown per finding
@@ -191,6 +191,16 @@ def _excerpts(
     return shown
 
 
+def rescore(store: Store, row, recipients, assessment: dict, prior: tuple[float, str]) -> dict:
+    """The assessment's findings scored from another prior, stored as a new
+    assessment (the earlier one is kept)."""
+    again = json.loads(json.dumps(assessment))
+    again["analysed_at"] = datetime.now(UTC).isoformat()
+    again["score"] = score(again["findings"], prior[0]) | {"prior_source": prior[1]}
+    store_assessment(store, row, recipients, again)
+    return again
+
+
 def host_report(
     store: Store,
     host: str,
@@ -213,12 +223,12 @@ def host_report(
     assessment = load_assessment(store, row["id"], identity)
     # Its evidence points into one parse of the bundle (event numbers,
     # snapshot keys): any newer parser or checks means analysing again.
-    if (
-        assessment is None
-        or assessment.get("versions") != current_versions()
-        or assessment["score"]["prior"] != prior[0]
-    ):
+    if assessment is None or assessment.get("versions") != current_versions():
         assessment = analyze(store, host, identity, recipients, row["id"], prior)
+    elif (assessment["score"]["prior"], assessment["score"]["prior_source"]) != prior:
+        # Only the prior changed: score the same findings again, without
+        # running the checks (which could see another baseline by now).
+        assessment = rescore(store, row, recipients, assessment, prior)
     parsed = load_events(store, row, identity)
     events = parsed.events if parsed else events_of(store, row, identity, recipients)
     snapshot = snapshot_of(store, row, identity, recipients)
@@ -287,6 +297,7 @@ def render(reports: list[HostReport], generated_by: tuple[str, str]) -> str:
         finalize=_finalize,
     )
     environment.filters["visible"] = visible
+    environment.filters["percent"] = percent
     template = environment.get_template("report.html.j2")
     return template.render(
         reports=reports,

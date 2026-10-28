@@ -66,17 +66,28 @@ def _is_shell(process: dict) -> bool:
     return any(n in SHELLS or n.startswith("python") for n in names)
 
 
-def _updated_since(context: Context, started: str | None) -> bool:
-    """Whether the package lists changed after a process started: a
-    program deleted under it was most likely replaced by that update."""
+def _updated_since(context: Context, process: dict) -> bool:
+    """Whether the package lists changed after the process's code was
+    loaded: a program deleted under it was most likely replaced by that
+    update. A process forked without a new program ((sd-pam) from
+    systemd) runs code its ancestors loaded, so the earliest start among
+    its ancestors running the same program counts."""
     times = [
         str(item.get("mtime"))
         for item in context.items("checksum_store").values()
         if item.get("mtime")
     ]
+    processes = {p.get("pid"): p for p in context.snapshot.live.get("processes", [])}
+    starts, current, seen = [process.get("start_time")], process, set()
+    exe = str(process.get("exe") or "")
+    while current.get("ppid") in processes and current.get("ppid") not in seen:
+        seen.add(current.get("ppid"))
+        current = processes[current.get("ppid")]
+        if str(current.get("exe") or "") == exe:
+            starts.append(current.get("start_time"))
     try:
-        start = datetime.fromisoformat(str(started))
-        return any(datetime.fromisoformat(t) > start for t in times)
+        loaded = min(datetime.fromisoformat(str(t)) for t in starts if t)
+        return any(datetime.fromisoformat(t) > loaded for t in times)
     except ValueError:
         return False
 
@@ -199,7 +210,7 @@ def executable(context: Context) -> list[Finding]:
                         "process.executable", "A process whose program was deleted", "high", p, exe
                     )
                 )
-            elif path.startswith(SYSTEM) and _updated_since(context, p.get("start_time")):
+            elif path.startswith(SYSTEM) and _updated_since(context, p):
                 # A package update replaced it under a running service.
                 findings.append(
                     _finding(
@@ -343,7 +354,7 @@ def injected(context: Context) -> list[Finding]:
         if not paths:
             continue
         bare = [x.removesuffix(" (deleted)") for x in paths]
-        replaced = _updated_since(context, p.get("start_time"))
+        replaced = _updated_since(context, p)
         if any(x.startswith(SCRATCH + HOMES) for x in bare):
             title, band, category = (
                 "A process has code mapped from a scratch or home file",

@@ -94,6 +94,15 @@ _SOCKET_CALLS = {"bind", "connect", "sendto", "sendmsg"}
 # then locks down its own runtime sockets and directories at login.
 _FD_ATTRIBUTE_CALLS = {"fchmod", "fchown", "fsetxattr"}
 _SESSION_MANAGER = "/usr/lib/systemd/systemd"
+# systemd 256 and later: at login the user's session manager makes the
+# placeholder nodes it masks paths with (InaccessiblePaths=) inside its own
+# runtime area, through a directory handle, so the audit log has only the
+# bare names. Accepted only from the session manager, only these names.
+_PLACEHOLDER_CALLS = {"mkdirat", "mknodat", "linkat"}
+_PLACEHOLDER_NAMES = {"/", "/inaccessible", "/dir", "/reg", "/chr", "/blk", "/fifo", "/sock"}
+# The user-unit generators write links into their output directory under
+# /run/user/<uid>/systemd, also through a handle.
+_USER_GENERATORS = "/usr/lib/systemd/user-generators/"
 
 
 # --- Linode API ------------------------------------------------------------------
@@ -387,6 +396,23 @@ def classify(events: list[dict]) -> Verdict:
                 )
             else:
                 verdict.unexpected.append(f"{who} (no path)")
+            continue
+        if (
+            event["exe"] == _SESSION_MANAGER
+            and event["syscall"] in _PLACEHOLDER_CALLS
+            and all(path in _PLACEHOLDER_NAMES for path in targets)
+        ):
+            verdict.disclosed.extend(
+                f"{who} {path}  — session setup: the user manager's placeholder nodes in its"
+                " runtime area (memory)"
+                for path in targets
+            )
+            continue
+        if event["exe"].startswith(_USER_GENERATORS) and event["syscall"].startswith("symlink"):
+            verdict.disclosed.extend(
+                f"{who} {path}  — session setup: a user-unit generator's output (memory)"
+                for path in targets
+            )
             continue
         for path in targets:
             # A ".." could climb out of a disclosed prefix (/run/user/1000/../../etc):

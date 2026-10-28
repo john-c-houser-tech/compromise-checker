@@ -371,6 +371,26 @@ compared around every run. If nothing ever loads, the collector reads
 those rules too and the proof keeps ufw and Docker on the Ubuntu images;
 if anything loads, the gap stays and the docs name it.
 
+*2.4a proof (2026-10-28, read-only, all seven images, 7 Nanodes, about 5
+cents, all deleted):* PASS on every image: the collector wrote nothing and
+no firewall module was loaded or unloaded during any collection.
+
+| Image | Firewall | Rules listed | Collector | Peak memory |
+|---|---|---|---|---|
+| Ubuntu 22.04 | ufw (nft_compat) | no: gap, as designed | 57 s | 47 MB |
+| Ubuntu 24.04 | ufw (nft_compat) | no: gap, as designed | 71 s | 53 MB |
+| Ubuntu 26.04 | ufw (nft_compat) | no: gap, as designed | 66 s | 60 MB |
+| Rocky Linux 9 | firewalld (native nftables) | yes, `nft` | 54 s | 68 MB |
+| Rocky Linux 10 | none loaded | nothing to list | 54 s | 63 MB |
+| AlmaLinux 9 | firewalld (native nftables) | yes, `nft` | 56 s | 69 MB |
+| AlmaLinux 10 | none loaded | nothing to list | 45 s | 65 MB |
+
+For 2.10's calibration: on Ubuntu 22.04 one `(sd-pam)` process was a
+*high* "code mapped from a deleted file" (libaudit, replaced when the
+proof installs auditd), beside the known low hygiene findings for the same
+library; the 1.9 ancestor rule for forks without a new program didn't
+cover it this time.
+
 ### 2.5 — Anti-forensics (8.10, ★ all)
 
 - **Collector, new module `logging_state`:** a manifest of `/var/log` and

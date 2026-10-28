@@ -754,3 +754,25 @@ def test_mode_changes_that_open_things_up():
         ("/usr/lib/x/f", "medium"),
         ("/usr/share/x/g", "medium"),
     ]
+
+
+def test_a_set_user_id_shell_in_a_scratch_place_is_a_privileged_file():
+    # /tmp is listed whole as unusual files, so the privileged search skips it.
+    items = {
+        "/tmp/.cc-sh": {"place": "/tmp", "type": "-", "kind": "elf", "setuid": True, "uid": 0},
+        "/tmp/plain": {"place": "/tmp", "type": "-", "kind": "elf"},
+    }
+    web = {
+        "/var/www/html/x.cgi": {"place": "/var/www", "type": "-", "capabilities": "cap_setuid=ep"}
+    }
+    found = of(run([], snap(OWNERS, unusual_files=items, web_files=web)), "files.privileged")
+    assert sorted((f.summary.split(":")[0], f.band) for f in found) == [
+        ("/tmp/.cc-sh", "high"),
+        ("/var/www/html/x.cgi", "high"),
+    ]
+    # And as new since the baseline, from its own section's changes.
+    before = snap(OWNERS, unusual_files={}, web_files={}, privileged_files={})
+    after = snap(OWNERS, unusual_files=items, web_files={}, privileged_files={})
+    [finding] = of(run([], after, baseline=before), "files.privileged")
+    assert finding.title == "A new privileged file since the baseline"
+    assert finding.evidence == [{"change": ["b0", "unusual_files", "/tmp/.cc-sh", "added"]}]

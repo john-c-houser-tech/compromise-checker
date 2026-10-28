@@ -250,11 +250,23 @@ def package_changed(context: Context) -> list[Finding]:
 def privileged(context: Context) -> list[Finding]:
     findings = []
     owners = _owners_known(context)
-    diff = context.changes("privileged_files")
-    added = diff["added"] if diff else {}
-    changed = diff["changed"] if diff else {}
+    # The scratch places and web roots are listed whole (unusual_file,
+    # web_file), so the privileged search skips them: a set-user-ID shell in
+    # /tmp is only there. Every listed file carrying privilege counts.
+    candidates: dict[str, tuple[str, dict]] = {}
+    for section in ("unusual_files", "web_files", "privileged_files"):
+        for path, item in context.items(section).items():
+            privileged = item.get("setuid") or item.get("setgid") or item.get("capabilities")
+            if section == "privileged_files" or privileged:
+                candidates[path] = (section, item)
+    added, changed = {}, {}
+    for section in ("unusual_files", "web_files", "privileged_files"):
+        diff = context.changes(section)
+        if diff:
+            added.update({k: section for k in diff["added"]})
+            changed.update(diff["changed"])
     uncertain = context.uncertain("privileged_files")
-    for path, item in context.items("privileged_files").items():
+    for path, (section, item) in sorted(candidates.items()):
         if "error" in item or path.startswith(SYSTEMD_OWN):
             continue  # a walk error (a coverage gap), or systemd's own placeholders
         special = item.get("setuid") or item.get("setgid")
@@ -304,12 +316,11 @@ def privileged(context: Context) -> list[Finding]:
                 + (f" (package {item['package']})" if item.get("package") else ""),
                 [f"path:{path}"],
                 [
-                    context.change_ref("privileged_files", path, "added" if is_new else "changed")
+                    context.change_ref(section, path, "added" if is_new else "changed")
                     if is_new or gained
-                    else {"item": ["privileged_files", path]}
+                    else {"item": [section, path]}
                 ],
-                new=(is_new or bool(gained))
-                and context.new_since_previous("privileged_files", path),
+                new=(is_new or bool(gained)) and context.new_since_previous(section, path),
                 uncertain=uncertain if is_new or gained else None,
             )
         )

@@ -272,6 +272,7 @@ class Result:
     # (must stay empty).
     sudo_listing: list[str] = field(default_factory=list)
     root_mail: list[str] = field(default_factory=list)  # informational
+    sudo_mail: str = ""  # sudo's security mail to root, if any
     mail_leaks: list[str] = field(default_factory=list)
     error: str | None = None
 
@@ -735,6 +736,15 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 timeout=60,
             )
             result.root_mail = subjects.stdout.strip().splitlines()[:10]
+            # Mail queued in the scanner's session is disclosed only as
+            # sudo's to the administrators: its messages must be there, and
+            # say what sudo reported.
+            bodies = await conn.run(
+                "cat /var/mail/root /var/spool/mail/root 2>/dev/null"
+                " | grep -a -A12 '^Subject: \\*\\*\\* SECURITY information'",
+                timeout=60,
+            )
+            result.sudo_mail = bodies.stdout[:4000]
             result.status = outcome.status
             if outcome.error:
                 result.error = outcome.error
@@ -811,6 +821,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             and not result.modules_changed
             and result.mail_events > 0
             and not result.sudo_listing
+            and (not _queued_mail(audit) or "SECURITY information" in result.sudo_mail)
             and not result.mail_leaks
             # On Ubuntu, ufw (and Docker) put the rules through nft_compat:
             # that path must really have been exercised.
@@ -874,6 +885,11 @@ nss=$(readlink -f /etc/nsswitch.conf)
 sed -i '/^[[:space:]]*sudoers[[:space:]]*:/d' "$nss"
 echo 'sudoers: files sss' >> "$nss"
 """
+
+
+def _queued_mail(audit) -> bool:
+    """Whether anything was queued for local mail in the scanner's session."""
+    return any("/var/spool/postfix/maildrop/" in line for line in audit.disclosed)
 
 
 class _LookupRecord:
@@ -1105,6 +1121,15 @@ def report(results: list[Result]) -> bool:
                 print("  FAIL: no mail event parsed, so the mail log reads went unproven")
             for subject in r.root_mail:
                 print(f"  mail to root during the run: {subject}")
+            if r.audit is not None and _queued_mail(r.audit):
+                if "SECURITY information" in r.sudo_mail:
+                    print("  sudo's mail to root (what queued mail in the session was):")
+                    for line in r.sudo_mail.splitlines()[:20]:
+                        print(f"    {line}")
+                else:
+                    print(
+                        "  FAIL: mail was queued in the scanner's session, and none of it is sudo's"
+                    )
             for problem in r.sudo_listing:
                 print(f"  FAIL: sudo listing: {problem}")
             for leak in r.mail_leaks:

@@ -199,3 +199,14 @@ def test_cli_report_into_a_missing_directory(home, capsys):
     add_bundle(home, "b1", 0, host_records())
     assert cli.main(["report", "web01", "--output", str(home[0] / "no" / "such" / "r.html")]) == 1
     assert "checker:" in capsys.readouterr().err
+
+
+def test_the_report_says_when_the_advisor_is_off(home):
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    off = write_report(store, ["web01"], identity, config.recipients, base / "reports")
+    assert "AI advisor: off." in off.read_text()
+    on = write_report(
+        store, ["web01"], identity, config.recipients, base / "reports", advisor_enabled=True
+    )
+    assert "AI advisor: off." not in on.read_text()

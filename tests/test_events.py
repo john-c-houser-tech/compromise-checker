@@ -645,7 +645,8 @@ def test_events_are_stored_encrypted_and_reloaded(stored_bundle, tmp_path):
     assert [e.as_dict() for e in again.events] == [e.as_dict() for e in parsed.events]
     actions = [r["action"] for r in store.custody_of("b1")]
     assert actions == ["collected", "parsed"]
-    target.write_bytes(target.read_bytes()[:-1] + b"x")
+    data = target.read_bytes()
+    target.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))  # always a change
     with pytest.raises(Exception, match="recorded hash"):
         load_events(store, row, identity)
 

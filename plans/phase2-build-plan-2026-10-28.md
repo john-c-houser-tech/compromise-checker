@@ -618,6 +618,26 @@ Rocky 9, all twenty-five behaviours (mail from `www-data`, a volume jump,
 60 new domains). Golden cases re-exported. Phase 2 spend so far: about
 32 cents.
 
+*2.7b — sudo rules from a directory (John decided 2026-10-29):* where
+`nsswitch.conf` names a directory for sudo rules, the sudoers module asks
+sudo itself (`sudo -n -ll -U <scanner>`, `sudo` allow-listed for this
+only) and reads the listing for input logging; `off` needs proof the
+directory answered (SSSD's responder running; an LDAP role listed; no
+warning), and a cut, failed or unrecognised listing is `unknown`. No
+look-up where sudoers mails or forwards it. Ubuntu 26.04's `sudo-rs` has
+no input logging and lists rules without the defaults' header. Root's
+listing is logged on none of the seven images; an SSSD sudo can't reach
+mails the administrators "problem with defaults entries" (for the
+collector's own sudo too). Policy §5 (worded with John): the look-up's
+traces, and GRUB's boot-success flag on RHEL 9 and later after a few
+minutes' session. Agent review: 10 findings fixed. Proofs: read-only
+7/7, each image collected three times (the third with `sudoers: files
+sss` and SSSD stopped, so the look-up runs inside an audited collection
+and finds the directory not answering); the proof samples in-memory
+mounts through every session and discloses the user manager clearing
+generator output at a later login; root's mail must be sudo's own. Four
+runs, 24 Nanodes, about 18 cents. Phase 2 spend so far: about 50 cents.
+
 ### 2.8 — Web applications (8.12) (decision 3: decided)
 
 - **Collector, new module `web_logs`:** web server configuration (nginx,

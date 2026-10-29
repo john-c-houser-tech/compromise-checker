@@ -1218,6 +1218,10 @@ COMMANDS = {
     "nft": ("/usr/sbin/nft", "/sbin/nft"),
     "iptables-legacy-save": ("/usr/sbin/iptables-legacy-save", "/sbin/iptables-legacy-save"),
     "ip6tables-legacy-save": ("/usr/sbin/ip6tables-legacy-save", "/sbin/ip6tables-legacy-save"),
+    # Only `sudo -n -ll -U <the account that ran the collector>`, where sudo
+    # takes rules from a directory (sudo_input_logging): what sudo applies
+    # to that account, read for input logging and never sent.
+    "sudo": ("/usr/bin/sudo", "/bin/sudo"),
 }
 # A fixed, minimal environment: nothing from the login session reaches a command.
 _COMMAND_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C.UTF-8"}
@@ -1248,6 +1252,89 @@ def find_command(name):
         else:
             return candidate, info, None
     return None, None, "; ".join(reasons) or "not installed"
+
+
+def capture_command(run, name, args, limit=256 * 1024, seconds=20.0):
+    """Run an allow-listed command for the collector's own use, never sent:
+    a dict with its `argv`, `executable_sha256`, and either `status`,
+    `output` (at most `limit` bytes), `output_cut` (more than that) and
+    `stderr` (its first 4 KiB), or `failed` (why it couldn't run or
+    finish). Stopped, its whole process group, after `seconds` or at the
+    module's deadline; not started at all past the deadline."""
+    executable, _, problem = find_command(name)
+    if executable is None:
+        return {"failed": problem}
+    digest, _ = hash_file(run, executable)
+    found = {"argv": [executable] + list(args), "executable_sha256": digest}
+    remaining = min(seconds, run.deadline - time.monotonic())
+    if remaining <= 0:
+        return dict(found, failed="no time left")
+    try:
+        no_input = os.open(os.devnull, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        return dict(found, failed=str(exc))
+    try:
+        process = subprocess.Popen(  # noqa: S603 - allow-listed executable, fixed arguments
+            [path(executable)] + list(args),
+            stdin=no_input,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_COMMAND_ENV,
+            cwd="/",
+            close_fds=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return dict(found, failed=str(exc))
+    finally:
+        os.close(no_input)
+    stopped = {"time": False}
+
+    def stop():
+        stopped["time"] = True
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    errors = {"kept": b""}
+
+    def drain():
+        while True:
+            piece = process.stderr.read(4096)
+            if not piece:
+                return
+            if len(errors["kept"]) < _STDERR_KEEP:
+                errors["kept"] += piece[: _STDERR_KEEP - len(errors["kept"])]
+
+    watchdog = threading.Timer(remaining, stop)
+    watchdog.daemon = True
+    watchdog.start()
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    try:
+        output = process.stdout.read(limit + 1)
+        if len(output) > limit:
+            os.killpg(process.pid, signal.SIGKILL)  # enough read; nothing more is wanted
+        status = process.wait()
+    finally:
+        watchdog.cancel()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)  # anything it left behind
+        except OSError:
+            pass
+        reader.join(1)
+        process.stdout.close()
+        process.stderr.close()
+    if stopped["time"]:
+        return dict(found, failed="timed out")
+    return dict(
+        found,
+        status=status,
+        output=output[:limit],
+        output_cut=len(output) > limit,
+        stderr=errors["kept"].decode("utf-8", "replace"),
+    )
 
 
 def run_command(run, module, name, args, transform=None):
@@ -2414,10 +2501,83 @@ def sudo_logs_input(line):
     return any(len(m.group(1)) % 2 == 0 for m in _SUDO_INPUT_FLAG.finditer(line))
 
 
-def sudo_input_logging(texts, complete):
+# Local, fully qualified (scanner@corp.example.com) and domain (CORP\scanner)
+# account names; never one sudo could take for an option.
+_SUDO_ACCOUNT = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.@\\$-]{0,255}$")
+_SUDO_LIST_OPTION = re.compile(r"[\s,:]")
+# sudo settings that make a look-up leave more traces (mail the
+# administrators, send the event to a log server): no look-up then.
+_SUDO_LOOKUP_NOISY = re.compile(r"(?<![!\w])(?:mail_always|mail_all_cmnds|log_servers)\b")
+SSSD_SUDO_PIPE = "/var/lib/sss/pipes/sudo"
+SSSD_PID_FILES = ("/run/sssd.pid", "/var/run/sssd.pid")
+
+
+def sssd_answering():
+    """Whether SSSD's sudo responder can answer: its socket exists and the
+    process its pid file names is alive. If it can't, sudo quietly lists
+    only the files' rules, which proves nothing about the directory's."""
+    try:
+        if not stat.S_ISSOCK(os.lstat(path(SSSD_SUDO_PIPE)).st_mode):
+            return False
+    except OSError:
+        return False
+    for pid_file in SSSD_PID_FILES:
+        text = (read_small(pid_file, 64) or "").strip()
+        if text.isdigit() and os.path.isdir(path(f"/proc/{int(text)}")):
+            return True
+    return False
+
+
+def sudo_directory_lookup(run, sources):
+    """Whether sudo logs the input of the account that ran the collector,
+    asked of sudo itself (`sudo -n -ll -U <account>`), so rules it takes
+    from a directory count too: ("on" | "off" | why it can't be told, the
+    command's argv and executable hash). "off" needs proof the directory
+    answered: SSSD's responder running (for sss), a listed LDAP role (for
+    ldap), and no warning from sudo. It holds as of the look-up: directory
+    rules can change between collections. sudo records the look-up in the
+    authentication log."""
+    account = os.environ.get("SUDO_USER", "")
+    if not _SUDO_ACCOUNT.match(account):
+        return "not run under sudo by a named account", None
+    ran = capture_command(run, "sudo", ["-n", "-ll", "-U", account])
+    trail = {k: ran[k] for k in ("argv", "executable_sha256") if k in ran}
+    if "failed" in ran:
+        return f"lookup failed: {ran['failed']}", trail or None
+    if ran["output_cut"]:  # (stopped once enough was read: its status says nothing)
+        return "lookup failed: listing too long to read whole", trail
+    if ran["status"] != 0:
+        return f"lookup failed: exit status {ran['status']}", trail
+    if ran["stderr"].strip():
+        return "lookup failed: sudo warned while listing", trail
+    text = ran["output"].decode("utf-8", "replace")
+    verdict = sudo_list_logs_input(text)
+    if verdict != "off":
+        return verdict, trail
+    if "sss" in sources and not sssd_answering():
+        return "lookup failed: SSSD's sudo responder isn't running", trail
+    if "ldap" in sources and "LDAP Role:" not in text:
+        return "lookup failed: no rule came from LDAP", trail
+    return verdict, trail
+
+
+def sudo_list_logs_input(text):
+    """From `sudo -ll`'s listing: "on" if its defaults or a rule's options
+    log input, "off" if not, or why the listing can't be read. sudo leaves
+    the defaults' header out when none match, and sudo-rs (Ubuntu 26.04),
+    which has no input logging, always does; a listing for an account
+    with no rules can't be read."""
+    if "Matching Defaults entries for" not in text and "may run the following commands" not in text:
+        return "lookup failed: not a sudo listing"
+    words = set(_SUDO_LIST_OPTION.split(text))
+    return "on" if words & {"log_input", "log_stdin", "LOG_INPUT"} else "off"
+
+
+def sudo_input_logging(texts, complete, run=None):
     """Whether sudo writes its input to disk, from every sudoers file's text
     (`complete`: all of them read whole), sudo.conf's plugins and where
-    nsswitch.conf says rules come from. "off" only when sure."""
+    nsswitch.conf says rules come from. "off" only when sure. Where rules
+    may also come from a directory, sudo itself is asked (with `run`)."""
     logged = any(sudo_logs_input(line) for text in texts for line in text.splitlines())
     plugins, redirected = [], False
     conf, readable = _settings_text("/etc/sudo.conf")
@@ -2437,19 +2597,37 @@ def sudo_input_logging(texts, complete):
         if match:
             sources = match.group(1).split()
     elsewhere = [s for s in sources if s != "files" and not s.startswith("[")]
+    lookup = trail = None
     if logged or unknown:
         state = "on"
-    elif complete and not elsewhere and not redirected:
+    elif complete and not redirected and not elsewhere:
         state = "off"
+    elif complete and not redirected and run is not None:
+        noisy = any(
+            _SUDO_LOOKUP_NOISY.search(line)
+            for text in texts
+            for line in text.splitlines()
+            if not _SUDO_COMMENT_LINE.match(line)
+        )
+        if noisy:
+            lookup = "not looked up: sudo would mail or forward the look-up"
+        else:
+            lookup, trail = sudo_directory_lookup(run, elsewhere)
+        state = lookup if lookup in ("on", "off") else "unknown"
     else:
         state = "unknown"
-    return {
+    found = {
         "state": state,
         "sudoers_complete": complete,
         "plugins": plugins,
         "plugin_arguments": redirected,
         "rules_also_from": elsewhere,
     }
+    if lookup is not None:
+        found["directory_lookup"] = lookup
+        if trail:
+            found["lookup_command"] = trail
+    return found
 
 
 def module_sudoers(run):
@@ -2520,7 +2698,7 @@ def module_sudoers(run):
             )
             # Every file is sent, including those sudo skips: evidence either way.
             pending.extend((_join(target, n), depth + 1) for n in names[:MAX_DIR_FILES])
-    run.stream.record(module, "sudo_input_logging", sudo_input_logging(texts, complete))
+    run.stream.record(module, "sudo_input_logging", sudo_input_logging(texts, complete, run))
 
 
 # Who the home_text opt-in's "privileged" setting covers (policy §7: root,

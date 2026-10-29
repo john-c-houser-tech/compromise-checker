@@ -1188,6 +1188,7 @@ class ResourceTests(FixtureRoot):
                     "/usr/sbin/ip6tables-legacy-save",
                     "/sbin/ip6tables-legacy-save",
                 ],
+                "sudo": ["/usr/bin/sudo", "/bin/sudo"],
             },
         )
 
@@ -5032,6 +5033,90 @@ class MailTests(FixtureRoot):
         entry = walk._entry("/x", info)
         self.assertEqual(entry["device"], [1, 3])
 
+    def directory_sudo(self, listing, status=0, nss=b"files sss", sssd=True, warn=b"", extra=b""):
+        self.write("etc/sudoers", b"root ALL=(ALL) ALL\n" + extra)
+        self.write("etc/nsswitch.conf", b"sudoers: " + nss + b"\n")
+        Path(self.root, "listing").write_bytes(listing)
+        script = b"#!/bin/sh\ncat " + str(Path(self.root, "listing")).encode() + b"\n"
+        if warn:
+            script += b"echo '" + warn + b"' >&2\n"
+        self.write("usr/bin/sudo", script + b"exit %d\n" % status).chmod(0o755)
+        pipe = Path(self.root, "var/lib/sss/pipes/sudo")
+        if not sssd and pipe.exists():
+            pipe.unlink()
+        if sssd and not pipe.exists():
+            pipe.parent.mkdir(parents=True, exist_ok=True)
+            server = socket.socket(socket.AF_UNIX)
+            server.bind(str(pipe))
+            self.addCleanup(server.close)
+            self.write("run/sssd.pid", b"%d\n" % os.getpid())
+            Path(self.root, f"proc/{os.getpid()}").mkdir(parents=True, exist_ok=True)
+        os.environ["SUDO_USER"] = "scanner"
+        self.addCleanup(os.environ.pop, "SUDO_USER", None)
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        return found["data"]
+
+    def test_directory_rules_are_asked_of_sudo(self):
+        found = self.directory_sudo(SUDO_LIST)
+        self.assertEqual((found["state"], found["directory_lookup"]), ("off", "off"))
+        self.assertEqual(found["lookup_command"]["argv"][1:], ["-n", "-ll", "-U", "scanner"])
+        self.assertTrue(found["lookup_command"]["executable_sha256"])
+        on = SUDO_LIST.replace(b"!authenticate", b"!authenticate, log_input")
+        self.assertEqual(self.directory_sudo(on)["state"], "on")
+        on = SUDO_LIST.replace(b"env_reset", b"env_reset, log_stdin")
+        self.assertEqual(self.directory_sudo(on)["state"], "on")
+        on = (
+            SUDO_LIST
+            + b"\nRunas and Command-specific defaults for scanner:\n"
+            + b"    Defaults!/usr/bin/python3 log_input\n"
+        )
+        self.assertEqual(self.directory_sudo(on)["state"], "on")
+        off = SUDO_LIST.replace(b"!authenticate", b"!authenticate, !log_input")
+        self.assertEqual(self.directory_sudo(off)["state"], "off")
+
+    def test_sudo_rs_and_header_less_listings_are_read(self):
+        sudo_rs = SUDO_LIST.split(b"\n\n", 1)[1]  # no "Matching Defaults" header
+        self.assertEqual(self.directory_sudo(sudo_rs)["state"], "off")
+        tagged = sudo_rs.replace(b"!authenticate", b"!authenticate, log_input")
+        self.assertEqual(self.directory_sudo(tagged)["state"], "on")
+
+    def test_a_lookup_that_proves_nothing_is_unknown(self):
+        cases = [
+            (dict(listing=SUDO_LIST, status=1), "exit status 1"),
+            (dict(listing=b"sudo: something else entirely"), "not a sudo listing"),
+            (dict(listing=SUDO_LIST + b"    Commands:\n" + b"x" * 300000), "too long"),
+            (dict(listing=SUDO_LIST, warn=b"sudo: unable to load sss"), "warned"),
+            (dict(listing=SUDO_LIST, sssd=False), "responder"),
+            (dict(listing=FILES_LIST, nss=b"files ldap"), "no rule came from LDAP"),
+            (dict(listing=SUDO_LIST, extra=b"Defaults mail_always\n"), "not looked up"),
+        ]
+        for kwargs, why in cases:
+            found = self.directory_sudo(**kwargs)
+            self.assertEqual(found["state"], "unknown", why)
+            self.assertIn(why, found["directory_lookup"])
+        found = self.directory_sudo(
+            SUDO_LIST.replace(b"LDAP Role", b"LDAP Role"), nss=b"files ldap"
+        )
+        self.assertEqual(found["state"], "off")  # the listing names an LDAP role
+
+    def test_the_lookup_asks_for_the_account_that_ran_the_collector(self):
+        collector = load_collector(self.root)
+        calls = []
+
+        def capture(run, name, args, **kwargs):
+            calls.append((name, args))
+            return {"status": 0, "output": SUDO_LIST, "output_cut": False, "stderr": ""}
+
+        collector.capture_command = capture
+        collector.sssd_answering = lambda: True
+        for account in ("scanner", "scanner@corp.example.com", "CORP\\scanner"):
+            os.environ["SUDO_USER"] = account
+            self.addCleanup(os.environ.pop, "SUDO_USER", None)
+            self.assertEqual(collector.sudo_directory_lookup(None, ["sss"])[0], "off")
+            self.assertEqual(calls[-1], ("sudo", ["-n", "-ll", "-U", account]))
+        os.environ["SUDO_USER"] = "-x"  # never an option
+        self.assertIn("not run under sudo", collector.sudo_directory_lookup(None, ["sss"])[0])
+
     def test_a_bad_key_is_refused(self):
         records = collect(self.root, ["mail"], mail_key="NOT-HEX")
         self.assertEqual(records[-1]["status"], "refused")
@@ -5154,6 +5239,18 @@ class MailTests(FixtureRoot):
         self.assertEqual(self.fp(b"Bob"), self.fp(b"bob"))
 
 
+SUDO_LIST = b"""Matching Defaults entries for scanner on web01:
+    env_reset, mail_badpass, secure_path=/usr/sbin\\:/usr/bin
+
+User scanner may run the following commands on web01:
+
+LDAP Role: compromise-checker
+    RunAsUsers: root
+    Options: !authenticate
+    Commands:
+\t/usr/bin/python3 -I -B -
+"""
+FILES_LIST = SUDO_LIST.replace(b"LDAP Role: compromise-checker", b"Sudoers entry: /etc/sudoers")
 OTHER_JOURNALCTL = b"""#!/bin/sh
 printf '{"MESSAGE":"Login: user=<alice>, subject=Secret","SYSLOG_IDENTIFIER":"dovecot"}\\n'
 printf '{"MESSAGE":"4F: removed","SYSLOG_IDENTIFIER":"postfix/qmgr"}\\n'

@@ -190,8 +190,29 @@ either way, since a skipped one is still evidence.
 
 Also a `sudo_input_logging` record: whether sudo writes its input to disk,
 judged from that text, `/etc/sudo.conf`'s plugins and `nsswitch.conf`'s
-`sudoers:` line (read, not sent). The controller sends the mail key only
-where it is `off` (see `mail`).
+`sudoers:` line (read, not sent). Where that line names a directory as
+well (`sss`, `ldap`), sudo itself is asked what it applies to the account
+that ran the collector (`SUDO_USER`): `sudo -n -ll -U <account>`, whose
+listing shows directory rules too; `log_input`, `log_stdin` or `LOG_INPUT`
+in its defaults or a rule's options is `on`. `off` needs proof the
+directory answered, since sudo quietly lists only the files' rules when it
+can't reach it: SSSD's sudo responder running (its socket, and the process
+in its pid file), for `sss`; a listed `LDAP Role:`, for `ldap`; and no
+warning from sudo. A failed, cut-short (over 256 KiB) or unrecognised
+listing leaves it `unknown` (`directory_lookup` says which;
+`lookup_command` records the command and its executable's SHA-256). Where
+the sudoers files set `mail_always`, `mail_all_cmnds` or `log_servers`,
+the look-up isn't made (it would mail the administrators or reach a log
+server) and the state stays `unknown`. The answer holds as of the look-up:
+directory rules can change before the next collection. sudo logged
+nothing about root's listing on any of the seven proof images; should a
+sudo log it (`COMMAND=list`), the analysis marks that one line as the
+tool's own, only for a bundle whose look-up ran and only after the
+collector's own sudo. Ubuntu 26.04's `sudo-rs` has no input logging at
+all (it ignores `log_input` and `LOG_INPUT`) and lists rules without the
+defaults' header; its listings are read the same way. Account names may be fully
+qualified (`scanner@corp.example.com`, `CORP\scanner`). The controller sends the mail key only where it is `off`
+(see `mail`).
 
 ## `ssh`
 
@@ -885,8 +906,8 @@ collection, at the same address, said `off`. Deciding closes the host's
 gate until the run's own answer is recorded (after its bundle), so a run
 whose answer is lost leaves it closed; a damaged gate file counts as
 closed for every host. A host's first collection, a host whose sudo
-logs its input or takes rules from a directory (LDAP, SSSD), and a host
-whose last collection couldn't tell get no key: no mail log is sent
+logs its input, and a host whose last collection couldn't tell (sudo's
+own listing failing, where rules come from a directory) get no key: no mail log is sent
 (`mail_logs_withheld`, with the controller's reason), and the coverage
 says so. A run that leaves out `sudoers` keeps the host's last answer.
 
@@ -987,8 +1008,9 @@ follow links too (see `ssh`); logs never do.
 Where a file can't practically be read directly, a module runs a command
 from the collector's fixed allow-list (DESIGN.md §5.4). The settings can't
 add to the list or change a command's arguments. Today the list is
-`journalctl`, `nft`, `iptables-legacy-save` and `ip6tables-legacy-save`;
-the manifest carries the list as `commands_allowed`.
+`journalctl`, `nft`, `iptables-legacy-save`, `ip6tables-legacy-save` and
+`sudo` (only `sudo -n -ll -U <account>`, see `sudoers`); the manifest
+carries the list as `commands_allowed`.
 
 A command runs only from its absolute path (`/usr/bin/…` or `/bin/…`, never
 a search of `PATH`), and only if that file is owned by root and writable by
@@ -1004,6 +1026,11 @@ output, masked; if that output was longer, or the command was stopped
 part-way through a line, that unfinished line is left out
 (`stderr_truncated`). A command that fails on its own (non-zero exit
 status) ends its module with status `error`.
+
+`sudo`'s listing is the one exception to sending: the collector reads it
+for input logging and sends only its verdict. It runs the same way (from
+its absolute path, no input, the fixed environment), stopped after 20
+seconds.
 
 ## Directory walks
 

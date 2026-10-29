@@ -15,9 +15,11 @@ Redaction (DESIGN.md §3.5, policy §9):
 - *pseudonymize*: people's account names (UID 1000 and up, other UID 0
   accounts, accounts with a home under /home, names from log fields and
   findings that aren't system accounts, and the part after /home/ in any
-  path), host names (the host's own and the inventory's, whatever their
-  spelling, names under the host's domain, remote names in log fields,
-  the host part of user@host), the host's group, email addresses, IP
+  path, and the user before @ an address), host names (the host's own and
+  the inventory's, whatever their spelling, short and full; names under
+  any of the organization's domains, parent domains included; remote names
+  in log fields; the host part of user@host), the host's group, email
+  addresses, IP
   addresses and SSH key fingerprints become placeholders such as
   USER-2-7f3a (USER, HOST, DOMAIN, GROUP, EMAIL, IP, KEY), made fresh for
   each run with a random tag and never stored (decision 2); `restore`
@@ -37,7 +39,9 @@ account whose name is also an ordinary word or path part (ORDINARY_WORDS:
 `log`, `git`, `admin`…) is replaced only where it stands as a name (a
 whole value, after "account:", "/home/", "user=", "USER=", "user ",
 "for ", "by ", "sudo: ", "su: ", "(to ", "owner ", or before "@"), so that
-`log` doesn't turn /var/log into a placeholder; and the whitelist's
+`log` doesn't turn /var/log into a placeholder (hosts and groups named
+like ordinary words likewise, in their own name places, and a one-label
+domain such as `corp` only at the end of a longer name); and the whitelist's
 reasons are sent as written apart from the names above (so they
 shouldn't name people).
 """
@@ -53,9 +57,10 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
+from checker.assess import LOG_SOURCES, REACH_ONLY
 from checker.checks import BANDS
 from checker.report import excerpts, visible
-from checker.snapshot import Snapshot
+from checker.snapshot import FULL, SECTIONS, Snapshot
 
 CASE_FORMAT = 1
 MAX_CASE_CHARS = 200_000  # about 60 k tokens
@@ -68,6 +73,7 @@ GENERIC_HOSTNAMES = {
     "localhost6.localdomain6",
     "ip6-localhost",
     "ip6-loopback",
+    "localdomain",
     # Values PAM and sshd put where a remote host goes.
     "notty",
     "unknown",
@@ -103,7 +109,10 @@ SYSTEM_ACCOUNTS = GENERIC_ACCOUNTS | {
 }  # fmt: skip
 # Two-label names whose second label is a public top-level domain: no
 # domain of the organization's to derive from them.
-COMMON_TLDS = {"com", "org", "net", "gov", "edu", "mil", "int", "io", "us", "uk", "de", "info"}
+COMMON_TLDS = {"com", "org", "net", "gov", "edu", "mil", "int", "io", "info", "biz", "app", "dev"}
+# Second-level labels under a country code that are public suffixes too
+# (gov.uk, co.nz): never an organization's own domain.
+PUBLIC_SECOND_LEVELS = {"co", "com", "gov", "govt", "org", "net", "ac", "edu", "mil", "nhs"}
 # Event fields that hold account names, and host names.
 ACCOUNT_FIELDS = ("user", "by", "target", "old_user", "members")
 HOST_FIELDS = ("host", "client", "relay", "address")
@@ -169,10 +178,24 @@ def _host_facts(snapshot: Snapshot) -> dict[str, Any]:
     section = snapshot.sections.get("host")
     items = section.items if section else {}
     os_ = items.get("os") or {}
+    os_text = " ".join(str(v) for v in (os_.get("id"), os_.get("version_id")) if v)
+    kernel = (items.get("kernel") or {}).get("release")
     return {
-        "os": " ".join(str(v) for v in (os_.get("id"), os_.get("version_id")) if v) or None,
-        "kernel": (items.get("kernel") or {}).get("release"),
+        "os": _text(os_text, 200) if os_text else None,
+        "kernel": _text(kernel, 200) if kernel else None,
     }
+
+
+def _clip(value: Any) -> Any:
+    """Host or organization text inside a structure (a rule's match), each
+    string shown and cut as the rest is."""
+    if isinstance(value, str):
+        return _text(value, 200)
+    if isinstance(value, list):
+        return [_clip(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _clip(v) for k, v in value.items()}
+    return value
 
 
 def _size(value: Any) -> int:
@@ -209,11 +232,11 @@ def build_case(
     used = {str(key).split("/", 1)[-1] for key in (applied.get("matched") or {})}
     rules = [
         {
-            "id": rule.get("id"),
-            "layer": rule.get("layer"),
-            "match": rule.get("match"),
+            "id": _clip(rule.get("id")),
+            "layer": _clip(rule.get("layer")),
+            "match": _clip(rule.get("match")),
             "reason": _text(rule.get("reason")),
-            "expires": rule.get("expires"),
+            "expires": _clip(rule.get("expires")),
         }
         for rule in applied.get("rules") or []
         if isinstance(rule, dict) and rule.get("id") in used
@@ -222,12 +245,12 @@ def build_case(
     case = {
         "case_format": CASE_FORMAT,
         "redaction": "none",
-        "host": {"name": host, "group": group, **_host_facts(snapshot)},
+        "host": {"name": _text(host, 200), "group": _clip(group), **_host_facts(snapshot)},
         "assessment": {
             "probability": score.get("probability"),
             "band": score.get("band"),
             "prior": score.get("prior"),
-            "prior_source": score.get("prior_source"),
+            "prior_source": _clip(score.get("prior_source")),
             "hygiene_and_exposure": score.get("hygiene_and_exposure"),
             "top_contributors": [],
         },
@@ -240,9 +263,10 @@ def build_case(
                 "findings": [
                     f"F-{i + 1}" for i in chain.get("findings") or [] if isinstance(i, int)
                 ],
-                "account": chain.get("account"),
+                "account": _clip(chain.get("account")),
             }
             for chain in score.get("chains") or []
+            if isinstance(chain, dict)
         ],
         "whitelist_rules": rules,
         "from_host": {
@@ -298,6 +322,9 @@ class Known:
     system: set[str] = field(default_factory=lambda: set(SYSTEM_ACCOUNTS))
     hosts: set[str] = field(default_factory=set)
     domains: set[str] = field(default_factory=set)
+    # One-label domains (corp, lan): matched only as the end of a longer
+    # name (db01.corp), never alone, where they are ordinary words.
+    suffixes: set[str] = field(default_factory=set)
     groups: set[str] = field(default_factory=set)
 
 
@@ -342,7 +369,10 @@ def known_identifiers(
     `inventory` is (name, address, login user, group) for every host."""
     known = Known()
     section = snapshot.sections.get("accounts")
-    for name, item in (section.items if section else {}).items():
+    items = section.items if section is not None else {}
+    for name, item in (items if isinstance(items, dict) else {}).items():
+        if not isinstance(name, str) or not name:
+            continue
         item = item if isinstance(item, dict) else {}
         uid = _uid(item.get("uid"))
         home = str(item.get("home") or "")
@@ -371,13 +401,16 @@ def known_identifiers(
             try:
                 ipaddress.ip_address(name)
             except ValueError:
-                if name not in GENERIC_HOSTNAMES:
+                generic = GENERIC_HOSTNAMES | GENERIC_ACCOUNTS
+                if name not in generic:
                     known.hosts.add(name)
                     # Its short name too: syslog writes it in every line.
-                    if _qualified(name) and name.split(".")[0] not in GENERIC_HOSTNAMES:
+                    if _qualified(name) and name.split(".")[0] not in generic:
                         known.hosts.add(name.split(".")[0])
 
-    for finding in findings:
+    for finding in findings or []:
+        if not isinstance(finding, dict):
+            continue
         for entity in finding.get("entities") or []:
             kind, _, value = str(entity).partition(":")
             if kind == "account":
@@ -392,24 +425,32 @@ def known_identifiers(
                     account(fields.get(key))
                 for key in HOST_FIELDS:
                     hostname(fields.get(key))
-    for chain in chains:
-        account(chain.get("account"))
+    for chain in chains or []:
+        if isinstance(chain, dict):
+            account(chain.get("account"))
     always(host)
     always(snapshot.meta.get("hostname"))
-    for name, address, user, group in inventory:
+    for row in inventory or []:
+        name, address, user, group = (tuple(row) + (None,) * 4)[:4]
         always(name)
         hostname(address)
         account(user)
-        if group:
+        if isinstance(group, str) and group:
             known.groups.add(group)
     for name in list(known.hosts):
         if not _qualified(name):
             continue
         labels = name.split(".")
-        if len(labels) >= 3:
-            known.domains.add(".".join(labels[1:]))
-        elif len(labels) == 2 and labels[1] not in COMMON_TLDS:
-            known.domains.add(labels[1])
+        # Every parent domain that is the organization's: it.example.gov
+        # and example.gov, not gov or gov.uk.
+        for start in range(1, len(labels) - 1):
+            suffix = labels[start:]
+            public = len(suffix) == 2 and len(suffix[1]) == 2 and suffix[0] in PUBLIC_SECOND_LEVELS
+            if not public:
+                known.domains.add(".".join(suffix))
+        last = labels[-1]
+        if len(labels) == 2 and last not in COMMON_TLDS and len(last) > 2:
+            known.suffixes.add(last)
     return known
 
 
@@ -426,6 +467,12 @@ _IPV4_DASHED = r"(?<!\d)(?<!\d-)\d{1,3}(?:-\d{1,3}){3}(?!\d)(?!-\d)"
 _GLUED_IPV4 = r"(?<=[^\W\d])(?:\d{1,3}\.){3}\d{1,3}(?!\d)(?!\.\d)"
 _EMAIL = (  # the last label starts with a letter: root@127.0.0.1 is no address
     r"(?<![\w.%+:-])[\w.%+:-]+@[\w-]+(?:\.[\w-]+)*\.[^\W\d_][\w-]*"
+)
+# A user name before @ and an address (ssh alice@203.0.113.5): the
+# address is the next pass's.
+_AT_ADDRESS = (
+    r"(?<![\w.%+-])(?P<atip_user>[\w.+-]*[^\W\d_][\w.+-]*)"
+    r"(?=@(?:\d{1,3}\.\d|\[?[0-9A-Fa-f]{0,4}::?[0-9A-Fa-f]))"
 )
 # user@machine without a dot after the @ (SSH key comments, prompts).
 _AT = (
@@ -445,6 +492,16 @@ _NAME_PLACES = (
     "(?:(?<=account:)|(?<=/home/)|(?<=user=)|(?<=USER=)|(?<=user )|(?<=for )|(?<=by )"
     "|(?<=sudo: )|(?<=su: )|(?<=\\(to )|(?<=owner ))"
 )
+# Where a host name stands as a name: a host whose name is also an
+# ordinary word is replaced only here.
+_HOST_PLACES = (
+    "(?:(?<=host=)|(?<=rhost=)|(?<=from )|(?<=on )|(?<=to )|(?<=host )|(?<=@)|(?<=hostname ))"
+)
+MAX_ADDRESS = 45  # characters in the longest written IPv6 address
+# Placeholders made in one pass are sealed (one private-use character
+# each, which host text never holds: it is shown escaped) so that a later
+# pass can't take part of one for an address or a name.
+SEAL_BASE = 0xF0000
 # Directories of the spools above that are no account's.
 SPOOL_DIRS = {"atjobs", "atspool", "crontabs", "lpd"}
 # Account names that are also ordinary words or path parts: replaced only
@@ -464,7 +521,9 @@ ORDINARY_WORDS = {
 TOKEN_KINDS = ("HOST", "DOMAIN", "GROUP", "USER", "EMAIL", "IP", "KEY")
 # Anything shaped like a placeholder, tagged or not: host text like this is
 # defanged before redaction, so it can't pass for one.
-TOKEN_SHAPED = re.compile(rf"(?<![A-Z])({'|'.join(TOKEN_KINDS)})-(\d+)(?:-([0-9a-z]+))?\b")
+TOKEN_SHAPED = re.compile(
+    rf"(?<![A-Z])({'|'.join(TOKEN_KINDS)})-(\d+)(?:-([0-9a-z]+))?(?![0-9a-z])"
+)
 NB_HYPHEN = chr(0x2011)
 CUT = "…"
 
@@ -512,32 +571,41 @@ class Pseudonyms:
         self._tokens: dict[tuple[str, str], str] = {}
         self._counts: Counter[str] = Counter()
         self._system = set(known.system)
-        self._domains = {d.lower() for d in known.domains}
-        self._groups = set(known.groups)
-        # Each host's first label, so that a host's short name and its
-        # longer names (prod-db, prod-db.localdomain) are one host.
-        self._host_key = {h.lower(): h.lower().split(".")[0] for h in known.hosts}
+        self._sealed: list[str] = []
+        self._domains = {d.lower() for d in known.domains if d}
+        self._groups = {g for g in known.groups if g}
+        self._hosts = {h.lower() for h in known.hosts if h}
+        accounts = {a for a in known.accounts if a}
         # Every spelling of an account (as collected, as shown, lowercased).
         self._accounts: dict[str, str] = {}
-        for name in known.accounts:
+        for name in accounts:
             for form in (name, str(visible(name, 10_000))):
                 self._accounts[form] = name
                 self._accounts.setdefault(form.lower(), name)
-        anywhere = {n for n in known.accounts if n.lower() not in ORDINARY_WORDS}
-        placed = known.accounts - anywhere
+        anywhere = {n for n in accounts if n.lower() not in ORDINARY_WORDS}
+        placed = accounts - anywhere
         self._placed = {form for n in placed for form in (n, str(visible(n, 10_000)))}
-        self._identifiers = {n.lower() for n in known.accounts | known.hosts | known.domains}
+        self._identifiers = {n.lower() for n in accounts} | self._hosts | self._domains
+        ordinary = ORDINARY_WORDS | GENERIC_ACCOUNTS
+        hosts_anywhere = {h for h in self._hosts if h not in ordinary}
+        hosts_placed = self._hosts - hosts_anywhere
+        self._hosts_placed = hosts_placed
         names = []
-        if known.hosts or known.domains:
-            hosts = "|".join(
-                p
-                for p in (
-                    f"(?:[\\w-]+\\.)*(?:{_alternation(known.domains)})" if known.domains else "",
-                    f"(?:{_alternation(known.hosts)})(?:\\.[\\w-]+)*" if known.hosts else "",
-                )
-                if p
+        alternatives = []
+        if self._domains:
+            alternatives.append(f"(?:[\\w-]+\\.)*(?:{_alternation(self._domains)})")
+        suffixes = {x.lower() for x in known.suffixes if x}
+        if suffixes:
+            alternatives.append(f"(?:[\\w-]+\\.)+(?:{_alternation(suffixes)})")
+        if hosts_anywhere:
+            alternatives.append(f"(?:{_alternation(hosts_anywhere)})(?:\\.[\\w-]+)*")
+        if alternatives:
+            joined = "|".join(alternatives)
+            names.append(f"(?P<host>(?i:(?<!{ALNUM})(?:{joined})(?!{ALNUM})))")
+        if hosts_placed:
+            names.append(
+                f"(?P<hostplaced>(?i:{_HOST_PLACES}(?:{_alternation(hosts_placed)})(?!{ALNUM})))"
             )
-            names.append(f"(?P<host>(?i:(?<!{ALNUM})(?<!\\.)(?:{hosts})(?!{ALNUM})))")
         names.append(_HOME)
         if anywhere:
             names.append(f"(?P<user>(?i:(?<!{ALNUM})(?:{_alternation(anywhere)})(?!{ALNUM})))")
@@ -547,21 +615,34 @@ class Pseudonyms:
                 f"(?P<placed>{_NAME_PLACES}(?:{alternation})(?!{ALNUM})"
                 f"|(?<!{ALNUM})(?:{alternation})(?=@)|(?<=sudo: )(?:{alternation}))"
             )
-        if known.groups:
-            names.append(f"(?P<group>(?<=group )(?:{_alternation(known.groups)})(?!{ALNUM}))")
+        groups_anywhere = {g for g in self._groups if g.lower() not in ordinary}
+        groups_placed = self._groups - groups_anywhere
+        if groups_anywhere:
+            names.append(f"(?P<group>(?<!{ALNUM})(?:{_alternation(groups_anywhere)})(?!{ALNUM}))")
+        if groups_placed:
+            names.append(
+                "(?P<groupplaced>(?:(?<=group )|(?<=group=))"
+                f"(?:{_alternation(groups_placed)})(?!{ALNUM}))"
+            )
         # Three passes, each over what the one before left: fingerprints and
         # email addresses whole; then addresses; then names, so that a run
         # of hex digits that was no address can't hide a name (abba, dc01).
-        self._shapes = re.compile(f"(?P<key>{_KEY})|(?P<email>{_EMAIL})|(?P<at>{_AT})")
+        self._shapes = re.compile(
+            f"(?P<key>{_KEY})|(?P<email>{_EMAIL})|(?P<at>{_AT})|(?P<atip>{_AT_ADDRESS})"
+        )
         self._address_pattern = re.compile(
             f"(?P<addr>{_ADDRESS_RUN})|(?P<ip4d>{_IPV4_DASHED})|(?P<glued>{_GLUED_IPV4})"
         )
         self._names = re.compile("|".join(names)) if names else None
         self._token_pattern = re.compile(
-            rf"(?<![A-Z])(?:{'|'.join(TOKEN_KINDS)})-\d+-{re.escape(self.tag)}\b"
+            rf"(?<![A-Z])(?:{'|'.join(TOKEN_KINDS)})-\d+-{re.escape(self.tag)}(?![0-9a-z])"
         )
 
     def _token(self, kind: str, original: str, key: str | None = None) -> str:
+        """The placeholder, sealed until the passes are done."""
+        return self._seal(self._raw_token(kind, original, key))
+
+    def _raw_token(self, kind: str, original: str, key: str | None = None) -> str:
         key = key if key is not None else original
         token = self._tokens.get((kind, key))
         if token is None:
@@ -571,6 +652,16 @@ class Pseudonyms:
             self.originals[token] = original
         return token
 
+    def _seal(self, token: str) -> str:
+        self._sealed.append(token)
+        return chr(SEAL_BASE + len(self._sealed) - 1)
+
+    def _unseal(self, text: str) -> str:
+        top = SEAL_BASE + len(self._sealed)
+        return "".join(
+            self._sealed[ord(c) - SEAL_BASE] if SEAL_BASE <= ord(c) < top else c for c in text
+        )
+
     def _is_token(self, text: str) -> bool:
         return self._token_pattern.fullmatch(text) is not None
 
@@ -578,53 +669,77 @@ class Pseudonyms:
         name = self._accounts.get(text) or self._accounts.get(text.lower()) or text
         return self._token("USER", name)
 
+    def _canonical(self, lowered: str) -> str:
+        """The one name a host goes by: a full name as itself; a short name,
+        or another full name with the same first label (prod-db.localdomain),
+        as the only known full name starting with it."""
+        if lowered in self._hosts and "." in lowered:
+            return lowered
+        first = lowered.split(".")[0]
+        full = [h for h in self._hosts if "." in h and h.split(".")[0] == first]
+        if len(full) == 1:
+            return full[0]
+        if lowered in self._hosts or first not in self._hosts:
+            return lowered
+        return first
+
     def _host(self, text: str) -> str:
         lowered = text.lower()
         if lowered in self._domains:
             return self._token("DOMAIN", text, lowered)
-        first = lowered.split(".")[0]
-        known = next((k for k, v in self._host_key.items() if v == first), None)
-        return self._token("HOST", known or lowered, first if known else lowered)
+        name = self._canonical(lowered)
+        return self._token("HOST", name, name)
 
     def _address_token(self, address) -> str:
         if address.is_loopback or address.is_unspecified:
             return str(address)
-        token = self._token("IP", str(address))
+        token = self._raw_token("IP", str(address))
         if address.is_link_local:
             self.address_kinds[token] = "link-local"
         elif not address.is_global:
             self.address_kinds[token] = "private or reserved"
-        return token
+        return self._seal(token)
 
     def _addresses(self, run: str) -> str:
-        """The addresses in a run of hex digits, colons and dots: the
-        longest piece of it that is one (starting at the run's start, after
-        a colon or dot, or at a digit after a hex letter; ending at its end
-        or before a colon or dot), then the same for what is left on either
-        side. Loopback and unspecified addresses are kept as written."""
-        if len(run) > 100:
-            return run
-        starts = [0] + [
-            i
-            for i in range(1, len(run))
-            if run[i - 1] in ":." or (run[i].isdigit() and run[i - 1].isalpha())
-        ]
-        ends = [len(run)] + [i for i in range(1, len(run)) if run[i] in ":."]
-        spans = sorted(
-            ((s, e) for s in starts for e in ends if e > s),
-            key=lambda span: (span[0] - span[1], span[0]),
-        )
-        for start, end in spans:
-            address = _parse(run[start:end])
-            if address is None:
-                continue
-            middle = (
-                run[start:end]
-                if address.is_loopback or address.is_unspecified
-                else self._address_token(address)
+        """The addresses in a run of hex digits, colons and dots, left to
+        right: at each place one can start (the run's start, after a colon
+        or dot, or at a digit after a hex letter), the longest piece up to
+        MAX_ADDRESS characters that is one, ending at the run's end or
+        before a colon or dot. Loopback and unspecified addresses are kept
+        as written."""
+        ends = [i for i in range(1, len(run)) if run[i] in ":."] + [len(run)]
+        out, start, done = [], 0, 0
+        while start < len(run):
+            can_start = (
+                start == 0
+                or run[start - 1] in ":."
+                or (run[start].isdigit() and run[start - 1].isalpha())
             )
-            return self._addresses(run[:start]) + middle + self._addresses(run[end:])
-        return run
+            found = None
+            if can_start:
+                for end in reversed(ends):
+                    if end <= start or end > start + MAX_ADDRESS:
+                        continue
+                    piece = run[start:end]
+                    if ":::" in piece or ".." in piece:
+                        continue
+                    if ":" not in piece and piece.count(".") != 3:
+                        continue
+                    if (address := _parse(piece)) is not None:
+                        found = (end, address)
+                        break
+            if found is None:
+                start += 1
+                continue
+            end, address = found
+            out.append(run[done:start])
+            if address.is_loopback or address.is_unspecified:
+                out.append(run[start:end])
+            else:
+                out.append(self._address_token(address))
+            start = done = end
+        out.append(run[done:])
+        return "".join(out)
 
     def _shape(self, match: re.Match[str]) -> str:
         text = match.group(0)
@@ -632,6 +747,9 @@ class Pseudonyms:
             return self._token("KEY", text)
         if match.lastgroup == "email":
             return self._token("EMAIL", text, text.lower())
+        if match.lastgroup == "atip":
+            ordinary = text in self._system or text.lower() in ORDINARY_WORDS | GENERIC_ACCOUNTS
+            return text if ordinary else self._user(text)
         user, machine = match.group("at_user"), match.group("at_host")
         if user not in self._system and user.lower() not in ORDINARY_WORDS:
             user = self._user(user)
@@ -654,7 +772,7 @@ class Pseudonyms:
         text = match.group(0)
         if self._is_token(text):
             return text
-        if match.lastgroup == "host":
+        if match.lastgroup in ("host", "hostplaced"):
             return self._host(text)
         if match.lastgroup == "home":
             if text in self._system or text in SPOOL_DIRS or self._is_token(text):
@@ -662,32 +780,37 @@ class Pseudonyms:
             return self._user(text)
         if match.lastgroup in ("user", "placed"):
             return self._user(text)
-        return self._token("GROUP", text)
+        return self._token("GROUP", text)  # group, groupplaced
 
     def _cut_tail(self, text: str) -> str:
         """A value cut short may end in part of a name ("js…"): that part
         goes too."""
-        match = re.search(r"(\w[\w.:-]+)" + CUT + "$", text)
+        if not text.endswith(CUT):
+            return text
+        offset = max(0, len(text) - 200)
+        match = re.search(r"(\w[\w.:-]+)" + CUT + "$", text[offset:])
         if not match or self._is_token(match.group(1)):
             return text
         part = match.group(1).lower()
         if any(name.startswith(part) for name in self._identifiers) or re.fullmatch(
             r"[0-9a-f:.]+", part
         ):
-            return text[: match.start(1)] + "[cut]" + CUT
+            return text[: offset + match.start(1)] + "[cut]" + CUT
         return text
 
     def apply(self, text: str) -> str:
         text = TOKEN_SHAPED.sub(lambda m: m.group(0).replace("-", NB_HYPHEN), text)
         if text in self._placed or text in self._accounts:
-            return self._user(text)
+            return self._unseal(self._user(text))
         if text in self._groups:
-            return self._token("GROUP", text)
+            return self._unseal(self._token("GROUP", text))
+        if text.lower() in self._hosts_placed:
+            return self._unseal(self._host(text))
         text = self._shapes.sub(self._shape, text)
         text = self._address_pattern.sub(self._address, text)
         if self._names is not None:
             text = self._names.sub(self._name, text)
-        return self._cut_tail(text)
+        return self._unseal(self._cut_tail(text))
 
     def restore(self, text: str) -> str:
         """The answer with each of this run's placeholders turned back into
@@ -712,7 +835,15 @@ def _walk(value: Any, apply, path: tuple[str, ...] = ()) -> Any:
 
 
 # The kinds of coverage gap, as strict mode sends them: fixed words, with
-# at most a module or section name the collector itself defines.
+# at most a module or section name this tool defines (a name in a gap comes
+# from the bundle, which the host wrote, so any other is "another").
+KNOWN_NAMES = (
+    frozenset(FULL)
+    | frozenset(SECTIONS)
+    | frozenset(LOG_SOURCES)
+    | frozenset(REACH_ONLY)
+    | {"boots", "web_logs", "mail_log", "containers"}
+)
 GAP_KINDS: list[tuple[str, str]] = [
     (r"the bundle is ", "the bundle is not complete"),
     (r"not collected: ", "modules not collected"),
@@ -739,16 +870,17 @@ GAP_KINDS: list[tuple[str, str]] = [
 def gap_kind(gap: str) -> str:
     for pattern, kind in GAP_KINDS:
         if match := re.match(pattern, gap):
-            return kind.format(*match.groups())
+            names = [n if n in KNOWN_NAMES else "another" for n in match.groups()]
+            return kind.format(*names)
     return "another gap"
 
 
 def strict_view(case: dict[str, Any]) -> dict[str, Any]:
     """Only the kinds of finding, their counts and scores, and the kinds of
     coverage gap: no names, entities, excerpts, summaries or rule text."""
-    assessment = case["assessment"]
+    assessment = case.get("assessment") or {}
     return {
-        "case_format": case["case_format"],
+        "case_format": case.get("case_format"),
         "redaction": "strict",
         "assessment": {
             key: assessment.get(key)
@@ -765,11 +897,16 @@ def strict_view(case: dict[str, Any]) -> dict[str, Any]:
                 "contribution": f["contribution"],
                 "suppressed": f["suppressed_by"] is not None,
             }
-            for f in case["findings"]
+            for f in case.get("findings") or []
         ],
         "omitted": case.get("omitted"),
-        "chains": [{"chain": c["chain"], "findings": c["findings"]} for c in case["chains"]],
-        "coverage_gaps": sorted({gap_kind(g) for g in case["from_host"]["coverage_gaps"]}),
+        "chains": [
+            {"chain": c.get("chain"), "findings": c.get("findings")}
+            for c in case.get("chains") or []
+        ],
+        "coverage_gaps": sorted(
+            {gap_kind(str(g)) for g in (case.get("from_host") or {}).get("coverage_gaps") or []}
+        ),
     }
 
 
@@ -779,11 +916,13 @@ def redact(
     """The case as it may leave, under the redaction mode, and the run's
     placeholders (None under *none*: nothing to restore). `tag` fixes the
     placeholders' tag (golden tests); otherwise it is random."""
+    if not isinstance(case, dict):
+        raise ValueError("not a case file")
     if mode == "none":
         return copy.deepcopy(case), None
     if mode not in ("pseudonymize", "strict"):
         raise ValueError(f"unknown redaction mode {mode!r}")
-    pseudonyms = Pseudonyms(known, tag)
+    pseudonyms = Pseudonyms(known if known is not None else Known(), tag)
     if mode == "strict":
         # Nothing in it is host text: only the code's own words and numbers.
         return strict_view(case), pseudonyms

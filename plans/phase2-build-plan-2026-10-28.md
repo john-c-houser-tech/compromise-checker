@@ -851,7 +851,15 @@ outside the served folders medium). A changed script inside a served
 folder is now high (it wasn't checked before). What remained after the
 fixes was the server's build (2026-10-18) and the scanner account's
 creation, explained in a host whitelist that expires 2026-11-30, after
-those log entries leave the look-back.
+those log entries leave the look-back. Re-review: one medium (a planted
+link could get another application judged; only configured folders decide
+now), all fixed. Proofs (John approved; run from a frozen worktree of the
+final collector): read-only matrix PASS 7/7 (Ubuntu 22.04 and 26.04 re-run
+after Linode's API timed out creating them; nothing left behind), detection
+PASS 32/32 on Ubuntu 24.04 and Rocky 9; golden re-exported from it, which
+showed RHEL's nginx including its packaged modules from /usr, now accepted.
+2.11 spend about 9 cents (one earlier detection run included); Phase 2
+about 92 cents of $10.
 
 ## Explicitly gated on John
 

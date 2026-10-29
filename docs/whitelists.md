@@ -251,3 +251,27 @@ SHA-256, and the day it judged expiry on. When the whitelist changes, or a
 rule has expired since, the next report applies the current one to the
 stored findings and scores them again (the checks don't run again), as a
 new assessment; the earlier one is kept.
+
+## Proposals from the AI advisor
+
+`checker advise HOST --role whitelist` asks the optional advisor
+(security and privacy policy §9) for rules for findings that are routine on
+the host. Its answer is advice: nothing is applied. Each proposed rule is
+checked against the host's real findings, after its placeholders are
+turned back into names, and offered only when:
+
+- it is a valid rule (the same model as these files) that narrows its
+  check, expires within 90 days, and has an id the host's whitelist doesn't
+  use;
+- it hides every finding it names, none already suppressed;
+- none of them is **critical** or **part of a chain**: those are never
+  whitelisted by proposal, only by hand (Phase 3 decision 7);
+- it hides nothing else in any stored analysis of the host, and, for a
+  group rule, of any host in the group.
+
+The accepted rules are written to `whitelist/proposals/HOST-TIME.yaml`
+(owner-only), each with the layer file it belongs in and the findings it
+hides. Its `owner` is left empty, so `checker whitelist check` refuses it
+until a person writes in who vouches for it. Review, set the owner, try it
+with `checker whitelist test`, then copy it into the layer file. The
+report lists what was proposed and what was set aside, and why.

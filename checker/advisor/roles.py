@@ -90,6 +90,59 @@ class Explanation(BaseModel):
     )
 
 
+class ProposedMatch(BaseModel):
+    """What a whitelist rule matches (checker/whitelist.py Match, without
+    correlated_with): the check, and values from the finding's entities."""
+
+    check: str
+    variant: str | None = None
+    account: str | None = None
+    group: str | None = None
+    key: str | None = None
+    module: str | None = None
+    package: str | None = None
+    program: str | None = None
+    address: str | None = Field(default=None, description="an address or network, host bits zero")
+    path: str | None = Field(default=None, description="anchored: * within a directory, ** across")
+    exe: str | None = Field(default=None, description="a process's executable, as a path pattern")
+    container: str | None = None
+    image: str | None = None
+
+
+class Proposal(BaseModel):
+    findings: list[str] = Field(description="the finding identifiers this rule is meant to hide")
+    layer: Literal["host", "group"]
+    id: str = Field(description="lower-case letters, digits, '.', '_' and '-'")
+    match: ProposedMatch
+    reason: str = Field(description="why this is expected here, checkable by a reviewer")
+    expires_in_days: int = Field(description="1 to 90")
+
+
+class WhitelistAnswer(BaseModel):
+    """Role 2: rules a person may add to the whitelist."""
+
+    proposals: list[Proposal]
+    left_alone: list[Point] = Field(
+        description="findings that may look routine but should stay visible, and why"
+    )
+
+
+WHITELIST_QUESTION = (
+    "Propose whitelist rules for findings that are routine for this host: expected"
+    " behaviour the evidence explains (a known deploy account, a monitoring agent, a"
+    " package's own account). Each rule is as narrow as the evidence allows: its check"
+    " (and variant), plus values copied from the findings' entities (kind:value) for"
+    " account, group, key, module, package, program, address (an address or network,"
+    " host bits zero), path and exe (anchored patterns: * within one directory, **"
+    " across), container and image (only together). Give the findings each rule should"
+    " hide, a layer (host, or group for what every host in the group does), an id, a"
+    " reason a reviewer can check, and an expiry of at most 90 days. A rule must hide"
+    " only the findings it names. Critical findings and findings that are part of a"
+    " chain are never whitelisted by proposal; neither are suppressed ones. Propose"
+    " nothing when nothing is routine, and list under left_alone the findings that"
+    " might look routine but should stay visible."
+)
+
 ROLES = {
     "explain": (
         Explanation,
@@ -98,6 +151,7 @@ ROLES = {
         " important findings and why; plausible innocent explanations for findings where"
         " there are any; and the questions or checks that would settle it.",
     ),
+    "whitelist": (WhitelistAnswer, WHITELIST_QUESTION),
 }
 
 
@@ -144,4 +198,19 @@ def check_explanation(
         raise InvalidAnswer("lists more than five most important findings")
 
 
-CHECKS = {"explain": check_explanation}
+def check_whitelist(
+    answer: WhitelistAnswer, finding_ids: set[str], band: str | None, quoted=frozenset()
+) -> None:
+    """The answer's shape against the case; whether each rule is safe is
+    checker.advisor.proposals' (against the real findings)."""
+    named = [f for p in answer.proposals for f in p.findings] + [
+        p.finding for p in answer.left_alone
+    ]
+    unknown = sorted({f for f in named if f not in finding_ids})
+    if unknown:
+        raise InvalidAnswer(f"names findings that aren't in the case: {', '.join(unknown)}")
+    if len(answer.proposals) > 20:
+        raise InvalidAnswer("proposes more than twenty rules")
+
+
+CHECKS = {"explain": check_explanation, "whitelist": check_whitelist}

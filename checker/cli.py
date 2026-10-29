@@ -909,7 +909,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the request exactly as it would be sent; send nothing",
     )
-    advising.add_argument("--role", choices=["explain"], default="explain", help="what to ask")
+    advising.add_argument(
+        "--role",
+        choices=["explain", "whitelist"],
+        default="explain",
+        help="explain the analysis (default), or propose whitelist rules for a person to review",
+    )
     advising.add_argument(
         "--yes",
         action="store_true",
@@ -963,6 +968,9 @@ def _print_advice(advice, role: str) -> None:
     answer = advice.answer
     if not answer:
         return
+    if role == "whitelist":
+        _print_proposals(advice, shown)
+        return
 
     print()
     print(f"Verdict: {shown(answer['verdict'])}")
@@ -980,6 +988,27 @@ def _print_advice(advice, role: str) -> None:
         for question in answer["what_would_settle_it"]:
             print(f"  - {shown(question)}")
     print("\n(AI advice: the score is the tool's own and is unchanged. Stored, encrypted.)")
+
+
+def _print_proposals(advice, shown) -> None:
+    judged = advice.judged or []
+    accepted = [j for j in judged if j.accepted]
+    print()
+    if not judged:
+        print("No whitelist rules proposed.")
+    for item in judged:
+        name = shown(item.proposal.get("id"))
+        if item.accepted:
+            print(
+                f"Proposed: {name}: hides {shown(', '.join(h.split(':')[0] for h in item.hides))}"
+            )
+        else:
+            print(f"Set aside: {name}: {shown(item.reason)}")
+    for point in advice.answer.get("left_alone") or []:
+        print(f"Left alone: {shown(point['finding'])}: {shown(point['why'])}")
+    if advice.file:
+        print(f"\n{len(accepted)} rule(s) written to {advice.file}: nothing is in effect until")
+        print("a person reviews them, sets each owner and copies them into the whitelist.")
 
 
 def cmd_advise(args: argparse.Namespace) -> int:
@@ -1038,7 +1067,7 @@ def cmd_advise(args: argparse.Namespace) -> int:
 
         advice = advise(
             store, args.host, identity, config, inventory, prior, whitelist,
-            role=args.role, bundle_id=args.bundle, confirm=confirm,
+            role=args.role, bundle_id=args.bundle, confirm=confirm, home=base,
         )  # fmt: skip
     except (EvidenceError, OSError, AdvisorError) as exc:
         print(f"checker: {exc}", file=sys.stderr)

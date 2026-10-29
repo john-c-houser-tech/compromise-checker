@@ -16,6 +16,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from checker.advisor.case import case_for_host, redact
@@ -39,6 +40,8 @@ class Advice:
     outcome: Outcome | None
     answer: dict[str, Any] | None  # restored, for the operator
     note: str = ""
+    judged: list | None = None  # whitelist proposals, each accepted or why not
+    file: Path | None = None  # where the accepted ones were written
 
 
 def _restore(value: Any, restore: Callable[[str], str]) -> Any:
@@ -65,6 +68,7 @@ def advise(
     client=None,
     confirm: Callable[[str], bool] | None = None,
     say: Callable[[str], None] = print,
+    home: Path | None = None,
 ) -> Advice:
     """Ask the advisor about a host's current assessment. `confirm` is
     asked (with the estimate) when a run would cost more than the limit or
@@ -162,6 +166,20 @@ def advise(
             status, note = "invalid", f"the answer was set aside: it {exc}"
         else:
             answer = _restore(raw, pseudonyms.restore) if pseudonyms is not None else raw
+    judged, written = None, None
+    if status == "answered" and role == "whitelist":
+        judged, written = _proposals(
+            store, host, identity, inventory, whitelist, which, answer, home
+        )
+        answer = dict(
+            answer,
+            judged=[
+                {"id": j.proposal.get("id"), "accepted": j.accepted, "reason": j.reason,
+                 "hides": j.hides}
+                for j in judged
+            ],
+            file=str(written) if written else None,
+        )  # fmt: skip
     elif outcome.status == "declined":
         note = (
             "the request was declined by the model's safety checks"
@@ -173,7 +191,51 @@ def advise(
     elif outcome.status == "unreadable":
         note = "the answer didn't fit the requested form"
     record(outcome, status, raw, answer, note)
-    return Advice(status, outcome, answer, note)
+    return Advice(status, outcome, answer, note, judged, written)
+
+
+def _proposals(store, host, identity, inventory, whitelist, which, answer, home):
+    """Role 2's rules judged against the real findings (checker.advisor.
+    proposals), and the file the accepted ones go to."""
+    from checker.advisor.proposals import judge, write_file
+    from checker.assess import load_assessment
+    from checker.baseline import usable_bundles
+    from checker.inventory import home as default_home
+
+    report = which["report"]
+    group = which["group"]
+
+    def latest_findings(name: str, skip: str | None = None) -> list[list[dict]]:
+        found = []
+        for row in usable_bundles(store, name):
+            if row["id"] == skip:
+                continue
+            assessment = load_assessment(store, row["id"], identity)
+            if assessment is not None:
+                found.append(assessment.get("findings") or [])
+        return found
+
+    others = latest_findings(host, skip=which["bundle_id"])
+    group_others = []
+    if group:
+        for entry in inventory.hosts:
+            if entry.group == group and entry.name != host:
+                group_others += latest_findings(entry.name)[-1:]
+    rule_ids = {placed.rule.id for placed in whitelist.rules} if whitelist else set()
+    judged = judge(
+        answer.get("proposals") or [],
+        report.assessment["findings"],
+        (report.assessment.get("score") or {}).get("chains") or [],
+        report.events,
+        others,
+        group_others,
+        rule_ids,
+        group=group,
+    )
+    written = write_file(
+        home or default_home(), host, group, judged, datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
+    )
+    return judged, written
 
 
 def _quoted(payload: dict[str, Any]) -> set[str]:

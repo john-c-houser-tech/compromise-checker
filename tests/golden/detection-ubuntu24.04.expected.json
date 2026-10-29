@@ -47,7 +47,7 @@
   },
   {
    "check": "files.privileged",
-   "findings": 3,
+   "findings": 1,
    "status": "ran"
   },
   {
@@ -357,7 +357,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "accounts",
       "cc-toor",
       "added"
@@ -377,7 +377,7 @@
    "band": "high",
    "category": "compromise indicator",
    "check": "files.privileged",
-   "contribution": 0.6931,
+   "contribution": 2.9957,
    "entities": [
     "path:/tmp/.cc-sh"
    ],
@@ -385,7 +385,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "unusual_files",
       "/tmp/.cc-sh",
       "added"
@@ -404,60 +404,8 @@
   {
    "band": "high",
    "category": "compromise indicator",
-   "check": "files.privileged",
-   "contribution": 2.9957,
-   "entities": [
-    "path:/var/spool/postfix/dev/random"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "item": [
-      "privileged_files",
-      "/var/spool/postfix/dev/random"
-     ]
-    }
-   ],
-   "first_seen": null,
-   "last_seen": null,
-   "new": false,
-   "ratio": 20.0,
-   "summary": "/var/spool/postfix/dev/random: a device node",
-   "title": "A privileged file outside the system directories",
-   "uncertain": null,
-   "variant": null
-  },
-  {
-   "band": "high",
-   "category": "compromise indicator",
-   "check": "files.privileged",
-   "contribution": 0.6931,
-   "entities": [
-    "path:/var/spool/postfix/dev/urandom"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "item": [
-      "privileged_files",
-      "/var/spool/postfix/dev/urandom"
-     ]
-    }
-   ],
-   "first_seen": null,
-   "last_seen": null,
-   "new": false,
-   "ratio": 20.0,
-   "summary": "/var/spool/postfix/dev/urandom: a device node",
-   "title": "A privileged file outside the system directories",
-   "uncertain": null,
-   "variant": null
-  },
-  {
-   "band": "high",
-   "category": "compromise indicator",
    "check": "files.scratch",
-   "contribution": 2.9957,
+   "contribution": 0.6931,
    "entities": [
     "path:/tmp/.cc-sh"
    ],
@@ -536,7 +484,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "service: auditd",
       "removed"
@@ -564,11 +512,11 @@
      "event": 215
     }
    ],
-   "first_seen": "2026-10-29T02:47:11.683119+00:00",
-   "last_seen": "2026-10-29T02:47:11.683119+00:00",
+   "first_seen": "2026-10-29T03:06:43.737279+00:00",
+   "last_seen": "2026-10-29T03:06:43.737279+00:00",
    "new": true,
    "ratio": 20.0,
-   "summary": "auditd.service - Security Auditing Service (stopped) at 2026-10-29T02:47:11.683119+00:00, not during a shutdown and not started again",
+   "summary": "auditd.service - Security Auditing Service (stopped) at 2026-10-29T03:06:43.737279+00:00, not during a shutdown and not started again",
    "title": "A logging or audit service was stopped",
    "uncertain": null,
    "variant": "unit"
@@ -581,11 +529,11 @@
    "entities": [],
    "entities_complete": true,
    "evidence": [],
-   "first_seen": "2026-10-29T02:47:11+00:00",
-   "last_seen": "2026-10-29T02:47:11+00:00",
+   "first_seen": "2026-10-29T03:06:43+00:00",
+   "last_seen": "2026-10-29T03:06:43+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "type=DAEMON_END msg=audit(1793242031.619:3319): op=terminate auid=0 uid=0 ses=4294967295 pid=1 subj=unconfined res=success\u001dAUID=\"root\" UID=\"root\"",
+   "summary": "type=DAEMON_END msg=audit(1793243203.673:3652): op=terminate auid=0 uid=0 ses=4294967295 pid=1 subj=unconfined res=success\u001dAUID=\"root\" UID=\"root\"",
    "title": "The audit daemon stopped, not during a shutdown",
    "uncertain": null,
    "variant": "audit_daemon"
@@ -600,7 +548,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: /usr/bin/man",
       "removed"
@@ -608,7 +556,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: /usr/lib/snapd/snap-confine",
       "removed"
@@ -616,7 +564,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: /usr/sbin/haveged",
       "removed"
@@ -624,7 +572,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: lsb_release",
       "removed"
@@ -632,7 +580,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: man_filter",
       "removed"
@@ -640,7 +588,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: man_groff",
       "removed"
@@ -648,7 +596,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: nvidia_modprobe",
       "removed"
@@ -656,7 +604,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: nvidia_modprobe//kmod",
       "removed"
@@ -664,7 +612,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: plasmashell",
       "removed"
@@ -672,7 +620,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: plasmashell//QtWebEngineProcess",
       "removed"
@@ -680,7 +628,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: rsyslogd",
       "removed"
@@ -688,7 +636,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: tcpdump",
       "removed"
@@ -696,7 +644,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: transmission-cli",
       "removed"
@@ -704,7 +652,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: transmission-daemon",
       "removed"
@@ -712,7 +660,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: transmission-gtk",
       "removed"
@@ -720,7 +668,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: transmission-qt",
       "removed"
@@ -728,7 +676,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: ubuntu_pro_apt_news",
       "removed"
@@ -736,7 +684,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: ubuntu_pro_esm_cache",
       "removed"
@@ -744,7 +692,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: ubuntu_pro_esm_cache//apt_methods",
       "removed"
@@ -752,7 +700,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "logging",
       "apparmor: ubuntu_pro_esm_cache//apt_methods_gpgv",
       "removed"
@@ -776,7 +724,7 @@
    "entities": [
     "address:127.0.0.1",
     "account:www-data",
-    "pid:4720",
+    "pid:4708",
     "program:sleep",
     "exe:/usr/bin/sleep"
    ],
@@ -785,15 +733,15 @@
     {
      "live": [
       "processes",
-      4720
+      4708
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:47:08.340000+00:00",
-   "last_seen": "2026-10-29T02:47:08.340000+00:00",
+   "first_seen": "2026-10-29T03:06:41.230000+00:00",
+   "last_seen": "2026-10-29T03:06:41.230000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "sleep (pid 4720, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
+   "summary": "sleep (pid 4708, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
    "title": "A web-server account reached SMB",
    "uncertain": null,
    "variant": "smb_winrm"
@@ -811,7 +759,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "pam_rules",
       "/etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true",
       "added"
@@ -839,7 +787,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "startup",
       "/etc/ld.so.preload",
       "added"
@@ -862,7 +810,7 @@
    "contribution": 2.9957,
    "entities": [
     "program:cc-sleep",
-    "pid:4686",
+    "pid:4674",
     "exe:/root/cc-sleep (deleted)"
    ],
    "entities_complete": true,
@@ -870,15 +818,15 @@
     {
      "live": [
       "processes",
-      4686
+      4674
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:47:05.240000+00:00",
-   "last_seen": "2026-10-29T02:47:05.240000+00:00",
+   "first_seen": "2026-10-29T03:06:38.120000+00:00",
+   "last_seen": "2026-10-29T03:06:38.120000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "cc-sleep (pid 4686): /root/cc-sleep (deleted)",
+   "summary": "cc-sleep (pid 4674): /root/cc-sleep (deleted)",
    "title": "A process whose program was deleted",
    "uncertain": null,
    "variant": null
@@ -890,7 +838,7 @@
    "contribution": 0.6931,
    "entities": [
     "program:cc-sleep",
-    "pid:4686",
+    "pid:4674",
     "exe:/root/cc-sleep (deleted)"
    ],
    "entities_complete": true,
@@ -898,15 +846,15 @@
     {
      "live": [
       "processes",
-      4686
+      4674
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:47:05.240000+00:00",
-   "last_seen": "2026-10-29T02:47:05.240000+00:00",
+   "first_seen": "2026-10-29T03:06:38.120000+00:00",
+   "last_seen": "2026-10-29T03:06:38.120000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "cc-sleep (pid 4686): /root/cc-sleep (deleted)",
+   "summary": "cc-sleep (pid 4674): /root/cc-sleep (deleted)",
    "title": "A process has code mapped from a scratch or home file",
    "uncertain": null,
    "variant": null
@@ -918,7 +866,7 @@
    "contribution": 2.9957,
    "entities": [
     "program:bash",
-    "pid:4698",
+    "pid:4686",
     "exe:/usr/bin/bash"
    ],
    "entities_complete": true,
@@ -926,15 +874,15 @@
     {
      "live": [
       "processes",
-      4698
+      4686
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:47:06.780000+00:00",
-   "last_seen": "2026-10-29T02:47:06.780000+00:00",
+   "first_seen": "2026-10-29T03:06:39.660000+00:00",
+   "last_seen": "2026-10-29T03:06:39.660000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "bash (pid 4698): stdin is tcp to 127.0.0.1:4444",
+   "summary": "bash (pid 4686): stdin is tcp to 127.0.0.1:4444",
    "title": "A shell talking to a network socket (a reverse shell)",
    "uncertain": null,
    "variant": null
@@ -946,15 +894,15 @@
    "contribution": 2.9957,
    "entities": [
     "account:root",
-    "key:SHA256:7rW+j5QW19UV6pACsmlZsTWvshXCLLfQyR5h0EG3LEE"
+    "key:SHA256:7Y/NhdWde8XV90BdxtyFdRFRNJcO2z/UyJXl/QkmrVA"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "authorized_keys",
-      "root SHA256:7rW+j5QW19UV6pACsmlZsTWvshXCLLfQyR5h0EG3LEE /root/.ssh/authorized_keys",
+      "root SHA256:7Y/NhdWde8XV90BdxtyFdRFRNJcO2z/UyJXl/QkmrVA /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -963,7 +911,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "root: ssh-ed25519 SHA256:7rW+j5QW19UV6pACsmlZsTWvshXCLLfQyR5h0EG3LEE in /root/.ssh/authorized_keys",
+   "summary": "root: ssh-ed25519 SHA256:7Y/NhdWde8XV90BdxtyFdRFRNJcO2z/UyJXl/QkmrVA in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -975,15 +923,15 @@
    "contribution": 0.6931,
    "entities": [
     "account:root",
-    "key:SHA256:fDpPWTaCwL0S6a7vbw2mO8CrYfOR7r8xDDfH6Btb08w"
+    "key:SHA256:KOLkCNNyEfMDPrb9J2OD5HBjCNnCHiK+MRga7NH2itY"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "authorized_keys",
-      "root SHA256:fDpPWTaCwL0S6a7vbw2mO8CrYfOR7r8xDDfH6Btb08w /root/.ssh/authorized_keys",
+      "root SHA256:KOLkCNNyEfMDPrb9J2OD5HBjCNnCHiK+MRga7NH2itY /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -992,7 +940,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "root: ssh-ed25519 SHA256:fDpPWTaCwL0S6a7vbw2mO8CrYfOR7r8xDDfH6Btb08w in /root/.ssh/authorized_keys",
+   "summary": "root: ssh-ed25519 SHA256:KOLkCNNyEfMDPrb9J2OD5HBjCNnCHiK+MRga7NH2itY in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -1009,7 +957,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "sshd_config",
       "/etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes",
       "added"
@@ -1037,7 +985,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "accounts",
       "cc-toor",
       "added"
@@ -1067,8 +1015,8 @@
      "event": 208
     }
    ],
-   "first_seen": "2026-10-29T02:47:06.216150+00:00",
-   "last_seen": "2026-10-29T02:47:06.216150+00:00",
+   "first_seen": "2026-10-29T03:06:38.281446+00:00",
+   "last_seen": "2026-10-29T03:06:38.281446+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: cc-toor UID 0",
@@ -1087,11 +1035,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 155
+     "event": 153
     }
    ],
-   "first_seen": "2026-10-29T02:45:17.529603+00:00",
-   "last_seen": "2026-10-29T02:45:17.529603+00:00",
+   "first_seen": "2026-10-29T03:04:51.329703+00:00",
+   "last_seen": "2026-10-29T03:04:51.329703+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: dnsmasq UID 999",
@@ -1120,8 +1068,8 @@
      "event": 171
     }
    ],
-   "first_seen": "2026-10-29T02:45:37.912612+00:00",
-   "last_seen": "2026-10-29T02:45:37.912612+00:00",
+   "first_seen": "2026-10-29T03:05:11.009774+00:00",
+   "last_seen": "2026-10-29T03:05:11.009774+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: postfix UID 110",
@@ -1143,8 +1091,8 @@
      "event": 168
     }
    ],
-   "first_seen": "2026-10-29T02:45:33.425694+00:00",
-   "last_seen": "2026-10-29T02:45:33.425694+00:00",
+   "first_seen": "2026-10-29T03:05:06.703139+00:00",
+   "last_seen": "2026-10-29T03:05:06.703139+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -1170,11 +1118,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 165
+     "event": 163
     }
    ],
-   "first_seen": "2026-10-29T02:45:27.270003+00:00",
-   "last_seen": "2026-10-29T02:45:27.270003+00:00",
+   "first_seen": "2026-10-29T03:05:00.225537+00:00",
+   "last_seen": "2026-10-29T03:05:00.225537+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -1200,19 +1148,19 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 226
+     "event": 224
     },
     {
-     "event": 231
+     "event": 232
     },
     {
-     "event": 239
+     "event": 240
     },
     {
-     "event": 245
+     "event": 246
     },
     {
-     "event": 251
+     "event": 253
     },
     {
      "event": 259
@@ -1224,13 +1172,13 @@
      "event": 273
     },
     {
-     "event": 281
+     "event": 280
     },
     {
-     "event": 285
+     "event": 288
     },
     {
-     "event": 293
+     "event": 295
     },
     {
      "event": 301
@@ -1239,119 +1187,119 @@
      "event": 308
     },
     {
-     "event": 315
+     "event": 316
     },
     {
-     "event": 321
+     "event": 323
     },
     {
-     "event": 328
+     "event": 329
     },
     {
-     "event": 333
+     "event": 337
     },
     {
-     "event": 342
+     "event": 344
     },
     {
-     "event": 352
+     "event": 351
     },
     {
-     "event": 357
+     "event": 358
     },
     {
-     "event": 364
+     "event": 365
     },
     {
-     "event": 370
+     "event": 372
     },
     {
-     "event": 376
+     "event": 379
     },
     {
-     "event": 384
+     "event": 386
     },
     {
-     "event": 391
+     "event": 393
     },
     {
-     "event": 398
+     "event": 400
     },
     {
-     "event": 405
+     "event": 407
     },
     {
-     "event": 412
+     "event": 414
     },
     {
-     "event": 419
+     "event": 421
     },
     {
-     "event": 426
+     "event": 428
     },
     {
-     "event": 433
+     "event": 435
     },
     {
-     "event": 440
+     "event": 442
     },
     {
-     "event": 448
+     "event": 449
     },
     {
-     "event": 454
+     "event": 456
     },
     {
-     "event": 460
+     "event": 463
     },
     {
-     "event": 469
+     "event": 470
     },
     {
-     "event": 475
+     "event": 477
     },
     {
-     "event": 483
+     "event": 484
     },
     {
-     "event": 489
+     "event": 491
     },
     {
      "event": 498
     },
     {
-     "event": 501
+     "event": 505
     },
     {
-     "event": 510
+     "event": 512
     },
     {
-     "event": 517
+     "event": 519
     },
     {
-     "event": 525
+     "event": 526
     },
     {
-     "event": 531
+     "event": 533
     },
     {
-     "event": 538
+     "event": 540
     },
     {
-     "event": 545
+     "event": 547
     },
     {
-     "event": 551
+     "event": 554
     },
     {
-     "event": 558
+     "event": 561
     },
     {
-     "event": 565
+     "event": 568
     }
    ],
-   "first_seen": "2026-10-29T02:47:20.894495+00:00",
-   "last_seen": "2026-10-29T02:47:25.708935+00:00",
+   "first_seen": "2026-10-29T03:06:53.004700+00:00",
+   "last_seen": "2026-10-29T03:06:57.025446+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "www-data: 150 messages",
@@ -1371,7 +1319,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "network_files",
       "/etc/hosts",
       "changed"
@@ -1395,7 +1343,7 @@
    "entities": [
     "address:169.254.169.254",
     "account:root",
-    "pid:4709",
+    "pid:4697",
     "program:sleep",
     "exe:/usr/bin/sleep"
    ],
@@ -1404,15 +1352,15 @@
     {
      "live": [
       "processes",
-      4709
+      4697
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:47:07.810000+00:00",
-   "last_seen": "2026-10-29T02:47:07.810000+00:00",
+   "first_seen": "2026-10-29T03:06:40.690000+00:00",
+   "last_seen": "2026-10-29T03:06:40.690000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "sleep (pid 4709, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
+   "summary": "sleep (pid 4697, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
    "title": "A program other than the cloud agent reached the metadata address",
    "uncertain": null,
    "variant": null
@@ -1423,7 +1371,7 @@
    "check": "net.tunnel",
    "contribution": 1.3863,
    "entities": [
-    "pid:4725",
+    "pid:4713",
     "program:ssh",
     "account:root",
     "exe:/usr/bin/ssh"
@@ -1433,15 +1381,15 @@
     {
      "live": [
       "processes",
-      4725
+      4713
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:47:08.540000+00:00",
-   "last_seen": "2026-10-29T02:47:08.540000+00:00",
+   "first_seen": "2026-10-29T03:06:41.420000+00:00",
+   "last_seen": "2026-10-29T03:06:41.420000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "ssh (pid 4725, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
+   "summary": "ssh (pid 4713, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
    "title": "An SSH client forwarding ports (a tunnel)",
    "uncertain": null,
    "variant": null
@@ -1452,7 +1400,7 @@
    "check": "net.tunnel",
    "contribution": 0.6931,
    "entities": [
-    "pid:4723",
+    "pid:4711",
     "program:sshd"
    ],
    "entities_complete": true,
@@ -1460,15 +1408,15 @@
     {
      "live": [
       "processes",
-      4723
+      4711
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:47:08.360000+00:00",
-   "last_seen": "2026-10-29T02:47:08.360000+00:00",
+   "first_seen": "2026-10-29T03:06:41.240000+00:00",
+   "last_seen": "2026-10-29T03:06:41.240000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "sshd session (pid 4723) listening on 127.0.0.1 port 2222",
+   "summary": "sshd session (pid 4711) listening on 127.0.0.1 port 2222",
    "title": "An SSH session listening on a port (a remote forward)",
    "uncertain": null,
    "variant": null
@@ -1479,14 +1427,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/cron/atjobs/a0000101c80bfd"
+    "path:/var/spool/cron/atjobs/a0000101c80c11"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/cron/atjobs/a0000101c80bfd"
+      "/var/spool/cron/atjobs/a0000101c80c11"
      ]
     }
    ],
@@ -1494,7 +1442,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/cron/atjobs/a0000101c80bfd (owner UID 0)",
+   "summary": "/var/spool/cron/atjobs/a0000101c80c11 (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -1518,7 +1466,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "cron",
       "/etc/cron.d/cc-proof",
       "added"
@@ -1546,7 +1494,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "systemd",
       "/etc/systemd/system/cc-proof.service",
       "added"
@@ -1574,7 +1522,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "systemd",
       "/etc/systemd/system/cc-proof.timer",
       "added"
@@ -1602,7 +1550,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "software_files",
       "/etc/apt/keyrings/cc-proof.gpg",
       "added"
@@ -1630,7 +1578,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "software_files",
       "/etc/apt/sources.list.d/cc-proof.list",
       "added"
@@ -1658,15 +1606,15 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "packages",
       "nmap amd64",
       "added"
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:47:16.924395+00:00",
-   "last_seen": "2026-10-29T02:47:16.924395+00:00",
+   "first_seen": "2026-10-29T03:06:49.350145+00:00",
+   "last_seen": "2026-10-29T03:06:49.350145+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "nmap 7.94+git20230807.3be01efb1+dfsg-3build2",
@@ -1689,8 +1637,8 @@
      "event": 211
     }
    ],
-   "first_seen": "2026-10-29T02:47:09.572330+00:00",
-   "last_seen": "2026-10-29T02:47:09.572330+00:00",
+   "first_seen": "2026-10-29T03:06:41.618331+00:00",
+   "last_seen": "2026-10-29T03:06:41.618331+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "127.0.0.1: 1 login(s) as root",
@@ -1713,8 +1661,8 @@
      "event": 211
     }
    ],
-   "first_seen": "2026-10-29T02:47:09.572330+00:00",
-   "last_seen": "2026-10-29T02:47:09.572330+00:00",
+   "first_seen": "2026-10-29T03:06:41.618331+00:00",
+   "last_seen": "2026-10-29T03:06:41.618331+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "root from 127.0.0.1 (publickey)",
@@ -1736,7 +1684,7 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.6"
+    "address:203.0.113.7"
    ],
    "entities_complete": true,
    "evidence": [
@@ -1744,11 +1692,11 @@
      "event": 124
     }
    ],
-   "first_seen": "2026-10-29T02:44:41.363419+00:00",
-   "last_seen": "2026-10-29T02:44:41.363419+00:00",
+   "first_seen": "2026-10-29T03:04:18.124490+00:00",
+   "last_seen": "2026-10-29T03:04:18.124490+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.6 (publickey)",
+   "summary": "root from 203.0.113.7 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -1771,11 +1719,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 160
+     "event": 158
     }
    ],
-   "first_seen": "2026-10-29T02:45:19.680415+00:00",
-   "last_seen": "2026-10-29T02:45:19.680415+00:00",
+   "first_seen": "2026-10-29T03:04:52.972907+00:00",
+   "last_seen": "2026-10-29T03:04:52.972907+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: group docker",
@@ -1804,8 +1752,8 @@
      "event": 172
     }
    ],
-   "first_seen": "2026-10-29T02:45:38.039447+00:00",
-   "last_seen": "2026-10-29T02:45:38.039447+00:00",
+   "first_seen": "2026-10-29T03:05:11.138246+00:00",
+   "last_seen": "2026-10-29T03:05:11.138246+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: group postdrop",
@@ -1827,8 +1775,8 @@
      "event": 170
     }
    ],
-   "first_seen": "2026-10-29T02:45:37.838991+00:00",
-   "last_seen": "2026-10-29T02:45:37.838991+00:00",
+   "first_seen": "2026-10-29T03:05:10.935095+00:00",
+   "last_seen": "2026-10-29T03:05:10.935095+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: group postfix",
@@ -1850,8 +1798,8 @@
      "event": 169
     }
    ],
-   "first_seen": "2026-10-29T02:45:35.329573+00:00",
-   "last_seen": "2026-10-29T02:45:35.329573+00:00",
+   "first_seen": "2026-10-29T03:05:08.592142+00:00",
+   "last_seen": "2026-10-29T03:05:08.592142+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: group ssl-cert",
@@ -1873,7 +1821,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "listeners",
       "tcp 127.0.0.1:2222 netns=net:[4026531840]",
       "added"
@@ -1903,7 +1851,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "listeners",
       "tcp 127.0.0.1:4444 netns=net:[4026531840]",
       "added"
@@ -1933,7 +1881,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "listeners",
       "tcp 127.0.0.1:445 netns=net:[4026531840]",
       "added"
@@ -1959,7 +1907,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/libblas3:amd64.list",
       "added"
@@ -1967,7 +1915,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/libblas3:amd64.md5sums",
       "added"
@@ -1975,7 +1923,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/libblas3:amd64.postinst",
       "added"
@@ -1983,7 +1931,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/libblas3:amd64.preinst",
       "added"
@@ -1991,7 +1939,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/libblas3:amd64.prerm",
       "added"
@@ -1999,7 +1947,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/libblas3:amd64.shlibs",
       "added"
@@ -2007,7 +1955,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/libblas3:amd64.triggers",
       "added"
@@ -2015,7 +1963,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/liblinear4:amd64.list",
       "added"
@@ -2023,7 +1971,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/liblinear4:amd64.md5sums",
       "added"
@@ -2031,7 +1979,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/liblinear4:amd64.shlibs",
       "added"
@@ -2039,7 +1987,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/liblinear4:amd64.symbols",
       "added"
@@ -2047,7 +1995,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/liblinear4:amd64.triggers",
       "added"
@@ -2055,7 +2003,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/liblua5.4-0:amd64.list",
       "added"
@@ -2063,7 +2011,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/liblua5.4-0:amd64.md5sums",
       "added"
@@ -2071,7 +2019,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/liblua5.4-0:amd64.shlibs",
       "added"
@@ -2079,7 +2027,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/liblua5.4-0:amd64.symbols",
       "added"
@@ -2087,7 +2035,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/liblua5.4-0:amd64.triggers",
       "added"
@@ -2095,7 +2043,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/libssh2-1t64:amd64.list",
       "added"
@@ -2103,7 +2051,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/libssh2-1t64:amd64.md5sums",
       "added"
@@ -2111,7 +2059,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info/libssh2-1t64:amd64.shlibs",
       "added"
@@ -2119,7 +2067,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/info",
       "changed"
@@ -2127,7 +2075,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "checksum_store",
       "/var/lib/dpkg/status",
       "changed"
@@ -2160,7 +2108,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "packages",
       "libblas3 amd64",
       "added"
@@ -2168,7 +2116,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "packages",
       "liblinear4 amd64",
       "added"
@@ -2176,7 +2124,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "packages",
       "liblua5.4-0 amd64",
       "added"
@@ -2184,7 +2132,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "packages",
       "libssh2-1t64 amd64",
       "added"
@@ -2192,7 +2140,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "packages",
       "nmap-common all",
       "added"
@@ -2200,15 +2148,15 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T024556Z-e5522410",
+      "ubuntu24.04-20261029T030529Z-d7adc174",
       "packages",
       "nmap amd64",
       "added"
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:47:15.908384+00:00",
-   "last_seen": "2026-10-29T02:47:16.924395+00:00",
+   "first_seen": "2026-10-29T03:06:48.727153+00:00",
+   "last_seen": "2026-10-29T03:06:49.350145+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "6: libblas3, liblinear4, liblua5.4-0, libssh2-1t64, nmap-common, nmap",
@@ -2235,8 +2183,8 @@
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:44:41.810000+00:00",
-   "last_seen": "2026-10-29T02:44:41.810000+00:00",
+   "first_seen": "2026-10-29T03:04:18.550000+00:00",
+   "last_seen": "2026-10-29T03:04:18.550000+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "(sd-pam) (pid 838): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
@@ -2263,8 +2211,8 @@
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:44:34.270000+00:00",
-   "last_seen": "2026-10-29T02:44:34.270000+00:00",
+   "first_seen": "2026-10-29T03:04:13.330000+00:00",
+   "last_seen": "2026-10-29T03:04:13.330000+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "dbus-daemon (pid 665): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
@@ -2291,8 +2239,8 @@
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:44:41.800000+00:00",
-   "last_seen": "2026-10-29T02:44:41.800000+00:00",
+   "first_seen": "2026-10-29T03:04:18.530000+00:00",
+   "last_seen": "2026-10-29T03:04:18.530000+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "systemd (pid 837): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
@@ -2319,8 +2267,8 @@
      ]
     }
    ],
-   "first_seen": "2026-10-29T02:44:34.550000+00:00",
-   "last_seen": "2026-10-29T02:44:34.550000+00:00",
+   "first_seen": "2026-10-29T03:04:13.620000+00:00",
+   "last_seen": "2026-10-29T03:04:13.620000+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "systemd-logind (pid 674): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
@@ -2526,7 +2474,7 @@
     "contribution": 4.6052,
     "finding": 0,
     "ratio": 100.0,
-    "share": 0.0656,
+    "share": 0.0693,
     "title": "An account other than root has UID 0"
    },
    {
@@ -2535,7 +2483,7 @@
     "contribution": 4.6052,
     "finding": 1,
     "ratio": 100.0,
-    "share": 0.0656,
+    "share": 0.0693,
     "title": "/etc/ld.so.preload loads a library into every program"
    },
    {
@@ -2544,359 +2492,359 @@
     "contribution": 2.9957,
     "finding": 2,
     "ratio": 20.0,
-    "share": 0.0427,
+    "share": 0.0451,
     "title": "A new account whose primary group is root-equivalent"
    },
    {
     "capped": null,
     "check": "files.privileged",
     "contribution": 2.9957,
-    "finding": 4,
+    "finding": 3,
     "ratio": 20.0,
-    "share": 0.0427,
-    "title": "A privileged file outside the system directories"
-   },
-   {
-    "capped": null,
-    "check": "files.scratch",
-    "contribution": 2.9957,
-    "finding": 6,
-    "ratio": 20.0,
-    "share": 0.0427,
-    "title": "A program in a scratch directory"
+    "share": 0.0451,
+    "title": "A new privileged file since the baseline"
    },
    {
     "capped": null,
     "check": "history.disabled",
     "contribution": 2.9957,
-    "finding": 7,
+    "finding": 5,
     "ratio": 20.0,
-    "share": 0.0427,
+    "share": 0.0451,
     "title": "A shell history file is a link to /dev/null"
    },
    {
     "capped": null,
     "check": "logs.cleared",
     "contribution": 2.9957,
-    "finding": 8,
+    "finding": 6,
     "ratio": 20.0,
-    "share": 0.0427,
+    "share": 0.0451,
     "title": "A log was truncated since the previous collection"
    },
    {
     "capped": null,
     "check": "logs.stopped",
     "contribution": 2.9957,
-    "finding": 9,
+    "finding": 7,
     "ratio": 20.0,
-    "share": 0.0427,
+    "share": 0.0451,
     "title": "A logging service that ran at the baseline isn't running"
    },
    {
     "capped": null,
     "check": "mac.disabled",
     "contribution": 2.9957,
-    "finding": 12,
+    "finding": 10,
     "ratio": 20.0,
-    "share": 0.0427,
+    "share": 0.0451,
     "title": "AppArmor profiles were unloaded or stopped enforcing"
    },
    {
     "capped": null,
     "check": "net.directory",
     "contribution": 2.9957,
-    "finding": 13,
+    "finding": 11,
     "ratio": 20.0,
-    "share": 0.0427,
+    "share": 0.0451,
     "title": "A web-server account reached SMB"
    },
    {
     "capped": null,
     "check": "pam.changes",
     "contribution": 2.9957,
-    "finding": 14,
+    "finding": 12,
     "ratio": 20.0,
-    "share": 0.0427,
+    "share": 0.0451,
     "title": "A PAM line was added that runs a program (pam_exec)"
    },
    {
     "capped": null,
     "check": "process.executable",
     "contribution": 2.9957,
-    "finding": 16,
+    "finding": 14,
     "ratio": 20.0,
-    "share": 0.0427,
+    "share": 0.0451,
     "title": "A process whose program was deleted"
    },
    {
     "capped": null,
     "check": "process.reverse_shell",
     "contribution": 2.9957,
-    "finding": 18,
+    "finding": 16,
     "ratio": 20.0,
-    "share": 0.0427,
+    "share": 0.0451,
     "title": "A shell talking to a network socket (a reverse shell)"
    },
    {
     "capped": null,
     "check": "ssh.authorized_keys",
     "contribution": 2.9957,
-    "finding": 19,
+    "finding": 17,
     "ratio": 20.0,
-    "share": 0.0427,
+    "share": 0.0451,
     "title": "A new authorized SSH key"
    },
    {
     "capped": null,
     "check": "sshd.config",
     "contribution": 2.9957,
-    "finding": 21,
+    "finding": 19,
     "ratio": 20.0,
-    "share": 0.0427,
+    "share": 0.0451,
     "title": "An sshd setting was added"
    },
    {
     "capped": null,
     "check": "account.log_changes",
     "contribution": 1.3863,
-    "finding": 23,
+    "finding": 21,
     "ratio": 4.0,
-    "share": 0.0198,
+    "share": 0.0209,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": null,
     "check": "mail.web_user",
     "contribution": 1.3863,
-    "finding": 28,
+    "finding": 26,
     "ratio": 4.0,
-    "share": 0.0198,
+    "share": 0.0209,
     "title": "Mail submitted by a web-server account"
    },
    {
     "capped": null,
     "check": "net.config",
     "contribution": 1.3863,
-    "finding": 29,
+    "finding": 27,
     "ratio": 4.0,
-    "share": 0.0198,
+    "share": 0.0209,
     "title": "A network configuration file was changed"
    },
    {
     "capped": null,
     "check": "net.metadata",
     "contribution": 1.3863,
-    "finding": 30,
+    "finding": 28,
     "ratio": 4.0,
-    "share": 0.0198,
+    "share": 0.0209,
     "title": "A program other than the cloud agent reached the metadata address"
    },
    {
     "capped": null,
     "check": "net.tunnel",
     "contribution": 1.3863,
-    "finding": 31,
+    "finding": 29,
     "ratio": 4.0,
-    "share": 0.0198,
+    "share": 0.0209,
     "title": "An SSH client forwarding ports (a tunnel)"
    },
    {
     "capped": null,
     "check": "persistence.changes",
     "contribution": 1.3863,
-    "finding": 34,
+    "finding": 32,
     "ratio": 4.0,
-    "share": 0.0198,
+    "share": 0.0209,
     "title": "A new cron file"
    },
    {
     "capped": null,
     "check": "software.repository",
     "contribution": 1.3863,
-    "finding": 37,
+    "finding": 35,
     "ratio": 4.0,
-    "share": 0.0198,
+    "share": 0.0209,
     "title": "A package signing key was added"
    },
    {
     "capped": null,
     "check": "software.tools",
     "contribution": 1.3863,
-    "finding": 39,
+    "finding": 37,
     "ratio": 4.0,
-    "share": 0.0198,
+    "share": 0.0209,
     "title": "An attack or tunnelling tool was installed"
    },
    {
     "capped": null,
     "check": "ssh.login",
     "contribution": 1.3863,
-    "finding": 40,
+    "finding": 38,
     "ratio": 4.0,
-    "share": 0.0198,
+    "share": 0.0209,
     "title": "Logins from an address never seen before"
    },
    {
     "capped": "group",
-    "check": "files.privileged",
+    "check": "files.scratch",
     "contribution": 0.6931,
-    "finding": 3,
+    "finding": 4,
     "ratio": 20.0,
-    "share": 0.0099,
-    "title": "A new privileged file since the baseline"
-   },
-   {
-    "capped": "family",
-    "check": "files.privileged",
-    "contribution": 0.6931,
-    "finding": 5,
-    "ratio": 20.0,
-    "share": 0.0099,
-    "title": "A privileged file outside the system directories"
+    "share": 0.0104,
+    "title": "A program in a scratch directory"
    },
    {
     "capped": "group",
     "check": "persistence.changes",
     "contribution": 0.6931,
-    "finding": 15,
+    "finding": 13,
     "ratio": 20.0,
-    "share": 0.0099,
+    "share": 0.0104,
     "title": "A new startup file"
    },
    {
     "capped": "group",
     "check": "process.injected",
     "contribution": 0.6931,
-    "finding": 17,
+    "finding": 15,
     "ratio": 20.0,
-    "share": 0.0099,
+    "share": 0.0104,
     "title": "A process has code mapped from a scratch or home file"
    },
    {
     "capped": "family",
     "check": "ssh.authorized_keys",
     "contribution": 0.6931,
-    "finding": 20,
+    "finding": 18,
     "ratio": 20.0,
-    "share": 0.0099,
+    "share": 0.0104,
     "title": "A new authorized SSH key"
    },
    {
     "capped": "family",
     "check": "account.changes",
     "contribution": 0.6931,
-    "finding": 22,
+    "finding": 20,
     "ratio": 4.0,
-    "share": 0.0099,
+    "share": 0.0104,
     "title": "A new account"
    },
    {
     "capped": "family",
     "check": "net.tunnel",
     "contribution": 0.6931,
-    "finding": 32,
+    "finding": 30,
     "ratio": 4.0,
-    "share": 0.0099,
+    "share": 0.0104,
     "title": "An SSH session listening on a port (a remote forward)"
    },
    {
     "capped": "family",
     "check": "software.repository",
     "contribution": 0.6931,
-    "finding": 38,
+    "finding": 36,
     "ratio": 4.0,
-    "share": 0.0099,
+    "share": 0.0104,
     "title": "A package repository was added"
    },
    {
     "capped": null,
     "check": "net.listener",
     "contribution": 0.4055,
-    "finding": 47,
+    "finding": 45,
     "ratio": 1.5,
-    "share": 0.0058,
+    "share": 0.0061,
     "title": "A new listening port"
    },
    {
     "capped": null,
     "check": "package.changed",
     "contribution": 0.4055,
-    "finding": 50,
+    "finding": 48,
     "ratio": 1.5,
-    "share": 0.0058,
+    "share": 0.0061,
     "title": "The package managers' checksum lists changed since the baseline"
    },
    {
     "capped": null,
     "check": "software.packages",
     "contribution": 0.4055,
-    "finding": 51,
+    "finding": 49,
     "ratio": 1.5,
-    "share": 0.0058,
+    "share": 0.0061,
     "title": "Packages installed since the baseline"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
     "contribution": 0.3692,
-    "finding": 25,
+    "finding": 23,
     "ratio": 4.0,
-    "share": 0.0053,
+    "share": 0.0056,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "logs.stopped",
     "contribution": 0.3466,
-    "finding": 10,
+    "finding": 8,
     "ratio": 20.0,
-    "share": 0.0049,
+    "share": 0.0052,
     "title": "A logging or audit service was stopped"
    },
    {
     "capped": "family",
     "check": "logs.stopped",
     "contribution": 0.3466,
-    "finding": 11,
+    "finding": 9,
     "ratio": 20.0,
-    "share": 0.0049,
+    "share": 0.0052,
     "title": "The audit daemon stopped, not during a shutdown"
    },
    {
     "capped": "family",
     "check": "persistence.changes",
     "contribution": 0.3466,
-    "finding": 35,
+    "finding": 33,
     "ratio": 4.0,
-    "share": 0.0049,
+    "share": 0.0052,
     "title": "A new systemd file"
    },
    {
     "capped": "family",
     "check": "persistence.changes",
     "contribution": 0.3466,
-    "finding": 36,
+    "finding": 34,
     "ratio": 4.0,
-    "share": 0.0049,
+    "share": 0.0052,
     "title": "A new systemd file"
    },
    {
     "capped": "family",
     "check": "net.listener",
     "contribution": 0.3466,
-    "finding": 48,
+    "finding": 46,
     "ratio": 1.5,
-    "share": 0.0049,
+    "share": 0.0052,
     "title": "A new listening port"
    },
    {
     "capped": "family",
     "check": "net.listener",
     "contribution": 0.3466,
-    "finding": 49,
+    "finding": 47,
     "ratio": 1.5,
-    "share": 0.0049,
+    "share": 0.0052,
     "title": "A new listening port"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.108,
+    "finding": 42,
+    "ratio": 1.5,
+    "share": 0.0016,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.108,
+    "finding": 43,
+    "ratio": 1.5,
+    "share": 0.0016,
+    "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
@@ -2904,25 +2852,7 @@
     "contribution": 0.108,
     "finding": 44,
     "ratio": 1.5,
-    "share": 0.0015,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.108,
-    "finding": 45,
-    "ratio": 1.5,
-    "share": 0.0015,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.108,
-    "finding": 46,
-    "ratio": 1.5,
-    "share": 0.0015,
+    "share": 0.0016,
     "title": "An account or group was changed (from the logs)"
    }
   ],
@@ -2935,7 +2865,7 @@
     }
    }
   },
-  "log_odds": 66.2739,
+  "log_odds": 62.585,
   "prior": 0.02,
   "prior_source": "golden",
   "probability": 1.0,

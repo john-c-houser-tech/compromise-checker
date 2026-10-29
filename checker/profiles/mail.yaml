@@ -1,0 +1,18 @@
+# Compromise Checker's mail profile, for a mail relay or a server that
+# sends mail for others (plan 2.10). Apply with `profiles: [base, mail]`.
+# These are broad on purpose: on a relay, volume and new domains are its
+# job. Relay settings changing (mail.relay) and mail from web accounts
+# (mail.web_user) still show.
+rules:
+  - id: mail-relay-volume
+    match: {check: mail.volume, variant: deliveries}
+    broad: true
+    reason: A relay's daily volume swings with its customers' mail, not with an intruder.
+    owner: Compromise Checker defaults
+    expires: never
+  - id: mail-relay-domains
+    match: {check: mail.domains}
+    broad: true
+    reason: A relay writes to new recipient domains every day.
+    owner: Compromise Checker defaults
+    expires: never

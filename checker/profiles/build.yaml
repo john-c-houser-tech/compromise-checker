@@ -1,0 +1,9 @@
+# Compromise Checker's build profile, for build and development servers
+# (plan 2.10). Apply with `profiles: [base, build]`.
+rules:
+  - id: build-compilers
+    match: {check: software.tools, variant: compiler}
+    broad: true
+    reason: Build servers install compilers. Attack and tunnelling tools still show.
+    owner: Compromise Checker defaults
+    expires: never

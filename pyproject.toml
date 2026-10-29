@@ -37,7 +37,7 @@ include = ["checker*"]
 [tool.setuptools.package-data]
 # The collector is shipped as a data file and streamed to targets as text;
 # the controller never imports it (DESIGN.md §5.1).
-checker = ["collector/collector.py", "templates/*.html.j2"]
+checker = ["collector/collector.py", "templates/*.html.j2", "profiles/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

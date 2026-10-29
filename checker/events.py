@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-PARSER_VERSION = 6  # 3: system.clock_changed; 4: unit.starting, unit.finished; 5: mail; 6: web
+PARSER_VERSION = 7  # 3: clock_changed; 4: unit.starting/finished; 5: mail; 6: web; 7: useradd shell
 MAX_EVENT_LINE = 2048  # characters of the source line kept on each event
 
 _MONTHS = {m: i for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)}
@@ -120,7 +120,11 @@ _RULES: list[tuple[str | None, re.Pattern[str], str]] = [
     ("su", re.compile(r"^\(to (?P<target>\S+)\) (?P<user>\S+) on (?P<tty>\S+)"), "su.switch"),
     (
         "useradd",
-        re.compile(r"^new user: name=(?P<user>[^,]+), UID=(?P<uid>\d+)"),
+        re.compile(
+            r"^new user: name=(?P<user>[^,]+), UID=(?P<uid>\d+)"
+            r"(?:, GID=\d+)?(?:, home=[^,]*)?(?:, shell=(?P<shell>[^,]*))?"
+            r"(?:, from=(?P<origin>\S+))?"
+        ),
         "account.created",
     ),
     ("userdel", re.compile(r"^delete user '(?P<user>[^']+)'"), "account.deleted"),

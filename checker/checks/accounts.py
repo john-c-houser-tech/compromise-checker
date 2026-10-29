@@ -259,6 +259,28 @@ LOG_CHANGE_VARIANTS = (
 )
 
 
+NO_LOGIN_SHELL = re.compile(r"(?:^|/)(?:nologin|false)$")
+SYSTEM_UID_MAX = 999
+
+
+def _package_account(context: Context, fields: dict) -> bool:
+    """A package's own account: a system UID and no login shell, made with
+    no terminal (useradd's from=none: a package's install script), or, for
+    a group membership, an existing such account. It can't log in; a
+    package installing (software.packages) is the change worth knowing."""
+    user = fields.get("user")
+    current = context.items("accounts").get(user) or {}
+    uid = fields.get("uid") if fields.get("uid") is not None else current.get("uid")
+    shell = fields.get("shell") if fields.get("shell") is not None else current.get("shell")
+    try:
+        system = uid is not None and int(uid) <= SYSTEM_UID_MAX and int(uid) != 0
+    except (TypeError, ValueError):
+        return False
+    if "origin" in fields and fields["origin"] != "none":
+        return False  # made at a terminal: someone's hand, not a package's
+    return system and bool(shell) and bool(NO_LOGIN_SHELL.search(str(shell)))
+
+
 @check(
     "account.log_changes",
     "Account and group changes recorded in the logs",
@@ -280,6 +302,7 @@ def log_changes(context: Context) -> list[Finding]:
             if privileged
             else "medium"
             if event.type in ("account.created", "group.member_added")
+            and not _package_account(context, f)
             else "low"
         )
         who = f.get("user") or ""

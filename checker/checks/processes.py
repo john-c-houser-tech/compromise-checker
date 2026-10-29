@@ -97,6 +97,12 @@ def _updated_since(context: Context, process: dict, mapping: str | None = None) 
         if not holds(current):
             break  # the chain of inheritance stops here
         starts.append(current.get("start_time"))
+    # (sd-pam) is forked from PID 1's child before it becomes the user
+    # manager: it holds what PID 1 loaded, though its listed parent (the
+    # user manager, a fresh program) doesn't.
+    first = processes.get(1)
+    if first is not None and first is not process and holds(first):
+        starts.append(first.get("start_time"))
     try:
         loaded = min(datetime.fromisoformat(str(t)) for t in starts if t)
         return any(datetime.fromisoformat(t) > loaded for t in times)
@@ -356,7 +362,11 @@ def miner(context: Context) -> list[Finding]:
     return findings
 
 
-@check("process.injected", "Code mapped from deleted, memory-only or scratch files")
+@check(
+    "process.injected",
+    "Code mapped from deleted, memory-only or scratch files",
+    variants=("scratch", "deleted", "libffi", "memory", "replaced"),
+)
 def injected(context: Context) -> list[Finding]:
     """A library injected with dlopen or ptrace shows as an executable
     mapping from a scratch place, a deleted file or a memory-only one. A
@@ -374,41 +384,46 @@ def injected(context: Context) -> list[Finding]:
             if mapping.removesuffix(" (deleted)").startswith(SYSTEM)
         )
         if any(x.startswith(SCRATCH + HOMES) for x in bare):
-            title, band, category = (
+            title, band, category, variant = (
                 "A process has code mapped from a scratch or home file",
                 "high",
                 COMPROMISE,
+                "scratch",
             )
         elif any(not x.startswith((*SYSTEM, "/memfd:")) for x in bare) or (
             not replaced and any(x.startswith(SYSTEM) for x in bare)
         ):
-            title, band, category = (
+            title, band, category, variant = (
                 "A process has code mapped from a deleted file",
                 "high",
                 COMPROMISE,
+                "deleted",
             )
         elif all(x.startswith("/memfd:libffi") for x in bare):
             # libffi makes its closures this way (firewalld on RHEL); the
             # name is the creator's choice, so it isn't dropped.
-            title, band, category = (
+            title, band, category, variant = (
                 "A process has libffi code mapped from memory only",
                 "low",
                 COMPROMISE,
+                "libffi",
             )
         elif any(x.startswith("/memfd:") for x in bare):
             # JITs and libffi use memory-only code too, so less sure.
-            title, band, category = (
+            title, band, category, variant = (
                 "A process has code mapped from memory only",
                 "medium",
                 COMPROMISE,
+                "memory",
             )
         else:
-            title, band, category = (
+            title, band, category, variant = (
                 "A process still uses replaced system libraries (restart it after the update)",
                 "low",
                 HYGIENE,
+                "replaced",
             )
-        findings.append(
-            _finding("process.injected", title, band, p, ", ".join(paths[:5]), category)
-        )
+        finding = _finding("process.injected", title, band, p, ", ".join(paths[:5]), category)
+        finding.variant = variant
+        findings.append(finding)
     return findings

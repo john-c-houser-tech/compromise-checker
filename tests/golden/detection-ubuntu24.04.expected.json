@@ -954,7 +954,7 @@
    "summary": "cc-sleep (pid 11398): /root/cc-sleep (deleted)",
    "title": "A process has code mapped from a scratch or home file",
    "uncertain": null,
-   "variant": null
+   "variant": "scratch"
   },
   {
    "band": "high",
@@ -1241,59 +1241,6 @@
    "new": true,
    "ratio": 4.0,
    "summary": "created: cc-toor UID 0",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "medium",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0,
-   "entities": [
-    "account:dnsmasq"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 155
-    }
-   ],
-   "first_seen": "2026-10-29T07:15:32.252942+00:00",
-   "last_seen": "2026-10-29T07:15:32.252942+00:00",
-   "new": false,
-   "ratio": 4.0,
-   "summary": "created: dnsmasq UID 999",
-   "suppressed_by": {
-    "file": "tests/integration/proof-whitelist.yaml",
-    "layer": "host ubuntu24.04",
-    "owner": "compromise-checker proofs",
-    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account).",
-    "rule": "proof-docker-dnsmasq-account"
-   },
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "medium",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.3692,
-   "entities": [
-    "account:postfix"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 171
-    }
-   ],
-   "first_seen": "2026-10-29T07:15:51.981231+00:00",
-   "last_seen": "2026-10-29T07:15:51.981231+00:00",
-   "new": false,
-   "ratio": 4.0,
-   "summary": "created: postfix UID 110",
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "created"
@@ -1984,6 +1931,36 @@
    "check": "account.log_changes",
    "contribution": 0.0,
    "entities": [
+    "account:dnsmasq"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 155
+    }
+   ],
+   "first_seen": "2026-10-29T07:15:32.252942+00:00",
+   "last_seen": "2026-10-29T07:15:32.252942+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "created: dnsmasq UID 999",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account).",
+    "rule": "proof-docker-dnsmasq-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
     "group:docker"
    ],
    "entities_complete": true,
@@ -2012,7 +1989,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.108,
+   "contribution": 0.1733,
    "entities": [
     "group:postdrop"
    ],
@@ -2035,7 +2012,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.108,
+   "contribution": 0.1733,
    "entities": [
     "group:postfix"
    ],
@@ -2058,7 +2035,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.108,
+   "contribution": 0.1733,
    "entities": [
     "group:ssl-cert"
    ],
@@ -2076,6 +2053,29 @@
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.1733,
+   "entities": [
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 171
+    }
+   ],
+   "first_seen": "2026-10-29T07:15:51.981231+00:00",
+   "last_seen": "2026-10-29T07:15:51.981231+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "created: postfix UID 110",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
   },
   {
    "band": "low",
@@ -2518,7 +2518,7 @@
    "summary": "(sd-pam) (pid 841): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
-   "variant": null
+   "variant": "replaced"
   },
   {
    "band": "low",
@@ -2546,7 +2546,7 @@
    "summary": "dbus-daemon (pid 665): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
-   "variant": null
+   "variant": "replaced"
   },
   {
    "band": "low",
@@ -2574,7 +2574,7 @@
    "summary": "systemd (pid 840): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
-   "variant": null
+   "variant": "replaced"
   },
   {
    "band": "low",
@@ -2602,7 +2602,7 @@
    "summary": "systemd-logind (pid 674): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
-   "variant": null
+   "variant": "replaced"
   },
   {
    "band": "info",
@@ -3012,7 +3012,7 @@
     "capped": null,
     "check": "mail.web_user",
     "contribution": 1.3863,
-    "finding": 32,
+    "finding": 30,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "Mail submitted by a web-server account"
@@ -3021,7 +3021,7 @@
     "capped": null,
     "check": "net.config",
     "contribution": 1.3863,
-    "finding": 33,
+    "finding": 31,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "A network configuration file was changed"
@@ -3030,7 +3030,7 @@
     "capped": null,
     "check": "net.metadata",
     "contribution": 1.3863,
-    "finding": 35,
+    "finding": 33,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "A program other than the cloud agent reached the metadata address"
@@ -3039,7 +3039,7 @@
     "capped": null,
     "check": "net.tunnel",
     "contribution": 1.3863,
-    "finding": 36,
+    "finding": 34,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "An SSH client forwarding ports (a tunnel)"
@@ -3048,7 +3048,7 @@
     "capped": null,
     "check": "persistence.changes",
     "contribution": 1.3863,
-    "finding": 39,
+    "finding": 37,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "A new cron file"
@@ -3057,7 +3057,7 @@
     "capped": null,
     "check": "software.repository",
     "contribution": 1.3863,
-    "finding": 42,
+    "finding": 40,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "A package signing key was added"
@@ -3066,7 +3066,7 @@
     "capped": null,
     "check": "software.tools",
     "contribution": 1.3863,
-    "finding": 44,
+    "finding": 42,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "An attack or tunnelling tool was installed"
@@ -3075,7 +3075,7 @@
     "capped": null,
     "check": "ssh.login",
     "contribution": 1.3863,
-    "finding": 45,
+    "finding": 43,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "Logins from an address never seen before"
@@ -3084,7 +3084,7 @@
     "capped": null,
     "check": "web.exploit",
     "contribution": 1.3863,
-    "finding": 48,
+    "finding": 46,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "A traversal attack answered"
@@ -3147,7 +3147,7 @@
     "capped": "family",
     "check": "net.config",
     "contribution": 0.6931,
-    "finding": 34,
+    "finding": 32,
     "ratio": 4.0,
     "share": 0.0087,
     "title": "Firewall rules added since the baseline"
@@ -3156,7 +3156,7 @@
     "capped": "family",
     "check": "net.tunnel",
     "contribution": 0.6931,
-    "finding": 37,
+    "finding": 35,
     "ratio": 4.0,
     "share": 0.0087,
     "title": "An SSH session listening on a port (a remote forward)"
@@ -3165,7 +3165,7 @@
     "capped": "family",
     "check": "software.repository",
     "contribution": 0.6931,
-    "finding": 43,
+    "finding": 41,
     "ratio": 4.0,
     "share": 0.0087,
     "title": "A package repository was added"
@@ -3217,15 +3217,6 @@
    },
    {
     "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.3692,
-    "finding": 29,
-    "ratio": 4.0,
-    "share": 0.0046,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
     "check": "logs.stopped",
     "contribution": 0.3466,
     "finding": 10,
@@ -3264,7 +3255,7 @@
     "capped": "family",
     "check": "persistence.changes",
     "contribution": 0.3466,
-    "finding": 40,
+    "finding": 38,
     "ratio": 4.0,
     "share": 0.0043,
     "title": "A new systemd file"
@@ -3273,7 +3264,7 @@
     "capped": "family",
     "check": "persistence.changes",
     "contribution": 0.3466,
-    "finding": 41,
+    "finding": 39,
     "ratio": 4.0,
     "share": 0.0043,
     "title": "A new systemd file"
@@ -3299,28 +3290,37 @@
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.108,
+    "contribution": 0.1733,
+    "finding": 49,
+    "ratio": 1.5,
+    "share": 0.0022,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.1733,
     "finding": 50,
     "ratio": 1.5,
-    "share": 0.0014,
+    "share": 0.0022,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.108,
+    "contribution": 0.1733,
     "finding": 51,
     "ratio": 1.5,
-    "share": 0.0014,
+    "share": 0.0022,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.108,
+    "contribution": 0.1733,
     "finding": 52,
     "ratio": 1.5,
-    "share": 0.0014,
+    "share": 0.0022,
     "title": "An account or group was changed (from the logs)"
    }
   ],

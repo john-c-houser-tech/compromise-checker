@@ -1,0 +1,31 @@
+# Compromise Checker's base profile: what clean servers on the supported
+# images show that isn't a sign of anything (DESIGN.md §11; plan 2.10).
+# Apply it with `profiles: [base]` in a whitelist file. Every rule here
+# names what it covers narrowly; none hides a whole check.
+rules:
+  - id: base-python-libffi
+    match: {check: process.injected, variant: libffi, exe: "/usr/bin/python3*"}
+    reason: >-
+      Python's ctypes (firewalld on RHEL, Rocky and Alma; cloud-init) has
+      libffi make its closures in memory-only files. Only the libffi kind,
+      only for the system's Python: code from a deleted or scratch file
+      stays a finding.
+    owner: Compromise Checker defaults
+    expires: never
+  - id: base-platform-python-libffi
+    match: {check: process.injected, variant: libffi, exe: /usr/libexec/platform-python*}
+    reason: RHEL's platform Python (firewalld, dnf) makes libffi closures in memory too.
+    owner: Compromise Checker defaults
+    expires: never
+  - id: base-efi-directory-mode
+    match: {check: package.changed, package: efi-filesystem, path: /boot/efi}
+    reason: >-
+      AlmaLinux 10 mounts /boot/efi with wider permissions than its
+      efi-filesystem package records (0755 against 0700).
+    owner: Compromise Checker defaults
+    expires: never
+  - id: base-efi-tree-mode
+    match: {check: package.changed, package: efi-filesystem, path: "/boot/efi/**"}
+    reason: The same, for the directories under /boot/efi.
+    owner: Compromise Checker defaults
+    expires: never

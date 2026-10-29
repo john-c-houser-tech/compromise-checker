@@ -204,10 +204,13 @@ listing leaves it `unknown` (`directory_lookup` says which;
 the sudoers files set `mail_always`, `mail_all_cmnds` or `log_servers`,
 the look-up isn't made (it would mail the administrators or reach a log
 server) and the state stays `unknown`. The answer holds as of the look-up:
-directory rules can change before the next collection. sudo records
-the lookup in the authentication log (`COMMAND=list`), and the analysis
-marks that one line as the tool's own, only for a bundle whose look-up ran
-and only after the collector's own sudo. Account names may be fully
+directory rules can change before the next collection. sudo logged
+nothing about root's listing on any of the seven proof images; should a
+sudo log it (`COMMAND=list`), the analysis marks that one line as the
+tool's own, only for a bundle whose look-up ran and only after the
+collector's own sudo. Ubuntu 26.04's `sudo-rs` has no input logging at
+all (it ignores `log_input` and `LOG_INPUT`) and lists rules without the
+defaults' header; its listings are read the same way. Account names may be fully
 qualified (`scanner@corp.example.com`, `CORP\scanner`). The controller sends the mail key only where it is `off`
 (see `mail`).
 

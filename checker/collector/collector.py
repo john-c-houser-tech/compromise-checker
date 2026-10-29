@@ -2563,9 +2563,11 @@ def sudo_directory_lookup(run, sources):
 
 def sudo_list_logs_input(text):
     """From `sudo -ll`'s listing: "on" if its defaults or a rule's options
-    log input, "off" if not, or why the listing can't be read. (A listing
-    with no defaults, or for an account with no rules, can't be read.)"""
-    if "Matching Defaults entries for" not in text:
+    log input, "off" if not, or why the listing can't be read. sudo leaves
+    the defaults' header out when none match, and sudo-rs (Ubuntu 26.04),
+    which has no input logging, always does; a listing for an account
+    with no rules can't be read."""
+    if "Matching Defaults entries for" not in text and "may run the following commands" not in text:
         return "lookup failed: not a sudo listing"
     words = set(_SUDO_LIST_OPTION.split(text))
     return "on" if words & {"log_input", "log_stdin", "LOG_INPUT"} else "off"

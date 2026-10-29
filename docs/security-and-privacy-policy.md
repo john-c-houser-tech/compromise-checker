@@ -73,16 +73,19 @@ Any login leaves records. The tool's runs leave these:
 - records of the commands run, if the server's audit system is configured to
   keep them;
 - on a server whose `sudo` takes rules from a directory service (such as
-  SSSD or LDAP), a second `sudo` entry in the authentication log, for the
-  tool's look-up of the scanner account's own `sudo` rules; the directory
-  service may refresh its cache of those rules as it answers;
+  SSSD or LDAP), the tool's look-up of the scanner account's own `sudo`
+  rules: the directory service may refresh its cache of those rules as it
+  answers, and if `sudo` can't reach it, `sudo` may mail the administrators
+  about it (for the tool's own `sudo` as well as the look-up);
 - the system's ordinary session setup for the account: a per-login runtime
   area in memory (`/run/user/…`) and, on Ubuntu, its login-message files,
   including one small marker file (`.cache/motd.legal-displayed`) in the
   scanner account's home directory on its first login; where Ubuntu's
   Landscape client is installed, the login message's system summary also
   refreshes its cache and log file (under `/var/lib/landscape` and
-  `/var/log/landscape`).
+  `/var/log/landscape`); on Red Hat Enterprise Linux 10 and its rebuilds, a
+  login session that lasts a few minutes also has the system record that the
+  last boot succeeded (`/boot/grub2/grubenv`).
 
 **The tool never removes, edits or suppresses any of these.** On a server
 that may be compromised, changing logs destroys evidence, and it is exactly

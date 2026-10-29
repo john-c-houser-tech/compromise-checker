@@ -5074,6 +5074,12 @@ class MailTests(FixtureRoot):
         off = SUDO_LIST.replace(b"!authenticate", b"!authenticate, !log_input")
         self.assertEqual(self.directory_sudo(off)["state"], "off")
 
+    def test_sudo_rs_and_header_less_listings_are_read(self):
+        sudo_rs = SUDO_LIST.split(b"\n\n", 1)[1]  # no "Matching Defaults" header
+        self.assertEqual(self.directory_sudo(sudo_rs)["state"], "off")
+        tagged = sudo_rs.replace(b"!authenticate", b"!authenticate, log_input")
+        self.assertEqual(self.directory_sudo(tagged)["state"], "on")
+
     def test_a_lookup_that_proves_nothing_is_unknown(self):
         cases = [
             (dict(listing=SUDO_LIST, status=1), "exit status 1"),

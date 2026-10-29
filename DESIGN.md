@@ -107,10 +107,11 @@ first.
   disk) and, on first use by that account, its "lecture" marker.
 - auditd records of the commands run, where auditd is configured to record
   them.
-- Where `sudo` takes rules from a directory (SSSD, LDAP), a second `sudo`
-  line in the authentication log for the collector's `sudo -ll -U` look-up
-  of the scanner account's rules (PR 2.7b); the directory service may
-  refresh its cache as it answers.
+- Where `sudo` takes rules from a directory (SSSD, LDAP), the collector's
+  `sudo -ll -U` look-up of the scanner account's rules (PR 2.7b; root's
+  listing isn't logged): the directory service may refresh its cache as it
+  answers, and a `sudo` that can't reach it may mail the administrators
+  (for the collector's own `sudo` too).
 - The system's ordinary session setup for the account: a per-login runtime
   area in memory (`/run/user/…`, control groups) and, on Ubuntu, its
   login-message files, including one small marker file
@@ -118,7 +119,9 @@ first.
   login; where Ubuntu's Landscape client is installed, the login message's
   system summary refreshes its cache and log (`/var/lib/landscape`,
   `/var/log/landscape`). Measured by the read-only proof (PR 0.7) on Ubuntu
-  24.04 and Rocky 9, the Landscape writes on Ubuntu 26.04 (PR 2.7).
+  24.04 and Rocky 9, the Landscape writes on Ubuntu 26.04 (PR 2.7). On
+  RHEL 10 and its rebuilds, a session lasting a few minutes has
+  `grub2-set-bootflag` record a successful boot in `/boot/grub2/grubenv`.
 
 **Never done:** removing, editing, or suppressing any of those traces.
 Changing logs on a system that may be compromised destroys evidence, and it

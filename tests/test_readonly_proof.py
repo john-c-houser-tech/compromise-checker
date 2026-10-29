@@ -123,6 +123,27 @@ def test_landscape_s_login_summary_is_login_machinery_but_only_in_its_own_folder
     assert judge(event("python3", py, "bind")).collector
 
 
+def test_rhel_10_s_boot_flag_and_sudo_s_mail_are_disclosed():
+    writes = event(
+        "grub2-set-bootf",
+        "/usr/sbin/grub2-set-bootflag",
+        "rename",
+        ("/boot/grub2/grubenv.1000", "DELETE"),
+        ("/boot/grub2/grubenv", "CREATE"),
+    ) + event(
+        "postdrop",
+        "/usr/sbin/postdrop",
+        "openat",
+        ("/var/spool/postfix/maildrop/300725.5186", "CREATE"),
+    )
+    verdict = judge(writes)
+    assert verdict.unexpected == [] and len(verdict.disclosed) == 3
+    elsewhere = event(
+        "grub2-set-bootf", "/usr/sbin/grub2-set-bootflag", "openat", ("/boot/x", "CREATE")
+    )
+    assert judge(elsewhere).unexpected
+
+
 def test_an_undisclosed_write_by_login_machinery_fails():
     verdict = judge(SESSION + event("sshd", SSHD, "openat", ("/etc/passwd", "NORMAL")))
     assert verdict.unexpected == ["sshd (/usr/sbin/sshd) openat /etc/passwd"]

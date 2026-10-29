@@ -190,8 +190,10 @@ sometimes secrets typed into shell commands.
 ### 3.5 The AI advisor
 
 - **An explicit choice at setup.** `checker init` asks whether to enable it,
-  explaining in a few lines what would be sent and to whom. A yes asks for
-  the API key and sets redaction to *pseudonymize*; a no leaves everything
+  explaining in a few lines what would be sent and to whom. A yes records
+  where the API key will come from (an environment variable by default,
+  the OS keyring, or a command that prints it; never the key itself) and
+  sets redaction to *pseudonymize*; a no leaves everything
   else working, and reports carry a one-line note that the advisor exists.
   Unattended installs leave it off unless the configuration file turns it on.
   The tool works fully without it.

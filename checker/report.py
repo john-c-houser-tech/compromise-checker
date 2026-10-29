@@ -335,7 +335,9 @@ def host_report(
     return report
 
 
-def render(reports: list[HostReport], generated_by: tuple[str, str]) -> str:
+def render(
+    reports: list[HostReport], generated_by: tuple[str, str], advisor_enabled: bool = False
+) -> str:
     environment = Environment(
         loader=PackageLoader("checker", "templates"),
         autoescape=select_autoescape(["html", "j2"], default=True),
@@ -355,6 +357,7 @@ def render(reports: list[HostReport], generated_by: tuple[str, str]) -> str:
         controller=generated_by[1],
         version=__version__,
         checks_version=CHECKS_VERSION,
+        advisor_enabled=advisor_enabled,
     )
 
 
@@ -368,6 +371,7 @@ def write_report(
     output: Path | None = None,
     priors: Callable[[str], tuple[float, str]] | None = None,
     whitelists: Callable[[str], Whitelist | None] | None = None,
+    advisor_enabled: bool = False,
 ) -> Path:
     """Write the report (owner-only, like the evidence) and add a
     `reported` entry, with the report's hash, to each bundle's custody."""
@@ -377,7 +381,7 @@ def write_report(
         host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h))
         for h in hosts
     ]
-    html = render(reports, who_and_where())
+    html = render(reports, who_and_where(), advisor_enabled)
     if output is None:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         directory.chmod(0o700)  # also when it was already there

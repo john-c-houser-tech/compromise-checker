@@ -13,18 +13,20 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
+import shlex
 import socket
 import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import pyrage
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pyrage import x25519
 
 from checker.files import atomic_write, locked
@@ -52,6 +54,67 @@ class EvidenceError(Exception):
 # --- Configuration -------------------------------------------------------------
 
 
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+Redaction = Literal["pseudonymize", "strict", "none"]
+MODEL_NAME = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$"
+
+
+class Advisor(BaseModel):
+    """The optional AI advisor (DESIGN.md §3.5, §12; policy §9). Off until
+    the organization turns it on; nothing is sent while it is off."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    model: str = Field(default="claude-opus-5-5", pattern=MODEL_NAME)
+    effort: Effort = "high"
+    redaction: Redaction = "pseudonymize"
+    # Where the API key comes from, never the key itself: "env"
+    # (ANTHROPIC_API_KEY), "keyring", or "command:<command>" whose output
+    # is the key (for example `op read 'op://…'`).
+    api_key_source: str = "env"
+    # Where the provider runs the model, for organizations that must keep
+    # inference in one geography (e.g. "us"); empty: the provider's default.
+    inference_geo: str | None = Field(default=None, pattern=r"^[a-z]{2,16}$")
+    # Asks before sending a run estimated to cost more (US dollars).
+    max_cost_per_run: float = Field(default=1.0, gt=0, le=1000)
+
+    @field_validator("api_key_source")
+    @classmethod
+    def _key_source(cls, value: str) -> str:
+        if value in ("env", "keyring"):
+            return value
+        if value.startswith("command:"):
+            try:
+                words = shlex.split(value.removeprefix("command:"))
+            except ValueError as exc:
+                raise ValueError(f"the key command doesn't parse: {exc}") from None
+            if not words:
+                raise ValueError("command: needs a command after it")
+            # The setting is stored, shown and recorded for good (config
+            # changes can't be deleted), so a key pasted into the command
+            # itself must never get in.
+            if any(looks_like_a_key(word) for word in words):
+                raise ValueError(
+                    "that looks like a key itself: give a command that prints the key"
+                    " (for example op read 'op://…'), never the key"
+                )
+            return value
+        raise ValueError("must be env, keyring or command:<command>")
+
+
+def looks_like_a_key(text: str) -> bool:
+    """An API key or other secret token: Anthropic's prefix, or a long run
+    of key characters mixing upper and lower case and digits (as random
+    tokens do; long hyphenated file names and lowercase IDs don't)."""
+    if "sk-ant-" in text:
+        return True
+    for run in re.findall(r"[A-Za-z0-9_-]{32,}", text):
+        if re.search(r"[a-z]", run) and re.search(r"[A-Z]", run) and re.search(r"[0-9]", run):
+            return True
+    return False
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -71,6 +134,7 @@ class Config(BaseModel):
     web_users: list[Annotated[str, Field(pattern=ACCOUNT_NAME)]] = Field(
         default=[], max_length=MAX_WEB_USERS
     )
+    advisor: Advisor = Field(default_factory=Advisor)
 
 
 def config_file(home: Path) -> Path:
@@ -94,6 +158,7 @@ def initialise(
     home_text: HomeText = "off",
     web_access_logs: bool = False,
     exec_records: ExecRecords = "web",
+    advisor: Advisor | None = None,
 ) -> tuple[Config, Path | None]:
     """Create the tool's directory, evidence key and database. With
     `recipient`, bundles are encrypted to that key and its private half stays
@@ -104,7 +169,7 @@ def initialise(
     with locked(config_file(home)):
         if config_file(home).exists():
             raise EvidenceError(f"already set up ({config_file(home)}); nothing changed")
-        return _initialise(home, recipient, home_text, web_access_logs, exec_records)
+        return _initialise(home, recipient, home_text, web_access_logs, exec_records, advisor)
 
 
 def _initialise(
@@ -113,6 +178,7 @@ def _initialise(
     home_text: HomeText,
     web_access_logs: bool = False,
     exec_records: ExecRecords = "web",
+    advisor: Advisor | None = None,
 ) -> tuple[Config, Path | None]:
     identity_path = None
     if recipient:
@@ -140,6 +206,7 @@ def _initialise(
         home_text=home_text,
         web_access_logs=web_access_logs,
         exec_records=exec_records,
+        advisor=advisor or Advisor(),
     )
     Store(database_file(home)).close()
     mail_key(home)
@@ -614,6 +681,23 @@ CREATE TRIGGER IF NOT EXISTS purges_no_update BEFORE UPDATE ON purges
     BEGIN SELECT RAISE(ABORT, 'purges are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS purges_no_delete BEFORE DELETE ON purges
     BEGIN SELECT RAISE(ABORT, 'purges are append-only'); END;
+-- Each change to a setting after `checker init` (`checker config set`):
+-- who, when, from where, and the old and new values (JSON). Settings hold
+-- no secrets: the advisor's key source names where the key is, never the
+-- key. Never purged.
+CREATE TABLE IF NOT EXISTS config_changes (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    controller TEXT NOT NULL,
+    setting TEXT NOT NULL,
+    old TEXT,
+    new TEXT
+);
+CREATE TRIGGER IF NOT EXISTS config_changes_no_update BEFORE UPDATE ON config_changes
+    BEGIN SELECT RAISE(ABORT, 'config changes are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS config_changes_no_delete BEFORE DELETE ON config_changes
+    BEGIN SELECT RAISE(ABORT, 'config changes are append-only'); END;
 """
 
 
@@ -781,6 +865,41 @@ class Store:
         return self._db.execute(
             "SELECT * FROM custody WHERE bundle_id = ? ORDER BY seq", (bundle_id,)
         ).fetchall()
+
+    def record_config_change(self, setting: str, old: Any, new: Any, write, undo) -> None:
+        """Record a setting's change and make it with `write()` inside one
+        transaction, so that neither happens without the other: the
+        database is reserved before anything is written (a busy database
+        fails first), and if the commit fails after writing, `undo()` puts
+        the old configuration back."""
+        operator, controller = who_and_where()
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            self._db.execute(
+                "INSERT INTO config_changes (at, operator, controller, setting, old, new)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    datetime.now(UTC).isoformat(timespec="seconds"),
+                    operator,
+                    controller,
+                    setting,
+                    json.dumps(old),
+                    json.dumps(new),
+                ),
+            )
+            write()
+        except BaseException:
+            self._db.rollback()
+            raise
+        try:
+            self._db.commit()
+        except BaseException:
+            undo()
+            self._db.rollback()
+            raise
+
+    def config_changes(self) -> list[sqlite3.Row]:
+        return self._db.execute("SELECT * FROM config_changes ORDER BY seq").fetchall()
 
     def purge_state(self, host: str) -> list[Any]:
         """What a purge plan for `host` depends on: its current baseline

@@ -20,7 +20,17 @@ What works today:
   start-up files and user units in home directories (policy §7);
   `--web-access-logs` opts in to web servers' access logs, masked;
   `--exec-records` chooses whose program starts are read from the audit
-  log (the web server's accounts by default).
+  log (the web server's accounts by default). It also asks whether to turn
+  on the optional AI advisor (`--advisor on|off` for unattended setups,
+  which leave it off), and where its API key comes from
+  (`--advisor-key-source env|keyring|command:<command>`; never stored in
+  the configuration).
+- `checker config show|set|history|check-key` — the settings in words;
+  change one after `init` (validated, and recorded with who, when, old and
+  new value; the file is written back whole, so hand-added comments go);
+  every change so far; read the advisor's API key from its source to check
+  it works, without sending anything. A key pasted into a `command:`
+  source is refused.
 - `checker hosts add|list|remove` and `checker trust` — the inventory
   (`--web-root DIR`, repeatable, sets a host's own web roots), and
   verified SSH host keys (no way to switch verification off).

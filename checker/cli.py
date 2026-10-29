@@ -14,6 +14,7 @@ import pyrage
 from pydantic import ValidationError
 
 from checker import __version__
+from checker.advisor.keys import KeySourceError, looks_like_anthropic_key, read_api_key
 from checker.analysis import load_events, parse_bundle, store_parsed
 from checker.assess import analyze, prior_for
 from checker.baseline import accept, changes, usable_bundles
@@ -21,9 +22,11 @@ from checker.checks import BANDS, CATEGORIES
 from checker.collect import collect_hosts
 from checker.credentials import password_for
 from checker.evidence import (
+    Advisor,
     EvidenceError,
     Store,
     check_sidecar,
+    config_file,
     database_file,
     file_sha256,
     initialise,
@@ -41,6 +44,17 @@ from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
 from checker.report import write_report
 from checker.scoring import percent
+from checker.settings import (
+    EXEC_RECORDS,
+    HOME_TEXT,
+    SETTABLE,
+    advisor_question,
+    describe,
+    key_source_words,
+    value_of,
+)
+from checker.settings import change as change_setting
+from checker.settings import message as setting_message
 from checker.transport import TransportError, fetch_host_key, trust_host_key
 from checker.whitelist import WhitelistError, check_all
 from checker.whitelist import for_host as whitelist_for_host
@@ -48,18 +62,6 @@ from checker.whitelist import load_with as whitelist_load_with
 from checker.whitelist import other_sets as whitelist_other_sets
 from checker.whitelist_review import compare as whitelist_compare
 from checker.whitelist_review import stale as whitelist_stale
-
-# What `checker init --home-text` means, as `init` reports it.
-EXEC_RECORDS = {
-    "web": "the web server's accounts",
-    "privileged": "the web server's, root, service and administrator accounts",
-    "all": "every account",
-}
-HOME_TEXT = {
-    "off": "not collected (hashes only)",
-    "privileged": "collected, masked, for root, service and administrator accounts",
-    "all": "collected, masked, for every account",
-}
 
 
 def cmd_hosts_add(args: argparse.Namespace) -> int:
@@ -158,11 +160,43 @@ def cmd_trust(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
     return 0
 
 
-def cmd_init(args: argparse.Namespace) -> int:
+def _advisor_choice(args: argparse.Namespace, ask: Callable[[str], str] | None) -> bool:
+    """The advisor is an explicit choice (DESIGN.md §3.5): --advisor on|off,
+    else asked when someone is there to answer, else off."""
+    if args.advisor is not None:
+        return args.advisor == "on"
+    if ask is None:
+        if not sys.stdin.isatty():
+            return False
+        ask = input
+    print(advisor_question(args.advisor_redaction))
+    try:
+        answer = ask("Turn the AI advisor on? [y/N] ")
+    except EOFError:
+        print()
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def cmd_init(args: argparse.Namespace, ask: Callable[[str], str] | None = None) -> int:
     base = home()
+    if config_file(base).exists():  # before asking anything
+        print(f"checker: already set up ({config_file(base)}); nothing changed", file=sys.stderr)
+        return 1
+    try:
+        advisor = Advisor(api_key_source=args.advisor_key_source, redaction=args.advisor_redaction)
+    except ValidationError as exc:
+        print(f"checker: {setting_message(exc, '--advisor-key-source')}", file=sys.stderr)
+        return 2
+    advisor.enabled = _advisor_choice(args, ask)
     try:
         config, identity_path = initialise(
-            base, args.recipient, args.home_text, args.web_access_logs, args.exec_records
+            base,
+            args.recipient,
+            args.home_text,
+            args.web_access_logs,
+            args.exec_records,
+            advisor,
         )
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -175,17 +209,89 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("cannot be read, by you or anyone else.")
     else:
         print("Its private key is not on this machine; use --identity to read bundles.")
-    print(
-        f"Text of start-up files and user units in home directories: {HOME_TEXT[config.home_text]}"
-    )
-    print(
-        "Web access logs: "
-        + ("collected, masked" if config.web_access_logs else "not collected (error logs only)")
-    )
-    print(f"Program starts from the audit log, for: {EXEC_RECORDS[config.exec_records]}")
+    for line in describe(config):
+        print(line)
     print(f"Mail logs' addresses are fingerprinted with the mail key in {mail_key_file(base)};")
     print("keep it as private as the evidence key.")
+    print("Change any of these later with `checker config set`.")
     print("Next: `checker hosts add`, then `checker trust`, then `checker collect`.")
+    return 0
+
+
+def cmd_config_show(args: argparse.Namespace) -> int:
+    try:
+        config = load_config(home())
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    for line in describe(config):
+        print(line)
+    print(f"Retention: {config.retention_days} days. Prior: {percent(config.prior)}.")
+    print("Settable with `checker config set KEY VALUE`:")
+    for key, setting in SETTABLE.items():
+        print(f"  {key} = {json.dumps(value_of(config, key))}    ({setting.help})")
+    return 0
+
+
+def cmd_config_set(args: argparse.Namespace) -> int:
+    try:
+        old, new, config = change_setting(home(), args.key, args.value)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    except (OSError, sqlite3.Error) as exc:
+        print(f"checker: {args.key} not changed: {exc}", file=sys.stderr)
+        return 1
+    if old == new:
+        print(f"{args.key} is already {json.dumps(new)}. Nothing changed.")
+        return 0
+    print(f"{args.key}: {json.dumps(old)} -> {json.dumps(new)} (recorded).")
+    if args.key == "advisor.enabled" and new:
+        print(advisor_question(config.advisor.redaction))
+    for line in describe(config):
+        print(line)
+    return 0
+
+
+def cmd_config_history(args: argparse.Namespace) -> int:
+    base = home()
+    if not database_file(base).exists():
+        print("checker: not set up yet: run `checker init`", file=sys.stderr)
+        return 2
+    store = Store(database_file(base))
+    try:
+        rows = store.config_changes()
+    finally:
+        store.close()
+    if not rows:
+        print("No settings changed since `checker init`.")
+    for row in rows:
+        print(
+            f"{row['at']}  {row['operator']}@{row['controller']}  {row['setting']}:"
+            f" {row['old']} -> {row['new']}"
+        )
+    return 0
+
+
+def cmd_config_check_key(args: argparse.Namespace) -> int:
+    """Read the advisor's API key from its source, as `checker advise` will,
+    and say whether that worked. Sends nothing; never shows the key."""
+    try:
+        advisor = load_config(home()).advisor
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    print(f"Reading the key from {key_source_words(advisor.api_key_source)}…")
+    try:
+        key = read_api_key(advisor.api_key_source)
+    except KeySourceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    print(f"A key was read ({len(key)} characters). Nothing was sent.")
+    if not looks_like_anthropic_key(key):
+        print("It doesn't look like an Anthropic API key (they start with sk-ant-).")
+    if not advisor.enabled:
+        print("The advisor is off: `checker config set advisor.enabled on` to use it.")
     return 0
 
 
@@ -630,7 +736,56 @@ def build_parser() -> argparse.ArgumentParser:
             " accounts) or all"
         ),
     )
+    init.add_argument(
+        "--advisor",
+        choices=["on", "off"],
+        help=(
+            "turn the optional AI advisor on or off (policy §9); without it, `init` asks"
+            " when run in a terminal, and leaves it off otherwise"
+        ),
+    )
+    init.add_argument(
+        "--advisor-key-source",
+        default="env",
+        metavar="SOURCE",
+        help=(
+            "where the advisor's API key comes from: env (ANTHROPIC_API_KEY, the default),"
+            " keyring, or command:<command> that prints it"
+        ),
+    )
+    init.add_argument(
+        "--advisor-redaction",
+        choices=["pseudonymize", "strict", "none"],
+        default="pseudonymize",
+        help="what the advisor's requests may contain (default pseudonymize)",
+    )
     init.set_defaults(handler=cmd_init)
+
+    configuring = commands.add_parser("config", help="show or change settings after init")
+    config_commands = configuring.add_subparsers(
+        dest="config_command", metavar="ACTION", required=True
+    )
+    config_commands.add_parser("show", help="the settings, in words").set_defaults(
+        handler=cmd_config_show
+    )
+    setting = config_commands.add_parser(
+        "set",
+        help="change a setting (recorded)",
+        description=(
+            "Change one setting, validated and recorded. config.yaml is written back"
+            " whole, so comments added to it by hand are lost. A value starting with"
+            " '-' goes after '--': checker config set KEY -- VALUE."
+        ),
+    )
+    setting.add_argument("key", choices=list(SETTABLE), metavar="KEY", help=", ".join(SETTABLE))
+    setting.add_argument("value")
+    setting.set_defaults(handler=cmd_config_set)
+    config_commands.add_parser(
+        "history", help="every setting changed since init: who, when, old and new"
+    ).set_defaults(handler=cmd_config_history)
+    config_commands.add_parser(
+        "check-key", help="read the advisor's API key from its source (sends nothing)"
+    ).set_defaults(handler=cmd_config_check_key)
 
     collect = commands.add_parser("collect", help="collect evidence from hosts")
     which = collect.add_mutually_exclusive_group(required=True)
@@ -781,16 +936,18 @@ def cmd_report(args: argparse.Namespace) -> int:
             hosts = [args.host]
         inventory = _inventory_for_priors()
         whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
+        config = load_config(base)
         path = write_report(
             store,
             hosts,
             _identity(args, base),
-            load_config(base).recipients,
+            config.recipients,
             base / "reports",
             args.bundle,
             Path(args.output) if args.output else None,
-            partial(prior_for, config=load_config(base), inventory=inventory),
+            partial(prior_for, config=config, inventory=inventory),
             whitelists.get,
+            config.advisor.enabled,
         )
     except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)

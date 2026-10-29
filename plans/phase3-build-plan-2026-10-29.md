@@ -88,15 +88,16 @@ The advisor needs one, so it comes first.
   `init` prints. Each change is recorded (who, when, old and new value)
   in an append-only `config_changes` table.
 - Advisor settings, all off or empty by default:
-  - `advisor.enabled`; `advisor.provider` (`anthropic` | `local`);
+  - `advisor.enabled`;
   - `advisor.model` (default `claude-opus-5-5`), `advisor.effort`
-    (default `high`), `advisor.triage_model` (empty; decision 5);
+    (default `high`); `advisor.provider`, `advisor.base_url` and
+    `advisor.triage_model` arrive with 3.7, which uses them;
   - `advisor.redaction` (`pseudonymize` | `strict` | `none`; set to
     `pseudonymize` when the advisor is turned on);
   - `advisor.api_key_source` (decision 1), `advisor.inference_geo`
     (empty, or `us` for organizations that need inference in the US);
-  - `advisor.max_cost_per_run` (USD; asks above it), `advisor.fallback`
-    (decision 3).
+  - `advisor.max_cost_per_run` (USD; asks above it); `advisor.fallback`
+    arrives with 3.2, after decision 3.
 - `checker init` asks the advisor question in a few lines (what is sent,
   to whom, under which redaction), as DESIGN.md §3.5 says; `--advisor
   off|on` for unattended installs, off by default.

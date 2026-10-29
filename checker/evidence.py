@@ -78,6 +78,10 @@ class Advisor(BaseModel):
     inference_geo: str | None = Field(default=None, pattern=r"^[a-z]{2,16}$")
     # Asks before sending a run estimated to cost more (US dollars).
     max_cost_per_run: float = Field(default=1.0, gt=0, le=1000)
+    # When the model's safety checks decline a request (decision 3): off,
+    # nothing more; anthropic, re-run on Anthropic's recommended model for
+    # that kind of decline (same provider and account).
+    fallback: Literal["off", "anthropic"] = "anthropic"
 
     @field_validator("api_key_source")
     @classmethod
@@ -681,6 +685,33 @@ CREATE TRIGGER IF NOT EXISTS purges_no_update BEFORE UPDATE ON purges
     BEGIN SELECT RAISE(ABORT, 'purges are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS purges_no_delete BEFORE DELETE ON purges
     BEGIN SELECT RAISE(ABORT, 'purges are append-only'); END;
+-- Each request to the AI advisor (policy §9) and what came of it: which
+-- assessment it read, the model asked and the model that answered, the
+-- redaction, tokens and cost; the request as sent and the answer (with its
+-- placeholders restored) encrypted to the evidence key, so an organization
+-- can show afterwards exactly what left. Purged with its bundle.
+CREATE TABLE IF NOT EXISTS advice (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    bundle_id TEXT NOT NULL REFERENCES bundles(id),
+    host TEXT NOT NULL,
+    assessed_at TEXT NOT NULL,
+    role TEXT NOT NULL,
+    at TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    controller TEXT NOT NULL,
+    status TEXT NOT NULL,
+    redaction TEXT NOT NULL,
+    model_asked TEXT NOT NULL,
+    model_answered TEXT,
+    declined_by TEXT,
+    refusal_category TEXT,
+    effort TEXT,
+    request_id TEXT,
+    usage TEXT,
+    estimated_cost REAL,
+    request BLOB NOT NULL,
+    answer BLOB
+);
 -- Each change to a setting after `checker init` (`checker config set`):
 -- who, when, from where, and the old and new values (JSON). Settings hold
 -- no secrets: the advisor's key source names where the key is, never the
@@ -708,6 +739,7 @@ APPEND_ONLY = (
     ("custody", "custody is"),
     ("baselines", "baselines are"),
     ("assessments", "assessments are"),
+    ("advice", "advice is"),
 )
 
 
@@ -898,6 +930,27 @@ class Store:
             self._db.rollback()
             raise
 
+    def record_advice(self, row: dict[str, Any]) -> None:
+        operator, controller = who_and_where()
+        row = dict(row, operator=operator, controller=controller)
+        columns = ", ".join(row)
+        marks = ", ".join(f":{key}" for key in row)
+        with self._db:
+            self._db.execute(
+                f"INSERT INTO advice ({columns}) VALUES ({marks})",  # noqa: S608 - our own keys
+                row,
+            )
+
+    def advice_for_host(self, host: str) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM advice WHERE host = ? ORDER BY seq", (host,)
+        ).fetchall()
+
+    def advice(self, bundle_id: str) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM advice WHERE bundle_id = ? ORDER BY seq", (bundle_id,)
+        ).fetchall()
+
     def config_changes(self) -> list[sqlite3.Row]:
         return self._db.execute("SELECT * FROM config_changes ORDER BY seq").fetchall()
 
@@ -952,6 +1005,7 @@ class Store:
                 for action in ("update", "delete"):
                     self._db.execute(f"DROP TRIGGER {table}_no_{action}")
             for table, column in (
+                ("advice", "bundle_id"),
                 ("assessments", "bundle_id"),
                 ("derived", "bundle_id"),
                 ("baselines", "bundle_id"),

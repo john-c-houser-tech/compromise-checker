@@ -1,7 +1,7 @@
 # Phase 3 build plan — 2026-10-29
 
 > **Status: DRAFT 1, 2026-10-29** — shape agreed by John; decisions 1,
-> 2, 3 and 6 settled; 4, 5, 7 and 8 open. Nothing built yet.
+> 2, 3, 4 and 6 settled; 5, 7 and 8 open. Nothing built yet.
 
 **Goal (DESIGN.md §18, Phase 3):** an operator who turns the advisor on
 gets a plain-language reading of an assessment, whitelist proposals they can
@@ -168,7 +168,9 @@ assessment, its events, snapshot and whitelist, by one module
   `client.messages.parse()` with a Pydantic schema per role
   (`output_config.format`); adaptive thinking (always on for
   `claude-opus-5-5`), `effort` from the configuration, non-streaming with
-  `max_tokens` 16 000; SDK retries (2) left on; typed error handling
+  `max_tokens` 16 000; no automatic retries (a request that timed out may
+  still be billed, and a retry would bill it again past the confirmed
+  estimate); typed error handling
   (authentication, rate limit, server, connection) with plain messages.
 - **Refusals:** `stop_reason == "refusal"` is checked before anything is
   read. A compromise assessment is exactly the kind of text cyber
@@ -178,10 +180,15 @@ assessment, its events, snapshot and whitelist, by one module
   the report say both: declined by the configured model, answered by the
   fallback (read from the response, never assumed). If none answered, the
   report says no advice was produced and why.
-- **Cost:** `count_tokens` on the exact request, an estimated cost from a
-  price table in one place (`checker/advisor/prices.py`, dated, overridable
-  in the configuration), shown before sending; above `max_cost_per_run` it
-  asks; `--yes` for scripts. Real usage from the response is stored.
+- **Cost:** estimated here from the request's length (two characters a
+  token, input at the cache-write rate, which errs high: the first real
+  request, 86 000 characters, was 35 800 tokens and cost $0.23; built 2026-10-29 in place of
+  `count_tokens`, which would have sent the case before the operator said
+  yes), from a price table in one place (`checker/advisor/prices.py`,
+  dated), counting a possible fallback re-run; shown before sending; above
+  `max_cost_per_run` (or with no price for the model) it asks; `--yes` for
+  scripts. The real cost, each model at its own rate from the usage per
+  model, is stored. Nothing at all leaves before the yes.
 - **Prompt caching:** the system prompt and the case file come first and
   are marked for caching; the role instruction comes after. Running
   several roles on one case (`checker advise HOST` runs 1, then 2–4 as
@@ -352,12 +359,11 @@ The advisor's answers can't be golden-tested, so they are measured.
    declined and the model and provider that answered, from the response.
    `off` and `anthropic` arrive in 3.2; `model` in 3.7 with local models
    (same endpoint code). Policy §9 says so in 3.8.
-4. **Before 3.1 — login hours.** The Phase 2 plan left "logins at unusual
-   hours" (DESIGN.md §8.3) for the advisor to propose. Deterministic is
-   better here: learn each host's normal hours from its own stored
-   assessments, as a Phase 2-style check with a ratio, and leave the
-   advisor out of it. Recommendation: build it as a small check PR outside
-   the advisor (3.1b), or move it to the 'After Phase 3' list.
+4. ~~Before 3.1 — login hours.~~ **Decided 2026-10-29:** an ordinary,
+   deterministic check, not the advisor's: each host's normal login hours
+   per account, learned from its own stored history; a login well outside
+   them is a finding with a ratio like any other; until there are a few
+   weeks of history, coverage says so. A small PR after 3.2 (3.2b).
 5. **Before 3.7 — triage model.** Whether to ship a suggested value for
    `advisor.triage_model` (a faster, cheaper model such as
    `claude-sonnet-5-5` or `claude-haiku-5-5` for quiet hosts) or leave it

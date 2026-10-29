@@ -351,20 +351,27 @@ def test_advise_show_prints_the_request_and_sends_nothing(home, capsys, monkeypa
     add_bundle(home, "b1", 0, records)
     assert cli.main(["advise", "web01", "--show"]) == 0
     captured = capsys.readouterr()
-    payload = json.loads(captured.out)
+    payload = case_in(json.loads(captured.out))
     assert payload["redaction"] == "pseudonymize"
     assert "Nothing was sent" in captured.err and "advisor is off" in captured.err
     text = json.dumps(payload)
     assert "toor" not in text and "jch" not in text and "web01" not in text
     assert cli.main(["advise", "web01", "--show", "--redaction", "strict"]) == 0
     captured = capsys.readouterr()
-    assert json.loads(captured.out)["redaction"] == "strict"
+    assert case_in(json.loads(captured.out))["redaction"] == "strict"
     assert "this preview used strict" in captured.err
 
 
-def test_advise_without_show_sends_nothing(home, capsys):
-    assert cli.main(["advise", "web01"]) == 2
-    assert "--show" in capsys.readouterr().err
+def test_advise_with_the_advisor_off_sends_nothing(home, capsys):
+    add_bundle(home, "b1", 0, host_records())
+    assert cli.main(["advise", "web01"]) == 1
+    assert "the advisor is off" in capsys.readouterr().err
+
+
+def case_in(request):
+    """The case file inside a request, as `--show` prints it."""
+    text = request["body"]["messages"][0]["content"][0]["text"]
+    return json.loads(text.removeprefix("The case file:\n"))
 
 
 # --- Regressions from the review of 3.1 -------------------------------------------------------
@@ -878,3 +885,16 @@ def test_odd_inputs_dont_crash(call):
 def test_redact_refuses_what_isnt_a_case():
     with pytest.raises(ValueError, match="not a case"):
         redact(None, "pseudonymize", Known())
+
+
+def test_chains_cite_only_findings_the_case_holds():
+    path = GOLDEN[0]
+    case = golden.load_case(path)
+    result = golden.run_case(case)
+    target = case["target"]
+    snapshots = {k: Snapshot.from_dict(v) for k, v in case["snapshots"].items()}
+    events = [Event(**e) for e in case["events"][target]]
+    built = build_case(case["host"], result, events, snapshots[target], snapshots, max_chars=5000)
+    included = {f["id"] for f in built["findings"]}
+    for chain in built["chains"]:
+        assert set(chain["findings"]) <= included

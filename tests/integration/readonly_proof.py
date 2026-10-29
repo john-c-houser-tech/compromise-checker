@@ -28,7 +28,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -271,6 +271,11 @@ class Result:
     # never leave the server found in the bundle: the mail key, or the
     # mailed address's local part (must stay empty).
     mail_events: int = 0
+    # Calibration (plan 2.10): the clean bundle's score, with the proof's
+    # whitelist and the base profile, and its compromise findings by band.
+    probability: float | None = None
+    band: str | None = None
+    findings_by_band: dict = field(default_factory=dict)
     # Plan 2.7b: real `sudo -ll` output read as the collector reads it (off,
     # then on once the scanner's input is logged), and sudo's log line for
     # the lookup parsed as the own-session marking expects: problems found
@@ -1125,15 +1130,25 @@ def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path,
     try:
         row = store.bundle(bundle_id)
         parsed = parse_bundle(row, identity)
+        # This bundle (the clean one), not the host's latest: a later
+        # collection may follow it (the directory look-up's).
         assessment = analyze(
             store,
             row["host"],
             identity,
             load_config(home).recipients,
+            bundle_id=bundle_id,
             whitelist=proof_whitelist(home, row["host"]),
         )
     finally:
         store.close()
+    score = assessment.get("score") or {}
+    result.probability, result.band = score.get("probability"), score.get("band")
+    result.findings_by_band = {}
+    for f in assessment["findings"]:
+        if f.get("suppressed_by") or f["category"] != "compromise indicator":
+            continue
+        result.findings_by_band[f["band"]] = result.findings_by_band.get(f["band"], 0) + 1
     result.checks_failed = [
         f"{c['check']}: {c['status']}"
         for c in assessment["checks"]
@@ -1287,6 +1302,7 @@ async def main() -> int:
     )
     parser.add_argument("--region", default="us-sea")
     parser.add_argument("--keep", action="store_true", help="don't delete the servers")
+    parser.add_argument("--json", type=Path, help="also write the results here (calibrate.py)")
     args = parser.parse_args()
     if "all" in args.distro:
         args.distro = list(IMAGES)  # the whole matrix Linode offers (no RHEL there)
@@ -1302,6 +1318,8 @@ async def main() -> int:
     finally:
         if not args.keep:
             await asyncio.to_thread(sweep_run, api)
+    if args.json:
+        args.json.write_text(json.dumps([asdict(r) for r in results], default=str, indent=1))
     return 0 if report(list(results)) else 1
 
 

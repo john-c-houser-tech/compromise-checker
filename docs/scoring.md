@@ -181,3 +181,36 @@ scoring, not the parsers or the collector.
 The ratios are expert estimates. Plan 2.10 tunes them against fresh
 servers on all seven images (false alarms) and the detection proof's
 compromised servers (detections), and records the results here.
+`tests/integration/calibrate.py` runs both proofs (on throwaway servers,
+with John's approval), judges done-means 2 (every clean image Low, with
+the proof's whitelist and the `base` profile) and 3 (every behaviour and
+chain found at its band), and writes the table below with `--write-docs`.
+
+### Tuning (2.10)
+
+Each change, with the reason the results gave for it:
+
+- **Accounts a package creates are low, not medium** (`account.log_changes`).
+  Installing Postfix, nginx or PHP-FPM creates accounts and groups and adds
+  them to groups; on clean servers these were the largest contributors
+  (Ubuntu 14%, Rocky 20%). An account with a system UID, no login shell,
+  made with no terminal (`useradd`'s `from=none`: a package's install
+  script), and such an account's group memberships, are now low. A login
+  shell, a terminal, a person's UID or UID 0 keep them medium, and a root
+  group keeps a membership high. Clean golden servers: Ubuntu 5.8%, Rocky
+  8.4%, both Low.
+- **`(sd-pam)` is judged by what PID 1 loaded** (`process.injected`). It is
+  forked from PID 1's child before that becomes the user manager, so it
+  holds the libraries PID 1 loaded at boot; an update replacing one made it
+  look like code from a deleted file (high on Ubuntu 22.04). It is now the
+  replaced-library hygiene finding, as the rest of the system is.
+- **The `base` profile** suppresses Python's libffi closures (firewalld on
+  the RHEL family; the `libffi` kind only, for the system's Python) and
+  AlmaLinux 10's `/boot/efi` modes.
+- Four medium findings from different checks still take a 2% prior to
+  about 72%: kept, since four unrelated medium signs on one host are worth
+  a look; the fixes above stop clean servers producing them.
+
+<!-- calibration:start -->
+Not run yet in this version.
+<!-- calibration:end -->

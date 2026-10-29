@@ -513,24 +513,41 @@ def sshd_lines(lines: list[str]) -> list[tuple[str, str, str]]:
     return out
 
 
-# nginx's root and alias, several to a line or inside a block on one line.
-_NGINX_SERVED = re.compile(r"(?:^|[{;\s])(root|alias)\s+(\"[^\"]*\"|'[^']*'|[^\s;{}]+)\s*;")
+# nginx's root and alias (and include, so the check sees configuration
+# kept elsewhere), several to a line or inside a block on one line.
+_NGINX_SERVED = re.compile(r"(?:^|[{;\s])(root|alias|include)\s+(\"[^\"]*\"|'[^']*'|[^\s;{}]+)\s*;")
 # Apache's: the folder is the last argument (Alias's first is the URL).
 _APACHE_SERVED = re.compile(
-    r"^\s*(DocumentRoot|Alias|ScriptAlias|AliasMatch|ScriptAliasMatch)\s+(.*?)\s*$", re.I
+    r"^\s*(DocumentRoot|Alias|ScriptAlias|AliasMatch|ScriptAliasMatch|Include|IncludeOptional)"
+    r"\s+(.*?)\s*$",
+    re.I,
 )
+
+
+def _uncommented(line: str) -> str:
+    """nginx's line up to a # outside quotes (root "/srv/a#b"; is a path)."""
+    quote = ""
+    for i, c in enumerate(line):
+        if quote:
+            quote = "" if c == quote else quote
+        elif c in "\"'":
+            quote = c
+        elif c == "#":
+            return line[:i]
+    return line
 
 
 def web_served(path: str, lines: list[str]) -> list[tuple[str, str]]:
     """(directive, folder as written) for each folder a web server's
-    configuration file serves. Folders with a variable, or relative to the
-    server's own prefix, are kept as written: the check can't place them."""
+    configuration file serves, and each file it includes. Folders with a
+    variable, or relative to the server's own prefix, are kept as written:
+    the check can't place them."""
     out = []
     nginx = path.startswith("/etc/nginx/")
     if not nginx and not path.startswith(("/etc/apache2/", "/etc/httpd/")):
         return out  # PHP-FPM's: it serves nothing itself
     for raw in lines:
-        line = raw.split("#", 1)[0] if nginx else raw
+        line = _uncommented(raw) if nginx else raw
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if nginx:

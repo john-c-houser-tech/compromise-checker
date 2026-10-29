@@ -1000,7 +1000,7 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "b3f84f8b6a1e19ab27cd42e974006d50941b89816ae21852c60e75a3c1c0923f",
+  "hash": "493363e2a1fe616a867da3e74d3d3a137933c95a909e74c1e2f3e4ec2d0e75a1",
   "maintenance": 0,
   "matched": {
    "host ubuntu24.04/proof-at-job-debian": 1,
@@ -1145,7 +1145,7 @@
      "variant": "shared"
     },
     "owner": "Compromise Checker defaults",
-    "reason": "PHP's opcache keeps its JIT code in shared memory, which /proc's maps show as \"/dev/zero (deleted)\". Only the shared-memory kind, only PHP-FPM as installed by the system: a memory-only file, a deleted file or a scratch file mapped into PHP-FPM still shows."
+    "reason": "PHP's opcache keeps its JIT code in shared memory, which /proc's maps show as \"/dev/zero (deleted)\". Only the shared-memory kind, only PHP-FPM as installed by the system: a memory-only file, a deleted file or a scratch file mapped into PHP-FPM still shows. Code a script maps the same way (PHP's FFI) looks the same and is let through too."
    },
    {
     "broad": false,

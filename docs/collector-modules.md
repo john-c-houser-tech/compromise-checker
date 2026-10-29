@@ -612,9 +612,11 @@ use up another's time; one that runs out of its share stops there
   runs `shell.php.jpg` when a handler maps `.php` (`.php`, `.phtml`,
   `.phar`, `.shtml`, `.cfm`, `.jsp`, `.asp(x)`, `.cgi`, `.pl`, `.py`, `.sh`
   and the like) — executables, set-user-ID or capability files, devices,
-  pipes and sockets, hidden files and directories, and links that are
-  script-named or lead out of the web root (shared hosting's `root.txt ->
-  /`) are sent (`web_file`); everything else — uploads, whose names can be
+  pipes and sockets, hidden files and directories, and every link (one
+  leading out of the web root, shared hosting's `root.txt -> /`, and one
+  inside it, which the controller follows to tell what the web server
+  serves: `public/bundles/x -> ../../vendor/…`; an upload can't make a
+  link) are sent (`web_file`); everything else — uploads, whose names can be
   personal — is only counted (`not_listed` in the walk summary). Hidden
   data files (`.env`, `.htpasswd`, `.user.ini`) are listed but not hashed:
   a short secret's hash could be guessed;

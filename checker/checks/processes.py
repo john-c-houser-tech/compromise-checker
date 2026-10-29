@@ -450,4 +450,18 @@ def injected(context: Context) -> list[Finding]:
         finding = _finding("process.injected", title, band, p, ", ".join(paths[:5]), category)
         finding.variant = variant
         findings.append(finding)
+        system = [x for x in paths if x.startswith(SYSTEM)]
+        if variant == "shared" and system:
+            # Shared memory is its own finding (a profile may explain it);
+            # the restart an update needs still shows.
+            restart = _finding(
+                "process.injected",
+                "A process still uses replaced system libraries (restart it after the update)",
+                "low",
+                p,
+                ", ".join(system[:5]),
+                HYGIENE,
+            )
+            restart.variant = "replaced"
+            findings.append(restart)
     return findings

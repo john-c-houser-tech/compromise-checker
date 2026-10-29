@@ -821,6 +821,38 @@ narrowed; the second PASS: every clean image Low (5.8%), both compromised
 images Critical with 32/32 behaviours and both chains (done-means 2 and
 3). Golden cases re-exported. Phase 2 spend so far: about 83 cents.
 
+## Real-world clean run (2026-10-29) and PR 2.11
+
+With John's go-ahead, nouriloop-prod (Ubuntu 24.04, nginx and PHP-FPM, two
+Symfony applications) was checked through a dedicated scanner account set
+up from docs/scanner-account.md (John's choice: a separate audit trail for
+the tool). Counts only, as agreed:
+
+| Run | Score | Critical | High | Medium | Low | Info |
+|---|---|---|---|---|---|---|
+| First, Phase 2 code | 100% Critical | 0 | 2,396 | 10 | 12 | 9 |
+| PR 2.11's code | 99% Critical | 0 | 2 | 6 | 12 | 9 |
+| PR 2.11's code, host whitelist | 6% Low | 0 | 0 | 0 | 6 | 9 |
+
+The first run's false alarms, all fixed in PR 2.11: any folder named
+`cache` counted as an upload directory (2,383, from the framework's
+compiled cache and its libraries); `.pl` in Polish translation files read
+as a Perl script behind a second extension; PHP-FPM's opcache JIT in shared
+memory read as code from a deleted file; `.env` and `.git` beside the
+served folder reported as exposed; a package's generated file mislabelled;
+`checker trust` taking the RSA host key over ED25519. The fix for the
+first: files are judged by what the web servers' configuration serves
+(snapshot v11 `web_served`), with new or changed scripts outside it one
+low finding per application folder, so a deploy doesn't read as hundreds
+of web shells. Independent review: 3 high, 3 medium, 4 low, all fixed
+(links followed both ways, per-application judgement, fallbacks for
+included files and programs that serve files themselves, a lone edit
+outside the served folders medium). A changed script inside a served
+folder is now high (it wasn't checked before). What remained after the
+fixes was the server's build (2026-10-18) and the scanner account's
+creation, explained in a host whitelist that expires 2026-11-30, after
+those log entries leave the look-back.
+
 ## Explicitly gated on John
 
 - Any change to the security and privacy policy's wording. 2.0 may tighten

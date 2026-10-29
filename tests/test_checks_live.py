@@ -370,6 +370,110 @@ def test_a_deploy_is_one_low_finding_per_folder_and_an_edited_front_controller_i
     ]
 
 
+def _served_titles(after, before=None, **web_args):
+    found = of(run([], web(after, **web_args), baseline=web(before or {}, **web_args)), "files.web")
+    return sorted((f.band, f.title, f.summary.split(" (")[0].split(":")[0]) for f in found)
+
+
+NEW_SHELL = ("high", "A new script in a web root")
+
+
+def test_a_served_folder_through_a_link_is_followed_and_unfollowable_is_unjudged():
+    # Deployer's layout: nginx serves current/public, current -> releases/7.
+    rel = f"{APP}/releases/7"
+    served = {"x: root /var/www/app/current/public": {"folder": f"{APP}/current/public"}}
+    before = {f"{rel}/public/index.php": {"sha256": "aa"}}
+    after = {
+        **before,
+        f"{rel}/public/shell.php": {"sha256": "bb"},
+        f"{rel}/vendor/a/b.php": {"sha256": "cc"},
+    }
+    link = {f"{APP}/current": {"type": "l", "link_target": "releases/7"}}
+    titles = _served_titles({**after, **link}, {**before, **link}, served=served)
+    assert (*NEW_SHELL, f"{rel}/public/shell.php") in titles
+    assert (
+        "medium",
+        "New or changed scripts outside what the web servers serve",
+        f"1 in {APP}/releases",
+    ) in titles
+    # Without the link listed, nothing was seen inside the served folder:
+    # the application keeps the old rules, so vendor's new file is a new
+    # script too.
+    titles = _served_titles(after, before, served=served)
+    assert (*NEW_SHELL, f"{rel}/vendor/a/b.php") in titles
+
+
+def test_an_application_with_no_served_folder_known_keeps_the_old_rules():
+    # /var/www/blog's root sits in a snippet the collector doesn't read.
+    before = {f"{APP}/public/index.php": {"sha256": "aa"}}
+    after = {**before, "/var/www/blog/wp-content/shell.php": {"sha256": "bb"}}
+    assert (*NEW_SHELL, "/var/www/blog/wp-content/shell.php") in _served_titles(after, before)
+
+
+def test_what_a_link_in_a_served_folder_leads_to_is_served():
+    # assets:install --symlink: public/bundles/acme -> vendor's public files.
+    target = f"{APP}/vendor/acme/x/Resources/public"
+    link = {
+        f"{APP}/public/bundles/acme": {
+            "type": "l",
+            "link_target": "../../vendor/acme/x/Resources/public",
+        }
+    }
+    before = {f"{APP}/public/index.php": {"sha256": "aa"}, **link}
+    after = {**before, f"{target}/s.php": {"sha256": "bb"}}
+    assert (*NEW_SHELL, f"{target}/s.php") in _served_titles(after, before)
+
+
+def test_programs_that_serve_files_themselves_and_outside_includes_leave_it_unknown():
+    before = {f"{APP}/public/index.php": {"sha256": "aa"}}
+    after = {**before, f"{APP}/var/x.php": {"sha256": "bb"}}
+    node = {**NGINX, "tcp 127.0.0.1:3000 netns=net:[1]": {"programs": ["node"]}}
+    assert (*NEW_SHELL, f"{APP}/var/x.php") in _served_titles(after, before, listeners=node)
+    fpm = {**NGINX, "tcp 127.0.0.1:9000 netns=net:[1]": {"programs": ["php-fpm8.4"]}}
+    assert NEW_SHELL not in [t[:2] for t in _served_titles(after, before, listeners=fpm)]
+    included = {
+        **SERVED,
+        "y: include /var/www/app/nginx.conf": {
+            "directive": "include",
+            "folder": f"{APP}/nginx.conf",
+        },
+    }
+    assert (*NEW_SHELL, f"{APP}/var/x.php") in _served_titles(after, before, served=included)
+    stock = {
+        **SERVED,
+        "y: include snippets/fastcgi-php.conf": {
+            "directive": "include",
+            "folder": "snippets/fastcgi-php.conf",
+        },
+        "z: include /etc/nginx/sites-enabled/*": {
+            "directive": "include",
+            "folder": "/etc/nginx/sites-enabled/*",
+        },
+    }
+    assert NEW_SHELL not in [t[:2] for t in _served_titles(after, before, served=stock)]
+
+
+def test_a_lone_edit_outside_the_served_folders_is_medium():
+    before = {
+        f"{APP}/public/index.php": {"sha256": "aa"},
+        f"{APP}/vendor/autoload.php": {"sha256": "v1"},
+        f"{APP}/var/cache/prod/C1/a.php": {"sha256": "c1"},
+        f"{APP}/src/Kernel.php": {},  # not hashed (too big, or out of time)
+    }
+    after = {
+        **before,
+        f"{APP}/vendor/autoload.php": {"sha256": "v2"},
+        f"{APP}/src/Kernel.php": {"sha256": "k2"},
+    }
+    [finding] = of(run([], web(after), baseline=web(before)), "files.web")
+    assert finding.band == "medium"
+    assert finding.summary.startswith(f"1 in {APP}/vendor (and no other change in the application)")
+    # The same edit in a deploy that rebuilt the compiled cache: low.
+    after.update({f"{APP}/var/cache/prod/C2/s{n}.php": {"sha256": f"n{n}"} for n in range(4)})
+    found = of(run([], web(after), baseline=web(before)), "files.web")
+    assert {f.band for f in found} == {"low"}
+
+
 def test_web_shells():
     items = {
         "/var/www/html/index.php": {"place": "/var/www", "type": "-"},
@@ -789,6 +893,11 @@ def test_shared_memory_is_not_a_deleted_file():
     live = {"processes": [proc(124397, "php-fpm8.4", suspicious_mappings=both)]}
     [finding] = of(run([], snap(live)), "process.injected")
     assert (finding.band, finding.variant) == ("high", "deleted")
+    # With replaced system libraries too, the restart still shows.
+    both = ["/dev/zero (deleted)", "/usr/lib/x86_64-linux-gnu/libz.so.1 (deleted)"]
+    live = {"processes": [proc(124397, "php-fpm8.4", suspicious_mappings=both)]}
+    found = of(run([], snap(live, checksum_store=UPDATED)), "process.injected")
+    assert sorted(f.variant for f in found) == ["replaced", "shared"]
     # libffi's closures stay low, but not when shared memory is mapped too.
     both = ["/dev/zero (deleted)", "/memfd:libffi (deleted)"]
     live = {"processes": [proc(635, "firewalld", suspicious_mappings=both)]}

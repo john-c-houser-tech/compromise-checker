@@ -5619,11 +5619,10 @@ def _is_web_listed(entry, root):
     if kind == "d":
         return name.startswith(".")
     if kind == "l":
-        # A script-named link, or one leading out of the web root
-        # (shared hosting's "root.txt -> /").
-        target = entry.get("link_target") or ""
-        outside = target.startswith("/") and not target.startswith(root.rstrip("/") + "/")
-        return bool(WEB_SCRIPT.search(name)) or outside or ".." in target.split("/")
+        # Every link: one leading out of the web root (shared hosting's
+        # "root.txt -> /"), and one inside it, which the controller follows
+        # to tell what is served (public/bundles/x -> vendor/...).
+        return True
     if kind != "-":
         return True  # a device, pipe or socket has no business in a web root
     privileged = privileged_elsewhere(entry)

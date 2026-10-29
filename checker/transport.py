@@ -451,7 +451,10 @@ HOST_KEY_ALGS = (
     "ecdsa-sha2-nistp256",
     "rsa-sha2-512",
     "rsa-sha2-256",
+    "ssh-rsa",
 )
+# A known key's type and the algorithms that fetch it.
+_KEY_ALGS = {"ssh-rsa": ("rsa-sha2-512", "rsa-sha2-256", "ssh-rsa")}
 
 
 def _known_hosts_name(host: Host) -> str:
@@ -463,13 +466,23 @@ def _read_known(path: Path) -> list[str]:
 
 
 async def fetch_host_key(host: Host, known_hosts: Path | None = None) -> HostKeyCheck:
-    """Ask the server for its host key, and compare it with what we know."""
+    """Ask the server for its host key, and compare it with what we know:
+    a known key's kind first, so a host trusted by its RSA key isn't
+    reported changed for offering its ED25519 one."""
+    known_types, known = [], []
+    name = _known_hosts_name(host)
+    for line in _read_known(known_hosts or known_hosts_file()):
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == name:
+            known.append(asyncssh.import_public_key(" ".join(parts[1:3])).get_fingerprint("sha256"))
+            known_types.extend(_KEY_ALGS.get(parts[1], (parts[1],)))
+    algs = list(dict.fromkeys([*known_types, *HOST_KEY_ALGS]))
     try:
         key = await asyncio.wait_for(
             # Same connection behaviour as collect(): the operator's
             # ~/.ssh/config must not redirect us to a different endpoint.
             asyncssh.get_server_host_key(
-                host.address, host.port, config=None, server_host_key_algs=HOST_KEY_ALGS
+                host.address, host.port, config=None, server_host_key_algs=algs
             ),
             timeout=15,
         )
@@ -477,12 +490,6 @@ async def fetch_host_key(host: Host, known_hosts: Path | None = None) -> HostKey
         raise TransportError(f"{host.name}: cannot fetch the host key: {exc}") from exc
     if key is None:
         raise TransportError(f"{host.name}: the server offered no host key")
-    known = []
-    name = _known_hosts_name(host)
-    for line in _read_known(known_hosts or known_hosts_file()):
-        parts = line.split()
-        if len(parts) >= 3 and parts[0] == name:
-            known.append(asyncssh.import_public_key(" ".join(parts[1:3])).get_fingerprint("sha256"))
     return HostKeyCheck(
         key=key,
         fingerprint=key.get_fingerprint("sha256"),

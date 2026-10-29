@@ -19,7 +19,8 @@ rules:
       PHP's opcache keeps its JIT code in shared memory, which /proc's maps
       show as "/dev/zero (deleted)". Only the shared-memory kind, only
       PHP-FPM as installed by the system: a memory-only file, a deleted
-      file or a scratch file mapped into PHP-FPM still shows.
+      file or a scratch file mapped into PHP-FPM still shows. Code a script
+      maps the same way (PHP's FFI) looks the same and is let through too.
     owner: Compromise Checker defaults
     expires: never
   - id: base-efi-directory-mode

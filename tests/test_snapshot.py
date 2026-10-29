@@ -997,6 +997,13 @@ def test_web_served_reads_nginx_and_apache_folders():
         ("scriptalias", "/usr/lib/cgi-bin/"),
         ("alias", "/srv/my docs"),
     ]
+    # A # inside quotes is part of the path; includes are kept for the check.
+    assert web_served(
+        "/etc/nginx/sites-available/b", ['root "/srv/a#b"; # old', "include snippets/x.conf;"]
+    ) == [("root", "/srv/a#b"), ("include", "snippets/x.conf")]
+    assert web_served("/etc/apache2/apache2.conf", ["IncludeOptional sites-enabled/*.conf"]) == [
+        ("includeoptional", "sites-enabled/*.conf")
+    ]
     # PHP-FPM serves nothing itself.
     assert web_served("/etc/php/8.4/fpm/pool.d/www.conf", ["chdir = /var/www"]) == []
 

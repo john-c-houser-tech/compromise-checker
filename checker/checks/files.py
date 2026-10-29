@@ -29,6 +29,11 @@ SECRET_FILES = {".env", ".htpasswd", ".git", ".svn", ".user.ini"}
 # the ports where another program would serve files they don't know about.
 WEB_SERVERS = {"nginx", "apache2", "httpd"}
 WEB_PORTS = {80, 443, 8080, 8443}
+# Programs that serve files themselves, on any port (php -S, a Node or
+# Python server behind nginx's proxy_pass): what they serve isn't known.
+APP_SERVERS = re.compile(
+    r"^(?:php[\d.]*|node(?:js)?|python[\d.]*|ruby[\d.]*|java|deno|bun|uwsgi|gunicorn.*|puma.*|unicorn.*)$"
+)
 
 
 def _leaves(path: str, item: dict) -> bool:
@@ -176,11 +181,14 @@ def dev(context: Context) -> list[Finding]:
 
 
 def served_folders(context: Context) -> list[str] | None:
-    """The folders the web servers serve, from their configuration; None
-    when that can't be told, and then everything in a web root counts as
-    served: the configuration not fully collected or naming no folder, a
-    folder written with a variable or relative to the server's prefix, or a
-    web port held by a program other than nginx or Apache."""
+    """The folders the web servers serve, from their configuration, with
+    the links into and out of them followed; None when that can't be told,
+    and then everything in a web root counts as served: the configuration
+    not fully collected or naming no folder, a folder written with a
+    variable or relative to the server's prefix, a configuration file
+    included from outside /etc (an application's own), a web port held by a
+    program other than nginx or Apache, or a program that serves files
+    itself listening anywhere."""
     config = context.snapshot.sections.get("web_config")
     served = context.snapshot.sections.get("web_served")
     listeners = context.snapshot.sections.get("listeners")
@@ -191,18 +199,71 @@ def served_folders(context: Context) -> list[str] | None:
     for key, item in listeners.items.items():
         protocol, address = (key.split(" ") + [""])[:2]
         port = address.rsplit(":", 1)[-1]
-        if protocol.startswith("tcp") and port.isdigit() and int(port) in WEB_PORTS:
-            programs = set(item.get("programs") or [])
-            if not programs or programs - WEB_SERVERS:
-                return None
-    folders = [str(item.get("folder") or "") for item in served.items.values()]
-    if any(not f.startswith("/") or "$" in f for f in folders):
+        programs = set(item.get("programs") or [])
+        if not protocol.startswith("tcp"):
+            continue
+        if any(APP_SERVERS.match(p) for p in programs):
+            return None
+        if port.isdigit() and int(port) in WEB_PORTS and (not programs or programs - WEB_SERVERS):
+            return None
+    entries = list(served.items.values())
+    if any(
+        e.get("directive") in ("include", "includeoptional")
+        and str(e.get("folder") or "").startswith("/")
+        and not str(e["folder"]).startswith("/etc/")
+        for e in entries
+    ):
         return None
-    return sorted({posixpath.normpath(f) for f in folders})
+    folders = {str(e.get("folder") or "") for e in entries if e.get("directive") not in _INCLUDES}
+    if not folders or any(not f.startswith("/") or "$" in f for f in folders):
+        return None
+    folders = {posixpath.normpath(f) for f in folders}
+    # The collector lists real paths and doesn't follow links: a served
+    # folder through a link (current -> releases/7), and what a link in a
+    # served folder leads to (public/bundles/x -> vendor/...), are served.
+    links = {
+        path: posixpath.normpath(posixpath.join(posixpath.dirname(path), str(item["link_target"])))
+        for path, item in context.items("web_files").items()
+        if item.get("type") == "l" and item.get("link_target")
+    }
+    for _ in range(8):  # links to links, a few deep
+        more = {target for link, target in links.items() if _inside(link, folders)}
+        more |= {
+            target + f[len(link) :]
+            for f in folders
+            for link, target in links.items()
+            if f.startswith(link + "/")
+        }
+        if more <= folders:
+            break
+        folders |= more
+    return sorted(folders)
 
 
-def _inside(path: str, folders: list[str]) -> bool:
+_INCLUDES = ("include", "includeoptional")
+# At most this many new or changed scripts in an application, outside what
+# is served, is a small edit, not a deploy or an update.
+SMALL_EDIT = 3
+
+
+def _inside(path: str, folders) -> bool:
     return any(path == f or path.startswith(f.rstrip("/") + "/") for f in folders)
+
+
+def _judged(items: dict[str, dict], served: list[str] | None) -> set[str]:
+    """The applications (folders directly in a web root) whose files can be
+    judged by what is served: a served folder lies in it, and some file was
+    listed inside that folder, so the folder as written is where the files
+    are. Any other application keeps every file counted as served."""
+    if served is None:
+        return set()
+    judged = set()
+    for path, item in items.items():
+        if _inside(path, served):
+            application = _group(item, path)
+            if any(_inside(f, [application]) for f in served):
+                judged.add(application)
+    return judged
 
 
 def _outside_group(item: dict, path: str) -> str:
@@ -229,17 +290,25 @@ def web(context: Context) -> list[Finding]:
         if None not in fields.get("sha256", [None])
     }
     uncertain = context.uncertain("web_files")
+    items = context.items("web_files")
     served = served_folders(context)
-    outside: dict[str, list[str]] = {}
-    for path, item in context.items("web_files").items():
+    judged = _judged(items, served)
+    outside: dict[tuple[str, str], list[str]] = {}
+    for path, item in items.items():
         name = path.rsplit("/", 1)[-1]
         double = not SCRIPT.search(name) and HANDLED.search(name) is not None
         script = double or SCRIPT.search(name) is not None or item.get("kind") == "script"
-        if served is not None and not _inside(path, served) and item.get("kind") != "elf":
+        if (
+            _group(item, path) in judged
+            and not _inside(path, served or [])
+            and item.get("kind") != "elf"
+        ):
             # No request reaches it, but the application may run it (its
             # libraries, its compiled cache): a deploy rewrites hundreds.
             if (path in added or path in edited) and (script or _runnable(item)):
-                outside.setdefault(_outside_group(item, path), []).append(path)
+                outside.setdefault((_group(item, path), _outside_group(item, path)), []).append(
+                    path
+                )
             continue
         reason = None
         if path in added and (script or _runnable(item)):
@@ -288,15 +357,28 @@ def web(context: Context) -> list[Finding]:
                 uncertain=uncertain if path in added or path in edited else None,
             )
         )
-    for group, paths in sorted(outside.items()):
+    per_application: dict[str, int] = {}
+    for (application, _), paths in outside.items():
+        per_application[application] = per_application.get(application, 0) + len(paths)
+    for (application, group), paths in sorted(outside.items()):
         paths.sort()
+        # A deploy rewrites hundreds (a framework's compiled cache with
+        # them); a few files edited and nothing else is what a backdoor
+        # in vendor/autoload.php looks like.
+        few = per_application[application] <= SMALL_EDIT
         findings.append(
             Finding(
                 "files.web",
                 "New or changed scripts outside what the web servers serve",
                 COMPROMISE,
-                "low",
-                f"{len(paths)} in {group} (a deploy or an update does this): "
+                "medium" if few else "low",
+                f"{len(paths)} in {group} "
+                + (
+                    "(and no other change in the application)"
+                    if few
+                    else "(a deploy or an update does this)"
+                )
+                + ": "
                 + ", ".join(p[len(group) :].lstrip("/") for p in paths[:3])
                 + (", …" if len(paths) > 3 else ""),
                 [f"path:{group}"],

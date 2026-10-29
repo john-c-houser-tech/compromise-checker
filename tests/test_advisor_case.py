@@ -25,6 +25,16 @@ sys.path.insert(0, str(Path(__file__).parent / "integration"))
 import golden  # noqa: E402
 
 GOLDEN = golden.cases()
+T = "t"  # a fixed placeholder tag, so expected text can be written out
+
+
+def untag(value):
+    """Text (or JSON) with this file's placeholder tag taken off: USER-1-t is USER-1."""
+    if not isinstance(value, str):
+        value = json.dumps(value, ensure_ascii=False)
+    return re.sub(rf"(HOST|DOMAIN|GROUP|USER|EMAIL|IP|KEY)-(\d+)-{T}\b", r"\1-\2", value)
+
+
 RLO = chr(0x202E)  # right-to-left override
 
 
@@ -125,11 +135,22 @@ def test_every_placeholder_restores(path):
     _, _, built, known = golden_case(path)
     payload, pseudonyms = redact(built, "pseudonymize", known)
     text = json.dumps(payload, ensure_ascii=False)
-    tokens = set(re.findall(r"\b(?:HOST|DOMAIN|USER|EMAIL|IP|KEY)-\d+\b", text))
+    tag = re.escape(pseudonyms.tag)
+    tokens = set(re.findall(rf"\b(?:HOST|DOMAIN|USER|EMAIL|IP|KEY)-\d+-{tag}\b", text))
     assert tokens and tokens == set(pseudonyms.originals)
     for token in tokens:
         assert pseudonyms.restore(f"look at {token}.") == f"look at {pseudonyms.originals[token]}."
     assert pseudonyms.restore("USER-99 did it") == "[unknown USER-99] did it"
+    junk = f"USER-1-{pseudonyms.tag}x"
+    assert pseudonyms.restore(junk) == f"[unknown {junk}]"
+    other = "ffff" if pseudonyms.tag != "ffff" else "eeee"
+    assert pseudonyms.restore(f"USER-1-{other}") == f"[unknown USER-1-{other}]"
+
+
+def test_each_run_gets_its_own_tag():
+    _, _, built, known = golden_case(GOLDEN[0])
+    tags = {redact(built, "pseudonymize", known)[1].tag for _ in range(5)}
+    assert len(tags) > 1
 
 
 @pytest.mark.parametrize("path", GOLDEN, ids=lambda p: p.name.removesuffix(".json.gz"))
@@ -143,10 +164,8 @@ def test_strict_carries_no_names_entities_or_excerpts(path):
         "findings",
         "omitted",
         "chains",
-        "from_host",
-        "address_kinds",
+        "coverage_gaps",
     }
-    assert set(payload["from_host"]) == {"coverage_gaps"}
     assert "host" not in payload
     for finding in payload["findings"]:
         assert set(finding) == {
@@ -161,6 +180,11 @@ def test_strict_carries_no_names_entities_or_excerpts(path):
         }
     for chain in payload["chains"]:
         assert set(chain) == {"chain", "findings"}
+    from checker.advisor.case import GAP_KINDS
+
+    kinds = {k.split("{")[0] for _, k in GAP_KINDS} | {"another gap"}
+    for gap in payload["coverage_gaps"]:
+        assert any(gap.startswith(k) for k in kinds), gap
 
 
 def test_none_is_the_case_as_built():
@@ -230,8 +254,8 @@ def test_injection_text_stays_data_in_its_place():
 def test_hidden_characters_are_escaped_and_such_names_still_replaced():
     name = "ad" + RLO + "min"
     built, known = case_of(f"{name} has UID 0", accounts=(("root", 0), (name, 0)))
-    payload, _ = redact(built, "pseudonymize", known)
-    summary = payload["findings"][0]["from_host"]["summary"]
+    payload, _ = redact(built, "pseudonymize", known, tag=T)
+    summary = untag(payload["findings"][0]["from_host"]["summary"])
     assert summary == "USER-1 has UID 0"
     assert RLO not in json.dumps(payload, ensure_ascii=False)
 
@@ -243,42 +267,47 @@ def test_bidi_text_is_shown_escaped():
 
 
 def test_addresses_in_their_forms():
-    p = Pseudonyms(Known())
-    text = p.apply(
-        "from 8.8.8.8 port 22, ip-8-8-8-8.example, 10.0.0.5, [2606:4700::1111]:443,"
-        " 127.0.0.1:6379, ::1, 0.0.0.0, at 15:47:50, ver 300.1.1.1"
+    p = Pseudonyms(Known(), tag=T)
+    text = untag(
+        p.apply(
+            "from 8.8.8.8 port 22, ip-8-8-8-8.example, 10.0.0.5, [2606:4700::1111]:443,"
+            " 127.0.0.1:6379, ::1, 0.0.0.0, at 15:47:50, ver 300.1.1.1"
+        )
     )
     assert text == (
         "from IP-1 port 22, ip-IP-1.example, IP-2, [IP-3]:443,"
         " 127.0.0.1:6379, ::1, 0.0.0.0, at 15:47:50, ver 300.1.1.1"
     )
-    assert p.address_kinds == {"IP-2": "private or reserved"}
+    assert p.address_kinds == {"IP-2-t": "private or reserved"}
 
 
 def test_one_address_however_written_is_one_placeholder():
-    p = Pseudonyms(Known())
-    assert p.apply("2606:4700::1111 and 2606:4700:0:0:0:0:0:1111") == "IP-1 and IP-1"
+    p = Pseudonyms(Known(), tag=T)
+    assert untag(p.apply("2606:4700::1111 and 2606:4700:0:0:0:0:0:1111")) == "IP-1 and IP-1"
 
 
 def test_domains_hosts_and_emails():
     snapshot = snapshot_with((("root", 0), ("jch", 1000)))
     known = known_identifiers("web01", snapshot, [], [])
     assert known.domains == {"it.example.gov"}
-    p = Pseudonyms(known)
+    p = Pseudonyms(known, tag=T)
     assert (
-        p.apply(
-            "WEB01.IT.EXAMPLE.GOV shop.it.example.gov it.example.gov h:3f9a1c2e@it.example.gov"
-            " other.example.org /home/jch jch@web01 jchx"
+        untag(
+            p.apply(
+                "WEB01.IT.EXAMPLE.GOV shop.it.example.gov it.example.gov h:3f9a1c2e@it.example.gov"
+                " other.example.org /home/jch jch@web01 jchx web01.localdomain"
+            )
         )
-        == "HOST-1 HOST-2 DOMAIN-1 EMAIL-1 other.example.org /home/USER-1 USER-1@HOST-3 jchx"
+        == "HOST-1 HOST-2 DOMAIN-1 EMAIL-1 other.example.org /home/USER-1 USER-1@HOST-1"
+        " jchx HOST-1"
     )
 
 
 def test_system_accounts_and_short_words_are_kept():
     snapshot = snapshot_with((("root", 0), ("bin", 2), ("www-data", 33), ("a", 1001)))
     known = known_identifiers("web01", snapshot, [], [])
-    p = Pseudonyms(known)
-    assert p.apply("root ran /usr/bin/id as www-data") == "root ran /usr/bin/id as www-data"
+    p = Pseudonyms(known, tag=T)
+    assert untag(p.apply("root ran /usr/bin/id as www-data")) == "root ran /usr/bin/id as www-data"
     assert known.accounts == {"a"}  # on the host, so a person's: replaced even when short
 
 
@@ -346,8 +375,8 @@ def pseudonymize(text, accounts=(), hosts=(), domains=(), groups=(), system=None
     known.groups = set(groups)
     if system is not None:
         known.system |= set(system)
-    p = Pseudonyms(known)
-    return p.apply(text), p
+    p = Pseudonyms(known, tag=T)
+    return untag(p.apply(text)), p
 
 
 def test_a_chain_among_the_top_contributors_doesnt_crash():
@@ -380,7 +409,7 @@ def test_the_hosts_own_name_is_replaced_however_spelled(name):
     known = known_identifiers(name, snapshot, assessment["findings"], [])
     payload, _ = redact(built, "pseudonymize", known)
     assert name not in json.dumps(payload, ensure_ascii=False)
-    assert re.fullmatch(r"HOST-\d+", payload["host"]["name"])
+    assert re.fullmatch(r"HOST-\d+-[0-9a-f]{4}", payload["host"]["name"])
 
 
 @pytest.mark.parametrize(
@@ -461,9 +490,15 @@ def test_key_comments_user_at_machine():
 
 
 def test_a_placeholder_planted_on_the_host_cant_be_restored_as_a_person():
-    out, p = pseudonymize("USER-1 logged in, then jsmith", accounts={"jsmith"})
-    assert out == f"USER{chr(0x2011)}1 logged in, then USER-1"
-    assert p.restore(out) == f"USER{chr(0x2011)}1 logged in, then jsmith"
+    known = Known(accounts={"jsmith"})
+    p = Pseudonyms(known, tag="7f3a")
+    out = p.apply("USER-1 logged in, then USER-1-7f3a, then jsmith")
+    hyphen = chr(0x2011)
+    assert out == f"USER{hyphen}1 logged in, then USER{hyphen}1{hyphen}7f3a, then USER-1-7f3a"
+    # Even if the model writes the planted text back with plain hyphens:
+    assert p.restore("USER-1 logged in, then USER-1-7f3a") == (
+        "[unknown USER-1] logged in, then jsmith"
+    )
 
 
 def test_generic_and_short_names_dont_wreck_the_text():
@@ -503,9 +538,9 @@ def test_strict_sends_only_the_kind_of_each_gap():
         "containers not inventoried: jsmith-db",
     ]
     payload, _ = redact(built, "strict", known)
-    assert payload["from_host"]["coverage_gaps"] == [
+    assert payload["coverage_gaps"] == [
+        "an error in a module: auth_log",
         "containers not inventoried",
-        "error in auth_log",
     ]
 
 
@@ -554,9 +589,9 @@ def test_the_group_is_replaced():
     known = known_identifiers(
         "web01", snapshot, [], [], inventory=[("web01", "192.0.2.1", "scanner", "elections")]
     )
-    payload, _ = redact(built, "pseudonymize", known)
-    assert payload["host"]["group"] == "GROUP-1"
-    assert payload["assessment"]["prior_source"] == "group GROUP-1"
+    payload, _ = redact(built, "pseudonymize", known, tag=T)
+    assert untag(payload["host"]["group"]) == "GROUP-1"
+    assert untag(payload["assessment"]["prior_source"]) == "group GROUP-1"
 
 
 def test_a_name_cut_short_goes_too():
@@ -564,3 +599,133 @@ def test_a_name_cut_short_goes_too():
     assert out == "ran by [cut]…"
     assert pseudonymize("from 203.0.11" + "…")[0] == "from [cut]…"
     assert pseudonymize("an ordinary wo" + "…")[0] == "an ordinary wo…"
+
+
+# --- Regressions from the second review of 3.1 ------------------------------------------------
+
+
+def test_a_hosts_short_and_long_names_are_one_host():
+    snapshot = snapshot_with((("root", 0),))
+    snapshot.meta["hostname"] = "prod-db.it.example.gov"
+    known = known_identifiers("prod-db.it.example.gov", snapshot, [], [])
+    out, _ = pseudonymize(
+        "Oct 29 14:45:49 prod-db sshd[1]: Accepted; 127.0.1.1 prod-db.localdomain prod-db;"
+        " prod-db.local prod-db.it.example.gov",
+        hosts=known.hosts,
+        domains=known.domains,
+    )
+    assert out == (
+        "Oct 29 14:45:49 HOST-1 sshd[1]: Accepted; 127.0.1.1 HOST-1 HOST-1; HOST-1 HOST-1"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("sudo:x:27:abba", "sudo:x:27:USER-1"),
+        ("abba:x:1001:1001:Abba Dee,,,:/home/abba:/bin/bash",
+         "USER-1:x:1001:1001:USER-1 Dee,,,:/home/USER-1:/bin/bash"),
+        ("127.0.0.1:abba", "127.0.0.1:USER-1"),
+        ("1001:abba and .abba", "1001:USER-1 and .USER-1"),
+        ("x 10:dc01", "x 10:HOST-1"),
+    ],
+)  # fmt: skip
+def test_a_run_that_is_no_address_hides_no_name(text, expected):
+    out, _ = pseudonymize(text, accounts={"abba"}, hosts={"dc01"})
+    assert out == expected
+
+
+def test_os_and_kernel_are_host_text_too():
+    snapshot = snapshot_with((("root", 0), ("jsmith", 1000)))
+    snapshot.sections["host"].items["os"] = {"id": "USER-1", "version_id": "jsmith"}
+    snapshot.sections["host"].items["kernel"] = {"release": "6.8.0-10.0.0.5-generic"}
+    assessment = one_finding("x")
+    built = build_case("web01", assessment, [], snapshot, {})
+    known = known_identifiers("web01", snapshot, assessment["findings"], [])
+    payload, pseudonyms = redact(built, "pseudonymize", known)
+    hyphen = chr(0x2011)
+    assert payload["host"]["os"] == f"USER{hyphen}1 USER-1-{pseudonyms.tag}"
+    assert "10.0.0.5" not in payload["host"]["kernel"]
+    assert pseudonyms.restore("the os is USER-1") == "the os is [unknown USER-1]"
+
+
+def test_strict_holds_only_the_codes_own_words():
+    built, known = case_of("x")
+    built["from_host"]["coverage_gaps"] = [
+        "web_logs /var/log/nginx/shop.example.org-access.log: cut short (cap)",
+        "something new from a later version: /home/jsmith",
+    ]
+    payload, _ = redact(built, "strict", known)
+    assert payload["coverage_gaps"] == ["a source was cut short: web_logs", "another gap"]
+    for text in strings(payload):
+        assert re.fullmatch(r"[A-Za-z0-9_ .:'-]*", text), text
+
+
+@pytest.mark.parametrize("before", ["for 'jsm", 'user "jsmi', "<jsmit", "-jsm"])
+def test_a_cut_name_after_punctuation_goes_too(before):
+    out, _ = pseudonymize(before + "…", accounts={"jsmith"})
+    assert "jsm" not in out and out.endswith("[cut]…")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("ip_203.0.113.5", "ip_IP-1"),
+        ("host203.0.113.5", "hostIP-1"),
+        ("a2001:db8::1", "aIP-1"),
+        ("_2001:db8::1", "_IP-1"),
+        ("0ubuntu0.24.04.4", "0ubuntu0.24.04.4"),
+    ],
+)
+def test_addresses_glued_to_letters(text, expected):
+    out, p = pseudonymize(text)
+    assert out == expected
+    if "IP-1" in out:
+        assert p.originals[f"IP-1-{T}"] in ("203.0.113.5", "2001:db8::1")
+
+
+def test_an_ambiguous_run_hides_an_address_either_way():
+    out, p = pseudonymize("1.203.0.113.5")
+    assert out in ("1.IP-1", "IP-1.5") and "203.0.113" not in out
+
+
+def test_restore_finds_tokens_glued_to_lowercase_letters():
+    p = Pseudonyms(Known(), tag="7f3a")
+    out = p.apply("host203.0.113.5")
+    assert out == "hostIP-1-7f3a" and p.restore(out) == "host203.0.113.5"
+
+
+def test_a_fingerprint_must_end_where_it_should():
+    long = "SHA256:" + "A" * 43 + "5"
+    assert pseudonymize(long)[0] == long  # not a fingerprint: no half-match token
+    assert pseudonymize("SHA256:" + "A" * 43 + " x")[0] == "KEY-1 x"
+
+
+def test_ordinary_word_accounts_and_titles():
+    out, _ = pseudonymize("Failed password for invalid user git from x", accounts={"git"})
+    assert out == "Failed password for invalid user USER-1 from x"
+    built, known = case_of("x", accounts=(("root", 0), ("user", 1000)))
+    built["findings"][0]["title"] = "A user's own systemd unit"
+    payload, _ = redact(built, "pseudonymize", known)
+    assert payload["findings"][0]["title"] == "A user's own systemd unit"
+
+
+def test_sudo_lines_with_short_names():
+    out, _ = pseudonymize(
+        "sudo: bob : TTY=pts/0 ; PWD=/srv/bob ; USER=root ; COMMAND=/bin/id; bob ran it",
+        accounts={"bob"},
+    )
+    assert out == (
+        "sudo: USER-1 : TTY=pts/0 ; PWD=/srv/USER-1 ; USER=root ; COMMAND=/bin/id; USER-1 ran it"
+    )
+    out, _ = pseudonymize("sudo: log : TTY=pts/0 ; PWD=/var/log ; USER=log", accounts={"log"})
+    assert out == "sudo: USER-1 : TTY=pts/0 ; PWD=/var/log ; USER=USER-1"
+
+
+def test_a_dotted_name_without_a_domain_gives_no_domain():
+    snapshot = snapshot_with((("root", 0),))
+    snapshot.meta["hostname"] = "ubuntu24.04"
+    known = known_identifiers("ubuntu24.04", snapshot, [], [])
+    assert known.hosts == {"ubuntu24.04"} and known.domains == set()
+    out, _ = pseudonymize("ubuntu 24.04, 1.11.0-4.1ubuntu0.24.04", hosts=known.hosts)
+    assert out == "ubuntu 24.04, 1.11.0-4.1ubuntu0.24.04"

@@ -279,7 +279,5 @@
  ],
  "omitted": null,
  "chains": [],
- "from_host": {
-  "coverage_gaps": []
- }
+ "coverage_gaps": []
 }

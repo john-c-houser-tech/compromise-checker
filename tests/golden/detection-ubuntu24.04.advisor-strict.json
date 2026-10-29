@@ -846,7 +846,5 @@
    ]
   }
  ],
- "from_host": {
-  "coverage_gaps": []
- }
+ "coverage_gaps": []
 }

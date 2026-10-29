@@ -2,7 +2,7 @@
  "case_format": 1,
  "redaction": "pseudonymize",
  "host": {
-  "name": "HOST-1",
+  "name": "HOST-1-0000",
   "group": null,
   "os": "ubuntu 24.04",
   "kernel": "6.8.0-134-generic"
@@ -46,15 +46,15 @@
    "suppressed_by": null,
    "title": "An account other than root has UID 0",
    "from_host": {
-    "summary": "USER-1 has UID 0: it is root under another name",
+    "summary": "USER-1-0000 has UID 0: it is root under another name",
     "entities": [
-     "account:USER-1"
+     "account:USER-1-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "accounts",
-      "text": "USER-1: gid=0 home=/home/USER-1 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=0"
+      "text": "USER-1-0000: gid=0 home=/home/USER-1-0000 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=0"
      }
     ],
     "uncertain": null,
@@ -100,16 +100,16 @@
    "suppressed_by": null,
    "title": "A new account whose primary group is root-equivalent",
    "from_host": {
-    "summary": "USER-1: primary group root (GID 0)",
+    "summary": "USER-1-0000: primary group root (GID 0)",
     "entities": [
-     "account:USER-1",
+     "account:USER-1-0000",
      "group:root"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "accounts, since the baseline",
-      "text": "added: USER-1: gid=0 home=/home/USER-1 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=0"
+      "text": "added: USER-1-0000: gid=0 home=/home/USER-1-0000 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=0"
      }
     ],
     "uncertain": null,
@@ -447,16 +447,16 @@
    "suppressed_by": null,
    "title": "A new authorized SSH key",
    "from_host": {
-    "summary": "USER-2: ssh-ed25519 KEY-1 in /home/USER-2/.ssh/authorized_keys",
+    "summary": "USER-2-0000: ssh-ed25519 KEY-1-0000 in /home/USER-2-0000/.ssh/authorized_keys",
     "entities": [
-     "account:USER-2",
-     "key:KEY-1"
+     "account:USER-2-0000",
+     "key:KEY-1-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "authorized_keys, since the baseline",
-      "text": "added: USER-2 KEY-1 /home/USER-2/.ssh/authorized_keys: account=USER-2 comment=cc-proof-admin fingerprint=KEY-1 key_bytes=51 path=/home/USER-2/.ssh/authorized_keys type=ssh-ed25519"
+      "text": "added: USER-2-0000 KEY-1-0000 /home/USER-2-0000/.ssh/authorized_keys: account=USER-2-0000 comment=cc-proof-admin fingerprint=KEY-1-0000 key_bytes=51 path=/home/USER-2-0000/.ssh/authorized_keys type=ssh-ed25519"
      }
     ],
     "uncertain": null,
@@ -502,16 +502,16 @@
    "suppressed_by": null,
    "title": "A new sudo rule without a password (NOPASSWD)",
    "from_host": {
-    "summary": "/etc/sudoers.d/cc-admin: USER-2 ALL=(ALL) NOPASSWD: ALL",
+    "summary": "/etc/sudoers.d/cc-admin: USER-2-0000 ALL=(ALL) NOPASSWD: ALL",
     "entities": [
      "path:/etc/sudoers.d/cc-admin",
-     "account:USER-2"
+     "account:USER-2-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "sudo_rules, since the baseline",
-      "text": "added: /etc/sudoers.d/cc-admin: USER-2 ALL=(ALL) NOPASSWD: ALL: path=/etc/sudoers.d/cc-admin"
+      "text": "added: /etc/sudoers.d/cc-admin: USER-2-0000 ALL=(ALL) NOPASSWD: ALL: path=/etc/sudoers.d/cc-admin"
      }
     ],
     "uncertain": null,
@@ -740,16 +740,16 @@
    "suppressed_by": null,
    "title": "A new authorized SSH key",
    "from_host": {
-    "summary": "root: ssh-ed25519 KEY-2 in /root/.ssh/authorized_keys",
+    "summary": "root: ssh-ed25519 KEY-2-0000 in /root/.ssh/authorized_keys",
     "entities": [
      "account:root",
-     "key:KEY-2"
+     "key:KEY-2-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "authorized_keys, since the baseline",
-      "text": "added: root KEY-2 /root/.ssh/authorized_keys: account=root comment=cc-proof-backdoor fingerprint=KEY-2 key_bytes=51 path=/root/.ssh/authorized_keys type=ssh-ed25519"
+      "text": "added: root KEY-2-0000 /root/.ssh/authorized_keys: account=root comment=cc-proof-backdoor fingerprint=KEY-2-0000 key_bytes=51 path=/root/.ssh/authorized_keys type=ssh-ed25519"
      }
     ],
     "uncertain": null,
@@ -768,16 +768,16 @@
    "suppressed_by": null,
    "title": "A new authorized SSH key",
    "from_host": {
-    "summary": "root: ssh-ed25519 KEY-3 in /root/.ssh/authorized_keys",
+    "summary": "root: ssh-ed25519 KEY-3-0000 in /root/.ssh/authorized_keys",
     "entities": [
      "account:root",
-     "key:KEY-3"
+     "key:KEY-3-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "authorized_keys, since the baseline",
-      "text": "added: root KEY-3 /root/.ssh/authorized_keys: account=root comment=root@localhost fingerprint=KEY-3 key_bytes=51 path=/root/.ssh/authorized_keys type=ssh-ed25519"
+      "text": "added: root KEY-3-0000 /root/.ssh/authorized_keys: account=root comment=root@localhost fingerprint=KEY-3-0000 key_bytes=51 path=/root/.ssh/authorized_keys type=ssh-ed25519"
      }
     ],
     "uncertain": null,
@@ -869,16 +869,16 @@
    "suppressed_by": null,
    "title": "An account or group was changed (from the logs)",
    "from_host": {
-    "summary": "created: USER-1 UID 0",
+    "summary": "created: USER-1-0000 UID 0",
     "entities": [
-     "account:USER-1"
+     "account:USER-1-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "when": "2026-10-29T15:50:50",
       "where": "auth_journal",
-      "text": "new user: name=USER-1, UID=0, GID=0, home=/home/USER-1, shell=/bin/bash, from=none"
+      "text": "new user: name=USER-1-0000, UID=0, GID=0, home=/home/USER-1-0000, shell=/bin/bash, from=none"
      }
     ],
     "uncertain": null,
@@ -975,9 +975,9 @@
    "suppressed_by": null,
    "title": "A program other than the cloud agent reached the metadata address",
    "from_host": {
-    "summary": "sleep (pid 11422, root, /usr/bin/sleep): connected to IP-1 port 80, established",
+    "summary": "sleep (pid 11422, root, /usr/bin/sleep): connected to IP-1-0000 port 80, established",
     "entities": [
-     "address:IP-1",
+     "address:IP-1-0000",
      "account:root",
      "pid:11422",
      "program:sleep",
@@ -1127,7 +1127,7 @@
      {
       "when": "2026-10-29T15:50:54",
       "where": "auth_journal",
-      "text": "Accepted publickey for root from 127.0.0.1 port 50568 ssh2: ED25519 KEY-3"
+      "text": "Accepted publickey for root from 127.0.0.1 port 50568 ssh2: ED25519 KEY-3-0000"
      }
     ],
     "uncertain": null,
@@ -1174,13 +1174,13 @@
    "suppressed_by": null,
    "title": "Firewall rules added since the baseline",
    "from_host": {
-    "summary": "1 rule line(s) added: nft: [ip raw / chain PREROUTING] ip daddr IP-2 iifname != \"docker0\" counter drop",
+    "summary": "1 rule line(s) added: nft: [ip raw / chain PREROUTING] ip daddr IP-2-0000 iifname != \"docker0\" counter drop",
     "entities": [],
     "entities_complete": false,
     "excerpts": [
      {
       "where": "firewall_rules, since the baseline",
-      "text": "added: nft: [ip raw / chain PREROUTING] ip daddr IP-2 iifname != \"docker0\" counter drop: program=nft"
+      "text": "added: nft: [ip raw / chain PREROUTING] ip daddr IP-2-0000 iifname != \"docker0\" counter drop: program=nft"
      }
     ],
     "uncertain": null,
@@ -1254,15 +1254,15 @@
    "suppressed_by": null,
    "title": "A new account",
    "from_host": {
-    "summary": "USER-1 (UID 0, shell /bin/bash)",
+    "summary": "USER-1-0000 (UID 0, shell /bin/bash)",
     "entities": [
-     "account:USER-1"
+     "account:USER-1-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "accounts, since the baseline",
-      "text": "added: USER-1: gid=0 home=/home/USER-1 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=0"
+      "text": "added: USER-1-0000: gid=0 home=/home/USER-1-0000 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=0"
      }
     ],
     "uncertain": null,
@@ -1281,15 +1281,15 @@
    "suppressed_by": null,
    "title": "A new account",
    "from_host": {
-    "summary": "USER-2 (UID 1002, shell /bin/bash)",
+    "summary": "USER-2-0000 (UID 1002, shell /bin/bash)",
     "entities": [
-     "account:USER-2"
+     "account:USER-2-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "accounts, since the baseline",
-      "text": "added: USER-2: gid=1002 home=/home/USER-2 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=1002"
+      "text": "added: USER-2-0000: gid=1002 home=/home/USER-2-0000 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=1002"
      }
     ],
     "uncertain": null,
@@ -1308,16 +1308,16 @@
    "suppressed_by": null,
    "title": "An account or group was changed (from the logs)",
    "from_host": {
-    "summary": "created: USER-2 UID 1002",
+    "summary": "created: USER-2-0000 UID 1002",
     "entities": [
-     "account:USER-2"
+     "account:USER-2-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "when": "2026-10-29T15:51:42",
       "where": "auth_journal",
-      "text": "new user: name=USER-2, UID=1002, GID=1002, home=/home/USER-2, shell=/bin/bash, from=none"
+      "text": "new user: name=USER-2-0000, UID=1002, GID=1002, home=/home/USER-2-0000, shell=/bin/bash, from=none"
      }
     ],
     "uncertain": null,
@@ -1390,15 +1390,15 @@
    "suppressed_by": null,
    "title": "A new startup file",
    "from_host": {
-    "summary": "/home/USER-2/.bash_logout",
+    "summary": "/home/USER-2-0000/.bash_logout",
     "entities": [
-     "path:/home/USER-2/.bash_logout"
+     "path:/home/USER-2-0000/.bash_logout"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "startup, since the baseline",
-      "text": "added: /home/USER-2/.bash_logout: accounts=['USER-2'] ctime=2026-10-29T15:51:42.344092+00:00 gid=1002 home=/home/USER-2 inode=263060 mode=0644 mtime=2024-03-31T08:41:03+00:00 record=home_startup_file sha256=26882b79471c25f945c970f8233d8ce29d54e9d5eedcd2884f88affa84a18f56 size=220 type=- uid=1002"
+      "text": "added: /home/USER-2-0000/.bash_logout: accounts=['USER-2-0000'] ctime=2026-10-29T15:51:42.344092+00:00 gid=1002 home=/home/USER-2-0000 inode=263060 mode=0644 mtime=2024-03-31T08:41:03+00:00 record=home_startup_file sha256=26882b79471c25f945c970f8233d8ce29d54e9d5eedcd2884f88affa84a18f56 size=220 type=- uid=1002"
      }
     ],
     "uncertain": null,
@@ -1417,15 +1417,15 @@
    "suppressed_by": null,
    "title": "A new startup file",
    "from_host": {
-    "summary": "/home/USER-2/.bashrc",
+    "summary": "/home/USER-2-0000/.bashrc",
     "entities": [
-     "path:/home/USER-2/.bashrc"
+     "path:/home/USER-2-0000/.bashrc"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "startup, since the baseline",
-      "text": "added: /home/USER-2/.bashrc: accounts=['USER-2'] ctime=2026-10-29T15:51:42.344092+00:00 gid=1002 home=/home/USER-2 inode=263061 mode=0644 mtime=2024-03-31T08:41:03+00:00 record=home_startup_file sha256=342099da4dd28c394d3f8782d90d7465cb2eaa611193f8f378d6918261cb9bb8 size=3771 type=- uid=1002"
+      "text": "added: /home/USER-2-0000/.bashrc: accounts=['USER-2-0000'] ctime=2026-10-29T15:51:42.344092+00:00 gid=1002 home=/home/USER-2-0000 inode=263061 mode=0644 mtime=2024-03-31T08:41:03+00:00 record=home_startup_file sha256=342099da4dd28c394d3f8782d90d7465cb2eaa611193f8f378d6918261cb9bb8 size=3771 type=- uid=1002"
      }
     ],
     "uncertain": null,
@@ -1444,15 +1444,15 @@
    "suppressed_by": null,
    "title": "A new startup file",
    "from_host": {
-    "summary": "/home/USER-2/.profile",
+    "summary": "/home/USER-2-0000/.profile",
     "entities": [
-     "path:/home/USER-2/.profile"
+     "path:/home/USER-2-0000/.profile"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "startup, since the baseline",
-      "text": "added: /home/USER-2/.profile: accounts=['USER-2'] ctime=2026-10-29T15:51:42.344092+00:00 gid=1002 home=/home/USER-2 inode=263933 mode=0644 mtime=2024-03-31T08:41:03+00:00 record=home_startup_file sha256=28b4a453b68dde64f814e94bab14ee651f4f162e15dd9920490aa1d49f05d2a4 size=807 type=- uid=1002"
+      "text": "added: /home/USER-2-0000/.profile: accounts=['USER-2-0000'] ctime=2026-10-29T15:51:42.344092+00:00 gid=1002 home=/home/USER-2-0000 inode=263933 mode=0644 mtime=2024-03-31T08:41:03+00:00 record=home_startup_file sha256=28b4a453b68dde64f814e94bab14ee651f4f162e15dd9920490aa1d49f05d2a4 size=807 type=- uid=1002"
      }
     ],
     "uncertain": null,
@@ -1528,16 +1528,16 @@
    "suppressed_by": null,
    "title": "A new outgoing destination",
    "from_host": {
-    "summary": "dockerd IP-3/24 port 443 (open at collection)",
+    "summary": "dockerd IP-3-0000/24 port 443 (open at collection)",
     "entities": [
      "program:dockerd",
-     "address:IP-3"
+     "address:IP-3-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "peers, since the baseline",
-      "text": "added: dockerd IP-3/24 port 443: program=dockerd"
+      "text": "added: dockerd IP-3-0000/24 port 443: program=dockerd"
      }
     ],
     "uncertain": null,
@@ -1964,15 +1964,15 @@
    "suppressed_by": null,
    "title": "A user's own systemd unit",
    "from_host": {
-    "summary": "/home/USER-3/.config/systemd/user/proof.service",
+    "summary": "/home/USER-3-0000/.config/systemd/user/proof.service",
     "entities": [
-     "path:/home/USER-3/.config/systemd/user/proof.service"
+     "path:/home/USER-3-0000/.config/systemd/user/proof.service"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "systemd",
-      "text": "/home/USER-3/.config/systemd/user/proof.service: accounts=['USER-3'] ctime=2026-10-29T15:48:54.050623+00:00 gid=0 home=/home/USER-3 inode=262294 mode=0644 mtime=2026-10-29T15:48:54.050623+00:00 nlink=1 record=file sha256=e60d856a4702104ded06244a7ff06f71e2cc2aacc378e7fbba20762a507d56fd size=34 type=- uid=0"
+      "text": "/home/USER-3-0000/.config/systemd/user/proof.service: accounts=['USER-3-0000'] ctime=2026-10-29T15:48:54.050623+00:00 gid=0 home=/home/USER-3-0000 inode=262294 mode=0644 mtime=2026-10-29T15:48:54.050623+00:00 nlink=1 record=file sha256=e60d856a4702104ded06244a7ff06f71e2cc2aacc378e7fbba20762a507d56fd size=34 type=- uid=0"
      }
     ],
     "uncertain": null,
@@ -2184,19 +2184,19 @@
    "category": "compromise indicator",
    "new": false,
    "contribution": 0.0,
-   "suppressed_by": "proof-USER-3-account",
+   "suppressed_by": "proof-USER-3-0000-account",
    "title": "An account or group was changed (from the logs)",
    "from_host": {
-    "summary": "created: USER-3 UID 1001",
+    "summary": "created: USER-3-0000 UID 1001",
     "entities": [
-     "account:USER-3"
+     "account:USER-3-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "when": "2026-10-29T15:48:54",
       "where": "auth_journal",
-      "text": "new user: name=USER-3, UID=1001, GID=1001, home=/home/USER-3, shell=/bin/bash, from=none"
+      "text": "new user: name=USER-3-0000, UID=1001, GID=1001, home=/home/USER-3-0000, shell=/bin/bash, from=none"
      }
     ],
     "uncertain": null,
@@ -2212,19 +2212,19 @@
    "category": "compromise indicator",
    "new": false,
    "contribution": 0.0,
-   "suppressed_by": "proof-USER-4-account",
+   "suppressed_by": "proof-USER-4-0000-account",
    "title": "An account or group was changed (from the logs)",
    "from_host": {
-    "summary": "created: USER-4 UID 1000",
+    "summary": "created: USER-4-0000 UID 1000",
     "entities": [
-     "account:USER-4"
+     "account:USER-4-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "when": "2026-10-29T15:48:47",
       "where": "auth_journal",
-      "text": "new user: name=USER-4, UID=1000, GID=1000, home=/home/USER-4, shell=/bin/sh, from=none"
+      "text": "new user: name=USER-4-0000, UID=1000, GID=1000, home=/home/USER-4-0000, shell=/bin/sh, from=none"
      }
     ],
     "uncertain": null,
@@ -2280,7 +2280,7 @@
      {
       "when": "2026-10-29T15:50:54",
       "where": "auth_journal",
-      "text": "Accepted publickey for root from 127.0.0.1 port 50568 ssh2: ED25519 KEY-3"
+      "text": "Accepted publickey for root from 127.0.0.1 port 50568 ssh2: ED25519 KEY-3-0000"
      }
     ],
     "uncertain": null,
@@ -2299,17 +2299,17 @@
    "suppressed_by": "proof-root-login",
    "title": "A direct root login over SSH",
    "from_host": {
-    "summary": "root from IP-4 (publickey)",
+    "summary": "root from IP-4-0000 (publickey)",
     "entities": [
      "account:root",
-     "address:IP-4"
+     "address:IP-4-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "when": "2026-10-29T15:48:00",
       "where": "auth_journal",
-      "text": "Accepted publickey for root from IP-4 port 42278 ssh2: ED25519 KEY-4"
+      "text": "Accepted publickey for root from IP-4-0000 port 42278 ssh2: ED25519 KEY-4-0000"
      }
     ],
     "uncertain": null,
@@ -2383,7 +2383,7 @@
     "F-20",
     "F-24"
    ],
-   "account": "USER-2"
+   "account": "USER-2-0000"
   },
   {
    "chain": "web-shell-used",
@@ -2398,7 +2398,7 @@
  "whitelist_rules": [
   {
    "id": "proof-docker-group",
-   "layer": "host HOST-1",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "account.log_changes",
     "variant": "group_created",
@@ -2409,7 +2409,7 @@
   },
   {
    "id": "proof-docker-dnsmasq-account",
-   "layer": "host HOST-1",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "account.log_changes",
     "variant": "created",
@@ -2420,7 +2420,7 @@
   },
   {
    "id": "proof-at-job-debian",
-   "layer": "host HOST-1",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "persistence.at_jobs",
     "path": "/var/spool/cron/atjobs/*"
@@ -2430,7 +2430,7 @@
   },
   {
    "id": "proof-root-login",
-   "layer": "host HOST-1",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "ssh.login",
     "variant": "root_login",
@@ -2440,23 +2440,23 @@
    "expires": "never"
   },
   {
-   "id": "proof-USER-3-account",
-   "layer": "host HOST-1",
+   "id": "proof-USER-3-0000-account",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "account.log_changes",
-    "account": "USER-3"
+    "account": "USER-3-0000"
    },
-   "reason": "The proof creates USER-3 to give the persistence modules something to find.",
+   "reason": "The proof creates USER-3-0000 to give the persistence modules something to find.",
    "expires": "never"
   },
   {
-   "id": "proof-USER-4-account",
-   "layer": "host HOST-1",
+   "id": "proof-USER-4-0000-account",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "account.log_changes",
-    "account": "USER-4"
+    "account": "USER-4-0000"
    },
-   "reason": "The proof creates the USER-4 account, as docs/USER-4-account.md sets it up.",
+   "reason": "The proof creates the USER-4-0000 account, as docs/USER-4-0000-account.md sets it up.",
    "expires": "never"
   }
  ],
@@ -2466,9 +2466,9 @@
   "notes": []
  },
  "address_kinds": {
-  "IP-1": "link-local",
-  "IP-2": "private or reserved",
-  "IP-3": "private or reserved",
-  "IP-4": "private or reserved"
+  "IP-1-0000": "link-local",
+  "IP-2-0000": "private or reserved",
+  "IP-3-0000": "private or reserved",
+  "IP-4-0000": "private or reserved"
  }
 }

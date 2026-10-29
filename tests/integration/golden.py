@@ -302,7 +302,7 @@ def advisor_text(case: dict[str, Any], result: dict[str, Any], mode: str) -> str
     known = known_identifiers(
         case["host"], snapshots[target], result["findings"], events, result["score"]["chains"]
     )
-    payload, _ = redact(built, mode, known)
+    payload, _ = redact(built, mode, known, tag="0000")  # fixed, so the file is stable
     return json.dumps(payload, indent=1, ensure_ascii=False) + "\n"
 
 

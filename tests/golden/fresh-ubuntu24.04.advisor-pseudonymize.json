@@ -2,7 +2,7 @@
  "case_format": 1,
  "redaction": "pseudonymize",
  "host": {
-  "name": "HOST-1",
+  "name": "HOST-1-0000",
   "group": null,
   "os": "ubuntu 24.04",
   "kernel": "6.8.0-134-generic"
@@ -324,15 +324,15 @@
    "suppressed_by": null,
    "title": "A user's own systemd unit",
    "from_host": {
-    "summary": "/home/USER-1/.config/systemd/user/proof.service",
+    "summary": "/home/USER-1-0000/.config/systemd/user/proof.service",
     "entities": [
-     "path:/home/USER-1/.config/systemd/user/proof.service"
+     "path:/home/USER-1-0000/.config/systemd/user/proof.service"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "where": "systemd",
-      "text": "/home/USER-1/.config/systemd/user/proof.service: accounts=['USER-1'] ctime=2026-10-29T15:48:54.050623+00:00 gid=0 home=/home/USER-1 inode=262294 mode=0644 mtime=2026-10-29T15:48:54.050623+00:00 nlink=1 record=file sha256=e60d856a4702104ded06244a7ff06f71e2cc2aacc378e7fbba20762a507d56fd size=34 type=- uid=0"
+      "text": "/home/USER-1-0000/.config/systemd/user/proof.service: accounts=['USER-1-0000'] ctime=2026-10-29T15:48:54.050623+00:00 gid=0 home=/home/USER-1-0000 inode=262294 mode=0644 mtime=2026-10-29T15:48:54.050623+00:00 nlink=1 record=file sha256=e60d856a4702104ded06244a7ff06f71e2cc2aacc378e7fbba20762a507d56fd size=34 type=- uid=0"
      }
     ],
     "uncertain": null,
@@ -516,19 +516,19 @@
    "category": "compromise indicator",
    "new": true,
    "contribution": 0.0,
-   "suppressed_by": "proof-USER-1-account",
+   "suppressed_by": "proof-USER-1-0000-account",
    "title": "An account or group was changed (from the logs)",
    "from_host": {
-    "summary": "created: USER-1 UID 1001",
+    "summary": "created: USER-1-0000 UID 1001",
     "entities": [
-     "account:USER-1"
+     "account:USER-1-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "when": "2026-10-29T15:48:54",
       "where": "auth_journal",
-      "text": "new user: name=USER-1, UID=1001, GID=1001, home=/home/USER-1, shell=/bin/bash, from=none"
+      "text": "new user: name=USER-1-0000, UID=1001, GID=1001, home=/home/USER-1-0000, shell=/bin/bash, from=none"
      }
     ],
     "uncertain": null,
@@ -544,19 +544,19 @@
    "category": "compromise indicator",
    "new": true,
    "contribution": 0.0,
-   "suppressed_by": "proof-USER-2-account",
+   "suppressed_by": "proof-USER-2-0000-account",
    "title": "An account or group was changed (from the logs)",
    "from_host": {
-    "summary": "created: USER-2 UID 1000",
+    "summary": "created: USER-2-0000 UID 1000",
     "entities": [
-     "account:USER-2"
+     "account:USER-2-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "when": "2026-10-29T15:48:47",
       "where": "auth_journal",
-      "text": "new user: name=USER-2, UID=1000, GID=1000, home=/home/USER-2, shell=/bin/sh, from=none"
+      "text": "new user: name=USER-2-0000, UID=1000, GID=1000, home=/home/USER-2-0000, shell=/bin/sh, from=none"
      }
     ],
     "uncertain": null,
@@ -602,17 +602,17 @@
    "suppressed_by": "proof-root-login",
    "title": "A direct root login over SSH",
    "from_host": {
-    "summary": "root from IP-1 (publickey)",
+    "summary": "root from IP-1-0000 (publickey)",
     "entities": [
      "account:root",
-     "address:IP-1"
+     "address:IP-1-0000"
     ],
     "entities_complete": true,
     "excerpts": [
      {
       "when": "2026-10-29T15:48:00",
       "where": "auth_journal",
-      "text": "Accepted publickey for root from IP-1 port 42278 ssh2: ED25519 KEY-1"
+      "text": "Accepted publickey for root from IP-1-0000 port 42278 ssh2: ED25519 KEY-1-0000"
      }
     ],
     "uncertain": null,
@@ -682,7 +682,7 @@
  "whitelist_rules": [
   {
    "id": "proof-docker-group",
-   "layer": "host HOST-1",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "account.log_changes",
     "variant": "group_created",
@@ -693,7 +693,7 @@
   },
   {
    "id": "proof-docker-dnsmasq-account",
-   "layer": "host HOST-1",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "account.log_changes",
     "variant": "created",
@@ -704,7 +704,7 @@
   },
   {
    "id": "proof-at-job-debian",
-   "layer": "host HOST-1",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "persistence.at_jobs",
     "path": "/var/spool/cron/atjobs/*"
@@ -714,7 +714,7 @@
   },
   {
    "id": "proof-root-login",
-   "layer": "host HOST-1",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "ssh.login",
     "variant": "root_login",
@@ -724,23 +724,23 @@
    "expires": "never"
   },
   {
-   "id": "proof-USER-1-account",
-   "layer": "host HOST-1",
+   "id": "proof-USER-1-0000-account",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "account.log_changes",
-    "account": "USER-1"
+    "account": "USER-1-0000"
    },
-   "reason": "The proof creates USER-1 to give the persistence modules something to find.",
+   "reason": "The proof creates USER-1-0000 to give the persistence modules something to find.",
    "expires": "never"
   },
   {
-   "id": "proof-USER-2-account",
-   "layer": "host HOST-1",
+   "id": "proof-USER-2-0000-account",
+   "layer": "host HOST-1-0000",
    "match": {
     "check": "account.log_changes",
-    "account": "USER-2"
+    "account": "USER-2-0000"
    },
-   "reason": "The proof creates the USER-2 account, as docs/USER-2-account.md sets it up.",
+   "reason": "The proof creates the USER-2-0000 account, as docs/USER-2-0000-account.md sets it up.",
    "expires": "never"
   }
  ],
@@ -750,6 +750,6 @@
   "notes": []
  },
  "address_kinds": {
-  "IP-1": "private or reserved"
+  "IP-1-0000": "private or reserved"
  }
 }

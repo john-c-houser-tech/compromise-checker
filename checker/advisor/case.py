@@ -18,25 +18,28 @@ Redaction (DESIGN.md §3.5, policy §9):
   path), host names (the host's own and the inventory's, whatever their
   spelling, names under the host's domain, remote names in log fields,
   the host part of user@host), the host's group, email addresses, IP
-  addresses and SSH key fingerprints become USER-n, HOST-n, DOMAIN-n,
-  GROUP-n, EMAIL-n, IP-n and KEY-n. Placeholders are made fresh for each
-  run and never stored (decision 2); `restore` turns them back in the
-  answer. Text on the host already shaped like a placeholder is changed
-  first (its hyphen becomes U+2011), so a planted "USER-1" can't be
-  restored as a real person. Loopback and unspecified addresses are kept;
-  private and reserved ones are marked as such.
+  addresses and SSH key fingerprints become placeholders such as
+  USER-2-7f3a (USER, HOST, DOMAIN, GROUP, EMAIL, IP, KEY), made fresh for
+  each run with a random tag and never stored (decision 2); `restore`
+  turns them back in the answer. A host's short and full names are one
+  host. Text on the host already shaped like a placeholder is changed
+  first (its hyphens become U+2011), and can't guess the tag anyway, so it
+  can't pass for a placeholder or be restored as a person. Loopback and
+  unspecified addresses are kept; private and reserved ones are marked.
 - *strict*: the kinds of finding, their counts and scores, and the kinds
-  of coverage gap (the gap's text up to its first colon, pseudonymized);
-  no names, addresses, excerpts or other host text.
+  of coverage gap (from a fixed list, GAP_KINDS): only the code's own
+  words, no host text at all.
 - *none*: as built (after the collector's secret masking).
 
 Limits: names a host mentions only in free text (another company's domain
-in a log line, a person's name in a comment) are not recognised; account
-names of three characters or fewer are replaced only where they stand as
-a name (a whole value, after "account:", "/home/", "user=", "for ", "by ",
-or before "@"), so that `log` doesn't turn /var/log into a placeholder;
-and the whitelist's reasons are sent as written apart from the names above
-(so they shouldn't name people).
+in a log line, a person's name in a comment) are not recognised; an
+account whose name is also an ordinary word or path part (ORDINARY_WORDS:
+`log`, `git`, `admin`…) is replaced only where it stands as a name (a
+whole value, after "account:", "/home/", "user=", "USER=", "user ",
+"for ", "by ", "sudo: ", "su: ", "(to ", "owner ", or before "@"), so that
+`log` doesn't turn /var/log into a placeholder; and the whitelist's
+reasons are sent as written apart from the names above (so they
+shouldn't name people).
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ import copy
 import ipaddress
 import json
 import re
+import secrets
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -109,15 +113,14 @@ HOST_FIELDS = ("host", "client", "relay", "address")
 SKIP_PATHS = {
     ("redaction",),
     ("assessment", "band"),
-    ("host", "os"),
-    ("host", "kernel"),
     ("findings", "check"),
     ("findings", "variant"),
     ("findings", "band"),
     ("findings", "category"),
+    ("findings", "title"),
     ("chains", "chain"),
+    ("chains", "title"),
 }
-SHORT_ACCOUNT = 3  # names this long or shorter: replaced only where they stand as names
 
 
 def _text(value: Any, limit: int = MAX_EXCERPT) -> str:
@@ -313,6 +316,13 @@ def _hostname(value: str) -> str | None:
     return None
 
 
+def _qualified(name: str) -> bool:
+    """A name with a domain: dotted, its last label starting with a letter
+    (web01.corp, not ubuntu24.04)."""
+    labels = name.split(".")
+    return len(labels) >= 2 and re.match(r"[^\W\d_]", labels[-1]) is not None
+
+
 def _uid(value: Any) -> int | None:
     try:
         return int(value)
@@ -363,6 +373,9 @@ def known_identifiers(
             except ValueError:
                 if name not in GENERIC_HOSTNAMES:
                     known.hosts.add(name)
+                    # Its short name too: syslog writes it in every line.
+                    if _qualified(name) and name.split(".")[0] not in GENERIC_HOSTNAMES:
+                        known.hosts.add(name.split(".")[0])
 
     for finding in findings:
         for entity in finding.get("entities") or []:
@@ -390,6 +403,8 @@ def known_identifiers(
         if group:
             known.groups.add(group)
     for name in list(known.hosts):
+        if not _qualified(name):
+            continue
         labels = name.split(".")
         if len(labels) >= 3:
             known.domains.add(".".join(labels[1:]))
@@ -401,29 +416,56 @@ def known_identifiers(
 # --- Pseudonyms ----------------------------------------------------------------------------
 
 ALNUM = r"[^\W_]"  # a letter or digit, in any script
-_IPV4_DASHED = r"(?<!\d)(?<!\d-)\d{1,3}(?:-\d{1,3}){3}(?!\d)(?!-\d)"
 # Anything that could hold an address: hex digits, colons and dots, not
-# inside a word. Each candidate is parsed; see Pseudonyms._addresses.
-_ADDRESS_RUN = r"(?<!\w)(?=[0-9A-Fa-f.]*[:.])[0-9A-Fa-f:.]+"
-_DOTTED = re.compile(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)")
-# The last label starts with a letter: root@127.0.0.1 is no email address.
-_EMAIL = r"(?<![\w.%+:-])[\w.%+:-]+@[\w-]+(?:\.[\w-]+)*\.[^\W\d_][\w-]*"
+# right after a letter or digit. Each candidate is parsed; see
+# Pseudonyms._addresses.
+_ADDRESS_RUN = rf"(?<!{ALNUM})(?=[0-9A-Fa-f.]*[:.])[0-9A-Fa-f:.]+"
+_IPV4_DASHED = r"(?<!\d)(?<!\d-)\d{1,3}(?:-\d{1,3}){3}(?!\d)(?!-\d)"
+# A dotted quad glued to letters (host203.0.113.5); one with a leading
+# zero there is a version (0ubuntu0.24.04.4), not an address.
+_GLUED_IPV4 = r"(?<=[^\W\d])(?:\d{1,3}\.){3}\d{1,3}(?!\d)(?!\.\d)"
+_EMAIL = (  # the last label starts with a letter: root@127.0.0.1 is no address
+    r"(?<![\w.%+:-])[\w.%+:-]+@[\w-]+(?:\.[\w-]+)*\.[^\W\d_][\w-]*"
+)
 # user@machine without a dot after the @ (SSH key comments, prompts).
 _AT = (
     r"(?<![\w.%+-])(?P<at_user>[\w.+-]+)@"
     r"(?P<at_host>(?=[\w-]*[^\W\d_])[^\W_][\w-]*)(?![\w-])(?!\.[\w-])"
 )
 # An SSH key's fingerprint links its owner across requests like a name does.
-_KEY = r"SHA256:[A-Za-z0-9+/]{43}=?"
+_KEY = r"SHA256:[A-Za-z0-9+/]{43}=?(?![A-Za-z0-9+/=])"
 # The part of a path that is an account's name.
 _HOME = (
     r"(?:(?<=/home/)|(?<=/var/mail/)|(?<=/var/spool/mail/)|(?<=/var/spool/cron/)"
     r"|(?<=/var/spool/cron/crontabs/))(?P<home>[^/\s\"'`()\[\]:,;=]+)"
 )
+# Where an account name stands as a name: an account whose name is also an
+# ordinary word is replaced only here.
+_NAME_PLACES = (
+    "(?:(?<=account:)|(?<=/home/)|(?<=user=)|(?<=USER=)|(?<=user )|(?<=for )|(?<=by )"
+    "|(?<=sudo: )|(?<=su: )|(?<=\\(to )|(?<=owner ))"
+)
 # Directories of the spools above that are no account's.
 SPOOL_DIRS = {"atjobs", "atspool", "crontabs", "lpd"}
-TOKEN = re.compile(r"\b(HOST|DOMAIN|GROUP|USER|EMAIL|IP|KEY)-(\d+)\b")
-NB_HYPHEN = chr(0x2011)  # a placeholder-shaped string from a host is defanged with it
+# Account names that are also ordinary words or path parts: replaced only
+# where they stand as a name, so that `log` doesn't wreck /var/log.
+ORDINARY_WORDS = {
+    "a", "an", "as", "at", "be", "by", "do", "go", "id", "if", "in", "ip", "is", "it",
+    "me", "my", "no", "of", "ok", "on", "or", "so", "to", "up", "us", "we", "sh", "su",
+    "all", "and", "any", "api", "app", "are", "bin", "box", "but", "can", "dev", "did",
+    "end", "etc", "for", "get", "git", "has", "her", "him", "his", "how", "its", "key",
+    "let", "lib", "log", "man", "may", "new", "not", "now", "off", "old", "one", "opt",
+    "our", "out", "own", "pid", "pts", "put", "ran", "run", "see", "set", "she", "srv",
+    "ssh", "sys", "tcp", "the", "tmp", "too", "top", "try", "tty", "two", "udp", "use",
+    "usr", "var", "was", "way", "web", "who", "why", "yes", "yet", "you", "boot", "data",
+    "user", "test", "deploy", "backup", "mail", "home", "root", "admin", "guest", "build",
+    "proxy", "share", "local", "cache", "spool", "service", "system", "www",
+}  # fmt: skip
+TOKEN_KINDS = ("HOST", "DOMAIN", "GROUP", "USER", "EMAIL", "IP", "KEY")
+# Anything shaped like a placeholder, tagged or not: host text like this is
+# defanged before redaction, so it can't pass for one.
+TOKEN_SHAPED = re.compile(rf"(?<![A-Z])({'|'.join(TOKEN_KINDS)})-(\d+)(?:-([0-9a-z]+))?\b")
+NB_HYPHEN = chr(0x2011)
 CUT = "…"
 
 
@@ -441,7 +483,7 @@ def _alternation(names: set[str]) -> str:
 def _parse(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     """An address, also with leading zeros in IPv4 (203.000.113.009), and
     an IPv4-mapped IPv6 address as its IPv4 address."""
-    if _DOTTED.fullmatch(text):
+    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", text):
         parts = [int(p) for p in text.split(".")]
         return ipaddress.IPv4Address(".".join(map(str, parts))) if max(parts) <= 255 else None
     if ":" not in text:
@@ -453,11 +495,18 @@ def _parse(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     return address.ipv4_mapped or address
 
 
-class Pseudonyms:
-    """One run's placeholders: the same name always gets the same one
-    within the run; a new run starts again (decision 2)."""
+def new_tag() -> str:
+    return secrets.token_hex(2)
 
-    def __init__(self, known: Known) -> None:
+
+class Pseudonyms:
+    """One run's placeholders, like USER-2-7f3a: the same name always gets
+    the same one within the run; a new run starts again, with a new random
+    tag (decision 2), which text planted on a host can't guess, so it can't
+    pass for a placeholder or be restored as a person."""
+
+    def __init__(self, known: Known, tag: str | None = None) -> None:
+        self.tag = tag if tag is not None else new_tag()
         self.originals: dict[str, str] = {}
         self.address_kinds: dict[str, str] = {}
         self._tokens: dict[tuple[str, str], str] = {}
@@ -465,63 +514,77 @@ class Pseudonyms:
         self._system = set(known.system)
         self._domains = {d.lower() for d in known.domains}
         self._groups = set(known.groups)
-        # Every spelling of an account (as collected, as shown, lowercased)
-        # to the account.
+        # Each host's first label, so that a host's short name and its
+        # longer names (prod-db, prod-db.localdomain) are one host.
+        self._host_key = {h.lower(): h.lower().split(".")[0] for h in known.hosts}
+        # Every spelling of an account (as collected, as shown, lowercased).
         self._accounts: dict[str, str] = {}
         for name in known.accounts:
             for form in (name, str(visible(name, 10_000))):
                 self._accounts[form] = name
                 self._accounts.setdefault(form.lower(), name)
-        long = {n for n in known.accounts if len(n) > SHORT_ACCOUNT}
-        short = {n for n in known.accounts if len(n) <= SHORT_ACCOUNT}
-        self._short = {form for n in short for form in (n, str(visible(n, 10_000)))}
+        anywhere = {n for n in known.accounts if n.lower() not in ORDINARY_WORDS}
+        placed = known.accounts - anywhere
+        self._placed = {form for n in placed for form in (n, str(visible(n, 10_000)))}
         self._identifiers = {n.lower() for n in known.accounts | known.hosts | known.domains}
-        parts = [
-            f"(?P<key>{_KEY})",
-            f"(?P<email>{_EMAIL})",
-            f"(?P<at>{_AT})",
-        ]
+        names = []
         if known.hosts or known.domains:
-            names = "|".join(
+            hosts = "|".join(
                 p
                 for p in (
                     f"(?:[\\w-]+\\.)*(?:{_alternation(known.domains)})" if known.domains else "",
-                    _alternation(known.hosts) if known.hosts else "",
+                    f"(?:{_alternation(known.hosts)})(?:\\.[\\w-]+)*" if known.hosts else "",
                 )
                 if p
             )
-            parts.append(f"(?P<host>(?i:(?<!{ALNUM})(?<!\\.)(?:{names})(?!{ALNUM})(?!\\.\\w)))")
-        parts.append(_HOME)
-        if long:
-            parts.append(f"(?P<user>(?i:(?<!{ALNUM})(?:{_alternation(long)})(?!{ALNUM})))")
-        if short:
-            alternation = _alternation(short)
-            parts.append(
-                "(?P<short>(?:(?<=account:)|(?<=/home/)|(?<=user=)|(?<=user )|(?<=for )"
-                f"|(?<=by ))(?:{alternation})(?!{ALNUM})|(?<!{ALNUM})(?:{alternation})(?=@))"
+            names.append(f"(?P<host>(?i:(?<!{ALNUM})(?<!\\.)(?:{hosts})(?!{ALNUM})))")
+        names.append(_HOME)
+        if anywhere:
+            names.append(f"(?P<user>(?i:(?<!{ALNUM})(?:{_alternation(anywhere)})(?!{ALNUM})))")
+        if placed:
+            alternation = _alternation(placed)
+            names.append(
+                f"(?P<placed>{_NAME_PLACES}(?:{alternation})(?!{ALNUM})"
+                f"|(?<!{ALNUM})(?:{alternation})(?=@)|(?<=sudo: )(?:{alternation}))"
             )
         if known.groups:
-            parts.append(f"(?P<group>(?<=group )(?:{_alternation(known.groups)})(?!{ALNUM}))")
-        parts += [f"(?P<addr>{_ADDRESS_RUN})", f"(?P<ip4d>{_IPV4_DASHED})"]
-        self._pattern = re.compile("|".join(parts))
+            names.append(f"(?P<group>(?<=group )(?:{_alternation(known.groups)})(?!{ALNUM}))")
+        # Three passes, each over what the one before left: fingerprints and
+        # email addresses whole; then addresses; then names, so that a run
+        # of hex digits that was no address can't hide a name (abba, dc01).
+        self._shapes = re.compile(f"(?P<key>{_KEY})|(?P<email>{_EMAIL})|(?P<at>{_AT})")
+        self._address_pattern = re.compile(
+            f"(?P<addr>{_ADDRESS_RUN})|(?P<ip4d>{_IPV4_DASHED})|(?P<glued>{_GLUED_IPV4})"
+        )
+        self._names = re.compile("|".join(names)) if names else None
+        self._token_pattern = re.compile(
+            rf"(?<![A-Z])(?:{'|'.join(TOKEN_KINDS)})-\d+-{re.escape(self.tag)}\b"
+        )
 
     def _token(self, kind: str, original: str, key: str | None = None) -> str:
         key = key if key is not None else original
         token = self._tokens.get((kind, key))
         if token is None:
             self._counts[kind] += 1
-            token = f"{kind}-{self._counts[kind]}"
+            token = f"{kind}-{self._counts[kind]}-{self.tag}"
             self._tokens[(kind, key)] = token
             self.originals[token] = original
         return token
+
+    def _is_token(self, text: str) -> bool:
+        return self._token_pattern.fullmatch(text) is not None
 
     def _user(self, text: str) -> str:
         name = self._accounts.get(text) or self._accounts.get(text.lower()) or text
         return self._token("USER", name)
 
     def _host(self, text: str) -> str:
-        kind = "DOMAIN" if text.lower() in self._domains else "HOST"
-        return self._token(kind, text, text.lower())
+        lowered = text.lower()
+        if lowered in self._domains:
+            return self._token("DOMAIN", text, lowered)
+        first = lowered.split(".")[0]
+        known = next((k for k, v in self._host_key.items() if v == first), None)
+        return self._token("HOST", known or lowered, first if known else lowered)
 
     def _address_token(self, address) -> str:
         if address.is_loopback or address.is_unspecified:
@@ -534,73 +597,78 @@ class Pseudonyms:
         return token
 
     def _addresses(self, run: str) -> str:
-        """The addresses in a run of hex digits, colons and dots: the whole
-        run; else without stray colons or dots at its ends, or a port at
-        its end (2001:db8::1:51234, Apache's way); else each IPv4 address
-        inside it. Loopback and unspecified addresses are kept as written."""
-        candidates = [(run, "", "")]
-        core = run.rstrip(".:") if not run.endswith("::") else run
-        lead = ""
-        if core.startswith(":") and not core.startswith("::"):
-            lead, core = ":", core[1:]
-        candidates.append((core, lead, run[len(lead) + len(core) :]))
-        rest = core
-        for _ in range(2):
-            if ":" not in rest:
-                break
-            rest = rest.rsplit(":", 1)[0]
-            candidates.append((rest, lead, run[len(lead) + len(rest) :]))
-        for text, before, after in candidates:
-            if text and (address := _parse(text)) is not None:
-                if address.is_loopback or address.is_unspecified:
-                    return run
-                return before + self._address_token(address) + after
-        return _DOTTED.sub(
-            lambda m: (
-                self._address_token(a) if (a := _parse(m.group(0))) is not None else m.group(0)
-            ),
-            run,
+        """The addresses in a run of hex digits, colons and dots: the
+        longest piece of it that is one (starting at the run's start, after
+        a colon or dot, or at a digit after a hex letter; ending at its end
+        or before a colon or dot), then the same for what is left on either
+        side. Loopback and unspecified addresses are kept as written."""
+        if len(run) > 100:
+            return run
+        starts = [0] + [
+            i
+            for i in range(1, len(run))
+            if run[i - 1] in ":." or (run[i].isdigit() and run[i - 1].isalpha())
+        ]
+        ends = [len(run)] + [i for i in range(1, len(run)) if run[i] in ":."]
+        spans = sorted(
+            ((s, e) for s in starts for e in ends if e > s),
+            key=lambda span: (span[0] - span[1], span[0]),
         )
+        for start, end in spans:
+            address = _parse(run[start:end])
+            if address is None:
+                continue
+            middle = (
+                run[start:end]
+                if address.is_loopback or address.is_unspecified
+                else self._address_token(address)
+            )
+            return self._addresses(run[:start]) + middle + self._addresses(run[end:])
+        return run
 
-    def _replace(self, match: re.Match[str]) -> str:
+    def _shape(self, match: re.Match[str]) -> str:
         text = match.group(0)
-        group = match.lastgroup
-        if group == "key":
+        if match.lastgroup == "key":
             return self._token("KEY", text)
-        if group == "email":
+        if match.lastgroup == "email":
             return self._token("EMAIL", text, text.lower())
-        if group in ("at", "at_user", "at_host"):
-            user, machine = match.group("at_user"), match.group("at_host")
-            if user not in self._system:
-                user = self._user(user)
-            if machine.lower() not in GENERIC_HOSTNAMES:
-                machine = self._host(machine)
-            return f"{user}@{machine}"
-        if group == "host":
-            return self._host(text)
-        if group == "home":
-            if text in self._system or text in SPOOL_DIRS or TOKEN.fullmatch(text):
-                return text
-            return self._user(text)
-        if group in ("user", "short"):
-            return self._user(text)
-        if group == "group":
-            return self._token("GROUP", text)
-        if group == "addr":
+        user, machine = match.group("at_user"), match.group("at_host")
+        if user not in self._system and user.lower() not in ORDINARY_WORDS:
+            user = self._user(user)
+        if machine.lower() not in GENERIC_HOSTNAMES:
+            machine = self._host(machine)
+        return f"{user}@{machine}"
+
+    def _address(self, match: re.Match[str]) -> str:
+        text = match.group(0)
+        if match.lastgroup == "addr":
             return self._addresses(text)
-        if group == "ip4d":
-            dotted = text.replace("-", ".")
-            address = _parse(dotted)
-            if address is None or address.is_loopback or address.is_unspecified:
+        if match.lastgroup == "glued" and re.search(r"(?:^|\.)0\d", text):
+            return text  # a version, not an address
+        address = _parse(text.replace("-", "."))
+        if address is None or address.is_loopback or address.is_unspecified:
+            return text
+        return self._address_token(address)
+
+    def _name(self, match: re.Match[str]) -> str:
+        text = match.group(0)
+        if self._is_token(text):
+            return text
+        if match.lastgroup == "host":
+            return self._host(text)
+        if match.lastgroup == "home":
+            if text in self._system or text in SPOOL_DIRS or self._is_token(text):
                 return text
-            return self._address_token(address)
-        return text
+            return self._user(text)
+        if match.lastgroup in ("user", "placed"):
+            return self._user(text)
+        return self._token("GROUP", text)
 
     def _cut_tail(self, text: str) -> str:
         """A value cut short may end in part of a name ("js…"): that part
         goes too."""
-        match = re.search(r"([^\s/=:@,;()\[\]]{2,})" + CUT + "$", text)
-        if not match or TOKEN.fullmatch(match.group(1)):
+        match = re.search(r"(\w[\w.:-]+)" + CUT + "$", text)
+        if not match or self._is_token(match.group(1)):
             return text
         part = match.group(1).lower()
         if any(name.startswith(part) for name in self._identifiers) or re.fullmatch(
@@ -610,22 +678,27 @@ class Pseudonyms:
         return text
 
     def apply(self, text: str) -> str:
-        text = TOKEN.sub(lambda m: f"{m.group(1)}{NB_HYPHEN}{m.group(2)}", text)
-        if text in self._short or text in self._accounts and len(text) <= SHORT_ACCOUNT:
+        text = TOKEN_SHAPED.sub(lambda m: m.group(0).replace("-", NB_HYPHEN), text)
+        if text in self._placed or text in self._accounts:
             return self._user(text)
         if text in self._groups:
             return self._token("GROUP", text)
-        return self._cut_tail(self._pattern.sub(self._replace, text))
+        text = self._shapes.sub(self._shape, text)
+        text = self._address_pattern.sub(self._address, text)
+        if self._names is not None:
+            text = self._names.sub(self._name, text)
+        return self._cut_tail(text)
 
     def restore(self, text: str) -> str:
-        """The answer with each placeholder turned back into its name; one
-        this run never made is left visible, never guessed."""
+        """The answer with each of this run's placeholders turned back into
+        its name; a placeholder-shaped string this run never made is left
+        visible, never guessed."""
 
         def back(match: re.Match[str]) -> str:
             original = self.originals.get(match.group(0))
             return original if original is not None else f"[unknown {match.group(0)}]"
 
-        return TOKEN.sub(back, text)
+        return TOKEN_SHAPED.sub(back, text)
 
 
 def _walk(value: Any, apply, path: tuple[str, ...] = ()) -> Any:
@@ -636,6 +709,38 @@ def _walk(value: Any, apply, path: tuple[str, ...] = ()) -> Any:
     if isinstance(value, dict):
         return {k: _walk(v, apply, (*path, k)) for k, v in value.items()}
     return value
+
+
+# The kinds of coverage gap, as strict mode sends them: fixed words, with
+# at most a module or section name the collector itself defines.
+GAP_KINDS: list[tuple[str, str]] = [
+    (r"the bundle is ", "the bundle is not complete"),
+    (r"not collected: ", "modules not collected"),
+    (r"module ([a-z_]+): ", "a module did not finish: {}"),
+    (r"([a-z_]+) .*: cut short", "a source was cut short: {}"),
+    (r"error in ([a-z_]+)", "an error in a module: {}"),
+    (r"([a-z_]+) incomplete", "a section is incomplete: {}"),
+    (r"no authentication log events", "no authentication log events"),
+    (r"no system journal events", "no system journal events"),
+    (r"no boot list", "no boot list or boot records"),
+    (r"containers not inventoried", "containers not inventoried"),
+    (r"\d+ running container", "running containers no state file described"),
+    (r"mail logs not collected", "mail logs not collected"),
+    (r"the host's clock is ", "the host's clock is off"),
+    (r"the host's time zone is unknown", "the host's time zone is unknown"),
+    (r"this tool's own SSH login was not recognised", "this tool's own login not recognised"),
+    (r"web access logs not collected", "web access logs not collected"),
+    (r"no audit log", "no audit log"),
+    (r"no program starts in the audit log", "no program starts in the audit log"),
+    (r"web log format not recognised", "a web log format not recognised"),
+]
+
+
+def gap_kind(gap: str) -> str:
+    for pattern, kind in GAP_KINDS:
+        if match := re.match(pattern, gap):
+            return kind.format(*match.groups())
+    return "another gap"
 
 
 def strict_view(case: dict[str, Any]) -> dict[str, Any]:
@@ -664,26 +769,25 @@ def strict_view(case: dict[str, Any]) -> dict[str, Any]:
         ],
         "omitted": case.get("omitted"),
         "chains": [{"chain": c["chain"], "findings": c["findings"]} for c in case["chains"]],
-        "from_host": {
-            "coverage_gaps": sorted(
-                {gap.split(":", 1)[0] for gap in case["from_host"]["coverage_gaps"]}
-            )
-        },
+        "coverage_gaps": sorted({gap_kind(g) for g in case["from_host"]["coverage_gaps"]}),
     }
 
 
 def redact(
-    case: dict[str, Any], mode: str, known: Known
+    case: dict[str, Any], mode: str, known: Known, tag: str | None = None
 ) -> tuple[dict[str, Any], Pseudonyms | None]:
     """The case as it may leave, under the redaction mode, and the run's
-    placeholders (None under *none*: nothing to restore)."""
+    placeholders (None under *none*: nothing to restore). `tag` fixes the
+    placeholders' tag (golden tests); otherwise it is random."""
     if mode == "none":
         return copy.deepcopy(case), None
     if mode not in ("pseudonymize", "strict"):
         raise ValueError(f"unknown redaction mode {mode!r}")
-    pseudonyms = Pseudonyms(known)
-    source = strict_view(case) if mode == "strict" else case
-    redacted = _walk(source, pseudonyms.apply)
+    pseudonyms = Pseudonyms(known, tag)
+    if mode == "strict":
+        # Nothing in it is host text: only the code's own words and numbers.
+        return strict_view(case), pseudonyms
+    redacted = _walk(case, pseudonyms.apply)
     redacted["redaction"] = mode
     if pseudonyms.address_kinds:
         redacted["address_kinds"] = dict(pseudonyms.address_kinds)

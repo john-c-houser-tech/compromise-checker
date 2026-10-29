@@ -29,8 +29,9 @@ What works today:
   optional AI advisor would be sent about a host's latest analysis, after
   redaction, and sends nothing. Under *pseudonymize* (the default) people's
   account names, host names, email addresses, IP addresses and SSH key
-  fingerprints become placeholders made fresh for each run; *strict* sends
-  only the kinds of finding, counts, scores and coverage gaps. Sending
+  fingerprints become placeholders (USER-2-7f3a) made fresh for each run;
+  *strict* sends only the kinds of finding, counts, scores and kinds of
+  coverage gap. Sending
   arrives later in Phase 3.
 - `checker config show|set|history|check-key` — the settings in words;
   change one after `init` (validated, and recorded with who, when, old and

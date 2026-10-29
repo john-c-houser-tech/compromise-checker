@@ -44,6 +44,29 @@ disable:
     owner: john
 ```
 
+## Shipped profiles
+
+`profiles:` in any layer applies rule sets shipped with the tool
+(`checker/profiles/`), owned by "Compromise Checker defaults", each rule
+with its reason:
+
+- `base`, for every host: firewalld's libffi closures (the RHEL family),
+  AlmaLinux 10's `/boot/efi` modes;
+- `web`, only for hosts whose web applications send their own mail:
+  `mail.web_user` for `www-data`, `apache`, `nginx`. With it, mail a web
+  shell sends shows only in bulk (`mail.volume`, `mail.domains`, which
+  need a baseline), not message by message;
+- `database`: database servers' own listeners (`mysql`, `postgres`,
+  `redis`, `mongodb`, `mongod`);
+- `mail`, for relays: daily volume and new recipient domains (broad, on
+  purpose; relay changes and web accounts' mail still show);
+- `build`, for build servers: compilers (attack tools still show).
+
+Monitoring agents that hold the host (cadvisor, node-exporter) aren't in a
+profile: their container names differ per site, and a rule needs the
+container and its image together. Write one per agent, for example
+`{check: container.privileged, variant: standing, container: "docker: cadvisor", image: gcr.io/cadvisor/cadvisor}`.
+
 ## A rule
 
 - `id`: lower-case letters, digits, `.`, `_` and `-`; unique across the

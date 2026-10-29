@@ -9,6 +9,8 @@
 # can't be proven with this set (the detection judge ignores suppressed
 # findings, so it would show as missed, never as a false pass); a proof of
 # one needs a narrower whitelist.
+# The default profile, as a real organization would apply it (done-means 2).
+profiles: [base]
 rules:
   - id: proof-scanner-account
     match: {check: account.log_changes, account: scanner}

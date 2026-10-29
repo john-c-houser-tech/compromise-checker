@@ -766,12 +766,18 @@ def build(layers: list[tuple[str, str, Layer]]) -> Whitelist:
             raise WhitelistError(f"{file}: rule id {rule.id!r} is already used in the set")
         placed.append(Placed(rule, label, file))
 
+    applied: set[str] = set()
     for label, file, layer in layers:
         for name in layer.profiles:
+            if name in applied:
+                continue  # named by a wider layer too: its rules are in already
+            applied.add(name)
             path = profile_file(name)
             profile = read_layer(path)
+            # Named by its place in the package, not where it is installed:
+            # the set's hash is the same on every machine.
             for rule in [*profile.rules, *profile.maintenance]:
-                add(rule, f"profile {name}", str(path))
+                add(rule, f"profile {name}", f"checker/profiles/{name}.yaml")
         for item in layer.disable:
             before = len(placed)
             placed = [p for p in placed if p.rule.id != item.id]

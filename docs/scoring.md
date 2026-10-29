@@ -31,7 +31,8 @@ rules below.
 
 `OVERRIDES` in `checker/scoring.py` can give one check, or one variant of
 it, its own ratio where calibration shows its band misjudges it. There are
-none yet; Phase 2's calibration (plan 2.10) sets them, each with its
+none: Phase 2's calibration (plan 2.10) needed none, since fixing the checks
+themselves (below) put every clean image in Low. Any later one gets its
 reason recorded here.
 
 ## Rules
@@ -100,10 +101,9 @@ data like the ratios):
   with the findings that made it listed under it in the report; the
   assessment records each chain's findings and events.
 
-More chains arrive with the checks they need: a web worker's child, a file
-in a scratch place and an outbound connection (2.4, 2.8); anything high,
-then logging stopped or history wiped (2.5); a new web script, then
-successful requests to it (2.8).
+Not chains yet, though their checks exist: a file in a scratch place, then
+an outbound connection; anything high, then logging stopped or history
+wiped. Each would need its own proof before it is added.
 
 ## The prior
 
@@ -181,3 +181,56 @@ scoring, not the parsers or the collector.
 The ratios are expert estimates. Plan 2.10 tunes them against fresh
 servers on all seven images (false alarms) and the detection proof's
 compromised servers (detections), and records the results here.
+`tests/integration/calibrate.py` runs both proofs (on throwaway servers,
+with John's approval), judges done-means 2 (every clean image Low, with
+the proof's whitelist and the `base` profile) and 3 (every behaviour and
+chain found at its band), and writes the table below with `--write-docs`.
+
+### Tuning (2.10)
+
+Each change, with the reason the results gave for it:
+
+- **Accounts a package creates are low, not medium** (`account.log_changes`).
+  Installing Postfix, nginx or PHP-FPM creates accounts and groups and adds
+  them to groups; on clean servers these were the largest contributors
+  (Ubuntu 14%, Rocky 20%). An account logged within 15 minutes of a
+  package's install (the snapshot's install times), with a system UID, no
+  login shell as logged and as it is now, made with no terminal
+  (`useradd`'s `from=none`), and such an account's group memberships, are
+  now low. "No terminal" alone proves nothing (any script has none, a web
+  shell's too): the install nearby is the evidence. A login shell, a
+  terminal, a person's UID, UID 0, or no install nearby keep them medium
+  (packages make the web accounts too: `nginx`, `apache` on RHEL; a web
+  account joining a group is never lowered), and a root or root-equivalent group (now also
+  `libvirt`, `incus-admin`, `kmem`) keeps a membership high.
+- **`(sd-pam)` is judged by what PID 1 loaded** (`process.injected`). It is
+  forked from PID 1's child before that becomes the user manager, so it
+  holds the libraries PID 1 loaded at boot; an update replacing one made it
+  look like code from a deleted file (high on Ubuntu 22.04). It is now the
+  replaced-library hygiene finding, as the rest of the system is.
+- **The `base` profile** suppresses firewalld's libffi closures (on the
+  RHEL family; the `libffi` kind only, firewalld only, on the system's
+  Python) and AlmaLinux 10's `/boot/efi` modes. A profile named in several
+  layers applies once.
+- Four medium findings from different checks still take a 2% prior to
+  about 72%: kept, since four unrelated medium signs on one host are worth
+  a look; the fixes above stop clean servers producing them.
+
+<!-- calibration:start -->
+Calibration run of 2026-10-29 (tests/integration/calibrate.py).
+
+| Clean image | Probability | Band | Compromise findings by band |
+|---|---|---|---|
+| alma10 | 5.8% | Low | 2 info, 9 low |
+| alma9 | 5.8% | Low | 2 info, 9 low |
+| rocky10 | 5.8% | Low | 2 info, 9 low |
+| rocky9 | 5.8% | Low | 2 info, 9 low |
+| ubuntu22.04 | 5.8% | Low | 3 info, 6 low |
+| ubuntu24.04 | 5.8% | Low | 3 info, 4 low |
+| ubuntu26.04 | 5.8% | Low | 3 info, 4 low |
+
+| Compromised image | Probability | Band | Behaviours and chains |
+|---|---|---|---|
+| rocky9 | 100.0% | Critical | 32 found, 0 missed |
+| ubuntu24.04 | 100.0% | Critical | 32 found, 0 missed |
+<!-- calibration:end -->

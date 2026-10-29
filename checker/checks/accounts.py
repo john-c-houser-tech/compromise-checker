@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from checker.checks import (
     COMPROMISE,
@@ -15,10 +15,23 @@ from checker.checks import (
     parse_time,
     span,
 )
+from checker.checks.web import WEB_USERS
 
 SYSTEM_UID_MAX = 999  # service accounts: 1-999 (login.defs SYS_UID_MAX)
 NO_LOGIN = ("nologin", "false", "sync", "shutdown", "halt")
-ROOT_GROUPS = {"root", "wheel", "sudo", "admin", "docker", "lxd", "disk", "shadow"}
+ROOT_GROUPS = {
+    "root",
+    "wheel",
+    "sudo",
+    "admin",
+    "docker",
+    "lxd",
+    "incus-admin",
+    "libvirt",
+    "disk",
+    "kmem",
+    "shadow",
+}
 LOG_GROUPS = {"adm", "systemd-journal"}
 # A "too many failures" line repeats the last attempt, so it isn't counted.
 FAILURES = ("ssh.login.failed", "ssh.invalid_user", "auth.failure")
@@ -259,6 +272,52 @@ LOG_CHANGE_VARIANTS = (
 )
 
 
+NO_LOGIN_SHELL = re.compile(r"(?:^|/)(?:nologin|false)$")
+# How close to a package's install an account it made is logged.
+PACKAGE_WINDOW = timedelta(minutes=15)
+
+
+def _package_installs(context: Context) -> list[datetime]:
+    times = []
+    for item in context.items("packages").values():
+        try:
+            times.append(datetime.fromtimestamp(float(item["installed"]), UTC))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    return times
+
+
+def _package_account(context: Context, event, installs: list[datetime]) -> bool:
+    """A package's own account: logged within minutes of a package being
+    installed (no terminal is no proof: any script has none), a system UID,
+    and no login shell, both as logged and as it is now. Such an account,
+    or such an account's group membership, is low: the install is the
+    change worth knowing (software.packages). Packages create the web
+    accounts too (nginx, apache on RHEL), but a web account joining a group
+    is never a package's: it is what a web shell would gain."""
+    fields = event.fields
+    user = fields.get("user")
+    if event.type != "account.created" and user in WEB_USERS:
+        return False
+    at = parse_time(event.corrected)
+    if at is None or not any(abs(at - t) <= PACKAGE_WINDOW for t in installs):
+        return False
+    current = context.items("accounts").get(user) or {}
+    uid = fields.get("uid") if fields.get("uid") is not None else current.get("uid")
+    try:
+        if uid is None or not 0 < int(uid) <= SYSTEM_UID_MAX:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if event.type == "account.created":
+        if fields.get("origin") != "none":
+            return False  # made at a terminal (or not said): someone's hand
+        if not NO_LOGIN_SHELL.search(str(fields.get("shell") or "")):
+            return False
+    shells = [s for s in (current.get("shell"),) if s] or [fields.get("shell")]
+    return all(s and NO_LOGIN_SHELL.search(str(s)) for s in shells)
+
+
 @check(
     "account.log_changes",
     "Account and group changes recorded in the logs",
@@ -266,6 +325,7 @@ LOG_CHANGE_VARIANTS = (
 )
 def log_changes(context: Context) -> list[Finding]:
     findings = []
+    installs = _package_installs(context)
     for index, event in context.of("account.", "group."):
         if event.type == "account.password_changed":
             continue  # account.password reports it
@@ -280,6 +340,7 @@ def log_changes(context: Context) -> list[Finding]:
             if privileged
             else "medium"
             if event.type in ("account.created", "group.member_added")
+            and not _package_account(context, event, installs)
             else "low"
         )
         who = f.get("user") or ""

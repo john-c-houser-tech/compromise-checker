@@ -481,6 +481,13 @@ side note: a file merely named like a rotated copy doesn't excuse a shrunk
 log; the copy must carry the old inode or be an uncompressed copy at least
 as large. On Ubuntu the detection proof unloads AppArmor's profiles
 (`aa-teardown`) in place of `setenforce 0`.
+After the 2.5 review (4 High): logging restarts and augenrules reloads are
+routine, and removed rules are one finding; AppArmor's transient profiles
+are left out and a few changes are medium; replaced key logs and a
+removed journal are reported; a cut-short listing never reads as
+deletion; `node=`-prefixed audit records count and the newest are kept;
+agents and services are keyed by the file they run; no service findings
+without a full process listing; journald precedence as systemd's.
 
 ### 2.6 — Software changes (8.11)
 

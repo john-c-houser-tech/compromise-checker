@@ -4696,6 +4696,55 @@ class LoggingStateTests(FixtureRoot):
         self.assertIn("/etc/systemd/journald.conf", sources(records))
         self.assertEqual(records[-1]["modules"]["logging_state"]["status"], "ok")
 
+    def test_node_prefixed_records_count_and_the_newest_are_kept(self):
+        collector = load_collector(self.root)
+        collector.AUDIT_LINES = 3
+        now = int(NOW)
+        lines = (
+            "".join(
+                f"node=web01 type=CONFIG_CHANGE msg=audit({now}.1:{n}): op=add_rule key=k{n}\n"
+                for n in range(5)
+            )
+            + f'node=web01 type=EXECVE msg=audit({now}.1:9): a0="x"\n'
+        )
+        self.write("var/log/audit/audit.log.1", lines.encode())
+        self.write(
+            "var/log/audit/audit.log",
+            f"node=web01 type=DAEMON_END msg=audit({now}.1:10): op=terminate\n".encode(),
+        )
+        out = io.BytesIO()
+        collector.main(settings(["logging_state"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        [audit] = named(records, "audit_records")
+        kept = audit["data"]["lines"]
+        self.assertEqual(len(kept), 3)
+        self.assertTrue(kept[-1].startswith("type=DAEMON_END"))  # newest kept, prefix gone
+        self.assertEqual(audit["data"]["older_left_out"], 3)
+        self.assertFalse([x for x in kept if "EXECVE" in x])
+
+    def test_a_record_merely_containing_a_wanted_type_is_left_out(self):
+        now = int(NOW)
+        self.write(
+            "var/log/audit/audit.log",
+            f'type=USER_CMD msg=audit({now}.1:1): cmd="echo type=CONFIG_CHANGE x" uid=0\n'.encode(),
+        )
+        [audit] = named(collect(self.root, ["logging_state"]), "audit_records")
+        self.assertEqual(audit["data"]["lines"], [])
+
+    def test_the_audit_folder_is_listed_first_and_the_cap_holds(self):
+        collector = load_collector(self.root)
+        collector.LOG_TREE_ENTRIES = 6
+        for n in range(10):
+            self.write(f"var/log/aaa/f{n}", b"x")
+        self.write("var/log/audit/audit.log", b"x")
+        out = io.BytesIO()
+        collector.main(settings(["logging_state"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        paths = [r["data"]["path"] for r in named(records, "log_file")]
+        self.assertIn("/var/log/audit/audit.log", paths)
+        self.assertLessEqual(len(paths), 6)
+        self.assertTrue(named(records, "log_manifest")[0]["data"]["truncated"])
+
 
 if __name__ == "__main__":
     unittest.main()

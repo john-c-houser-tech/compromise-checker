@@ -88,13 +88,42 @@ def test_logging_stopped_outside_a_shutdown():
 def test_audit_switched_off_and_its_daemon_ended():
     at = int(T0.timestamp())
     records = [
-        f"type=CONFIG_CHANGE msg=audit({at}.100:5): auid=0 ses=3 op=remove_rule key=x res=1",
         f"type=CONFIG_CHANGE msg=audit({at}.200:6): op=set audit_enabled=0 old=1 auid=0 res=1",
-        f"type=CONFIG_CHANGE msg=audit({at}.300:7): auid=0 op=add_rule key=y res=1",
         f"type=DAEMON_END msg=audit({at}.400:8): op=terminate auid=0 res=success",
     ]
     found = of(run([], snap({"audit_records": records, "processes": []})), "logs.stopped")
-    assert sorted(f.variant for f in found) == ["audit_daemon", "audit_rules", "audit_rules"]
+    assert sorted(f.variant for f in found) == ["audit_daemon", "audit_rules"]
+
+
+def test_an_augenrules_reload_and_a_restart_are_routine():
+    at = int(T0.timestamp())
+    records = (
+        [
+            f"type=CONFIG_CHANGE msg=audit({at}.1:{n}): auid=0 op=remove_rule key=k{n} res=1"
+            for n in range(120)
+        ]
+        + [
+            f"type=CONFIG_CHANGE msg=audit({at + 2}.1:{200 + n}): auid=0 op=add_rule key=k{n} res=1"
+            for n in range(120)
+        ]
+        + [
+            f"type=DAEMON_END msg=audit({at + 10}.1:400): op=terminate auid=0 res=success",
+            f"type=DAEMON_START msg=audit({at + 12}.1:401): op=start ver=3.1 res=success",
+        ]
+    )
+    assert of(run([], snap({"audit_records": records, "processes": []})), "logs.stopped") == []
+    # Removed and never loaded again: one finding, however many rules.
+    removed = records[:120]
+    [found] = of(run([], snap({"audit_records": removed, "processes": []})), "logs.stopped")
+    assert "(120)" in found.title
+
+
+def test_a_logging_service_restarted_is_not_stopped():
+    events = [
+        ev("unit.stopped", 0, what="System Logging Service"),
+        ev("unit.started", 1, what="System Logging Service"),
+    ]
+    assert of(run(events), "logs.stopped") == []
 
 
 def test_journald_storage_and_services_and_agents():
@@ -186,7 +215,7 @@ def test_the_snapshot_flags_history_off_and_reads_logging_state(tmp_path):
     assert logging["journald"] == {"storage": "volatile"}
     assert logging["selinux"] == {"mode": "enforcing", "configured": "permissive"}
     assert logging["apparmor: /usr/sbin/cupsd"] == {"mode": "enforce"}
-    assert logging["service: auditd"] == {"running": True}
+    assert logging["service: auditd"] == {"running": True, "exe": "/usr/sbin/auditd"}
     assert snapshot.live["log_files"][0]["path"] == "/var/log/wtmp"
 
 
@@ -209,3 +238,109 @@ def test_a_file_merely_named_like_a_rotated_copy_hides_nothing():
     )
     [found] = of(run([], compressed, previous=before), "logs.cleared")
     assert found.band == "medium" and "auth.log.1.gz" in found.summary
+
+
+def test_a_fake_agent_and_no_process_listing():
+    before = snap(
+        logging={
+            "agent: osqueryd": {"running": True, "exe": "/opt/osquery/bin/osqueryd"},
+            "service: auditd": {"running": True, "exe": "/usr/sbin/auditd"},
+        }
+    )
+    after = snap(
+        logging={
+            "agent: osqueryd": {"running": True, "exe": "/dev/shm/osqueryd"},
+            "service: auditd": {"running": True, "exe": "/usr/sbin/auditd"},
+        }
+    )
+    found = run([], after, baseline=before)
+    assert [f.variant for f in of(found, "agent.stopped")] == ["moved"]
+    unknown = snap(logging={"services": {"known": False}})
+    found = run([], unknown, baseline=before)
+    assert of(found, "agent.stopped") == [] and of(found, "logs.stopped") == []
+
+
+def test_replaced_logs_and_a_removed_journal():
+    before = snap(
+        logs(
+            {"path": "/var/log/auth.log", "size": 5000, "inode": 2, "mtime": 100},
+            {"path": "/var/log/journal", "size": 0, "inode": 5, "type": "d"},
+            {"path": "/var/log/journal/abc/system.journal", "size": 9, "inode": 6},
+        )
+    )
+    after = snap(logs({"path": "/var/log/auth.log", "size": 4900, "inode": 9, "mtime": 200}))
+    found = {f.variant for f in of(run([], after, previous=before), "logs.cleared")}
+    assert found == {"replaced", "journal_removed"}
+
+
+def test_a_cut_short_listing_reads_nothing_as_deleted():
+    before = snap(logs({"path": "/var/log/audit/audit.log", "size": 5000, "inode": 2}))
+    after = snap({**logs(), "log_manifest_truncated": True})
+    assert of(run([], after, previous=before), "logs.cleared") == []
+
+
+def test_transient_apparmor_profiles_and_a_few_changes_are_not_high():
+    profiles = {f"apparmor: p{n}": {"mode": "enforce"} for n in range(10)}
+    before = snap(
+        logging={
+            **profiles,
+            "apparmor: snap.lxd.daemon": {"mode": "enforce"},
+            "apparmor: libvirt-1234": {"mode": "enforce"},
+        }
+    )
+    after = snap(logging={k: v for k, v in profiles.items() if k != "apparmor: p0"})
+    [found] = of(run([], after, baseline=before), "mac.disabled")
+    assert found.band == "medium" and "1 unloaded" in found.summary
+    gone = snap(logging={})
+    [found] = of(run([], gone, baseline=before), "mac.disabled")
+    assert found.band == "high"
+
+
+def test_history_deleted_and_quoted_forms():
+    from checker.snapshot import HISTORY_OFF
+
+    before = snap(shell_history={"/root/.bash_history": {"type": "-", "size": 10}})
+    after = snap(shell_history={})
+    [found] = of(run([], after, baseline=before), "history.disabled")
+    assert found.variant == "deleted"
+    for line in ('export HISTFILE="/dev/null"', "HISTSIZE='0'", "unset -v HISTFILE"):
+        assert HISTORY_OFF.search(line), line
+    assert not HISTORY_OFF.search("HISTSIZE=10000")
+
+
+def test_a_user_managers_clock_message_is_not_the_systems():
+    events = [ev("system.clock_changed", 180, pid="2345")]
+    assert of(run(events), "clock.jump") == []
+
+
+def test_journald_precedence_follows_systemd():
+    from checker.snapshot import journald_storage
+
+    settings = [
+        ("/usr/lib/systemd/journald.conf", ["Storage=auto"]),
+        ("/etc/systemd/journald.conf", ["[Journal]"]),
+        ("/usr/lib/systemd/journald.conf.d/50-x.conf", ["Storage=persistent"]),
+        ("/etc/systemd/journald.conf.d/10-y.conf", ["Storage=volatile"]),
+        ("/etc/systemd/journald.conf.d/50-x.conf", ["Storage=none"]),  # masks /usr/lib's
+        ("/run/systemd/journald.conf.d/notes.txt", ["Storage=bogus"]),
+    ]
+    assert journald_storage(settings) == "none"
+
+
+def test_the_audit_daemon_ending_during_a_shutdown_is_routine():
+    at = int(T0.timestamp())
+    records = [f"type=DAEMON_END msg=audit({at}.400:8): op=terminate auid=0 res=success"]
+    events = [ev("system.shutdown", 1, target="Shutdown")]
+    assert of(run(events, snap({"audit_records": records, "processes": []})), "logs.stopped") == []
+
+
+def test_a_compressed_copy_older_than_the_log_doesnt_soften_it():
+    before = snap(logs({"path": "/var/log/auth.log", "size": 5000, "inode": 2, "mtime": 500}))
+    after = snap(
+        logs(
+            {"path": "/var/log/auth.log", "size": 0, "inode": 2, "mtime": 600},
+            {"path": "/var/log/auth.log.2.gz", "size": 700, "inode": 8, "mtime": 100},
+        )
+    )
+    [found] = of(run([], after, previous=before), "logs.cleared")
+    assert found.band == "high"

@@ -17,6 +17,7 @@ what each module reads, and why, is in docs/collector-modules.md.
 
 import base64
 import binascii
+import collections
 import contextlib
 import datetime
 import errno
@@ -6247,6 +6248,7 @@ def module_network(run):
 
 LOGGING_FILES = (
     "/etc/systemd/journald.conf",
+    "/usr/lib/systemd/journald.conf",
     "/etc/rsyslog.conf",
     "/etc/audit/auditd.conf",
     "/etc/audit/audit.rules",
@@ -6254,6 +6256,7 @@ LOGGING_FILES = (
 )
 LOGGING_DIRS = (
     "/etc/systemd/journald.conf.d",
+    "/run/systemd/journald.conf.d",
     "/usr/lib/systemd/journald.conf.d",
     "/etc/rsyslog.d",
     "/etc/audit/rules.d",
@@ -6277,22 +6280,31 @@ AUDIT_TYPES = (
 AUDIT_LINES = 2000
 AUDIT_BYTES = 64 * 1024 * 1024
 _AUDIT_TIME = re.compile(rb"msg=audit\((\d+)\.\d+:\d+\)")
+# With auditd's name_format set, each record starts with its node's name.
+_AUDIT_NODE = re.compile(rb"^node=\S+ ")
+# Walked first, so a cut-short listing still holds what matters most.
+LOG_TREE_FIRST = ("/var/log/audit", "/var/log/journal")
 
 
 def _log_manifest(run, module):
     """Every file and link under /var/log (three levels, at most 5,000
-    entries): name, type, size, inode, times. Never contents."""
+    entries), breadth first, the audit and journal folders first: name,
+    type, size, inode, times. Never contents."""
     count, truncated = 0, False
-    pending = [(LOG_TREE, 0)]
+    pending = collections.deque([(LOG_TREE, 0)])
     while pending:
         run.check_time()
-        directory, depth = pending.pop()
+        if count >= LOG_TREE_ENTRIES:
+            truncated = True
+            break
+        directory, depth = pending.popleft()
         try:
-            names, cut = list_directory(directory, LOG_TREE_ENTRIES, run)
+            names, cut = list_directory(directory, LOG_TREE_ENTRIES - count, run)
         except OSError as exc:
             run.stream.record(module, "not_examined", {"path": directory, "reason": str(exc)})
             continue
         truncated = truncated or cut
+        deeper = []
         for name in names:
             if count >= LOG_TREE_ENTRIES:
                 truncated = True
@@ -6327,17 +6339,22 @@ def _log_manifest(run, module):
                     data["link"] = None
             run.stream.record(module, "log_file", data)
             if kind == "d" and depth + 1 < LOG_TREE_DEPTH:
-                pending.append((absolute, depth + 1))
+                deeper.append((absolute, depth + 1))
+        deeper.sort(key=lambda d: (not d[0].startswith(LOG_TREE_FIRST), d[0]))
+        pending.extend(deeper)
     run.stream.record(module, "log_manifest", {"entries": count, "truncated": truncated})
 
 
 def _audit_records(run, module):
     """From the audit logs, within the look-back, only the records about
     audit and SELinux themselves (AUDIT_TYPES), masked: rules changed,
-    audit started or stopped, enforcement switched."""
+    audit started or stopped, enforcement switched. The newest are kept
+    (rotated files read oldest first), so a flood of earlier records can't
+    push the latest out."""
     since = run.since.timestamp()
-    found, read, truncated = [], 0, False
-    for absolute in AUDIT_LOGS:
+    found = collections.deque(maxlen=AUDIT_LINES)
+    matched, read, cut = 0, 0, False
+    for absolute in reversed(AUDIT_LOGS):
         run.check_time()
         try:
             raw, _ = open_regular_file(absolute)
@@ -6349,20 +6366,29 @@ def _audit_records(run, module):
                 if not line:
                     break
                 read += len(line)
-                if read > AUDIT_BYTES or len(found) >= AUDIT_LINES:
-                    truncated = True
+                if read > AUDIT_BYTES:
+                    cut = True
                     break
-                if not line.startswith(AUDIT_TYPES):
+                record = _AUDIT_NODE.sub(b"", line, count=1)
+                if not record.startswith(AUDIT_TYPES):
                     continue
-                when = _AUDIT_TIME.search(line)
+                when = _AUDIT_TIME.search(record)
                 if when is None or int(when.group(1)) < since:
                     continue
-                masked, _ = mask_text(line.rstrip(b"\n")[:4096])
+                masked, _ = mask_text(record.rstrip(b"\n")[:4096])
                 found.append(masked.decode("utf-8", "replace"))
-        if truncated:
+                matched += 1
+        if cut:
             break
     run.stream.record(
-        module, "audit_records", {"lines": found, "truncated": truncated, "bytes_read": read}
+        module,
+        "audit_records",
+        {
+            "lines": list(found),
+            "truncated": cut,
+            "older_left_out": max(0, matched - AUDIT_LINES),
+            "bytes_read": read,
+        },
     )
 
 

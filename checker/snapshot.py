@@ -204,8 +204,13 @@ def remote_network(address: str) -> str | None:
 
 # A start-up file that switches shell history off for everyone.
 HISTORY_OFF = re.compile(
-    r"^\s*(?:export\s+)?(?:unset\s+HISTFILE\b|HISTFILE=/dev/null\b|HISTSIZE=0\b"
-    r"|HISTFILESIZE=0\b|set\s+\+o\s+history\b)"
+    r"^\s*(?:export\s+|declare\s+-x\s+|readonly\s+)?(?:unset\s+(?:-v\s+)?HISTFILE\b"
+    r"|HISTFILE=[\"']?/dev/null[\"']?(?:\s|;|$)|HISTSIZE=[\"']?0[\"']?(?:\s|;|$)"
+    r"|HISTFILESIZE=[\"']?0[\"']?(?:\s|;|$)|set\s+\+o\s+history\b)"
+)
+# Files a shell reads at start: only these can switch history off for users.
+SHELL_STARTUP = re.compile(
+    r"^/etc/(?:profile|profile\.d/.*|bash\.bashrc|bashrc|zsh/.*|zshrc|zprofile|environment)$"
 )
 LOGGING_SERVICES = {"auditd", "rsyslogd", "systemd-journald", "syslog-ng", "journald"}
 SECURITY_AGENTS = {
@@ -222,21 +227,57 @@ SECURITY_AGENTS = {
     "wdavdaemon",
     "s1-agent",
     "elastic-agent",
-    "aide",
 }
 _INTERPRETER = re.compile(r"^(?:python[\d.]*|perl[\d.]*|ruby[\d.]*|node|bash|sh)$")
 
 
-def _runs(process: dict[str, Any]) -> str:
-    """The name of the file a process runs; for an interpreter, its script."""
+def _runs(process: dict[str, Any]) -> tuple[str, str]:
+    """(name, path) of the file a process runs; for an interpreter, its
+    script."""
     exe = str(process.get("exe") or "").removesuffix(" (deleted)")
     name = exe.rsplit("/", 1)[-1]
     if _INTERPRETER.match(name):
         args = str(process.get("cmdline") or "").split()
         script = next((a for a in args[1:] if not a.startswith("-")), "")
         if script.startswith("/"):
-            return script.rsplit("/", 1)[-1]
-    return name
+            return script.rsplit("/", 1)[-1], script
+    return name, exe
+
+
+_JOURNALD_DIRS = (
+    "/etc/systemd/journald.conf.d/",
+    "/run/systemd/journald.conf.d/",
+    "/usr/lib/systemd/journald.conf.d/",
+)
+
+
+def journald_storage(settings: list[tuple[str, list[str]]]) -> str | None:
+    """journald's effective Storage=, as systemd reads it: the main file
+    (/etc over /usr/lib), then the *.conf drop-ins of all three folders in
+    file-name order, a name in /etc masking it in /run and /usr/lib, and
+    /run masking /usr/lib; the last setting wins."""
+    by_path = dict(settings)
+    main = next(
+        (
+            by_path[p]
+            for p in ("/etc/systemd/journald.conf", "/usr/lib/systemd/journald.conf")
+            if p in by_path
+        ),
+        [],
+    )
+    dropins: dict[str, list[str]] = {}
+    for folder in reversed(_JOURNALD_DIRS):  # /usr/lib first, /etc last: it masks
+        for path, lines in settings:
+            name = path[len(folder) :]
+            if path.startswith(folder) and name.endswith(".conf") and "/" not in name:
+                dropins[name] = lines
+    storage = None
+    for lines in [main] + [dropins[n] for n in sorted(dropins)]:
+        for line in lines:
+            text = line.split("#", 1)[0].strip()
+            if text.startswith("Storage="):
+                storage = text.split("=", 1)[1].strip()
+    return storage
 
 
 # Records that mean some of a module's data is missing.
@@ -548,7 +589,7 @@ class SnapshotBuilder:
         if lines is None:
             return
         if start.module == "startup":
-            if any(HISTORY_OFF.search(line) for line in lines):
+            if SHELL_STARTUP.match(start.name) and any(HISTORY_OFF.search(x) for x in lines):
                 item["disables_history"] = True
             return
         if start.module == "logging_state":
@@ -684,7 +725,9 @@ class SnapshotBuilder:
         if name == "log_file":
             self.live.setdefault("log_files", []).append(data)
         elif name == "log_manifest" and data.get("truncated"):
-            self._module_gap("logging_state", "the /var/log manifest was cut short", name, data)
+            # Not a gap of the compared sections: the listing is live data,
+            # and the checks know not to read a missing log as deleted.
+            self.live["log_manifest_truncated"] = True
         elif name == "audit_records":
             self.live["audit_records"] = data.get("lines") or []
             if data.get("truncated"):
@@ -703,16 +746,13 @@ class SnapshotBuilder:
         section = self.section("logging")
         mac = self._mac or {}
         configured = None
-        storage = None
-        # journald: the main file, then drop-ins in order: the last wins.
-        for path, lines in sorted(self._settings, key=lambda s: (".conf.d/" in s[0], s[0])):
-            for line in lines:
-                text = line.split("#", 1)[0].strip()
-                if path.endswith("journald.conf") or "/journald.conf.d/" in path:
-                    if text.startswith("Storage="):
-                        storage = text.split("=", 1)[1].strip()
-                elif path == "/etc/selinux/config" and text.startswith("SELINUX="):
-                    configured = text.split("=", 1)[1].strip()
+        for path, lines in self._settings:
+            if path == "/etc/selinux/config":
+                for line in lines:
+                    text = line.split("#", 1)[0].strip()
+                    if text.startswith("SELINUX="):
+                        configured = text.split("=", 1)[1].strip()
+        storage = journald_storage(self._settings)
         section.items["selinux"] = {"mode": mac.get("selinux"), "configured": configured}
         section.items["journald"] = {"storage": storage or "auto (default)"}
         apparmor = mac.get("apparmor")
@@ -721,10 +761,25 @@ class SnapshotBuilder:
             section.items["apparmor"] = {"loaded": True, "profiles": len(profiles)}
             for name, mode in profiles.items():
                 section.items[f"apparmor: {name}"] = {"mode": mode}
-        running = {_runs(p) for p in self.live.get("processes", []) if not p.get("kernel_thread")}
-        for name in sorted(running & (LOGGING_SERVICES | SECURITY_AGENTS)):
+        results = self.trailer_data.modules if self.trailer_data else {}
+        listing = results.get("processes")
+        if "processes" not in planned or listing is None or listing.status != "ok":
+            # Without a full process listing, nothing can be said about what
+            # runs: no service or agent items (the checks see `unknown`).
+            section.items["services"] = {"known": False}
+            return
+        running: dict[str, set[str]] = {}
+        for process in self.live.get("processes", []):
+            if process.get("kernel_thread"):
+                continue
+            name, exe = _runs(process)
+            if name in LOGGING_SERVICES | SECURITY_AGENTS:
+                running.setdefault(name, set()).add(exe)
+        for name, exes in sorted(running.items()):
             kind = "service" if name in LOGGING_SERVICES else "agent"
-            section.items[f"{kind}: {name}"] = {"running": True}
+            # The file it runs: a copy of sleep named auditd in /dev/shm
+            # changes it.
+            section.items[f"{kind}: {name}"] = {"running": True, "exe": ", ".join(sorted(exes))}
 
     def _on_network(self, name: str, data: dict[str, Any]) -> None:
         if name == "interface" and data.get("name"):

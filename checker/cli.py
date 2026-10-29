@@ -901,11 +901,19 @@ def build_parser() -> argparse.ArgumentParser:
     staling.add_argument("--identity", help="the evidence private key file")
     staling.set_defaults(handler=cmd_whitelist_stale)
     advising = commands.add_parser(
-        "advise", help="the AI advisor's request for a host's latest analysis (--show)"
+        "advise", help="ask the optional AI advisor about a host's latest analysis"
     )
     advising.add_argument("host")
     advising.add_argument(
-        "--show", action="store_true", help="print the request exactly as it would be sent"
+        "--show",
+        action="store_true",
+        help="print the request exactly as it would be sent; send nothing",
+    )
+    advising.add_argument("--role", choices=["explain"], default="explain", help="what to ask")
+    advising.add_argument(
+        "--yes",
+        action="store_true",
+        help="send even above advisor.max_cost_per_run, without asking",
     )
     advising.add_argument(
         "--redaction",
@@ -936,56 +944,101 @@ def build_parser() -> argparse.ArgumentParser:
 SHOWN = 20  # items listed per kind and section without --all
 
 
-def cmd_advise(args: argparse.Namespace) -> int:
-    """The advisor's request for a host's latest assessment. So far only
-    shown (--show), never sent: the client arrives in Phase 3's PR 3.2."""
-    from checker.advisor.case import case_for_host, redact
+def _print_advice(advice, role: str) -> None:
+    outcome = advice.outcome
+    if outcome is not None:
+        line = f"Asked {outcome.model_asked}"
+        if outcome.declined_by:
+            line += f"; declined by {', '.join(outcome.declined_by)}"
+        if outcome.model_answered:
+            line += f"; answered by {outcome.model_answered}"
+        print(line + ".")
+    if advice.note:
+        print(advice.note[0].upper() + advice.note[1:] + ".")
+    answer = advice.answer
+    if not answer:
+        return
+    print()
+    print(f"Verdict: {answer['verdict']}")
+    print(answer["summary"])
+    if answer["most_important"]:
+        print("\nMost important:")
+        for point in answer["most_important"]:
+            print(f"  {point['finding']}: {point['why']}")
+    if answer["innocent_explanations"]:
+        print("\nPossible innocent explanations:")
+        for item in answer["innocent_explanations"]:
+            print(f"  {item['finding']}: {item['explanation']}")
+    if answer["what_would_settle_it"]:
+        print("\nWhat would settle it:")
+        for question in answer["what_would_settle_it"]:
+            print(f"  - {question}")
+    print("\n(AI advice: the score is the tool's own and is unchanged. Stored, encrypted.)")
 
-    if not args.show:
-        print(
-            "checker: the advisor only shows its requests so far: add --show (sending comes"
-            " with a later version)",
-            file=sys.stderr,
-        )
-        return 2
+
+def cmd_advise(args: argparse.Namespace) -> int:
+    """The advisor's answer about a host's latest assessment (sent), or the
+    request exactly as it would be sent (--show, sends nothing)."""
+    from checker.advisor.advise import advise
+    from checker.advisor.case import case_for_host, redact
+    from checker.advisor.client import AdvisorError, build_request
+
     base = home()
     store = Store(database_file(base))
     try:
         config = load_config(base)
         inventory = _inventory_for_priors()
-        built, known = case_for_host(
-            store,
-            args.host,
-            _identity(args, base),
-            config.recipients,
-            inventory,
-            prior_for(args.host, config, inventory),
-            _whitelist_for(base, args.host, inventory),
-            args.bundle,
-        )
-    except (EvidenceError, OSError) as exc:
+        prior = prior_for(args.host, config, inventory)
+        whitelist = _whitelist_for(base, args.host, inventory)
+        identity = _identity(args, base)
+        if args.show:
+            built, known, _ = case_for_host(
+                store, args.host, identity, config.recipients, inventory, prior, whitelist,
+                args.bundle,
+            )  # fmt: skip
+            mode = args.redaction or config.advisor.redaction
+            payload, pseudonyms = redact(built, mode, known)
+            request = build_request(payload, args.role, config.advisor)
+            text = json.dumps(request, indent=1, ensure_ascii=False)
+            print(text)
+            placeholders = len(pseudonyms.originals) if pseudonyms else 0
+            print(
+                f"[{len(text)} characters, about {len(text) // 4} tokens; redaction {mode};"
+                f" {placeholders} placeholders, kept only for this run. Nothing was sent.]",
+                file=sys.stderr,
+            )
+            if mode != config.advisor.redaction:
+                print(
+                    f"[The configured redaction is {config.advisor.redaction};"
+                    f" this preview used {mode}.]",
+                    file=sys.stderr,
+                )
+            if not config.advisor.enabled:
+                print("[The advisor is off; this is what it would send.]", file=sys.stderr)
+            return 0
+        if args.redaction:
+            raise EvidenceError("--redaction only previews (with --show); set advisor.redaction")
+
+        def confirm(question: str) -> bool:
+            if args.yes:
+                return True
+            if not sys.stdin.isatty():
+                print("checker: not sent: confirm with --yes, or raise advisor.max_cost_per_run",
+                      file=sys.stderr)  # fmt: skip
+                return False
+            return input(question).strip().lower() in ("y", "yes")
+
+        advice = advise(
+            store, args.host, identity, config, inventory, prior, whitelist,
+            role=args.role, bundle_id=args.bundle, confirm=confirm,
+        )  # fmt: skip
+    except (EvidenceError, OSError, AdvisorError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     finally:
         store.close()
-    mode = args.redaction or config.advisor.redaction
-    payload, pseudonyms = redact(built, mode, known)
-    text = json.dumps(payload, indent=1, ensure_ascii=False)
-    print(text)
-    placeholders = len(pseudonyms.originals) if pseudonyms else 0
-    print(
-        f"[{len(text)} characters, about {len(text) // 4} tokens; redaction {mode};"
-        f" {placeholders} placeholders, kept only for this run. Nothing was sent.]",
-        file=sys.stderr,
-    )
-    if mode != config.advisor.redaction:
-        print(
-            f"[The configured redaction is {config.advisor.redaction}; this preview used {mode}.]",
-            file=sys.stderr,
-        )
-    if not config.advisor.enabled:
-        print("[The advisor is off; this is what it would send.]", file=sys.stderr)
-    return 0
+    _print_advice(advice, args.role)
+    return 0 if advice.status == "answered" else 1
 
 
 def cmd_report(args: argparse.Namespace) -> int:

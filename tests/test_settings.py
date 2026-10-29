@@ -184,6 +184,7 @@ def test_older_configuration_files_get_the_advisor_off(base):
         ("advisor.api_key_source", "keyring", "keyring"),
         ("advisor.inference_geo", "us", "us"),
         ("advisor.max_cost_per_run", "2.5", 2.5),
+        ("advisor.fallback", "off", "off"),
     ],
 )
 def test_every_setting_round_trips(base, key, text, value):
@@ -200,7 +201,7 @@ def test_every_setting_round_trips(base, key, text, value):
 
 
 def test_the_table_lists_every_setting_tested():
-    assert len(SETTABLE) == 12
+    assert len(SETTABLE) == 13
 
 
 @pytest.mark.parametrize(

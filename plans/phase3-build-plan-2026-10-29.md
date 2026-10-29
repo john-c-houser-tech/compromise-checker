@@ -1,7 +1,7 @@
 # Phase 3 build plan — 2026-10-29
 
 > **Status: DRAFT 1, 2026-10-29** — shape agreed by John; decisions 1,
-> 2, 3 and 6 settled; 4, 5, 7 and 8 open. Nothing built yet.
+> 2, 3, 4 and 6 settled; 5, 7 and 8 open. Nothing built yet.
 
 **Goal (DESIGN.md §18, Phase 3):** an operator who turns the advisor on
 gets a plain-language reading of an assessment, whitelist proposals they can
@@ -352,12 +352,11 @@ The advisor's answers can't be golden-tested, so they are measured.
    declined and the model and provider that answered, from the response.
    `off` and `anthropic` arrive in 3.2; `model` in 3.7 with local models
    (same endpoint code). Policy §9 says so in 3.8.
-4. **Before 3.1 — login hours.** The Phase 2 plan left "logins at unusual
-   hours" (DESIGN.md §8.3) for the advisor to propose. Deterministic is
-   better here: learn each host's normal hours from its own stored
-   assessments, as a Phase 2-style check with a ratio, and leave the
-   advisor out of it. Recommendation: build it as a small check PR outside
-   the advisor (3.1b), or move it to the 'After Phase 3' list.
+4. ~~Before 3.1 — login hours.~~ **Decided 2026-10-29:** an ordinary,
+   deterministic check, not the advisor's: each host's normal login hours
+   per account, learned from its own stored history; a login well outside
+   them is a finding with a ratio like any other; until there are a few
+   weeks of history, coverage says so. A small PR after 3.2 (3.2b).
 5. **Before 3.7 — triage model.** Whether to ship a suggested value for
    `advisor.triage_model` (a faster, cheaper model such as
    `claude-sonnet-5-5` or `claude-haiku-5-5` for quiet hosts) or leave it

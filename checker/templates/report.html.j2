@@ -97,6 +97,7 @@ policy §9).</p>
 {% macro finding_card(f) %}
 <div class="finding">
 <div><span class="band {{ f.band }}">{{ f.band|upper }}</span>
+<span class="mono muted">F-{{ f.number }}</span>
 <span class="title">{{ f.title|visible(200) }}</span>
 {% if f.new %}<span class="tag">new</span>{% endif %}
 <span class="tag mono">{{ f.check }}</span></div>
@@ -173,6 +174,20 @@ uncertain findings count half. Suppressed and informational findings don't count
 {% else %}<p class="muted">No gaps recorded.</p>{% endif %}
 {% set waiting = r.assessment.checks|rejectattr("status", "equalto", "ran")|list %}
 {% if waiting %}<p>Checks not run: {% for c in waiting %}<span class="mono">{{ c.check }}</span> ({{ c.status|visible(200) }}){% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+{% set a = r.advice.get("explain") %}
+{% if a %}
+<h3>AI advisor (advice, not findings)</h3>
+<div class="notice">
+<p class="meta">Asked {{ a.model_asked|visible(80) }}{% if a.declined_by %}; declined by {{ a.declined_by|join(", ")|visible(200) }}{% endif %}{% if a.model_answered %}; answered by {{ a.model_answered|visible(80) }}{% endif %} · redaction {{ a.redaction }} · {{ a.at[:16] }} UTC · about the assessment of {{ a.assessed_at[:16] }}{% if a.stale %} · <strong>stale: the host has been assessed again since</strong>{% endif %}</p>
+{% if a.answer %}
+<p><strong>Verdict: {{ a.answer.verdict|visible(80) }}.</strong> {{ a.answer.summary|visible(2000) }}</p>
+{% if a.answer.most_important %}<p>Most important:</p><ul>{% for p in a.answer.most_important %}<li><span class="mono">{{ p.finding|visible(20) }}</span>: {{ p.why|visible(1000) }}</li>{% endfor %}</ul>{% endif %}
+{% if a.answer.innocent_explanations %}<p>Possible innocent explanations:</p><ul>{% for p in a.answer.innocent_explanations %}<li><span class="mono">{{ p.finding|visible(20) }}</span>: {{ p.explanation|visible(1000) }}</li>{% endfor %}</ul>{% endif %}
+{% if a.answer.what_would_settle_it %}<p>What would settle it:</p><ul>{% for q in a.answer.what_would_settle_it %}<li>{{ q|visible(1000) }}</li>{% endfor %}</ul>{% endif %}
+{% else %}<p>No advice: {{ a.note|visible(400) }}.</p>{% endif %}
+<p class="muted">Written by an AI model from the findings above; the probability and band are the tool's own and unchanged. Finding numbers (F-n) count the analysis's findings in order.</p>
+</div>
+{% endif %}
 {% endfor %}
 
 <h2>Appendix</h2>
@@ -189,7 +204,7 @@ Suppressed findings are kept, here, and count for nothing in the probability.</p
 <tr><th>Band</th><th>Finding</th><th>Rule</th><th>Reason</th><th>Owner</th></tr>
 {% for f in r.suppressed %}
 <tr><td><span class="band {{ f.band }}">{{ f.band|upper }}</span></td>
-<td>{{ f.title|visible(200) }}<div class="mono muted">{{ f.summary|visible(300) }}</div></td>
+<td><span class="mono muted">F-{{ f.number }}</span> {{ f.title|visible(200) }}<div class="mono muted">{{ f.summary|visible(300) }}</div></td>
 <td class="mono">{{ f.suppressed_by.layer|visible(80) }} / {{ f.suppressed_by.rule|visible(80) }}</td>
 <td>{{ f.suppressed_by.reason|visible(300) }}</td><td>{{ f.suppressed_by.owner|visible(80) }}</td></tr>
 {% endfor %}

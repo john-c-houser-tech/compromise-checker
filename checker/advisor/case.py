@@ -945,10 +945,11 @@ def case_for_host(
     prior: tuple[float, str],
     whitelist,
     bundle_id: str | None = None,
-) -> tuple[dict[str, Any], Known]:
+) -> tuple[dict[str, Any], Known, dict[str, Any]]:
     """The case for a host's latest (or a given) bundle, from the same
     current assessment the report shows (analysed or reassessed first if
-    the checks, whitelist or prior changed)."""
+    the checks, whitelist or prior changed), its names to redact, and
+    which assessment it is (bundle, when assessed, band)."""
     from checker.report import host_report
 
     report = host_report(store, host, identity, recipients, bundle_id, prior, whitelist)
@@ -969,4 +970,9 @@ def case_for_host(
         (report.assessment.get("score") or {}).get("chains") or [],
         [(h.name, h.address, h.user, h.group) for h in inventory.hosts],
     )
-    return built, known
+    which = {
+        "bundle_id": report.row["id"],
+        "assessed_at": report.assessment.get("analysed_at"),
+        "band": (report.assessment.get("score") or {}).get("band"),
+    }
+    return built, known, which

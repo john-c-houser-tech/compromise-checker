@@ -125,6 +125,8 @@ class HostReport:
     suppressed: list[dict] = field(default_factory=list)  # whitelisted, for the appendix
     timeline: list[dict] = field(default_factory=list)
     counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    # The advisor's latest record per role for this bundle (policy §9).
+    advice: dict[str, dict] = field(default_factory=dict)
     # What the findings' evidence points into, for the advisor's case file.
     events: list = field(default_factory=list)
     snapshot: Snapshot | None = None
@@ -299,9 +301,16 @@ def host_report(
         snapshot=snapshot,
         baselines=baselines,
     )
+    from checker.advisor.advise import latest_advice
+
+    for record in latest_advice(store, row["id"], identity).values():
+        record["stale"] = record["assessed_at"] != assessment.get("analysed_at")
+        report.advice[record["role"]] = record
     timeline = {}
-    for finding in assessment["findings"]:
-        finding = dict(finding, excerpts=excerpts(finding, events, snapshot, baselines))
+    for number, finding in enumerate(assessment["findings"], 1):
+        finding = dict(
+            finding, number=number, excerpts=excerpts(finding, events, snapshot, baselines)
+        )
         if finding.get("suppressed_by"):
             report.suppressed.append(finding)
             continue  # in the appendix, with its rule; not in the timeline

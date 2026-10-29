@@ -116,6 +116,13 @@ def describe(config: Config) -> list[str]:
         f"  Redaction: {advisor.redaction}: {REDACTION[advisor.redaction]}.",
         "  `checker config check-key` checks the key can be read, without sending anything.",
         f"  Asks before a run estimated above ${advisor.max_cost_per_run:.2f}.",
+        "  If the model's safety checks decline a request: "
+        + (
+            "it is re-run on the model Anthropic recommends for that kind of decline"
+            " (same provider and account), and the report names both."
+            if advisor.fallback == "anthropic"
+            else "nothing more is sent; the report says it was declined."
+        ),
     ]
     if advisor.inference_geo:
         lines.append(f"  Inference geography: {advisor.inference_geo}.")
@@ -158,6 +165,7 @@ SETTABLE: dict[str, Setting] = {
         Setting(("advisor", "api_key_source"), str, "env, keyring or command:<command>"),
         Setting(("advisor", "inference_geo"), _optional, "e.g. us, or none"),
         Setting(("advisor", "max_cost_per_run"), float, "US dollars (default 1.00)"),
+        Setting(("advisor", "fallback"), str, "on a decline: anthropic (default) or off"),
     )
 }
 

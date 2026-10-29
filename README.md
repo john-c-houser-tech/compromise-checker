@@ -25,8 +25,15 @@ What works today:
   which leave it off), and where its API key comes from
   (`--advisor-key-source env|keyring|command:<command>`; never stored in
   the configuration).
-- `checker advise HOST --show [--redaction MODE]` — prints exactly what the
-  optional AI advisor would be sent about a host's latest analysis, after
+- `checker advise HOST [--yes]` — asks the optional AI advisor to explain a
+  host's latest analysis (verdict, what matters most, innocent
+  explanations, what would settle it), after showing the estimated cost
+  and asking above `advisor.max_cost_per_run`. The answer is checked
+  against the case (it must name only real findings and agree with the
+  band), its placeholders turned back into names, and it is stored
+  encrypted with exactly what was sent; the report shows it, labelled
+  with the models and redaction, separately from the findings.
+  `--show [--redaction MODE]` prints exactly what would be sent, after
   redaction, and sends nothing. Under *pseudonymize* (the default) people's
   account names, host names, email addresses, IP addresses and SSH key
   fingerprints become placeholders (USER-2-7f3a) made fresh for each run;

@@ -1,0 +1,28 @@
+# Compromise Checker: record program starts by the web server's accounts
+# (DESIGN.md §8.12), so a shell or download tool a web application started
+# shows even after it has exited.
+#
+# Install as root:
+#   cp auditd-web.rules /etc/audit/rules.d/50-compromise-checker-web.rules
+#   augenrules --load
+#
+# Keep only the lines for accounts that exist on the server (auditctl
+# refuses a rule naming an unknown account): www-data on Debian and Ubuntu,
+# apache on RHEL and its rebuilds, nginx where nginx runs as its own user.
+# Add lines for any other account your web applications run as. Both uid
+# and euid: a web shell that runs a set-user-ID program keeps its uid.
+
+-a always,exit -F arch=b64 -S execve,execveat -F euid=www-data -k cc-web-exec
+-a always,exit -F arch=b32 -S execve,execveat -F euid=www-data -k cc-web-exec
+-a always,exit -F arch=b64 -S execve,execveat -F uid=www-data -k cc-web-exec
+-a always,exit -F arch=b32 -S execve,execveat -F uid=www-data -k cc-web-exec
+
+-a always,exit -F arch=b64 -S execve,execveat -F euid=apache -k cc-web-exec
+-a always,exit -F arch=b32 -S execve,execveat -F euid=apache -k cc-web-exec
+-a always,exit -F arch=b64 -S execve,execveat -F uid=apache -k cc-web-exec
+-a always,exit -F arch=b32 -S execve,execveat -F uid=apache -k cc-web-exec
+
+-a always,exit -F arch=b64 -S execve,execveat -F euid=nginx -k cc-web-exec
+-a always,exit -F arch=b32 -S execve,execveat -F euid=nginx -k cc-web-exec
+-a always,exit -F arch=b64 -S execve,execveat -F uid=nginx -k cc-web-exec
+-a always,exit -F arch=b32 -S execve,execveat -F uid=nginx -k cc-web-exec

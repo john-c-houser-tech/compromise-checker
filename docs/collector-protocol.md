@@ -76,6 +76,14 @@ stores it with the evidence; the manifest carries the version string only.
   (collector-modules.md, `mail`). Omitted or `null`: no mail log is sent.
   The manifest repeats the settings with this replaced by `id:` and an
   identifier of the key, never the key.
+- `web_access_logs` — optional, `false` by default: whether web servers'
+  access logs are sent (policy §7; `checker init --web-access-logs`).
+  Error logs always are.
+- `exec_records` — optional: whose program starts are read from the audit
+  log: `"web"` (the default), `"privileged"` or `"all"` (`checker init
+  --exec-records`).
+- `web_users` — optional: up to 64 more web-server account names
+  (`web_users` in the configuration).
 - `mail_key_withheld` — optional: why the controller sent no mail key to
   this host (at most 300 characters); the collector records it with
   `mail_logs_withheld`.

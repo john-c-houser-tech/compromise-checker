@@ -85,6 +85,9 @@ async def collect_hosts(
         modules=modules,  # None: every module
         limits=limits,
         home_text=config.home_text,
+        web_access_logs=config.web_access_logs,
+        exec_records=config.exec_records,
+        web_users=config.web_users,
     )
     key = mail_key(home)
     fingerprint = collector_sha256()

@@ -675,6 +675,27 @@ runs, 24 Nanodes, about 18 cents. Phase 2 spend so far: about 50 cents.
   shell, requested a few times with `curl`; auditd installed with the
   shipped rules so the historical path is proved too.
 
+*2.8a as built (collection and parsing; checks follow in 2.8b):* policy §7's
+web bullets worded with John (2026-10-29). `checker init --web-access-logs`
+and `--exec-records web|privileged|all`; `web_users` in the configuration.
+The `web_logs` module reads program starts first (audit log, newest 64 MiB,
+execve records joined by time and serial, arguments masked whole then cut),
+then nginx/Apache/PHP-FPM configuration (linked sites followed) and logs
+newest first: error logs always, access logs only with the opt-in (an
+ambiguous name counts as access). Query and referrer values masked with
+names kept, attacks named; combined and vhost_combined lines' agents cut by
+characters; other formats masked field by field. Parser: `web.request` kept
+only for 5xx, attacks (markers in request or referrer; traversal, `<?php`,
+JNDI, Shellshock, NUL in path or agent), scripts, and 2xx for secrets or
+backups; the rest counted per network in the snapshot's live part;
+`web.error`, `process.exec`. Coverage: access logs not chosen, no audit log,
+no program starts recorded, formats not recognised. `docs/auditd-web.rules`
+(uid and euid). Independent review: 4 high, 7 medium and several low
+findings, all fixed (the url_password masking rule's quadratic scheme fixed
+too). Read-only proof PASS 7/7 with nginx and PHP-FPM, the shipped rules
+and secret-bearing queries and referrers (none left the server); 7
+Nanodes, about 5 cents. Phase 2 spend so far: about 55 cents.
+
 ### 2.9 — Containers (8.13) (decision 4: decided)
 
 - **Collector, new module `containers`**, reading files only (decision 4),

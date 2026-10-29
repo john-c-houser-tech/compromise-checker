@@ -102,6 +102,7 @@ def coverage(
         gaps.append("no system journal events: kernel messages and shutdowns can't be checked")
     if not any(e.type in ("system.boot_journal", "system.boot") for e in events):
         gaps.append("no boot list or boot records: reboots can't be classified")
+    gaps += web_gaps(snapshot)
     withheld = snapshot.live.get("mail_logs_withheld")
     if withheld:
         gaps.append(f"mail logs not collected ({withheld.get('reason')}): outgoing mail unchecked")
@@ -116,6 +117,33 @@ def coverage(
             " it are listed as findings"
         )
     return {"gaps": gaps, "log_reach": reach}
+
+
+def web_gaps(snapshot: Snapshot) -> list[str]:
+    """What the web checks couldn't see: access logs not chosen at setup,
+    no audit log for program starts, logs in a format not recognised."""
+    gaps: list[str] = []
+    web = snapshot.live.get("web_logs_summary")
+    if web and not web.get("access_logs_opted_in") and web.get("access_found"):
+        gaps.append(
+            "web access logs not collected (not chosen at setup): web checks use error logs,"
+            " processes and audit records only"
+        )
+    if snapshot.live.get("exec_records_unavailable"):
+        gaps.append(
+            "no audit log: earlier program starts by web accounts can't be checked"
+            " (docs/auditd-web.rules sets auditd up for them)"
+        )
+    elif (snapshot.live.get("exec_records_summary") or {}).get("starts") == 0:
+        gaps.append(
+            "no program starts in the audit log: auditd isn't recording them, so earlier"
+            " ones by web accounts can't be checked (docs/auditd-web.rules)"
+        )
+    requests = snapshot.live.get("web_requests") or {}
+    for name, unparsed in sorted((requests.get("unparsed") or {}).items()):
+        if unparsed * 2 > (requests.get("lines") or {}).get(name, 0):
+            gaps.append(f"web log format not recognised: {name} ({unparsed} lines)")
+    return gaps
 
 
 def count(findings: list[dict[str, Any]]) -> dict[str, int]:

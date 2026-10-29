@@ -30,7 +30,13 @@ from pydantic_core import PydanticCustomError
 PROTOCOL = 1
 
 HomeText = Literal["off", "privileged", "all"]
+# Whose program starts are collected from the audit log (policy §7): the
+# web server's accounts; also root, service and administrator accounts;
+# or, with that, every account.
+ExecRecords = Literal["web", "privileged", "all"]
 MAX_WEB_ROOTS = 64
+MAX_WEB_USERS = 64
+ACCOUNT_NAME = r"^[A-Za-z0-9_.][A-Za-z0-9_.@\\$-]{0,255}$"
 
 
 def check_web_roots(value: list[str] | None) -> list[str] | None:
@@ -81,6 +87,13 @@ class Settings(_Model):
     mail_key: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", repr=False)
     # Why the controller didn't send the key to this host, if it didn't.
     mail_key_withheld: str | None = Field(default=None, max_length=300)
+    # Web access logs, opt-in (policy §7); error logs are always collected.
+    web_access_logs: bool = False
+    exec_records: ExecRecords = "web"
+    # Web-server accounts beyond www-data, apache, nginx and the like.
+    web_users: list[Annotated[str, Field(pattern=ACCOUNT_NAME)]] = Field(
+        default=[], max_length=MAX_WEB_USERS
+    )
 
     @field_validator("web_roots")
     @classmethod

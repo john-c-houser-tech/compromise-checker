@@ -7,7 +7,7 @@ from test_checks import T0, ev, of, run
 from test_checks_live import proc, snap
 
 from checker.events import classify
-from checker.whitelist import PROFILES, matches, profile_file, read_layer
+from checker.whitelist import PROFILES, Layer, build, matches, profile_file, read_layer
 
 SHIPPED = sorted(p.stem for p in PROFILES.glob("*.yaml"))
 
@@ -242,3 +242,11 @@ def test_sd_pam_holds_what_pid_1_loaded():
     )
     [other] = [f for f in found if "pid 901" in f.summary]
     assert (other.variant, other.band) == ("deleted", "high")
+
+
+def test_a_profile_is_recorded_by_its_place_in_the_package_not_where_it_is_installed():
+    """The set's hash (recorded in every assessment, pinned by the golden
+    cases) must not depend on the machine."""
+    wl = build([("site", "site.yaml", Layer(profiles=["base"]))])
+    files = {p.file for p in wl.rules}
+    assert files == {"checker/profiles/base.yaml"}

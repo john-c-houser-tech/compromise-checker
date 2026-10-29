@@ -1000,7 +1000,7 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "6ce0cf7b7b9fa708a551fbad263ad502ba5c84bd0de4a1a56778c0fc73c22336",
+  "hash": "b5614fdd4a748d9912013574eb6412954ed5c31b7327f538de5c14d2816eeab5",
   "maintenance": 0,
   "matched": {
    "host ubuntu24.04/proof-at-job-debian": 1,
@@ -1108,7 +1108,7 @@
    {
     "broad": false,
     "expires": "never",
-    "file": "/home/jch/Projects/compromise-checker/checker/profiles/base.yaml",
+    "file": "checker/profiles/base.yaml",
     "id": "base-efi-tree-mode",
     "layer": "profile base",
     "match": {
@@ -1122,7 +1122,7 @@
    {
     "broad": false,
     "expires": "never",
-    "file": "/home/jch/Projects/compromise-checker/checker/profiles/base.yaml",
+    "file": "checker/profiles/base.yaml",
     "id": "base-efi-directory-mode",
     "layer": "profile base",
     "match": {
@@ -1136,7 +1136,7 @@
    {
     "broad": false,
     "expires": "never",
-    "file": "/home/jch/Projects/compromise-checker/checker/profiles/base.yaml",
+    "file": "checker/profiles/base.yaml",
     "id": "base-firewalld-libffi",
     "layer": "profile base",
     "match": {

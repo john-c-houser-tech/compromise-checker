@@ -774,8 +774,10 @@ def build(layers: list[tuple[str, str, Layer]]) -> Whitelist:
             applied.add(name)
             path = profile_file(name)
             profile = read_layer(path)
+            # Named by its place in the package, not where it is installed:
+            # the set's hash is the same on every machine.
             for rule in [*profile.rules, *profile.maintenance]:
-                add(rule, f"profile {name}", str(path))
+                add(rule, f"profile {name}", f"checker/profiles/{name}.yaml")
         for item in layer.disable:
             before = len(placed)
             placed = [p for p in placed if p.rule.id != item.id]

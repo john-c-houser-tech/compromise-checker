@@ -671,7 +671,7 @@
    "ratio": 1.5,
    "summary": "firewalld (pid 635): /memfd:libffi (deleted)",
    "suppressed_by": {
-    "file": "/home/jch/Projects/compromise-checker/checker/profiles/base.yaml",
+    "file": "checker/profiles/base.yaml",
     "layer": "profile base",
     "owner": "Compromise Checker defaults",
     "reason": "firewalld (RHEL, Rocky, Alma) runs on Python, whose ctypes has libffi make its closures in memory-only files. Only the libffi kind, only firewalld on the system's Python: another Python process with such a file stays a (low) finding, and code from a deleted or scratch file always does.",
@@ -1078,7 +1078,7 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "ae039b313cda2461c92e919db20355bd0380c3c7892d846613b90193e9a1d601",
+  "hash": "b3a24692f93ad6d0b75c1746771d8879548fa75e0c780a6feecc4b4c0f93bc11",
   "maintenance": 0,
   "matched": {
    "host rocky9/proof-at-job-redhat": 1,
@@ -1185,7 +1185,7 @@
    {
     "broad": false,
     "expires": "never",
-    "file": "/home/jch/Projects/compromise-checker/checker/profiles/base.yaml",
+    "file": "checker/profiles/base.yaml",
     "id": "base-efi-tree-mode",
     "layer": "profile base",
     "match": {
@@ -1199,7 +1199,7 @@
    {
     "broad": false,
     "expires": "never",
-    "file": "/home/jch/Projects/compromise-checker/checker/profiles/base.yaml",
+    "file": "checker/profiles/base.yaml",
     "id": "base-efi-directory-mode",
     "layer": "profile base",
     "match": {
@@ -1213,7 +1213,7 @@
    {
     "broad": false,
     "expires": "never",
-    "file": "/home/jch/Projects/compromise-checker/checker/profiles/base.yaml",
+    "file": "checker/profiles/base.yaml",
     "id": "base-firewalld-libffi",
     "layer": "profile base",
     "match": {

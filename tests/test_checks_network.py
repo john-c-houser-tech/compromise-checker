@@ -61,7 +61,8 @@ def test_metadata_by_the_file_a_process_runs_not_its_name():
         f.summary.split(" (")[0] + f" {f.summary.split('pid ')[1].split(',')[0]}": f.band
         for f in found("net.metadata", processes, sockets)
     }
-    assert bands == {"bash 5": "low", "cloud-init 8": "medium", "aws 9": "low"}
+    # A root shell is medium even from /usr/bin; an SDK-like program, low.
+    assert bands == {"bash 5": "medium", "cloud-init 8": "medium", "aws 9": "low"}
 
 
 def test_the_ipv6_metadata_address_and_mapped_forms():
@@ -283,3 +284,34 @@ def test_docker_user_is_compared_rule_by_rule():
         "[filter] *filter",
         "[filter / chain DOCKER-USER] -A DOCKER-USER -p tcp --dport 31337 -j ACCEPT",
     ]
+
+
+def test_a_shared_uid_is_named_after_its_first_account():
+    from test_checks import Context  # noqa: F401 - the run helper builds one
+
+    from checker.checks.network import _accounts_by_uid
+
+    snapshot = snap(
+        accounts={
+            "cc-toor": {"uid": 0, "line": 30},
+            "root": {"uid": 0, "line": 1},
+            "a": {"uid": 1001, "line": 5},
+            "b": {"uid": 1001, "line": 4},
+        }
+    )
+
+    class Ctx:
+        def items(self, section):
+            return snapshot.sections[section].items
+
+    names = _accounts_by_uid(Ctx())
+    assert names[0] == "root" and names[1001] == "b"
+
+
+@pytest.mark.parametrize(
+    "exe", ["/usr/bin/sleep", "/usr/bin/curl", "/usr/bin/nc", "/usr/bin/python3"]
+)
+def test_generic_tools_reaching_the_metadata_address_stay_medium(exe):
+    processes = [proc(5, exe.rsplit("/", 1)[-1], exe=exe, cmdline=exe, uids=ROOT)]
+    [finding] = found("net.metadata", processes, [sock(["169.254.169.254", 80], [5])])
+    assert finding.band == "medium"

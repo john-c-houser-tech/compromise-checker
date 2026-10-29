@@ -395,6 +395,22 @@ side note: a chain named like a managed one is only summarised, so a new
 check, `net.managed_chain`, flags such a chain whose owner isn't running,
 and `DOCKER-USER` is compared rule by rule.
 
+*2.4b proofs (2026-10-28, approved by John; about 3 cents, every server
+deleted):* read-only PASS on Ubuntu 22.04, 24.04 and 26.04 with ufw and
+Docker running: nft_compat loaded, the rules listed with `nft`, no firewall
+module changed, the collector wrote nothing. Detection PASS on Ubuntu 24.04
+and Rocky 9 after two reruns, all fifteen behaviours at their bands. The
+first run found every behaviour but failed on the proof's own metadata
+check (bash had replaced itself with `sleep`; now checked by socket) and
+showed root's connections named after the proof's second UID 0 account
+(a shared UID is now named after its first account). The second showed
+the metadata connection at low: a root `sleep` in a system directory read
+as SDK-like, so shells, interpreters without a script and generic tools
+now stay medium. Golden cases re-exported from the first run (they now
+hold the network behaviours); the proof whitelist covers its Docker
+install (`dnsmasq` account, `docker` group). Phase 2 spend so far: about
+11 cents.
+
 *2.4a proof (2026-10-28, read-only, all seven images, 7 Nanodes, about 5
 cents, all deleted):* PASS on every image: the collector wrote nothing and
 no firewall module was loaded or unloaded during any collection.

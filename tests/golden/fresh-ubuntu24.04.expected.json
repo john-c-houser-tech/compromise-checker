@@ -6,7 +6,7 @@
   },
   {
    "check": "account.log_changes",
-   "findings": 2,
+   "findings": 4,
    "status": "ran"
   },
   {
@@ -215,16 +215,46 @@
    "check": "account.log_changes",
    "contribution": 0.0,
    "entities": [
+    "account:dnsmasq"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 49
+    }
+   ],
+   "first_seen": "2026-10-28T23:55:58.077927+00:00",
+   "last_seen": "2026-10-28T23:55:58.077927+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: dnsmasq UID 999",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account).",
+    "rule": "proof-docker-dnsmasq-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
     "account:proofuser"
    ],
    "entities_complete": true,
    "evidence": [
     {
-     "event": 53
+     "event": 56
     }
    ],
-   "first_seen": "2026-10-28T20:38:32.159748+00:00",
-   "last_seen": "2026-10-28T20:38:32.159748+00:00",
+   "first_seen": "2026-10-28T23:56:15.680031+00:00",
+   "last_seen": "2026-10-28T23:56:15.680031+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -250,11 +280,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 51
+     "event": 54
     }
    ],
-   "first_seen": "2026-10-28T20:38:26.352414+00:00",
-   "last_seen": "2026-10-28T20:38:26.352414+00:00",
+   "first_seen": "2026-10-28T23:56:08.769051+00:00",
+   "last_seen": "2026-10-28T23:56:08.769051+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -275,14 +305,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/cron/atjobs/a0000101c80a8e"
+    "path:/var/spool/cron/atjobs/a0000101c80b54"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/cron/atjobs/a0000101c80a8e"
+      "/var/spool/cron/atjobs/a0000101c80b54"
      ]
     }
    ],
@@ -290,7 +320,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/cron/atjobs/a0000101c80a8e (owner UID 0)",
+   "summary": "/var/spool/cron/atjobs/a0000101c80b54 (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -309,7 +339,7 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.11"
+    "address:203.0.113.10"
    ],
    "entities_complete": true,
    "evidence": [
@@ -317,11 +347,11 @@
      "event": 34
     }
    ],
-   "first_seen": "2026-10-28T20:38:00.063720+00:00",
-   "last_seen": "2026-10-28T20:38:00.063720+00:00",
+   "first_seen": "2026-10-28T23:55:24.190486+00:00",
+   "last_seen": "2026-10-28T23:55:24.190486+00:00",
    "new": true,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.11 (publickey)",
+   "summary": "root from 203.0.113.10 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -335,12 +365,42 @@
   },
   {
    "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "group:docker"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 51
+    }
+   ],
+   "first_seen": "2026-10-28T23:55:59.983959+00:00",
+   "last_seen": "2026-10-28T23:55:59.983959+00:00",
+   "new": true,
+   "ratio": 1.5,
+   "summary": "created: group docker",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu, which creates the docker group.",
+    "rule": "proof-docker-group"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
    "category": "hygiene",
    "check": "process.injected",
    "contribution": 0.0,
    "entities": [
     "program:(sd-pam)",
-    "pid:841",
+    "pid:838",
     "exe:/usr/lib/systemd/systemd-executor"
    ],
    "entities_complete": true,
@@ -348,15 +408,15 @@
     {
      "live": [
       "processes",
-      841
+      838
      ]
     }
    ],
-   "first_seen": "2026-10-28T20:37:59.210000+00:00",
-   "last_seen": "2026-10-28T20:37:59.210000+00:00",
+   "first_seen": "2026-10-28T23:55:24.690000+00:00",
+   "last_seen": "2026-10-28T23:55:24.690000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "(sd-pam) (pid 841): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "(sd-pam) (pid 838): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -368,7 +428,7 @@
    "contribution": 0.0,
    "entities": [
     "program:dbus-daemon",
-    "pid:664",
+    "pid:665",
     "exe:/usr/bin/dbus-daemon"
    ],
    "entities_complete": true,
@@ -376,15 +436,15 @@
     {
      "live": [
       "processes",
-      664
+      665
      ]
     }
    ],
-   "first_seen": "2026-10-28T20:37:54.580000+00:00",
-   "last_seen": "2026-10-28T20:37:54.580000+00:00",
+   "first_seen": "2026-10-28T23:55:21.090000+00:00",
+   "last_seen": "2026-10-28T23:55:21.090000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "dbus-daemon (pid 664): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "dbus-daemon (pid 665): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -396,7 +456,7 @@
    "contribution": 0.0,
    "entities": [
     "program:sshd",
-    "pid:835",
+    "pid:832",
     "exe:/usr/sbin/sshd"
    ],
    "entities_complete": true,
@@ -404,15 +464,15 @@
     {
      "live": [
       "processes",
-      835
+      832
      ]
     }
    ],
-   "first_seen": "2026-10-28T20:37:58.910000+00:00",
-   "last_seen": "2026-10-28T20:37:58.910000+00:00",
+   "first_seen": "2026-10-28T23:55:24.380000+00:00",
+   "last_seen": "2026-10-28T23:55:24.380000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "sshd (pid 835): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "sshd (pid 832): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -424,7 +484,7 @@
    "contribution": 0.0,
    "entities": [
     "program:systemd",
-    "pid:840",
+    "pid:837",
     "exe:/usr/lib/systemd/systemd"
    ],
    "entities_complete": true,
@@ -432,15 +492,15 @@
     {
      "live": [
       "processes",
-      840
+      837
      ]
     }
    ],
-   "first_seen": "2026-10-28T20:37:59.190000+00:00",
-   "last_seen": "2026-10-28T20:37:59.190000+00:00",
+   "first_seen": "2026-10-28T23:55:24.680000+00:00",
+   "last_seen": "2026-10-28T23:55:24.680000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "systemd (pid 840): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "systemd (pid 837): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -452,7 +512,7 @@
    "contribution": 0.0,
    "entities": [
     "program:systemd-logind",
-    "pid:673",
+    "pid:674",
     "exe:/usr/lib/systemd/systemd-logind"
    ],
    "entities_complete": true,
@@ -460,15 +520,15 @@
     {
      "live": [
       "processes",
-      673
+      674
      ]
     }
    ],
-   "first_seen": "2026-10-28T20:37:54.840000+00:00",
-   "last_seen": "2026-10-28T20:37:54.840000+00:00",
+   "first_seen": "2026-10-28T23:55:21.390000+00:00",
+   "last_seen": "2026-10-28T23:55:21.390000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "systemd-logind (pid 673): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "systemd-logind (pid 674): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -657,15 +717,45 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "211bfa37aba7ae800df272b2eb367c8ce89eaa86d9a45c479611b886eb40c87a",
+  "hash": "c863c11395b7b42b5e4c098010934d8d28bd4b3c2c88935a997e74c4d576bada",
   "maintenance": 0,
   "matched": {
    "host ubuntu24.04/proof-at-job-debian": 1,
+   "host ubuntu24.04/proof-docker-dnsmasq-account": 1,
+   "host ubuntu24.04/proof-docker-group": 1,
    "host ubuntu24.04/proof-proofuser-account": 1,
    "host ubuntu24.04/proof-root-login": 1,
    "host ubuntu24.04/proof-scanner-account": 1
   },
   "rules": [
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-docker-group",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "check": "account.log_changes",
+     "group": "docker",
+     "variant": "group_created"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu, which creates the docker group."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-docker-dnsmasq-account",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "account": "dnsmasq",
+     "check": "account.log_changes",
+     "variant": "created"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account)."
+   },
    {
     "broad": false,
     "expires": "never",
@@ -733,7 +823,7 @@
     "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up."
    }
   ],
-  "suppressed": 4,
+  "suppressed": 6,
   "windows": []
  }
 }

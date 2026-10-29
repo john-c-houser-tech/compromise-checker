@@ -41,6 +41,13 @@ CLOUD_AGENTS = {
     "aliyun-service",
 }
 INTERPRETERS = re.compile(r"^(?:python[\d.]*|perl[\d.]*|ruby[\d.]*|node|bash|sh)$")
+# Tools anyone at a prompt uses: in a system directory, they still say
+# nothing about being a legitimate agent.
+GENERIC = re.compile(
+    r"^(?:ba|da|z|k|c|tc|fi)?sh$|^python[\d.]*$|^perl[\d.]*$|^ruby[\d.]*$|^node$|^php[\d.]*$"
+    r"|^(?:curl|wget|nc|ncat|netcat|socat|telnet|openssl|sleep|cat|dd|busybox|nohup|timeout"
+    r"|env|setsid|runuser|su|sudo|script)$"
+)
 SYSTEM_DIRS = ("/usr/", "/opt/", "/snap/", "/bin/", "/sbin/", "/lib/")
 # Directory services a web tier has no business reaching (§8.8 ★): SMB and
 # WinRM high; LDAP and Kerberos medium, since web apps that log users in
@@ -106,11 +113,20 @@ DOCUMENTATION = tuple(
 
 
 def _accounts_by_uid(context: Context) -> dict[int, str]:
-    return {
-        item.get("uid"): name.split(" ", 1)[0]
-        for name, item in context.items("accounts").items()
-        if isinstance(item.get("uid"), int)
-    }
+    """Account names by UID. Where several share one, the first in
+    /etc/passwd is the one the system names (root, not a second UID 0
+    account added later)."""
+    found: dict[int, tuple[float, str]] = {}
+    for name, item in context.items("accounts").items():
+        uid = item.get("uid")
+        if not isinstance(uid, int):
+            continue
+        line = item.get("line") if isinstance(item.get("line"), int) else float("inf")
+        if uid == 0 and name == "root":
+            line = -1
+        if uid not in found or line < found[uid][0]:
+            found[uid] = (line, name.split(" ", 1)[0])
+    return {uid: name for uid, (_, name) in found.items()}
 
 
 def _processes(context: Context) -> dict[int, dict[str, Any]]:
@@ -283,7 +299,9 @@ def peers(context: Context) -> list[Finding]:
 def metadata(context: Context) -> list[Finding]:
     """A known agent (by the file it runs, in a system directory) isn't
     reported; another root program in a system directory is low (an SDK
-    using the instance's role does this); anything else is medium."""
+    using the instance's role does this), unless it is a shell, an
+    interpreter given no script, or a generic tool (curl, nc, sleep…);
+    anything else is medium."""
     processes, users = _processes(context), _accounts_by_uid(context)
     findings = []
     for sock in context.snapshot.live.get("sockets", []):
@@ -295,7 +313,8 @@ def metadata(context: Context) -> list[Finding]:
             in_system = path.startswith(SYSTEM_DIRS)
             if name in CLOUD_AGENTS and in_system:
                 continue
-            band = "low" if in_system and _user(process, users) == "root" else "medium"
+            sdk_like = in_system and not GENERIC.match(name)
+            band = "low" if sdk_like and _user(process, users) == "root" else "medium"
             findings.append(
                 _socket_finding(
                     "net.metadata",

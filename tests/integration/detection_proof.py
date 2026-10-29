@@ -115,8 +115,10 @@ ssh-keygen -q -t ed25519 -N '' -f /root/.ssh/cc_tunnel \
 # /etc/hosts redirecting a name.
 echo '203.0.113.66 github.com' >> /etc/hosts || fail hosts
 sleep 2
-pgrep -f 'dev/tcp/169.254.169.254/80' >/dev/null || fail metadata
-pgrep -f 'dev/tcp/127.0.0.1/445' >/dev/null || fail directory
+# By their sockets: bash replaces itself with its last command (sleep), so
+# its own command line is gone.
+ss -tnH state established dst 169.254.169.254 | grep -q . || fail metadata
+ss -tnH state established dst 127.0.0.1:445 | grep -q . || fail directory
 pgrep -f 'R 127.0.0.1:2222' >/dev/null || fail ssh-tunnel-running
 """
 

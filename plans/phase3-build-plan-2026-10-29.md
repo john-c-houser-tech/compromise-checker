@@ -216,12 +216,14 @@ assessment, its events, snapshot and whitelist, by one module
 
 - `ssh.login_hours` (checks version 13): the logins since the previous
   collection (all of them on the first) at hours unusual for the account;
-  its usual hours are learned from every earlier login the host's stored
-  bundles hold, each once (logs overlap between bundles), in UTC with an
-  hour's margin either side (summer time). An account needs 10 logins over
-  21 days first; until then coverage says how many weren't judged (checks
-  can now add coverage gaps). The tool's own logins and its scanner account
-  (the account on each bundle's own login) don't count. Band low,
+  each is judged against the account's logins before it, from every
+  stored bundle, each once (by the host's clock: bundles correct times by
+  their own offsets), in UTC with an hour's margin either side (summer
+  time); an hour is usual once logins at it came on two days. An account
+  needs 10 logins over 21 days first; until then coverage says how many
+  weren't judged (checks can now add coverage gaps). Past runs' own logins
+  don't count; the account this run logged in as (its stored session, so
+  also behind NAT) isn't judged. Band low,
   compromise indicator; whitelistable by account. Controller-only: no proof
   run needed; golden expectations list the new check, scores unchanged.
 

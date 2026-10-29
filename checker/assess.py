@@ -240,9 +240,19 @@ def analyze(
             " from the next one"
         )
 
+    loaded: list[list[Event]] = []
+
     def earlier() -> list[list[Event]]:
-        rows = [r for r in usable_bundles(store, host) if r["started_at"] < row["started_at"]]
-        return [events_of(store, r, identity, recipients) for r in rows]
+        """Earlier bundles' events, loaded once however many checks ask."""
+        if not loaded:
+            rows = [r for r in usable_bundles(store, host) if r["started_at"] < row["started_at"]]
+            loaded.append([events_of(store, r, identity, recipients) for r in rows])
+        return loaded[0]
+
+    # The account this run logged in as (its stored session): known even
+    # when the own-session filter couldn't tie its login to it (NAT).
+    session_text = open_text(row["session"], identity)
+    scanner = (json.loads(session_text) or {}).get("user") if session_text else None
 
     context = Context(
         host=host,
@@ -253,6 +263,7 @@ def analyze(
         since_baseline=since_baseline,
         since_previous=since_previous,
         earlier_events=earlier,
+        scanner=scanner,
         previous_time=previous_time,
         no_baseline=no_baseline,
         previous_snapshot=previous_snapshot,

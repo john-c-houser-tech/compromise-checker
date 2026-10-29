@@ -70,12 +70,11 @@ def test_the_margin_covers_summer_time():
 
 
 def test_only_logins_since_the_previous_collection_are_judged():
-    history = office_hours() + [login(29, 3)]  # an odd hour before the last collection
-    assert all(
-        f.summary.startswith("jch: 1 login(s) at 04")
-        for f in login_hours(context(history + [login(31, 4)]))
-    )
-    assert login_hours(context(history)) == []
+    history = office_hours()
+    old_odd = login(29, 3)  # before the previous collection: history, not judged
+    found = login_hours(context(history + [old_odd, login(31, 15)]))
+    assert [f.summary.split(";")[0] for f in found] == ["jch: 1 login(s) at 15:00 UTC"]
+    assert login_hours(context(history + [old_odd])) == []
 
 
 def test_the_tools_own_logins_and_its_scanner_account_dont_count():
@@ -119,3 +118,97 @@ def test_a_checks_gap_is_stored_in_the_assessments_coverage(home, monkeypatch):
     add_bundle(home, "b1", 0, host_records())
     assessment = checker.assess.analyze(store, "web01", identity, config.recipients)
     assert "login hours not judged for 2 accounts: test" in assessment["coverage"]["gaps"]
+
+
+# --- What the review of 3.2b found ---------------------------------------------------------------
+
+
+def test_copies_with_different_corrected_times_are_one_login():
+    """Each bundle corrects the host's clock by its own measured offset."""
+
+    def copy(day, offset_us):
+        event = login(day, 9)
+        shifted = datetime.fromisoformat(event.corrected) + timedelta(microseconds=offset_us)
+        return Event(event.time, shifted.isoformat(), "auth_log", event.type, event.fields)
+
+    current = [login(0, 9), login(22, 9), login(31, 3)]
+    earlier = [copy(day, n) for n in range(1, 5) for day in (0, 22)]  # 4 more bundles
+    ctx = context(current, earlier=earlier)
+    assert login_hours(ctx) == [] and "not judged for 1 account" in ctx.gaps[0]
+
+
+def test_each_login_is_judged_against_the_logins_before_it():
+    """Three 03:00 logins: the first two are odd; by the third, 03:00 has
+    come on two days and is usual. Later logins mustn't make earlier ones
+    usual."""
+    month = office_hours()
+    ctx = Context("web01", "b1", month + [login(d, 3) for d in (31, 32, 33)], snap())
+    (finding,) = login_hours(ctx)
+    assert finding.summary.startswith("jch: 2 login(s) at 03:00")
+
+
+def test_a_first_analysis_can_flag():
+    month = office_hours()
+    ctx = Context("web01", "b1", month + [login(31, 3)], snap())  # no previous collection
+    found = login_hours(ctx)
+    assert [f.summary.split(";")[0] for f in found] == ["jch: 1 login(s) at 03:00 UTC"]
+
+
+def test_the_scanner_known_from_the_session_isnt_judged_even_behind_nat():
+    history = [login(d, 2, user="scanner") for d in range(30)]  # unmarked: NAT
+    ctx = context(history + [login(31, 14, user="scanner")])
+    assert len(login_hours(ctx)) == 1  # without knowing, it looks odd
+    ctx = context(history + [login(31, 14, user="scanner")])
+    ctx.scanner = "scanner"
+    assert login_hours(ctx) == []
+
+
+def test_an_account_the_tool_once_used_is_still_judged_later():
+    past_run = login(10, 2, user="root", own=True)  # once collected as root
+    earlier = [past_run] + office_hours(user="root")
+    ctx = context(office_hours(user="root") + [login(31, 3, user="root")], earlier=earlier)
+    assert [f.entities for f in login_hours(ctx)] == [["account:root"]]
+
+
+def test_past_runs_own_logins_dont_count_as_history():
+    runs = [login(10, 2, user="jch", own=True), login(11, 2, user="jch", own=True)]
+    again = [login(10, 2, user="jch"), login(11, 2, user="jch")]  # later logs, unmarked
+    found = login_hours(context(office_hours() + again + [login(31, 2)], earlier=runs))
+    assert len(found) == 1  # 02:00 isn't usual just because past runs logged in then
+
+
+def test_one_odd_login_doesnt_make_its_hour_usual():
+    history = office_hours() + [login(29, 3)]
+    first = Context("web01", "b1", history + [login(31, 3)], snap())
+    (finding,) = login_hours(first)
+    assert finding.summary.startswith("jch: 2 login(s) at 03:00")  # both, not just the first
+
+
+def test_analyze_tells_the_check_the_session_user(home, monkeypatch):
+    import json as jsonlib
+
+    from test_snapshot import add_bundle, host_records
+
+    import checker.assess
+    from checker.evidence import seal_text
+
+    seen = {}
+    real = checker.assess.evaluate
+
+    def capture(context, *args, **kwargs):
+        seen["scanner"] = context.scanner
+        return real(context, *args, **kwargs)
+
+    monkeypatch.setattr(checker.assess, "evaluate", capture)
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    row = dict(store.bundle("b1"))
+    store._db.execute("DROP TRIGGER bundles_no_update")
+    store._db.execute(
+        "UPDATE bundles SET session = ? WHERE id = 'b1'",
+        (seal_text(jsonlib.dumps({"user": "scanner"}), config.recipients),),
+    )
+    store._db.commit()
+    assert row["id"] == "b1"
+    checker.assess.analyze(store, "web01", identity, config.recipients)
+    assert seen["scanner"] == "scanner"

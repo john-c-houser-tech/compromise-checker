@@ -646,78 +646,96 @@ def logins(context: Context) -> list[Finding]:
 HOURS_MIN_DAYS = 21  # history an account needs before its hours are judged
 HOURS_MIN_LOGINS = 10
 HOURS_MARGIN = 1  # an hour either side of a usual one is usual too (summer time)
+HOURS_MIN_DAYS_SEEN = 2  # an hour is usual once logins at it came on two days
 
 
 def _login_key(event) -> tuple:
-    """One login, however many bundles logged it (logs overlap)."""
+    """One login, however many bundles logged it: by the host's own clock,
+    which every copy shares (each bundle corrects times by its own measured
+    offset, and keeps whichever source's copy it merged)."""
     f = event.fields
-    return (event.corrected, f.get("user"), f.get("address"), f.get("port"))
+    when = (event.time or event.corrected or "")[:19]
+    return (when, f.get("user"), f.get("address"), f.get("port"))
+
+
+def _usual_hours(past: list[datetime]) -> set[int]:
+    days_by_hour: dict[int, set] = defaultdict(set)
+    for moment in past:
+        days_by_hour[moment.hour].add(moment.date())
+    seen = [h for h, days in days_by_hour.items() if len(days) >= HOURS_MIN_DAYS_SEEN]
+    return {(h + shift) % 24 for h in seen for shift in range(-HOURS_MARGIN, HOURS_MARGIN + 1)}
 
 
 @check("ssh.login_hours", "Logins at hours unusual for the account")
 def login_hours(context: Context) -> list[Finding]:
     """Judged are the logins since the previous collection (all of them on
-    the first); the history is every earlier login the host's stored
-    bundles hold, once each. The tool's own logins, and its scanner
-    account's (it logs in whenever the operator runs it), don't count."""
-    earlier = context.earlier_events()
-    every = [e for events in [*earlier, context.events] for e in events]
-    scanners = {
-        e.fields.get("user") for e in every if e.type == "ssh.login.accepted" and e.own_session
-    } | ({context.scanner} if context.scanner else set())
+    a first analysis), each against the account's logins before it, from
+    every stored bundle, once each. An hour is usual once logins at it came
+    on two separate days. Past runs' own logins don't count (each bundle
+    marked its own); the account this run logged in as is not judged
+    (scheduled runs log in at any hour)."""
     previous = parse_time(context.previous_time)
-    history: dict[str, dict[tuple, datetime]] = defaultdict(dict)
-    for event in every:
-        moment = parse_time(event.corrected)
-        user = event.fields.get("user")
-        if event.type != "ssh.login.accepted" or event.own_session or moment is None:
-            continue
-        if user in scanners or not user:
-            continue
-        if previous is None or moment <= previous:
-            history[user][_login_key(event)] = moment
-    judged: dict[str, list[tuple[int, datetime]]] = defaultdict(list)
+    current = []
     for index, event in context.of("ssh.login.accepted"):
         moment = parse_time(event.corrected)
-        user = event.fields.get("user")
-        if event.own_session or moment is None or not user or user in scanners:
+        if event.own_session or moment is None or not event.fields.get("user"):
             continue
-        if previous is not None and moment <= previous:
+        if previous is None or moment > previous:
+            current.append((index, event, moment.astimezone(UTC)))
+    exempt = {
+        e.fields.get("user")
+        for e in context.events
+        if e.type == "ssh.login.accepted" and e.own_session
+    } | ({context.scanner} if context.scanner else set())
+    current = [c for c in current if c[1].fields.get("user") not in exempt]
+    if not current:
+        return []
+    every = [e for events in [*context.earlier_events(), context.events] for e in events]
+    logins = [e for e in every if e.type == "ssh.login.accepted"]
+    own = {_login_key(e) for e in logins if e.own_session}
+    history: dict[str, dict[tuple, datetime]] = defaultdict(dict)
+    for event in logins:
+        key, moment = _login_key(event), parse_time(event.corrected)
+        if event.own_session or key in own or moment is None:
             continue
-        judged[user].append((index, moment.astimezone(UTC)))
-    findings, unjudged = [], 0
-    for user, logins in sorted(judged.items()):
-        past = sorted(history.get(user, {}).values())
+        history[event.fields.get("user")].setdefault(key, moment.astimezone(UTC))
+    findings, unjudged = [], set()
+    odd: dict[str, list[tuple[int, datetime]]] = defaultdict(list)
+    profile: dict[str, tuple[set[int], int, int]] = {}
+    for index, event, moment in current:
+        user = event.fields["user"]
+        key = _login_key(event)
+        past = sorted(m for k, m in history.get(user, {}).items() if m < moment and k != key)
         if len(past) < HOURS_MIN_LOGINS or (past[-1] - past[0]) < timedelta(days=HOURS_MIN_DAYS):
-            unjudged += 1
+            unjudged.add(user)
             continue
-        usual = {
-            (moment.astimezone(UTC).hour + shift) % 24
-            for moment in past
-            for shift in range(-HOURS_MARGIN, HOURS_MARGIN + 1)
-        }
-        odd = [(i, m) for i, m in logins if m.hour not in usual]
-        if not odd:
-            continue
-        hours = sorted({m.hour for _, m in odd})
+        usual = _usual_hours(past)
+        if moment.hour not in usual:
+            odd[user].append((index, moment))
+            profile[user] = (usual, len(past), (past[-1] - past[0]).days)
+    for user, hits in sorted(odd.items()):
+        usual, count, days = profile[user]
+        hours = sorted({m.hour for _, m in hits})
         findings.append(
             Finding(
                 "ssh.login_hours",
                 "Logins at hours unusual for the account",
                 COMPROMISE,
                 "low",
-                f"{user}: {len(odd)} login(s) at {', '.join(f'{h:02d}:00' for h in hours)} UTC;"
-                f" usually {_hour_ranges(usual)} UTC ({len(past)} logins over"
-                f" {(past[-1] - past[0]).days} days)",
+                f"{user}: {len(hits)} login(s) at {', '.join(f'{h:02d}:00' for h in hours)} UTC;"
+                f" usually {_hour_ranges(usual) or 'no hour yet'} UTC ({count} logins over"
+                f" {days} days)",
                 [f"account:{user}"],
-                [{"event": i} for i, _ in odd[:20]],
-                odd[0][1].isoformat(),
-                odd[-1][1].isoformat(),
+                [{"event": i} for i, _ in hits[:20]],
+                hits[0][1].isoformat(),
+                hits[-1][1].isoformat(),
             )
         )
+    unjudged -= set(odd)
     if unjudged:
+        n = len(unjudged)
         context.gaps.append(
-            f"login hours not judged for {unjudged} account{'s' if unjudged != 1 else ''}:"
+            f"login hours not judged for {n} account{'s' if n != 1 else ''}:"
             f" fewer than {HOURS_MIN_LOGINS} logins or {HOURS_MIN_DAYS} days of history"
         )
     return findings

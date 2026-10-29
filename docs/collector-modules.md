@@ -936,7 +936,10 @@ exploit attempts that got an answer, error bursts.
   and `/var/log/php-fpm`, and `/var/log/php*-fpm.log`, told apart by name
   (`access`, or `error`/`slow`). Error logs are always sent; access logs
   only where the organization chose them in `checker init
-  --web-access-logs` (policy §7). Only files last written within the
+  --web-access-logs` (policy §7); a file named both ways, or neither, in
+  the web log folders counts as an access log. Links in `sites-enabled`
+  and `conf-enabled` are followed, as the server follows them. Only files
+  last written within the
   window; `web_logs_summary` counts what was found and sent;
 - program starts from the audit log (`/var/log/audit/audit.log` and
   `.1`–`.4`, read oldest first, at most 64 MiB): `SYSCALL` records for
@@ -945,23 +948,37 @@ exploit attempts that got an answer, error bursts.
   `apache`, `nginx`, `http`, `wwwrun`, `lighttpd` and the configuration's
   `web_users` — by default; `privileged` adds root, service and
   administrator accounts as `home_text` reads them; `all`), within the
-  window, newest 20,000 kept. Each `exec_record` carries the user (`uid`,
+  window, newest 20,000 kept (at most the newest 64 MiB of the logs; a
+  command split over several `EXECVE` records joined; records matched by
+  time and serial). Each `exec_record` carries the user (`uid`,
   `euid`, `auid`), `pid`, `ppid`, `comm`, `exe`, `cwd` and the arguments
-  joined and masked like any command line (at most 4,096 bytes, hex and
-  split arguments decoded). With no audit log, `exec_records_unavailable`
+  joined and masked like any command line, control characters included,
+  then cut to 4,096 characters (hex and split arguments decoded); `comm`,
+  `exe` and `cwd` masked too. With no audit log, `exec_records_unavailable`
   says so; `docs/auditd-web.rules` sets auditd up to record them.
 
 **Masking (policy §7):** before secret masking, every query string in a
-line (the request's, and a referrer's) keeps its names and has each value
-replaced by `[MASKED:value]`, or, where the value (percent-decoded twice)
-matches an attack, by a marker naming it: `traversal` (`../`),
-`php_wrapper` (`php://`, `phar://`, `data://`…), `php_code` (`<?php`),
-`jndi` (`${jndi:`…), `shell` (`;sh`, `|curl`, `$(`…), `nul` (`%00`), `sql`
+line (the request's, and a referrer's; escaped characters and fragments
+included) keeps its names and has each value replaced by `[MASKED:value]`,
+or, where the value (percent-decoded twice) matches an attack, by a marker
+naming it: `traversal` (`../`), `php_wrapper` (`php://`, `phar://`,
+`data://`…), `php_code` (`<?php`), `jndi` (`${jndi:`…), `shellshock`
+(`() { :;};`), `shell` (`;sh`, `|curl`, `$(`…), `nul` (`%00`), `sql`
 (`union select`, `sleep(`). A referrer keeps its scheme and host; the rest
-becomes `[MASKED:referrer]` (or an attack marker). In a combined-format
-line the user agent is cut to 256 characters (`[cut]`). Visitors'
-addresses are kept. Each pattern reads a line once, left to right.
+becomes `[MASKED:referrer]` (or an attack marker). In an access log, a
+combined-format line (with or without Apache's virtual host first) has its
+user agent cut to 256 characters (`[cut]`; characters, never splitting
+one), and anything a custom format adds after it is masked field by field;
+a line in no known format (custom, JSON) is masked the same way throughout:
+every quoted URL cut to its scheme and host, every `name=value`'s value
+masked (cookies, form fields), every quoted field over 256 characters cut.
+Error logs get the query, referrer (quoted or not) and quoted-URL masking.
+Visitors' addresses are kept. Logs are read newest first; program starts
+are read before the logs, so long logs can't crowd them out, and the
+summary is written however the module ends. Each pattern reads a line
+once, left to right.
 
+## Protected files
 
 Some files are collected only as structured records, status or metadata,
 never as text: `/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow` and

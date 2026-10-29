@@ -714,19 +714,51 @@ _WEB_PHP_FPM = re.compile(
 )
 _WEB_ERROR_CLIENT = re.compile(r"client: ([^,\s]+)")
 _WEB_ERROR_REQUEST = re.compile(r'request: "([^"]*)"')
-# Paths a check looks at even when answered 2xx: scripts, and anything an
-# attack marker was put in.
+# Paths a check looks at even when answered 2xx: scripts, and files a site
+# should never serve (secrets, repositories, backups).
 WEB_SCRIPT_PATH = re.compile(
     r"\.(?:php\d?|phtml|phar|cgi|pl|py|jsp|jspx|aspx?|sh)(?:$|[/?;])", re.I
 )
+WEB_SENSITIVE_PATH = re.compile(
+    r"/\.(?:env|git|svn|hg|htpasswd|aws|ssh|docker)(?:$|[/?.])"
+    r"|\.(?:bak|old|orig|swp|sql|tar|tgz|gz|zip|7z)$|~$",
+    re.I,
+)
+# The attacks the collector names in masked values, matched here on what it
+# leaves visible: the path, and the user agent (Log4Shell, Shellshock).
+WEB_PATH_ATTACKS = (
+    ("traversal", re.compile(r"\.\.[/\\]|[/\\]\.\.(?:[/\\]|$)|%2e%2e(?:%2f|%5c|/)", re.I)),
+    ("php_code", re.compile(r"<\?(?:php|=)", re.I)),
+    ("jndi", re.compile(r"\$\{\s*(?:jndi|lower|upper|env|sys)\s*:", re.I)),
+    ("shellshock", re.compile(r"\(\s*\)\s*\{\s*:?\s*;?\s*\}\s*;")),
+    ("nul", re.compile(r"%00|\x00")),
+)
+_WEB_MARKER = re.compile(r"\[MASKED:exploit:(\w+)\]")
 WEB_NETWORKS = 2000  # source networks counted per bundle
+
+
+def _client_address(text: str) -> str:
+    """A client as logged, without a port ("1.2.3.4:5678",
+    "[2001:db8::1]:5678", or Apache's "2001:db8::1:5678")."""
+    text = text.strip()
+    if text.startswith("[") and "]" in text:
+        return text[1 : text.index("]")]
+    try:
+        ipaddress.ip_address(text.split("%")[0])
+        return text
+    except ValueError:
+        pass
+    host, _, port = text.rpartition(":")
+    return host if port.isdigit() and host else text
 
 
 def _network(address: str) -> str:
     try:
-        ip = ipaddress.ip_address(address.split("%")[0].strip("[]"))
+        ip = ipaddress.ip_address(_client_address(address).split("%")[0])
     except ValueError:
         return "unknown"
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
     prefix = 24 if ip.version == 4 else 48
     return str(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))
 
@@ -764,9 +796,22 @@ class WebLogs:
         method, _, rest = found["request"].partition(" ")
         target = rest.rsplit(" ", 1)[0] if " " in rest else rest
         status = int(found["status"])
-        marked = "[MASKED:exploit:" in text
+        # Markers count only where the collector puts them: the request and
+        # the referrer (a user agent could carry a fake one).
+        attacks = set(_WEB_MARKER.findall(found["request"] + " " + (found["referrer"] or "")))
+        path = target.split("?", 1)[0]
+        agent = found["agent"] or ""
+        for name, pattern in WEB_PATH_ATTACKS:
+            if pattern.search(path) or (name != "traversal" and pattern.search(agent)):
+                attacks.add(name)
         network = _network(found["client"])
-        if not (status >= 500 or marked or WEB_SCRIPT_PATH.search(target)):
+        keep = (
+            status >= 500
+            or attacks
+            or WEB_SCRIPT_PATH.search(target)
+            or (status < 300 and WEB_SENSITIVE_PATH.search(path))
+        )
+        if not keep:
             if network in self.requests or len(self.requests) < WEB_NETWORKS:
                 counts = self.requests.setdefault(network, {})
                 kind = f"{status // 100}xx"
@@ -789,9 +834,8 @@ class WebLogs:
             fields["referrer"] = found["referrer"]
         if found["agent"]:
             fields["agent"] = found["agent"]
-        attacks = sorted(set(re.findall(r"\[MASKED:exploit:(\w+)\]", text)))
         if attacks:
-            fields["attacks"] = attacks
+            fields["attacks"] = sorted(attacks)
         builder._add(moment, source, "web.request", fields, None, text)
 
     def _error(self, builder: EventBuilder, source: str, found, form: str, text: str) -> None:
@@ -811,7 +855,7 @@ class WebLogs:
             match = _WEB_ERROR_CLIENT.search(message)
             client = match.group(1) if match else None
         if client:
-            fields["client"] = client.rsplit(":", 1)[0] if client.count(":") == 1 else client
+            fields["client"] = _client_address(client)
             fields["network"] = _network(fields["client"])
         request = _WEB_ERROR_REQUEST.search(message)
         if request:

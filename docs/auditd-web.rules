@@ -9,13 +9,20 @@
 # Keep only the lines for accounts that exist on the server (auditctl
 # refuses a rule naming an unknown account): www-data on Debian and Ubuntu,
 # apache on RHEL and its rebuilds, nginx where nginx runs as its own user.
-# Add lines for any other account your web applications run as.
+# Add lines for any other account your web applications run as. Both uid
+# and euid: a web shell that runs a set-user-ID program keeps its uid.
 
 -a always,exit -F arch=b64 -S execve,execveat -F euid=www-data -k cc-web-exec
 -a always,exit -F arch=b32 -S execve,execveat -F euid=www-data -k cc-web-exec
+-a always,exit -F arch=b64 -S execve,execveat -F uid=www-data -k cc-web-exec
+-a always,exit -F arch=b32 -S execve,execveat -F uid=www-data -k cc-web-exec
 
 -a always,exit -F arch=b64 -S execve,execveat -F euid=apache -k cc-web-exec
 -a always,exit -F arch=b32 -S execve,execveat -F euid=apache -k cc-web-exec
+-a always,exit -F arch=b64 -S execve,execveat -F uid=apache -k cc-web-exec
+-a always,exit -F arch=b32 -S execve,execveat -F uid=apache -k cc-web-exec
 
 -a always,exit -F arch=b64 -S execve,execveat -F euid=nginx -k cc-web-exec
 -a always,exit -F arch=b32 -S execve,execveat -F euid=nginx -k cc-web-exec
+-a always,exit -F arch=b64 -S execve,execveat -F uid=nginx -k cc-web-exec
+-a always,exit -F arch=b32 -S execve,execveat -F uid=nginx -k cc-web-exec

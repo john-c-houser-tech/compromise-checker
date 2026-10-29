@@ -134,6 +134,11 @@ def web_gaps(snapshot: Snapshot) -> list[str]:
             "no audit log: earlier program starts by web accounts can't be checked"
             " (docs/auditd-web.rules sets auditd up for them)"
         )
+    elif (snapshot.live.get("exec_records_summary") or {}).get("starts") == 0:
+        gaps.append(
+            "no program starts in the audit log: auditd isn't recording them, so earlier"
+            " ones by web accounts can't be checked (docs/auditd-web.rules)"
+        )
     requests = snapshot.live.get("web_requests") or {}
     for name, unparsed in sorted((requests.get("unparsed") or {}).items()):
         if unparsed * 2 > (requests.get("lines") or {}).get(name, 0):

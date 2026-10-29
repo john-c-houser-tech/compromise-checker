@@ -29,6 +29,8 @@ from pyrage import x25519
 
 from checker.files import atomic_write, locked
 from checker.protocol import (
+    ACCOUNT_NAME,
+    MAX_WEB_USERS,
     Error,
     ExecRecords,
     HomeText,
@@ -66,7 +68,9 @@ class Config(BaseModel):
     # the organization's own web-server accounts (policy §7).
     web_access_logs: bool = False
     exec_records: ExecRecords = "web"
-    web_users: list[str] = []
+    web_users: list[Annotated[str, Field(pattern=ACCOUNT_NAME)]] = Field(
+        default=[], max_length=MAX_WEB_USERS
+    )
 
 
 def config_file(home: Path) -> Path:

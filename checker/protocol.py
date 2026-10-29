@@ -36,7 +36,7 @@ HomeText = Literal["off", "privileged", "all"]
 ExecRecords = Literal["web", "privileged", "all"]
 MAX_WEB_ROOTS = 64
 MAX_WEB_USERS = 64
-_ACCOUNT_NAME = r"^[A-Za-z0-9_.][A-Za-z0-9_.@\\$-]{0,255}$"
+ACCOUNT_NAME = r"^[A-Za-z0-9_.][A-Za-z0-9_.@\\$-]{0,255}$"
 
 
 def check_web_roots(value: list[str] | None) -> list[str] | None:
@@ -91,7 +91,7 @@ class Settings(_Model):
     web_access_logs: bool = False
     exec_records: ExecRecords = "web"
     # Web-server accounts beyond www-data, apache, nginx and the like.
-    web_users: list[Annotated[str, Field(pattern=_ACCOUNT_NAME)]] = Field(
+    web_users: list[Annotated[str, Field(pattern=ACCOUNT_NAME)]] = Field(
         default=[], max_length=MAX_WEB_USERS
     )
 

@@ -344,7 +344,11 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
         if name in ("config_dir", "source") or str(path or "").startswith("/etc/"):
             return {"pam_rules", "pam"}
         return {"pam"}
-    if module in ("mail", "web_logs") and str(path or "").startswith("/var/log/"):
+    if module == "web_logs":
+        # Only its configuration is a section: logs and audit records are
+        # coverage, reported there.
+        return {"web_config"} if str(path or "").startswith("/etc/") else set()
+    if module == "mail" and str(path or "").startswith("/var/log/"):
         return set()  # a mail log: the coverage reports it, the settings are whole
     if module == "unusual_files":
         return {"unusual_files", "web_files", "privileged_files"}

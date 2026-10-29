@@ -18,8 +18,9 @@ from checker.snapshot import Snapshot
 
 # 2: the critical band, variants; 3: more variants; 4: exe entities and
 # entities_complete; 5: sudo.rules name the account or group; 6: account
-# and key variants; 7: network checks (8.8); 8: anti-forensics (8.10).
-CHECKS_VERSION = 8
+# and key variants; 7: network checks (8.8); 8: anti-forensics (8.10); 9:
+# software changes (8.11).
+CHECKS_VERSION = 9
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"
@@ -171,6 +172,7 @@ def load_checks() -> dict[str, Check]:
         persistence,
         processes,
         reboots,
+        software,
     )
 
     return {c.id: c for c in REGISTRY}

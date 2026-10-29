@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-PARSER_VERSION = 3  # 3: system.clock_changed
+PARSER_VERSION = 4  # 3: system.clock_changed; 4: unit.starting, unit.finished
 MAX_EVENT_LINE = 2048  # characters of the source line kept on each event
 
 _MONTHS = {m: i for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)}
@@ -217,6 +217,10 @@ _RULES: list[tuple[str | None, re.Pattern[str], str]] = [
     ("systemd", re.compile(r"^Started (?P<what>.+?)\.?$"), "unit.started"),
     ("systemd", re.compile(r"^Stopped (?P<what>.+?)\.?$"), "unit.stopped"),
     ("systemd", re.compile(r"^Time has been changed$"), "system.clock_changed"),
+    # Oneshot services (the automatic updaters) log Starting… and Finished…,
+    # never Started.
+    ("systemd", re.compile(r"^Starting (?P<what>.+?)(?:\.\.\.|…)$"), "unit.starting"),
+    ("systemd", re.compile(r"^Finished (?P<what>.+?)\.?$"), "unit.finished"),
     (
         "systemd",
         re.compile(r"^Reached target (?P<target>(?:System )?(?:Shutdown|Reboot|Power-Off)\S*)"),

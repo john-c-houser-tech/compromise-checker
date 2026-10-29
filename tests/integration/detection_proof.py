@@ -141,6 +141,28 @@ else
 fi
 # The login records emptied.
 : > /var/log/wtmp || fail wtmp
+# --- Software (2.6) ---
+# An attack tool installed.
+# (apt waits for a running unattended-upgrades instead of failing.)
+if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o DPkg::Lock::Timeout=600 update -qq >/dev/null 2>&1
+    apt-get -o DPkg::Lock::Timeout=600 install -y -qq nmap >/dev/null 2>&1 || fail nmap
+else
+    dnf install -y -q nmap >/dev/null 2>&1 || fail nmap
+fi
+# A package repository with its own signing key (disabled: nothing is fetched).
+if [ -d /etc/apt/sources.list.d ]; then
+    install -d -m 755 /etc/apt/keyrings
+    head -c 512 /dev/urandom > /etc/apt/keyrings/cc-proof.gpg
+    echo 'deb [signed-by=/etc/apt/keyrings/cc-proof.gpg] https://example.invalid/ stable main' \
+        > /etc/apt/sources.list.d/cc-proof.list || fail repository
+else
+    head -c 512 /dev/urandom > /etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof
+    printf '%s\n' '[cc-proof]' 'name=cc proof' 'baseurl=https://example.invalid/' 'enabled=0' \
+        'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof' \
+        > /etc/yum.repos.d/cc-proof.repo || fail repository
+fi
 sleep 2
 """
 
@@ -206,6 +228,11 @@ def expectations(root_fingerprint: str) -> list[Expected]:
         Expected("auditd stopped", "logs.stopped", "", "high"),
         Expected("SELinux or AppArmor turned down", "mac.disabled", "", "high"),
         Expected("the login records emptied", "logs.cleared", "/var/log/wtmp", "high"),
+        Expected("an attack tool installed", "software.tools", "nmap", "medium"),
+        Expected(
+            "a package repository added", "software.repository", "cc-proof", "medium", "repository"
+        ),
+        Expected("a signing key added", "software.repository", "cc-proof", "medium", "key"),
     ]
 
 

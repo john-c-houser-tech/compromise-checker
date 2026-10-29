@@ -6427,6 +6427,256 @@ def module_logging_state(run):
     _mac_state(run, module)
 
 
+# --- Software changes (DESIGN.md §8.11) -----------------------------------------------
+
+REPOSITORY_FILES = ("/etc/apt/sources.list", "/etc/dnf/dnf.conf", "/etc/yum.conf")
+REPOSITORY_DIRS = ("/etc/apt/sources.list.d", "/etc/yum.repos.d", "/etc/dnf/vars", "/etc/yum/vars")
+# Signing keys: hashed and listed, never sent (a key is no secret, but its
+# bytes say nothing a hash doesn't).
+KEY_FILES = ("/etc/apt/trusted.gpg",)
+KEY_DIRS = (
+    "/etc/apt/trusted.gpg.d",
+    "/etc/apt/keyrings",
+    "/usr/share/keyrings",
+    "/etc/pki/rpm-gpg",
+)
+GLOBAL_PYTHON = (
+    "/usr/local/lib/python3*/dist-packages",
+    "/usr/local/lib/python3*/site-packages",
+    "/usr/local/lib64/python3*/site-packages",
+)
+GLOBAL_NODE = ("/usr/lib/node_modules", "/usr/local/lib/node_modules")
+RPMTAG_VERSION, RPMTAG_RELEASE, RPMTAG_EPOCH = 1001, 1002, 1003
+RPMTAG_INSTALLTIME, RPMTAG_ARCH = 1008, 1022
+MAX_PACKAGES = 20000
+_DIST_INFO = re.compile(
+    r"^(?P<name>.+?)-(?P<version>[^-]+?)(?:-py\d+(?:\.\d+)*)?\.(?:dist|egg)-info$"
+)
+
+
+def _first(value):
+    return value[0] if isinstance(value, list) and value else value
+
+
+def rpm_packages(run, module, database):
+    """Installed packages from rpm's SQLite database, opened immutable (no
+    locks, no -shm or -wal file): name, version, architecture, install
+    time."""
+    import sqlite3  # standard library; only needed on rpm systems
+    from urllib.parse import quote
+
+    wal = path(database) + "-wal"
+    try:
+        pending = os.lstat(wal).st_size
+    except OSError:
+        pending = 0
+    if pending:
+        # Opened immutable, the database is read without its write-ahead
+        # log: changes still only there (a very recent install) aren't seen.
+        run.stream.record(module, "packages_pending", {"path": database + "-wal", "bytes": pending})
+    uri = "file:" + quote(path(database)) + "?immutable=1&mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    count = 0
+    try:
+        for (blob,) in connection.execute("SELECT blob FROM Packages"):
+            run.check_time()
+            if count >= MAX_PACKAGES:
+                run.stream.record(module, "listing_truncated", {"path": database})
+                break
+            try:
+                header = RpmHeader(blob)
+                epoch = _first(header.get(RPMTAG_EPOCH))
+                version = f"{header.get(RPMTAG_VERSION)}-{header.get(RPMTAG_RELEASE)}"
+                run.stream.record(
+                    module,
+                    "package",
+                    {
+                        "manager": "rpm",
+                        "name": header.get(RPMTAG_NAME),
+                        "version": f"{epoch}:{version}" if epoch else version,
+                        "arch": header.get(RPMTAG_ARCH),
+                        "installed": _first(header.get(RPMTAG_INSTALLTIME)),
+                    },
+                )
+                count += 1
+            except (ValueError, struct.error):
+                run.stream.record(module, "malformed_header", {"path": database})
+    finally:
+        connection.close()
+
+
+def dpkg_packages(run, module):
+    """Installed packages from dpkg's status file: name, version,
+    architecture, and as install time the modification time of the
+    package's file list (dpkg rewrites it when it installs or upgrades)."""
+    text, truncated = read_whole_lines(DPKG_STATUS, 64 * 1024 * 1024)
+    if text is None:
+        raise OSError(f"{DPKG_STATUS} could not be read")
+    if truncated:
+        run.stream.record(module, "listing_truncated", {"path": DPKG_STATUS})
+    count = 0
+    for stanza in text.split("\n\n"):
+        run.check_time()
+        fields = {}
+        for line in stanza.splitlines():
+            key, sep, value = line.partition(":")
+            if sep and not line.startswith((" ", "\t")):
+                fields[key] = value.strip()
+        if not fields.get("Package") or "installed" not in fields.get("Status", "").split():
+            continue
+        if fields.get("Status", "").split()[-1] != "installed":
+            continue
+        if count >= MAX_PACKAGES:
+            run.stream.record(module, "listing_truncated", {"path": DPKG_STATUS})
+            break
+        name, arch = fields["Package"], fields.get("Architecture")
+        installed = None
+        for candidate in (f"{name}:{arch}.list", f"{name}.list"):
+            try:
+                installed = os.lstat(path(f"{DPKG_INFO}/{candidate}")).st_mtime
+                break
+            except OSError:
+                continue
+        run.stream.record(
+            module,
+            "package",
+            {
+                "manager": "dpkg",
+                "name": name,
+                "version": fields.get("Version"),
+                "arch": arch,
+                "installed": installed,
+            },
+        )
+        count += 1
+
+
+def _key_files(run, module):
+    """Signing-key files: facts and SHA-256, never their bytes."""
+    names = list(KEY_FILES)
+    for directory in KEY_DIRS:
+        try:
+            listed, cut = list_directory(directory, 1000, run)
+        except OSError:
+            continue
+        if cut:
+            run.stream.record(module, "listing_truncated", {"path": directory})
+        names += [f"{directory}/{n}" for n in listed]
+    for absolute in names:
+        run.check_time()
+        facts = path_facts(absolute)
+        if facts is None or facts.get("type") not in ("-", "l"):
+            continue
+        target = absolute
+        if facts.get("type") == "l":
+            # A link's own facts don't change when its target does: hash
+            # what it points to.
+            target, risk = resolve_links(absolute)
+            if risk:
+                facts["problem"] = risk
+        if target and not facts.get("problem"):
+            digest, problem = digest_of(run, target, "sha256")
+            facts["sha256"] = digest
+            if problem:
+                facts["problem"] = problem
+        run.stream.record(module, "signing_key", facts)
+
+
+def _global_packages(run, module):
+    """Names and versions of Python and Node packages installed system-wide
+    by hand (pip as root, npm -g), from their folders' names."""
+    skipped = []
+    for pattern in GLOBAL_PYTHON:
+        for directory in glob_absolute(pattern, skipped, run):
+            try:
+                listed, _ = list_directory(directory, 5000, run)
+            except OSError:
+                continue
+            for name in listed:
+                match = _DIST_INFO.match(name)
+                if match:
+                    run.stream.record(
+                        module,
+                        "global_package",
+                        {
+                            "kind": "python",
+                            "name": match.group("name"),
+                            "version": match.group("version"),
+                            "where": directory,
+                        },
+                    )
+    for directory in GLOBAL_NODE:
+        try:
+            listed, _ = list_directory(directory, 5000, run)
+        except OSError:
+            continue
+        for name in listed:
+            names = [name]
+            if name.startswith("@"):
+                try:
+                    scoped, _ = list_directory(f"{directory}/{name}", 1000, run)
+                except OSError:
+                    scoped = []
+                names = [f"{name}/{s}" for s in scoped]
+            for package in names:
+                if package.startswith("."):
+                    continue
+                run.stream.record(
+                    module,
+                    "global_package",
+                    {"kind": "node", "name": package, "version": None, "where": directory},
+                )
+    for gap in skipped:
+        run.stream.record(module, "not_examined", dict(gap, section="global_packages"))
+
+
+def module_software(run):
+    """What software is installed and where it comes from (DESIGN.md
+    §8.11): the installed packages (rpm's and dpkg's, both where both are
+    present), the repositories (masked text), the signing keys (hashes),
+    and packages installed system-wide with pip or npm. Each part fails
+    alone: a gap for its own section, the rest still collected."""
+    module = "software"
+
+    def part(section, work, *args):
+        try:
+            work(*args)
+        except ModuleTimeout:
+            raise
+        except Exception as exc:  # noqa: BLE001 - recorded, the other parts still run
+            run.stream.record(
+                module,
+                "not_examined",
+                {"path": section, "section": section, "reason": f"{type(exc).__name__}: {exc}"},
+            )
+
+    def packages():
+        found = False
+        for database in RPM_DATABASES:
+            resolved, risk = resolve_links(database)
+            if risk or not resolved or not os.path.isfile(path(resolved)):
+                continue
+            found = True
+            rpm_packages(run, module, resolved)
+            break
+        if os.path.isfile(path(DPKG_STATUS)):
+            found = True
+            dpkg_packages(run, module)
+        if not found:
+            raise OSError("no rpm or dpkg database")
+
+    def repositories():
+        seen = set()
+        send_config_files(run, module, REPOSITORY_FILES, seen)
+        for directory in REPOSITORY_DIRS:
+            collect_tree(run, module, directory, seen, max_depth=1)
+        _key_files(run, module)
+
+    part("packages", packages)
+    part("software_files", repositories)
+    part("global_packages", _global_packages, run, module)
+
+
 MODULES = {
     "host_facts": module_host_facts,
     "auth_log": module_auth_log,
@@ -6450,6 +6700,7 @@ MODULES = {
     "processes": module_processes,
     "network": module_network,
     "logging_state": module_logging_state,
+    "software": module_software,
 }
 
 

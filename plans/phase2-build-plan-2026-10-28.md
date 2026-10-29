@@ -529,6 +529,32 @@ Phase 2 spend so far: about 17 cents.
 - **Detection behaviours:** `nmap` installed; a repository file added with
   a new key.
 
+*As built:* the collector's `software` module reads the installed
+packages itself (rpm's database immutable, dpkg's status file; the
+install time from rpm, or from dpkg's file lists), not the package logs:
+the checks need what is installed, and install times date it. Signing
+keys are hashed, not parsed (a new or changed key file is the finding).
+Package changes are grouped, one finding per kind; a maintenance window
+makes installs informational (removals carry no time).
+
+After the 2.6 review (2 High): the automatic updater is recognised from
+its service's Starting… and Finished… lines (parser version 4), never its
+timer or PackageKit; installs are grouped by time and an undated one isn't
+automatic; repository findings need a content or ownership change, and
+files the package manager doesn't read are low; rpm's imported keys and
+side-by-side kernels keep their own items, and a new `gpg-pubkey` is a
+signing key; both package managers are read where both exist, each part
+fails alone, and a pending write-ahead log is a gap; `socat` and `cpp` left
+off the lists.
+
+*2.6 proofs (2026-10-28, approved by John; 10 Nanodes, about 6 cents,
+every server deleted):* read-only PASS on all seven images (Ubuntu 26.04
+after one rerun: Linode's API timed out creating its first server; the
+collector reads rpm's database and dpkg's files and wrote nothing).
+Detection PASS on Ubuntu 24.04 and Rocky 9, all twenty-two behaviours
+(nmap installed; a repository and its signing key added). Golden cases
+re-exported from that run. Phase 2 spend so far: about 23 cents.
+
 ### 2.7 — Outgoing mail (8.9) (decision 3: decided)
 
 - **Collector, new module `mail`:** Postfix (`main.cf`, `master.cf`) and

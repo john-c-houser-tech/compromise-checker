@@ -251,7 +251,12 @@ _CLOCK = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 # loss, a forced reset) only steps down: the tool knows when the host came
 # back, not when it went down, and a forced reset timed for the patch night
 # must stay visible (decided with John, 2026-10-28).
-MAINTENANCE = {("system.reboot", "unexplained"): "info", ("system.reboot", "unclean"): "step"}
+MAINTENANCE = {
+    ("system.reboot", "unexplained"): "info",
+    ("system.reboot", "unclean"): "step",
+    # Installs carry their times; removals don't, so no window covers them.
+    ("software.packages", "installed"): "info",
+}
 _STEP = {"critical": "high", "high": "medium", "medium": "low", "low": "low", "info": "info"}
 
 

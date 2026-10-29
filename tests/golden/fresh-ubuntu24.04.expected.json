@@ -213,6 +213,22 @@
    "status": "ran"
   },
   {
+   "check": "software.global",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "software.packages",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "software.repository",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "software.tools",
+   "status": "this bundle is the baseline"
+  },
+  {
    "check": "ssh.authorized_keys",
    "findings": 0,
    "status": "ran"
@@ -253,11 +269,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 50
+     "event": 158
     }
    ],
-   "first_seen": "2026-10-29T00:50:50.723074+00:00",
-   "last_seen": "2026-10-29T00:50:50.723074+00:00",
+   "first_seen": "2026-10-29T01:17:39.277400+00:00",
+   "last_seen": "2026-10-29T01:17:39.277400+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: dnsmasq UID 999",
@@ -283,11 +299,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 57
+     "event": 171
     }
    ],
-   "first_seen": "2026-10-29T00:51:06.599582+00:00",
-   "last_seen": "2026-10-29T00:51:06.599582+00:00",
+   "first_seen": "2026-10-29T01:17:55.607207+00:00",
+   "last_seen": "2026-10-29T01:17:55.607207+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -313,11 +329,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 55
+     "event": 168
     }
    ],
-   "first_seen": "2026-10-29T00:51:00.292829+00:00",
-   "last_seen": "2026-10-29T00:51:00.292829+00:00",
+   "first_seen": "2026-10-29T01:17:49.193850+00:00",
+   "last_seen": "2026-10-29T01:17:49.193850+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -338,14 +354,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/cron/atjobs/a0000101c80b8b"
+    "path:/var/spool/cron/atjobs/a0000101c80ba5"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/cron/atjobs/a0000101c80b8b"
+      "/var/spool/cron/atjobs/a0000101c80ba5"
      ]
     }
    ],
@@ -353,7 +369,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/cron/atjobs/a0000101c80b8b (owner UID 0)",
+   "summary": "/var/spool/cron/atjobs/a0000101c80ba5 (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -372,19 +388,19 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.9"
+    "address:203.0.113.10"
    ],
    "entities_complete": true,
    "evidence": [
     {
-     "event": 34
+     "event": 127
     }
    ],
-   "first_seen": "2026-10-29T00:50:13.818752+00:00",
-   "last_seen": "2026-10-29T00:50:13.818752+00:00",
+   "first_seen": "2026-10-29T01:17:00.918297+00:00",
+   "last_seen": "2026-10-29T01:17:00.918297+00:00",
    "new": true,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.9 (publickey)",
+   "summary": "root from 203.0.113.10 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -407,11 +423,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 52
+     "event": 163
     }
    ],
-   "first_seen": "2026-10-29T00:50:52.320374+00:00",
-   "last_seen": "2026-10-29T00:50:52.320374+00:00",
+   "first_seen": "2026-10-29T01:17:41.132873+00:00",
+   "last_seen": "2026-10-29T01:17:41.132873+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group docker",
@@ -433,7 +449,7 @@
    "contribution": 0.0,
    "entities": [
     "program:(sd-pam)",
-    "pid:845",
+    "pid:839",
     "exe:/usr/lib/systemd/systemd-executor"
    ],
    "entities_complete": true,
@@ -441,15 +457,15 @@
     {
      "live": [
       "processes",
-      845
+      839
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:50:13.520000+00:00",
-   "last_seen": "2026-10-29T00:50:13.520000+00:00",
+   "first_seen": "2026-10-29T01:17:02.410000+00:00",
+   "last_seen": "2026-10-29T01:17:02.410000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "(sd-pam) (pid 845): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "(sd-pam) (pid 839): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -461,7 +477,7 @@
    "contribution": 0.0,
    "entities": [
     "program:dbus-daemon",
-    "pid:672",
+    "pid:664",
     "exe:/usr/bin/dbus-daemon"
    ],
    "entities_complete": true,
@@ -469,15 +485,15 @@
     {
      "live": [
       "processes",
-      672
+      664
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:50:09.370000+00:00",
-   "last_seen": "2026-10-29T00:50:09.370000+00:00",
+   "first_seen": "2026-10-29T01:16:57.230000+00:00",
+   "last_seen": "2026-10-29T01:16:57.230000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "dbus-daemon (pid 672): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "dbus-daemon (pid 664): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -489,7 +505,7 @@
    "contribution": 0.0,
    "entities": [
     "program:sshd",
-    "pid:839",
+    "pid:833",
     "exe:/usr/sbin/sshd"
    ],
    "entities_complete": true,
@@ -497,15 +513,15 @@
     {
      "live": [
       "processes",
-      839
+      833
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:50:13.190000+00:00",
-   "last_seen": "2026-10-29T00:50:13.190000+00:00",
+   "first_seen": "2026-10-29T01:17:02.090000+00:00",
+   "last_seen": "2026-10-29T01:17:02.090000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "sshd (pid 839): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "sshd (pid 833): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -517,7 +533,7 @@
    "contribution": 0.0,
    "entities": [
     "program:systemd",
-    "pid:844",
+    "pid:838",
     "exe:/usr/lib/systemd/systemd"
    ],
    "entities_complete": true,
@@ -525,15 +541,15 @@
     {
      "live": [
       "processes",
-      844
+      838
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:50:13.500000+00:00",
-   "last_seen": "2026-10-29T00:50:13.500000+00:00",
+   "first_seen": "2026-10-29T01:17:02.390000+00:00",
+   "last_seen": "2026-10-29T01:17:02.390000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "systemd (pid 844): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "systemd (pid 838): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -545,7 +561,7 @@
    "contribution": 0.0,
    "entities": [
     "program:systemd-logind",
-    "pid:681",
+    "pid:673",
     "exe:/usr/lib/systemd/systemd-logind"
    ],
    "entities_complete": true,
@@ -553,15 +569,15 @@
     {
      "live": [
       "processes",
-      681
+      673
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:50:09.670000+00:00",
-   "last_seen": "2026-10-29T00:50:09.670000+00:00",
+   "first_seen": "2026-10-29T01:16:57.500000+00:00",
+   "last_seen": "2026-10-29T01:16:57.500000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "systemd-logind (pid 681): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "systemd-logind (pid 673): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null

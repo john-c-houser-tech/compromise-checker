@@ -89,7 +89,15 @@ DISCLOSED = [
         re.compile(r"^/home/[^/]+/\.cache(/motd\.legal-displayed)?$"),
         "Ubuntu login-message marker, first login only (disk)",
     ),
+    (
+        re.compile(r"^/var/(lib|log)/landscape(/|$)"),
+        "Ubuntu login message: Landscape's system summary cache and log (disk)",
+    ),
 ]
+# The login message's Landscape system summary runs on Python too; its own
+# writes are login machinery, judged by path like the rest, never the
+# collector's.
+_LOGIN_PYTHON = ("landscape-sysin",)
 # Socket calls the audit rule also catches; they create no file.
 _SOCKET_CALLS = {"bind", "connect", "sendto", "sendmsg"}
 # Attribute changes on an already-open file carry no path in the audit log.
@@ -493,7 +501,8 @@ def classify(events: list[dict], memory: set[str] | None = None) -> Verdict:
     verdict = Verdict()
     for event in events:
         who = f"{event['comm']} ({event['exe']}) {event['syscall']}"
-        if event["comm"].startswith("python") or "python" in event["exe"]:
+        login_python = event["comm"] in _LOGIN_PYTHON
+        if not login_python and (event["comm"].startswith("python") or "python" in event["exe"]):
             # The collector itself must write nothing at all.
             paths = [path for path, _, _ in event["paths"]] or ["-"]
             verdict.collector.extend(f"{who} {path}" for path in paths)

@@ -75,7 +75,10 @@ Any login leaves records. The tool's runs leave these:
 - the system's ordinary session setup for the account: a per-login runtime
   area in memory (`/run/user/…`) and, on Ubuntu, its login-message files,
   including one small marker file (`.cache/motd.legal-displayed`) in the
-  scanner account's home directory on its first login.
+  scanner account's home directory on its first login; where Ubuntu's
+  Landscape client is installed, the login message's system summary also
+  refreshes its cache and log file (under `/var/lib/landscape` and
+  `/var/log/landscape`).
 
 **The tool never removes, edits or suppresses any of these.** On a server
 that may be compromised, changing logs destroys evidence, and it is exactly

@@ -110,6 +110,19 @@ def test_any_write_by_the_collector_fails():
     assert judge(SESSION + python).collector == ["python3 (/usr/bin/python3.12) openat /dev/null"]
 
 
+def test_landscape_s_login_summary_is_login_machinery_but_only_in_its_own_folders():
+    py = "/usr/bin/python3.14"
+    writes = event(
+        "landscape-sysin", py, "openat", ("/var/log/landscape/sysinfo.log", "NORMAL")
+    ) + event("landscape-sysin", py, "bind")
+    verdict = judge(SESSION + writes)
+    assert verdict.collector == [] and verdict.unexpected == []
+    elsewhere = event("landscape-sysin", py, "openat", ("/etc/passwd", "NORMAL"))
+    assert judge(elsewhere).unexpected == [f"landscape-sysin ({py}) openat /etc/passwd"]
+    # The collector can't pass for it by name alone: python3 is still the collector.
+    assert judge(event("python3", py, "bind")).collector
+
+
 def test_an_undisclosed_write_by_login_machinery_fails():
     verdict = judge(SESSION + event("sshd", SSHD, "openat", ("/etc/passwd", "NORMAL")))
     assert verdict.unexpected == ["sshd (/usr/sbin/sshd) openat /etc/passwd"]

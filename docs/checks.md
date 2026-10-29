@@ -234,6 +234,22 @@ Observed relays (each recipient domain's mail server, for a host that
 delivers directly) aren't compared: they change with every new recipient
 domain, which `mail.domains` covers.
 
+### 8.12 Web applications
+
+Web accounts are `www-data`, `apache`, `nginx`, `http`, `wwwrun`,
+`lighttpd` and any named at setup (`web_users`, recorded by the collector
+as `web_accounts`). Access logs are read only where the organization chose
+them (policy §7); without them, `web.new_script_hit`, `web.exploit` and
+`web.noise` have nothing to read, and the coverage says so.
+
+| Check | What | Band | Baseline |
+|---|---|---|---|
+| `web.worker_child` | ★ a shell, interpreter (Python, Perl, Ruby, PHP's CLI, Node), download or network tool (`curl`, `wget`, `nc`, `socat`…) or recon command (`id`, `whoami`, `uname`, `ps`, `netstat`…, or `cat` of `/etc/passwd`, `shadow`…): live, whose parent is a web worker (`php-fpm`, `php-cgi`, `lsphp`, `httpd`, `apache2`, `nginx`) or that runs as a web account outside a login session (no `sshd`, `sudo`, `su` above it) (`live`); from the audit log's program starts by web accounts, one finding per account and program (`history`). PHP's own `sh -c /usr/sbin/sendmail …` (its `mail()`) is left out | high | no |
+| `web.new_script_hit` | a script added to a web root since the baseline (what `files.web` reports) that answered requests 2xx: its path below some web root matched to the request's | high | yes |
+| `web.exploit` | per source network and attack (the collector's markers in the request or referrer; traversal, `<?php`, JNDI, Shellshock, NUL in the path or user agent): answered 2xx or 5xx (`answered`), refused 3xx or 4xx (`refused`) | medium; refused info | no |
+| `web.errors` | 20 or more 5xx answers or upstream errors from one network within five minutes | low | no |
+| `web.noise` | DESIGN.md §17: the refused requests every public site gets, as one informational line naming the busiest networks (from 10 refused requests) | info | no |
+
 ### 8.10 Anti-forensics (★ all)
 
 | Check | What | Band | Baseline |

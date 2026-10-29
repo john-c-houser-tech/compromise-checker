@@ -269,6 +269,17 @@ CHAINS = (
         timedelta(hours=24),
         5.0,
     ),
+    Chain(
+        "web-shell-used",
+        "A script new since the baseline answered requests, then the web account started a"
+        " shell or tool",
+        (
+            Step("a new script answering requests", (("web.new_script_hit", None),)),
+            Step("the web account starting a shell or tool", (("web.worker_child", None),)),
+        ),
+        timedelta(hours=24),
+        5.0,
+    ),
 )
 
 

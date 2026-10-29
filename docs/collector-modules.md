@@ -957,6 +957,9 @@ exploit attempts that got an answer, error bursts.
   `exe` and `cwd` masked too. With no audit log, `exec_records_unavailable`
   says so; `docs/auditd-web.rules` sets auditd up to record them.
 
+A `web_accounts` record names the accounts that count as the web
+server's (the usual ones and `web_users`), for the checks.
+
 **Masking (policy §7):** before secret masking, every query string in a
 line (the request's, and a referrer's; escaped characters and fragments
 included) keeps its names and has each value replaced by `[MASKED:value]`,

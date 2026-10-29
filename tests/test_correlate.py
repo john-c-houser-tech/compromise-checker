@@ -280,7 +280,11 @@ def test_a_chain_adds_its_bonus_to_the_score():
 
 
 def test_chains_are_data():
-    assert {c.id for c in CHAINS} == {"new-account-escalated-used", "guessed-then-entrenched"}
+    assert {c.id for c in CHAINS} == {
+        "new-account-escalated-used",
+        "guessed-then-entrenched",
+        "web-shell-used",
+    }
     assert all(c.ratio > 1 for c in CHAINS)
 
 

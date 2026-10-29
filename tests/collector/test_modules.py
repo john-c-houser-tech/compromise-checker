@@ -5515,6 +5515,9 @@ class WebTests(FixtureRoot):
         self.write("var/log/audit/audit.log", AUDIT_EXEC % ((now,) * 7))
         records, _ = self.run_web(web_users=["jch"])
         self.assertEqual(len(named(records, "exec_record")), 3)
+        [accounts] = named(records, "web_accounts")
+        self.assertIn("jch", accounts["data"]["names"])
+        self.assertIn("www-data", accounts["data"]["names"])
 
     def test_bad_web_settings_are_refused(self):
         for extra in (

@@ -7854,6 +7854,12 @@ def module_web_logs(run):
     their access logs only where the organization opted in (policy §7:
     query and referrer values masked, user agents cut)."""
     module = "web_logs"
+    # Which accounts count as the web server's: the checks judge these.
+    run.stream.record(
+        module,
+        "web_accounts",
+        {"names": sorted(set(WEB_USERS) | set(run.settings.get("web_users") or ()))},
+    )
     _exec_records(run, module)
     seen = set()
     send_config_files(run, module, WEB_CONFIG_FILES, seen)

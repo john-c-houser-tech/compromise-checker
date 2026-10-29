@@ -289,6 +289,31 @@
    "check": "system.reboot",
    "findings": 0,
    "status": "ran"
+  },
+  {
+   "check": "web.errors",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "web.exploit",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "web.new_script_hit",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "web.noise",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "web.worker_child",
+   "findings": 0,
+   "status": "ran"
   }
  ],
  "findings": [

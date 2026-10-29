@@ -205,8 +205,10 @@ sometimes secrets typed into shell commands.
 - **Redaction modes**, chosen per organization:
   - *none* — excerpts are sent as collected (after secret scrubbing);
   - *pseudonymize* (default) — hostnames, IP addresses, usernames and email
-    addresses are replaced with consistent tokens (`HOST-3`, `IP-17`,
-    `USER-2`) and restored locally when the answer comes back;
+    addresses (and SSH key fingerprints) are replaced with tokens that are
+    consistent within a run and tagged randomly per run (`HOST-3-7f3a`,
+    `IP-17-7f3a`, `USER-2-7f3a`) and restored locally when the answer comes
+    back;
   - *strict* — only finding types, counts and scores are sent.
 - **Log text is untrusted.** Usernames, URLs, user agents and email subjects
   are controlled by whoever produced them, including an attacker. They are

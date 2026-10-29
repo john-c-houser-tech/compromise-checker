@@ -301,7 +301,10 @@ The advisor's answers can't be golden-tested, so they are measured.
 
 ### 3.8 — Policy, docs, README
 
-- Policy §9 reconciled with what is built: the four roles; the fallback
+- Policy §9 reconciled with what is built (agreed with John 2026-10-29:
+  SSH key fingerprints added to what is replaced; strict also sends the
+  kinds of coverage gap; placeholders look like `USER-2-7f3a`; docs say
+  whitelist reasons shouldn't name people): the four roles; the fallback
   model, if decision 3 allows one; where requests and answers are stored
   and that they are encrypted and purged with the assessment; `--show`;
   inference geography. Wording to John before commit, as before.

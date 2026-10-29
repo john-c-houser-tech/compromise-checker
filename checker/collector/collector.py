@@ -2368,40 +2368,74 @@ def _sudo_reads(name):
     return not name.endswith("~") and "." not in name
 
 
-# sudo's input logging (plan 2.7): an un-negated log_input or log_stdin, or
-# a LOG_INPUT: tag on a rule (NOLOG_INPUT: turns it off). Where sudo logs
+# sudo's input logging (plan 2.7): log_input or log_stdin set (sudo's lexer
+# cancels pairs of !, so !!log_input sets it), or a LOG_INPUT tag on a rule
+# (blanks may precede its colon; NOLOG_INPUT turns it off). Where sudo logs
 # its input, it writes the collector's program, and so the mail key, to disk.
-_SUDO_LOGS_INPUT = re.compile(r"(?<![!\w])(?:log_input|log_stdin)\b|(?<!NO)LOG_INPUT:")
+_SUDO_INPUT_FLAG = re.compile(r"(?<![\w!])(!*)\s*(?:log_input|log_stdin)\b")
+_SUDO_INPUT_TAG = re.compile(r"(?<!NO)LOG_INPUT\s*:")
+# A sudoers comment: # not followed by a digit (#1000 is a user ID) and not
+# an #include or #includedir.
+_SUDO_COMMENT_LINE = re.compile(r"^\s*#(?!\d|include)")
 # sudo.conf plugins that don't record input beyond what sudoers says.
 SUDO_PLUGINS_KNOWN = frozenset(("sudoers_policy", "sudoers_io", "sudoers_audit"))
 _NSS_SUDOERS = re.compile(r"^\s*sudoers\s*:\s*(.*)$")
+SUDO_SETTINGS_BYTES = 65536
+
+
+def _settings_text(absolute):
+    """A small settings file's text as its program reads it, through links:
+    ("", True) if it doesn't exist; (None, False) if it exists but can't be
+    read whole."""
+    resolved, risk = resolve_links(absolute)
+    if risk:
+        return None, False
+    try:
+        if not os.path.lexists(path(resolved)):
+            return "", True
+        if os.stat(path(resolved)).st_size > SUDO_SETTINGS_BYTES:
+            return None, False
+    except OSError:
+        return None, False
+    text = read_small(resolved, SUDO_SETTINGS_BYTES)
+    return text, text is not None
+
+
+def sudo_logs_input(line):
+    """Whether one sudoers line turns input logging on."""
+    if _SUDO_COMMENT_LINE.match(line):
+        return False
+    if _SUDO_INPUT_TAG.search(line):
+        return True
+    return any(len(m.group(1)) % 2 == 0 for m in _SUDO_INPUT_FLAG.finditer(line))
 
 
 def sudo_input_logging(texts, complete):
     """Whether sudo writes its input to disk, from every sudoers file's text
     (`complete`: all of them read whole), sudo.conf's plugins and where
     nsswitch.conf says rules come from. "off" only when sure."""
-    logged = any(
-        _SUDO_LOGS_INPUT.search(line)
-        for text in texts
-        for line in text.splitlines()
-        if not line.lstrip().startswith("#")
-    )
-    plugins = []
-    for line in (read_small("/etc/sudo.conf") or "").splitlines():
-        words = line.split()
-        if len(words) >= 2 and words[0] == "Plugin":
+    logged = any(sudo_logs_input(line) for text in texts for line in text.splitlines())
+    plugins, redirected = [], False
+    conf, readable = _settings_text("/etc/sudo.conf")
+    complete = complete and readable
+    for line in (conf or "").splitlines():
+        words = line.split("#", 1)[0].split()
+        if len(words) >= 2 and words[0].lower() == "plugin":
             plugins.append(words[1])
+            # Arguments can point sudoers elsewhere (sudoers_file=, ldap_conf=).
+            redirected = redirected or len(words) > 3
     unknown = sorted(set(plugins) - SUDO_PLUGINS_KNOWN)
     sources = []
-    for line in (read_small("/etc/nsswitch.conf") or "").splitlines():
+    nss, readable = _settings_text("/etc/nsswitch.conf")
+    complete = complete and readable
+    for line in (nss or "").splitlines():
         match = _NSS_SUDOERS.match(line.split("#", 1)[0])
         if match:
             sources = match.group(1).split()
     elsewhere = [s for s in sources if s != "files" and not s.startswith("[")]
     if logged or unknown:
         state = "on"
-    elif complete and not elsewhere:
+    elif complete and not elsewhere and not redirected:
         state = "off"
     else:
         state = "unknown"
@@ -2409,6 +2443,7 @@ def sudo_input_logging(texts, complete):
         "state": state,
         "sudoers_complete": complete,
         "plugins": plugins,
+        "plugin_arguments": redirected,
         "rules_also_from": elsewhere,
     }
 
@@ -2429,7 +2464,10 @@ def module_sudoers(run):
         seen.add(absolute)
         sent = send_config_file(run, module, absolute)
         if sent is None:
-            complete = complete and not os.path.lexists(path(absolute))
+            # A missing include is missing for sudo too; a missing
+            # /etc/sudoers means sudo reads its rules from elsewhere.
+            missing = not os.path.lexists(path(absolute))
+            complete = complete and missing and absolute != "/etc/sudoers"
             continue
         text = read_config_text(run, module, sent)
         texts.append(text)

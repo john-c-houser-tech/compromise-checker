@@ -872,11 +872,19 @@ where input logging is on; the collector can't tell before sudo has logged
 it. So `sudoers` reports `sudo_input_logging`: `on` (an un-negated
 `log_input` or `log_stdin`, a `LOG_INPUT:` tag, or a `sudo.conf` plugin
 other than sudoers' own), `off` (every sudoers file read whole, none of
-those, and rules only from files in `nsswitch.conf`), or `unknown`. The
+those, and rules only from files in `nsswitch.conf`), or `unknown` (also when `/etc/sudoers` is missing, `sudo.conf` or
+`nsswitch.conf` can't be read whole through their links, or a `sudo.conf`
+plugin line has arguments, which can point sudo at other rules). Sudo's
+lexer is followed: `!!log_input` sets it, blanks may precede a tag's
+colon, and `#1000` starts a rule, not a comment. The
 controller reads it as the stream arrives and keeps, per host, an HMAC tag
-of it keyed with the mail key (`keys/mail-gate.json`: without the key it
-says nothing about any host), and sends the key only to a host whose
-latest collection said `off`. A host's first collection, a host whose sudo
+of it, its host's address and a fresh random nonce, keyed with the mail key
+(`keys/mail-gate.json`: without the key it shows neither the state nor
+whether it changed), and sends the key only to a host whose latest
+collection, at the same address, said `off`. Deciding closes the host's
+gate until the run's own answer is recorded (after its bundle), so a run
+whose answer is lost leaves it closed; a damaged gate file counts as
+closed for every host. A host's first collection, a host whose sudo
 logs its input or takes rules from a directory (LDAP, SSSD), and a host
 whose last collection couldn't tell get no key: no mail log is sent
 (`mail_logs_withheld`, with the controller's reason), and the coverage

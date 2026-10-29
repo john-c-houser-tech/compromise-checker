@@ -28,19 +28,31 @@ from checker.transport import PasswordProvider, Session, TransportError, collect
 DEFAULT_LIMITS = Limits(overall_seconds=600, module_seconds=120, source_bytes=256 * 1024 * 1024)
 
 
-def mail_key_for(home: Path, host: str, key: str) -> tuple[str | None, str | None]:
+def mail_key_for(
+    home: Path, host: Host, key: str, reads_sudo: bool = True
+) -> tuple[str | None, str | None]:
     """The mail key to send to a host, or why not (policy §7: the key is
     never written on a server). The program, key included, reaches the
     collector on sudo's input, which sudo writes to disk where its input
     logging is on, and the collector can't tell before sudo has logged it.
-    So the key goes only to a host whose latest collection showed sudo,
-    read whole, not logging its input (`record_mail_gate`)."""
-    if mail_gate_open(home, key, host):
-        return key, None
-    return None, (
-        "sudo's input logging wasn't shown to be off at the last collection (or this is"
-        " the first), so the mail key wasn't sent"
-    )
+    So the key goes only to a host whose latest collection, at the same
+    address, showed sudo, read whole, not logging its input. The host's
+    gate is then closed until this collection's own answer is recorded, so
+    a run whose answer can't be recorded leaves it closed (`reads_sudo`: the
+    run collects sudo's settings; one that doesn't leaves the gate as it was)."""
+    address = f"{host.address}:{host.port}"
+    sent = key if mail_gate_open(home, key, host.name, address) else None
+    try:
+        if reads_sudo:
+            record_mail_gate(home, key, host.name, address, None)
+    except OSError as exc:
+        return None, f"the mail gate couldn't be updated ({exc}), so the mail key wasn't sent"
+    if sent is None:
+        return None, (
+            "sudo's input logging wasn't shown to be off at the last collection (or this is"
+            " the first), so the mail key wasn't sent"
+        )
+    return sent, None
 
 
 @dataclass
@@ -83,7 +95,9 @@ async def collect_hosts(
         run_started = datetime.now(UTC)
         identifier = bundle_id(host.name, run_started, settings.run_id)
         writer = BundleWriter(bundle_path(home, host.name, identifier), config.recipients)
-        host_key, withheld = mail_key_for(home, host.name, key)
+        host_key, withheld = mail_key_for(
+            home, host, key, reads_sudo=modules is None or "sudoers" in modules
+        )
         # The host's own web roots, if it has any, replace the defaults.
         program = build_program(
             settings.model_copy(
@@ -111,11 +125,6 @@ async def collect_hosts(
             # Joining the encryptor and fsync can be slow: keep other hosts moving.
             sealed = await asyncio.to_thread(writer.seal)
         manifest = sealed.summary.manifest or {}
-        # What this collection showed about sudo's input logging decides
-        # whether the next one gets the mail key; a run that didn't read
-        # sudo's settings leaves that as it was.
-        if modules is None or "sudoers" in modules:
-            record_mail_gate(home, key, host.name, sealed.summary.sudo_input_logging)
         status, verdict = judge(
             sealed.status,
             sealed.summary.manifest,
@@ -148,6 +157,21 @@ async def collect_hosts(
         }
         store.record_bundle(row)
         write_sidecar(sealed, row)
+        # What this collection showed about sudo's input logging decides
+        # whether the next one gets the mail key; a run that didn't read
+        # sudo's settings leaves that as it was. After the bundle is
+        # recorded: a problem here must never cost the evidence.
+        if modules is None or "sudoers" in modules:
+            try:
+                record_mail_gate(
+                    home,
+                    key,
+                    host.name,
+                    f"{host.address}:{host.port}",
+                    sealed.summary.sudo_input_logging,
+                )
+            except OSError as exc:
+                problem = f"{problem + '; ' if problem else ''}mail gate not recorded: {exc}"
         outcomes.append(Outcome(host.name, identifier, status, problem, sealed.plaintext_bytes))
         if error is not None:
             raise error

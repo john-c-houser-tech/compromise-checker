@@ -501,21 +501,83 @@ def test_sudo_plugins_and_directory_rules_arent_off(tmp_path):
     assert found["state"] == "unknown" and found["rules_also_from"] == ["sss"]
 
 
+def gate_host(name="web01", address="192.0.2.10"):
+    from checker.inventory import Host
+
+    return Host(name=name, address=address, user="scanner")
+
+
 def test_the_gate_opens_only_on_a_collection_showing_no_input_logging(tmp_path):
     from checker.collect import mail_key_for
     from checker.evidence import mail_gate_file, record_mail_gate
 
-    key, why = mail_key_for(tmp_path, "web01", KEY)
+    web = gate_host()
+    key, why = mail_key_for(tmp_path, web, KEY)
     assert key is None and "first" in why
-    record_mail_gate(tmp_path, KEY, "web01", "off")
-    assert mail_key_for(tmp_path, "web01", KEY) == (KEY, None)
-    assert mail_key_for(tmp_path, "db01", KEY)[0] is None
-    assert mail_key_for(tmp_path, "web01", "cd" * 32)[0] is None  # another key
-    # Without the key, the file says nothing: no state in clear.
-    assert "off" not in mail_gate_file(tmp_path).read_text()
+    record_mail_gate(tmp_path, KEY, "web01", "192.0.2.10:22", "off")
+    assert mail_key_for(tmp_path, web, KEY) == (KEY, None)
+    # Deciding closed the gate until this run's answer is recorded.
+    assert mail_key_for(tmp_path, web, KEY)[0] is None
+    record_mail_gate(tmp_path, KEY, "web01", "192.0.2.10:22", "off")
+    assert mail_key_for(tmp_path, gate_host("db01"), KEY)[0] is None
+    assert mail_key_for(tmp_path, gate_host(address="192.0.2.99"), KEY)[0] is None
+    record_mail_gate(tmp_path, KEY, "web01", "192.0.2.10:22", "off")
+    assert mail_key_for(tmp_path, web, "cd" * 32)[0] is None  # another key
+    # A run that doesn't read sudo's settings leaves the gate as it was.
+    record_mail_gate(tmp_path, KEY, "web01", "192.0.2.10:22", "off")
+    assert mail_key_for(tmp_path, web, KEY, reads_sudo=False) == (KEY, None)
+    assert mail_key_for(tmp_path, web, KEY, reads_sudo=False) == (KEY, None)
     for state in ("on", None, "garbage"):
-        record_mail_gate(tmp_path, KEY, "web01", state)
-        assert mail_key_for(tmp_path, "web01", KEY)[0] is None
+        record_mail_gate(tmp_path, KEY, "web01", "192.0.2.10:22", state)
+        assert mail_key_for(tmp_path, web, KEY, reads_sudo=False)[0] is None
+    # Without the key, the file shows neither the state nor a change of it.
+    record_mail_gate(tmp_path, KEY, "web01", "192.0.2.10:22", "off")
+    first = mail_gate_file(tmp_path).read_text()
+    record_mail_gate(tmp_path, KEY, "web01", "192.0.2.10:22", "off")
+    assert "off" not in first and first != mail_gate_file(tmp_path).read_text()
+
+
+@pytest.mark.parametrize("content", ["{not json", "", "[]", '{"web01": "abc"}'])
+def test_a_damaged_gate_file_sends_no_key_and_is_rewritten(tmp_path, content):
+    from checker.collect import mail_key_for
+    from checker.evidence import mail_gate_file, record_mail_gate
+
+    mail_gate_file(tmp_path).parent.mkdir(parents=True)
+    mail_gate_file(tmp_path).write_text(content)
+    assert mail_key_for(tmp_path, gate_host(), KEY)[0] is None
+    record_mail_gate(tmp_path, KEY, "web01", "192.0.2.10:22", "off")
+    assert mail_key_for(tmp_path, gate_host(), KEY)[0] == KEY
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Defaults !!log_input",
+        "scanner ALL=(root) NOPASSWD: LOG_INPUT : /usr/bin/python3 -I -B -",
+        "#0 ALL=(ALL) LOG_INPUT: ALL",
+        "Defaults>root log_input",
+        "Defaults log_input # with a comment",
+    ],
+)
+def test_more_ways_sudoers_turns_input_logging_on(tmp_path, line):
+    collector = load_collector_for_sudo(tmp_path)
+    assert collector.sudo_input_logging([line + "\n"], True)["state"] == "on"
+
+
+def test_linked_or_unusual_sudo_settings_arent_off(tmp_path):
+    etc = tmp_path / "etc"
+    (etc / "authselect").mkdir(parents=True)
+    collector = load_collector_for_sudo(tmp_path)
+    (etc / "authselect/nsswitch.conf").write_text("sudoers: files sss\n")
+    (etc / "nsswitch.conf").symlink_to("/etc/authselect/nsswitch.conf")
+    assert collector.sudo_input_logging([""], True)["state"] == "unknown"
+    (etc / "nsswitch.conf").unlink()
+    (etc / "sudo.conf").write_text("plugin recorder_io recorder.so\n")
+    assert collector.sudo_input_logging([""], True)["state"] == "on"
+    (etc / "sudo.conf").write_text("Plugin sudoers_policy sudoers.so sudoers_file=/etc/x\n")
+    assert collector.sudo_input_logging([""], True)["state"] == "unknown"
+    (etc / "sudo.conf").write_text("x" * 70000)
+    assert collector.sudo_input_logging([""], True)["state"] == "unknown"
 
 
 def test_the_stream_summary_reads_sudo_s_input_logging():

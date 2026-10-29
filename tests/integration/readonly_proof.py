@@ -680,6 +680,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             # Twice: the mail key goes only to a host whose earlier
             # collection showed sudo doesn't log its input (plan 2.7), so
             # the second collection is the one that reads the mail logs.
+            runs = []
             for _ in range(2):
                 [outcome] = await collect_hosts(
                     home,
@@ -688,9 +689,12 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                     known_hosts=known,
                     limits=Limits(overall_seconds=600, module_seconds=300, source_bytes=1 << 28),
                 )
+                runs.append(outcome)
             result.status = outcome.status
             if outcome.error:
                 result.error = outcome.error
+            if runs[0].status != "complete":  # fails the proof: status must be "complete"
+                result.status = f"first {runs[0].status}, second {outcome.status}"
             loaded_after = await _kernel_modules(conn)
             changed = sorted(
                 [f"+{m}" for m in loaded_after - loaded_before]

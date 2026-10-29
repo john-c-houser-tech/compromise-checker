@@ -163,30 +163,48 @@ def mail_gate_file(home: Path) -> Path:
     return home / "keys" / "mail-gate.json"
 
 
-def _gate_tag(key: str, host: str, state: str) -> str:
-    message = f"compromise-checker mail gate\0{host}\0{state}".encode()
+def _gate_tag(key: str, nonce: str, host: str, address: str, state: str) -> str:
+    message = f"compromise-checker mail gate\0{nonce}\0{host}\0{address}\0{state}".encode()
     return hmac.new(bytes.fromhex(key), message, hashlib.sha256).hexdigest()
 
 
-def record_mail_gate(home: Path, key: str, host: str, state: str | None) -> None:
+def _gates(path: Path) -> dict[str, Any]:
+    """The gate file's entries; anything unreadable or malformed counts as
+    none (no key is sent)."""
+    try:
+        gates = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return gates if isinstance(gates, dict) else {}
+
+
+def record_mail_gate(home: Path, key: str, host: str, address: str, state: str | None) -> None:
     """Remember what a collection showed about a host's sudo input logging
-    ("on", "off", or anything else: unknown), as a tag only the mail key
-    can check: without it, the file says nothing about any host (policy §8)."""
+    ("on", "off", or anything else: unknown), as a tag only the mail key can
+    check, made with a fresh random nonce each time: without the key, the
+    file says neither the state nor whether it changed (policy §8). The
+    host's address is part of it, so a host moved to another address starts
+    again from a first collection."""
     path = mail_gate_file(home)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with locked(path):
-        gates = json.loads(path.read_text()) if path.exists() else {}
-        gates[host] = _gate_tag(key, host, state if state in ("on", "off") else "unknown")
+        gates = _gates(path)
+        nonce = secrets.token_hex(16)
+        state = state if state in ("on", "off") else "unknown"
+        gates[host] = {"nonce": nonce, "tag": _gate_tag(key, nonce, host, address, state)}
         atomic_write(path, json.dumps(gates, sort_keys=True, indent=1) + "\n")
 
 
-def mail_gate_open(home: Path, key: str, host: str) -> bool:
-    """Whether the host's latest collection showed sudo doesn't log its input."""
-    path = mail_gate_file(home)
-    try:
-        tag = json.loads(path.read_text()).get(host) if path.exists() else None
-    except ValueError:
+def mail_gate_open(home: Path, key: str, host: str, address: str) -> bool:
+    """Whether the host's latest collection, at this address, showed sudo
+    doesn't log its input."""
+    entry = _gates(mail_gate_file(home)).get(host)
+    if not isinstance(entry, dict):
         return False
-    return isinstance(tag, str) and hmac.compare_digest(tag, _gate_tag(key, host, "off"))
+    nonce, tag = entry.get("nonce"), entry.get("tag")
+    if not isinstance(nonce, str) or not isinstance(tag, str):
+        return False
+    return hmac.compare_digest(tag, _gate_tag(key, nonce, host, address, "off"))
 
 
 def mail_fingerprint(key: str, address: str) -> str:

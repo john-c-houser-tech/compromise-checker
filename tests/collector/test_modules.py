@@ -5020,6 +5020,10 @@ class MailTests(FixtureRoot):
         self.write("etc/sudoers.d/big", b"# x\n" * 300000)  # over 1 MiB: not read whole
         [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
         self.assertEqual(found["data"]["state"], "unknown")
+        Path(self.root, "etc/sudoers.d/big").unlink()
+        Path(self.root, "etc/sudoers").unlink()  # sudo reads its rules elsewhere
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "unknown")
 
     def test_a_bad_key_is_refused(self):
         records = collect(self.root, ["mail"], mail_key="NOT-HEX")

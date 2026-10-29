@@ -798,6 +798,29 @@ about 69 cents.
   *web* profile. Only counts go into the plan (findings by band, score),
   never their content.
 
+*2.10 as built:* profiles `base` (firewalld's libffi closures, AlmaLinux
+10's `/boot/efi` modes), `web` (an application's own mail only: the
+net.directory marking and PHP-FPM's workers needed nothing once 2.8b's
+checks judged by service and account), `database` (listeners by account;
+large files in database directories had no false alarm to cover), `mail`
+(a relay's volume and domains; queue sizes left in, the safer choice) and
+`build` (compilers), shipped as package data; a profile named in several
+layers applies once. Tuning, each with its reason in docs/scoring.md: a
+package's account (logged within 15 minutes of a package install, system
+UID, no login shell as logged and now, `from=none`) and its group
+memberships are low, a web account joining a group never; `libvirt`,
+`incus-admin`, `kmem` are root-equivalent; `(sd-pam)` judged by what PID 1
+loaded. The detection proof's second chain is 2.8b's `web-shell-used` (the
+web shell owned by its account), not the plan's "/tmp file then outbound
+connection", which no chain defines. Independent review: 3 medium and 4
+low findings, all fixed (the review showed "no terminal" proves nothing:
+the package install nearby is the evidence). Calibration (approved by
+John; two runs, 18 Nanodes, about 14 cents, all deleted): the first showed
+RHEL's nginx and apache accounts kept medium by a web-account exclusion,
+narrowed; the second PASS: every clean image Low (5.8%), both compromised
+images Critical with 32/32 behaviours and both chains (done-means 2 and
+3). Golden cases re-exported. Phase 2 spend so far: about 83 cents.
+
 ## Explicitly gated on John
 
 - Any change to the security and privacy policy's wording. 2.0 may tighten

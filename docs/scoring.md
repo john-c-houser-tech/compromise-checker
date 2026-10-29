@@ -221,10 +221,10 @@ Calibration run of 2026-10-29 (tests/integration/calibrate.py).
 
 | Clean image | Probability | Band | Compromise findings by band |
 |---|---|---|---|
-| alma10 | 14.0% | Elevated | 2 info, 7 low, 2 medium |
-| alma9 | 14.0% | Elevated | 2 info, 7 low, 2 medium |
-| rocky10 | 14.0% | Elevated | 2 info, 7 low, 2 medium |
-| rocky9 | 14.0% | Elevated | 2 info, 7 low, 2 medium |
+| alma10 | 5.8% | Low | 2 info, 9 low |
+| alma9 | 5.8% | Low | 2 info, 9 low |
+| rocky10 | 5.8% | Low | 2 info, 9 low |
+| rocky9 | 5.8% | Low | 2 info, 9 low |
 | ubuntu22.04 | 5.8% | Low | 3 info, 6 low |
 | ubuntu24.04 | 5.8% | Low | 3 info, 4 low |
 | ubuntu26.04 | 5.8% | Low | 3 info, 4 low |
@@ -233,12 +233,4 @@ Calibration run of 2026-10-29 (tests/integration/calibrate.py).
 |---|---|---|---|
 | rocky9 | 100.0% | Critical | 32 found, 0 missed |
 | ubuntu24.04 | 100.0% | Critical | 32 found, 0 missed |
-
-FAIL: alma10 (clean) scored Elevated (14.0%)
-
-FAIL: alma9 (clean) scored Elevated (14.0%)
-
-FAIL: rocky10 (clean) scored Elevated (14.0%)
-
-FAIL: rocky9 (clean) scored Elevated (14.0%)
 <!-- calibration:end -->

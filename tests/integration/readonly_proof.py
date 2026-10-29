@@ -336,8 +336,9 @@ fi
 # Containers for the containers module (plan 2.9): Docker's above on Ubuntu;
 # Podman with one running container on the RHEL family.
 if ! command -v ufw >/dev/null 2>&1; then
-    dnf install -y -q podman >/dev/null
-    podman run -d --name cc-proof-pod docker.io/library/alpine:latest sleep 7200 >/dev/null
+    (dnf install -y -q podman >/dev/null \
+        && podman run -d --name cc-proof-pod docker.io/library/alpine:latest sleep 7200 \
+            >/dev/null) || echo "proof setup: Podman container not started" >&2
 fi
 # The scanner account, exactly as docs/scanner-account.md sets it up.
 useradd --create-home --shell /bin/sh --comment "Compromise Checker" scanner

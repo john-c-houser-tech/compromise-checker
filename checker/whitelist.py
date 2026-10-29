@@ -47,18 +47,7 @@ EXACT_FIELDS = ("account", "group", "key", "module", "package", "program", "cont
 PATTERN_FIELDS = ("path", "exe")  # anchored patterns
 # Fields that make a rule narrow. `program` is a process's own name, which
 # it can set to anything (prctl), so it narrows nothing by itself.
-NARROWING = (
-    "account",
-    "group",
-    "key",
-    "module",
-    "package",
-    "address",
-    "path",
-    "exe",
-    "container",
-    "image",
-)
+NARROWING = ("account", "group", "key", "module", "package", "address", "path", "exe")
 MAX_PATH = 4096
 
 
@@ -143,8 +132,9 @@ class Match(BaseModel):
     address: str | None = None  # an address or a network, host bits zero
     path: str | None = None  # an anchored pattern: * within a directory, ** across
     exe: str | None = None  # a process's executable, as a path pattern
-    # A container's name (with its runtime: "docker: cadvisor") and image.
-    # Whoever runs containers chooses both: name the image too.
+    # A container's name (with its runtime: "docker: cadvisor") and its
+    # image's repository (gcr.io/cadvisor/cadvisor: no tag, so a rule
+    # survives version bumps). They narrow a rule only together.
     container: str | None = None
     image: str | None = None
     correlated_with: Correlation | None = None
@@ -200,6 +190,10 @@ class Match(BaseModel):
     def narrow(self) -> bool:
         """Names something that limits it: not only the check, a process's
         own name, every address (/0) or every path (/**)."""
+        # Whoever runs containers chooses both a container's name and its
+        # image: together they narrow a rule, either alone doesn't.
+        if self.container is not None and self.image is not None:
+            return True
         for name in NARROWING:
             value = getattr(self, name)
             if value is None:

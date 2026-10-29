@@ -7898,18 +7898,23 @@ def module_web_logs(run):
 # environment (it holds secrets) or labels.
 
 DOCKER_DAEMON_JSON = "/etc/docker/daemon.json"
-DOCKER_ROOT = "/var/lib/docker"
+DOCKER_ROOTS = ("/var/lib/docker", "/var/snap/docker/common/var-lib-docker")
 PODMAN_STORAGE_CONF = "/etc/containers/storage.conf"
 PODMAN_ROOT = "/var/lib/containers/storage"
+PODMAN_RUNROOT = "/run/containers/storage"
 CONTAINER_JSON_BYTES = 4 * 1024 * 1024
 MAX_CONTAINERS = 2000
-_GRAPHROOT = re.compile(r'^\s*graphroot\s*=\s*["\']([^"\']+)["\']')
+_STORAGE_SETTING = re.compile(r'^\s*(graphroot|runroot|driver)\s*=\s*["\']([^"\']*)["\']')
+CONTAINERD_TASKS = "/run/containerd/io.containerd.runtime.v2.task"
 # What's there but not inventoried: a coverage note, never "no containers".
+# (Docker runs its own containers through containerd, in its "moby"
+# namespace: only other namespaces are someone else's.)
 CONTAINER_NOT_INVENTORIED = (
     ("/var/lib/kubelet", "Kubernetes (kubelet)"),
-    ("/var/lib/containerd", "containerd"),
-    ("/var/lib/lxd", "LXD"),
-    ("/var/snap/lxd", "LXD"),
+    ("/var/lib/rancher/k3s", "k3s"),
+    ("/var/snap/microk8s", "MicroK8s"),
+    ("/var/lib/lxd/containers", "LXD"),
+    ("/var/snap/lxd/common/lxd/containers", "LXD"),
     ("/var/lib/lxc", "LXC"),
 )
 
@@ -7941,84 +7946,116 @@ def _container_text(value, limit=512):
     return masked(str(value)[:limit])[0]
 
 
+def capability(name):
+    """A capability's canonical name: SYS_ADMIN for sys_admin or CAP_SYS_ADMIN."""
+    name = str(name).upper()
+    return name[4:] if name.startswith("CAP_") else name
+
+
+def _mount(source, destination, rw, kind):
+    return {
+        "type": kind,
+        "source": _container_text(source) if source else None,
+        "destination": _container_text(destination),
+        "rw": bool(rw),
+    }
+
+
 def _docker_container(directory):
     """One Docker container from its state files: the listed fields only."""
     config, problem = read_json(_join(directory, "config.v2.json"))
     if config is None:
         return None, problem
-    host, _ = read_json(_join(directory, "hostconfig.json"))
-    host = host if isinstance(host, dict) else {}
+    host, host_problem = read_json(_join(directory, "hostconfig.json"))
     state = config.get("State") or {}
     inner = config.get("Config") or {}
     mounts = []
     for point in (config.get("MountPoints") or {}).values():
-        if isinstance(point, dict):
-            mounts.append(
-                {
-                    "source": _container_text(point.get("Source")),
-                    "destination": _container_text(point.get("Destination")),
-                    "rw": bool(point.get("RW")),
-                }
-            )
-    return {
+        if not isinstance(point, dict):
+            continue
+        # A volume an image declares (postgres's data) or a tmpfs has no
+        # host path: Source is empty. Only binds name one.
+        kind = point.get("Type") or ("bind" if point.get("Source") else "volume")
+        source = point.get("Source") if kind == "bind" else None
+        mounts.append(
+            _mount(source, point.get("Destination"), point.get("RW"), kind)
+            | ({"volume": _container_text(point.get("Name"), 128)} if point.get("Name") else {})
+        )
+    found = {
         "runtime": "docker",
         "id": str(config.get("ID") or "")[:64],
         "name": _container_text(str(config.get("Name") or "").lstrip("/")),
         "image": _container_text(inner.get("Image")),
         "created": config.get("Created"),
-        "running": bool(state.get("Running")),
-        "pid": state.get("Pid") if isinstance(state.get("Pid"), int) else None,
-        "privileged": bool(host.get("Privileged")),
-        "cap_add": sorted(_container_text(c, 64) for c in host.get("CapAdd") or [] if c),
-        "pid_mode": _container_text(host.get("PidMode"), 128) or None,
-        "network_mode": _container_text(host.get("NetworkMode"), 128) or None,
-        "ipc_mode": _container_text(host.get("IpcMode"), 128) or None,
-        "devices": sorted(
-            _container_text(d.get("PathOnHost"))
-            for d in host.get("Devices") or []
-            if isinstance(d, dict)
-        ),
-        "security_opt": sorted(_container_text(o, 128) for o in host.get("SecurityOpt") or [] if o),
+        "running_state": bool(state.get("Running")),
         "mounts": mounts,
-    }, None
+    }
+    if not isinstance(host, dict):
+        # Without it, nothing can be said of privilege: a gap, not "no".
+        found["hostconfig_unreadable"] = host_problem or "not an object"
+        return found, None
+    found.update(
+        {
+            "privileged": bool(host.get("Privileged")),
+            "capabilities": sorted(capability(c) for c in host.get("CapAdd") or [] if c),
+            "host_pid": host.get("PidMode") == "host",
+            "host_network": host.get("NetworkMode") == "host",
+            "host_ipc": host.get("IpcMode") == "host",
+            "devices": sorted(
+                _container_text(d.get("PathOnHost"))
+                for d in host.get("Devices") or []
+                if isinstance(d, dict) and d.get("PathOnHost")
+            ),
+            "security_opt": sorted(
+                _container_text(o, 128) for o in host.get("SecurityOpt") or [] if o
+            ),
+        }
+    )
+    return found, None
 
 
 def _docker_roots():
-    """Docker's data root (daemon.json's data-root, or the old graph), and
-    its userns-remap subdirectories (<uid>.<gid>)."""
-    root = DOCKER_ROOT
+    """Docker's data roots (daemon.json's data-root or the old graph, and
+    the snap's), each with its userns-remap subdirectories (<uid>.<gid>)."""
+    roots = list(DOCKER_ROOTS)
     settings, _ = read_json(DOCKER_DAEMON_JSON, 1024 * 1024)
     if isinstance(settings, dict):
         chosen = settings.get("data-root") or settings.get("graph")
         if isinstance(chosen, str) and chosen.startswith("/") and ".." not in chosen.split("/"):
-            root = chosen.rstrip("/") or "/"
-    roots = [root]
-    try:
-        for name in sorted(os.listdir(path(root))):
-            if re.match(r"^\d+\.\d+$", name):
-                roots.append(_join(root, name))
-    except OSError:
-        pass
-    return roots
+            roots = [chosen.rstrip("/") or "/"]
+    found = []
+    for root in roots:
+        found.append(root)
+        try:
+            found += [
+                _join(root, n) for n in sorted(os.listdir(path(root))) if re.match(r"^\d+\.\d+$", n)
+            ]
+        except OSError:
+            pass
+    return found
 
 
-def _podman_root():
-    text = read_small(PODMAN_STORAGE_CONF) or ""
+def _podman_storage():
+    """Podman's storage root, run root and driver from storage.conf's
+    [storage] table (comments and other tables ignored), or the defaults."""
+    found = {"graphroot": PODMAN_ROOT, "runroot": PODMAN_RUNROOT, "driver": ""}
     section = ""
-    for line in text.splitlines():
+    for line in (read_small(PODMAN_STORAGE_CONF) or "").splitlines():
         stripped = line.split("#", 1)[0].strip()
         if stripped.startswith("["):
             section = stripped
             continue
-        match = _GRAPHROOT.match(stripped)
+        match = _STORAGE_SETTING.match(stripped)
         if match and section in ("", "[storage]"):
-            value = match.group(1)
-            if value.startswith("/") and ".." not in value.split("/"):
-                return value.rstrip("/") or "/"
-    return PODMAN_ROOT
+            name, value = match.groups()
+            if name == "driver":
+                found[name] = value
+            elif value.startswith("/") and ".." not in value.split("/"):
+                found[name] = value.rstrip("/") or "/"
+    return found
 
 
-def _oci_container(listed, bundle):
+def _oci_container(listed, bundle, storage):
     """One Podman container from containers.json's entry and its OCI
     config.json (the runtime's own view: namespaces, capabilities, mounts,
     devices), the listed fields only."""
@@ -8027,56 +8064,84 @@ def _oci_container(listed, bundle):
         return None, problem
     linux = config.get("linux") or {}
     kinds = {n.get("type") for n in linux.get("namespaces") or [] if isinstance(n, dict)}
-    process = config.get("process") or {}
-    capabilities = (process.get("capabilities") or {}).get("effective") or []
+    caps = (config.get("process") or {}).get("capabilities") or {}
+    # The bounding set: a non-root container's effective set is empty, but a
+    # set-user-ID program in it regains these.
+    held = caps.get("bounding") or caps.get("effective") or []
+    annotations = config.get("annotations") or {}
     names = listed.get("names") or []
     try:
         metadata = json.loads(listed.get("metadata") or "{}")
     except ValueError:
         metadata = {}
-    pid_text = read_small(_join(bundle, "userdata/pidfile"), 64) or ""
+    own = (storage["graphroot"] + "/", storage["runroot"] + "/")
     return {
         "runtime": "podman",
         "id": str(listed.get("id") or "")[:64],
         "name": _container_text(names[0] if names else metadata.get("name")),
         "image": _container_text(metadata.get("image-name") or listed.get("image")),
         "created": listed.get("created"),
-        "running": None,  # judged from the processes (Podman keeps no plain state file)
-        "pid": int(pid_text) if pid_text.strip().isdigit() else None,
-        # Podman's --privileged: every capability and no device rules.
-        "privileged": "CAP_SYS_ADMIN" in capabilities and len(capabilities) >= 38,
-        "capabilities": sorted(_container_text(c, 64) for c in capabilities if c),
-        "pid_mode": "host" if "pid" not in kinds else None,
-        "network_mode": "host" if "network" not in kinds else None,
-        "ipc_mode": "host" if "ipc" not in kinds else None,
+        "privileged": str(annotations.get("io.podman.annotations.privileged")).upper() == "TRUE"
+        or ("CAP_SYS_ADMIN" in held and len(held) >= 38),
+        "capabilities": sorted(capability(c) for c in held if c),
+        "host_pid": "pid" not in kinds,
+        "host_network": "network" not in kinds,
+        "host_ipc": "ipc" not in kinds,
         "devices": sorted(
             _container_text(d.get("path"))
             for d in linux.get("devices") or []
-            if isinstance(d, dict)
+            if isinstance(d, dict) and d.get("path")
         ),
         "security_opt": [],
+        # Podman's own mounts (the container's /etc/hosts, /dev/shm) come
+        # from its storage, named by the container's ID: left out.
         "mounts": [
-            {
-                "source": _container_text(m.get("source")),
-                "destination": _container_text(m.get("destination")),
-                "rw": "ro" not in (m.get("options") or []),
-            }
+            _mount(
+                m.get("source"), m.get("destination"), "ro" not in (m.get("options") or []), "bind"
+            )
             for m in config.get("mounts") or []
-            if isinstance(m, dict) and m.get("type") in ("bind", None)
+            if isinstance(m, dict)
+            and m.get("type") in ("bind", None)
+            and not str(m.get("source") or "").startswith(own)
         ],
     }, None
+
+
+def _not_inventoried():
+    """Container runtimes present whose containers aren't read."""
+    found = [label for where, label in CONTAINER_NOT_INVENTORIED if _has_entries(where)]
+    try:
+        namespaces = [n for n in os.listdir(path(CONTAINERD_TASKS)) if n != "moby"]
+    except OSError:
+        namespaces = []
+    if any(_has_entries(_join(CONTAINERD_TASKS, n)) for n in namespaces):
+        found.append("containerd (" + ", ".join(sorted(namespaces)) + ")")
+    return found
+
+
+def _has_entries(absolute):
+    try:
+        with os.scandir(path(absolute)) as listing:
+            return any(True for _ in listing)
+    except OSError:
+        return False
 
 
 def module_containers(run):
     """Containers (DESIGN.md §8.13), from the runtimes' state files only
     (decision 4): Docker's per-container config.v2.json and hostconfig.json
-    under its data root, Podman's containers.json and each container's OCI
-    config.json under its storage root. Only the listed fields leave the
-    server, never the environment. A layout not recognised, and runtimes
-    not inventoried (Kubernetes, containerd, LXD, rootless Podman), are
-    recorded so the coverage says so."""
+    under its data roots, Podman's <driver>-containers/containers.json and
+    each container's OCI config.json under its storage root. Only the
+    listed fields leave the server, never the environment. A layout not
+    recognised, and runtimes not inventoried (Kubernetes, containerd, LXD,
+    rootless Podman), are recorded so the coverage says so; the controller
+    also matches running containers' cgroups against what was read."""
     module = "containers"
-    found = 0
+    found, created = 0, 0
+
+    def gap(where, reason):
+        run.stream.record(module, "containers_unreadable", {"path": where, "reason": reason})
+
     for root in _docker_roots():
         directory = _join(root, "containers")
         try:
@@ -8084,55 +8149,77 @@ def module_containers(run):
         except FileNotFoundError:
             continue
         except OSError as exc:
-            run.stream.record(
-                module, "containers_unreadable", {"path": directory, "reason": str(exc)}
-            )
+            gap(directory, str(exc))
             continue
         for name in names[:MAX_CONTAINERS]:
             run.check_time()
             container, problem = _docker_container(_join(directory, name))
             if container is None:
-                run.stream.record(
-                    module,
-                    "containers_unreadable",
-                    {"path": _join(directory, name), "reason": problem},
-                )
+                gap(_join(directory, name), problem)
                 continue
+            if "hostconfig_unreadable" in container:
+                gap(_join(directory, name) + "/hostconfig.json", container["hostconfig_unreadable"])
             run.stream.record(module, "container", container)
             found += 1
         if len(names) > MAX_CONTAINERS:
             run.stream.record(module, "containers_cut", {"path": directory, "count": len(names)})
-    root = _podman_root()
-    listing_path = _join(root, "overlay-containers/containers.json")
-    listing, problem = read_json(listing_path)
-    if listing is None and path_facts(listing_path) is not None:
-        run.stream.record(
-            module, "containers_unreadable", {"path": listing_path, "reason": problem}
+    storage = _podman_storage()
+    listings = []
+    if storage["driver"]:
+        listings.append(
+            _join(storage["graphroot"], storage["driver"] + "-containers/containers.json")
         )
-    for listed in (listing or [])[:MAX_CONTAINERS] if isinstance(listing, list) else []:
-        run.check_time()
-        if not isinstance(listed, dict) or not re.match(r"^[0-9a-f]{64}$", str(listed.get("id"))):
+    listings += [
+        p
+        for p in glob_absolute(storage["graphroot"] + "/*-containers/containers.json", run=run)
+        if p not in listings
+    ]
+    for listing_path in listings:
+        listing, problem = read_json(listing_path)
+        if listing is None:
+            if path_facts(listing_path) is not None:
+                gap(listing_path, problem)
             continue
-        bundle = _join(root, "overlay-containers/" + listed["id"])
-        container, problem = _oci_container(listed, bundle)
-        if container is None:
-            # Podman lists containers created but not yet given a bundle too.
-            run.stream.record(module, "containers_unreadable", {"path": bundle, "reason": problem})
+        if not isinstance(listing, list):
+            gap(listing_path, "not a list")
             continue
-        run.stream.record(module, "container", container)
-        found += 1
-    if listing is not None and not isinstance(listing, list):
-        run.stream.record(
-            module, "containers_unreadable", {"path": listing_path, "reason": "not a list"}
-        )
-    others = [label for where, label in CONTAINER_NOT_INVENTORIED if path_facts(where) is not None]
-    rootless = glob_absolute("/home/*/.local/share/containers/storage", run=run)
-    if rootless:
+        for listed in listing[:MAX_CONTAINERS]:
+            run.check_time()
+            if not isinstance(listed, dict) or not re.match(
+                r"^[0-9a-f]{64}$", str(listed.get("id"))
+            ):
+                continue
+            try:
+                metadata = json.loads(listed.get("metadata") or "{}")
+            except ValueError:
+                metadata = {}
+            if not metadata.get("image-name") and not metadata.get("name"):
+                continue  # a Buildah working container, not one Podman runs
+            bundle = _join(listing_path.rsplit("/", 1)[0], listed["id"])
+            container, problem = _oci_container(listed, bundle, storage)
+            if container is None:
+                # Created but never started: no runtime spec yet, nothing runs.
+                created += 1
+                continue
+            run.stream.record(module, "container", container)
+            found += 1
+        if len(listing) > MAX_CONTAINERS:
+            run.stream.record(
+                module, "containers_cut", {"path": listing_path, "count": len(listing)}
+            )
+    others = _not_inventoried()
+    if glob_absolute("/home/*/.local/share/containers/storage", run=run):
         others.append("rootless Podman in home directories")
+    if glob_absolute("/home/*/.local/share/docker/containers", run=run):
+        others.append("rootless Docker in home directories")
     run.stream.record(
         module,
         "containers_summary",
-        {"inventoried": found, "not_inventoried": sorted(set(others))},
+        {
+            "inventoried": found,
+            "created_not_started": created,
+            "not_inventoried": sorted(set(others)),
+        },
     )
 
 

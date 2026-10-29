@@ -59,9 +59,11 @@ disable:
     (docs/checks.md);
   - `account`, `group`, `key`, `module`, `package`, `program`: an exact
     entity of the finding;
-  - `container` (its runtime and name: `docker: cadvisor`), `image`: an
-    exact entity of a container finding. Whoever runs containers chooses
-    both, so name the image along with the container;
+  - `container` (its runtime and name: `docker: cadvisor`) and `image` (its
+    repository, without tag or digest: `gcr.io/cadvisor/cadvisor`, so a
+    rule survives version bumps): exact entities of a container finding.
+    Whoever runs containers chooses both, so they narrow a rule only
+    together;
   - `address`: an address or network with its host bits zero
     (`203.0.113.0/24`; `203.0.113.10/24` is refused as a likely typo); an
     IPv4-mapped IPv6 address matches its IPv4 network, and a finding about

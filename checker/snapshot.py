@@ -864,23 +864,37 @@ class SnapshotBuilder:
         if name == "container" and data.get("name"):
             # By name: a redeploy replaces a container's ID, not what it is.
             key = f"{data.get('runtime')}: {data['name']}"
-            self.section("containers").items[key] = {
+            mounts = data.get("mounts") or []
+            item = {
                 "image": data.get("image"),
-                "privileged": bool(data.get("privileged")),
-                "capabilities": sorted(
-                    set(data.get("cap_add") or []) | set(data.get("capabilities") or [])
-                ),
-                "host_pid": data.get("pid_mode") == "host",
-                "host_network": data.get("network_mode") == "host",
-                "host_ipc": data.get("ipc_mode") == "host",
-                "devices": sorted(d for d in data.get("devices") or [] if d),
+                # A bind mount by host path; a volume (no host path) by where it goes.
                 "mounts": sorted(
-                    f"{m.get('source')}:{m.get('destination')}:{'rw' if m.get('rw') else 'ro'}"
-                    for m in data.get("mounts") or []
+                    f"{m.get('source')} -> {m.get('destination')} ({'rw' if m.get('rw') else 'ro'})"
+                    if m.get("source")
+                    else f"{m.get('type') or 'volume'} -> {m.get('destination')}"
+                    for m in mounts
+                    if isinstance(m, dict)
                 ),
-                "security_opt": sorted(data.get("security_opt") or []),
+                # Host paths it mounts, kept apart so a ":" in a destination
+                # can't hide one.
+                "mount_sources": sorted(
+                    {m["source"] for m in mounts if isinstance(m, dict) and m.get("source")}
+                ),
             }
-            # Running or not, its ID and process: seen, not compared.
+            if "privileged" in data:  # its host configuration was read
+                item.update(
+                    {
+                        "privileged": bool(data.get("privileged")),
+                        "capabilities": sorted(set(data.get("capabilities") or [])),
+                        "host_pid": bool(data.get("host_pid")),
+                        "host_network": bool(data.get("host_network")),
+                        "host_ipc": bool(data.get("host_ipc")),
+                        "devices": sorted(d for d in data.get("devices") or [] if d),
+                        "security_opt": sorted(data.get("security_opt") or []),
+                    }
+                )
+            self.section("containers").items[key] = item
+            # Its ID and running state: seen, not compared.
             self.live.setdefault("containers", []).append(data)
         elif name == "containers_summary":
             self.live["containers_summary"] = data

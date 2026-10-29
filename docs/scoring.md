@@ -199,8 +199,9 @@ Each change, with the reason the results gave for it:
   (`useradd`'s `from=none`), and such an account's group memberships, are
   now low. "No terminal" alone proves nothing (any script has none, a web
   shell's too): the install nearby is the evidence. A login shell, a
-  terminal, a person's UID, UID 0, a web account, or no install nearby
-  keep them medium, and a root or root-equivalent group (now also
+  terminal, a person's UID, UID 0, or no install nearby keep them medium
+  (packages make the web accounts too: `nginx`, `apache` on RHEL; a web
+  account joining a group is never lowered), and a root or root-equivalent group (now also
   `libvirt`, `incus-admin`, `kmem`) keeps a membership high.
 - **`(sd-pam)` is judged by what PID 1 loaded** (`process.injected`). It is
   forked from PID 1's child before that becomes the user manager, so it
@@ -216,5 +217,28 @@ Each change, with the reason the results gave for it:
   a look; the fixes above stop clean servers producing them.
 
 <!-- calibration:start -->
-Not run yet in this version.
+Calibration run of 2026-10-29 (tests/integration/calibrate.py).
+
+| Clean image | Probability | Band | Compromise findings by band |
+|---|---|---|---|
+| alma10 | 14.0% | Elevated | 2 info, 7 low, 2 medium |
+| alma9 | 14.0% | Elevated | 2 info, 7 low, 2 medium |
+| rocky10 | 14.0% | Elevated | 2 info, 7 low, 2 medium |
+| rocky9 | 14.0% | Elevated | 2 info, 7 low, 2 medium |
+| ubuntu22.04 | 5.8% | Low | 3 info, 6 low |
+| ubuntu24.04 | 5.8% | Low | 3 info, 4 low |
+| ubuntu26.04 | 5.8% | Low | 3 info, 4 low |
+
+| Compromised image | Probability | Band | Behaviours and chains |
+|---|---|---|---|
+| rocky9 | 100.0% | Critical | 32 found, 0 missed |
+| ubuntu24.04 | 100.0% | Critical | 32 found, 0 missed |
+
+FAIL: alma10 (clean) scored Elevated (14.0%)
+
+FAIL: alma9 (clean) scored Elevated (14.0%)
+
+FAIL: rocky10 (clean) scored Elevated (14.0%)
+
+FAIL: rocky9 (clean) scored Elevated (14.0%)
 <!-- calibration:end -->

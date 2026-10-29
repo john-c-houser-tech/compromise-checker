@@ -130,7 +130,7 @@ def test_an_account_a_package_install_made_is_low_any_other_medium():
             created("eve", "1001", "/usr/sbin/nologin", "none"),
             created("toor", "0", "/usr/sbin/nologin", "none"),
             created("old", "996", "/usr/sbin/nologin", None),
-            created("www-data", "33", "/usr/sbin/nologin", "none"),
+            created("nginx", "995", "/sbin/nologin", "none"),  # RHEL's nginx package makes it
             created("late", "995", "/usr/sbin/nologin", "none", minutes=120),
         ]
     )
@@ -141,7 +141,7 @@ def test_an_account_a_package_install_made_is_low_any_other_medium():
         "eve": "medium",
         "toor": "medium",
         "old": "medium",
-        "www-data": "medium",
+        "nginx": "low",
         "late": "medium",
     }
 

@@ -290,13 +290,14 @@ def _package_installs(context: Context) -> list[datetime]:
 def _package_account(context: Context, event, installs: list[datetime]) -> bool:
     """A package's own account: logged within minutes of a package being
     installed (no terminal is no proof: any script has none), a system UID,
-    and no login shell, both as logged and as it is now; a web account is
-    never one (a web shell's account). Such an account, or such an
-    account's group membership, is low: the install is the change worth
-    knowing (software.packages)."""
+    and no login shell, both as logged and as it is now. Such an account,
+    or such an account's group membership, is low: the install is the
+    change worth knowing (software.packages). Packages create the web
+    accounts too (nginx, apache on RHEL), but a web account joining a group
+    is never a package's: it is what a web shell would gain."""
     fields = event.fields
     user = fields.get("user")
-    if user in WEB_USERS:
+    if event.type != "account.created" and user in WEB_USERS:
         return False
     at = parse_time(event.corrected)
     if at is None or not any(abs(at - t) <= PACKAGE_WINDOW for t in installs):

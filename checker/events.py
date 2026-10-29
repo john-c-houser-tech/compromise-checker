@@ -801,13 +801,17 @@ class WebLogs:
         attacks = set(_WEB_MARKER.findall(found["request"] + " " + (found["referrer"] or "")))
         path = target.split("?", 1)[0]
         agent = found["agent"] or ""
+        agent_attacks = set()
         for name, pattern in WEB_PATH_ATTACKS:
-            if pattern.search(path) or (name != "traversal" and pattern.search(agent)):
+            if pattern.search(path):
                 attacks.add(name)
+            elif name != "traversal" and pattern.search(agent):
+                agent_attacks.add(name)
         network = _network(found["client"])
         keep = (
             status >= 500
             or attacks
+            or agent_attacks
             or WEB_SCRIPT_PATH.search(target)
             or (status < 300 and WEB_SENSITIVE_PATH.search(path))
         )
@@ -836,6 +840,9 @@ class WebLogs:
             fields["agent"] = found["agent"]
         if attacks:
             fields["attacks"] = sorted(attacks)
+        if agent_attacks - attacks:
+            # In the user agent only: the request itself didn't carry it.
+            fields["agent_attacks"] = sorted(agent_attacks - attacks)
         builder._add(moment, source, "web.request", fields, None, text)
 
     def _error(self, builder: EventBuilder, source: str, found, form: str, text: str) -> None:

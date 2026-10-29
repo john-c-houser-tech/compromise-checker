@@ -75,6 +75,7 @@ data like the ratios):
 |---|---|---|---|
 | `new-account-escalated-used` | a *new* account or key → a sudo rule, privileged group or group membership for it → a login by it | 7 days | ×5 |
 | `guessed-then-entrenched` | a login after repeated failures → a new key, sudo rule or privileged group for it | 24 hours | ×5 |
+| `web-shell-used` | a script new since the baseline answering requests (`web.new_script_hit`, its account the file's owner) → that web account starting a shell or tool (`web.worker_child`), in order: from the script's first answered request to an hour after its last | 1 hour, ordered | ×5 |
 
 - Each chain counts **once**, however many accounts complete it.
 - Only findings the score counts are steps: compromise indicators, not

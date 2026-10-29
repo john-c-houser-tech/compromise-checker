@@ -854,7 +854,12 @@ class SnapshotBuilder:
             section.items[f"{kind}: {name}"] = {"running": True, "exe": ", ".join(sorted(exes))}
 
     def _on_web_logs(self, name: str, data: dict[str, Any]) -> None:
-        if name in ("web_logs_summary", "exec_records_summary", "exec_records_unavailable"):
+        if name in (
+            "web_logs_summary",
+            "exec_records_summary",
+            "exec_records_unavailable",
+            "web_accounts",
+        ):
             self.live[name] = data
             if name == "exec_records_summary" and data.get("truncated"):
                 self._module_gap("web_logs", "audit log read cut short", name, {})

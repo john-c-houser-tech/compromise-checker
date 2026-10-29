@@ -553,6 +553,14 @@ def matches(
 
 
 def _in(value: str, network) -> bool:
+    """An address, or a network (a finding about a source network), inside
+    the rule's network."""
+    if "/" in value:
+        try:
+            within = ipaddress.ip_network(value, strict=False)
+        except ValueError:
+            return False
+        return within.version == network.version and within.subnet_of(network)
     try:
         address = ipaddress.ip_address(value)
     except ValueError:

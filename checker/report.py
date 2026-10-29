@@ -175,6 +175,15 @@ def _excerpts(
                 ]
                 text = Shown(f"changed: {visible(key)}: " + "; ".join(changes))
             shown.append({"when": "", "where": f"{section}, since the baseline", "text": text})
+        elif "live" in ref and ref["live"][0] == "web_requests":
+            requests = snapshot.live.get("web_requests") or {}
+            shown.append(
+                {
+                    "when": "",
+                    "where": "web requests, counted",
+                    "text": _brief({"networks": len(requests.get("requests_by_network") or {})}),
+                }
+            )
         elif "live" in ref and ref["live"][0] == "mail_queues":
             for queue in snapshot.live.get("mail_queues", []):
                 shown.append({"when": "", "where": "mail queue", "text": _brief(queue)})

@@ -5970,6 +5970,11 @@ def describe_process(run, pid, boot_time, ticks, sockets_of):
         "cpu_seconds": round(cpu, 2),
         "start_time": iso_from_timestamp(start) if start is not None else None,
     }
+    # The login session it descends from (audit's login UID): a web server
+    # an administrator started by hand carries theirs.
+    loginuid = (read_proc(base + "/loginuid", 64) or b"").strip()
+    if loginuid.isdigit():
+        process["loginuid"] = int(loginuid)
     process["comm"], counts = masked(comm)
     _add_counts(found, counts)
     exe = read_link(base + "/exe")
@@ -7854,6 +7859,12 @@ def module_web_logs(run):
     their access logs only where the organization opted in (policy §7:
     query and referrer values masked, user agents cut)."""
     module = "web_logs"
+    # Which accounts count as the web server's: the checks judge these.
+    run.stream.record(
+        module,
+        "web_accounts",
+        {"names": sorted(set(WEB_USERS) | set(run.settings.get("web_users") or ()))},
+    )
     _exec_records(run, module)
     seen = set()
     send_config_files(run, module, WEB_CONFIG_FILES, seen)

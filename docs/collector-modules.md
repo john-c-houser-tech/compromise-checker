@@ -659,7 +659,8 @@ with its own share of the module's time — the listing at most 40%, the
 hidden-process probe at most half of what is left, the sockets the rest —
 and writes a `process_summary` however far it got. It **sends**:
 - a `process` record for each process: PID, parent, state, real, effective,
-  saved and filesystem user and group IDs, threads, CPU seconds, start time,
+  saved and filesystem user and group IDs, the login UID it descends from
+  (`/proc/<pid>/loginuid`), threads, CPU seconds, start time,
   the executable (`exe_deleted` when its file has been deleted, `exe_memfd`
   when it runs from memory only; `kernel_thread` or `exe_unreadable` when
   there is none to read), working directory, root (a `chroot` or container
@@ -956,6 +957,9 @@ exploit attempts that got an answer, error bursts.
   then cut to 4,096 characters (hex and split arguments decoded); `comm`,
   `exe` and `cwd` masked too. With no audit log, `exec_records_unavailable`
   says so; `docs/auditd-web.rules` sets auditd up to record them.
+
+A `web_accounts` record names the accounts that count as the web
+server's (the usual ones and `web_users`), for the checks.
 
 **Masking (policy §7):** before secret masking, every query string in a
 line (the request's, and a referrer's; escaped characters and fragments

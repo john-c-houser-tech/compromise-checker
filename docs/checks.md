@@ -183,7 +183,7 @@ sshd listener. A forged log line alone can't make anything the tool's own.
 | | a deleted system program, when the package lists changed after the process started: an update replaced it under a running service (hygiene: restart it) | low |
 | `process.reverse_shell` | a shell or interpreter (sh, bash, python, perl, nc, socat…, by its name, its program's name or its argv[0], so a renamed copy still counts) whose standard input, output or error is a TCP or UDP socket; any process whose input and output are one TCP or UDP socket. Not seen: a shell joined to a socket through pipes (`mkfifo … \| sh \| nc`), where only `nc` holds the socket | high |
 | `process.miner` | a known miner by name; or at least half a core on average over ten minutes or more, with a connection to a common mining-pool port on a public address | high |
-| `process.injected` | code mapped from a scratch or home file, or a deleted file outside the system directories, or a deleted system library no update explains (high); from memory only (medium: JITs do this too; low when it is libffi's, as firewalld's on RHEL); system libraries an update replaced, still in use (low hygiene) | |
+| `process.injected` | code mapped from a scratch or home file, or a deleted file outside the system directories, or a deleted system library no update explains (high); from memory only (medium: JITs do this too; low when it is libffi's, as firewalld's on RHEL); from shared memory, which `/proc` shows as `/dev/zero (deleted)` or `/SYSV… (deleted)` (medium, its own kind: PHP's opcache JIT); system libraries an update replaced, still in use (low hygiene) | |
 
 ### 8.8 Network and data transfer
 

@@ -3611,7 +3611,7 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "b3a24692f93ad6d0b75c1746771d8879548fa75e0c780a6feecc4b4c0f93bc11",
+  "hash": "2d4520da6a90560ecf7bddeae7c240e3fa2c8ae36d80a120d80838b0199c1971",
   "maintenance": 0,
   "matched": {
    "host rocky9/proof-at-job-redhat": 1,
@@ -3742,6 +3742,20 @@
     },
     "owner": "Compromise Checker defaults",
     "reason": "AlmaLinux 10 mounts /boot/efi with wider permissions than its efi-filesystem package records (0755 against 0700)."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-php-fpm-opcache",
+    "layer": "profile base",
+    "match": {
+     "check": "process.injected",
+     "exe": "/usr/sbin/php-fpm*",
+     "variant": "shared"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "PHP's opcache keeps its JIT code in shared memory, which /proc's maps show as \"/dev/zero (deleted)\". Only the shared-memory kind, only PHP-FPM as installed by the system: a memory-only file, a deleted file or a scratch file mapped into PHP-FPM still shows."
    },
    {
     "broad": false,

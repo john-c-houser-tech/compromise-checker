@@ -441,6 +441,19 @@ class HostKeyCheck:
         return "same" if self.fingerprint in self.known_fingerprints else "changed"
 
 
+# The host key to trust when a server has several: the strongest first.
+# asyncssh's own order puts RSA first, so a server with an ED25519 key too
+# was trusted by its RSA one. Later connections use the trusted key's kind.
+HOST_KEY_ALGS = (
+    "ssh-ed25519",
+    "ecdsa-sha2-nistp521",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp256",
+    "rsa-sha2-512",
+    "rsa-sha2-256",
+)
+
+
 def _known_hosts_name(host: Host) -> str:
     return host.address if host.port == 22 else f"[{host.address}]:{host.port}"
 
@@ -455,7 +468,9 @@ async def fetch_host_key(host: Host, known_hosts: Path | None = None) -> HostKey
         key = await asyncio.wait_for(
             # Same connection behaviour as collect(): the operator's
             # ~/.ssh/config must not redirect us to a different endpoint.
-            asyncssh.get_server_host_key(host.address, host.port, config=None),
+            asyncssh.get_server_host_key(
+                host.address, host.port, config=None, server_host_key_algs=HOST_KEY_ALGS
+            ),
             timeout=15,
         )
     except (OSError, TimeoutError, asyncssh.Error) as exc:

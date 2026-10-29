@@ -153,6 +153,26 @@ async def test_trust_ignores_the_operators_ssh_config(server, monkeypatch, tmp_p
     assert seen.get("config", ()) is None
 
 
+async def test_trust_takes_the_ed25519_key_when_the_server_offers_rsa_too(tmp_path):
+    ed25519 = asyncssh.generate_private_key("ssh-ed25519")
+    listener = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_host_keys=[asyncssh.generate_private_key("ssh-rsa"), ed25519],
+        gss_host=None,
+    )
+    try:
+        h = Host(
+            name="both", address="127.0.0.1", port=listener.sockets[0].getsockname()[1], user="u"
+        )
+        check = await fetch_host_key(h, tmp_path / "k")
+    finally:
+        listener.close()
+        await listener.wait_closed()
+    assert check.key_type == "ssh-ed25519"
+    assert check.fingerprint == ed25519.get_fingerprint("sha256")
+
+
 async def test_trust_new_then_same_then_changed(server, tmp_path):
     known = tmp_path / "trusted"
     h = host(server)

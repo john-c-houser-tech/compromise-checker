@@ -13,6 +13,15 @@ rules:
       always does.
     owner: Compromise Checker defaults
     expires: never
+  - id: base-php-fpm-opcache
+    match: {check: process.injected, variant: shared, exe: "/usr/sbin/php-fpm*"}
+    reason: >-
+      PHP's opcache keeps its JIT code in shared memory, which /proc's maps
+      show as "/dev/zero (deleted)". Only the shared-memory kind, only
+      PHP-FPM as installed by the system: a memory-only file, a deleted
+      file or a scratch file mapped into PHP-FPM still shows.
+    owner: Compromise Checker defaults
+    expires: never
   - id: base-efi-directory-mode
     match: {check: package.changed, package: efi-filesystem, path: /boot/efi}
     reason: >-

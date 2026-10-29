@@ -264,6 +264,23 @@ def test_deceptive_names_and_dev():
     ]
 
 
+def test_a_translation_is_not_a_script_behind_a_second_extension():
+    # Symfony ships Polish translations as validators.pl.xlf: .pl there is
+    # a language, and .pl runs only as a CGI script, never by AddHandler.
+    w = {"place": "/var/www", "type": "-"}
+    items = {
+        "/var/www/app/vendor/symfony/validator/Resources/translations/validators.pl.xlf": w,
+        "/var/www/app/public/uploads/messages.pl.yml": w,
+        "/var/www/app/public/img/cat.php5.png": w,
+        "/var/www/app/public/uploads/run.pl": w,
+    }
+    found = of(run([], snap(web_files=items)), "files.web")
+    assert sorted((f.title, f.summary) for f in found) == [
+        ("A script hidden behind a second extension", "/var/www/app/public/img/cat.php5.png"),
+        ("A script in an upload directory", "/var/www/app/public/uploads/run.pl"),
+    ]
+
+
 def test_web_shells():
     items = {
         "/var/www/html/index.php": {"place": "/var/www", "type": "-"},
@@ -660,9 +677,34 @@ def test_fresh_server_false_alarms_are_tuned_down():
     items = {"/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache": {"sha256": "c2" * 32}}
     [finding] = of(run([], snap(OWNERS, unowned_executables=items)), "files.unowned")
     assert finding.band == "info"
+    assert finding.title == "An executable no package installed (made by a package after install)"
     live = {"processes": [proc(635, "firewalld", suspicious_mappings=["/memfd:libffi (deleted)"])]}
     [finding] = of(run([], snap(live)), "process.injected")
     assert finding.band == "low"
+
+
+def test_shared_memory_is_not_a_deleted_file():
+    # Shared anonymous memory (PHP's opcache JIT) and System V shared memory
+    # show as deleted files in /proc's maps; nothing was on disk.
+    for mapping in ("/dev/zero (deleted)", "/SYSV0000a3f1 (deleted)"):
+        live = {"processes": [proc(124397, "php-fpm8.4", suspicious_mappings=[mapping])]}
+        [finding] = of(run([], snap(live)), "process.injected")
+        assert (finding.band, finding.variant) == ("medium", "shared")
+    # Alongside a memory-only file, the file is what's reported; alongside a
+    # deleted file outside the system directories, that is.
+    both = ["/dev/zero (deleted)", "/memfd:payload (deleted)"]
+    live = {"processes": [proc(124397, "php-fpm8.4", suspicious_mappings=both)]}
+    [finding] = of(run([], snap(live)), "process.injected")
+    assert finding.variant == "memory"
+    both = ["/dev/zero (deleted)", "/var/www/x.so (deleted)"]
+    live = {"processes": [proc(124397, "php-fpm8.4", suspicious_mappings=both)]}
+    [finding] = of(run([], snap(live)), "process.injected")
+    assert (finding.band, finding.variant) == ("high", "deleted")
+    # libffi's closures stay low, but not when shared memory is mapped too.
+    both = ["/dev/zero (deleted)", "/memfd:libffi (deleted)"]
+    live = {"processes": [proc(635, "firewalld", suspicious_mappings=both)]}
+    [finding] = of(run([], snap(live)), "process.injected")
+    assert finding.variant == "shared"
 
 
 def test_a_forked_process_inherits_its_parents_code():

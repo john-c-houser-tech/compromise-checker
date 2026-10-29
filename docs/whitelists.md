@@ -51,7 +51,7 @@ disable:
 with its reason:
 
 - `base`, for every host: firewalld's libffi closures (the RHEL family),
-  AlmaLinux 10's `/boot/efi` modes;
+  PHP-FPM's opcache in shared memory, AlmaLinux 10's `/boot/efi` modes;
 - `web`, only for hosts whose web applications send their own mail:
   `mail.web_user` for `www-data`, `apache`, `nginx`. With it, mail a web
   shell sends shows only in bulk (`mail.volume`, `mail.domains`, which

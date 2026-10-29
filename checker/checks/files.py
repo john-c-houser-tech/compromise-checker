@@ -17,9 +17,12 @@ DECEPTIVE = {
     "system_name": ("a system program's name", "high"),
     "control_characters": ("control characters in its name", "medium"),
 }
-SCRIPT = re.compile(
-    r"\.(?:php\d?|phtml|phar|shtml|cfm|jsp|jspx|aspx?|ashx|cgi|pl|py|sh|rb)(?:\.|$)", re.I
-)
+SCRIPT = re.compile(r"\.(?:php\d?|phtml|phar|shtml|cfm|jsp|jspx|aspx?|ashx|cgi|pl|py|sh|rb)$", re.I)
+# shell.php.jpg: Apache runs it when a handler maps .php (AddHandler), the
+# extension anywhere in the name. Only extensions mapped that way: .pl,
+# .py, .sh and .rb run only as CGI scripts, and .pl is also Polish
+# (validators.pl.xlf, in every Symfony application).
+HANDLED = re.compile(r"\.(?:php\d?|phtml|phar|shtml|cfm|jsp|jspx|aspx?|ashx|cgi)\.", re.I)
 UPLOADS = re.compile(r"/(?:uploads?|files|media|images?|tmp|cache|wp-content/uploads)/", re.I)
 SECRET_FILES = {".env", ".htpasswd", ".git", ".svn", ".user.ini"}
 
@@ -176,10 +179,8 @@ def web(context: Context) -> list[Finding]:
     uncertain = context.uncertain("web_files")
     for path, item in context.items("web_files").items():
         name = path.rsplit("/", 1)[-1]
-        match = SCRIPT.search(name)
-        script = match is not None or item.get("kind") == "script"
-        # shell.php.jpg: Apache runs it when a handler maps .php.
-        double = match is not None and match.group(0).endswith(".")
+        double = not SCRIPT.search(name) and HANDLED.search(name) is not None
+        script = double or SCRIPT.search(name) is not None or item.get("kind") == "script"
         reason = None
         if path in added and (script or _runnable(item)):
             reason, band = "A new script in a web root", "high"

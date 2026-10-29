@@ -751,7 +751,7 @@
    "new": false,
    "ratio": 1.0,
    "summary": "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache (SHA-256 c22c46421f20ce55\u2026)",
-   "title": "An executable no package installed (in /usr/local or /opt)",
+   "title": "An executable no package installed (made by a package after install)",
    "uncertain": null,
    "variant": null
   },
@@ -1000,7 +1000,7 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "b5614fdd4a748d9912013574eb6412954ed5c31b7327f538de5c14d2816eeab5",
+  "hash": "b3f84f8b6a1e19ab27cd42e974006d50941b89816ae21852c60e75a3c1c0923f",
   "maintenance": 0,
   "matched": {
    "host ubuntu24.04/proof-at-job-debian": 1,
@@ -1132,6 +1132,20 @@
     },
     "owner": "Compromise Checker defaults",
     "reason": "AlmaLinux 10 mounts /boot/efi with wider permissions than its efi-filesystem package records (0755 against 0700)."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-php-fpm-opcache",
+    "layer": "profile base",
+    "match": {
+     "check": "process.injected",
+     "exe": "/usr/sbin/php-fpm*",
+     "variant": "shared"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "PHP's opcache keeps its JIT code in shared memory, which /proc's maps show as \"/dev/zero (deleted)\". Only the shared-memory kind, only PHP-FPM as installed by the system: a memory-only file, a deleted file or a scratch file mapped into PHP-FPM still shows."
    },
    {
     "broad": false,

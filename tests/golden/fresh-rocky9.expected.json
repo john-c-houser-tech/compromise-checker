@@ -20,6 +20,15 @@
    "status": "ran"
   },
   {
+   "check": "agent.stopped",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "clock.jump",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "files.backdated",
    "findings": 0,
    "status": "ran"
@@ -59,6 +68,11 @@
    "status": "this bundle is the baseline"
   },
   {
+   "check": "history.disabled",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "kernel.core_dump",
    "findings": 0,
    "status": "ran"
@@ -80,6 +94,25 @@
   },
   {
    "check": "kernel.taint",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "logs.cleared",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "logs.journald_config",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "logs.stopped",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mac.disabled",
    "findings": 0,
    "status": "ran"
   },
@@ -220,11 +253,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 68
+     "event": 102
     }
    ],
-   "first_seen": "2026-10-28T23:56:08.851275+00:00",
-   "last_seen": "2026-10-28T23:56:08.851275+00:00",
+   "first_seen": "2026-10-29T00:50:40.648345+00:00",
+   "last_seen": "2026-10-29T00:50:40.648345+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -250,11 +283,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 65
+     "event": 70
     }
    ],
-   "first_seen": "2026-10-28T23:55:49.661493+00:00",
-   "last_seen": "2026-10-28T23:55:49.661493+00:00",
+   "first_seen": "2026-10-29T00:50:22.311114+00:00",
+   "last_seen": "2026-10-29T00:50:22.311114+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -275,14 +308,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/at/a0000101c80b54"
+    "path:/var/spool/at/a0000101c80b8a"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/at/a0000101c80b54"
+      "/var/spool/at/a0000101c80b8a"
      ]
     }
    ],
@@ -290,7 +323,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/at/a0000101c80b54 (owner UID 0)",
+   "summary": "/var/spool/at/a0000101c80b8a (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -309,19 +342,19 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.2"
+    "address:203.0.113.3"
    ],
    "entities_complete": true,
    "evidence": [
     {
-     "event": 59
+     "event": 60
     }
    ],
-   "first_seen": "2026-10-28T23:55:45.271895+00:00",
-   "last_seen": "2026-10-28T23:55:45.271895+00:00",
+   "first_seen": "2026-10-29T00:50:21.476357+00:00",
+   "last_seen": "2026-10-29T00:50:21.476357+00:00",
    "new": true,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.2 (publickey)",
+   "summary": "root from 203.0.113.3 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -340,7 +373,7 @@
    "contribution": 0.4055,
    "entities": [
     "program:firewalld",
-    "pid:635",
+    "pid:637",
     "exe:/usr/bin/python3.9"
    ],
    "entities_complete": true,
@@ -348,15 +381,15 @@
     {
      "live": [
       "processes",
-      635
+      637
      ]
     }
    ],
-   "first_seen": "2026-10-28T23:55:37.260000+00:00",
-   "last_seen": "2026-10-28T23:55:37.260000+00:00",
+   "first_seen": "2026-10-29T00:50:11.220000+00:00",
+   "last_seen": "2026-10-29T00:50:11.220000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "firewalld (pid 635): /memfd:libffi (deleted)",
+   "summary": "firewalld (pid 637): /memfd:libffi (deleted)",
    "title": "A process has libffi code mapped from memory only",
    "uncertain": null,
    "variant": null

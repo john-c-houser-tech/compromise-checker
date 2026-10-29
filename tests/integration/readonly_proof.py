@@ -259,6 +259,9 @@ EXPECTED_RECORDS = (
     ("processes", "socket"),  # sshd listens on every server
     ("network", "interface"),
     ("network", "firewall_loaded"),
+    ("logging_state", "log_file"),
+    ("logging_state", "audit_records"),
+    ("logging_state", "mac_state"),
 )
 EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal")
 

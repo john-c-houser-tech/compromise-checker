@@ -743,6 +743,34 @@ The read-only proof enables ufw and runs a Docker container on the Ubuntu
 images (Rocky and Alma run firewalld), and checks that no firewall module
 is loaded or unloaded during any collection.
 
+## `logging_state`
+
+**Why:** check 8.10 (anti-forensics): cleared or truncated logs, stopped or
+reconfigured logging and audit, SELinux and AppArmor turned down.
+
+**Reads:**
+- a manifest of `/var/log` (three levels, at most 5,000 entries, breadth
+  first with `audit` and `journal` first, so a cut-short listing keeps
+  them): each entry's name, type, size, inode, times and link target.
+  **Never a log's contents** through this module;
+- journald, rsyslog, auditd and SELinux configuration as masked text:
+  `/etc/systemd/journald.conf`, `/usr/lib/systemd/journald.conf` and the
+  drop-ins in `/etc`, `/run` and `/usr/lib`, `/etc/rsyslog.conf` and
+  `rsyslog.d`, `/etc/audit/auditd.conf`, `audit.rules` and `rules.d`,
+  `/etc/selinux/config`;
+- from `/var/log/audit/audit.log` and up to four rotated copies, within the
+  look-back, **only** the records about the audit system and SELinux
+  themselves: `CONFIG_CHANGE`, `DAEMON_START`, `DAEMON_END`,
+  `DAEMON_ABORT`, `MAC_STATUS`, `MAC_POLICY_LOAD` (with or without
+  auditd's `node=` prefix, which is dropped), matched at the start of the
+  record only; the newest 2,000 kept (rotated files read oldest first, so
+  a flood of earlier records can't push the latest out), at most 64 MB
+  read, each line masked and cut at 4 KiB. Never the commands, logins or
+  file accesses audit also records;
+- SELinux's mode (`/sys/fs/selinux/enforce`) and AppArmor's loaded
+  profiles, by name and mode (`/sys/kernel/security/apparmor/profiles`, at
+  most 5,000).
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,

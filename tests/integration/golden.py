@@ -258,6 +258,7 @@ def run_case(case: dict[str, Any]) -> dict[str, Any]:
         earlier_events=lambda: [events[i] for i in case["earlier"]],
         previous_time=case["started"][previous] if previous else None,
         no_baseline=no_baseline,
+        previous_snapshot=snapshots[previous] if previous else None,
     )
     whitelist = build(
         [

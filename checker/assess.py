@@ -163,6 +163,7 @@ def analyze(
         store_parsed(store, row, recipients, parsed)
     since_baseline = since_previous = None
     previous_time = None
+    previous_snapshot = None
     no_baseline = "no baseline yet"
     notes = list(found.notes)
     for comparison in found.comparisons:
@@ -178,6 +179,9 @@ def analyze(
         else:
             since_previous = comparison.differences
             previous_time = store.bundle(comparison.bundle_id)["started_at"]
+            previous_snapshot = snapshot_of(
+                store, store.bundle(comparison.bundle_id), identity, recipients
+            )
             if comparison.bundle_id == found.baseline_id:
                 since_baseline = comparison.differences
     if found.baseline_id == row["id"] and not found.first:
@@ -203,6 +207,7 @@ def analyze(
         earlier_events=earlier,
         previous_time=previous_time,
         no_baseline=no_baseline,
+        previous_snapshot=previous_snapshot,
     )
     found_dicts, ran, scored, applied = evaluate(context, prior, whitelist)
     counts = count(found_dicts)

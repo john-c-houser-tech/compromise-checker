@@ -209,6 +209,21 @@ compared).
 | `net.promiscuous` | an interface in promiscuous mode that isn't a bridge, a bridge port, or enslaved to something (a bond, Open vSwitch); low when a known capture tool (by the file it runs) holds a packet socket | medium | no |
 | `net.transfer` | weak signs, mostly material for chains: an archive of 50 MB or more in a scratch place (`archive`); `curl`, `wget`, `scp`, `rsync`, `rclone`, `nc`… connected to a public address (`tool`); an interface that sent over 1 GB and ten times what it received (`counters`) | low | no |
 
+### 8.10 Anti-forensics (★ all)
+
+| Check | What | Band | Baseline |
+|---|---|---|---|
+| `logs.cleared` | against the previous bundle's `/var/log` manifest: a log with the same inode but smaller (`truncated`); a key log gone (`deleted`) or a new file in its place, as `sed -i` or `rm` and `touch` leave (`replaced`); the persistent journal's folder or active `system.journal` gone (`journal_removed`). Key logs: `wtmp`, `btmp`, `lastlog`, `auth.log`, `secure`, `syslog`, `messages`, `kern.log`, `audit.log`. Rotation explains it only when a rotated copy really holds the old log: it carries the old inode (renamed), or is an uncompressed copy at least as large (copytruncate); a file merely named like a rotated copy proves nothing. With only a compressed copy as new as the old log (which can't be checked by size), the log is still reported, at medium, naming it. Nothing is read as deleted when either listing was cut short | high for key logs, else medium | previous bundle |
+| `logs.stopped` | auditd, rsyslog, journald or syslog-ng stopped or failed, not within 15 minutes of a shutdown or boot and not started again within two minutes (an update's restart) (`unit`); the audit daemon ending outside a shutdown and not starting again (`audit_daemon`); auditing switched off, or audit rules removed and not loaded again within 30 seconds (augenrules deletes all rules before reloading them), as one finding however many rules (`audit_rules`); a logging service that ran at the baseline not running (`not_running`), or running from a different file (`moved`). Nothing about services when the process listing didn't complete | high | partly |
+| `logs.journald_config` | journald's effective `Storage=` (main file, then drop-ins in `/etc`, `/run`, `/usr/lib` as systemd orders them) changed since the baseline to `none` or `volatile` | high | yes |
+| `history.disabled` | a shell history file linked to `/dev/null` (high, `link`); emptied (medium, `emptied`) or deleted (medium, `deleted`) since the baseline; a system shell start-up file (`/etc/profile`, `profile.d`, `bash.bashrc`, `bashrc`, zsh's) with `unset HISTFILE`, `HISTFILE=/dev/null`, `HISTSIZE=0`, `HISTFILESIZE=0` or `set +o history`, quoted or not (high, `startup`). Users' own start-up files are hashed only (policy §7), so a change there shows in `persistence.changes`, not here | | partly |
+| `mac.disabled` | SELinux switched to permissive (`setenforce 0` in the audit log, `selinux_audit`), or turned down since the baseline, running or configured (`selinux`); AppArmor profiles unloaded or no longer enforcing since the baseline (`apparmor`): high when ten or more, or most of them; medium for a few (an upgrade, a removed package). Profiles that come and go with VMs, containers and snaps (`libvirt-`, `lxd-`, `docker-`, `snap…`) are left out | high | partly |
+| `agent.stopped` | a security agent (fail2ban, Wazuh, osquery, CrowdStrike, auditbeat, CrowdSec, ClamAV, Defender, SentinelOne, Elastic…) that ran at the baseline, known by the file it runs, isn't running, or runs from a different file (`moved`) | high | yes |
+| `clock.jump` | the system clock set ("Time has been changed" from the system's manager, not a user's), not in the ten minutes after a boot; low when a time synchronisation daemon runs (chrony, timesyncd, ntpd, or a hypervisor's: VMware tools, Hyper-V, QEMU agent, PTP) | medium | no |
+
+A journal gap inside one boot isn't checked: it needs the whole journal,
+which the collector doesn't read (plan 2.5).
+
 ## Coverage
 
 Beside the findings, each assessment says what the collection couldn't see

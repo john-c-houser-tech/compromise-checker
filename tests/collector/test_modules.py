@@ -4644,5 +4644,107 @@ class NetworkTests(FixtureRoot):
         self.assertEqual(records[-1]["modules"]["network"]["status"], "ok")
 
 
+# --- PR 2.5: logging, audit and MAC state ----------------------------------------------
+
+
+class LoggingStateTests(FixtureRoot):
+    def test_log_manifest_without_contents(self):
+        self.write("var/log/wtmp", b"x" * 384)
+        self.write("var/log/journal/abc/system.journal", b"j" * 10)
+        Path(self.root, "var/log/auth.log").symlink_to("/dev/null")
+        records = collect(self.root, ["logging_state"])
+        files = {r["data"]["path"]: r["data"] for r in named(records, "log_file")}
+        self.assertEqual(files["/var/log/wtmp"]["size"], 384)
+        self.assertEqual(files["/var/log/auth.log"]["link"], "/dev/null")
+        self.assertIn("/var/log/journal/abc/system.journal", files)
+        self.assertFalse([n for n in sources(records) if n.startswith("/var/log")])
+
+    def test_only_audit_records_about_audit_and_selinux_in_the_window(self):
+        now, old = int(NOW), int(NOW - 90 * DAY)
+        self.write(
+            "var/log/audit/audit.log",
+            (
+                f"type=CONFIG_CHANGE msg=audit({now}.1:1): op=remove_rule auid=0 res=1\n"
+                f'type=EXECVE msg=audit({now}.1:2): argc=2 a0="cat" a1="/etc/shadow"\n'
+                f'type=USER_LOGIN msg=audit({now}.1:3): acct="eve" res=success\n'
+                f"type=MAC_STATUS msg=audit({now}.1:4): enforcing=0 old_enforcing=1\n"
+                f"type=DAEMON_END msg=audit({old}.1:5): op=terminate\n"
+                f"type=CONFIG_CHANGE msg=audit({now}.1:6): op=x password=hunter2\n"
+            ).encode(),
+        )
+        records = collect(self.root, ["logging_state"])
+        [audit] = named(records, "audit_records")
+        lines = audit["data"]["lines"]
+        self.assertEqual(len(lines), 3)
+        self.assertFalse([line for line in lines if "EXECVE" in line or "USER_LOGIN" in line])
+        self.assertFalse([line for line in lines if "hunter2" in line])
+
+    def test_selinux_and_apparmor_state_and_config_text(self):
+        self.write("sys/fs/selinux/enforce", b"1")
+        self.write(
+            "sys/kernel/security/apparmor/profiles",
+            b"/usr/sbin/cupsd (enforce)\nnginx (complain)\n",
+        )
+        self.write("etc/systemd/journald.conf", b"[Journal]\nStorage=volatile\n")
+        records = collect(self.root, ["logging_state"])
+        [state] = named(records, "mac_state")
+        self.assertEqual(state["data"]["selinux"], "enforcing")
+        self.assertEqual(
+            state["data"]["apparmor"]["profiles"],
+            {"/usr/sbin/cupsd": "enforce", "nginx": "complain"},
+        )
+        self.assertIn("/etc/systemd/journald.conf", sources(records))
+        self.assertEqual(records[-1]["modules"]["logging_state"]["status"], "ok")
+
+    def test_node_prefixed_records_count_and_the_newest_are_kept(self):
+        collector = load_collector(self.root)
+        collector.AUDIT_LINES = 3
+        now = int(NOW)
+        lines = (
+            "".join(
+                f"node=web01 type=CONFIG_CHANGE msg=audit({now}.1:{n}): op=add_rule key=k{n}\n"
+                for n in range(5)
+            )
+            + f'node=web01 type=EXECVE msg=audit({now}.1:9): a0="x"\n'
+        )
+        self.write("var/log/audit/audit.log.1", lines.encode())
+        self.write(
+            "var/log/audit/audit.log",
+            f"node=web01 type=DAEMON_END msg=audit({now}.1:10): op=terminate\n".encode(),
+        )
+        out = io.BytesIO()
+        collector.main(settings(["logging_state"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        [audit] = named(records, "audit_records")
+        kept = audit["data"]["lines"]
+        self.assertEqual(len(kept), 3)
+        self.assertTrue(kept[-1].startswith("type=DAEMON_END"))  # newest kept, prefix gone
+        self.assertEqual(audit["data"]["older_left_out"], 3)
+        self.assertFalse([x for x in kept if "EXECVE" in x])
+
+    def test_a_record_merely_containing_a_wanted_type_is_left_out(self):
+        now = int(NOW)
+        self.write(
+            "var/log/audit/audit.log",
+            f'type=USER_CMD msg=audit({now}.1:1): cmd="echo type=CONFIG_CHANGE x" uid=0\n'.encode(),
+        )
+        [audit] = named(collect(self.root, ["logging_state"]), "audit_records")
+        self.assertEqual(audit["data"]["lines"], [])
+
+    def test_the_audit_folder_is_listed_first_and_the_cap_holds(self):
+        collector = load_collector(self.root)
+        collector.LOG_TREE_ENTRIES = 6
+        for n in range(10):
+            self.write(f"var/log/aaa/f{n}", b"x")
+        self.write("var/log/audit/audit.log", b"x")
+        out = io.BytesIO()
+        collector.main(settings(["logging_state"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        paths = [r["data"]["path"] for r in named(records, "log_file")]
+        self.assertIn("/var/log/audit/audit.log", paths)
+        self.assertLessEqual(len(paths), 6)
+        self.assertTrue(named(records, "log_manifest")[0]["data"]["truncated"])
+
+
 if __name__ == "__main__":
     unittest.main()

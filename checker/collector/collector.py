@@ -17,6 +17,7 @@ what each module reads, and why, is in docs/collector-modules.md.
 
 import base64
 import binascii
+import collections
 import contextlib
 import datetime
 import errno
@@ -6243,6 +6244,189 @@ def module_network(run):
         _firewall_command(run, module, "ip6tables-legacy-save", [])
 
 
+# --- Logging, audit and mandatory access control (DESIGN.md §8.10) --------------------
+
+LOGGING_FILES = (
+    "/etc/systemd/journald.conf",
+    "/usr/lib/systemd/journald.conf",
+    "/etc/rsyslog.conf",
+    "/etc/audit/auditd.conf",
+    "/etc/audit/audit.rules",
+    "/etc/selinux/config",
+)
+LOGGING_DIRS = (
+    "/etc/systemd/journald.conf.d",
+    "/run/systemd/journald.conf.d",
+    "/usr/lib/systemd/journald.conf.d",
+    "/etc/rsyslog.d",
+    "/etc/audit/rules.d",
+)
+LOG_TREE = "/var/log"
+LOG_TREE_DEPTH = 3
+LOG_TREE_ENTRIES = 5000
+AUDIT_LOGS = ("/var/log/audit/audit.log",) + tuple(
+    f"/var/log/audit/audit.log.{n}" for n in range(1, 5)
+)
+# Only records about the audit system and SELinux themselves: never the
+# commands, logins or file accesses audit also records.
+AUDIT_TYPES = (
+    b"type=CONFIG_CHANGE ",
+    b"type=DAEMON_START ",
+    b"type=DAEMON_END ",
+    b"type=DAEMON_ABORT ",
+    b"type=MAC_STATUS ",
+    b"type=MAC_POLICY_LOAD ",
+)
+AUDIT_LINES = 2000
+AUDIT_BYTES = 64 * 1024 * 1024
+_AUDIT_TIME = re.compile(rb"msg=audit\((\d+)\.\d+:\d+\)")
+# With auditd's name_format set, each record starts with its node's name.
+_AUDIT_NODE = re.compile(rb"^node=\S+ ")
+# Walked first, so a cut-short listing still holds what matters most.
+LOG_TREE_FIRST = ("/var/log/audit", "/var/log/journal")
+
+
+def _log_manifest(run, module):
+    """Every file and link under /var/log (three levels, at most 5,000
+    entries), breadth first, the audit and journal folders first: name,
+    type, size, inode, times. Never contents."""
+    count, truncated = 0, False
+    pending = collections.deque([(LOG_TREE, 0)])
+    while pending:
+        run.check_time()
+        if count >= LOG_TREE_ENTRIES:
+            truncated = True
+            break
+        directory, depth = pending.popleft()
+        try:
+            names, cut = list_directory(directory, LOG_TREE_ENTRIES - count, run)
+        except OSError as exc:
+            run.stream.record(module, "not_examined", {"path": directory, "reason": str(exc)})
+            continue
+        truncated = truncated or cut
+        deeper = []
+        for name in names:
+            if count >= LOG_TREE_ENTRIES:
+                truncated = True
+                break
+            absolute = f"{directory}/{name}"
+            try:
+                info = os.lstat(path(absolute))
+            except OSError:
+                continue
+            count += 1
+            kind = (
+                "d"
+                if stat.S_ISDIR(info.st_mode)
+                else "l"
+                if stat.S_ISLNK(info.st_mode)
+                else "f"
+                if stat.S_ISREG(info.st_mode)
+                else "o"
+            )
+            data = {
+                "path": _printable(absolute),
+                "type": kind,
+                "size": info.st_size,
+                "inode": info.st_ino,
+                "mtime": info.st_mtime,
+                "ctime": info.st_ctime,
+            }
+            if kind == "l":
+                try:
+                    data["link"] = _printable(os.readlink(path(absolute)))
+                except OSError:
+                    data["link"] = None
+            run.stream.record(module, "log_file", data)
+            if kind == "d" and depth + 1 < LOG_TREE_DEPTH:
+                deeper.append((absolute, depth + 1))
+        deeper.sort(key=lambda d: (not d[0].startswith(LOG_TREE_FIRST), d[0]))
+        pending.extend(deeper)
+    run.stream.record(module, "log_manifest", {"entries": count, "truncated": truncated})
+
+
+def _audit_records(run, module):
+    """From the audit logs, within the look-back, only the records about
+    audit and SELinux themselves (AUDIT_TYPES), masked: rules changed,
+    audit started or stopped, enforcement switched. The newest are kept
+    (rotated files read oldest first), so a flood of earlier records can't
+    push the latest out."""
+    since = run.since.timestamp()
+    found = collections.deque(maxlen=AUDIT_LINES)
+    matched, read, cut = 0, 0, False
+    for absolute in reversed(AUDIT_LOGS):
+        run.check_time()
+        try:
+            raw, _ = open_regular_file(absolute)
+        except (OSError, ValueError):
+            continue
+        with raw:
+            while True:
+                line = raw.readline(65536)  # an over-long line comes in pieces
+                if not line:
+                    break
+                read += len(line)
+                if read > AUDIT_BYTES:
+                    cut = True
+                    break
+                record = _AUDIT_NODE.sub(b"", line, count=1)
+                if not record.startswith(AUDIT_TYPES):
+                    continue
+                when = _AUDIT_TIME.search(record)
+                if when is None or int(when.group(1)) < since:
+                    continue
+                masked, _ = mask_text(record.rstrip(b"\n")[:4096])
+                found.append(masked.decode("utf-8", "replace"))
+                matched += 1
+        if cut:
+            break
+    run.stream.record(
+        module,
+        "audit_records",
+        {
+            "lines": list(found),
+            "truncated": cut,
+            "older_left_out": max(0, matched - AUDIT_LINES),
+            "bytes_read": read,
+        },
+    )
+
+
+def _mac_state(run, module):
+    """SELinux's mode and AppArmor's loaded profiles (names and modes)."""
+    selinux = "absent"
+    if os.path.isdir(path("/sys/fs/selinux")):
+        value = read_small("/sys/fs/selinux/enforce", 16)
+        selinux = {"1": "enforcing", "0": "permissive"}.get((value or "").strip(), "unknown")
+    apparmor = None
+    text = read_small("/sys/kernel/security/apparmor/profiles", 4 * 1024 * 1024)
+    if text is not None:
+        profiles = {}
+        for line in text.splitlines()[:5000]:
+            name, _, mode = line.rpartition(" (")
+            if name:
+                profiles[_printable(name)] = mode.rstrip(")")
+        apparmor = {"profiles": profiles}
+    elif os.path.isdir(path("/sys/kernel/security/apparmor")):
+        apparmor = {"profiles": {}, "unreadable": True}
+    run.stream.record(module, "mac_state", {"selinux": selinux, "apparmor": apparmor})
+
+
+def module_logging_state(run):
+    """What anti-forensics touches (DESIGN.md §8.10): the logs' own
+    manifest (sizes, inodes, times: a truncated or deleted log shows), the
+    logging and audit configuration (masked text), the audit records about
+    audit and SELinux themselves, and the SELinux and AppArmor state."""
+    module = "logging_state"
+    seen = set()
+    send_config_files(run, module, LOGGING_FILES, seen)
+    for directory in LOGGING_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=1)
+    _log_manifest(run, module)
+    _audit_records(run, module)
+    _mac_state(run, module)
+
+
 MODULES = {
     "host_facts": module_host_facts,
     "auth_log": module_auth_log,
@@ -6265,6 +6449,7 @@ MODULES = {
     "unusual_files": module_unusual_files,
     "processes": module_processes,
     "network": module_network,
+    "logging_state": module_logging_state,
 }
 
 

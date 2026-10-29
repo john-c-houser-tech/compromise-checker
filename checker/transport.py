@@ -441,6 +441,22 @@ class HostKeyCheck:
         return "same" if self.fingerprint in self.known_fingerprints else "changed"
 
 
+# The host key to trust when a server has several: the strongest first.
+# asyncssh's own order puts RSA first, so a server with an ED25519 key too
+# was trusted by its RSA one. Later connections use the trusted key's kind.
+HOST_KEY_ALGS = (
+    "ssh-ed25519",
+    "ecdsa-sha2-nistp521",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp256",
+    "rsa-sha2-512",
+    "rsa-sha2-256",
+    "ssh-rsa",
+)
+# A known key's type and the algorithms that fetch it.
+_KEY_ALGS = {"ssh-rsa": ("rsa-sha2-512", "rsa-sha2-256", "ssh-rsa")}
+
+
 def _known_hosts_name(host: Host) -> str:
     return host.address if host.port == 22 else f"[{host.address}]:{host.port}"
 
@@ -450,24 +466,30 @@ def _read_known(path: Path) -> list[str]:
 
 
 async def fetch_host_key(host: Host, known_hosts: Path | None = None) -> HostKeyCheck:
-    """Ask the server for its host key, and compare it with what we know."""
+    """Ask the server for its host key, and compare it with what we know:
+    a known key's kind first, so a host trusted by its RSA key isn't
+    reported changed for offering its ED25519 one."""
+    known_types, known = [], []
+    name = _known_hosts_name(host)
+    for line in _read_known(known_hosts or known_hosts_file()):
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == name:
+            known.append(asyncssh.import_public_key(" ".join(parts[1:3])).get_fingerprint("sha256"))
+            known_types.extend(_KEY_ALGS.get(parts[1], (parts[1],)))
+    algs = list(dict.fromkeys([*known_types, *HOST_KEY_ALGS]))
     try:
         key = await asyncio.wait_for(
             # Same connection behaviour as collect(): the operator's
             # ~/.ssh/config must not redirect us to a different endpoint.
-            asyncssh.get_server_host_key(host.address, host.port, config=None),
+            asyncssh.get_server_host_key(
+                host.address, host.port, config=None, server_host_key_algs=algs
+            ),
             timeout=15,
         )
     except (OSError, TimeoutError, asyncssh.Error) as exc:
         raise TransportError(f"{host.name}: cannot fetch the host key: {exc}") from exc
     if key is None:
         raise TransportError(f"{host.name}: the server offered no host key")
-    known = []
-    name = _known_hosts_name(host)
-    for line in _read_known(known_hosts or known_hosts_file()):
-        parts = line.split()
-        if len(parts) >= 3 and parts[0] == name:
-            known.append(asyncssh.import_public_key(" ".join(parts[1:3])).get_fingerprint("sha256"))
     return HostKeyCheck(
         key=key,
         fingerprint=key.get_fingerprint("sha256"),

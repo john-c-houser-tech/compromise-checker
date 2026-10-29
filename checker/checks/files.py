@@ -17,11 +17,23 @@ DECEPTIVE = {
     "system_name": ("a system program's name", "high"),
     "control_characters": ("control characters in its name", "medium"),
 }
-SCRIPT = re.compile(
-    r"\.(?:php\d?|phtml|phar|shtml|cfm|jsp|jspx|aspx?|ashx|cgi|pl|py|sh|rb)(?:\.|$)", re.I
-)
+SCRIPT = re.compile(r"\.(?:php\d?|phtml|phar|shtml|cfm|jsp|jspx|aspx?|ashx|cgi|pl|py|sh|rb)$", re.I)
+# shell.php.jpg: Apache runs it when a handler maps .php (AddHandler), the
+# extension anywhere in the name. Only extensions mapped that way: .pl,
+# .py, .sh and .rb run only as CGI scripts, and .pl is also Polish
+# (validators.pl.xlf, in every Symfony application).
+HANDLED = re.compile(r"\.(?:php\d?|phtml|phar|shtml|cfm|jsp|jspx|aspx?|ashx|cgi)\.", re.I)
 UPLOADS = re.compile(r"/(?:uploads?|files|media|images?|tmp|cache|wp-content/uploads)/", re.I)
 SECRET_FILES = {".env", ".htpasswd", ".git", ".svn", ".user.ini"}
+# The servers whose configuration says what they serve (web_served), and
+# the ports where another program would serve files they don't know about.
+WEB_SERVERS = {"nginx", "apache2", "httpd"}
+WEB_PORTS = {80, 443, 8080, 8443}
+# Programs that serve files themselves, on any port (php -S, a Node or
+# Python server behind nginx's proxy_pass): what they serve isn't known.
+APP_SERVERS = re.compile(
+    r"^(?:php[\d.]*|node(?:js)?|python[\d.]*|ruby[\d.]*|java|deno|bun|uwsgi|gunicorn.*|puma.*|unicorn.*)$"
+)
 
 
 def _leaves(path: str, item: dict) -> bool:
@@ -168,21 +180,158 @@ def dev(context: Context) -> list[Finding]:
     return findings
 
 
-@check("files.web", "Web shells: new scripts in web roots, scripts in upload directories")
+def served_folders(context: Context) -> tuple[list[str], list[str]] | None:
+    """The folders the web servers serve, with the links into and out of
+    them followed, and those the configuration names (with the links on
+    their path followed only); None when that can't be told,
+    and then everything in a web root counts as served: the configuration
+    not fully collected or naming no folder, a folder written with a
+    variable or relative to the server's prefix, a configuration file
+    included from outside /etc (an application's own), a web port held by a
+    program other than nginx or Apache, or a program that serves files
+    itself listening anywhere."""
+    config = context.snapshot.sections.get("web_config")
+    served = context.snapshot.sections.get("web_served")
+    listeners = context.snapshot.sections.get("listeners")
+    if not (config and config.complete and served and served.complete and served.items):
+        return None
+    if listeners is None or not listeners.complete:
+        return None
+    for key, item in listeners.items.items():
+        protocol, address = (key.split(" ") + [""])[:2]
+        port = address.rsplit(":", 1)[-1]
+        programs = set(item.get("programs") or [])
+        if not protocol.startswith("tcp"):
+            continue
+        if any(APP_SERVERS.match(p) for p in programs):
+            return None
+        if port.isdigit() and int(port) in WEB_PORTS and (not programs or programs - WEB_SERVERS):
+            return None
+    entries = list(served.items.values())
+    if any(
+        e.get("directive") in _INCLUDES and _foreign_include(str(e.get("folder") or ""))
+        for e in entries
+    ):
+        return None
+    folders = {str(e.get("folder") or "") for e in entries if e.get("directive") not in _INCLUDES}
+    if not folders or any(not f.startswith("/") or "$" in f for f in folders):
+        return None
+    folders = {posixpath.normpath(f) for f in folders}
+    # The collector lists real paths and doesn't follow links: a served
+    # folder through a link (current -> releases/7), and what a link in a
+    # served folder leads to (public/bundles/x -> vendor/...), are served.
+    links = {
+        path: posixpath.normpath(posixpath.join(posixpath.dirname(path), str(item["link_target"])))
+        for path, item in context.items("web_files").items()
+        if item.get("type") == "l" and item.get("link_target")
+    }
+
+    def through_links(found: set[str], inside: bool) -> set[str]:
+        for _ in range(8):  # links to links, a few deep
+            more = {
+                target + f[len(link) :]
+                for f in found
+                for link, target in links.items()
+                if f.startswith(link + "/")
+            }
+            if inside:
+                more |= {target for link, target in links.items() if _inside(link, found)}
+            if more <= found:
+                break
+            found = found | more
+        return found
+
+    # Only the configuration's own folders (through the links on their
+    # path) say which applications are judged: a link planted in one
+    # application's public folder, leading into another, makes what it
+    # leads to served, never the other application judged.
+    configured = through_links(folders, inside=False)
+    return sorted(through_links(configured, inside=True)), sorted(configured)
+
+
+_INCLUDES = ("include", "includeoptional")
+
+
+def _foreign_include(target: str) -> bool:
+    """A configuration file kept outside the system's places: an
+    application's own, which the collector doesn't read. RHEL's nginx
+    includes its packaged modules from /usr/share/nginx/modules."""
+    if not target.startswith("/"):
+        return False  # relative to /etc/nginx or Apache's ServerRoot
+    return not target.startswith(("/etc/", "/usr/")) or target.startswith("/usr/share/nginx/html")
+
+
+# At most this many new or changed scripts in an application, outside what
+# is served, is a small edit, not a deploy or an update.
+SMALL_EDIT = 3
+
+
+def _inside(path: str, folders) -> bool:
+    return any(path == f or path.startswith(f.rstrip("/") + "/") for f in folders)
+
+
+def _judged(items: dict[str, dict], configured: list[str]) -> set[str]:
+    """The applications (folders directly in a web root) whose files can be
+    judged by what is served: a folder the configuration names lies in it,
+    and some file was listed inside that folder, so the folder as written is
+    where the files are. Any other application keeps every file counted as
+    served."""
+    judged = set()
+    for path, item in items.items():
+        if _inside(path, configured):
+            application = _group(item, path)
+            if any(_inside(f, [application]) for f in configured):
+                judged.add(application)
+    return judged
+
+
+def _outside_group(item: dict, path: str) -> str:
+    """Where scripts outside the served folders are counted: the
+    application's folder and the one below it (vendor, var, src)."""
+    application = _group(item, path)
+    rest = path[len(application) :].lstrip("/").split("/")
+    return application + ("/" + rest[0] if len(rest) > 1 else "")
+
+
+@check(
+    "files.web",
+    "Web shells: new or changed scripts in web roots, scripts in upload directories; new or changed"
+    " scripts outside what the web servers serve",
+)
 def web(context: Context) -> list[Finding]:
     findings = []
     diff = context.changes("web_files")
     added = diff["added"] if diff else {}
+    # Content, not times: a checkout rewrites times without changing a line.
+    edited = {
+        k
+        for k, fields in (diff["changed"] if diff else {}).items()
+        if None not in fields.get("sha256", [None])
+    }
     uncertain = context.uncertain("web_files")
-    for path, item in context.items("web_files").items():
+    items = context.items("web_files")
+    found = served_folders(context)
+    served, configured = found if found else ([], [])
+    judged = _judged(items, configured)
+    outside: dict[tuple[str, str], list[str]] = {}
+    for path, item in items.items():
         name = path.rsplit("/", 1)[-1]
-        match = SCRIPT.search(name)
-        script = match is not None or item.get("kind") == "script"
-        # shell.php.jpg: Apache runs it when a handler maps .php.
-        double = match is not None and match.group(0).endswith(".")
+        double = not SCRIPT.search(name) and HANDLED.search(name) is not None
+        script = double or SCRIPT.search(name) is not None or item.get("kind") == "script"
+        if _group(item, path) in judged and not _inside(path, served) and item.get("kind") != "elf":
+            # No request reaches it, but the application may run it (its
+            # libraries, its compiled cache): a deploy rewrites hundreds.
+            if (path in added or path in edited) and (script or _runnable(item)):
+                outside.setdefault((_group(item, path), _outside_group(item, path)), []).append(
+                    path
+                )
+            continue
         reason = None
         if path in added and (script or _runnable(item)):
             reason, band = "A new script in a web root", "high"
+        elif path in edited and (script or _runnable(item)):
+            # A few lines added to an existing index.php: a web shell too.
+            reason, band = "A changed script in a web root", "high"
         elif item.get("kind") == "elf":
             reason, band = "A program in a web root", "high"
         elif script and UPLOADS.search(path):
@@ -215,12 +364,46 @@ def web(context: Context) -> list[Finding]:
                 path + (f" (SHA-256 {item['sha256'][:16]}…)" if item.get("sha256") else ""),
                 [f"path:{path}"],
                 [
-                    context.change_ref("web_files", path, "added")
-                    if path in added
+                    context.change_ref("web_files", path, "added" if path in added else "changed")
+                    if path in added or path in edited
                     else {"item": ["web_files", path]}
                 ],
-                new=path in added and context.new_since_previous("web_files", path),
-                uncertain=uncertain if path in added else None,
+                new=(path in added or path in edited)
+                and context.new_since_previous("web_files", path),
+                uncertain=uncertain if path in added or path in edited else None,
+            )
+        )
+    per_application: dict[str, int] = {}
+    for (application, _), paths in outside.items():
+        per_application[application] = per_application.get(application, 0) + len(paths)
+    for (application, group), paths in sorted(outside.items()):
+        paths.sort()
+        # A deploy rewrites hundreds (a framework's compiled cache with
+        # them); a few files edited and nothing else is what a backdoor
+        # in vendor/autoload.php looks like.
+        few = per_application[application] <= SMALL_EDIT
+        findings.append(
+            Finding(
+                "files.web",
+                "New or changed scripts outside what the web servers serve",
+                COMPROMISE,
+                "medium" if few else "low",
+                f"{len(paths)} in {group} "
+                + (
+                    "(and no other change in the application)"
+                    if few
+                    else "(a deploy or an update does this)"
+                )
+                + ": "
+                + ", ".join(p[len(group) :].lstrip("/") for p in paths[:3])
+                + (", …" if len(paths) > 3 else ""),
+                [f"path:{group}"],
+                [
+                    context.change_ref("web_files", p, "added" if p in added else "changed")
+                    for p in paths[:20]
+                ],
+                new=any(context.new_since_previous("web_files", p) for p in paths),
+                uncertain=uncertain,
             )
         )
     return findings

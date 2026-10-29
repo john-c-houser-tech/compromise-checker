@@ -264,6 +264,234 @@ def test_deceptive_names_and_dev():
     ]
 
 
+def test_a_translation_is_not_a_script_behind_a_second_extension():
+    # Symfony ships Polish translations as validators.pl.xlf: .pl there is
+    # a language, and .pl runs only as a CGI script, never by AddHandler.
+    w = {"place": "/var/www", "type": "-"}
+    items = {
+        "/var/www/app/vendor/symfony/validator/Resources/translations/validators.pl.xlf": w,
+        "/var/www/app/public/uploads/messages.pl.yml": w,
+        "/var/www/app/public/img/cat.php5.png": w,
+        "/var/www/app/public/uploads/run.pl": w,
+    }
+    found = of(run([], snap(web_files=items)), "files.web")
+    assert sorted((f.title, f.summary) for f in found) == [
+        ("A script hidden behind a second extension", "/var/www/app/public/img/cat.php5.png"),
+        ("A script in an upload directory", "/var/www/app/public/uploads/run.pl"),
+    ]
+
+
+APP = "/var/www/app"
+SERVED = {"/etc/nginx/sites-available/app: root /var/www/app/public": {"folder": f"{APP}/public"}}
+NGINX = {"tcp 0.0.0.0:443 netns=net:[1]": {"programs": ["nginx"]}}
+
+
+def web(items, served=None, listeners=None):
+    return snap(
+        web_files={p: {"place": "/var/www", "type": "-", **i} for p, i in items.items()},
+        web_config={"/etc/nginx/nginx.conf": {}},
+        web_served=SERVED if served is None else served,
+        listeners=NGINX if listeners is None else listeners,
+    )
+
+
+def test_what_the_web_server_does_not_serve_is_no_web_shell():
+    # A Symfony application: nginx serves public/; the libraries, the
+    # compiled cache and the repository sit beside it.
+    items = {
+        f"{APP}/public/index.php": {"sha256": "aa"},
+        f"{APP}/public/uploads/x.php": {"sha256": "bb"},
+        f"{APP}/public/.env": {},
+        f"{APP}/vendor/symfony/cache/Adapter/AbstractAdapter.php": {"sha256": "cc"},
+        f"{APP}/var/cache/prod/ContainerRgxCWWf/getRouterService.php": {"sha256": "dd"},
+        f"{APP}/.env": {},
+        f"{APP}/.git": {"type": "d"},
+        f"{APP}/bin/helper": {"kind": "elf"},
+    }
+    found = of(run([], web(items)), "files.web")
+    assert sorted((f.title, f.summary.split(" (")[0]) for f in found) == [
+        ("A program in a web root", f"{APP}/bin/helper"),
+        ("A script in an upload directory", f"{APP}/public/uploads/x.php"),
+        (
+            "A secrets or repository file inside a web root",
+            f"{APP}/public/.env: a web server may serve it",
+        ),
+    ]
+    # Without knowing what is served, all of it counts, as before.
+    for unsure in (
+        web(items, served={}),
+        web(items, served={"x: root /var/www/$host": {"folder": "/var/www/$host"}}),
+        web(items, served={"x: root html": {"folder": "html"}}),
+        web(items, listeners={"tcp 0.0.0.0:8080 netns=net:[1]": {"programs": ["node"]}}),
+        web(items, listeners={"tcp :::80 netns=net:[1]": {"programs": []}}),
+    ):
+        titles = [f.title for f in of(run([], unsure), "files.web")]
+        assert titles.count("A script in an upload directory") == 3, titles
+    incomplete = web(items)
+    incomplete.sections["web_served"].complete = False
+    assert len(of(run([], incomplete), "files.web")) > 3
+
+
+def test_a_deploy_is_one_low_finding_per_folder_and_an_edited_front_controller_is_high():
+    before = {
+        f"{APP}/public/index.php": {"sha256": "aa", "mtime": "1"},
+        f"{APP}/var/cache/prod/ContainerAAAA/a.php": {"sha256": "c1"},
+        f"{APP}/vendor/twig/twig/src/Environment.php": {"sha256": "t1", "mtime": "1"},
+        f"{APP}/src/Kernel.php": {"sha256": "k1"},
+    }
+    after = {
+        # The deploy: a checkout rewrote index.php's times, not its text;
+        # a new compiled cache; one library updated; Kernel.php unchanged.
+        f"{APP}/public/index.php": {"sha256": "aa", "mtime": "2"},
+        **{f"{APP}/var/cache/prod/ContainerBBBB/s{n}.php": {"sha256": f"n{n}"} for n in range(5)},
+        f"{APP}/vendor/twig/twig/src/Environment.php": {"sha256": "t2", "mtime": "2"},
+        f"{APP}/src/Kernel.php": {"sha256": "k1"},
+    }
+    found = of(run([], web(after), baseline=web(before)), "files.web")
+    assert sorted((f.title, f.band, f.summary.split(":")[0]) for f in found) == [
+        (
+            "New or changed scripts outside what the web servers serve",
+            "low",
+            f"1 in {APP}/vendor (a deploy or an update does this)",
+        ),
+        (
+            "New or changed scripts outside what the web servers serve",
+            "low",
+            f"5 in {APP}/var (a deploy or an update does this)",
+        ),
+    ]
+    # A few lines added to the front controller: a web shell.
+    after[f"{APP}/public/index.php"] = {"sha256": "ee", "mtime": "2"}
+    found = of(run([], web(after), baseline=web(before)), "files.web")
+    [edited] = [f for f in found if f.band == "high"]
+    assert edited.title == "A changed script in a web root"
+    assert edited.evidence == [
+        {"change": ["b0", "web_files", f"{APP}/public/index.php", "changed"]}
+    ]
+
+
+def _served_titles(after, before=None, **web_args):
+    found = of(run([], web(after, **web_args), baseline=web(before or {}, **web_args)), "files.web")
+    return sorted((f.band, f.title, f.summary.split(" (")[0].split(":")[0]) for f in found)
+
+
+NEW_SHELL = ("high", "A new script in a web root")
+
+
+def test_a_served_folder_through_a_link_is_followed_and_unfollowable_is_unjudged():
+    # Deployer's layout: nginx serves current/public, current -> releases/7.
+    rel = f"{APP}/releases/7"
+    served = {"x: root /var/www/app/current/public": {"folder": f"{APP}/current/public"}}
+    before = {f"{rel}/public/index.php": {"sha256": "aa"}}
+    after = {
+        **before,
+        f"{rel}/public/shell.php": {"sha256": "bb"},
+        f"{rel}/vendor/a/b.php": {"sha256": "cc"},
+    }
+    link = {f"{APP}/current": {"type": "l", "link_target": "releases/7"}}
+    titles = _served_titles({**after, **link}, {**before, **link}, served=served)
+    assert (*NEW_SHELL, f"{rel}/public/shell.php") in titles
+    assert (
+        "medium",
+        "New or changed scripts outside what the web servers serve",
+        f"1 in {APP}/releases",
+    ) in titles
+    # Without the link listed, nothing was seen inside the served folder:
+    # the application keeps the old rules, so vendor's new file is a new
+    # script too.
+    titles = _served_titles(after, before, served=served)
+    assert (*NEW_SHELL, f"{rel}/vendor/a/b.php") in titles
+
+
+def test_an_application_with_no_served_folder_known_keeps_the_old_rules():
+    # /var/www/blog's root sits in a snippet the collector doesn't read.
+    before = {f"{APP}/public/index.php": {"sha256": "aa"}}
+    after = {**before, "/var/www/blog/wp-content/shell.php": {"sha256": "bb"}}
+    assert (*NEW_SHELL, "/var/www/blog/wp-content/shell.php") in _served_titles(after, before)
+
+
+def test_what_a_link_in_a_served_folder_leads_to_is_served():
+    # assets:install --symlink: public/bundles/acme -> vendor's public files.
+    target = f"{APP}/vendor/acme/x/Resources/public"
+    link = {
+        f"{APP}/public/bundles/acme": {
+            "type": "l",
+            "link_target": "../../vendor/acme/x/Resources/public",
+        }
+    }
+    before = {f"{APP}/public/index.php": {"sha256": "aa"}, **link}
+    after = {**before, f"{target}/s.php": {"sha256": "bb"}}
+    assert (*NEW_SHELL, f"{target}/s.php") in _served_titles(after, before)
+
+
+def test_a_link_planted_into_another_application_doesnt_get_it_judged():
+    # blog's real root is set in a snippet the collector doesn't read; a
+    # link from app's public folder into blog must not make blog judged.
+    link = {f"{APP}/public/x": {"type": "l", "link_target": "../../blog/public"}}
+    before = {
+        f"{APP}/public/index.php": {"sha256": "aa"},
+        "/var/www/blog/public/a.css.php": {"sha256": "c1"},
+        **link,
+    }
+    after = {**before, "/var/www/blog/web/shell.php": {"sha256": "bb"}}
+    assert (*NEW_SHELL, "/var/www/blog/web/shell.php") in _served_titles(after, before)
+
+
+def test_programs_that_serve_files_themselves_and_outside_includes_leave_it_unknown():
+    before = {f"{APP}/public/index.php": {"sha256": "aa"}}
+    after = {**before, f"{APP}/var/x.php": {"sha256": "bb"}}
+    node = {**NGINX, "tcp 127.0.0.1:3000 netns=net:[1]": {"programs": ["node"]}}
+    assert (*NEW_SHELL, f"{APP}/var/x.php") in _served_titles(after, before, listeners=node)
+    fpm = {**NGINX, "tcp 127.0.0.1:9000 netns=net:[1]": {"programs": ["php-fpm8.4"]}}
+    assert NEW_SHELL not in [t[:2] for t in _served_titles(after, before, listeners=fpm)]
+    included = {
+        **SERVED,
+        "y: include /var/www/app/nginx.conf": {
+            "directive": "include",
+            "folder": f"{APP}/nginx.conf",
+        },
+    }
+    assert (*NEW_SHELL, f"{APP}/var/x.php") in _served_titles(after, before, served=included)
+    stock = {
+        **SERVED,
+        "y: include snippets/fastcgi-php.conf": {
+            "directive": "include",
+            "folder": "snippets/fastcgi-php.conf",
+        },
+        "z: include /etc/nginx/sites-enabled/*": {
+            "directive": "include",
+            "folder": "/etc/nginx/sites-enabled/*",
+        },
+        # RHEL's nginx.conf: its packaged modules.
+        "m: include /usr/share/nginx/modules/*.conf": {
+            "directive": "include",
+            "folder": "/usr/share/nginx/modules/*.conf",
+        },
+    }
+    assert NEW_SHELL not in [t[:2] for t in _served_titles(after, before, served=stock)]
+
+
+def test_a_lone_edit_outside_the_served_folders_is_medium():
+    before = {
+        f"{APP}/public/index.php": {"sha256": "aa"},
+        f"{APP}/vendor/autoload.php": {"sha256": "v1"},
+        f"{APP}/var/cache/prod/C1/a.php": {"sha256": "c1"},
+        f"{APP}/src/Kernel.php": {},  # not hashed (too big, or out of time)
+    }
+    after = {
+        **before,
+        f"{APP}/vendor/autoload.php": {"sha256": "v2"},
+        f"{APP}/src/Kernel.php": {"sha256": "k2"},
+    }
+    [finding] = of(run([], web(after), baseline=web(before)), "files.web")
+    assert finding.band == "medium"
+    assert finding.summary.startswith(f"1 in {APP}/vendor (and no other change in the application)")
+    # The same edit in a deploy that rebuilt the compiled cache: low.
+    after.update({f"{APP}/var/cache/prod/C2/s{n}.php": {"sha256": f"n{n}"} for n in range(4)})
+    found = of(run([], web(after), baseline=web(before)), "files.web")
+    assert {f.band for f in found} == {"low"}
+
+
 def test_web_shells():
     items = {
         "/var/www/html/index.php": {"place": "/var/www", "type": "-"},
@@ -660,9 +888,39 @@ def test_fresh_server_false_alarms_are_tuned_down():
     items = {"/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache": {"sha256": "c2" * 32}}
     [finding] = of(run([], snap(OWNERS, unowned_executables=items)), "files.unowned")
     assert finding.band == "info"
+    assert finding.title == "An executable no package installed (made by a package after install)"
     live = {"processes": [proc(635, "firewalld", suspicious_mappings=["/memfd:libffi (deleted)"])]}
     [finding] = of(run([], snap(live)), "process.injected")
     assert finding.band == "low"
+
+
+def test_shared_memory_is_not_a_deleted_file():
+    # Shared anonymous memory (PHP's opcache JIT) and System V shared memory
+    # show as deleted files in /proc's maps; nothing was on disk.
+    for mapping in ("/dev/zero (deleted)", "/SYSV0000a3f1 (deleted)"):
+        live = {"processes": [proc(124397, "php-fpm8.4", suspicious_mappings=[mapping])]}
+        [finding] = of(run([], snap(live)), "process.injected")
+        assert (finding.band, finding.variant) == ("medium", "shared")
+    # Alongside a memory-only file, the file is what's reported; alongside a
+    # deleted file outside the system directories, that is.
+    both = ["/dev/zero (deleted)", "/memfd:payload (deleted)"]
+    live = {"processes": [proc(124397, "php-fpm8.4", suspicious_mappings=both)]}
+    [finding] = of(run([], snap(live)), "process.injected")
+    assert finding.variant == "memory"
+    both = ["/dev/zero (deleted)", "/var/www/x.so (deleted)"]
+    live = {"processes": [proc(124397, "php-fpm8.4", suspicious_mappings=both)]}
+    [finding] = of(run([], snap(live)), "process.injected")
+    assert (finding.band, finding.variant) == ("high", "deleted")
+    # With replaced system libraries too, the restart still shows.
+    both = ["/dev/zero (deleted)", "/usr/lib/x86_64-linux-gnu/libz.so.1 (deleted)"]
+    live = {"processes": [proc(124397, "php-fpm8.4", suspicious_mappings=both)]}
+    found = of(run([], snap(live, checksum_store=UPDATED)), "process.injected")
+    assert sorted(f.variant for f in found) == ["replaced", "shared"]
+    # libffi's closures stay low, but not when shared memory is mapped too.
+    both = ["/dev/zero (deleted)", "/memfd:libffi (deleted)"]
+    live = {"processes": [proc(635, "firewalld", suspicious_mappings=both)]}
+    [finding] = of(run([], snap(live)), "process.injected")
+    assert finding.variant == "shared"
 
 
 def test_a_forked_process_inherits_its_parents_code():

@@ -350,10 +350,10 @@ def unowned(context: Context) -> list[Finding]:
     diff = context.changes("unowned_executables")
     added = diff["added"] if diff else {}
     for path, item in context.items("unowned_executables").items():
-        local = bool(item.get("local"))
+        generated = _generated(path)
+        # Made by a package after install: reported apart, like /usr/local.
+        local = bool(item.get("local")) or generated
         is_new = path in added
-        if _generated(path):
-            local = True  # made by a package after install: reported apart, like /usr/local
         # Reported on every analysis, not only when new: the baseline's own
         # bundle may never have been analysed.
         if is_new:
@@ -368,7 +368,13 @@ def unowned(context: Context) -> list[Finding]:
                     if is_new
                     else "An executable no package installed"
                 )
-                + (" (in /usr/local or /opt)" if local else ""),
+                + (
+                    " (made by a package after install)"
+                    if generated
+                    else " (in /usr/local or /opt)"
+                    if local
+                    else ""
+                ),
                 COMPROMISE,
                 band,
                 path + (f" (SHA-256 {item['sha256'][:16]}…)" if item.get("sha256") else ""),

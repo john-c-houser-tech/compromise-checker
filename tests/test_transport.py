@@ -153,6 +153,46 @@ async def test_trust_ignores_the_operators_ssh_config(server, monkeypatch, tmp_p
     assert seen.get("config", ()) is None
 
 
+async def test_trust_takes_the_ed25519_key_when_the_server_offers_rsa_too(tmp_path):
+    ed25519 = asyncssh.generate_private_key("ssh-ed25519")
+    listener = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_host_keys=[asyncssh.generate_private_key("ssh-rsa"), ed25519],
+        gss_host=None,
+    )
+    try:
+        h = Host(
+            name="both", address="127.0.0.1", port=listener.sockets[0].getsockname()[1], user="u"
+        )
+        check = await fetch_host_key(h, tmp_path / "k")
+    finally:
+        listener.close()
+        await listener.wait_closed()
+    assert check.key_type == "ssh-ed25519"
+    assert check.fingerprint == ed25519.get_fingerprint("sha256")
+
+
+async def test_a_host_trusted_by_its_rsa_key_stays_the_same_when_it_has_ed25519_too(tmp_path):
+    rsa = asyncssh.generate_private_key("ssh-rsa")
+    listener = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_host_keys=[rsa, asyncssh.generate_private_key("ssh-ed25519")],
+        gss_host=None,
+    )
+    port = listener.sockets[0].getsockname()[1]
+    known = tmp_path / "k"
+    known.write_text(f"[127.0.0.1]:{port} " + rsa.export_public_key().decode())
+    try:
+        h = Host(name="both", address="127.0.0.1", port=port, user="u")
+        check = await fetch_host_key(h, known)
+    finally:
+        listener.close()
+        await listener.wait_closed()
+    assert check.status == "same"
+
+
 async def test_trust_new_then_same_then_changed(server, tmp_path):
     known = tmp_path / "trusted"
     h = host(server)

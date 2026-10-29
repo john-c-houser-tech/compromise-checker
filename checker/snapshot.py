@@ -13,14 +13,15 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = (
-    10  # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers
-)
+SNAPSHOT_VERSION = 11
+# 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers;
+# 11: the folders web servers serve
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -79,6 +80,10 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     "mail_files": ("Postfix and Exim configuration files", ("mail",)),
     "web_config": ("nginx, Apache and PHP-FPM configuration files", ("web_logs",)),
+    "web_served": (
+        "the folders nginx and Apache serve (root, alias, DocumentRoot, Alias), per file",
+        ("web_logs",),
+    ),
     "containers": (
         "Docker and Podman containers: image, privilege, capabilities, namespaces, devices, mounts",
         ("containers",),
@@ -118,6 +123,7 @@ _MASKED = {
     "mail_files",
     "mail_config",
     "web_config",
+    "web_served",
     "containers",
 }
 
@@ -354,7 +360,7 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
     if module == "web_logs":
         # Only its configuration is a section: logs and audit records are
         # coverage, reported there.
-        return {"web_config"} if str(path or "").startswith("/etc/") else set()
+        return {"web_config", "web_served"} if str(path or "").startswith("/etc/") else set()
     if module == "mail" and str(path or "").startswith("/var/log/"):
         return set()  # a mail log: the coverage reports it, the settings are whole
     if module == "unusual_files":
@@ -507,6 +513,56 @@ def sshd_lines(lines: list[str]) -> list[tuple[str, str, str]]:
     return out
 
 
+# nginx's root and alias (and include, so the check sees configuration
+# kept elsewhere), several to a line or inside a block on one line.
+_NGINX_SERVED = re.compile(r"(?:^|[{;\s])(root|alias|include)\s+(\"[^\"]*\"|'[^']*'|[^\s;{}]+)\s*;")
+# Apache's: the folder is the last argument (Alias's first is the URL).
+_APACHE_SERVED = re.compile(
+    r"^\s*(DocumentRoot|Alias|ScriptAlias|AliasMatch|ScriptAliasMatch|Include|IncludeOptional)"
+    r"\s+(.*?)\s*$",
+    re.I,
+)
+
+
+def _uncommented(line: str) -> str:
+    """nginx's line up to a # outside quotes (root "/srv/a#b"; is a path)."""
+    quote = ""
+    for i, c in enumerate(line):
+        if quote:
+            quote = "" if c == quote else quote
+        elif c in "\"'":
+            quote = c
+        elif c == "#":
+            return line[:i]
+    return line
+
+
+def web_served(path: str, lines: list[str]) -> list[tuple[str, str]]:
+    """(directive, folder as written) for each folder a web server's
+    configuration file serves, and each file it includes. Folders with a
+    variable, or relative to the server's own prefix, are kept as written:
+    the check can't place them."""
+    out = []
+    nginx = path.startswith("/etc/nginx/")
+    if not nginx and not path.startswith(("/etc/apache2/", "/etc/httpd/")):
+        return out  # PHP-FPM's: it serves nothing itself
+    for raw in lines:
+        line = _uncommented(raw) if nginx else raw
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if nginx:
+            found = [(m[1], m[2]) for m in _NGINX_SERVED.finditer(line)]
+        else:
+            match = _APACHE_SERVED.match(line)
+            try:
+                args = shlex.split(match[2]) if match else []
+            except ValueError:  # an unclosed quote
+                args = match[2].split()
+            found = [(match[1], args[-1])] if args else []
+        out.extend((directive.lower(), folder.strip("\"'")) for directive, folder in found)
+    return out
+
+
 # --- Building one ----------------------------------------------------------------------------
 
 
@@ -592,7 +648,8 @@ class SnapshotBuilder:
             wanted = False  # a log, read for events
         lines: list[str] | None = (
             []
-            if start.module in ("sudoers", "ssh", "pam", "startup", "logging_state", "mail")
+            if start.module
+            in ("sudoers", "ssh", "pam", "startup", "logging_state", "mail", "web_logs")
             else None
         )
         if wanted:
@@ -641,7 +698,9 @@ class SnapshotBuilder:
         item["content_sha256"] = digest.hexdigest()
         if cut:
             item["content_cut"] = True
-            self._module_gap(start.module, f"{start.name} cut short", "source", {})
+            # A web server's file names its section by path, as its records do.
+            where = {"path": start.name} if start.module == "web_logs" else {}
+            self._module_gap(start.module, f"{start.name} cut short", "source", where)
         if lines is None:
             return
         if start.module == "startup":
@@ -653,6 +712,15 @@ class SnapshotBuilder:
             return
         if start.module == "mail":
             self._mail_text.append((start.name, lines))
+            return
+        if start.module == "web_logs":
+            served = self.section("web_served")
+            for directive, folder in web_served(start.name, lines):
+                served.items[f"{start.name}: {directive} {folder}"] = {
+                    "path": start.name,
+                    "directive": directive,
+                    "folder": folder,
+                }
             return
         if start.module == "sudoers":
             rules = self.section("sudo_rules")

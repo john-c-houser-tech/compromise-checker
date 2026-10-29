@@ -25,6 +25,10 @@ SCRATCH = (
 )
 SYSTEM = ("/usr/", "/bin/", "/sbin/", "/lib/", "/lib32/", "/lib64/", "/libx32/", "/opt/")
 HOMES = ("/home/", "/root/")
+# Shared anonymous memory shows in /proc's maps as "/dev/zero (deleted)",
+# System V shared memory as "/SYSV<key> (deleted)": memory only, no file
+# was ever on disk (PHP's opcache maps its JIT buffer this way).
+SHARED_MEMORY = re.compile(r"^(?:/dev/zero|/SYSV[0-9a-f]{8})$")
 SHELLS = {
     "sh",
     "bash",
@@ -373,7 +377,7 @@ def miner(context: Context) -> list[Finding]:
 @check(
     "process.injected",
     "Code mapped from deleted, memory-only or scratch files",
-    variants=("scratch", "deleted", "libffi", "memory", "replaced"),
+    variants=("scratch", "deleted", "libffi", "memory", "shared", "replaced"),
 )
 def injected(context: Context) -> list[Finding]:
     """A library injected with dlopen or ptrace shows as an executable
@@ -386,6 +390,8 @@ def injected(context: Context) -> list[Finding]:
         if not paths:
             continue
         bare = [x.removesuffix(" (deleted)") for x in paths]
+        shared = [x for x in bare if SHARED_MEMORY.match(x)]
+        bare = [x for x in bare if not SHARED_MEMORY.match(x)]
         replaced = all(
             _updated_since(context, p, mapping)
             for mapping in paths
@@ -407,7 +413,25 @@ def injected(context: Context) -> list[Finding]:
                 COMPROMISE,
                 "deleted",
             )
-        elif all(x.startswith("/memfd:libffi") for x in bare):
+        elif any(x.startswith("/memfd:") and not x.startswith("/memfd:libffi") for x in bare):
+            # JITs and libffi use memory-only code too, so less sure.
+            title, band, category, variant = (
+                "A process has code mapped from memory only",
+                "medium",
+                COMPROMISE,
+                "memory",
+            )
+        elif shared:
+            # JITs keep their code in shared memory (PHP's opcache), so as
+            # unsure as memory-only files, but a kind of its own: a
+            # profile can explain one without the other.
+            title, band, category, variant = (
+                "A process has code mapped from shared memory",
+                "medium",
+                COMPROMISE,
+                "shared",
+            )
+        elif any(x.startswith("/memfd:") for x in bare):
             # libffi makes its closures this way (firewalld on RHEL); the
             # name is the creator's choice, so it isn't dropped.
             title, band, category, variant = (
@@ -415,14 +439,6 @@ def injected(context: Context) -> list[Finding]:
                 "low",
                 COMPROMISE,
                 "libffi",
-            )
-        elif any(x.startswith("/memfd:") for x in bare):
-            # JITs and libffi use memory-only code too, so less sure.
-            title, band, category, variant = (
-                "A process has code mapped from memory only",
-                "medium",
-                COMPROMISE,
-                "memory",
             )
         else:
             title, band, category, variant = (
@@ -434,4 +450,18 @@ def injected(context: Context) -> list[Finding]:
         finding = _finding("process.injected", title, band, p, ", ".join(paths[:5]), category)
         finding.variant = variant
         findings.append(finding)
+        system = [x for x in paths if x.startswith(SYSTEM)]
+        if variant == "shared" and system:
+            # Shared memory is its own finding (a profile may explain it);
+            # the restart an update needs still shows.
+            restart = _finding(
+                "process.injected",
+                "A process still uses replaced system libraries (restart it after the update)",
+                "low",
+                p,
+                ", ".join(system[:5]),
+                HYGIENE,
+            )
+            restart.variant = "replaced"
+            findings.append(restart)
     return findings

@@ -960,3 +960,71 @@ def test_chains_other_software_manages_are_summarised():
     ipt = ["*nat", "-A KUBE-SEP-ABC -s 10.244.1.5/32 -j KUBE-MARK-MASQ", "-A OUTPUT -j ACCEPT"]
     out = firewall_lines(ipt)
     assert "[nat / chain KUBE-SEP-ABC] (managed by other software: rules not compared)" in out
+
+
+# --- Web servers' folders (PR 2.11) -------------------------------------------------------
+
+
+def test_web_served_reads_nginx_and_apache_folders():
+    from checker.snapshot import web_served
+
+    nginx = [
+        "server {",
+        "    root /var/www/app/public;  # the front controller",
+        "    location /.well-known/ { root /var/www/letsencrypt; }",
+        '    location /static/ { alias "/srv/static/"; }',
+        "    # root /var/www/old;",
+        "    location / { root $site_root; }",
+        "    fastcgi_param DOCUMENT_ROOT /nowhere;",
+        "}",
+    ]
+    assert web_served("/etc/nginx/sites-available/app", nginx) == [
+        ("root", "/var/www/app/public"),
+        ("root", "/var/www/letsencrypt"),
+        ("alias", "/srv/static/"),
+        ("root", "$site_root"),
+    ]
+    apache = [
+        '    DocumentRoot "/var/www/html"',
+        "    Alias /icons/ /usr/share/apache2/icons/",
+        '    ScriptAlias /cgi-bin/ "/usr/lib/cgi-bin/"',
+        '    Alias /docs "/srv/my docs"',
+        "#   DocumentRoot /var/www/old",
+    ]
+    assert web_served("/etc/apache2/sites-enabled/000-default.conf", apache) == [
+        ("documentroot", "/var/www/html"),
+        ("alias", "/usr/share/apache2/icons/"),
+        ("scriptalias", "/usr/lib/cgi-bin/"),
+        ("alias", "/srv/my docs"),
+    ]
+    # A # inside quotes is part of the path; includes are kept for the check.
+    assert web_served(
+        "/etc/nginx/sites-available/b", ['root "/srv/a#b"; # old', "include snippets/x.conf;"]
+    ) == [("root", "/srv/a#b"), ("include", "snippets/x.conf")]
+    assert web_served("/etc/apache2/apache2.conf", ["IncludeOptional sites-enabled/*.conf"]) == [
+        ("includeoptional", "sites-enabled/*.conf")
+    ]
+    # PHP-FPM serves nothing itself.
+    assert web_served("/etc/php/8.4/fpm/pool.d/www.conf", ["chdir = /var/www"]) == []
+
+
+def test_web_served_folders_reach_the_snapshot_and_a_cut_file_leaves_them_incomplete(tmp_path):
+    site = "/etc/nginx/sites-available/app"
+    records = host_records(
+        extra=text_source(90, "web_logs", site, "server { root /var/www/app/public; }\n")
+    )
+    served = snapshot_of_records(records, tmp_path).sections["web_served"]
+    assert served.complete
+    assert served.items == {
+        f"{site}: root /var/www/app/public": {
+            "path": site,
+            "directive": "root",
+            "folder": "/var/www/app/public",
+        }
+    }
+    # Read only up to the byte limit: the source ends, marked truncated.
+    cut = text_source(90, "web_logs", site, "root /x;\n")
+    cut[-1]["truncated"] = True
+    taken = snapshot_of_records(host_records(extra=cut), tmp_path)
+    assert not taken.sections["web_served"].complete
+    assert not taken.sections["web_config"].complete

@@ -254,6 +254,14 @@ def worker_child(context: Context) -> list[Finding]:
             )
         )
 
+    # A web server an administrator started by hand runs under their login
+    # session: its programs' starts carry that login UID, and are judged.
+    worker_logins = {
+        p.get("loginuid")
+        for p in processes.values()
+        if WEB_WORKERS.match(_program(p.get("exe"), p.get("comm")))
+        and p.get("loginuid") not in (None, AUID_UNSET)
+    }
     groups: dict[tuple[str, str, str], list[tuple[int, Event, tuple[str, str]]]] = {}
     for index, event in context.of("process.exec"):
         f = event.fields
@@ -262,7 +270,7 @@ def worker_child(context: Context) -> list[Finding]:
         uid = f.get("uid") if f.get("uid") in webs else f.get("euid")
         if uid not in webs:
             continue
-        if f.get("auid") not in (None, AUID_UNSET):
+        if f.get("auid") not in (None, AUID_UNSET) and f.get("auid") not in worker_logins:
             continue  # an administrator's or a cron job's session, not the site's
         program = _program(f.get("exe"), f.get("comm"))
         command = f.get("argv") or ""

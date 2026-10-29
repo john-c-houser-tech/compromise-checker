@@ -365,3 +365,15 @@ def test_a_new_script_then_its_account_s_shell_is_a_chain():
 )
 def test_no_chain_out_of_order_too_late_or_another_account(events):
     assert chain_of(events) == []
+
+
+def test_a_web_server_started_by_hand_keeps_its_shells_judged():
+    # An administrator (UID 1000) started php-fpm from their session: its
+    # workers, and all they start, carry login UID 1000.
+    live = {
+        "processes": [web_proc(100, "php-fpm8.3", exe="/usr/sbin/php-fpm8.3", loginuid=1000)],
+        "sockets": [],
+    }
+    shell = exec_(1, 33, "/usr/bin/id", "id", auid=1000)
+    assert history([shell], live=live)
+    assert history([shell]) == []  # without such a worker: the administrator's own

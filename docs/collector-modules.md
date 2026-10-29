@@ -659,7 +659,8 @@ with its own share of the module's time — the listing at most 40%, the
 hidden-process probe at most half of what is left, the sockets the rest —
 and writes a `process_summary` however far it got. It **sends**:
 - a `process` record for each process: PID, parent, state, real, effective,
-  saved and filesystem user and group IDs, threads, CPU seconds, start time,
+  saved and filesystem user and group IDs, the login UID it descends from
+  (`/proc/<pid>/loginuid`), threads, CPU seconds, start time,
   the executable (`exe_deleted` when its file has been deleted, `exe_memfd`
   when it runs from memory only; `kernel_thread` or `exe_unreadable` when
   there is none to read), working directory, root (a `chroot` or container

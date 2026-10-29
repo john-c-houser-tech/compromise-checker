@@ -3820,6 +3820,8 @@ class ProcessTests(FixtureRoot):
         )
         fake_process(self.root, 31, comm="sshd", exe="/usr/sbin/sshd", fds=("socket:[4242]",))
         fake_process(self.root, 2, ppid=0, comm="kthreadd", cmdline=b"", exe=None)
+        Path(self.root, "proc/23/loginuid").write_bytes(b"1000")
+        Path(self.root, "proc/31/loginuid").write_bytes(b"4294967295")
 
     def test_processes_sockets_and_masking(self):
         self.fixture()
@@ -3841,6 +3843,8 @@ class ProcessTests(FixtureRoot):
         self.assertEqual(bad["std_streams"]["0"], {"kind": "socket", "inode": "4343"})
         self.assertEqual(bad["std_streams"]["1"], {"kind": "pipe"})
         self.assertTrue(procs[2]["kernel_thread"])
+        self.assertEqual((bad["loginuid"], procs[31]["loginuid"]), (1000, 4294967295))
+        self.assertNotIn("loginuid", procs[2])  # none to read
         sockets = {r["inode"]: r for r in records_named(records, "socket")}
         self.assertEqual(sockets["4242"]["local"], ["0.0.0.0", 4444])  # noqa: S104 - parsed, not bound
         self.assertEqual(sockets["4242"]["state"], "listen")

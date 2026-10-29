@@ -5970,6 +5970,11 @@ def describe_process(run, pid, boot_time, ticks, sockets_of):
         "cpu_seconds": round(cpu, 2),
         "start_time": iso_from_timestamp(start) if start is not None else None,
     }
+    # The login session it descends from (audit's login UID): a web server
+    # an administrator started by hand carries theirs.
+    loginuid = (read_proc(base + "/loginuid", 64) or b"").strip()
+    if loginuid.isdigit():
+        process["loginuid"] = int(loginuid)
     process["comm"], counts = masked(comm)
     _add_counts(found, counts)
     exe = read_link(base + "/exe")

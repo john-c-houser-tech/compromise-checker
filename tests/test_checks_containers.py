@@ -143,3 +143,26 @@ def test_the_snapshot_keeps_what_a_container_is_not_its_id():
     assert stored["mounts"] == ["/srv:/srv:ro"]
     assert "id" not in stored and "running" not in stored
     assert builder.live["containers"][0]["id"] == "a" * 64
+
+
+def test_another_image_under_a_trusted_name_but_not_another_version():
+    from checker.checks.containers import repository
+
+    assert repository("nginx:1.25") == repository("docker.io/library/nginx@sha256:abc")
+    assert repository("registry.example:5000/app:2") == "registry.example:5000/app"
+    assert repository("org/app:1") == "docker.io/org/app"
+    before = snap(
+        containers={
+            "docker: web": item(image="nginx:1.25"),
+            "docker: db": item(image="postgres:16"),
+        }
+    )
+    after = snap(
+        containers={
+            "docker: web": item(image="docker.io/library/nginx:1.27"),
+            "docker: db": item(image="docker.io/evil/postgres:16"),
+        }
+    )
+    [found] = of(run([], after, baseline=before), "container.new")
+    assert found.variant == "image_changed" and found.band == "low"
+    assert found.summary.startswith("docker: db: postgres:16 → docker.io/evil/postgres:16")

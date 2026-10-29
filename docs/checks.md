@@ -245,7 +245,7 @@ the coverage names them when present.
 |---|---|---|---|
 | `container.privileged` | privileged (Docker's flag; Podman's every capability), mounting `/`, `/etc`, `/root`, `/boot` or a runtime's socket (Docker's, Podman's, containerd's), or holding `CAP_SYS_ADMIN`: new since the baseline (added, or given it since) high (`new`); there before, or with no baseline yet, medium hygiene (`standing`). Says whether it runs (its process alive at collection) | high / medium | partly |
 | `container.host_namespace` | sharing the host's process or network namespace, new since the baseline | medium | yes |
-| `container.new` | a container new since the baseline: deploys make them; what it can do is judged above | low | yes |
+| `container.new` | a container new since the baseline (`new`), or running an image from another repository under the same name (`image_changed`: another tag or digest of the same image is a deploy and isn't reported; `nginx:1.25` and `docker.io/library/nginx@sha256:…` are one repository). Deploys make containers; what one can do is judged above | low | yes |
 
 ### 8.12 Web applications
 

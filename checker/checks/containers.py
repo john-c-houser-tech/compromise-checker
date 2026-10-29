@@ -140,12 +140,36 @@ def host_namespace(context: Context) -> list[Finding]:
     return findings
 
 
-@check("container.new", "Containers new since the baseline", needs_baseline=True)
+def repository(image: str | None) -> str:
+    """An image's repository, without its tag or digest, with Docker Hub's
+    implied prefixes added: nginx:1.25 and docker.io/library/nginx@sha256:…
+    are the same repository."""
+    name = (image or "").split("@", 1)[0]
+    last = name.rsplit("/", 1)[-1]
+    if ":" in last:
+        name = name[: len(name) - len(last)] + last.split(":", 1)[0]
+    parts = name.split("/")
+    if len(parts) == 1:
+        parts = ["docker.io", "library", *parts]
+    elif "." not in parts[0] and ":" not in parts[0] and parts[0] != "localhost":
+        parts = ["docker.io", *parts]
+    return "/".join(parts).lower()
+
+
+@check(
+    "container.new",
+    "Containers new since the baseline, or running another image",
+    needs_baseline=True,
+    variants=("new", "image_changed"),
+)
 def new(context: Context) -> list[Finding]:
-    """Low: deploys make containers; what a new one can do is judged above."""
-    diff = context.changes("containers") or {"added": {}}
+    """Low: deploys make containers, and change their images' versions;
+    what a container can do is judged above. A container whose image is
+    another repository (not another tag or digest of the same) under the
+    same name is reported too: a trusted name running something else."""
+    diff = context.changes("containers") or {"added": {}, "changed": {}}
     running = _running(context)
-    return [
+    findings = [
         Finding(
             "container.new",
             "A container new since the baseline",
@@ -157,6 +181,30 @@ def new(context: Context) -> list[Finding]:
             [context.change_ref("containers", key, "added")],
             new=context.new_since_previous("containers", key),
             uncertain=context.uncertain("containers"),
+            variant="new",
         )
         for key, item in sorted(diff["added"].items())
     ]
+    items = context.items("containers")
+    for key, fields in sorted((diff.get("changed") or {}).items()):
+        if "image" not in fields:
+            continue
+        before, after = fields["image"]
+        if repository(before) == repository(after):
+            continue  # another version of the same image: a deploy
+        findings.append(
+            Finding(
+                "container.new",
+                "A container running another image since the baseline",
+                COMPROMISE,
+                "low",
+                f"{key}: {before or '?'} → {after or '?'}"
+                f" ({'running' if running.get(key) else 'not running'})",
+                _entities(key, items.get(key) or {"image": after}),
+                [context.change_ref("containers", key, "changed")],
+                new=context.new_since_previous("containers", key),
+                uncertain=context.uncertain("containers"),
+                variant="image_changed",
+            )
+        )
+    return findings

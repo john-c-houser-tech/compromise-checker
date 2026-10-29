@@ -178,8 +178,9 @@ assessment, its events, snapshot and whitelist, by one module
   the report say both: declined by the configured model, answered by the
   fallback (read from the response, never assumed). If none answered, the
   report says no advice was produced and why.
-- **Cost:** estimated here from the request's length (about three
-  characters a token, which errs high; built 2026-10-29 in place of
+- **Cost:** estimated here from the request's length (two characters a
+  token, input at the cache-write rate, which errs high: the first real
+  request, 86 000 characters, was 35 800 tokens and cost $0.23; built 2026-10-29 in place of
   `count_tokens`, which would have sent the case before the operator said
   yes), from a price table in one place (`checker/advisor/prices.py`,
   dated), counting a possible fallback re-run; shown before sending; above

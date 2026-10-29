@@ -34,7 +34,9 @@ PRICES = {
 # The models Anthropic's server-side fallback may re-run a declined request
 # on (decision 3): an estimate with the fallback on allows for the dearest.
 FALLBACK_MODELS = ("claude-opus-5", "claude-opus-4-8")
-CHARACTERS_PER_TOKEN = 3  # generous for JSON: an estimate errs high
+# A real case file of 86 000 characters was 35 800 tokens (2026-10-29):
+# about 2.4 characters a token, so 2 errs high, as an estimate should.
+CHARACTERS_PER_TOKEN = 2
 
 
 def tokens_in(text: str) -> int:
@@ -47,17 +49,18 @@ def estimate(
     model: str, input_tokens: int, max_output_tokens: int, fallback: bool = False
 ) -> tuple[float, float] | None:
     """(the input's cost, the most the output can cost) for a request, or
-    None for a model without a price. With the fallback on, a declined
-    request may be billed again on the dearest fallback model."""
+    None for a model without a price. The input is priced as a cache
+    write (a first request writes the cache). With the fallback on, a
+    declined request may be billed again on the dearest fallback model."""
     price = PRICES.get(model)
     if price is None:
         return None
-    first = (input_tokens * price.input / 1e6, max_output_tokens * price.output / 1e6)
+    first = (input_tokens * price.cache_write / 1e6, max_output_tokens * price.output / 1e6)
     if not fallback:
         return first
     dearest = max((PRICES[m] for m in FALLBACK_MODELS), key=lambda p: p.input + p.output)
     return (
-        first[0] + input_tokens * dearest.input / 1e6,
+        first[0] + input_tokens * dearest.cache_write / 1e6,
         first[1] + max_output_tokens * dearest.output / 1e6,
     )
 

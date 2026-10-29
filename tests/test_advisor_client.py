@@ -488,3 +488,14 @@ def test_the_report_keeps_the_last_good_answer_and_marks_old_ones_stale(enabled)
     add_bundle(enabled, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))))
     html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
     assert "stale: it read an earlier collection" in html
+
+
+def test_the_estimate_errs_high_for_a_real_case():
+    from checker.advisor.prices import estimate, tokens_in
+
+    # The first real request (2026-10-29): 86 000 characters were 35 831
+    # tokens, all written to the cache, and 2 618 out; it cost $0.23.
+    tokens = tokens_in("x" * 86_000)
+    assert tokens >= 35_831
+    input_cost, _ = estimate("claude-opus-5-5", tokens, 16_000)
+    assert input_cost >= 35_831 * 4 * 1.25 / 1e6

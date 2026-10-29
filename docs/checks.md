@@ -209,6 +209,21 @@ compared).
 | `net.promiscuous` | an interface in promiscuous mode that isn't a bridge, a bridge port, or enslaved to something (a bond, Open vSwitch); low when a known capture tool (by the file it runs) holds a packet socket | medium | no |
 | `net.transfer` | weak signs, mostly material for chains: an archive of 50 MB or more in a scratch place (`archive`); `curl`, `wget`, `scp`, `rsync`, `rclone`, `nc`… connected to a public address (`tool`); an interface that sent over 1 GB and ten times what it received (`counters`) | low | no |
 
+### 8.10 Anti-forensics (★ all)
+
+| Check | What | Band | Baseline |
+|---|---|---|---|
+| `logs.cleared` | against the previous bundle's `/var/log` manifest: a log with the same inode but smaller (`truncated`), or a key log gone (`deleted`): `wtmp`, `btmp`, `lastlog`, `auth.log`, `secure`, `syslog`, `messages`, `kern.log`, `audit.log`. Rotation is recognised only when a rotated copy really holds the old log: it carries the old inode (renamed), or is an uncompressed copy at least as large (copytruncate); a file merely named like a rotated copy proves nothing. With only a compressed copy, which can't be checked by size, the log is still reported, at medium | high for key logs, else medium | previous bundle |
+| `logs.stopped` | auditd, rsyslog, journald or syslog-ng stopped or failed, not within 15 minutes of a shutdown or boot (`unit`); the audit daemon ending outside a shutdown (`audit_daemon`); audit rules removed or auditing switched off, from the audit log (`audit_rules`); a logging service that ran at the baseline not running now (`not_running`) | high | partly |
+| `logs.journald_config` | journald's `Storage=` changed since the baseline to `none` or `volatile` | high | yes |
+| `history.disabled` | a shell history file linked to `/dev/null` (high, `link`); emptied since the baseline (medium, `emptied`); a system start-up file with `unset HISTFILE`, `HISTFILE=/dev/null`, `HISTSIZE=0`, `HISTFILESIZE=0` or `set +o history` (high, `startup`) | | partly |
+| `mac.disabled` | SELinux switched to permissive (`setenforce 0` in the audit log, `selinux_audit`), or turned down since the baseline, running or configured (`selinux`); AppArmor profiles unloaded or no longer enforcing since the baseline (`apparmor`) | high | partly |
+| `agent.stopped` | a security agent (fail2ban, Wazuh, osquery, CrowdStrike, auditbeat, CrowdSec, ClamAV, Defender, SentinelOne, Elastic…) that ran at the baseline, known by the file it runs, isn't running | high | yes |
+| `clock.jump` | the clock set ("Time has been changed"), not in the ten minutes after a boot; low when a time synchronisation daemon runs | medium | no |
+
+A journal gap inside one boot isn't checked: it needs the whole journal,
+which the collector doesn't read (plan 2.5).
+
 ## Coverage
 
 Beside the findings, each assessment says what the collection couldn't see

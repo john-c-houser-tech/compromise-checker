@@ -21,6 +21,16 @@
    "status": "ran"
   },
   {
+   "check": "agent.stopped",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "clock.jump",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "files.backdated",
    "findings": 0,
    "status": "ran"
@@ -61,6 +71,11 @@
    "status": "ran"
   },
   {
+   "check": "history.disabled",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "kernel.core_dump",
    "findings": 0,
    "status": "ran"
@@ -82,6 +97,26 @@
   },
   {
    "check": "kernel.taint",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "logs.cleared",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "logs.journald_config",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "logs.stopped",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mac.disabled",
    "findings": 0,
    "status": "ran"
   },

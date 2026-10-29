@@ -743,6 +743,29 @@ The read-only proof enables ufw and runs a Docker container on the Ubuntu
 images (Rocky and Alma run firewalld), and checks that no firewall module
 is loaded or unloaded during any collection.
 
+## `logging_state`
+
+**Why:** check 8.10 (anti-forensics): cleared or truncated logs, stopped or
+reconfigured logging and audit, SELinux and AppArmor turned down.
+
+**Reads:**
+- a manifest of `/var/log` (three levels, at most 5,000 entries): each
+  entry's name, type, size, inode, times and link target. **Never a log's
+  contents** through this module;
+- journald, rsyslog, auditd and SELinux configuration as masked text:
+  `/etc/systemd/journald.conf` and its drop-ins, `/etc/rsyslog.conf` and
+  `rsyslog.d`, `/etc/audit/auditd.conf`, `audit.rules` and `rules.d`,
+  `/etc/selinux/config`;
+- from `/var/log/audit/audit.log` and up to four rotated copies, within the
+  look-back, **only** the records about the audit system and SELinux
+  themselves: `CONFIG_CHANGE`, `DAEMON_START`, `DAEMON_END`,
+  `DAEMON_ABORT`, `MAC_STATUS`, `MAC_POLICY_LOAD`; at most 2,000 records
+  and 64 MB read, each line masked and cut at 4 KiB. Never the commands,
+  logins or file accesses audit also records;
+- SELinux's mode (`/sys/fs/selinux/enforce`) and AppArmor's loaded
+  profiles, by name and mode (`/sys/kernel/security/apparmor/profiles`, at
+  most 5,000).
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,

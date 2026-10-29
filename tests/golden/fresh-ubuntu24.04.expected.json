@@ -20,6 +20,15 @@
    "status": "ran"
   },
   {
+   "check": "agent.stopped",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "clock.jump",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "files.backdated",
    "findings": 0,
    "status": "ran"
@@ -59,6 +68,11 @@
    "status": "this bundle is the baseline"
   },
   {
+   "check": "history.disabled",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "kernel.core_dump",
    "findings": 0,
    "status": "ran"
@@ -80,6 +94,25 @@
   },
   {
    "check": "kernel.taint",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "logs.cleared",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "logs.journald_config",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "logs.stopped",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mac.disabled",
    "findings": 0,
    "status": "ran"
   },

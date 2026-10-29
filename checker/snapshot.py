@@ -18,7 +18,7 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 5  # 5: network_files, interfaces, firewall_rules, peers
+SNAPSHOT_VERSION = 6  # 5: network sections; 6: logging, log_config, history flags
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -66,6 +66,12 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     "interfaces": ("network interfaces: flags, state, bridges", ("network",)),
     "firewall_rules": ("the firewall's loaded rules, line by line", ("network",)),
+    "log_config": ("journald, rsyslog, audit and SELinux configuration files", ("logging_state",)),
+    "logging": (
+        "SELinux and AppArmor state, journald storage, logging services and security agents"
+        " running",
+        ("logging_state", "processes"),
+    ),
 }
 
 # Every module the sections come from: a bundle that planned them all is a
@@ -75,6 +81,7 @@ FULL = frozenset(m for _, modules in SECTIONS.values() for m in modules)
 # Sections holding masked text, hashes of it, or masked names: a new masking
 # version can change them without any change on the host.
 _MASKED = {
+    "log_config",
     "firewall_rules",
     "network_files",
     "sudo_rules",
@@ -105,6 +112,7 @@ _FILE_SECTIONS = {
     "hooks": "hooks",
     "crash_dumps": "crash_dumps",
     "network": "network_files",
+    "logging_state": "log_config",
 }
 _FILE_RECORDS = {
     "file",
@@ -192,6 +200,43 @@ def remote_network(address: str) -> str | None:
         return None
     prefix = 24 if parsed.version == 4 else 48
     return str(ipaddress.ip_network(f"{parsed}/{prefix}", strict=False))
+
+
+# A start-up file that switches shell history off for everyone.
+HISTORY_OFF = re.compile(
+    r"^\s*(?:export\s+)?(?:unset\s+HISTFILE\b|HISTFILE=/dev/null\b|HISTSIZE=0\b"
+    r"|HISTFILESIZE=0\b|set\s+\+o\s+history\b)"
+)
+LOGGING_SERVICES = {"auditd", "rsyslogd", "systemd-journald", "syslog-ng", "journald"}
+SECURITY_AGENTS = {
+    "fail2ban-server",
+    "wazuh-agentd",
+    "wazuh-modulesd",
+    "ossec-agentd",
+    "osqueryd",
+    "falcon-sensor",
+    "auditbeat",
+    "crowdsec",
+    "clamd",
+    "ds_agent",
+    "wdavdaemon",
+    "s1-agent",
+    "elastic-agent",
+    "aide",
+}
+_INTERPRETER = re.compile(r"^(?:python[\d.]*|perl[\d.]*|ruby[\d.]*|node|bash|sh)$")
+
+
+def _runs(process: dict[str, Any]) -> str:
+    """The name of the file a process runs; for an interpreter, its script."""
+    exe = str(process.get("exe") or "").removesuffix(" (deleted)")
+    name = exe.rsplit("/", 1)[-1]
+    if _INTERPRETER.match(name):
+        args = str(process.get("cmdline") or "").split()
+        script = next((a for a in args[1:] if not a.startswith("-")), "")
+        if script.startswith("/"):
+            return script.rsplit("/", 1)[-1]
+    return name
 
 
 # Records that mean some of a module's data is missing.
@@ -391,6 +436,8 @@ class SnapshotBuilder:
         self._gaps: dict[str, list[tuple[str, set[str] | None]]] = {}
         self._names: dict[str, dict[str, int]] = {}
         self._unread: list[tuple[str, dict[str, Any]]] = []
+        self._settings: list[tuple[str, list[str]]] = []  # logging configuration text
+        self._mac: dict[str, Any] | None = None
 
     def section(self, name: str) -> Section:
         return self.sections.setdefault(name, Section())
@@ -448,7 +495,9 @@ class SnapshotBuilder:
             self._text[start.source_id] = ((start, hashlib.sha256()), [])
             return
         wanted = start.kind == "file" and start.module in _FILE_SECTIONS
-        lines: list[str] | None = [] if start.module in ("sudoers", "ssh", "pam") else None
+        lines: list[str] | None = (
+            [] if start.module in ("sudoers", "ssh", "pam", "startup", "logging_state") else None
+        )
         if wanted:
             self._text[start.source_id] = ((start, hashlib.sha256()), lines)
 
@@ -497,6 +546,13 @@ class SnapshotBuilder:
             item["content_cut"] = True
             self._module_gap(start.module, f"{start.name} cut short", "source", {})
         if lines is None:
+            return
+        if start.module == "startup":
+            if any(HISTORY_OFF.search(line) for line in lines):
+                item["disables_history"] = True
+            return
+        if start.module == "logging_state":
+            self._settings.append((start.name, lines))
             return
         if start.module == "sudoers":
             rules = self.section("sudo_rules")
@@ -623,6 +679,52 @@ class SnapshotBuilder:
                 # comes without a place.
                 item.setdefault("place", "/")
             self.section(sections[name]).items[data["path"]] = item
+
+    def _on_logging_state(self, name: str, data: dict[str, Any]) -> None:
+        if name == "log_file":
+            self.live.setdefault("log_files", []).append(data)
+        elif name == "log_manifest" and data.get("truncated"):
+            self._module_gap("logging_state", "the /var/log manifest was cut short", name, data)
+        elif name == "audit_records":
+            self.live["audit_records"] = data.get("lines") or []
+            if data.get("truncated"):
+                self._module_gap("logging_state", "audit records cut short", name, data)
+        elif name == "mac_state":
+            self._mac = data
+
+    def _logging(self) -> None:
+        """The compared state anti-forensics changes: SELinux's mode and
+        configured mode, journald's storage, AppArmor's profiles, and which
+        logging services and security agents are running (by the file they
+        run)."""
+        planned = self._planned()
+        if "logging_state" not in planned:
+            return
+        section = self.section("logging")
+        mac = self._mac or {}
+        configured = None
+        storage = None
+        # journald: the main file, then drop-ins in order: the last wins.
+        for path, lines in sorted(self._settings, key=lambda s: (".conf.d/" in s[0], s[0])):
+            for line in lines:
+                text = line.split("#", 1)[0].strip()
+                if path.endswith("journald.conf") or "/journald.conf.d/" in path:
+                    if text.startswith("Storage="):
+                        storage = text.split("=", 1)[1].strip()
+                elif path == "/etc/selinux/config" and text.startswith("SELINUX="):
+                    configured = text.split("=", 1)[1].strip()
+        section.items["selinux"] = {"mode": mac.get("selinux"), "configured": configured}
+        section.items["journald"] = {"storage": storage or "auto (default)"}
+        apparmor = mac.get("apparmor")
+        if apparmor is not None:
+            profiles = apparmor.get("profiles") or {}
+            section.items["apparmor"] = {"loaded": True, "profiles": len(profiles)}
+            for name, mode in profiles.items():
+                section.items[f"apparmor: {name}"] = {"mode": mode}
+        running = {_runs(p) for p in self.live.get("processes", []) if not p.get("kernel_thread")}
+        for name in sorted(running & (LOGGING_SERVICES | SECURITY_AGENTS)):
+            kind = "service" if name in LOGGING_SERVICES else "agent"
+            section.items[f"{kind}: {name}"] = {"running": True}
 
     def _on_network(self, name: str, data: dict[str, Any]) -> None:
         if name == "interface" and data.get("name"):
@@ -754,6 +856,7 @@ class SnapshotBuilder:
         self._settle_unread()
         self._listeners()
         self._peers()
+        self._logging()
         planned = self._planned()
         results = self.trailer_data.modules if self.trailer_data else {}
         for section_name, (_, modules) in SECTIONS.items():

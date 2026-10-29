@@ -18,8 +18,8 @@ from checker.snapshot import Snapshot
 
 # 2: the critical band, variants; 3: more variants; 4: exe entities and
 # entities_complete; 5: sudo.rules name the account or group; 6: account
-# and key variants; 7: network checks (8.8).
-CHECKS_VERSION = 7
+# and key variants; 7: network checks (8.8); 8: anti-forensics (8.10).
+CHECKS_VERSION = 8
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"
@@ -77,6 +77,9 @@ class Context:
     previous_time: str | None = None
     # Why change-based checks can't run, when they can't.
     no_baseline: str = "no baseline yet"
+    # The previous bundle's snapshot, for what only its live part shows (a
+    # log that shrank since then).
+    previous_snapshot: Snapshot | None = None
 
     def of(self, *types: str) -> Iterator[tuple[int, Event]]:
         """(index, event) for events of these types (or type prefixes ending
@@ -160,6 +163,7 @@ def load_checks() -> dict[str, Check]:
     """Every check, by id (importing the modules registers them)."""
     from checker.checks import (  # noqa: F401 - they register
         accounts,
+        antiforensics,
         files,
         integrity,
         kernel,

@@ -472,6 +472,16 @@ cover it this time.
   `/dev/null`; `systemctl stop auditd` (installed first on Ubuntu);
   `setenforce 0` on Rocky; `wtmp` truncated.
 
+*As built:* one PR (collector, snapshot v6 and checks together).
+`checker/checks/antiforensics.py`; the checks see the previous bundle's
+snapshot (`Context.previous_snapshot`) for the log manifest. The journal
+gap inside one boot isn't checked (it needs the whole journal); a
+`system.clock_changed` event (parser version 3) feeds `clock.jump`. John's
+side note: a file merely named like a rotated copy doesn't excuse a shrunk
+log; the copy must carry the old inode or be an uncompressed copy at least
+as large. On Ubuntu the detection proof unloads AppArmor's profiles
+(`aa-teardown`) in place of `setenforce 0`.
+
 ### 2.6 — Software changes (8.11)
 
 - **Collector, new module `software`:** package logs within the look-back

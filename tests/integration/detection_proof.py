@@ -120,6 +120,22 @@ sleep 2
 ss -tnH state established dst 169.254.169.254 | grep -q . || fail metadata
 ss -tnH state established dst 127.0.0.1:445 | grep -q . || fail directory
 pgrep -f 'R 127.0.0.1:2222' >/dev/null || fail ssh-tunnel-running
+# --- Anti-forensics (2.5) ---
+# Root's history sent to /dev/null.
+ln -sf /dev/null /root/.bash_history || fail history
+# auditd stopped (RHEL refuses `systemctl stop auditd`; `service` works).
+systemctl stop auditd 2>/dev/null || service auditd stop >/dev/null 2>&1 || fail auditd
+# SELinux to permissive (RHEL family), or AppArmor's profiles unloaded (Ubuntu).
+if command -v setenforce >/dev/null 2>&1 && [ -e /sys/fs/selinux/enforce ]; then
+    setenforce 0 || fail selinux
+elif command -v aa-teardown >/dev/null 2>&1; then
+    aa-teardown >/dev/null 2>&1 || fail apparmor
+else
+    fail mac-unavailable
+fi
+# The login records emptied.
+: > /var/log/wtmp || fail wtmp
+sleep 2
 """
 
 
@@ -174,6 +190,16 @@ def expectations(root_fingerprint: str) -> list[Expected]:
             "session",
         ),
         Expected("/etc/hosts rewritten", "net.config", "/etc/hosts", "medium"),
+        Expected(
+            "root's history linked to /dev/null",
+            "history.disabled",
+            "/root/.bash_history",
+            "high",
+            "/dev/null",
+        ),
+        Expected("auditd stopped", "logs.stopped", "", "high"),
+        Expected("SELinux or AppArmor turned down", "mac.disabled", "", "high"),
+        Expected("the login records emptied", "logs.cleared", "/var/log/wtmp", "high"),
     ]
 
 

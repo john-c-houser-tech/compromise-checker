@@ -431,6 +431,8 @@ class EventBuilder:
         # Per open auth_log source: the classified lines with traditional
         # syslog dates, waiting for the source's end to learn their years.
         self._syslog: dict[int, list[tuple[tuple[int, int, str], tuple]]] = {}
+        # Whether the collector asked sudo for the account's rules (2.7b).
+        self.sudo_lookup = False
 
     # Consumer interface
     def manifest(self, manifest: Manifest) -> None:
@@ -447,6 +449,8 @@ class EventBuilder:
             self.zone, self.zone_assumed = host_zone(record.data.get("localtime_link"))
         elif record.module == "login_records" and record.name == "login_record":
             self._login_record(record.data)
+        elif (record.module, record.name) == ("sudoers", "sudo_input_logging"):
+            self.sudo_lookup = bool(record.data.get("lookup_command"))
 
     def source_start(self, start: SourceStart) -> None:
         if _log_kind(start) is not None:
@@ -771,7 +775,9 @@ def _public(address: str | None) -> bool:
         return False
 
 
-def mark_own_session(events: list[Event], session: dict[str, Any] | None) -> int:
+def mark_own_session(
+    events: list[Event], session: dict[str, Any] | None, sudo_lookup: bool = False
+) -> int:
     """Mark the events the tool's own connection caused, each tied to that
     connection rather than to its account or time alone:
 
@@ -900,21 +906,29 @@ def mark_own_session(events: list[Event], session: dict[str, Any] | None) -> int
         ):
             mark(event)
 
-    # 4b. The collector's own `sudo -ll -U <account>` (plan 2.7b): root
-    # listing the session's account's rules, from that audit session when
-    # the journal says, once the collector itself is known to have run.
-    if sudo_pids:
+    # 4b. The collector's own `sudo -ll -U <account>` (plan 2.7b), only when
+    # the bundle says it ran one: root's `list` (sudo logs no more than
+    # that), after the collector's own sudo, from that audit session when
+    # the journal says; one at most, so another listing nearby stays.
+    if sudo_lookup and sudo_pids:
+        started_sudo = min(
+            (moment(e) for e in candidates if e.type == "sudo.command" and e.own_session),
+            default=None,
+        )
         for event in candidates:
             f = event.fields
-            if event.type != "sudo.command" or f.get("user") != "root":
+            if event.type != "sudo.command" or event.own_session or f.get("user") != "root":
                 continue
-            if (f.get("command") or "").split() not in (["list"], ["list", user]):
+            if (f.get("command") or "").split() != ["list"]:
                 continue
-            if f.get("runas", "root") not in ("root", user) or f.get("tty", "unknown") != "unknown":
+            if f.get("runas", "root") != "root" or f.get("tty", "unknown") != "unknown":
                 continue
             if "audit_session" in f and f["audit_session"] not in audit_sessions:
                 continue
+            if started_sudo is None or moment(event) < started_sudo:
+                continue
             mark(event)
+            break
 
     # 5. The user manager systemd starts for a first login.
     for event in candidates:

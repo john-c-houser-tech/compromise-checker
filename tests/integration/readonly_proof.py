@@ -706,6 +706,18 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                     limits=Limits(overall_seconds=600, module_seconds=300, source_bytes=1 << 28),
                 )
                 runs.append(outcome)
+            # A third, with sudo told to take rules from SSSD too (its
+            # library installed, SSSD itself not running): the collector's
+            # own `sudo -ll` look-up runs inside an audited collection, and
+            # must find the directory not answering (plan 2.7b).
+            await conn.run(DIRECTORY_SUDO, check=True, timeout=600)
+            [third] = await collect_hosts(
+                home,
+                config,
+                [scanner],
+                known_hosts=known,
+                limits=Limits(overall_seconds=600, module_seconds=300, source_bytes=1 << 28),
+            )
             result.status = outcome.status
             if outcome.error:
                 result.error = outcome.error
@@ -766,6 +778,9 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             with_sources = {s.get("module") for s in opened.summary.sources if s.get("bytes")}
             result.missing += [f"{m} (source)" for m in EXPECTED_SOURCES if m not in with_sources]
             check_parse(result, home, outcome.bundle_id, Path(config.identity_file), scanner_key)
+            result.sudo_listing += check_directory_lookup(
+                home, third.bundle_id, Path(config.identity_file)
+            )
         audit = result.audit
         result.passed = (
             result.status == "complete"
@@ -831,12 +846,71 @@ def proof_whitelist(home: Path, host: str):
 
 
 COLLECTOR_FILE = Path(__file__).resolve().parents[2] / "checker" / "collector" / "collector.py"
+DIRECTORY_SUDO = r"""
+set -eu
+if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libsss-sudo >/dev/null
+else
+    dnf install -y -q libsss_sudo >/dev/null
+fi
+nss=$(readlink -f /etc/nsswitch.conf)
+sed -i '/^[[:space:]]*sudoers[[:space:]]*:/d' "$nss"
+echo 'sudoers: files sss' >> "$nss"
+"""
+
+
+class _LookupRecord:
+    """A bundle walk keeping the sudoers module's sudo_input_logging record."""
+
+    def __init__(self) -> None:
+        self.data = None
+
+    def record(self, record) -> None:
+        if (record.module, record.name) == ("sudoers", "sudo_input_logging"):
+            self.data = record.data
+
+    def __getattr__(self, name):
+        return lambda *args: None
+
+
+def check_directory_lookup(home: Path, bundle_id: str, identity_file: Path) -> list[str]:
+    """The third collection's: the look-up ran, found SSSD not answering and
+    left the state unknown (no key), and its log line is the tool's own."""
+    store = Store(database_file(home))
+    identity = load_identity(identity_file)
+    try:
+        row = store.bundle(bundle_id)
+        found = _LookupRecord()
+        walk_bundle(Path(row["path"]), identity, found)
+        parsed = parse_bundle(row, identity)
+    finally:
+        store.close()
+    data = found.data or {}
+    problems = []
+    if data.get("state") != "unknown" or "responder" not in str(data.get("directory_lookup")):
+        problems.append(f"directory look-up: {data}")
+    if not data.get("lookup_command"):
+        problems.append("the look-up didn't run")
+    listings = [
+        e
+        for e in parsed.events
+        if e.type == "sudo.command" and (e.fields.get("command") or "").split() == ["list"]
+    ]
+    if not any(e.own_session for e in listings):
+        problems.append(f"sudo's look-up line wasn't marked as the tool's own: {listings[:2]}")
+    return problems
+
+
 SUDO_LISTING = r"""
 set -u
 sudo -n -ll -U scanner > /root/cc-list-off 2>&1; echo "off status $?"
 echo 'Defaults:scanner log_input' > /etc/sudoers.d/zz-cc-proof-input
 chmod 440 /etc/sudoers.d/zz-cc-proof-input
 sudo -n -ll -U scanner > /root/cc-list-on 2>&1; echo "on status $?"
+echo 'Defaults!/usr/bin/python3 log_input' > /etc/sudoers.d/zz-cc-proof-input
+sudo -n -ll -U scanner > /root/cc-list-cmnd 2>&1; echo "cmnd status $?"
+echo 'scanner ALL=(root) NOPASSWD: LOG_INPUT: /usr/bin/true' > /etc/sudoers.d/zz-cc-proof-input
+sudo -n -ll -U scanner > /root/cc-list-tag 2>&1; echo "tag status $?"
 rm -f /etc/sudoers.d/zz-cc-proof-input
 sleep 2
 """
@@ -854,10 +928,10 @@ async def check_sudo_listing(conn) -> list[str]:
     line for such a lookup, on this distribution."""
     problems = []
     statuses = (await conn.run(SUDO_LISTING, check=True, timeout=120)).stdout
-    if "off status 0" not in statuses or "on status 0" not in statuses:
+    if any(f"{n} status 0" not in statuses for n in ("off", "on", "cmnd", "tag")):
         problems.append(f"sudo -ll failed: {statuses.strip()}")
     collector = _collector_module()
-    for name, expected in (("off", "off"), ("on", "on")):
+    for name, expected in (("off", "off"), ("on", "on"), ("cmnd", "on"), ("tag", "on")):
         listing = (await conn.run(f"cat /root/cc-list-{name}", check=True, timeout=60)).stdout
         found = collector.sudo_list_logs_input(listing)
         if found != expected:

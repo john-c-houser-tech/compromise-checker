@@ -980,17 +980,25 @@ def test_the_collector_s_own_sudo_listing_is_its_own():
             audit_session="77",
         ),
     ]
-    listing = [
-        make("sudo.command", 0, user="root", command="list", audit_session="77"),
-        make("sudo.command", 0, user="root", command="list scanner", runas="scanner"),
-        # Someone else's listing, in another session, or of another account.
-        make("sudo.command", 0, user="root", command="list", audit_session="80"),
-        make("sudo.command", 0, user="root", command="list jch", runas="jch"),
-        make("sudo.command", 0, user="root", command="/bin/sh", audit_session="77"),
-    ]
+
+    def listings():
+        return [
+            make("sudo.command", 1, user="root", command="list", audit_session="77"),
+            # Another one nearby, another session's, root's `sudo -l scanner`,
+            # one from before the collector's own sudo.
+            make("sudo.command", 1, user="root", command="list", audit_session="77"),
+            make("sudo.command", 1, user="root", command="list", audit_session="80"),
+            make("sudo.command", 1, user="root", command="list scanner"),
+            make("sudo.command", -1, user="root", command="list"),
+        ]
+
+    listing = listings()
+    mark_own_session(own + listing, SESSION, sudo_lookup=True)
+    assert [e.own_session for e in listing] == [True, False, False, False, False]
+    # Without a look-up in the bundle, or the collector's own sudo, none.
+    listing = listings()
     mark_own_session(own + listing, SESSION)
-    assert [e.own_session for e in listing] == [True, True, False, False, False]
-    # Without the collector's own sudo found, no listing is taken for it.
-    alone = [make("sudo.command", 0, user="root", command="list", audit_session="77")]
-    mark_own_session(alone, SESSION)
-    assert not alone[0].own_session
+    assert not any(e.own_session for e in listing)
+    listing = listings()
+    mark_own_session(listing, SESSION, sudo_lookup=True)
+    assert not any(e.own_session for e in listing)

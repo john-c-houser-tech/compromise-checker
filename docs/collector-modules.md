@@ -194,10 +194,21 @@ judged from that text, `/etc/sudo.conf`'s plugins and `nsswitch.conf`'s
 well (`sss`, `ldap`), sudo itself is asked what it applies to the account
 that ran the collector (`SUDO_USER`): `sudo -n -ll -U <account>`, whose
 listing shows directory rules too; `log_input`, `log_stdin` or `LOG_INPUT`
-in its defaults or a rule's options is `on`, and a failed or unrecognised
-listing leaves it `unknown` (`directory_lookup` says which). sudo records
-the lookup in the authentication log, and the analysis marks that line as
-the tool's own. The controller sends the mail key only where it is `off`
+in its defaults or a rule's options is `on`. `off` needs proof the
+directory answered, since sudo quietly lists only the files' rules when it
+can't reach it: SSSD's sudo responder running (its socket, and the process
+in its pid file), for `sss`; a listed `LDAP Role:`, for `ldap`; and no
+warning from sudo. A failed, cut-short (over 256 KiB) or unrecognised
+listing leaves it `unknown` (`directory_lookup` says which;
+`lookup_command` records the command and its executable's SHA-256). Where
+the sudoers files set `mail_always`, `mail_all_cmnds` or `log_servers`,
+the look-up isn't made (it would mail the administrators or reach a log
+server) and the state stays `unknown`. The answer holds as of the look-up:
+directory rules can change before the next collection. sudo records
+the lookup in the authentication log (`COMMAND=list`), and the analysis
+marks that one line as the tool's own, only for a bundle whose look-up ran
+and only after the collector's own sudo. Account names may be fully
+qualified (`scanner@corp.example.com`, `CORP\scanner`). The controller sends the mail key only where it is `off`
 (see `mail`).
 
 ## `ssh`

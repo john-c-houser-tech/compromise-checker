@@ -60,7 +60,7 @@ def parse_bundle(row: Any, identity: x25519.Identity) -> Parsed:
     if walked.plaintext_sha256 != row["plaintext_sha256"]:
         raise EvidenceError(f"bundle {row['id']}'s content doesn't match its recorded hash")
     events = merge_duplicates(builder.events)
-    own = mark_own_session(events, session)
+    own = mark_own_session(events, session, builder.sudo_lookup)
     events.sort(key=lambda e: (e.corrected or "", e.source))
     counts: dict[str, int] = {}
     for event in events:

@@ -39,7 +39,7 @@ HOME_TEXT = {
 REDACTION = {
     "pseudonymize": (
         "server names, IP addresses, usernames and email addresses are replaced with"
-        " placeholders such as HOST-3 or USER-2 before sending, and restored here when"
+        " placeholders such as USER-2-7f3a before sending, and restored here when"
         " the answer returns"
     ),
     "strict": "only the kinds of finding, counts and scores are sent",

@@ -125,9 +125,13 @@ class HostReport:
     suppressed: list[dict] = field(default_factory=list)  # whitelisted, for the appendix
     timeline: list[dict] = field(default_factory=list)
     counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    # What the findings' evidence points into, for the advisor's case file.
+    events: list = field(default_factory=list)
+    snapshot: Snapshot | None = None
+    baselines: dict[str, Snapshot | None] = field(default_factory=dict)
 
 
-def _excerpts(
+def excerpts(
     finding: dict, events, snapshot: Snapshot, baselines: dict[str, Snapshot]
 ) -> list[dict]:
     """What each piece of a finding's evidence says, briefly."""
@@ -291,10 +295,13 @@ def host_report(
         assessment=assessment,
         manifest=summary.get("manifest") or {},
         custody=store.custody_of(row["id"]),
+        events=events,
+        snapshot=snapshot,
+        baselines=baselines,
     )
     timeline = {}
     for finding in assessment["findings"]:
-        finding = dict(finding, excerpts=_excerpts(finding, events, snapshot, baselines))
+        finding = dict(finding, excerpts=excerpts(finding, events, snapshot, baselines))
         if finding.get("suppressed_by"):
             report.suppressed.append(finding)
             continue  # in the appendix, with its rule; not in the timeline

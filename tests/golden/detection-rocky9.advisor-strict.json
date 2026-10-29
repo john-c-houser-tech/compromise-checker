@@ -1,0 +1,919 @@
+{
+ "case_format": 1,
+ "redaction": "strict",
+ "assessment": {
+  "probability": 1.0,
+  "band": "Critical",
+  "prior": 0.02,
+  "hygiene_and_exposure": {
+   "band": "none",
+   "counts": {
+    "hygiene": {
+     "info": 10
+    }
+   }
+  },
+  "top_contributors": [
+   "F-1",
+   "F-2",
+   "F-3",
+   "F-4",
+   "F-5",
+   "F-7",
+   "F-8",
+   "F-9",
+   "F-10",
+   "F-12"
+  ]
+ },
+ "findings": [
+  {
+   "id": "F-1",
+   "check": "account.uid0",
+   "variant": null,
+   "band": "critical",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 4.6052,
+   "suppressed": false
+  },
+  {
+   "id": "F-2",
+   "check": "persistence.ld_preload",
+   "variant": null,
+   "band": "critical",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 4.6052,
+   "suppressed": false
+  },
+  {
+   "id": "F-3",
+   "check": "account.changes",
+   "variant": "root_group",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-4",
+   "check": "container.privileged",
+   "variant": "new",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-5",
+   "check": "files.privileged",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-7",
+   "check": "files.web",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-8",
+   "check": "history.disabled",
+   "variant": "link",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-9",
+   "check": "logs.cleared",
+   "variant": "truncated",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-10",
+   "check": "logs.stopped",
+   "variant": "not_running",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-12",
+   "check": "mac.disabled",
+   "variant": "selinux",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-13",
+   "check": "net.directory",
+   "variant": "smb_winrm",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-14",
+   "check": "pam.changes",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-16",
+   "check": "process.executable",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-18",
+   "check": "process.reverse_shell",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-19",
+   "check": "ssh.authorized_keys",
+   "variant": "new_key",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-24",
+   "check": "sshd.config",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-25",
+   "check": "sudo.rules",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-27",
+   "check": "web.worker_child",
+   "variant": "history",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed": false
+  },
+  {
+   "id": "F-6",
+   "check": "files.scratch",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.6931,
+   "suppressed": false
+  },
+  {
+   "id": "F-11",
+   "check": "logs.stopped",
+   "variant": "audit_daemon",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.6931,
+   "suppressed": false
+  },
+  {
+   "id": "F-15",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.6931,
+   "suppressed": false
+  },
+  {
+   "id": "F-17",
+   "check": "process.injected",
+   "variant": "scratch",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.6931,
+   "suppressed": false
+  },
+  {
+   "id": "F-26",
+   "check": "web.new_script_hit",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.6931,
+   "suppressed": false
+  },
+  {
+   "id": "F-28",
+   "check": "web.worker_child",
+   "variant": "history",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed": false
+  },
+  {
+   "id": "F-29",
+   "check": "web.worker_child",
+   "variant": "history",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed": false
+  },
+  {
+   "id": "F-30",
+   "check": "web.worker_child",
+   "variant": "history",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed": false
+  },
+  {
+   "id": "F-20",
+   "check": "ssh.authorized_keys",
+   "variant": "new_key",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1733,
+   "suppressed": false
+  },
+  {
+   "id": "F-21",
+   "check": "ssh.authorized_keys",
+   "variant": "new_key",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1733,
+   "suppressed": false
+  },
+  {
+   "id": "F-22",
+   "check": "ssh.authorized_keys",
+   "variant": "new_key",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1733,
+   "suppressed": false
+  },
+  {
+   "id": "F-23",
+   "check": "ssh.authorized_keys",
+   "variant": "new_key",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1733,
+   "suppressed": false
+  },
+  {
+   "id": "F-34",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed": false
+  },
+  {
+   "id": "F-38",
+   "check": "mail.web_user",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed": false
+  },
+  {
+   "id": "F-39",
+   "check": "net.config",
+   "variant": "file",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed": false
+  },
+  {
+   "id": "F-40",
+   "check": "net.metadata",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 1.3863,
+   "suppressed": false
+  },
+  {
+   "id": "F-41",
+   "check": "net.tunnel",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 1.3863,
+   "suppressed": false
+  },
+  {
+   "id": "F-44",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed": false
+  },
+  {
+   "id": "F-50",
+   "check": "software.repository",
+   "variant": "key",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed": false
+  },
+  {
+   "id": "F-52",
+   "check": "software.tools",
+   "variant": "attack_tool",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed": false
+  },
+  {
+   "id": "F-54",
+   "check": "ssh.login",
+   "variant": "new_address",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed": false
+  },
+  {
+   "id": "F-57",
+   "check": "web.exploit",
+   "variant": "answered",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed": false
+  },
+  {
+   "id": "F-42",
+   "check": "net.tunnel",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.6931,
+   "suppressed": false
+  },
+  {
+   "id": "F-51",
+   "check": "software.repository",
+   "variant": "repository",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.6931,
+   "suppressed": false
+  },
+  {
+   "id": "F-53",
+   "check": "software.tools",
+   "variant": "attack_tool",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.6931,
+   "suppressed": false
+  },
+  {
+   "id": "F-31",
+   "check": "account.changes",
+   "variant": "new",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed": false
+  },
+  {
+   "id": "F-32",
+   "check": "account.changes",
+   "variant": "new",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed": false
+  },
+  {
+   "id": "F-33",
+   "check": "account.changes",
+   "variant": "new",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed": false
+  },
+  {
+   "id": "F-35",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1766,
+   "suppressed": false
+  },
+  {
+   "id": "F-45",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1386,
+   "suppressed": false
+  },
+  {
+   "id": "F-46",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1386,
+   "suppressed": false
+  },
+  {
+   "id": "F-47",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1386,
+   "suppressed": false
+  },
+  {
+   "id": "F-48",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1386,
+   "suppressed": false
+  },
+  {
+   "id": "F-49",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1386,
+   "suppressed": false
+  },
+  {
+   "id": "F-68",
+   "check": "container.new",
+   "variant": "new",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.4055,
+   "suppressed": false
+  },
+  {
+   "id": "F-69",
+   "check": "net.listener",
+   "variant": null,
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.4055,
+   "suppressed": false
+  },
+  {
+   "id": "F-73",
+   "check": "package.changed",
+   "variant": null,
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.4055,
+   "suppressed": false
+  },
+  {
+   "id": "F-75",
+   "check": "software.packages",
+   "variant": "installed",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.4055,
+   "suppressed": false
+  },
+  {
+   "id": "F-70",
+   "check": "net.listener",
+   "variant": null,
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed": false
+  },
+  {
+   "id": "F-71",
+   "check": "net.listener",
+   "variant": null,
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed": false
+  },
+  {
+   "id": "F-72",
+   "check": "net.listener",
+   "variant": null,
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed": false
+  },
+  {
+   "id": "F-58",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed": false
+  },
+  {
+   "id": "F-59",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed": false
+  },
+  {
+   "id": "F-60",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed": false
+  },
+  {
+   "id": "F-61",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed": false
+  },
+  {
+   "id": "F-62",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed": false
+  },
+  {
+   "id": "F-63",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed": false
+  },
+  {
+   "id": "F-64",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed": false
+  },
+  {
+   "id": "F-65",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0517,
+   "suppressed": false
+  },
+  {
+   "id": "F-66",
+   "check": "account.log_changes",
+   "variant": "group_member_added",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed": false
+  },
+  {
+   "id": "F-67",
+   "check": "account.log_changes",
+   "variant": "group_member_added",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed": false
+  },
+  {
+   "id": "F-76",
+   "check": "persistence.homes",
+   "variant": null,
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-77",
+   "check": "web.exploit",
+   "variant": "refused",
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-78",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-79",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-80",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-81",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-82",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-83",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-84",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-85",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-86",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-87",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-36",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": true
+  },
+  {
+   "id": "F-37",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": true
+  },
+  {
+   "id": "F-43",
+   "check": "persistence.at_jobs",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": true
+  },
+  {
+   "id": "F-55",
+   "check": "ssh.login",
+   "variant": "root_login",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed": true
+  },
+  {
+   "id": "F-56",
+   "check": "ssh.login",
+   "variant": "root_login",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": true
+  },
+  {
+   "id": "F-74",
+   "check": "process.injected",
+   "variant": "libffi",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": true
+  }
+ ],
+ "omitted": null,
+ "chains": [
+  {
+   "chain": "new-account-escalated-used",
+   "findings": [
+    "F-19",
+    "F-25"
+   ]
+  },
+  {
+   "chain": "web-shell-used",
+   "findings": [
+    "F-26",
+    "F-27"
+   ]
+  }
+ ],
+ "coverage_gaps": []
+}

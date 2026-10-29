@@ -34,6 +34,7 @@ SYSCALLS = {
     (X86, "265"): "linkat",
     (X86, "266"): "symlinkat",
     (X86, "77"): "ftruncate",
+    (X86, "263"): "unlinkat",
 }
 NUMBERS = {name: number for (_, number), name in SYSCALLS.items()}
 _serial = 0
@@ -163,6 +164,23 @@ def test_postdrop_s_queue_files_and_grub_s_open_file_are_disclosed():
     )
     assert len(judge(other).unexpected) == 2
     assert judge(event("evil", "/tmp/evil", "ftruncate")).unexpected
+
+
+def test_the_user_manager_clearing_generator_output_in_memory_is_disclosed():
+    cleared = event(
+        "systemd",
+        SYSTEMD,
+        "unlinkat",
+        ("app-snap\\x2duserd\\x2dautostart@autostart.service", "DELETE", MEMORY),
+    ) + event(
+        "systemd", SYSTEMD, "unlinkat", ("xdg-desktop-autostart.target.wants", "DELETE", MEMORY)
+    )
+    verdict = judge(cleared)
+    assert verdict.unexpected == [] and len(verdict.disclosed) == 2
+    # On a disk, by another program, or something that isn't generator output: not excused.
+    assert judge(event("systemd", SYSTEMD, "unlinkat", ("x.service", "DELETE", "fd:01"))).unexpected
+    assert judge(event("evil", "/tmp/evil", "unlinkat", ("x.service", "DELETE", MEMORY))).unexpected
+    assert judge(event("systemd", SYSTEMD, "unlinkat", ("passwd", "DELETE", MEMORY))).unexpected
 
 
 def test_an_undisclosed_write_by_login_machinery_fails():

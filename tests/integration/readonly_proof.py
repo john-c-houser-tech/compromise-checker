@@ -125,6 +125,11 @@ _PLACEHOLDER_NAMES = {"/", "/inaccessible", "/dir", "/reg", "/chr", "/blk", "/fi
 # /run/user/<uid>/systemd, also through a handle.
 _USER_GENERATORS = "/usr/lib/systemd/user-generators/"
 PLACEHOLDERS = "session setup: the user manager's placeholder nodes in its runtime area (memory)"
+# At a later login the user manager runs the generators again, first
+# removing their earlier output (links and .wants directories), through a
+# handle on that same in-memory directory.
+_GENERATOR_OUTPUT = re.compile(r"^/?[^/]+(\.(service|target|socket|timer|path|mount)|\.wants)$")
+REGENERATED = "session setup: the user manager clearing its generators' earlier output (memory)"
 
 
 # --- Linode API ------------------------------------------------------------------
@@ -553,6 +558,16 @@ def classify(events: list[dict], memory: set[str] | None = None) -> Verdict:
                 f"{who} {path}  — session setup: a user-unit generator's output (memory)"
                 for path in targets
             )
+            continue
+        if (
+            event["exe"] == _SESSION_MANAGER
+            and event["syscall"] in ("unlinkat", "unlink", "rmdir")
+            and all(
+                _GENERATOR_OUTPUT.match(path) and _in_memory_relative(facts[path], memory)
+                for path in targets
+            )
+        ):
+            verdict.disclosed.extend(f"{who} {path}  — {REGENERATED}" for path in targets)
             continue
         placeholder = event["exe"] == _SESSION_MANAGER and event["syscall"] in _PLACEHOLDER_CALLS
         for path in targets:

@@ -387,3 +387,69 @@ def test_days_are_utc():
         run(burst, snap(), baseline=snap(), baseline_time=late - timedelta(hours=13)), "mail.volume"
     )
     assert found and found[0].summary.startswith("2027-01-02")
+
+
+def test_deliveries_into_mailboxes_here_arent_outgoing():
+    kind, fields = classify_mail(
+        "postfix/local", SENT.replace("mx.example.org[192.0.2.25]:25", "local")
+    )
+    assert fields["local"] is True
+    lmtp = SENT.replace("mx.example.org[192.0.2.25]:25", "mail.example.org[private/dovecot-lmtp]")
+    assert classify_mail("postfix/lmtp", lmtp)[1]["local"] is True
+    assert "local" not in classify_mail("postfix/smtp", SENT)[1]
+    _, fields, _ = classify_exim("2026-10-28 10:00:02 1tA-0-DF => h:1 <h:1@web01> R=u T=mail_spool")
+    assert fields["local"] is True
+    inbound = [
+        ev(
+            "mail.sent",
+            10 + n,
+            source="mail_journal",
+            queue_id=f"I{n}",
+            recipient="h:1@here",
+            domain=f"d{n}.example",
+            local=True,
+        )
+        for n in range(150)
+    ]
+    findings = run(inbound, snap(), baseline=snap())
+    assert of(findings, "mail.volume") == [] and of(findings, "mail.domains") == []
+
+
+def test_installing_a_mail_server_isnt_a_relay_change():
+    after = snap(
+        mail_config=config(relayhost="", default_transport="error", relay_transport="error")
+    )
+    assert of(run([], after, baseline=snap(mail_config={})), "mail.relay") == []
+    # Setting one where there was none is.
+    before = snap(mail_config=config(relayhost=""))
+    after = snap(mail_config=config(relayhost="[evil.example]:25"))
+    [found] = of(run([], after, baseline=before), "mail.relay")
+    assert found.summary == "postfix: relayhost: (empty) → [evil.example]:25"
+
+
+def test_a_baseline_without_queue_counts_uses_only_the_limit():
+    assert of(run([], snap(queues(60)), baseline=snap()), "mail.volume") == []
+    [found] = of(run([], snap(queues(600)), baseline=snap()), "mail.volume")
+    assert found.summary == "600 messages waiting; no count at the baseline"
+
+
+def test_defer_all_refuses_relaying():
+    items = snap(mail_config=config(smtpd_relay_restrictions="permit_mynetworks, defer_all"))
+    assert of(run([], items), "mail.relay") == []
+
+
+def test_mail_hash_lowercases_domains_as_the_collector_does():
+    assert mail_fingerprint(KEY, "a@ÉXAMPLE.org").endswith("@Éxample.org")
+
+
+def test_coverage_only_names_modules_the_collector_has():
+    # A name that isn't a module would show as "not collected" on every bundle.
+    from checker.assess import LOG_SOURCES
+    from checker.snapshot import FULL
+
+    spec = importlib.util.spec_from_file_location(
+        "collector_for_modules", Path(__file__).parents[1] / "checker/collector/collector.py"
+    )
+    collector = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(collector)
+    assert (FULL | set(LOG_SOURCES) | {"boots"}) <= set(collector.MODULES)

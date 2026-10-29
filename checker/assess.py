@@ -27,14 +27,9 @@ from checker.snapshot import FULL, SNAPSHOT_VERSION, Snapshot
 from checker.whitelist import Whitelist
 
 # Logs whose reach (how far back they go) the coverage reports.
-LOG_SOURCES = (
-    "auth_log",
-    "auth_journal",
-    "system_journal",
-    "login_records",
-    "mail_log",
-    "mail_journal",
-)
+LOG_SOURCES = ("auth_log", "auth_journal", "system_journal", "login_records")
+# Event sources whose reach is reported too, though no module has their name.
+REACH_ONLY = ("mail_log", "mail_journal")
 LARGE_CLOCK_OFFSET = 120  # seconds
 # 2: scored (prior, each finding's ratio and contribution, the score).
 ASSESSMENT_FORMAT = 2
@@ -88,7 +83,7 @@ def coverage(
         if not section.complete:
             gaps.append(f"{name} incomplete: " + "; ".join(section.gaps[:3]))
     reach = {}
-    for prefix in LOG_SOURCES:
+    for prefix in LOG_SOURCES + REACH_ONLY:
         times = sorted(
             e.corrected
             for e in events

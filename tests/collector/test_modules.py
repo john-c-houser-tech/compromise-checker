@@ -5022,6 +5022,84 @@ class MailTests(FixtureRoot):
         self.assertEqual(queues["exim"]["queues"], {"input": 1})
         self.assertNotIn(b"secret message body", json.dumps(records).encode())
 
+    def test_review_cases_leave_no_local_part(self):
+        cases = {
+            # VERP: everything before the @ is the local part.
+            b"from=<list-bounces+alice=example.com@lists.org>": [b"alice"],
+            b"to=<=?utf-8?q?alice?=@x.org>": [b"alice"],
+            b'to=<"a\\"b"@x.org>': [b"a\\"],
+            b"to=<a(comment)lice@x.org>": [b"comment", b"lice"],
+            b"to=<alice@>": [b"alice"],
+            # Exim through syslog: the subject and a bare local delivery.
+            b'web01 exim[1]: 1tA2b3-000ABC-DE <= h@x U=www-data P=local T="Secret merger plans"': [
+                b"Secret",
+                b"merger",
+            ],
+            b"web01 exim[1]: 1tA2b3-000ABC-DF => bob R=local_user T=mail_spool": [b"bob"],
+            b"postfix/smtpd[1]: client=h[192.0.2.1], sasl_method=PLAIN, sasl_username=alice": [
+                b"alice"
+            ],
+            b"1tA2b3-000ABC-DE <= x@y A=plain:alice P=esmtpa": [b"alice"],
+            b"user=<alice>, rip=192.0.2.1": [b"alice"],
+            b'status=bounced (unknown user: "alice")': [b"alice"],
+            b"status=bounced (host mx[192.0.2.2] said: 550 5.1.1 alice... User unknown"
+            b" (in reply to RCPT TO command))": [b"alice"],
+            # Text in a matched header can't pass for the envelope.
+            b"4F1A: warning: header Subject: x from local; from=<top secret> to=<y>"
+            b" from local; from=<a@b.org> to=<c@d.org>": [b"top", b"y>"],
+            b"4F1A: warning: header Subject: hi; from=<top secret merger plan>"
+            b" proto=Board-only from local; from=<a@b.org> to=<c@d.org>": [
+                b"secret",
+                b"Board",
+            ],
+        }
+        for line, secrets in cases.items():
+            masked, _ = self.mask(line)
+            for secret in secrets:
+                self.assertNotIn(secret.decode(), masked, line)
+        masked, _ = self.mask(b"to=<list-bounces+alice=example.com@lists.org>")
+        self.assertEqual(masked, f"to=<{self.fp(b'list-bounces+alice=example.com')}@lists.org>")
+        masked, _ = self.mask(b"sasl_username=jo@example.org")
+        self.assertEqual(masked, f"sasl_username={self.fp(b'jo')}@example.org")
+
+    def test_addresses_are_fingerprinted_before_secrets_are_masked(self):
+        self.write(
+            "var/log/mail.log",
+            b"Oct 28 10:00:01 web01 postfix/smtp[1]: 4F: to=<bob-apikey=1@example.com>\n",
+        )
+        text = sources(collect(self.root, ["mail"], mail_key=MAIL_KEY))["/var/log/mail.log"][1]
+        self.assertNotIn(b"bob", text)
+        self.assertIn(self.fp(b"bob-apikey=1").encode() + b"@example.com", text)
+
+    def test_other_programs_lines_are_not_sent(self):
+        self.write(
+            "var/log/mail.log",
+            b"Oct 28 10:00:01 web01 dovecot: imap-login: Login: user=<alice>, subject=Secret\n"
+            b"Oct 28 10:00:02 web01 postfix/qmgr[2]: 4F: removed\n",
+        )
+        self.write("usr/bin/journalctl", OTHER_JOURNALCTL).chmod(0o755)
+        sent = sources(collect(self.root, ["mail"], days=1, mail_key=MAIL_KEY))
+        text = b"".join(content for _, content, _ in sent.values())
+        self.assertNotIn(b"Secret", text)
+        self.assertNotIn(b"dovecot", text)
+        self.assertIn(b"postfix/qmgr[2]: 4F: removed", text)
+
+    def test_mail_configuration_addresses_are_fingerprinted_or_marked(self):
+        self.write("etc/postfix/main.cf", b"always_bcc = ceo@example.com\n")
+        text = sources(collect(self.root, ["mail"], mail_key=MAIL_KEY))["/etc/postfix/main.cf"][1]
+        self.assertEqual(text, f"always_bcc = {self.fp(b'ceo')}@example.com\n".encode())
+        text = sources(collect(self.root, ["mail"]))["/etc/postfix/main.cf"][1]
+        self.assertEqual(text, b"always_bcc = [MASKED:mail_address]@example.com\n")
+
+    def test_a_long_line_is_masked_in_linear_time(self):
+        began = time.monotonic()
+        masked, _ = self.mask(b"a" * 500000 + b"@x.org " + b"b" * 500000)
+        self.assertLess(time.monotonic() - began, 2)
+        self.assertNotIn("aaaa", masked)
+        began = time.monotonic()
+        self.mask(b'"' * 200000 + b"@" * 1000)
+        self.assertLess(time.monotonic() - began, 2)
+
     def test_masking_cases(self):
         cases = {
             b"to=<o'brien@x.org>": f"to=<{self.fp(b'o' + bytes([39]) + b'brien')}@x.org>",
@@ -5037,6 +5115,11 @@ class MailTests(FixtureRoot):
         self.assertEqual(self.fp(b"Bob"), self.fp(b"bob"))
 
 
+OTHER_JOURNALCTL = b"""#!/bin/sh
+printf '{"MESSAGE":"Login: user=<alice>, subject=Secret","SYSLOG_IDENTIFIER":"dovecot"}\\n'
+printf '{"MESSAGE":"4F: removed","SYSLOG_IDENTIFIER":"postfix/qmgr"}\\n'
+exit 0
+"""
 MAIL_JOURNALCTL = b"""#!/bin/sh
 printf '{"MESSAGE":"args %s"}\\n' "$*"
 printf '{"MESSAGE":"1A: to=<eve@example.com>, status=sent","SYSLOG_IDENTIFIER":"postfix/smtp"}\\n'

@@ -608,6 +608,8 @@ def test_coverage_names_missing_system_logs(home):
     gaps = analyze(store, "web01", identity, config.recipients)["coverage"]["gaps"]
     assert any("no system journal events" in g for g in gaps)
     assert any("reboots can't be classified" in g for g in gaps)
+    # Mail's event sources have no module of their own to be missing.
+    assert not any("mail_log" in g or "mail_journal" in g for g in gaps)
 
 
 def test_an_invalid_user_attempt_counts_once():

@@ -79,7 +79,7 @@ recorded, which includes connecting and any prompt).
 | `login.session`, `login.ended`, `system.boot`, `system.shutdown_record` | wtmp | user, line, host, address |
 | `login.failed` | btmp | user (masked unless a local account), host, address |
 | `mail.submitted` | Postfix's `pickup`, Exim's `<=` with `P=local` | queue_id, sender (fingerprinted), uid (Postfix) or user (Exim) |
-| `mail.sent`, `mail.deferred`, `mail.bounced` | Postfix's delivery agents (`status=sent`, `deferred`, `bounced` or `expired`); Exim's `=>`/`->`, `==`, `**` | queue_id, recipient (fingerprinted), domain, relay |
+| `mail.sent`, `mail.deferred`, `mail.bounced` | Postfix's delivery agents (`status=sent`, `deferred`, `bounced` or `expired`); Exim's `=>`/`->`, `==`, `**` | queue_id, recipient (fingerprinted), domain, relay; `local` for a delivery into a mailbox on the host |
 
 Mail events come from the mail logs (`mail_log:<path>`) and the journal's
 mail facility (`mail_journal`); Exim's main log uses the host's time zone

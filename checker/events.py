@@ -275,6 +275,10 @@ _POSTFIX_DELIVERY = re.compile(
     r"^(?P<queue_id>\w+): to=<(?P<recipient>[^>]*)>,(?: orig_to=<[^>]*>,)? "
     r"relay=(?P<relay>[^,\s]+),.*? status=(?P<status>sent|deferred|bounced|expired)\b"
 )
+# Postfix's agents that deliver into mailboxes on the host itself, and the
+# relays that say so (Dovecot's LMTP socket, private/…).
+_LOCAL_AGENTS = {"local", "virtual", "lmtp"}
+_LOCAL_RELAYS = ("local", "virtual", "private/", "dovecot")
 _DELIVERY_STATUS = {
     "sent": "mail.sent",
     "deferred": "mail.deferred",
@@ -315,6 +319,8 @@ def classify_mail(program: str | None, message: str) -> tuple[str, dict[str, Any
     fields = found.groupdict()
     status = fields.pop("status")
     fields["domain"] = _domain(fields["recipient"])
+    if daemon["daemon"] in _LOCAL_AGENTS or fields["relay"].startswith(_LOCAL_RELAYS):
+        fields["local"] = True  # delivered into a mailbox here: not outgoing
     return _DELIVERY_STATUS[status], fields
 
 
@@ -340,6 +346,8 @@ def classify_exim(line: str) -> tuple[str, dict[str, Any], dict[str, str]] | Non
         "relay": host.group(1) if host else named.get("T", "local"),
         "domain": _domain(found["address"]),
     }
+    if host is None and found["flag"] in ("=>", "->"):
+        fields["local"] = True  # no remote host: a local delivery
     return _EXIM_FLAGS[found["flag"]], fields, when
 
 

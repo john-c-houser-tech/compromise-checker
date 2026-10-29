@@ -830,18 +830,33 @@ domains.
   mail facility (`SYSLOG_FACILITY=2`), with the same fields as
   `auth_journal`.
 
-**Addresses (policy §7):** before a mail log line is sent, after secret
-masking, every address in it is changed: the local part is replaced by
-`h:` and the first 12 hex digits of its HMAC-SHA256, keyed with the
-organization's mail key and computed over the local part lowercased; the
-domain is kept, lowercased (`alice@example.org` becomes
-`h:3f9a1c2e5b7d@example.org`). Addresses without a domain (Postfix's
-`from=<www-data>`, `orig_to=<alias>`, Exim's local deliveries) are
-fingerprinted too. The header or body line Postfix's `header_checks` and
-`body_checks` log is replaced by `[MASKED:mail_content]`, keeping only the
-envelope after it (`from=<…> to=<…> proto=… helo=<…>`), and Exim's subject
+**Addresses (policy §7):** only Postfix's lines (`postfix/…`) and Exim's
+are sent, from the syslog files and the journal alike: the mail logs'
+other writers (Dovecot, spam filters) log user names and subjects in their
+own ways, so their lines are left out (counted as `mail_other_line`).
+Before a line is sent, and before secret masking (so that no secret rule
+can take an address's `@` and leave its local part), every address in it
+is changed: the local part is replaced by `h:` and the first 12 hex digits
+of its HMAC-SHA256, keyed with the organization's mail key and computed
+over the local part lowercased; the domain is kept, lowercased
+(`alice@example.org` becomes `h:3f9a1c2e5b7d@example.org`). The local part
+is everything before the `@` back to a space, `<`, `,`, `;`, `:` or `"`
+(VERP and SRS addresses, `list-bounces+alice=example.com@…`, are hashed
+whole), except a known field name (`sasl_username=`, `from=`…); a quoted
+local part is hashed with its quotes. Names without a domain are
+fingerprinted too: Postfix's `from=<www-data>`, `to=<…>`, `orig_to=<…>`,
+`user=<…>`, `sasl_username=`, Exim's authenticated id (`A=plain:…`) and
+local deliveries, and local's `unknown user: "…"`. What a remote server
+answered (after `said:`, or Exim's `SMTP error from remote mail server`)
+is masked after its status codes (`[MASKED:remote_reply]`). The header or
+body line Postfix's `header_checks` and `body_checks` log is replaced by
+`[MASKED:mail_content]`, keeping only the envelope after the last
+`from <client>;` (`from=<…> to=<…> proto=… helo=<…>`), and Exim's subject
 (`T="…"` on arrival lines, with `log_selector = +subject`) by
-`[MASKED:mail_subject]`. In journal entries every field is treated so.
+`[MASKED:mail_subject]`. Mail configuration text gets the same address
+treatment (`always_bcc`, notice recipients); without a key its local
+parts become `[MASKED:mail_address]`. Masking reads each line once, left
+to right, so a long line costs no more than its length.
 
 The key (`keys/mail-key.txt` in the tool's directory, made by `checker
 init`, or on first use for a directory set up before) travels in the

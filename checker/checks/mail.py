@@ -38,7 +38,17 @@ RELAY_SETTINGS = {
     "exim: route_data",
 }
 LOOPBACK = {"loopback-only", "localhost", "127.0.0.1", "::1", "[::1]", "0:0:0:0:0:0:0:1"}
-BLOCKS_RELAY = {"reject_unauth_destination", "defer_unauth_destination", "reject", "defer"}
+BLOCKS_RELAY = {
+    "reject_unauth_destination",
+    "defer_unauth_destination",
+    "reject",
+    "defer",
+    "defer_all",
+    "defer_if_permit",
+}
+# A relay setting added or removed with one of these values routes nothing
+# elsewhere: a mail server installed or removed (its package shows that).
+NO_RELAY = {"", "error", "local"}
 
 
 def _account(event: Event, names: dict[Any, str]) -> str | None:
@@ -209,8 +219,10 @@ def relay(context: Context) -> list[Finding]:
                     continue
                 before, after = item["value"]
                 what = f"{key}: {before or '(empty)'} → {after or '(empty)'}"
+            elif str(item.get("value") or "").strip() in NO_RELAY:
+                continue
             else:
-                what = f"{key} {how}: {item.get('value') or '(empty)'}"
+                what = f"{key} {how}: {item.get('value')}"
             findings.append(
                 Finding(
                     "mail.relay",
@@ -255,12 +267,13 @@ def _time(event: Event) -> datetime | None:
 
 
 def _deliveries(events: Iterable[Event]) -> dict[tuple, tuple[datetime, Event]]:
-    """Each message's delivery to each recipient, once, at its first
+    """Each message's outgoing delivery to each recipient (not one into a
+    mailbox on the host), once, at its first
     attempt: retries of deferred mail, and the same line in several logs
     or several bundles (whose look-backs overlap), aren't new mail."""
     first: dict[tuple, tuple[datetime, Event]] = {}
     for event in events:
-        if event.own_session or event.type not in DELIVERIES:
+        if event.own_session or event.type not in DELIVERIES or event.fields.get("local"):
             continue
         moment = _time(event)
         if moment is None:
@@ -349,17 +362,28 @@ def volume(context: Context) -> list[Finding]:
                 )
             )
     waiting = _queued(context.snapshot)
-    before_queue = _queued(context.baseline_snapshot) or 0
-    if waiting is not None and (
-        waiting > QUEUE_LIMIT or (waiting >= QUEUE_FLOOR and waiting > VOLUME_FACTOR * before_queue)
-    ):
+    # A baseline without queue counts (collected before they were) is
+    # compared with nothing: only the absolute limit applies.
+    before_queue = _queued(context.baseline_snapshot)
+    grown = (
+        before_queue is not None
+        and waiting is not None
+        and waiting >= QUEUE_FLOOR
+        and waiting > VOLUME_FACTOR * before_queue
+    )
+    if waiting is not None and (waiting > QUEUE_LIMIT or grown):
         findings.append(
             Finding(
                 "mail.volume",
                 "The mail queue has grown",
                 COMPROMISE,
                 "medium",
-                f"{waiting} messages waiting; {before_queue} at the baseline",
+                f"{waiting} messages waiting; "
+                + (
+                    f"{before_queue} at the baseline"
+                    if before_queue is not None
+                    else "no count at the baseline"
+                ),
                 [f"host:{context.host}"],
                 [{"live": ["mail_queues", 0]}],
                 uncertain=(

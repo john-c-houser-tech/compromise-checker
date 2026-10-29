@@ -168,7 +168,9 @@ def mail_fingerprint(key: str, address: str) -> str:
     if not local:
         raise ValueError(f"not an address: {address!r}")
     digest = hmac.new(bytes.fromhex(key), local.encode("utf-8").lower(), hashlib.sha256).hexdigest()
-    return f"h:{digest[:MAIL_FINGERPRINT_HEX]}" + (f"@{domain.lower()}" if at else "")
+    # Lowercased as the collector does, bytewise: ASCII letters only.
+    domain = domain.encode("utf-8").lower().decode("utf-8")
+    return f"h:{digest[:MAIL_FINGERPRINT_HEX]}" + (f"@{domain}" if at else "")
 
 
 def load_identity(path: Path) -> x25519.Identity:

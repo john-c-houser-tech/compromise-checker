@@ -2316,7 +2316,7 @@ def resolve_links(absolute):
     return resolved or "/", None
 
 
-def send_config_file(run, module, absolute, text_only=False):
+def send_config_file(run, module, absolute, text_only=False, transform=None):
     """Send a configuration file the way its program reads it: through
     symbolic links (RHEL's authselect and crypto-policies use them by
     design). A link is recorded, then its resolved target is sent, still only
@@ -2330,7 +2330,7 @@ def send_config_file(run, module, absolute, text_only=False):
         facts["resolved"] = resolved
         run.stream.record(module, "config_link", facts)
     absolute = resolved
-    return absolute if send_file(run, module, absolute, text_only) else None
+    return absolute if send_file(run, module, absolute, text_only, transform=transform) else None
 
 
 def read_config_text(run, module, absolute):
@@ -3141,7 +3141,16 @@ def _text(relative):
 
 
 def collect_tree(
-    run, module, top, seen, max_depth=4, choose=_text, extra=None, spool=False, home=None
+    run,
+    module,
+    top,
+    seen,
+    max_depth=4,
+    choose=_text,
+    extra=None,
+    spool=False,
+    home=None,
+    transform=None,
 ):
     """Walk one directory (see "Directory walks"), recording each entry as a
     `file` record, then send the text of the small text files in it, masked.
@@ -3247,13 +3256,15 @@ def collect_tree(
             spool=spool,
             walked=True,
             home=home,
+            transform=transform,
         ):
             seen.add(absolute)
 
 
-def send_config_files(run, module, names, seen):
+def send_config_files(run, module, names, seen, transform=None):
     """Send each of these single files that exists, through links, as text,
-    unless already sent (`seen`, as in collect_tree)."""
+    unless already sent (`seen`, as in collect_tree); with `transform`, its
+    lines go through it (see pump_lines)."""
     for absolute in names:
         run.check_time()
         resolved, risk = resolve_links(absolute)
@@ -3263,7 +3274,7 @@ def send_config_files(run, module, names, seen):
             continue
         elif resolved not in seen:
             seen.add(resolved)
-            send_config_file(run, module, absolute, text_only=True)
+            send_config_file(run, module, absolute, text_only=True, transform=transform)
         else:
             # Its target was sent already; the link itself is still evidence
             # (/etc/profile -> /etc/rc.d/rc.local).
@@ -6711,30 +6722,63 @@ MAIL_LOG_DIRS = (
 JOURNAL_MAIL_MATCHES = ("SYSLOG_FACILITY=2",)  # mail
 MAIL_KEY_HEX = re.compile(r"^[0-9a-f]{64}$")
 MAIL_FINGERPRINT_HEX = 12
-# An address: a local part (quoted, or anything up to a character that ends
-# one in a log line), @, and a domain or an address literal.
-_MAIL_ADDRESS = re.compile(
-    rb'(?P<local>"[^"\r\n]*"|[^\s<>()\[\]\\,;:"@=]+)@'
-    rb"(?P<domain>\[[^\]\s]*\]|[^\s<>()\[\]\\,;:\"@='`]+)"
+# Words of a log line, any one of which may be an address: a quoted local
+# part with its domain, or a run of characters that can't end one. Matched
+# left to right, each character once (no backtracking over a long line).
+_MAIL_TOKEN = re.compile(rb'"(?:[^"\\\r\n]|\\.){0,256}"@[^\s<>,;:"\'()]*|[^\s<>,;:"]+')
+# Log fields an address may follow directly (sasl_username=alice@x.org):
+# their name stays. Anything else before an = is part of the local part
+# (VERP: list-bounces+alice=example.com@lists.org).
+_MAIL_FIELDS = frozenset(
+    b"from to orig_to sasl_username sasl_sender user sender recipient rcpt orig_rcpt"
+    b" envelope_from mail_from rcpt_to id msgid message-id resent-message-id a f u r".split()
 )
-# A sender or recipient without a domain (Postfix's from=<www-data>).
-_MAIL_BARE = re.compile(rb"\b(from|to|orig_to)=<([^<>@\s]+)>")
-# Exim's main log: the address after an arrival or delivery flag, which
-# for a local delivery may have no domain.
-_EXIM_LINE = re.compile(
-    rb"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)? (?:[+-]\d{4} )?(?:\[\d+\] )?\S+ "
-    rb"(<=|=>|->|\*>|\*\*|==) )(\S*)"
+# Account names and recipients without a domain: Postfix's from=<www-data>,
+# Dovecot's user=<alice>, SASL logins, Exim's authenticated id (A=plain:alice),
+# and local's bounce reason (unknown user: "alice").
+_MAIL_BARE = (
+    re.compile(rb"\b((?:from|to|orig_to|user)=<)([^<>@\s]{1,512})(>)"),
+    re.compile(rb"\b(sasl_username=)([^\s,;@]{1,512})(?=[\s,;]|$)"),
+    re.compile(rb"(?:^|(?<=\s))(A=[\w-]{1,64}:)([^\s@]{1,512})(?=\s|$)"),
+    re.compile(rb'(unknown user: ")([^"\r\n]{1,512})(")'),
+)
+# What a remote server answered can name the recipient in any form
+# ("550 5.1.1 alice... User unknown"): only its status codes are kept.
+_MAIL_REPLY = (
+    re.compile(rb"( said: \d{3}(?:[ -]\d\.\d{1,3}\.\d{1,3})?)[^)\r\n]*"),
+    re.compile(
+        rb"(SMTP error from remote mail server after [^\r\n]{0,600}?: \d{3}"
+        rb"(?:[ -]\d\.\d{1,3}\.\d{1,3})?)[^\r\n]*"
+    ),
+)
+# Exim's arrival and delivery lines, in its main log or through syslog: the
+# message id, the flag, and the first address (which for a local delivery
+# may have no domain).
+_EXIM_FLAG = re.compile(
+    rb"(?:^|(?<=\s))[0-9A-Za-z]{6}-[0-9A-Za-z]{6,11}-[0-9A-Za-z]{2,4} "
+    rb"(<=|=>|->|\*>|\*\*|==) (\S*)"
 )
 # Exim's subject (log_selector +subject), on arrival lines only: on
 # delivery lines T= names the transport.
 _EXIM_SUBJECT = re.compile(rb'(?<= )T=(?:"(?:[^"\\\r\n]|\\.)*"?|\S+)')
 # Postfix's header_checks and body_checks log the header or body line they
-# matched; only the envelope after it is kept.
+# matched, then where the message came from and its envelope; only that
+# envelope is kept, taken after the last "from <client>;" so that text in
+# the header can't pass for it.
 _POSTFIX_CONTENT = re.compile(
     rb": (?:warning|info|reject|hold|discard|redirect|filter|replace|prepend|bcc|defer"
     rb"|dunno|ignore|strip): (?:header|body|mime-header|nested-header) "
 )
-_POSTFIX_ENVELOPE = re.compile(rb"\b(?:from|to|helo)=<[^<>]*>|\bproto=\S+")
+_POSTFIX_ENVELOPE = re.compile(
+    rb" from (?:local|[^\s;\[]{1,255}\[[^\]\s]{0,64}\]); "
+    rb"(from=<[^<>\r\n]{0,512}> to=<[^<>\r\n]{0,512}>(?: proto=\S{1,32} helo=<[^<>\r\n]{0,512}>)?)"
+)
+# Programs whose mail log lines are sent; the mail logs' other writers
+# (Dovecot, spam filters) log user names and subjects in their own ways.
+MAIL_PROGRAMS = re.compile(r"^(?:postfix[\w.-]*/[\w-]+|exim\d?)$")
+_MAIL_SYSLOG_PROGRAM = re.compile(
+    rb"^(?:\d{4}-\d\d-\d\dT\S+|[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d) \S+ ([^:\[\s]+)"
+)
 
 
 def mail_key(run):
@@ -6754,73 +6798,117 @@ def mail_key_id(value):
 
 def mail_fingerprint(key, local):
     """A local part's keyed fingerprint (policy §7): the same address always
-    gives the same one, and without the key none can be turned back."""
+    gives the same one, and without the key none can be turned back. With
+    no key, only a marker."""
+    if key is None:
+        return MASK % b"mail_address"
     digest = hmac.new(key, local.lower(), hashlib.sha256).hexdigest()
     return b"h:" + digest[:MAIL_FINGERPRINT_HEX].encode()
 
 
 def mask_mail(data, key, counts):
-    """A mail log line (bytes) with no address left in it: each local part
-    replaced by its fingerprint, the domain kept (lowercased); the header or
-    body text Postfix's checks matched, and Exim's subject, masked."""
+    """Mail log or configuration text (bytes) with no address left in it:
+    each local part replaced by its fingerprint, the domain kept
+    (lowercased); account names without a domain fingerprinted too; the
+    header or body text Postfix's checks matched, Exim's subject, and what
+    remote servers answered, masked. Run before secret masking, so that no
+    secret rule can take an address's @ and leave its local part."""
 
     def count(kind):
         counts[kind] = counts.get(kind, 0) + 1
 
+    ending = data[len(data.rstrip(b"\r\n")) :]
     found = _POSTFIX_CONTENT.search(data)
     if found:
-        envelope = _POSTFIX_ENVELOPE.findall(data[found.end() :])
-        ending = data[len(data.rstrip(b"\r\n")) :]
+        envelopes = list(_POSTFIX_ENVELOPE.finditer(data, found.end()))
+        envelope = envelopes[-1] if envelopes else None
         data = data[: found.end()] + MASK % b"mail_content"
-        data += (b"; " + b" ".join(envelope) if envelope else b"") + ending
+        data += (b"; " + envelope.group(1) if envelope else b"") + ending
         count("mail_content")
-    exim = _EXIM_LINE.match(data)
-    if exim and exim.group(2) == b"<=":
+    exim = _EXIM_FLAG.search(data)
+    if exim and exim.group(1) == b"<=":
         data, subjects = _EXIM_SUBJECT.subn(b"T=" + MASK % b"mail_subject", data)
         if subjects:
             count("mail_subject")
+    for reply in _MAIL_REPLY:
+        data, replies = reply.subn(lambda m: m.group(1) + b" " + MASK % b"remote_reply", data)
+        if replies:
+            count("remote_reply")
 
     def address(match):
-        local, domain = match.group("local"), match.group("domain")
-        lead = len(local) - len(local.lstrip(b"'`"))
-        if lead == len(local):
-            return match.group(0)
-        trimmed = domain.rstrip(b".")
+        token = match.group(0)
+        if b"@" not in token:
+            return token
+        if token.startswith(b'"'):
+            close = token.rindex(b'"@')
+            prefix, local, domain = b"", token[: close + 1], token[close + 2 :]
+        else:
+            local, _, domain = token.rpartition(b"@")
+            prefix = b""
+            name, equals, rest = local.partition(b"=")
+            if equals and name.lower() in _MAIL_FIELDS:
+                prefix, local = name + b"=", rest
+            lead = len(local) - len(local.lstrip(b"([{'`"))
+            prefix, local = prefix + local[:lead], local[lead:]
+        if not local:
+            return token
+        if domain.startswith(b"["):
+            trimmed = domain[: domain.find(b"]") + 1] if b"]" in domain else domain
+        else:
+            trimmed = domain.rstrip(b".)]}'`")
         count("mail_address")
         return (
-            local[:lead]
-            + mail_fingerprint(key, local[lead:])
-            + b"@"
-            + trimmed.lower()
-            + domain[len(trimmed) :]
+            prefix + mail_fingerprint(key, local) + b"@" + trimmed.lower() + domain[len(trimmed) :]
         )
 
-    def bare(match):
-        count("mail_address")
-        return match.group(1) + b"=<" + mail_fingerprint(key, match.group(2)) + b">"
-
-    data = _MAIL_ADDRESS.sub(address, data)
-    data = _MAIL_BARE.sub(bare, data)
-    exim = _EXIM_LINE.match(data)
-    first = exim.group(3) if exim else b""
+    data = _MAIL_TOKEN.sub(address, data)
+    for bare in _MAIL_BARE:
+        data, n = bare.subn(
+            lambda m: (
+                m.group(1)
+                + mail_fingerprint(key, m.group(2))
+                + (m.group(3) if m.lastindex >= 3 else b"")
+            ),
+            data,
+        )
+        if n:
+            counts["mail_address"] = counts.get("mail_address", 0) + n
+    exim = _EXIM_FLAG.search(data)
+    first = exim.group(2) if exim else b""
     if first and b"@" not in first and first != b"<>" and not first.startswith((b"/", b"|", b":")):
         count("mail_address")
-        data = exim.group(1) + mail_fingerprint(key, exim.group(3)) + data[exim.end() :]
+        data = data[: exim.start(2)] + mail_fingerprint(key, first) + data[exim.end(2) :]
     return data
 
 
-def mail_line_masker(key):
-    """pump_lines' transform for a mail log file: secrets, then addresses."""
+def mail_line_masker(key, exim_log=False):
+    """pump_lines' transform for a mail log file: only Postfix's and Exim's
+    lines (all of an Exim main log), addresses first, then secrets."""
 
     def transform(line, masker):
-        return mask_mail(masker.line(line), key, masker.counts)
+        if not exim_log:
+            program = _MAIL_SYSLOG_PROGRAM.match(line)
+            if program is None or not MAIL_PROGRAMS.match(program.group(1).decode("latin-1")):
+                masker.counts["mail_other_line"] = masker.counts.get("mail_other_line", 0) + 1
+                return b""
+        return masker.line(mask_mail(line, key, masker.counts))
+
+    return transform
+
+
+def mail_text_masker(key):
+    """pump_lines' transform for mail configuration: addresses, then secrets."""
+
+    def transform(line, masker):
+        return masker.line(mask_mail(line, key, masker.counts))
 
     return transform
 
 
 def mail_journal_masker(key):
-    """pump_lines' transform for the journal's mail messages: masked like
-    any journal line, then every field's addresses."""
+    """pump_lines' transform for the journal's mail messages: only Postfix's
+    and Exim's entries, every field's addresses fingerprinted, then masked
+    like any journal line."""
 
     def value(item, counts):
         if isinstance(item, str):
@@ -6833,13 +6921,20 @@ def mail_journal_masker(key):
         return item
 
     def transform(line, masker):
-        masked = mask_journal_line(line, masker)
         try:
-            entry = json.loads(masked)
+            entry = json.loads(line)
         except ValueError:
-            return masked  # already the marker for a line that can't be parsed
+            entry = None
+        if not isinstance(entry, dict):
+            masker.counts["unparsed_line"] = masker.counts.get("unparsed_line", 0) + 1
+            return b"[MASKED:unparsed_line %d bytes]\n" % len(line)
+        program = entry.get("SYSLOG_IDENTIFIER")
+        if not isinstance(program, str) or not MAIL_PROGRAMS.match(program):
+            masker.counts["mail_other_line"] = masker.counts.get("mail_other_line", 0) + 1
+            return b""
         entry = {name: value(item, masker.counts) for name, item in entry.items()}
-        return (json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+        text = json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
+        return mask_journal_line(text.encode("utf-8", "surrogatepass"), masker)
 
     return transform
 
@@ -6848,9 +6943,9 @@ def _mail_logs(run, module, key):
     """The mail log files last written within the window, and the journal's
     mail messages, each address fingerprinted before it is sent."""
     since = run.since.timestamp()
-    transform = mail_line_masker(key)
     found = sent = skipped = 0
     for directory, pattern in MAIL_LOG_DIRS:
+        transform = mail_line_masker(key, exim_log=directory != "/var/log")
         try:
             names = os.listdir(path(directory))
         except FileNotFoundError:
@@ -6957,9 +7052,13 @@ def module_mail(run):
     (policy §7). Without that key, no mail log is sent."""
     module = "mail"
     seen = set()
-    send_config_files(run, module, MAIL_CONFIG_FILES, seen)
+    key = mail_key(run)
+    # Configuration can name addresses too (always_bcc, notice recipients):
+    # fingerprinted like the logs', or without a key replaced by a marker.
+    text = mail_text_masker(key)
+    send_config_files(run, module, MAIL_CONFIG_FILES, seen, text)
     for directory in MAIL_CONFIG_DIRS:
-        collect_tree(run, module, directory, seen, max_depth=2)
+        collect_tree(run, module, directory, seen, max_depth=2, transform=text)
     postfix = path_facts("/etc/postfix/main.cf") is not None
     exim = any(path_facts(p) is not None for p in ("/etc/exim4", "/etc/exim/exim.conf"))
     run.stream.record(module, "mail_servers", {"postfix": postfix, "exim": exim})
@@ -6970,7 +7069,6 @@ def module_mail(run):
         if path_facts(spool) is not None:
             # One -H file per message, a level down with split_spool_directory.
             _mail_queue(run, module, "exim", spool, ("input",), 1, b"-H")
-    key = mail_key(run)
     if key is None:
         run.stream.record(
             module,

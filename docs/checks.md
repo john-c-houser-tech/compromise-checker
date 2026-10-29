@@ -214,16 +214,20 @@ compared).
 Addresses arrive fingerprinted (policy §7: the local part replaced by a
 keyed hash, the domain kept), so recipients are counted and domains
 compared without any address being shown; `checker mail-hash` shows how a
-known address appears. Deliveries are counted once each (a message to a
-recipient, at its first attempt): retries of deferred mail, and the same
+known address appears. Only outgoing deliveries count: those into mailboxes on
+the host (Postfix's `local`, `virtual` and `lmtp`, Dovecot's LMTP socket,
+Exim deliveries with no remote host) don't. Deliveries are counted once
+each (a message to a recipient, at its first attempt): retries of deferred mail, and the same
 line in the mail log and the journal or in several bundles, are not new
 mail. Days are UTC days.
 
 | Check | What | Band | Baseline |
 |---|---|---|---|
 | `mail.web_user` | mail submitted by a web-server account (`www-data`, `apache`, `nginx`, `http`, `wwwrun`, `lighttpd`): Postfix's `pickup` names the UID, Exim's `<=` line (`P=local`) the user. One finding per account, counting messages. Hosts whose web apps send mail whitelist it | medium | no |
-| `mail.relay` | a setting that routes mail elsewhere added, changed or removed since the baseline: Postfix's `relayhost`, `smtp_fallback_relay`, `default_transport`, `relay_transport`, `transport_maps`, `sender_dependent_relayhost_maps`; Exim's `dc_smarthost`, `route_list`, `route_data` (`relay`, a compromise sign). Relaying open to anyone, while the server listens beyond loopback (`open_relay`, exposure): trusted networks (`mynetworks`, `dc_relay_nets`, `relay_from_hosts`) wider than any one host's own — a /0 to /7 of any kind (IPv6 /0 to /15), or a public network wider than a /24 (/48) — or `mynetworks_style = class`; Postfix restrictions that never refuse mail for other domains (neither `smtpd_relay_restrictions`, which refuses by default, nor `smtpd_recipient_restrictions` has `reject_unauth_destination`, `defer_unauth_destination`, `reject` or `defer` before a `permit`; a list with `$variables` isn't judged); Exim relaying to every domain (`*`) | medium | partly |
-| `mail.volume` | a day with more deliveries attempted after the baseline was collected than both 100 and ten times the daily average before it (from every bundle's mail logs, over the days they reach back) (`deliveries`); messages waiting (Postfix's deferred queue, Exim's spool) over 500, or 50 or more and ten times the baseline's (`queue`) | medium | yes |
+| `mail.relay` | a setting that routes mail elsewhere added, changed or removed since the baseline: Postfix's `relayhost`, `smtp_fallback_relay`, `default_transport`, `relay_transport`, `transport_maps`, `sender_dependent_relayhost_maps`; Exim's `dc_smarthost`, `route_list`, `route_data` (`relay`, a compromise sign); one added or
+removed with no value, `error` or `local` is a mail server installed or
+removed, which `software.packages` reports, and isn't one. Relaying open to anyone, while the server listens beyond loopback (`open_relay`, exposure): trusted networks (`mynetworks`, `dc_relay_nets`, `relay_from_hosts`) wider than any one host's own — a /0 to /7 of any kind (IPv6 /0 to /15), or a public network wider than a /24 (/48) — or `mynetworks_style = class`; Postfix restrictions that never refuse mail for other domains (neither `smtpd_relay_restrictions`, which refuses by default, nor `smtpd_recipient_restrictions` has `reject_unauth_destination`, `defer_unauth_destination`, `reject`, `defer`, `defer_all` or `defer_if_permit` before a `permit`; a list with `$variables` isn't judged); Exim relaying to every domain (`*`) | medium | partly |
+| `mail.volume` | a day with more deliveries attempted after the baseline was collected than both 100 and ten times the daily average before it (from every bundle's mail logs, over the days they reach back) (`deliveries`); messages waiting (Postfix's deferred queue, Exim's spool) over 500, or 50 or more and ten times the baseline's (`queue`; a baseline without queue counts gets only the 500 limit) | medium | yes |
 | `mail.domains` | more than 50 recipient domains, in one day after the baseline, that no delivery in any bundle went to before | medium | yes |
 
 Observed relays (each recipient domain's mail server, for a host that

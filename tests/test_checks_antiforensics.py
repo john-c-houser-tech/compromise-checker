@@ -344,3 +344,11 @@ def test_a_compressed_copy_older_than_the_log_doesnt_soften_it():
     )
     [found] = of(run([], after, previous=before), "logs.cleared")
     assert found.band == "high"
+
+
+def test_many_profiles_unloaded_is_high_even_when_most_remain():
+    profiles = {f"apparmor: p{n}": {"mode": "enforce"} for n in range(100)}
+    before = snap(logging=profiles)
+    after = snap(logging=dict(list(profiles.items())[12:]))
+    [found] = of(run([], after, baseline=before), "mac.disabled")
+    assert found.band == "high" and "12 unloaded" in found.summary

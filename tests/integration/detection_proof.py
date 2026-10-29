@@ -130,7 +130,12 @@ systemctl stop auditd 2>/dev/null || service auditd stop >/dev/null 2>&1 \
 if command -v setenforce >/dev/null 2>&1 && [ -e /sys/fs/selinux/enforce ]; then
     setenforce 0 || fail selinux
 elif command -v aa-teardown >/dev/null 2>&1; then
-    aa-teardown >/dev/null 2>&1 || fail apparmor
+    # aa-teardown reports a failure if any one profile stays; what matters
+    # is that profiles went.
+    before=$(wc -l < /sys/kernel/security/apparmor/profiles)
+    aa-teardown >/dev/null 2>&1
+    after=$(wc -l < /sys/kernel/security/apparmor/profiles)
+    [ "$after" -lt "$before" ] || fail apparmor
 else
     fail mac-unavailable
 fi

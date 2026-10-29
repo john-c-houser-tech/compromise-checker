@@ -45,6 +45,7 @@ NTP_DAEMONS = {
     "phc2sys",
     "ptp4l",
 }
+WHOLESALE_PROFILES = 10
 # AppArmor profiles that come and go with VMs, containers and snaps.
 TRANSIENT_PROFILES = re.compile(r"^(?:libvirt-|lxd-|docker-|snap\.|snap-update-ns\.|snap-|cri-)")
 BOOT_SETTLING = timedelta(minutes=10)
@@ -473,7 +474,9 @@ def mac(context: Context) -> list[Finding]:
         if k.startswith("apparmor: ")
     ]
     before = sum(1 for name in profiles_then if not TRANSIENT_PROFILES.match(name))
-    wholesale = before and (len(unloaded) + len(relaxed)) * 2 > before
+    changed = len(unloaded) + len(relaxed)
+    # Most of them, or many (an upgrade or a removed package touches a few).
+    wholesale = changed >= WHOLESALE_PROFILES or (before and changed * 2 > before)
     if unloaded or relaxed:
         shown = ", ".join((unloaded + relaxed)[:5])
         more = len(unloaded) + len(relaxed) - 5

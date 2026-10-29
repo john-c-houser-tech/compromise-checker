@@ -31,7 +31,7 @@ What works today:
   containers, with secrets masked before they leave the server (email
   addresses' local parts are fingerprinted, the domain kept).
 - `checker mail-hash ADDRESS…` — shows how known email addresses appear in
-  the collected mail logs, so it can be looked for.
+  the collected mail logs, so they can be looked for.
 - `checker bundle list|show|verify` — inspect and re-check stored evidence.
 - `checker events BUNDLE` — parse a bundle into events (logins, sudo, account
   changes, kernel and systemd messages, login records), with the tool's own

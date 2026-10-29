@@ -25,6 +25,13 @@ What works today:
   which leave it off), and where its API key comes from
   (`--advisor-key-source env|keyring|command:<command>`; never stored in
   the configuration).
+- `checker advise HOST --show [--redaction MODE]` — prints exactly what the
+  optional AI advisor would be sent about a host's latest analysis, after
+  redaction, and sends nothing. Under *pseudonymize* (the default) people's
+  account names, host names, email addresses, IP addresses and SSH key
+  fingerprints become placeholders made fresh for each run; *strict* sends
+  only the kinds of finding, counts, scores and coverage gaps. Sending
+  arrives later in Phase 3.
 - `checker config show|set|history|check-key` — the settings in words;
   change one after `init` (validated, and recorded with who, when, old and
   new value; the file is written back whole, so hand-added comments go);

@@ -900,6 +900,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     staling.add_argument("--identity", help="the evidence private key file")
     staling.set_defaults(handler=cmd_whitelist_stale)
+    advising = commands.add_parser(
+        "advise", help="the AI advisor's request for a host's latest analysis (--show)"
+    )
+    advising.add_argument("host")
+    advising.add_argument(
+        "--show", action="store_true", help="print the request exactly as it would be sent"
+    )
+    advising.add_argument(
+        "--redaction",
+        choices=["pseudonymize", "strict", "none"],
+        help="preview another redaction mode than the configured one",
+    )
+    advising.add_argument("--bundle", help="a given bundle instead of the latest")
+    advising.add_argument("--identity", help="the evidence private key file")
+    advising.set_defaults(handler=cmd_advise)
     purging = commands.add_parser(
         "purge", help="delete stored evidence for a host, before a date, or past retention"
     )
@@ -919,6 +934,58 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 SHOWN = 20  # items listed per kind and section without --all
+
+
+def cmd_advise(args: argparse.Namespace) -> int:
+    """The advisor's request for a host's latest assessment. So far only
+    shown (--show), never sent: the client arrives in Phase 3's PR 3.2."""
+    from checker.advisor.case import case_for_host, redact
+
+    if not args.show:
+        print(
+            "checker: the advisor only shows its requests so far: add --show (sending comes"
+            " with a later version)",
+            file=sys.stderr,
+        )
+        return 2
+    base = home()
+    store = Store(database_file(base))
+    try:
+        config = load_config(base)
+        inventory = _inventory_for_priors()
+        built, known = case_for_host(
+            store,
+            args.host,
+            _identity(args, base),
+            config.recipients,
+            inventory,
+            prior_for(args.host, config, inventory),
+            _whitelist_for(base, args.host, inventory),
+            args.bundle,
+        )
+    except (EvidenceError, OSError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    mode = args.redaction or config.advisor.redaction
+    payload, pseudonyms = redact(built, mode, known)
+    text = json.dumps(payload, indent=1, ensure_ascii=False)
+    print(text)
+    placeholders = len(pseudonyms.originals) if pseudonyms else 0
+    print(
+        f"[{len(text)} characters, about {len(text) // 4} tokens; redaction {mode};"
+        f" {placeholders} placeholders, kept only for this run. Nothing was sent.]",
+        file=sys.stderr,
+    )
+    if mode != config.advisor.redaction:
+        print(
+            f"[The configured redaction is {config.advisor.redaction}; this preview used {mode}.]",
+            file=sys.stderr,
+        )
+    if not config.advisor.enabled:
+        print("[The advisor is off; this is what it would send.]", file=sys.stderr)
+    return 0
 
 
 def cmd_report(args: argparse.Namespace) -> int:

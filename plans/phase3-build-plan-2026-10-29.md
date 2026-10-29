@@ -1,7 +1,7 @@
 # Phase 3 build plan — 2026-10-29
 
-> **Status: DRAFT 1, 2026-10-29** — shape agreed by John; decisions 1
-> and 6 settled; 2–5 and 7–8 open. Nothing built yet.
+> **Status: DRAFT 1, 2026-10-29** — shape agreed by John; decisions 1,
+> 2 and 6 settled; 3–5 and 7–8 open. Nothing built yet.
 
 **Goal (DESIGN.md §18, Phase 3):** an operator who turns the advisor on
 gets a plain-language reading of an assessment, whitelist proposals they can
@@ -121,20 +121,27 @@ assessment, its events, snapshot and whitelist, by one module
   it appears in text), IP addresses (v4 and v6, inside URLs and log lines
   too), usernames, home directory components (`/home/alice` →
   `/home/USER-2`), email addresses (domains included; mail local parts are
-  already HMAC'd on the server) become `HOST-n`, `IP-n`, `USER-n`, `EMAIL-n`.
+  already HMAC'd on the server) become `HOST-n`, `IP-n`, `USER-n`, `EMAIL-n`;
+  names under the host's domain `HOST-n`, the domain `DOMAIN-n`; SSH key
+  fingerprints `KEY-n` (added 2026-10-29: as linkable as a name; policy §9
+  to say so in 3.8).
   The token map stays on the controller and is applied in reverse to the
-  answer. Kept as they are: system accounts that exist on every
+  answer, then dropped: placeholders are made fresh for each run (decision
+  2). Kept as they are: system accounts that exist on every
   distribution (`root`, `www-data`, `sshd`…, from the profiles' lists), RFC
   1918 / loopback / documentation ranges marked as such (`IP-4
-  (private)`), package names, ports, check names. Token scope: decision 2.
+  (private)`), package names, ports, check names.
 - **Strict:** check names, variants, bands, categories, counts, the score
   and coverage gaps only. No entities, no excerpts.
 - **None:** excerpts as collected (after the controller's second masking
   pass).
-- **Untrusted text wrapping:** each excerpt and entity value goes in a
-  `<host_data id="…">…</host_data>` block; a literal `</host_data` inside
-  host text is escaped before wrapping. Control characters and bidi
-  characters are replaced by visible escapes (the repo-text guard's list).
+- **Untrusted text wrapping:** the case is JSON, and every value that
+  came from a host (summaries, entities, excerpts, coverage gaps, notes)
+  sits under a `from_host` key the system prompt names as evidence, never
+  instructions. JSON's own string escaping is the delimiter escape: host
+  text can't end its value early. (Built 2026-10-29; simpler than the
+  `<host_data>` blocks first planned.) Control, bidi and invisible
+  characters are shown as escapes, as in the report.
 - **Size:** per-excerpt (1 KB) and per-request (default 60 k tokens) caps;
   findings beyond the cap are listed by check and count only, and the case
   says so (the advisor is told the list is partial).
@@ -321,11 +328,10 @@ The advisor's answers can't be golden-tested, so they are measured.
    only the chosen source is recorded. `checker init` asks which; the key
    is read only when a request is about to be sent, so `--show` works
    without it.
-2. **Before 3.1 — pseudonym scope.** Fresh tokens per request (the
-   provider can't link two requests about the same host or user) or stable
-   tokens per organization (advice across runs talks about the same
-   `USER-2`, but requests become linkable). Recommendation: per request;
-   the answers are restored locally anyway.
+2. ~~Before 3.1 — pseudonym scope.~~ **Decided 2026-10-29:** fresh
+   placeholders for each `checker advise` run, never stored; within one run
+   the roles share one numbering, so their answers agree on who `USER-2` is.
+   Nothing sent lets the provider connect one run to another by name.
 3. **Before 3.2 — refusals.** When a request is declined by a safety
    classifier, either let Anthropic re-run it on the model it recommends
    for that category (`fallbacks: "default"`; the request goes to another

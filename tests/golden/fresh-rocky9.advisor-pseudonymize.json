@@ -1,0 +1,804 @@
+{
+ "case_format": 1,
+ "redaction": "pseudonymize",
+ "host": {
+  "name": "HOST-1",
+  "group": null,
+  "os": "rocky 9.8",
+  "kernel": "5.14.0-687.61.1.el9_8.x86_64"
+ },
+ "assessment": {
+  "probability": 0.0577,
+  "band": "Low",
+  "prior": 0.02,
+  "prior_source": "golden",
+  "hygiene_and_exposure": {
+   "band": "none",
+   "counts": {
+    "hygiene": {
+     "info": 9
+    }
+   }
+  },
+  "top_contributors": [
+   "F-5",
+   "F-6",
+   "F-7",
+   "F-8",
+   "F-9",
+   "F-10",
+   "F-11",
+   "F-12",
+   "F-13"
+  ]
+ },
+ "findings": [
+  {
+   "id": "F-5",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.4055,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: apache UID 48",
+    "entities": [
+     "account:apache"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:21",
+      "where": "auth_journal",
+      "text": "new user: name=apache, UID=48, GID=48, home=/usr/share/httpd, shell=/sbin/nologin, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:21.162406+00:00",
+    "last_seen": "2026-10-29T15:50:21.162406+00:00"
+   }
+  },
+  {
+   "id": "F-6",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0866,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group apache",
+    "entities": [
+     "group:apache"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:21",
+      "where": "auth_journal",
+      "text": "new group: name=apache, GID=48"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:21.133481+00:00",
+    "last_seen": "2026-10-29T15:50:21.133481+00:00"
+   }
+  },
+  {
+   "id": "F-7",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0866,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group nginx",
+    "entities": [
+     "group:nginx"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:20",
+      "where": "auth_journal",
+      "text": "new group: name=nginx, GID=995"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:20.923949+00:00",
+    "last_seen": "2026-10-29T15:50:20.923949+00:00"
+   }
+  },
+  {
+   "id": "F-8",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0866,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group postdrop",
+    "entities": [
+     "group:postdrop"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:07",
+      "where": "auth_journal",
+      "text": "new group: name=postdrop, GID=90"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:07.828370+00:00",
+    "last_seen": "2026-10-29T15:50:07.828370+00:00"
+   }
+  },
+  {
+   "id": "F-9",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0866,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group postfix",
+    "entities": [
+     "group:postfix"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:07",
+      "where": "auth_journal",
+      "text": "new group: name=postfix, GID=89"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:07.655834+00:00",
+    "last_seen": "2026-10-29T15:50:07.655834+00:00"
+   }
+  },
+  {
+   "id": "F-10",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0866,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: nginx UID 995",
+    "entities": [
+     "account:nginx"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:20",
+      "where": "auth_journal",
+      "text": "new user: name=nginx, UID=995, GID=995, home=/var/lib/nginx, shell=/sbin/nologin, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:20.950401+00:00",
+    "last_seen": "2026-10-29T15:50:20.950401+00:00"
+   }
+  },
+  {
+   "id": "F-11",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0866,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: postfix UID 89",
+    "entities": [
+     "account:postfix"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:07",
+      "where": "auth_journal",
+      "text": "new user: name=postfix, UID=89, GID=89, home=/var/spool/postfix, shell=/sbin/nologin, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:07.715077+00:00",
+    "last_seen": "2026-10-29T15:50:07.715077+00:00"
+   }
+  },
+  {
+   "id": "F-12",
+   "check": "account.log_changes",
+   "variant": "group_member_added",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0866,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "member added: postfix group mail",
+    "entities": [
+     "account:postfix",
+     "group:mail"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:07",
+      "where": "auth_journal",
+      "text": "add 'postfix' to group 'mail'"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:07.898118+00:00",
+    "last_seen": "2026-10-29T15:50:07.898118+00:00"
+   }
+  },
+  {
+   "id": "F-13",
+   "check": "account.log_changes",
+   "variant": "group_member_added",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0866,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "member added: postfix group mail",
+    "entities": [
+     "account:postfix",
+     "group:mail"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:07",
+      "where": "auth_journal",
+      "text": "add 'postfix' to shadow group 'mail'"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:07.898313+00:00",
+    "last_seen": "2026-10-29T15:50:07.898313+00:00"
+   }
+  },
+  {
+   "id": "F-15",
+   "check": "persistence.homes",
+   "variant": null,
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A user's own systemd unit",
+   "from_host": {
+    "summary": "/home/USER-1/.config/systemd/user/proof.service",
+    "entities": [
+     "path:/home/USER-1/.config/systemd/user/proof.service"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "systemd",
+      "text": "/home/USER-1/.config/systemd/user/proof.service: accounts=['USER-1'] ctime=2026-10-29T15:50:04.264927+00:00 gid=0 home=/home/USER-1 inode=264571 mode=0644 mtime=2026-10-29T15:50:04.264927+00:00 nlink=1 record=file sha256=e60d856a4702104ded06244a7ff06f71e2cc2aacc378e7fbba20762a507d56fd size=34 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-16",
+   "check": "web.exploit",
+   "variant": "refused",
+   "band": "info",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A traversal attack refused",
+   "from_host": {
+    "summary": "127.0.0.0/24: 1 request (status 404), e.g. /x?f=[MASKED:exploit:traversal]",
+    "entities": [
+     "address:127.0.0.0/24"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:23",
+      "where": "web_logs:/var/log/nginx/access.log",
+      "text": "127.0.0.1 - - [29/Oct/2026:15:50:23 +0000] \"GET /x?f=[MASKED:exploit:traversal] HTTP/1.1\" 404 3332 \"https://ref.example/[MASKED:referrer]\" \"curl/7.76.1\" \"-\""
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:23.031689+00:00",
+    "last_seen": "2026-10-29T15:50:23.031689+00:00"
+   }
+  },
+  {
+   "id": "F-17",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/NetworkManager/NetworkManager.conf (NetworkManager): changed",
+    "entities": [
+     "path:/etc/NetworkManager/NetworkManager.conf",
+     "package:NetworkManager"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/NetworkManager/NetworkManager.conf: configuration=True package=NetworkManager results=['changed']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-18",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/nsswitch.conf (glibc): mode",
+    "entities": [
+     "path:/etc/nsswitch.conf",
+     "package:glibc"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/nsswitch.conf: configuration=True expected_mode=100644 mode=120777 package=glibc results=['mode']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-19",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/pam.d/fingerprint-auth (pam): mode, unreadable",
+    "entities": [
+     "path:/etc/pam.d/fingerprint-auth",
+     "package:pam"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/pam.d/fingerprint-auth: configuration=True expected_mode=100644 mode=120777 package=pam reason=[Errno 40] Too many levels of symbolic links: '/etc/pam.d/fingerprint-auth' results=['mode', 'unreadable']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-20",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/pam.d/password-auth (pam): mode, unreadable",
+    "entities": [
+     "path:/etc/pam.d/password-auth",
+     "package:pam"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/pam.d/password-auth: configuration=True expected_mode=100644 mode=120777 package=pam reason=[Errno 40] Too many levels of symbolic links: '/etc/pam.d/password-auth' results=['mode', 'unreadable']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-21",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/pam.d/postlogin (pam): mode, unreadable",
+    "entities": [
+     "path:/etc/pam.d/postlogin",
+     "package:pam"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/pam.d/postlogin: configuration=True expected_mode=100644 mode=120777 package=pam reason=[Errno 40] Too many levels of symbolic links: '/etc/pam.d/postlogin' results=['mode', 'unreadable']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-22",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/pam.d/smartcard-auth (pam): mode, unreadable",
+    "entities": [
+     "path:/etc/pam.d/smartcard-auth",
+     "package:pam"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/pam.d/smartcard-auth: configuration=True expected_mode=100644 mode=120777 package=pam reason=[Errno 40] Too many levels of symbolic links: '/etc/pam.d/smartcard-auth' results=['mode', 'unreadable']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-23",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/pam.d/system-auth (pam): mode, unreadable",
+    "entities": [
+     "path:/etc/pam.d/system-auth",
+     "package:pam"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/pam.d/system-auth: configuration=True expected_mode=100644 mode=120777 package=pam reason=[Errno 40] Too many levels of symbolic links: '/etc/pam.d/system-auth' results=['mode', 'unreadable']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-24",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/shadow (setup): mode",
+    "entities": [
+     "path:/etc/shadow",
+     "package:setup"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/shadow: configuration=True expected_mode=100000 mode=100200 package=setup results=['mode']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-25",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/ssh/sshd_config (openssh-server): changed",
+    "entities": [
+     "path:/etc/ssh/sshd_config",
+     "package:openssh-server"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/ssh/sshd_config: configuration=True package=openssh-server results=['changed']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-1",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed_by": "proof-proofuser-account",
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: USER-1 UID 1001",
+    "entities": [
+     "account:USER-1"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:04",
+      "where": "auth_journal",
+      "text": "new user: name=USER-1, UID=1001, GID=1001, home=/home/USER-1, shell=/bin/bash, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:04.190724+00:00",
+    "last_seen": "2026-10-29T15:50:04.190724+00:00"
+   }
+  },
+  {
+   "id": "F-2",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed_by": "proof-scanner-account",
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: USER-2 UID 1000",
+    "entities": [
+     "account:USER-2"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:49:58",
+      "where": "auth_journal",
+      "text": "new user: name=USER-2, UID=1000, GID=1000, home=/home/USER-2, shell=/bin/sh, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:49:58.688284+00:00",
+    "last_seen": "2026-10-29T15:49:58.688284+00:00"
+   }
+  },
+  {
+   "id": "F-3",
+   "check": "persistence.at_jobs",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": "proof-at-job-redhat",
+   "title": "A queued at job",
+   "from_host": {
+    "summary": "/var/spool/at/a0000101c80f0e (owner UID 0)",
+    "entities": [
+     "path:/var/spool/at/a0000101c80f0e"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "cron",
+      "text": "/var/spool/at/a0000101c80f0e: content_sha256=f7aa0ad5dc44d32fc26cfc4cf7b208d920282eccebc8affe770cd6428935df29 ctime=2026-10-29T15:50:04.254927+00:00 gid=0 inode=264567 mode=0700 mtime=2026-10-29T15:50:04.254927+00:00 nlink=1 record=file sha256=5ee9cd0758e6bfa0fbe63e23df005eb6a39b92c3f66e085f7dfcf2a0a7406529 size=1434 type=- uid=…"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-4",
+   "check": "ssh.login",
+   "variant": "root_login",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed_by": "proof-root-login",
+   "title": "A direct root login over SSH",
+   "from_host": {
+    "summary": "root from IP-1 (publickey)",
+    "entities": [
+     "account:root",
+     "address:IP-1"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:12",
+      "where": "auth_journal",
+      "text": "Accepted publickey for root from IP-1 port 34556 ssh2: ED25519 KEY-1"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:12.165995+00:00",
+    "last_seen": "2026-10-29T15:48:12.165995+00:00"
+   }
+  },
+  {
+   "id": "F-14",
+   "check": "process.injected",
+   "variant": "libffi",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": "base-firewalld-libffi",
+   "title": "A process has libffi code mapped from memory only",
+   "from_host": {
+    "summary": "firewalld (pid 624): /memfd:libffi (deleted)",
+    "entities": [
+     "program:firewalld",
+     "pid:624",
+     "exe:/usr/bin/python3.9"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=624 ppid=1 comm=firewalld exe=/usr/bin/python3.9 cmdline=/usr/bin/python3 -s /usr/sbin/firewalld --nofork --nopid uids=[0, 0, 0, 0] start_time=2026-10-29T15:48:03.610000+00:00 cwd=/"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:03.610000+00:00",
+    "last_seen": "2026-10-29T15:48:03.610000+00:00"
+   }
+  }
+ ],
+ "omitted": null,
+ "chains": [],
+ "whitelist_rules": [
+  {
+   "id": "proof-at-job-redhat",
+   "layer": "host HOST-1",
+   "match": {
+    "check": "persistence.at_jobs",
+    "path": "/var/spool/at/*"
+   },
+   "reason": "The proof queues an at job for the persistence modules to find.",
+   "expires": "never"
+  },
+  {
+   "id": "proof-root-login",
+   "layer": "host HOST-1",
+   "match": {
+    "check": "ssh.login",
+    "variant": "root_login",
+    "account": "root"
+   },
+   "reason": "The proof logs in as root to set the server up.",
+   "expires": "never"
+  },
+  {
+   "id": "proof-proofuser-account",
+   "layer": "host HOST-1",
+   "match": {
+    "check": "account.log_changes",
+    "account": "USER-1"
+   },
+   "reason": "The proof creates USER-1 to give the persistence modules something to find.",
+   "expires": "never"
+  },
+  {
+   "id": "proof-scanner-account",
+   "layer": "host HOST-1",
+   "match": {
+    "check": "account.log_changes",
+    "account": "USER-2"
+   },
+   "reason": "The proof creates the USER-2 account, as docs/scanner-account.md sets it up.",
+   "expires": "never"
+  },
+  {
+   "id": "base-firewalld-libffi",
+   "layer": "profile base",
+   "match": {
+    "check": "process.injected",
+    "variant": "libffi",
+    "program": "firewalld",
+    "exe": "/usr/bin/python3*"
+   },
+   "reason": "firewalld (RHEL, Rocky, Alma) runs on Python, whose ctypes has libffi make its closures in memory-only files. Only the libffi kind, only firewalld on the system's Python: another Python process with such a file stays a (low) finding, and code from a deleted or scratch file always does.",
+   "expires": "never"
+  }
+ ],
+ "from_host": {
+  "coverage_gaps": [],
+  "log_reach_days": {},
+  "notes": []
+ },
+ "address_kinds": {
+  "IP-1": "private or reserved"
+ }
+}

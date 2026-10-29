@@ -26,6 +26,16 @@ def test_each_case_still_gives_its_expected_assessment(path):
     assert actual == expected, "findings moved: run scripts/update_golden.py and review the diff"
 
 
+@pytest.mark.parametrize("path", golden.cases(), ids=lambda p: p.name.removesuffix(".json.gz"))
+@pytest.mark.parametrize("mode", golden.ADVISOR_MODES)
+def test_each_case_still_gives_its_advisor_request(path, mode):
+    """What the advisor would be sent (PR 3.1) is pinned like the findings."""
+    case = golden.load_case(path)
+    expected = golden.advisor_path(path, mode).read_text()
+    actual = golden.advisor_text(case, golden.run_case(case), mode)
+    assert actual == expected, "the advisor's request moved: run scripts/update_golden.py"
+
+
 def test_there_are_cases_from_both_families_fresh_and_compromised():
     names = {p.name for p in golden.cases()}
     for distro in ("ubuntu24.04", "rocky9"):

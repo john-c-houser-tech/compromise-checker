@@ -16,7 +16,6 @@ ATTACK_TOOLS = {
     "nmap",
     "masscan",
     "zmap",
-    "socat",
     "ncat",
     "nmap-ncat",
     "netcat-traditional",
@@ -39,11 +38,11 @@ ATTACK_TOOLS = {
     "dnscat2",
     "ligolo-ng",
 }
+# (cpp alone builds nothing; socat is left out: Kubernetes nodes need it.)
 COMPILERS = {
     "gcc",
     "g++",
     "clang",
-    "cpp",
     "golang",
     "golang-go",
     "rustc",
@@ -51,23 +50,33 @@ COMPILERS = {
     "tcc",
     "build-essential",
 }
-# Automatic updaters, by the description systemd logs when it starts them.
+# The automatic updaters' services (oneshot: systemd logs Starting… and
+# Finished…, by unit name, or by description on older systemd). Not their
+# timers (Started… at boot), nor PackageKit (apt starts it after any
+# install), nor unattended-upgrades.service (a shutdown helper).
 UPDATERS = (
-    "apt-daily-upgrade",
-    "unattended-upgrade",
-    "Daily apt upgrade",
+    "apt-daily-upgrade.service",
+    "Daily apt upgrade and clean activities",
     "dnf-automatic",
-    "dnf makecache",
-    "yum-cron",
-    "packagekit",
+    "dnf automatic",
 )
-UPDATER_WINDOW = timedelta(hours=2)
+AFTER_RUN = timedelta(minutes=5)
+RUN_LIMIT = timedelta(hours=4)
+CLUSTER_GAP = timedelta(hours=6)
+# Node.js's own package ships these in /usr/lib/node_modules.
+BUNDLED_NODE = {"npm", "corepack"}
 SHOWN = 8
+# What makes a repository or key file's change real (not its times or inode).
+MEANINGFUL = {"content_sha256", "sha256", "size", "mode", "uid", "gid", "link_target", "type"}
+REPOSITORY_EXTENSIONS = (".list", ".sources", ".repo")
+CONFIG_FILES = ("/etc/apt/sources.list", "/etc/dnf/", "/etc/yum.conf", "/etc/yum/vars/")
 MAX_ENTITIES = 200
 
 
 def _name(key: str) -> str:
-    return key.rsplit(" ", 1)[0] if " " in key else key
+    """The package's name from its snapshot key: `name arch`, or
+    `name arch version` for packages installed side by side."""
+    return key.split(" ", 1)[0]
 
 
 def _time(value) -> datetime | None:
@@ -77,13 +86,48 @@ def _time(value) -> datetime | None:
         return None
 
 
-def _updater_runs(context: Context) -> list[datetime]:
-    return [
-        t
-        for _, e in context.of("unit.started")
-        if any(u.lower() in str(e.fields.get("what") or "").lower() for u in UPDATERS)
-        and (t := parse_time(e.corrected))
+def _updater_runs(context: Context) -> list[tuple[datetime, datetime]]:
+    """(start, end) of each automatic updater run: a Starting… of an
+    updater's service, to its Finished… (or four hours, if none)."""
+
+    def updater(event) -> bool:
+        what = str(event.fields.get("what") or "")
+        return any(u.lower() in what.lower() for u in UPDATERS)
+
+    finishes = [
+        (str(e.fields.get("what")), t)
+        for _, e in context.of("unit.finished")
+        if updater(e) and (t := parse_time(e.corrected))
     ]
+    runs = []
+    for _, event in context.of("unit.starting"):
+        start = parse_time(event.corrected)
+        if not updater(event) or start is None:
+            continue
+        what = str(event.fields.get("what"))
+        end = min(
+            (t for w, t in finishes if w == what and start <= t <= start + RUN_LIMIT),
+            default=start + RUN_LIMIT,
+        )
+        runs.append((start, end + AFTER_RUN))
+    return runs
+
+
+def _clusters(items: list[tuple[str, datetime | None]]) -> list[list[tuple[str, datetime | None]]]:
+    """Installs grouped by when they happened (a gap of six hours starts a
+    new group), so two patch nights are two findings; ones with no time
+    are a group of their own."""
+    timed = sorted((i for i in items if i[1] is not None), key=lambda i: i[1])
+    groups: list[list[tuple[str, datetime | None]]] = []
+    for item in timed:
+        if groups and item[1] - groups[-1][-1][1] <= CLUSTER_GAP:
+            groups[-1].append(item)
+        else:
+            groups.append([item])
+    untimed = [i for i in items if i[1] is None]
+    if untimed:
+        groups.append(untimed)
+    return groups
 
 
 def _grouped(check_id, title, band, variant, names, refs, times, context, keys=()) -> Finding:
@@ -118,12 +162,18 @@ def _grouped(check_id, title, band, variant, names, refs, times, context, keys=(
 def packages(context: Context) -> list[Finding]:
     diff = context.changes("packages")
     findings = []
-    updaters = _updater_runs(context)
-    installed = sorted(diff["added"])
-    if installed:
-        times = [t for k in installed if (t := _time(diff["added"][k].get("installed")))]
-        automatic = bool(times) and all(
-            any(timedelta(0) <= t - u <= UPDATER_WINDOW for u in updaters) for t in times
+    runs = _updater_runs(context)
+    installed = [
+        (k, _time(item.get("installed")))
+        for k, item in sorted(diff["added"].items())
+        if _name(k) != "gpg-pubkey"  # a signing key: software.repository
+    ]
+    for group in _clusters(installed):
+        keys = [k for k, _ in group]
+        times = [t for _, t in group if t is not None]
+        # Every one dated, and inside an updater's run.
+        automatic = len(times) == len(group) and all(
+            any(start <= t <= end for start, end in runs) for t in times
         )
         findings.append(
             _grouped(
@@ -132,11 +182,11 @@ def packages(context: Context) -> list[Finding]:
                 + (" (by the automatic updater)" if automatic else ""),
                 "info" if automatic else "low",
                 "automatic" if automatic else "installed",
-                [_name(k) for k in installed],
-                [context.change_ref("packages", k, "added") for k in installed],
+                [_name(k) for k in keys],
+                [context.change_ref("packages", k, "added") for k in keys],
                 times,
                 context,
-                installed,
+                keys,
             )
         )
     removed = sorted(diff["removed"])
@@ -184,6 +234,10 @@ def packages(context: Context) -> list[Finding]:
     variants=("repository", "key"),
 )
 def repositories(context: Context) -> list[Finding]:
+    """Repository and key files added, or changed in content or ownership
+    (an upgrade rewriting a file unchanged is no change); keys rpm imported
+    into its own database (gpg-pubkey packages). Files apt and dnf don't
+    read (`.rpmnew`, `.save`, `.dpkg-dist`…) are low."""
     diff = context.changes("software_files")
     findings = []
     for how in ("added", "changed"):
@@ -191,15 +245,21 @@ def repositories(context: Context) -> list[Finding]:
             current = context.items("software_files").get(path, item)
             if current.get("type") == "d":
                 continue
+            if how == "changed" and not set(item) & MEANINGFUL:
+                continue
             key = current.get("record") == "signing_key"
+            read = key or path.endswith(REPOSITORY_EXTENSIONS) or path.startswith(CONFIG_FILES)
             findings.append(
                 Finding(
                     "software.repository",
-                    f"A package signing key was {how}"
-                    if key
-                    else f"A package repository was {how}",
+                    (
+                        f"A package signing key was {how}"
+                        if key
+                        else f"A package repository was {how}"
+                    )
+                    + ("" if read else " (a file the package manager doesn't read)"),
                     COMPROMISE,
-                    "medium",
+                    "medium" if read else "low",
                     path,
                     [f"path:{path}"],
                     [context.change_ref("software_files", path, how)],
@@ -208,6 +268,23 @@ def repositories(context: Context) -> list[Finding]:
                     variant="key" if key else "repository",
                 )
             )
+    for package, item in context.changes("packages")["added"].items():
+        if _name(package) != "gpg-pubkey":
+            continue
+        findings.append(
+            Finding(
+                "software.repository",
+                "A signing key was imported into rpm's database",
+                COMPROMISE,
+                "medium",
+                f"gpg-pubkey {item.get('version')}",
+                ["package:gpg-pubkey"],
+                [context.change_ref("packages", package, "added")],
+                new=context.new_since_previous("packages", package),
+                uncertain=context.uncertain("packages"),
+                variant="key",
+            )
+        )
     return findings
 
 
@@ -257,7 +334,11 @@ def tools(context: Context) -> list[Finding]:
 )
 def global_packages(context: Context) -> list[Finding]:
     diff = context.changes("global_packages")
-    added: list[tuple[str, dict[str, Any]]] = sorted(diff["added"].items())
+    added: list[tuple[str, dict[str, Any]]] = sorted(
+        (k, v)
+        for k, v in diff["added"].items()
+        if not (k.startswith("node: ") and k.split(": ", 1)[1] in BUNDLED_NODE)
+    )
     if not added:
         return []
     names = [k.split(": ", 1)[1] for k, _ in added]

@@ -254,8 +254,8 @@ _CLOCK = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 MAINTENANCE = {
     ("system.reboot", "unexplained"): "info",
     ("system.reboot", "unclean"): "step",
+    # Installs carry their times; removals don't, so no window covers them.
     ("software.packages", "installed"): "info",
-    ("software.packages", "removed"): "info",
 }
 _STEP = {"critical": "high", "high": "medium", "medium": "low", "low": "low", "info": "info"}
 

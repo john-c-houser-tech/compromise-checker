@@ -6429,8 +6429,8 @@ def module_logging_state(run):
 
 # --- Software changes (DESIGN.md §8.11) -----------------------------------------------
 
-REPOSITORY_FILES = ("/etc/apt/sources.list",)
-REPOSITORY_DIRS = ("/etc/apt/sources.list.d", "/etc/yum.repos.d")
+REPOSITORY_FILES = ("/etc/apt/sources.list", "/etc/dnf/dnf.conf", "/etc/yum.conf")
+REPOSITORY_DIRS = ("/etc/apt/sources.list.d", "/etc/yum.repos.d", "/etc/dnf/vars", "/etc/yum/vars")
 # Signing keys: hashed and listed, never sent (a key is no secret, but its
 # bytes say nothing a hash doesn't).
 KEY_FILES = ("/etc/apt/trusted.gpg",)
@@ -6443,12 +6443,15 @@ KEY_DIRS = (
 GLOBAL_PYTHON = (
     "/usr/local/lib/python3*/dist-packages",
     "/usr/local/lib/python3*/site-packages",
+    "/usr/local/lib64/python3*/site-packages",
 )
 GLOBAL_NODE = ("/usr/lib/node_modules", "/usr/local/lib/node_modules")
 RPMTAG_VERSION, RPMTAG_RELEASE, RPMTAG_EPOCH = 1001, 1002, 1003
 RPMTAG_INSTALLTIME, RPMTAG_ARCH = 1008, 1022
 MAX_PACKAGES = 20000
-_DIST_INFO = re.compile(r"^(?P<name>.+?)-(?P<version>[^-]+)\.(?:dist|egg)-info$")
+_DIST_INFO = re.compile(
+    r"^(?P<name>.+?)-(?P<version>[^-]+?)(?:-py\d+(?:\.\d+)*)?\.(?:dist|egg)-info$"
+)
 
 
 def _first(value):
@@ -6462,6 +6465,15 @@ def rpm_packages(run, module, database):
     import sqlite3  # standard library; only needed on rpm systems
     from urllib.parse import quote
 
+    wal = path(database) + "-wal"
+    try:
+        pending = os.lstat(wal).st_size
+    except OSError:
+        pending = 0
+    if pending:
+        # Opened immutable, the database is read without its write-ahead
+        # log: changes still only there (a very recent install) aren't seen.
+        run.stream.record(module, "packages_pending", {"path": database + "-wal", "bytes": pending})
     uri = "file:" + quote(path(database)) + "?immutable=1&mode=ro"
     connection = sqlite3.connect(uri, uri=True)
     count = 0
@@ -6488,7 +6500,7 @@ def rpm_packages(run, module, database):
                 )
                 count += 1
             except (ValueError, struct.error):
-                run.stream.record(module, "malformed_header", {"database": database})
+                run.stream.record(module, "malformed_header", {"path": database})
     finally:
         connection.close()
 
@@ -6555,8 +6567,15 @@ def _key_files(run, module):
         facts = path_facts(absolute)
         if facts is None or facts.get("type") not in ("-", "l"):
             continue
-        if facts.get("type") == "-":
-            digest, problem = digest_of(run, absolute, "sha256")
+        target = absolute
+        if facts.get("type") == "l":
+            # A link's own facts don't change when its target does: hash
+            # what it points to.
+            target, risk = resolve_links(absolute)
+            if risk:
+                facts["problem"] = risk
+        if target and not facts.get("problem"):
+            digest, problem = digest_of(run, target, "sha256")
             facts["sha256"] = digest
             if problem:
                 facts["problem"] = problem
@@ -6608,30 +6627,54 @@ def _global_packages(run, module):
                     {"kind": "node", "name": package, "version": None, "where": directory},
                 )
     for gap in skipped:
-        run.stream.record(module, "not_examined", gap)
+        run.stream.record(module, "not_examined", dict(gap, section="global_packages"))
 
 
 def module_software(run):
     """What software is installed and where it comes from (DESIGN.md
-    §8.11): the installed packages, the repositories (masked text), the
-    signing keys (hashes), and packages installed system-wide with pip or
-    npm."""
+    §8.11): the installed packages (rpm's and dpkg's, both where both are
+    present), the repositories (masked text), the signing keys (hashes),
+    and packages installed system-wide with pip or npm. Each part fails
+    alone: a gap for its own section, the rest still collected."""
     module = "software"
-    database = next((d for d in RPM_DATABASES if os.path.isfile(path(d))), None)
-    if database is not None:
-        rpm_packages(run, module, database)
-    elif os.path.isfile(path(DPKG_STATUS)):
-        dpkg_packages(run, module)
-    else:
-        run.stream.record(
-            module, "not_examined", {"path": "packages", "reason": "no rpm or dpkg database"}
-        )
-    seen = set()
-    send_config_files(run, module, REPOSITORY_FILES, seen)
-    for directory in REPOSITORY_DIRS:
-        collect_tree(run, module, directory, seen, max_depth=1)
-    _key_files(run, module)
-    _global_packages(run, module)
+
+    def part(section, work, *args):
+        try:
+            work(*args)
+        except ModuleTimeout:
+            raise
+        except Exception as exc:  # noqa: BLE001 - recorded, the other parts still run
+            run.stream.record(
+                module,
+                "not_examined",
+                {"path": section, "section": section, "reason": f"{type(exc).__name__}: {exc}"},
+            )
+
+    def packages():
+        found = False
+        for database in RPM_DATABASES:
+            resolved, risk = resolve_links(database)
+            if risk or not resolved or not os.path.isfile(path(resolved)):
+                continue
+            found = True
+            rpm_packages(run, module, resolved)
+            break
+        if os.path.isfile(path(DPKG_STATUS)):
+            found = True
+            dpkg_packages(run, module)
+        if not found:
+            raise OSError("no rpm or dpkg database")
+
+    def repositories():
+        seen = set()
+        send_config_files(run, module, REPOSITORY_FILES, seen)
+        for directory in REPOSITORY_DIRS:
+            collect_tree(run, module, directory, seen, max_depth=1)
+        _key_files(run, module)
+
+    part("packages", packages)
+    part("software_files", repositories)
+    part("global_packages", _global_packages, run, module)
 
 
 MODULES = {

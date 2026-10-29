@@ -535,7 +535,17 @@ install time from rpm, or from dpkg's file lists), not the package logs:
 the checks need what is installed, and install times date it. Signing
 keys are hashed, not parsed (a new or changed key file is the finding).
 Package changes are grouped, one finding per kind; a maintenance window
-makes installs and removals informational.
+makes installs informational (removals carry no time).
+
+After the 2.6 review (2 High): the automatic updater is recognised from
+its service's Starting… and Finished… lines (parser version 4), never its
+timer or PackageKit; installs are grouped by time and an undated one isn't
+automatic; repository findings need a content or ownership change, and
+files the package manager doesn't read are low; rpm's imported keys and
+side-by-side kernels keep their own items, and a new `gpg-pubkey` is a
+signing key; both package managers are read where both exist, each part
+fails alone, and a pending write-ahead log is a gap; `socat` and `cpp` left
+off the lists.
 
 ### 2.7 — Outgoing mail (8.9) (decision 3: decided)
 

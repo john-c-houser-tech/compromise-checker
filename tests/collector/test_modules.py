@@ -4813,6 +4813,87 @@ class SoftwareTests(FixtureRoot):
         raw = json.dumps(records)
         self.assertNotIn("KEYBYTES", raw)
 
+    def test_dpkg_only_installed_packages_and_the_plain_list_name(self):
+        self.write(
+            "var/lib/dpkg/status",
+            b"Package: half\nStatus: install ok half-configured\nArchitecture: amd64\n"
+            b"Version: 1\n\nPackage: tzdata\nStatus: install ok installed\n"
+            b"Architecture: all\nVersion: 2\n",
+        )
+        self.write("var/lib/dpkg/info/tzdata.list", b"/usr/share/zoneinfo\n", age_days=3)
+        records = collect(self.root, ["software"])
+        [tz] = named(records, "package")
+        self.assertEqual(tz["data"]["name"], "tzdata")
+        self.assertAlmostEqual(tz["data"]["installed"], NOW - 3 * DAY, delta=5)
+
+    def test_the_package_cap_holds(self):
+        import sqlite3
+
+        collector = load_collector(self.root)
+        collector.MAX_PACKAGES = 1
+        db = Path(self.root, "var/lib/rpm/rpmdb.sqlite")
+        db.parent.mkdir(parents=True)
+        connection = sqlite3.connect(db)
+        connection.execute("CREATE TABLE Packages (hnum INTEGER PRIMARY KEY, blob BLOB)")
+        for name in ("a", "b", "c"):
+            blob = rpm_header([(1000, 6, name), (1001, 6, "1"), (1002, 6, "1")])
+            connection.execute("INSERT INTO Packages (blob) VALUES (?)", (blob,))
+        connection.commit()
+        connection.close()
+        out = io.BytesIO()
+        collector.main(settings(["software"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        self.assertEqual(len(named(records, "package")), 1)
+        self.assertTrue(named(records, "listing_truncated"))
+
+    def test_both_managers_a_pending_log_and_a_broken_database_failing_alone(self):
+        import sqlite3
+
+        db = Path(self.root, "var/lib/rpm/rpmdb.sqlite")
+        db.parent.mkdir(parents=True)
+        connection = sqlite3.connect(db)
+        connection.execute("CREATE TABLE Packages (hnum INTEGER PRIMARY KEY, blob BLOB)")
+        connection.execute("INSERT INTO Packages (blob) VALUES (?)", (b"short",))
+        connection.commit()
+        connection.close()
+        self.write("var/lib/rpm/rpmdb.sqlite-wal", b"x" * 100)
+        self.write(
+            "var/lib/dpkg/status",
+            b"Package: bash\nStatus: install ok installed\nArchitecture: amd64\nVersion: 5\n",
+        )
+        self.write("etc/yum.repos.d/x.repo", b"[x]\nbaseurl=https://repo.example/\n")
+        records = collect(self.root, ["software"])
+        self.assertEqual([r["data"]["name"] for r in named(records, "package")], ["bash"])
+        self.assertTrue(named(records, "malformed_header"))
+        self.assertEqual(named(records, "packages_pending")[0]["data"]["bytes"], 100)
+        self.assertIn("/etc/yum.repos.d/x.repo", sources(records))
+
+        Path(self.root, "var/lib/rpm/rpmdb.sqlite").write_bytes(b"not a database at all")
+        records = collect(self.root, ["software"])
+        [gap] = [
+            r for r in named(records, "not_examined") if r["data"].get("section") == "packages"
+        ]
+        self.assertIn("DatabaseError", gap["data"]["reason"])
+        self.assertIn("/etc/yum.repos.d/x.repo", sources(records))  # the rest still collected
+
+    def test_egg_info_names_lib64_and_linked_keys(self):
+        self.write("var/lib/dpkg/status", b"")
+        self.write("usr/local/lib/python3.9/site-packages/foo-1.0-py3.9.egg-info/PKG-INFO", b"x")
+        self.write("usr/local/lib64/python3.9/site-packages/bar-2.0.dist-info/METADATA", b"x")
+        self.write("usr/share/keyrings/real.gpg", b"KEY")
+        Path(self.root, "etc/apt/keyrings").mkdir(parents=True)
+        Path(self.root, "etc/apt/keyrings/link.gpg").symlink_to("/usr/share/keyrings/real.gpg")
+        records = collect(self.root, ["software"])
+        names = {
+            (r["data"]["name"], r["data"]["version"]) for r in named(records, "global_package")
+        }
+        self.assertEqual(names, {("foo", "1.0"), ("bar", "2.0")})
+        keys = {r["data"]["path"]: r["data"] for r in named(records, "signing_key")}
+        self.assertEqual(
+            keys["/etc/apt/keyrings/link.gpg"]["sha256"],
+            keys["/usr/share/keyrings/real.gpg"]["sha256"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

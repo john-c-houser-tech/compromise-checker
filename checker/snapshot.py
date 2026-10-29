@@ -84,6 +84,7 @@ FULL = frozenset(m for _, modules in SECTIONS.values() for m in modules)
 # Sections holding masked text, hashes of it, or masked names: a new masking
 # version can change them without any change on the host.
 _MASKED = {
+    "software_files",
     "log_config",
     "firewall_rules",
     "network_files",
@@ -206,6 +207,18 @@ def remote_network(address: str) -> str | None:
     return str(ipaddress.ip_network(f"{parsed}/{prefix}", strict=False))
 
 
+# Packages of which several versions are installed at once.
+VERSIONED_PACKAGES = {
+    "gpg-pubkey",
+    "kernel",
+    "kernel-core",
+    "kernel-modules",
+    "kernel-modules-core",
+    "kernel-modules-extra",
+    "kernel-devel",
+    "kernel-uek",
+    "installonlypkg",
+}
 # A start-up file that switches shell history off for everyone.
 HISTORY_OFF = re.compile(
     r"^\s*(?:export\s+|declare\s+-x\s+|readonly\s+)?(?:unset\s+(?:-v\s+)?HISTFILE\b"
@@ -286,6 +299,8 @@ def journald_storage(settings: list[tuple[str, list[str]]]) -> str | None:
 
 # Records that mean some of a module's data is missing.
 _GAPS = {
+    "packages_pending",
+    "malformed_header",
     "unreadable_file",
     "listing_truncated",
     "phase_time_limit",
@@ -323,10 +338,10 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
     if module == "system_files":
         return {"privileged_files", "unowned_executables"}
     if module == "software":
-        if path in (None, "packages", "/var/lib/dpkg/status") or str(path).endswith(".sqlite"):
+        if data.get("section") in ("packages", "software_files", "global_packages"):
+            return {data["section"]}
+        if name in ("packages_pending", "malformed_header") or path == "/var/lib/dpkg/status":
             return {"packages"}
-        if "node_modules" in str(path) or "python" in str(path):
-            return {"global_packages"}
         return {"software_files"}
     if module == "network":
         if name in ("command_unavailable", "command_failed", "set_unterminated", "source") or (
@@ -734,6 +749,10 @@ class SnapshotBuilder:
     def _on_software(self, name: str, data: dict[str, Any]) -> None:
         if name == "package" and data.get("name"):
             key = f"{data['name']} {data.get('arch') or ''}".strip()
+            if data["name"] in VERSIONED_PACKAGES:
+                # Several at once: rpm's imported keys (each a gpg-pubkey,
+                # no architecture), kernels installed side by side.
+                key = f"{key} {data.get('version')}"
             self.section("packages").items[key] = {
                 k: data.get(k) for k in ("manager", "version", "installed")
             }

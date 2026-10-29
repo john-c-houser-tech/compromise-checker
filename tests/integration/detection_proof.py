@@ -143,8 +143,14 @@ fi
 : > /var/log/wtmp || fail wtmp
 # --- Software (2.6) ---
 # An attack tool installed.
-(DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nmap >/dev/null 2>&1 \
-    || dnf install -y -q nmap >/dev/null 2>&1) || fail nmap
+# (apt waits for a running unattended-upgrades instead of failing.)
+if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o DPkg::Lock::Timeout=600 update -qq >/dev/null 2>&1
+    apt-get -o DPkg::Lock::Timeout=600 install -y -qq nmap >/dev/null 2>&1 || fail nmap
+else
+    dnf install -y -q nmap >/dev/null 2>&1 || fail nmap
+fi
 # A package repository with its own signing key (disabled: nothing is fetched).
 if [ -d /etc/apt/sources.list.d ]; then
     install -d -m 755 /etc/apt/keyrings

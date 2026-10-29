@@ -228,10 +228,10 @@ which the collector doesn't read (plan 2.5).
 
 | Check | What | Band | Baseline |
 |---|---|---|---|
-| `software.packages` | packages installed (`installed`) or removed (`removed`) since the baseline, one finding each, naming them; informational when the automatic updater (unattended-upgrades, `apt-daily-upgrade`, `dnf-automatic`…) started within two hours before every install (`automatic`) or a maintenance window covers them; upgrades informational (`upgraded`) | low | yes |
-| `software.repository` | a package repository (`repository`) or signing key (`key`) added or changed | medium | yes |
-| `software.tools` | an attack or tunnelling tool installed (nmap, masscan, socat, ncat, proxychains, chisel, hydra, sqlmap, impacket…: `attack_tool`, medium); a compiler (gcc, clang, Go, Rust: `compiler`, low) | | yes |
-| `software.global` | Python packages installed system-wide by hand (in `/usr/local/lib/python3*`) or Node packages installed with `npm -g` | low | yes |
+| `software.packages` | packages installed since the baseline, grouped by when they were installed (six hours apart is another group) and named (`installed`); informational when every one is dated inside a run of the automatic updater's service (`apt-daily-upgrade.service`, `dnf-automatic*`: from its Starting… to its Finished… in the journal, not its timer, PackageKit or unattended-upgrades' shutdown helper) (`automatic`), or when a maintenance window covers the group. Packages removed (`removed`, low; removals carry no time, so no window covers them). Upgrades (`upgraded`, informational) | low | yes |
+| `software.repository` | a repository or signing-key file added, or changed in content or ownership (`repository`, `key`), medium; a file the package manager doesn't read (`.rpmnew`, `.save`, `.dpkg-dist`…) low; a key imported into rpm's own database (a new `gpg-pubkey`), medium (`key`) | | yes |
+| `software.tools` | an attack or tunnelling tool installed as a package (nmap, masscan, ncat, proxychains, chisel, hydra, sqlmap, impacket…: `attack_tool`, medium); a compiler (gcc, clang, Go, Rust: `compiler`, low). A tool unpacked from an archive or installed with pip isn't a package and isn't seen here (`files.unowned`, `software.global` may) | | yes |
+| `software.global` | Python packages installed system-wide by hand (in `/usr/local/lib*/python3*`) or Node packages installed with `npm -g` (not the `npm` and `corepack` Node.js ships) | low | yes |
 
 ## Coverage
 

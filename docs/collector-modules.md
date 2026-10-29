@@ -780,20 +780,30 @@ packages installed system-wide by hand.
 **Reads:**
 - the installed packages (at most 20,000): from rpm's SQLite database,
   opened immutable as `package_verify` opens it (no locks, no `-shm` or
-  `-wal` file), name, version-release (with its epoch), architecture and
-  install time; or from dpkg's status file, name, version and
-  architecture, with the modification time of the package's file list in
-  `/var/lib/dpkg/info` as its install time;
+  `-wal` file; changes still only in its write-ahead log aren't seen, and
+  `packages_pending` says so), name, version-release (with its epoch),
+  architecture and install time; and from dpkg's status file, where there
+  is one too, name, version and architecture, with the modification time
+  of the package's file list in `/var/lib/dpkg/info` as its install time;
 - repositories as masked text (a password in a repository's URL is
-  masked): `/etc/apt/sources.list`, `sources.list.d`, `/etc/yum.repos.d`;
-- signing keys as file facts and SHA-256 only, never their bytes:
+  masked): `/etc/apt/sources.list`, `sources.list.d`, `/etc/yum.repos.d`,
+  `/etc/dnf/dnf.conf`, `/etc/yum.conf`, `/etc/dnf/vars`, `/etc/yum/vars`
+  (apt's `Dir::Etc::SourceParts` lives in `apt.conf.d`, which `hooks`
+  collects);
+- signing keys as file facts and SHA-256 only, never their bytes (for a
+  link, the SHA-256 of what it points to):
   `/etc/apt/trusted.gpg`, `trusted.gpg.d`, `/etc/apt/keyrings`,
   `/usr/share/keyrings`, `/etc/pki/rpm-gpg`;
 - the names (and, for Python, versions) of packages installed
   system-wide by hand, from their folder names: `*.dist-info` and
   `*.egg-info` in `/usr/local/lib/python3*/dist-packages` and
-  `site-packages`, and `node_modules` in `/usr/lib` and `/usr/local/lib`
-  (scoped `@org/name` packages too).
+  `site-packages` and `/usr/local/lib64/python3*/site-packages`, and
+  `node_modules` in `/usr/lib` and `/usr/local/lib` (scoped `@org/name`
+  packages too).
+
+Each of the three parts (packages, repositories and keys, global
+packages) fails alone: a `not_examined` record for its own section, the
+others still collected.
 
 ## Protected files
 

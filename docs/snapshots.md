@@ -50,6 +50,7 @@ added.
 | `packages` | name and architecture (and version, for packages installed side by side: rpm's imported keys, `gpg-pubkey`, and kernels): the package manager, version and install time | `software` |
 | `software_files` | path: repository files (and the SHA-256 of their masked text) and signing keys (their SHA-256; `record: signing_key`) | `software` |
 | `global_packages` | `python: <name>` or `node: <name>`: version and folder | `software` |
+| `containers` | runtime and name (`docker: web`): image, privileged, capabilities, host PID/network/IPC namespaces, devices, mounts (`source:destination:rw`), security options; the ID, process and running state are in the uncompared `live` part, with the summary | `containers` |
 | `web_config` | path: nginx, Apache and PHP-FPM configuration files, and the SHA-256 of their (masked) text; the logs' summary, the program starts' summary and the counted requests (`web_requests`) are in the uncompared `live` part | `web_logs` |
 | `mail_files` | path: Postfix and Exim configuration files, and the SHA-256 of their (masked) text | `mail` |
 | `mail_config` | `postfix: <setting>` (each `main.cf` setting, continuation lines joined), `postfix service: <service> <type>` (each `master.cf` service), `exim: <dc_ setting>` (Debian's `update-exim4.conf.conf`), `exim: <hostlist\|domainlist…> <name>`, `exim: route_list`, `route_data`, `local_interfaces`, `daemon_smtp_ports`: the value and its file. The queue sizes are in the uncompared `live` part | `mail` |

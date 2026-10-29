@@ -234,6 +234,19 @@ Observed relays (each recipient domain's mail server, for a host that
 delivers directly) aren't compared: they change with every new recipient
 domain, which `mail.domains` covers.
 
+### 8.13 Containers
+
+From the runtimes' state files (decision 4: never their sockets), compared
+by runtime and name: a redeploy replaces a container's ID, not what it is.
+Kubernetes, containerd, LXD, LXC and rootless Podman aren't inventoried;
+the coverage names them when present.
+
+| Check | What | Band | Baseline |
+|---|---|---|---|
+| `container.privileged` | privileged (Docker's flag; Podman's every capability), mounting `/`, `/etc`, `/root`, `/boot` or a runtime's socket (Docker's, Podman's, containerd's), or holding `CAP_SYS_ADMIN`: new since the baseline (added, or given it since) high (`new`); there before, or with no baseline yet, medium hygiene (`standing`). Says whether it runs (its process alive at collection) | high / medium | partly |
+| `container.host_namespace` | sharing the host's process or network namespace, new since the baseline | medium | yes |
+| `container.new` | a container new since the baseline: deploys make them; what it can do is judged above | low | yes |
+
 ### 8.12 Web applications
 
 Web accounts are `www-data`, `apache`, `nginx`, `http`, `wwwrun`,

@@ -31,6 +31,21 @@
    "status": "ran"
   },
   {
+   "check": "container.host_namespace",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "container.new",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "container.privileged",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "files.backdated",
    "findings": 0,
    "status": "ran"

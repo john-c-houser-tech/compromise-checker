@@ -982,6 +982,36 @@ are read before the logs, so long logs can't crowd them out, and the
 summary is written however the module ends. Each pattern reads a line
 once, left to right.
 
+## `containers`
+
+**Why:** check 8.13 (containers): privileged containers, containers
+mounting the host's root or a runtime's socket, new containers.
+
+**Reads** (decision 4: the runtimes' state files only, never their sockets;
+Podman's is usually socket-activated, so connecting would start
+`podman.service`):
+- Docker: its data root (`data-root`, or the old `graph`, from
+  `/etc/docker/daemon.json`; `/var/lib/docker` by default) and its
+  userns-remap subdirectories (`<uid>.<gid>`): each container's
+  `config.v2.json` and `hostconfig.json` (at most 4 MiB each, 2,000
+  containers);
+- Podman (root): its storage root (`graphroot` from
+  `/etc/containers/storage.conf`; `/var/lib/containers/storage` by
+  default): `overlay-containers/containers.json`, and each container's OCI
+  `userdata/config.json` and `pidfile`.
+
+**Sends** a `container` record per container with only: runtime, id, name,
+image, created, running (Docker's state) and process ID, privileged
+(Docker's flag; for Podman, every capability), added capabilities (Docker)
+or effective ones (Podman), host PID, network and IPC namespaces, devices,
+security options, and bind mounts (source, destination, read-write). Names,
+images and paths are masked like any text a user chose. Never the
+environment (it holds secrets), labels, or any file's text. A file that
+can't be read or parsed is a `containers_unreadable` record (the coverage
+says so, never "no containers"); `containers_summary` counts what was
+inventoried and names what is present but not: Kubernetes (`kubelet`),
+containerd, LXD, LXC, and rootless Podman in home directories.
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,

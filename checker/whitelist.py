@@ -43,11 +43,22 @@ from checker.correlate import EVENT_TYPES, MAX_WITHIN, WRITERS, correlated, pars
 PROFILES = Path(__file__).parent / "profiles"
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
 # Entity kinds matched exactly: Finding.entities are "<kind>:<value>".
-EXACT_FIELDS = ("account", "group", "key", "module", "package", "program")
+EXACT_FIELDS = ("account", "group", "key", "module", "package", "program", "container", "image")
 PATTERN_FIELDS = ("path", "exe")  # anchored patterns
 # Fields that make a rule narrow. `program` is a process's own name, which
 # it can set to anything (prctl), so it narrows nothing by itself.
-NARROWING = ("account", "group", "key", "module", "package", "address", "path", "exe")
+NARROWING = (
+    "account",
+    "group",
+    "key",
+    "module",
+    "package",
+    "address",
+    "path",
+    "exe",
+    "container",
+    "image",
+)
 MAX_PATH = 4096
 
 
@@ -132,6 +143,10 @@ class Match(BaseModel):
     address: str | None = None  # an address or a network, host bits zero
     path: str | None = None  # an anchored pattern: * within a directory, ** across
     exe: str | None = None  # a process's executable, as a path pattern
+    # A container's name (with its runtime: "docker: cadvisor") and image.
+    # Whoever runs containers chooses both: name the image too.
+    container: str | None = None
+    image: str | None = None
     correlated_with: Correlation | None = None
 
     @field_validator("address")

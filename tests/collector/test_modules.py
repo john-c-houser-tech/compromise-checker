@@ -5533,5 +5533,136 @@ class WebTests(FixtureRoot):
             self.assertEqual(records[-1]["status"], "refused", extra)
 
 
+DOCKER_ID = "a" * 64
+PODMAN_ID = "b" * 64
+
+
+def docker_config(name, running=True, pid=4242, env="DB_PASSWORD=CanaryContainerEnv"):
+    return json.dumps(
+        {
+            "ID": DOCKER_ID,
+            "Name": "/" + name,
+            "Created": "2026-10-28T10:00:00Z",
+            "Config": {
+                "Image": "docker.io/library/alpine",
+                "Env": [env],
+                "Labels": {"l": "CanaryLabel"},
+            },
+            "State": {"Running": running, "Pid": pid},
+            "MountPoints": {
+                "/host": {"Source": "/", "Destination": "/host", "RW": True},
+                "/data": {"Source": "/srv/data", "Destination": "/data", "RW": False},
+            },
+        }
+    ).encode()
+
+
+DOCKER_HOST = json.dumps(
+    {
+        "Privileged": True,
+        "CapAdd": ["NET_ADMIN"],
+        "PidMode": "host",
+        "NetworkMode": "bridge",
+        "IpcMode": "private",
+        "Devices": [{"PathOnHost": "/dev/kvm"}],
+        "SecurityOpt": ["seccomp=unconfined"],
+    }
+).encode()
+
+
+class ContainerTests(FixtureRoot):
+    def test_docker_containers_from_their_state_files(self):
+        self.write(
+            f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("cc-priv")
+        )
+        self.write(f"var/lib/docker/containers/{DOCKER_ID}/hostconfig.json", DOCKER_HOST)
+        records = collect(self.root, ["containers"])
+        [container] = [r["data"] for r in named(records, "container")]
+        self.assertEqual(
+            (container["runtime"], container["name"], container["image"], container["privileged"]),
+            ("docker", "cc-priv", "docker.io/library/alpine", True),
+        )
+        self.assertEqual((container["pid_mode"], container["cap_add"]), ("host", ["NET_ADMIN"]))
+        self.assertEqual(container["devices"], ["/dev/kvm"])
+        self.assertIn({"source": "/", "destination": "/host", "rw": True}, container["mounts"])
+        text = json.dumps(records)
+        self.assertNotIn("CanaryContainerEnv", text)  # never the environment
+        self.assertNotIn("CanaryLabel", text)  # nor labels
+        self.assertEqual(sources(records), {})  # no file text at all
+
+    def test_docker_s_data_root_and_userns_remap_are_followed(self):
+        self.write("etc/docker/daemon.json", b'{"data-root": "/srv/docker"}')
+        self.write(f"srv/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("one"))
+        self.write(
+            f"srv/docker/100000.100000/containers/{DOCKER_ID}/config.v2.json", docker_config("two")
+        )
+        self.write(
+            f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("not-used")
+        )
+        names = sorted(
+            r["data"]["name"] for r in named(collect(self.root, ["containers"]), "container")
+        )
+        self.assertEqual(names, ["one", "two"])
+
+    def test_podman_containers_from_containers_json_and_oci_config(self):
+        self.write(
+            "etc/containers/storage.conf",
+            b'[storage]\ndriver = "overlay"\ngraphroot = "/srv/podman"\n',
+        )
+        listing = [
+            {
+                "id": PODMAN_ID,
+                "names": ["cc-pod"],
+                "image": "c" * 64,
+                "metadata": json.dumps({"image-name": "docker.io/library/alpine:latest"}),
+            }
+        ]
+        self.write("srv/podman/overlay-containers/containers.json", json.dumps(listing).encode())
+        oci = {
+            "process": {
+                "env": ["TOKEN=CanaryPodmanEnv"],
+                "capabilities": {"effective": ["CAP_CHOWN", "CAP_SYS_ADMIN"]},
+            },
+            "linux": {
+                "namespaces": [{"type": "mount"}, {"type": "network"}, {"type": "ipc"}],
+                "devices": [{"path": "/dev/fuse"}],
+            },
+            "mounts": [
+                {"destination": "/host", "type": "bind", "source": "/", "options": ["rbind", "rw"]},
+                {"destination": "/proc", "type": "proc", "source": "proc"},
+            ],
+        }
+        self.write(
+            f"srv/podman/overlay-containers/{PODMAN_ID}/userdata/config.json",
+            json.dumps(oci).encode(),
+        )
+        self.write(f"srv/podman/overlay-containers/{PODMAN_ID}/userdata/pidfile", b"5151")
+        records = collect(self.root, ["containers"])
+        [container] = [r["data"] for r in named(records, "container")]
+        self.assertEqual(
+            (container["runtime"], container["name"], container["pid"]), ("podman", "cc-pod", 5151)
+        )
+        self.assertEqual(container["image"], "docker.io/library/alpine:latest")
+        self.assertEqual((container["pid_mode"], container["network_mode"]), ("host", None))
+        self.assertIn("CAP_SYS_ADMIN", container["capabilities"])
+        self.assertFalse(container["privileged"])  # SYS_ADMIN alone isn't --privileged
+        self.assertEqual(container["mounts"], [{"source": "/", "destination": "/host", "rw": True}])
+        self.assertNotIn("CanaryPodmanEnv", json.dumps(records))
+
+    def test_unreadable_layouts_and_other_runtimes_are_said(self):
+        self.write(f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", b"{not json")
+        Path(self.root, "var/lib/kubelet").mkdir(parents=True)
+        Path(self.root, "home/alice/.local/share/containers/storage").mkdir(parents=True)
+        records = collect(self.root, ["containers"])
+        [bad] = named(records, "containers_unreadable")
+        self.assertIn("not JSON", bad["data"]["reason"])
+        [summary] = named(records, "containers_summary")
+        self.assertEqual(
+            summary["data"]["not_inventoried"],
+            ["Kubernetes (kubelet)", "rootless Podman in home directories"],
+        )
+        self.assertEqual(records[-1]["status"], "complete")
+
+
 if __name__ == "__main__":
     unittest.main()

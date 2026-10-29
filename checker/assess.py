@@ -103,6 +103,9 @@ def coverage(
     if not any(e.type in ("system.boot_journal", "system.boot") for e in events):
         gaps.append("no boot list or boot records: reboots can't be classified")
     gaps += web_gaps(snapshot)
+    others = (snapshot.live.get("containers_summary") or {}).get("not_inventoried") or []
+    if others:
+        gaps.append("containers not inventoried: " + ", ".join(others))
     withheld = snapshot.live.get("mail_logs_withheld")
     if withheld:
         gaps.append(f"mail logs not collected ({withheld.get('reason')}): outgoing mail unchecked")

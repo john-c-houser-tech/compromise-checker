@@ -51,6 +51,24 @@ def test_base_lets_firewalld_s_libffi_through_but_no_other_injection():
     assert not matches(rule.match, injected("firewalld", "/tmp/python3", "/memfd:libffi (deleted)"))
 
 
+def test_base_lets_php_fpm_s_opcache_through_but_no_other_injection():
+    def injected(comm, exe, *mappings):
+        p = proc(124397, comm, exe=exe, suspicious_mappings=list(mappings))
+        found = of(run([], snap({"processes": [p], "sockets": []})), "process.injected")
+        return found[0].as_dict()
+
+    rule = rules("base")["base-php-fpm-opcache"]
+    assert matches(
+        rule.match, injected("php-fpm8.4", "/usr/sbin/php-fpm8.4", "/dev/zero (deleted)")
+    )
+    # A memory-only file, a PHP-FPM outside the system: not.
+    assert not matches(
+        rule.match,
+        injected("php-fpm8.4", "/usr/sbin/php-fpm8.4", "/dev/zero (deleted)", "/memfd:x (deleted)"),
+    )
+    assert not matches(rule.match, injected("php-fpm8.4", "/tmp/php-fpm8.4", "/dev/zero (deleted)"))
+
+
 def test_a_profile_named_in_two_layers_applies_once(tmp_path, monkeypatch):
     from checker.whitelist import Layer, build
 

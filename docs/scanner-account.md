@@ -78,6 +78,9 @@ checker trust web01          # compare the fingerprint with the server's own:
 ```
 
 Use `--auth key --key PATH` instead of `--auth agent` to name a key file.
+With `--auth agent`, a connection gets two extra minutes for the agent to
+ask for its key's passphrase (gpg-agent's pop-up); a host that doesn't
+answer at all then takes that much longer to give up on.
 
 ## Other set-ups
 

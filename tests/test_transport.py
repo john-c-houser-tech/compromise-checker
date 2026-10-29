@@ -115,6 +115,55 @@ async def test_agent_keys_are_offered_and_the_agent_closed(server, monkeypatch):
     assert FakeAgent.closed
 
 
+async def test_a_silent_server_times_out_with_a_reason(server, monkeypatch):
+    # Accepts the connection and never speaks: the wait runs out. With an
+    # agent, its passphrase prompt gets time too, and the message says so.
+    async def silent(reader, writer):
+        await reader.read()  # until the client gives up and hangs up
+        writer.close()
+
+    quiet = await asyncio.start_server(silent, "127.0.0.1", 0)
+    port = quiet.sockets[0].getsockname()[1]
+    try:
+        with pytest.raises(TransportError, match=r"cannot connect: timed out after 0\.2 seconds$"):
+            await run(server, host(server, port=port), connect_timeout=0.2)
+
+        class FakeAgent:
+            async def get_keys(self):
+                return [server.client_key]
+
+            def close(self):
+                pass
+
+        async def connect_agent(path=()):
+            return FakeAgent()
+
+        monkeypatch.setattr(transport.asyncssh, "connect_agent", connect_agent)
+        monkeypatch.setattr(transport, "AGENT_PROMPT_SECONDS", 0.2)
+        with pytest.raises(TransportError, match=r"0\.4 seconds \(was the SSH agent waiting"):
+            await run(
+                server, host(server, port=port, auth="agent", key_path=None), connect_timeout=0.2
+            )
+    finally:
+        quiet.close()
+        await quiet.wait_closed()
+
+
+async def test_the_systems_own_timeout_is_reported_as_it_is(server, monkeypatch):
+    # No answer to the TCP connect: the kernel gives up (ETIMEDOUT) before
+    # our wait does, and that has nothing to do with an agent.
+    import errno
+
+    async def unanswered(*args, **kwargs):
+        raise TimeoutError(errno.ETIMEDOUT, "Connection timed out")
+
+    monkeypatch.setattr(transport.asyncssh, "connect", unanswered)
+    with pytest.raises(
+        TransportError, match=r"cannot connect: \[Errno 110\] Connection timed out$"
+    ):
+        await run(server, host(server))
+
+
 # --- Host keys ----------------------------------------------------------------------
 
 
@@ -151,6 +200,46 @@ async def test_trust_ignores_the_operators_ssh_config(server, monkeypatch, tmp_p
     monkeypatch.setattr(transport.asyncssh, "get_server_host_key", spy)
     await fetch_host_key(host(server), tmp_path / "k")
     assert seen.get("config", ()) is None
+
+
+async def test_trust_takes_the_ed25519_key_when_the_server_offers_rsa_too(tmp_path):
+    ed25519 = asyncssh.generate_private_key("ssh-ed25519")
+    listener = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_host_keys=[asyncssh.generate_private_key("ssh-rsa"), ed25519],
+        gss_host=None,
+    )
+    try:
+        h = Host(
+            name="both", address="127.0.0.1", port=listener.sockets[0].getsockname()[1], user="u"
+        )
+        check = await fetch_host_key(h, tmp_path / "k")
+    finally:
+        listener.close()
+        await listener.wait_closed()
+    assert check.key_type == "ssh-ed25519"
+    assert check.fingerprint == ed25519.get_fingerprint("sha256")
+
+
+async def test_a_host_trusted_by_its_rsa_key_stays_the_same_when_it_has_ed25519_too(tmp_path):
+    rsa = asyncssh.generate_private_key("ssh-rsa")
+    listener = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_host_keys=[rsa, asyncssh.generate_private_key("ssh-ed25519")],
+        gss_host=None,
+    )
+    port = listener.sockets[0].getsockname()[1]
+    known = tmp_path / "k"
+    known.write_text(f"[127.0.0.1]:{port} " + rsa.export_public_key().decode())
+    try:
+        h = Host(name="both", address="127.0.0.1", port=port, user="u")
+        check = await fetch_host_key(h, known)
+    finally:
+        listener.close()
+        await listener.wait_closed()
+    assert check.status == "same"
 
 
 async def test_trust_new_then_same_then_changed(server, tmp_path):

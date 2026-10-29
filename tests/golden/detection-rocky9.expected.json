@@ -397,7 +397,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "accounts",
       "cc-toor",
       "added"
@@ -426,7 +426,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "containers",
       "podman: cc-priv",
       "added"
@@ -454,7 +454,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "unusual_files",
       "/tmp/.cc-sh",
       "added"
@@ -508,7 +508,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "web_files",
       "/usr/share/nginx/html/cc-shell.php",
       "added"
@@ -581,7 +581,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "logging",
       "service: auditd",
       "removed"
@@ -605,11 +605,11 @@
    "entities": [],
    "entities_complete": true,
    "evidence": [],
-   "first_seen": "2026-10-29T08:34:21+00:00",
-   "last_seen": "2026-10-29T08:34:21+00:00",
+   "first_seen": "2026-10-29T15:51:26+00:00",
+   "last_seen": "2026-10-29T15:51:26+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "type=DAEMON_END msg=audit(1793262861.697:8904): op=terminate auid=0 uid=0 ses=1 pid=16521 subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 res=success\u001dAUID=\"root\" UID=\"root\"",
+   "summary": "type=DAEMON_END msg=audit(1793289086.766:735): op=terminate auid=0 uid=0 ses=1 pid=16562 subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 res=success\u001dAUID=\"root\" UID=\"root\"",
    "title": "The audit daemon stopped, not during a shutdown",
    "uncertain": null,
    "variant": "audit_daemon"
@@ -624,7 +624,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "logging",
       "selinux",
       "changed"
@@ -648,7 +648,7 @@
    "entities": [
     "address:127.0.0.1",
     "account:www-data",
-    "pid:16482",
+    "pid:16523",
     "program:sleep",
     "exe:/usr/bin/sleep"
    ],
@@ -657,15 +657,15 @@
     {
      "live": [
       "processes",
-      16482
+      16523
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:34:15.760000+00:00",
-   "last_seen": "2026-10-29T08:34:15.760000+00:00",
+   "first_seen": "2026-10-29T15:51:21.320000+00:00",
+   "last_seen": "2026-10-29T15:51:21.320000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "sleep (pid 16482, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
+   "summary": "sleep (pid 16523, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
    "title": "A web-server account reached SMB",
    "uncertain": null,
    "variant": "smb_winrm"
@@ -683,7 +683,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "pam_rules",
       "/etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true",
       "added"
@@ -711,7 +711,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "startup",
       "/etc/ld.so.preload",
       "added"
@@ -734,7 +734,7 @@
    "contribution": 2.9957,
    "entities": [
     "program:cc-sleep",
-    "pid:16440",
+    "pid:16482",
     "exe:/root/cc-sleep (deleted)"
    ],
    "entities_complete": true,
@@ -742,15 +742,15 @@
     {
      "live": [
       "processes",
-      16440
+      16482
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:34:12.560000+00:00",
-   "last_seen": "2026-10-29T08:34:12.560000+00:00",
+   "first_seen": "2026-10-29T15:51:18.120000+00:00",
+   "last_seen": "2026-10-29T15:51:18.120000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "cc-sleep (pid 16440): /root/cc-sleep (deleted)",
+   "summary": "cc-sleep (pid 16482): /root/cc-sleep (deleted)",
    "title": "A process whose program was deleted",
    "uncertain": null,
    "variant": null
@@ -762,7 +762,7 @@
    "contribution": 0.6931,
    "entities": [
     "program:cc-sleep",
-    "pid:16440",
+    "pid:16482",
     "exe:/root/cc-sleep (deleted)"
    ],
    "entities_complete": true,
@@ -770,15 +770,15 @@
     {
      "live": [
       "processes",
-      16440
+      16482
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:34:12.560000+00:00",
-   "last_seen": "2026-10-29T08:34:12.560000+00:00",
+   "first_seen": "2026-10-29T15:51:18.120000+00:00",
+   "last_seen": "2026-10-29T15:51:18.120000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "cc-sleep (pid 16440): /root/cc-sleep (deleted)",
+   "summary": "cc-sleep (pid 16482): /root/cc-sleep (deleted)",
    "title": "A process has code mapped from a scratch or home file",
    "uncertain": null,
    "variant": "scratch"
@@ -790,7 +790,7 @@
    "contribution": 2.9957,
    "entities": [
     "program:bash",
-    "pid:16452",
+    "pid:16494",
     "exe:/usr/bin/bash"
    ],
    "entities_complete": true,
@@ -798,15 +798,15 @@
     {
      "live": [
       "processes",
-      16452
+      16494
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:34:14.150000+00:00",
-   "last_seen": "2026-10-29T08:34:14.150000+00:00",
+   "first_seen": "2026-10-29T15:51:19.670000+00:00",
+   "last_seen": "2026-10-29T15:51:19.670000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "bash (pid 16452): stdin is tcp to 127.0.0.1:4444",
+   "summary": "bash (pid 16494): stdin is tcp to 127.0.0.1:4444",
    "title": "A shell talking to a network socket (a reverse shell)",
    "uncertain": null,
    "variant": null
@@ -818,15 +818,15 @@
    "contribution": 2.9957,
    "entities": [
     "account:ccadmin",
-    "key:SHA256:DgF2SKXF+MPTKI/EM6EhXvqVyHcGLJR3+cz/exwJoFE"
+    "key:SHA256:AXPuEMPU8ClhGRQ/21NkuEqppsBQFqvHcP8Jus4uRjI"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "authorized_keys",
-      "ccadmin SHA256:DgF2SKXF+MPTKI/EM6EhXvqVyHcGLJR3+cz/exwJoFE /home/ccadmin/.ssh/authorized_keys",
+      "ccadmin SHA256:AXPuEMPU8ClhGRQ/21NkuEqppsBQFqvHcP8Jus4uRjI /home/ccadmin/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -835,7 +835,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "ccadmin: ssh-ed25519 SHA256:DgF2SKXF+MPTKI/EM6EhXvqVyHcGLJR3+cz/exwJoFE in /home/ccadmin/.ssh/authorized_keys",
+   "summary": "ccadmin: ssh-ed25519 SHA256:AXPuEMPU8ClhGRQ/21NkuEqppsBQFqvHcP8Jus4uRjI in /home/ccadmin/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -847,15 +847,15 @@
    "contribution": 0.1733,
    "entities": [
     "account:operator",
-    "key:SHA256:NPaVCjouQUJtqE9hh01cFTIIoH9ZTOY3zqQtDicahqc"
+    "key:SHA256:B8t61310m/RL9E9teOdFniHDwtckdIE7NP2Vw1Rkaj8"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "authorized_keys",
-      "operator SHA256:NPaVCjouQUJtqE9hh01cFTIIoH9ZTOY3zqQtDicahqc /root/.ssh/authorized_keys",
+      "operator SHA256:B8t61310m/RL9E9teOdFniHDwtckdIE7NP2Vw1Rkaj8 /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -864,7 +864,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "operator: ssh-ed25519 SHA256:NPaVCjouQUJtqE9hh01cFTIIoH9ZTOY3zqQtDicahqc in /root/.ssh/authorized_keys",
+   "summary": "operator: ssh-ed25519 SHA256:B8t61310m/RL9E9teOdFniHDwtckdIE7NP2Vw1Rkaj8 in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -876,15 +876,15 @@
    "contribution": 0.1733,
    "entities": [
     "account:operator",
-    "key:SHA256:zAqbwfU5BAyMHeUxO85n5zBOBuFlbTqr+bL91quwEt4"
+    "key:SHA256:BsQIrMxk7imzfB5tAxgnv6Wp5BM7wCxe5vnA/V2Vcgs"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "authorized_keys",
-      "operator SHA256:zAqbwfU5BAyMHeUxO85n5zBOBuFlbTqr+bL91quwEt4 /root/.ssh/authorized_keys",
+      "operator SHA256:BsQIrMxk7imzfB5tAxgnv6Wp5BM7wCxe5vnA/V2Vcgs /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -893,7 +893,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "operator: ssh-ed25519 SHA256:zAqbwfU5BAyMHeUxO85n5zBOBuFlbTqr+bL91quwEt4 in /root/.ssh/authorized_keys",
+   "summary": "operator: ssh-ed25519 SHA256:BsQIrMxk7imzfB5tAxgnv6Wp5BM7wCxe5vnA/V2Vcgs in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -905,15 +905,15 @@
    "contribution": 0.1733,
    "entities": [
     "account:root",
-    "key:SHA256:NPaVCjouQUJtqE9hh01cFTIIoH9ZTOY3zqQtDicahqc"
+    "key:SHA256:B8t61310m/RL9E9teOdFniHDwtckdIE7NP2Vw1Rkaj8"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "authorized_keys",
-      "root SHA256:NPaVCjouQUJtqE9hh01cFTIIoH9ZTOY3zqQtDicahqc /root/.ssh/authorized_keys",
+      "root SHA256:B8t61310m/RL9E9teOdFniHDwtckdIE7NP2Vw1Rkaj8 /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -922,7 +922,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "root: ssh-ed25519 SHA256:NPaVCjouQUJtqE9hh01cFTIIoH9ZTOY3zqQtDicahqc in /root/.ssh/authorized_keys",
+   "summary": "root: ssh-ed25519 SHA256:B8t61310m/RL9E9teOdFniHDwtckdIE7NP2Vw1Rkaj8 in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -934,15 +934,15 @@
    "contribution": 0.1733,
    "entities": [
     "account:root",
-    "key:SHA256:zAqbwfU5BAyMHeUxO85n5zBOBuFlbTqr+bL91quwEt4"
+    "key:SHA256:BsQIrMxk7imzfB5tAxgnv6Wp5BM7wCxe5vnA/V2Vcgs"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "authorized_keys",
-      "root SHA256:zAqbwfU5BAyMHeUxO85n5zBOBuFlbTqr+bL91quwEt4 /root/.ssh/authorized_keys",
+      "root SHA256:BsQIrMxk7imzfB5tAxgnv6Wp5BM7wCxe5vnA/V2Vcgs /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -951,7 +951,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "root: ssh-ed25519 SHA256:zAqbwfU5BAyMHeUxO85n5zBOBuFlbTqr+bL91quwEt4 in /root/.ssh/authorized_keys",
+   "summary": "root: ssh-ed25519 SHA256:BsQIrMxk7imzfB5tAxgnv6Wp5BM7wCxe5vnA/V2Vcgs in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -968,7 +968,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "sshd_config",
       "/etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes",
       "added"
@@ -997,7 +997,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "sudo_rules",
       "/etc/sudoers.d/cc-admin: ccadmin ALL=(ALL) NOPASSWD: ALL",
       "added"
@@ -1025,31 +1025,31 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 227
+     "event": 248
     },
     {
-     "event": 228
+     "event": 249
     },
     {
-     "event": 229
+     "event": 250
     },
     {
-     "event": 230
+     "event": 251
     },
     {
-     "event": 231
+     "event": 252
     },
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "web_files",
       "/usr/share/nginx/html/cc-shell.php",
       "added"
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:34:18.024244+00:00",
-   "last_seen": "2026-10-29T08:34:18.024244+00:00",
+   "first_seen": "2026-10-29T15:51:23.041747+00:00",
+   "last_seen": "2026-10-29T15:51:23.041747+00:00",
    "new": true,
    "ratio": 20.0,
    "summary": "/usr/share/nginx/html/cc-shell.php: 5 requests answered, from 127.0.0.0/24",
@@ -1069,11 +1069,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 234
+     "event": 255
     }
    ],
-   "first_seen": "2026-10-29T08:34:18.024244+00:00",
-   "last_seen": "2026-10-29T08:34:18.024244+00:00",
+   "first_seen": "2026-10-29T15:51:23.041747+00:00",
+   "last_seen": "2026-10-29T15:51:23.041747+00:00",
    "new": true,
    "ratio": 20.0,
    "summary": "apache ran bash 1 time, e.g. sh -c uname -a",
@@ -1093,20 +1093,20 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 232
+     "event": 253
     },
     {
-     "event": 237
+     "event": 258
     },
     {
-     "event": 239
+     "event": 260
     },
     {
-     "event": 241
+     "event": 262
     }
    ],
-   "first_seen": "2026-10-29T08:34:18.024244+00:00",
-   "last_seen": "2026-10-29T08:34:18.024244+00:00",
+   "first_seen": "2026-10-29T15:51:23.041747+00:00",
+   "last_seen": "2026-10-29T15:51:23.041747+00:00",
    "new": true,
    "ratio": 20.0,
    "summary": "apache ran bash 4 times, e.g. sh -c id",
@@ -1126,20 +1126,20 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 233
+     "event": 254
     },
     {
-     "event": 238
+     "event": 259
     },
     {
-     "event": 240
+     "event": 261
     },
     {
-     "event": 242
+     "event": 263
     }
    ],
-   "first_seen": "2026-10-29T08:34:18.024244+00:00",
-   "last_seen": "2026-10-29T08:34:18.024244+00:00",
+   "first_seen": "2026-10-29T15:51:23.041747+00:00",
+   "last_seen": "2026-10-29T15:51:23.041747+00:00",
    "new": true,
    "ratio": 20.0,
    "summary": "apache ran id 4 times, e.g. id",
@@ -1159,11 +1159,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 235
+     "event": 256
     }
    ],
-   "first_seen": "2026-10-29T08:34:18.024244+00:00",
-   "last_seen": "2026-10-29T08:34:18.024244+00:00",
+   "first_seen": "2026-10-29T15:51:23.041747+00:00",
+   "last_seen": "2026-10-29T15:51:23.041747+00:00",
    "new": true,
    "ratio": 20.0,
    "summary": "apache ran uname 1 time, e.g. uname -a",
@@ -1183,7 +1183,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "accounts",
       "cc-toor",
       "added"
@@ -1211,7 +1211,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "accounts",
       "ccadmin",
       "added"
@@ -1239,7 +1239,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "accounts",
       "www-data",
       "added"
@@ -1266,11 +1266,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 218
+     "event": 239
     }
    ],
-   "first_seen": "2026-10-29T08:34:12.985869+00:00",
-   "last_seen": "2026-10-29T08:34:12.985869+00:00",
+   "first_seen": "2026-10-29T15:51:18.143068+00:00",
+   "last_seen": "2026-10-29T15:51:18.143068+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: cc-toor UID 0",
@@ -1289,11 +1289,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 998
+     "event": 1019
     }
    ],
-   "first_seen": "2026-10-29T08:35:00.681680+00:00",
-   "last_seen": "2026-10-29T08:35:00.681680+00:00",
+   "first_seen": "2026-10-29T15:52:06.507971+00:00",
+   "last_seen": "2026-10-29T15:52:06.507971+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: ccadmin UID 1002",
@@ -1312,11 +1312,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 162
+     "event": 179
     }
    ],
-   "first_seen": "2026-10-29T08:33:01.729358+00:00",
-   "last_seen": "2026-10-29T08:33:01.729358+00:00",
+   "first_seen": "2026-10-29T15:50:04.200782+00:00",
+   "last_seen": "2026-10-29T15:50:04.200782+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -1342,11 +1342,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 159
+     "event": 174
     }
    ],
-   "first_seen": "2026-10-29T08:32:57.108389+00:00",
-   "last_seen": "2026-10-29T08:32:57.108389+00:00",
+   "first_seen": "2026-10-29T15:49:58.698342+00:00",
+   "last_seen": "2026-10-29T15:49:58.698342+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -1372,61 +1372,46 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 248
+     "event": 270
     },
     {
-     "event": 253
+     "event": 275
     },
     {
-     "event": 258
+     "event": 277
     },
     {
-     "event": 261
-    },
-    {
-     "event": 264
-    },
-    {
-     "event": 271
-    },
-    {
-     "event": 274
-    },
-    {
-     "event": 281
+     "event": 280
     },
     {
      "event": 286
     },
     {
-     "event": 293
+     "event": 292
     },
     {
      "event": 296
     },
     {
-     "event": 300
+     "event": 304
     },
     {
-     "event": 303
+     "event": 308
     },
     {
-     "event": 310
+     "event": 312
     },
     {
-     "event": 313
+     "event": 318
     },
     {
-     "event": 320
+     "event": 322
     },
     {
-     "event": 325
+     "event": 329
     },
     {
      "event": 335
-    },
-    {
-     "event": 337
     },
     {
      "event": 340
@@ -1435,25 +1420,25 @@
      "event": 343
     },
     {
-     "event": 352
+     "event": 348
     },
     {
-     "event": 355
+     "event": 353
     },
     {
-     "event": 360
+     "event": 358
     },
     {
-     "event": 365
+     "event": 363
     },
     {
-     "event": 368
+     "event": 370
     },
     {
-     "event": 373
+     "event": 375
     },
     {
-     "event": 376
+     "event": 378
     },
     {
      "event": 383
@@ -1465,43 +1450,46 @@
      "event": 391
     },
     {
-     "event": 400
+     "event": 399
     },
     {
-     "event": 409
+     "event": 404
+    },
+    {
+     "event": 407
     },
     {
      "event": 412
     },
     {
-     "event": 417
+     "event": 419
     },
     {
-     "event": 420
+     "event": 422
     },
     {
-     "event": 423
-    },
-    {
-     "event": 428
-    },
-    {
-     "event": 431
+     "event": 427
     },
     {
      "event": 434
     },
     {
-     "event": 441
+     "event": 438
     },
     {
-     "event": 448
+     "event": 442
     },
     {
-     "event": 457
+     "event": 447
     },
     {
-     "event": 460
+     "event": 452
+    },
+    {
+     "event": 455
+    },
+    {
+     "event": 462
     },
     {
      "event": 467
@@ -1519,11 +1507,23 @@
      "event": 485
     },
     {
-     "event": 491
+     "event": 490
+    },
+    {
+     "event": 495
+    },
+    {
+     "event": 500
+    },
+    {
+     "event": 507
+    },
+    {
+     "event": 514
     }
    ],
-   "first_seen": "2026-10-29T08:34:25.453904+00:00",
-   "last_seen": "2026-10-29T08:34:30.646502+00:00",
+   "first_seen": "2026-10-29T15:51:30.463785+00:00",
+   "last_seen": "2026-10-29T15:51:36.465528+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "www-data: 150 messages",
@@ -1543,7 +1543,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "network_files",
       "/etc/hosts",
       "changed"
@@ -1567,7 +1567,7 @@
    "entities": [
     "address:169.254.169.254",
     "account:root",
-    "pid:16463",
+    "pid:16505",
     "program:sleep",
     "exe:/usr/bin/sleep"
    ],
@@ -1576,15 +1576,15 @@
     {
      "live": [
       "processes",
-      16463
+      16505
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:34:15.170000+00:00",
-   "last_seen": "2026-10-29T08:34:15.170000+00:00",
+   "first_seen": "2026-10-29T15:51:20.700000+00:00",
+   "last_seen": "2026-10-29T15:51:20.700000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "sleep (pid 16463, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
+   "summary": "sleep (pid 16505, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
    "title": "A program other than the cloud agent reached the metadata address",
    "uncertain": null,
    "variant": null
@@ -1595,7 +1595,7 @@
    "check": "net.tunnel",
    "contribution": 1.3863,
    "entities": [
-    "pid:16489",
+    "pid:16531",
     "program:ssh",
     "account:root",
     "exe:/usr/bin/ssh"
@@ -1605,15 +1605,15 @@
     {
      "live": [
       "processes",
-      16489
+      16531
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:34:15.940000+00:00",
-   "last_seen": "2026-10-29T08:34:15.940000+00:00",
+   "first_seen": "2026-10-29T15:51:21.540000+00:00",
+   "last_seen": "2026-10-29T15:51:21.540000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "ssh (pid 16489, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
+   "summary": "ssh (pid 16531, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
    "title": "An SSH client forwarding ports (a tunnel)",
    "uncertain": null,
    "variant": null
@@ -1624,7 +1624,7 @@
    "check": "net.tunnel",
    "contribution": 0.6931,
    "entities": [
-    "pid:16492",
+    "pid:16534",
     "program:sshd"
    ],
    "entities_complete": true,
@@ -1632,15 +1632,15 @@
     {
      "live": [
       "processes",
-      16492
+      16534
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:34:15.970000+00:00",
-   "last_seen": "2026-10-29T08:34:15.970000+00:00",
+   "first_seen": "2026-10-29T15:51:21.580000+00:00",
+   "last_seen": "2026-10-29T15:51:21.580000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "sshd session (pid 16492) listening on 127.0.0.1 port 2222",
+   "summary": "sshd session (pid 16534) listening on 127.0.0.1 port 2222",
    "title": "An SSH session listening on a port (a remote forward)",
    "uncertain": null,
    "variant": null
@@ -1651,14 +1651,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/at/a0000101c80d59"
+    "path:/var/spool/at/a0000101c80f0e"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/at/a0000101c80d59"
+      "/var/spool/at/a0000101c80f0e"
      ]
     }
    ],
@@ -1666,7 +1666,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/at/a0000101c80d59 (owner UID 0)",
+   "summary": "/var/spool/at/a0000101c80f0e (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -1690,7 +1690,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "cron",
       "/etc/cron.d/cc-proof",
       "added"
@@ -1718,7 +1718,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "systemd",
       "/etc/systemd/system/cc-proof.service",
       "added"
@@ -1746,7 +1746,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "systemd",
       "/etc/systemd/system/cc-proof.timer",
       "added"
@@ -1774,7 +1774,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "startup",
       "/home/ccadmin/.bash_logout",
       "added"
@@ -1802,7 +1802,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "startup",
       "/home/ccadmin/.bash_profile",
       "added"
@@ -1830,7 +1830,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "startup",
       "/home/ccadmin/.bashrc",
       "added"
@@ -1858,7 +1858,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "software_files",
       "/etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof",
       "added"
@@ -1886,7 +1886,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "software_files",
       "/etc/yum.repos.d/cc-proof.repo",
       "added"
@@ -1914,15 +1914,15 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "packages",
       "nmap x86_64",
       "added"
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:34:24+00:00",
-   "last_seen": "2026-10-29T08:34:24+00:00",
+   "first_seen": "2026-10-29T15:51:29+00:00",
+   "last_seen": "2026-10-29T15:51:29+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "nmap 3:7.92-5.el9",
@@ -1942,15 +1942,15 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "packages",
       "nmap-ncat x86_64",
       "added"
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:34:24+00:00",
-   "last_seen": "2026-10-29T08:34:24+00:00",
+   "first_seen": "2026-10-29T15:51:29+00:00",
+   "last_seen": "2026-10-29T15:51:29+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "nmap-ncat 3:7.92-5.el9",
@@ -1970,11 +1970,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 223
+     "event": 244
     }
    ],
-   "first_seen": "2026-10-29T08:34:16.567609+00:00",
-   "last_seen": "2026-10-29T08:34:16.567609+00:00",
+   "first_seen": "2026-10-29T15:51:21.619723+00:00",
+   "last_seen": "2026-10-29T15:51:21.619723+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "127.0.0.1: 1 login(s) as root",
@@ -1994,11 +1994,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 223
+     "event": 244
     }
    ],
-   "first_seen": "2026-10-29T08:34:16.567609+00:00",
-   "last_seen": "2026-10-29T08:34:16.567609+00:00",
+   "first_seen": "2026-10-29T15:51:21.619723+00:00",
+   "last_seen": "2026-10-29T15:51:21.619723+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "root from 127.0.0.1 (publickey)",
@@ -2020,19 +2020,19 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.8"
+    "address:203.0.113.9"
    ],
    "entities_complete": true,
    "evidence": [
     {
-     "event": 146
+     "event": 153
     }
    ],
-   "first_seen": "2026-10-29T08:30:22.403089+00:00",
-   "last_seen": "2026-10-29T08:30:22.403089+00:00",
+   "first_seen": "2026-10-29T15:48:12.176053+00:00",
+   "last_seen": "2026-10-29T15:48:12.176053+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.8 (publickey)",
+   "summary": "root from 203.0.113.9 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -2055,11 +2055,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 231
+     "event": 252
     }
    ],
-   "first_seen": "2026-10-29T08:34:18.024244+00:00",
-   "last_seen": "2026-10-29T08:34:18.024244+00:00",
+   "first_seen": "2026-10-29T15:51:23.041747+00:00",
+   "last_seen": "2026-10-29T15:51:23.041747+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "127.0.0.0/24: 1 request (status 200), e.g. /cc-shell.php?c=[MASKED:value]&f=[MASKED:exploit:traversal]",
@@ -2078,11 +2078,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 184
+     "event": 205
     }
    ],
-   "first_seen": "2026-10-29T08:33:17.089068+00:00",
-   "last_seen": "2026-10-29T08:33:17.089068+00:00",
+   "first_seen": "2026-10-29T15:50:21.172464+00:00",
+   "last_seen": "2026-10-29T15:50:21.172464+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: apache UID 48",
@@ -2101,11 +2101,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 183
+     "event": 204
     }
    ],
-   "first_seen": "2026-10-29T08:33:17.062735+00:00",
-   "last_seen": "2026-10-29T08:33:17.062735+00:00",
+   "first_seen": "2026-10-29T15:50:21.143539+00:00",
+   "last_seen": "2026-10-29T15:50:21.143539+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: group apache",
@@ -2124,11 +2124,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 181
+     "event": 202
     }
    ],
-   "first_seen": "2026-10-29T08:33:16.883382+00:00",
-   "last_seen": "2026-10-29T08:33:16.883382+00:00",
+   "first_seen": "2026-10-29T15:50:20.934007+00:00",
+   "last_seen": "2026-10-29T15:50:20.934007+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: group nginx",
@@ -2147,11 +2147,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 165
+     "event": 182
     }
    ],
-   "first_seen": "2026-10-29T08:33:05.265572+00:00",
-   "last_seen": "2026-10-29T08:33:05.265572+00:00",
+   "first_seen": "2026-10-29T15:50:07.838428+00:00",
+   "last_seen": "2026-10-29T15:50:07.838428+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: group postdrop",
@@ -2170,11 +2170,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 163
+     "event": 180
     }
    ],
-   "first_seen": "2026-10-29T08:33:05.136920+00:00",
-   "last_seen": "2026-10-29T08:33:05.136920+00:00",
+   "first_seen": "2026-10-29T15:50:07.665892+00:00",
+   "last_seen": "2026-10-29T15:50:07.665892+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: group postfix",
@@ -2193,11 +2193,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 182
+     "event": 203
     }
    ],
-   "first_seen": "2026-10-29T08:33:16.911470+00:00",
-   "last_seen": "2026-10-29T08:33:16.911470+00:00",
+   "first_seen": "2026-10-29T15:50:20.960459+00:00",
+   "last_seen": "2026-10-29T15:50:20.960459+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: nginx UID 995",
@@ -2216,11 +2216,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 164
+     "event": 181
     }
    ],
-   "first_seen": "2026-10-29T08:33:05.184689+00:00",
-   "last_seen": "2026-10-29T08:33:05.184689+00:00",
+   "first_seen": "2026-10-29T15:50:07.725135+00:00",
+   "last_seen": "2026-10-29T15:50:07.725135+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: postfix UID 89",
@@ -2239,11 +2239,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 219
+     "event": 240
     }
    ],
-   "first_seen": "2026-10-29T08:34:15.812213+00:00",
-   "last_seen": "2026-10-29T08:34:15.812213+00:00",
+   "first_seen": "2026-10-29T15:51:20.809118+00:00",
+   "last_seen": "2026-10-29T15:51:20.809118+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: www-data UID 994",
@@ -2263,11 +2263,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 166
+     "event": 183
     }
    ],
-   "first_seen": "2026-10-29T08:33:05.316214+00:00",
-   "last_seen": "2026-10-29T08:33:05.316214+00:00",
+   "first_seen": "2026-10-29T15:50:07.908176+00:00",
+   "last_seen": "2026-10-29T15:50:07.908176+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "member added: postfix group mail",
@@ -2287,11 +2287,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 167
+     "event": 184
     }
    ],
-   "first_seen": "2026-10-29T08:33:05.316261+00:00",
-   "last_seen": "2026-10-29T08:33:05.316261+00:00",
+   "first_seen": "2026-10-29T15:50:07.908371+00:00",
+   "last_seen": "2026-10-29T15:50:07.908371+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "member added: postfix group mail",
@@ -2312,7 +2312,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "containers",
       "podman: cc-priv",
       "added"
@@ -2342,7 +2342,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "listeners",
       "tcp 127.0.0.1:2222 netns=net:[4026531840]",
       "added"
@@ -2372,7 +2372,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "listeners",
       "tcp 127.0.0.1:4444 netns=net:[4026531840]",
       "added"
@@ -2402,7 +2402,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "listeners",
       "tcp 127.0.0.1:445 netns=net:[4026531840]",
       "added"
@@ -2432,9 +2432,9 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "listeners",
-      "udp 0.0.0.0:48823 netns=net:[4026531840]",
+      "udp 0.0.0.0:37756 netns=net:[4026531840]",
       "added"
      ]
     }
@@ -2443,7 +2443,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 1.5,
-   "summary": "udp 0.0.0.0:48823 netns=net:[4026531840]: local",
+   "summary": "udp 0.0.0.0:37756 netns=net:[4026531840]: local",
    "title": "A new listening port",
    "uncertain": null,
    "variant": null
@@ -2458,7 +2458,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "checksum_store",
       "/var/lib/rpm/rpmdb.sqlite",
       "changed"
@@ -2466,7 +2466,7 @@
     },
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "checksum_store",
       "/var/lib/rpm/rpmdb.sqlite-shm",
       "changed"
@@ -2474,7 +2474,7 @@
     },
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "checksum_store",
       "/var/lib/rpm/rpmdb.sqlite-wal",
       "changed"
@@ -2497,7 +2497,7 @@
    "contribution": 0.0,
    "entities": [
     "program:firewalld",
-    "pid:635",
+    "pid:624",
     "exe:/usr/bin/python3.9"
    ],
    "entities_complete": true,
@@ -2505,15 +2505,15 @@
     {
      "live": [
       "processes",
-      635
+      624
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:30:11.600000+00:00",
-   "last_seen": "2026-10-29T08:30:11.600000+00:00",
+   "first_seen": "2026-10-29T15:48:03.610000+00:00",
+   "last_seen": "2026-10-29T15:48:03.610000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "firewalld (pid 635): /memfd:libffi (deleted)",
+   "summary": "firewalld (pid 624): /memfd:libffi (deleted)",
    "suppressed_by": {
     "file": "checker/profiles/base.yaml",
     "layer": "profile base",
@@ -2540,7 +2540,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "packages",
       "libibverbs x86_64",
       "added"
@@ -2548,7 +2548,7 @@
     },
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "packages",
       "libpcap x86_64",
       "added"
@@ -2556,7 +2556,7 @@
     },
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "packages",
       "nmap x86_64",
       "added"
@@ -2564,15 +2564,15 @@
     },
     {
      "change": [
-      "rocky9-20261029T083319Z-b374b7c8",
+      "rocky9-20261029T155023Z-16c06382",
       "packages",
       "nmap-ncat x86_64",
       "added"
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:34:24+00:00",
-   "last_seen": "2026-10-29T08:34:24+00:00",
+   "first_seen": "2026-10-29T15:51:29+00:00",
+   "last_seen": "2026-10-29T15:51:29+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "4: libibverbs, libpcap, nmap, nmap-ncat",
@@ -2617,11 +2617,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 195
+     "event": 216
     }
    ],
-   "first_seen": "2026-10-29T08:33:19.024244+00:00",
-   "last_seen": "2026-10-29T08:33:19.024244+00:00",
+   "first_seen": "2026-10-29T15:50:23.041747+00:00",
+   "last_seen": "2026-10-29T15:50:23.041747+00:00",
    "new": false,
    "ratio": 1.0,
    "summary": "127.0.0.0/24: 1 request (status 404), e.g. /x?f=[MASKED:exploit:traversal]",
@@ -2907,7 +2907,7 @@
     "account": "ccadmin",
     "chain": "new-account-escalated-used",
     "events": [
-     1001
+     1022
     ],
     "findings": [
      18,
@@ -3097,7 +3097,7 @@
      "account": "ccadmin",
      "chain": "new-account-escalated-used",
      "events": [
-      1001
+      1022
      ],
      "findings": [
       18,
@@ -3611,7 +3611,7 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "b3a24692f93ad6d0b75c1746771d8879548fa75e0c780a6feecc4b4c0f93bc11",
+  "hash": "8a2fbcf41e2c8722935e4677d3fce816173ae0763895a6b1471a0cee6d92aa67",
   "maintenance": 0,
   "matched": {
    "host rocky9/proof-at-job-redhat": 1,
@@ -3742,6 +3742,20 @@
     },
     "owner": "Compromise Checker defaults",
     "reason": "AlmaLinux 10 mounts /boot/efi with wider permissions than its efi-filesystem package records (0755 against 0700)."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-php-fpm-opcache",
+    "layer": "profile base",
+    "match": {
+     "check": "process.injected",
+     "exe": "/usr/sbin/php-fpm*",
+     "variant": "shared"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "PHP's opcache keeps its JIT code in shared memory, which /proc's maps show as \"/dev/zero (deleted)\". Only the shared-memory kind, only PHP-FPM as installed by the system: a memory-only file, a deleted file or a scratch file mapped into PHP-FPM still shows. Code a script maps the same way (PHP's FFI) looks the same and is let through too."
    },
    {
     "broad": false,

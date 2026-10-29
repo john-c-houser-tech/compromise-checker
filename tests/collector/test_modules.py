@@ -3627,7 +3627,9 @@ class UnusualFilesTests(FixtureRoot):
             "/var/www/site/root.txt",
         ):
             self.assertIn(listed, web)
-        self.assertNotIn("/var/www/site/home.html", web)  # an ordinary link inside the root
+        # A link inside the root too: the controller follows it to tell
+        # what is served.
+        self.assertEqual(web["/var/www/site/home.html"]["link_target"], "index.html")
         self.assertNotIn("sha256", web["/var/www/site/.env"])  # hidden data: not hashed
         self.assertIn("sha256", web["/var/www/site/uploads/shell.php.jpg"])
         self.assertEqual(web["/var/www/site/big.php"]["hash_skipped"], "larger than 8388608 bytes")

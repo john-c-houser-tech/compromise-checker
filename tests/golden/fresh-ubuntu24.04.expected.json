@@ -324,11 +324,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 168
+     "event": 169
     }
    ],
-   "first_seen": "2026-10-29T08:31:09.190420+00:00",
-   "last_seen": "2026-10-29T08:31:09.190420+00:00",
+   "first_seen": "2026-10-29T15:48:54.063157+00:00",
+   "last_seen": "2026-10-29T15:48:54.063157+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -354,11 +354,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 165
+     "event": 166
     }
    ],
-   "first_seen": "2026-10-29T08:31:01.384158+00:00",
-   "last_seen": "2026-10-29T08:31:01.384158+00:00",
+   "first_seen": "2026-10-29T15:48:47.413328+00:00",
+   "last_seen": "2026-10-29T15:48:47.413328+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -379,14 +379,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/cron/atjobs/a0000101c80d57"
+    "path:/var/spool/cron/atjobs/a0000101c80f0c"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/cron/atjobs/a0000101c80d57"
+      "/var/spool/cron/atjobs/a0000101c80f0c"
      ]
     }
    ],
@@ -394,7 +394,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/cron/atjobs/a0000101c80d57 (owner UID 0)",
+   "summary": "/var/spool/cron/atjobs/a0000101c80f0c (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -413,19 +413,19 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.7"
+    "address:203.0.113.6"
    ],
    "entities_complete": true,
    "evidence": [
     {
-     "event": 122
+     "event": 123
     }
    ],
-   "first_seen": "2026-10-29T08:30:12.473598+00:00",
-   "last_seen": "2026-10-29T08:30:12.473598+00:00",
+   "first_seen": "2026-10-29T15:48:00.031112+00:00",
+   "last_seen": "2026-10-29T15:48:00.031112+00:00",
    "new": true,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.7 (publickey)",
+   "summary": "root from 203.0.113.6 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -448,11 +448,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 155
+     "event": 156
     }
    ],
-   "first_seen": "2026-10-29T08:30:50.992301+00:00",
-   "last_seen": "2026-10-29T08:30:50.992301+00:00",
+   "first_seen": "2026-10-29T15:48:38.234342+00:00",
+   "last_seen": "2026-10-29T15:48:38.234342+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: dnsmasq UID 999",
@@ -478,11 +478,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 160
+     "event": 161
     }
    ],
-   "first_seen": "2026-10-29T08:30:52.680638+00:00",
-   "last_seen": "2026-10-29T08:30:52.680638+00:00",
+   "first_seen": "2026-10-29T15:48:40.003550+00:00",
+   "last_seen": "2026-10-29T15:48:40.003550+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group docker",
@@ -508,11 +508,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 172
+     "event": 173
     }
    ],
-   "first_seen": "2026-10-29T08:31:14.516052+00:00",
-   "last_seen": "2026-10-29T08:31:14.516052+00:00",
+   "first_seen": "2026-10-29T15:48:58.562737+00:00",
+   "last_seen": "2026-10-29T15:48:58.562737+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group postdrop",
@@ -531,11 +531,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 170
+     "event": 171
     }
    ],
-   "first_seen": "2026-10-29T08:31:14.300541+00:00",
-   "last_seen": "2026-10-29T08:31:14.300541+00:00",
+   "first_seen": "2026-10-29T15:48:58.361825+00:00",
+   "last_seen": "2026-10-29T15:48:58.361825+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group postfix",
@@ -554,11 +554,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 169
+     "event": 170
     }
    ],
-   "first_seen": "2026-10-29T08:31:11.771521+00:00",
-   "last_seen": "2026-10-29T08:31:11.771521+00:00",
+   "first_seen": "2026-10-29T15:48:56.080951+00:00",
+   "last_seen": "2026-10-29T15:48:56.080951+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group ssl-cert",
@@ -577,11 +577,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 171
+     "event": 172
     }
    ],
-   "first_seen": "2026-10-29T08:31:14.370636+00:00",
-   "last_seen": "2026-10-29T08:31:14.370636+00:00",
+   "first_seen": "2026-10-29T15:48:58.433011+00:00",
+   "last_seen": "2026-10-29T15:48:58.433011+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: postfix UID 110",
@@ -596,7 +596,7 @@
    "contribution": 0.0,
    "entities": [
     "program:(sd-pam)",
-    "pid:796",
+    "pid:814",
     "exe:/usr/lib/systemd/systemd-executor"
    ],
    "entities_complete": true,
@@ -604,15 +604,15 @@
     {
      "live": [
       "processes",
-      796
+      814
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:30:14.150000+00:00",
-   "last_seen": "2026-10-29T08:30:14.150000+00:00",
+   "first_seen": "2026-10-29T15:48:00.520000+00:00",
+   "last_seen": "2026-10-29T15:48:00.520000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "(sd-pam) (pid 796): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "(sd-pam) (pid 814): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": "replaced"
@@ -636,8 +636,8 @@
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:30:11.540000+00:00",
-   "last_seen": "2026-10-29T08:30:11.540000+00:00",
+   "first_seen": "2026-10-29T15:47:58.160000+00:00",
+   "last_seen": "2026-10-29T15:47:58.160000+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "dbus-daemon (pid 664): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
@@ -652,7 +652,7 @@
    "contribution": 0.0,
    "entities": [
     "program:sshd",
-    "pid:782",
+    "pid:790",
     "exe:/usr/sbin/sshd"
    ],
    "entities_complete": true,
@@ -660,15 +660,15 @@
     {
      "live": [
       "processes",
-      782
+      790
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:30:13.670000+00:00",
-   "last_seen": "2026-10-29T08:30:13.670000+00:00",
+   "first_seen": "2026-10-29T15:48:00.120000+00:00",
+   "last_seen": "2026-10-29T15:48:00.120000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "sshd (pid 782): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "sshd (pid 790): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": "replaced"
@@ -680,7 +680,7 @@
    "contribution": 0.0,
    "entities": [
     "program:systemd",
-    "pid:795",
+    "pid:813",
     "exe:/usr/lib/systemd/systemd"
    ],
    "entities_complete": true,
@@ -688,15 +688,15 @@
     {
      "live": [
       "processes",
-      795
+      813
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:30:14.120000+00:00",
-   "last_seen": "2026-10-29T08:30:14.120000+00:00",
+   "first_seen": "2026-10-29T15:48:00.490000+00:00",
+   "last_seen": "2026-10-29T15:48:00.490000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "systemd (pid 795): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "systemd (pid 813): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": "replaced"
@@ -720,8 +720,8 @@
      ]
     }
    ],
-   "first_seen": "2026-10-29T08:30:11.900000+00:00",
-   "last_seen": "2026-10-29T08:30:11.900000+00:00",
+   "first_seen": "2026-10-29T15:47:58.460000+00:00",
+   "last_seen": "2026-10-29T15:47:58.460000+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "systemd-logind (pid 673): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
@@ -751,7 +751,7 @@
    "new": false,
    "ratio": 1.0,
    "summary": "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache (SHA-256 c22c46421f20ce55\u2026)",
-   "title": "An executable no package installed (in /usr/local or /opt)",
+   "title": "An executable no package installed (made by a package after install)",
    "uncertain": null,
    "variant": null
   },
@@ -792,11 +792,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 202
+     "event": 203
     }
    ],
-   "first_seen": "2026-10-29T08:31:58.023054+00:00",
-   "last_seen": "2026-10-29T08:31:58.023054+00:00",
+   "first_seen": "2026-10-29T15:49:38.038178+00:00",
+   "last_seen": "2026-10-29T15:49:38.038178+00:00",
    "new": true,
    "ratio": 1.0,
    "summary": "127.0.0.0/24: 1 request (status 404), e.g. /x?f=[MASKED:exploit:traversal]",
@@ -1000,7 +1000,7 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "b5614fdd4a748d9912013574eb6412954ed5c31b7327f538de5c14d2816eeab5",
+  "hash": "493363e2a1fe616a867da3e74d3d3a137933c95a909e74c1e2f3e4ec2d0e75a1",
   "maintenance": 0,
   "matched": {
    "host ubuntu24.04/proof-at-job-debian": 1,
@@ -1132,6 +1132,20 @@
     },
     "owner": "Compromise Checker defaults",
     "reason": "AlmaLinux 10 mounts /boot/efi with wider permissions than its efi-filesystem package records (0755 against 0700)."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-php-fpm-opcache",
+    "layer": "profile base",
+    "match": {
+     "check": "process.injected",
+     "exe": "/usr/sbin/php-fpm*",
+     "variant": "shared"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "PHP's opcache keeps its JIT code in shared memory, which /proc's maps show as \"/dev/zero (deleted)\". Only the shared-memory kind, only PHP-FPM as installed by the system: a memory-only file, a deleted file or a scratch file mapped into PHP-FPM still shows. Code a script maps the same way (PHP's FFI) looks the same and is let through too."
    },
    {
     "broad": false,

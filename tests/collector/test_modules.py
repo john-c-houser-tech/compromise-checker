@@ -5025,6 +5025,13 @@ class MailTests(FixtureRoot):
         [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
         self.assertEqual(found["data"]["state"], "unknown")
 
+    def test_device_nodes_say_which_device(self):
+        collector = load_collector(self.root)
+        info = os.stat("/dev/null")
+        walk = collector.Walk(collector.Run(None, json.loads(settings([])), 1e12), "/", max_depth=0)
+        entry = walk._entry("/x", info)
+        self.assertEqual(entry["device"], [1, 3])
+
     def test_a_bad_key_is_refused(self):
         records = collect(self.root, ["mail"], mail_key="NOT-HEX")
         self.assertEqual(records[-1]["status"], "refused")

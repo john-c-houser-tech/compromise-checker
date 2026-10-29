@@ -1090,6 +1090,10 @@ class Walk:
             entry["time_out_of_range"] = {"mtime": info.st_mtime, "ctime": info.st_ctime}
         if link_target is not None:
             entry["link_target"] = link_target
+        if stat.S_ISCHR(info.st_mode) or stat.S_ISBLK(info.st_mode):
+            # Which device it opens: a copy of /dev/urandom in a mail
+            # server's chroot is harmless, one of /dev/mem is not.
+            entry["device"] = [os.major(info.st_rdev), os.minor(info.st_rdev)]
         if stat.S_ISREG(info.st_mode) and self._wants_hash(info):
             # A hash is no text, but a short file's hash can still be
             # guessed: protected files are never hashed either.

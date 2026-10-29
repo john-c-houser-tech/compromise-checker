@@ -6,7 +6,7 @@
   },
   {
    "check": "account.log_changes",
-   "findings": 2,
+   "findings": 7,
    "status": "ran"
   },
   {
@@ -280,6 +280,29 @@
    "band": "medium",
    "category": "compromise indicator",
    "check": "account.log_changes",
+   "contribution": 1.3863,
+   "entities": [
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 164
+    }
+   ],
+   "first_seen": "2026-10-29T02:45:14.682730+00:00",
+   "last_seen": "2026-10-29T02:45:14.682730+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: postfix UID 89",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
    "contribution": 0.0,
    "entities": [
     "account:proofuser"
@@ -287,11 +310,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 172
+     "event": 162
     }
    ],
-   "first_seen": "2026-10-29T01:17:07.326793+00:00",
-   "last_seen": "2026-10-29T01:17:07.326793+00:00",
+   "first_seen": "2026-10-29T02:45:10.518062+00:00",
+   "last_seen": "2026-10-29T02:45:10.518062+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -317,11 +340,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 164
+     "event": 158
     }
    ],
-   "first_seen": "2026-10-29T01:16:47.356212+00:00",
-   "last_seen": "2026-10-29T01:16:47.356212+00:00",
+   "first_seen": "2026-10-29T02:44:50.205535+00:00",
+   "last_seen": "2026-10-29T02:44:50.205535+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -339,17 +362,65 @@
   {
    "band": "medium",
    "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.2681,
+   "entities": [
+    "account:postfix",
+    "group:mail"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 166
+    }
+   ],
+   "first_seen": "2026-10-29T02:45:14.829909+00:00",
+   "last_seen": "2026-10-29T02:45:14.829909+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "member added: postfix group mail",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_member_added"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.2681,
+   "entities": [
+    "account:postfix",
+    "group:mail"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 167
+    }
+   ],
+   "first_seen": "2026-10-29T02:45:14.830289+00:00",
+   "last_seen": "2026-10-29T02:45:14.830289+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "member added: postfix group mail",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_member_added"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/at/a0000101c80ba5"
+    "path:/var/spool/at/a0000101c80bfd"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/at/a0000101c80ba5"
+      "/var/spool/at/a0000101c80bfd"
      ]
     }
    ],
@@ -357,7 +428,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/at/a0000101c80ba5 (owner UID 0)",
+   "summary": "/var/spool/at/a0000101c80bfd (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -376,19 +447,19 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.8"
+    "address:203.0.113.7"
    ],
    "entities_complete": true,
    "evidence": [
     {
-     "event": 155
+     "event": 146
     }
    ],
-   "first_seen": "2026-10-29T01:16:46.582897+00:00",
-   "last_seen": "2026-10-29T01:16:46.582897+00:00",
+   "first_seen": "2026-10-29T02:44:49.298308+00:00",
+   "last_seen": "2026-10-29T02:44:49.298308+00:00",
    "new": true,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.8 (publickey)",
+   "summary": "root from 203.0.113.7 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -399,6 +470,52 @@
    "title": "A direct root login over SSH",
    "uncertain": null,
    "variant": "root_login"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0784,
+   "entities": [
+    "group:postdrop"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 165
+    }
+   ],
+   "first_seen": "2026-10-29T02:45:14.765366+00:00",
+   "last_seen": "2026-10-29T02:45:14.765366+00:00",
+   "new": true,
+   "ratio": 1.5,
+   "summary": "created: group postdrop",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0784,
+   "entities": [
+    "group:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 163
+    }
+   ],
+   "first_seen": "2026-10-29T02:45:14.639579+00:00",
+   "last_seen": "2026-10-29T02:45:14.639579+00:00",
+   "new": true,
+   "ratio": 1.5,
+   "summary": "created: group postfix",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
   },
   {
    "band": "low",
@@ -419,8 +536,8 @@
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:16:35.750000+00:00",
-   "last_seen": "2026-10-29T01:16:35.750000+00:00",
+   "first_seen": "2026-10-29T02:44:42.850000+00:00",
+   "last_seen": "2026-10-29T02:44:42.850000+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "firewalld (pid 635): /memfd:libffi (deleted)",
@@ -699,17 +816,62 @@
   }
  ],
  "score": {
-  "band": "Low",
+  "band": "Elevated",
   "chains": [],
   "contributors": [
    {
     "capped": null,
+    "check": "account.log_changes",
+    "contribution": 1.3863,
+    "finding": 0,
+    "ratio": 4.0,
+    "share": 0.5579,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": null,
     "check": "process.injected",
     "contribution": 0.4055,
-    "finding": 4,
+    "finding": 9,
     "ratio": 1.5,
-    "share": 1.0,
+    "share": 0.1632,
     "title": "A process has libffi code mapped from memory only"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.2681,
+    "finding": 3,
+    "ratio": 4.0,
+    "share": 0.1079,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.2681,
+    "finding": 4,
+    "ratio": 4.0,
+    "share": 0.1079,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0784,
+    "finding": 7,
+    "ratio": 1.5,
+    "share": 0.0316,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0784,
+    "finding": 8,
+    "ratio": 1.5,
+    "share": 0.0316,
+    "title": "An account or group was changed (from the logs)"
    }
   ],
   "hygiene_and_exposure": {
@@ -720,10 +882,10 @@
     }
    }
   },
-  "log_odds": -3.4864,
+  "log_odds": -1.4069,
   "prior": 0.02,
   "prior_source": "golden",
-  "probability": 0.0297,
+  "probability": 0.1967,
   "version": 2
  },
  "whitelist": {

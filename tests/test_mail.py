@@ -592,3 +592,16 @@ def test_the_stream_summary_reads_sudo_s_input_logging():
     data = {"state": "sideways"}
     summary.add(Record(type="record", module="sudoers", name="sudo_input_logging", data=data))
     assert summary.sudo_input_logging == "unknown"
+
+
+def test_a_mail_server_s_chroot_devices_arent_privileged_files():
+    def node(device):
+        return {"type": "c", "uid": 0, "mode": "0666", "place": "/var", "device": device}
+
+    items = {
+        "/var/spool/postfix/dev/random": node([1, 8]),
+        "/var/spool/postfix/dev/urandom": node([1, 9]),
+        "/var/spool/postfix/dev/mem": node([1, 1]),  # a copy of /dev/mem is not harmless
+    }
+    found = of(run([], snap(privileged_files=items)), "files.privileged")
+    assert [f.summary.split(":")[0] for f in found] == ["/var/spool/postfix/dev/mem"]

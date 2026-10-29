@@ -108,6 +108,7 @@ reboots inside them informational ([whitelists](whitelists.md#maintenance-window
 | | a key that belongs to no local account (hygiene) | medium | no |
 | `ssh.guessed` | a login after 5 or more failed attempts from the same address in the 24 hours before. One attempt is logged several times (sshd's line, an invalid-user line, PAM's), so attempts are counted once per connection port and second; PAM failures (with that `rhost`) count only for addresses sshd logged none for | high | no |
 | `ssh.login` | a direct root login | medium | no |
+| `ssh.login_hours` | logins since the previous collection at hours unusual for the account: its usual hours (UTC, an hour's margin either side for summer time) learned from every earlier login the host's stored bundles hold, once each; an account needs 10 logins over 21 days first, until then coverage says how many weren't judged. The tool's own logins and its scanner account don't count | low | no |
 | | logins from an address no earlier bundle of the host saw a login from (only once earlier bundles hold some login) | medium | earlier bundles |
 | `account.password` | `su` use and password changes (info); failed `su`, wrong sudo passwords and refused sudo (low) | | no |
 | `sshd.config` | sshd settings added or removed | high for settings that change who can log in and how (PermitRootLogin, ports, key and principal files and commands, PasswordAuthentication, Match, Include…), else medium | yes |

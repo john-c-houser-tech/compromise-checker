@@ -641,6 +641,105 @@ def logins(context: Context) -> list[Finding]:
     return findings
 
 
+# Logins at unusual hours (DESIGN.md §8.3; Phase 3 decision 4): each
+# account's usual hours, learned from the host's own history.
+HOURS_MIN_DAYS = 21  # history an account needs before its hours are judged
+HOURS_MIN_LOGINS = 10
+HOURS_MARGIN = 1  # an hour either side of a usual one is usual too (summer time)
+
+
+def _login_key(event) -> tuple:
+    """One login, however many bundles logged it (logs overlap)."""
+    f = event.fields
+    return (event.corrected, f.get("user"), f.get("address"), f.get("port"))
+
+
+@check("ssh.login_hours", "Logins at hours unusual for the account")
+def login_hours(context: Context) -> list[Finding]:
+    """Judged are the logins since the previous collection (all of them on
+    the first); the history is every earlier login the host's stored
+    bundles hold, once each. The tool's own logins, and its scanner
+    account's (it logs in whenever the operator runs it), don't count."""
+    earlier = context.earlier_events()
+    every = [e for events in [*earlier, context.events] for e in events]
+    scanners = {
+        e.fields.get("user") for e in every if e.type == "ssh.login.accepted" and e.own_session
+    } | ({context.scanner} if context.scanner else set())
+    previous = parse_time(context.previous_time)
+    history: dict[str, dict[tuple, datetime]] = defaultdict(dict)
+    for event in every:
+        moment = parse_time(event.corrected)
+        user = event.fields.get("user")
+        if event.type != "ssh.login.accepted" or event.own_session or moment is None:
+            continue
+        if user in scanners or not user:
+            continue
+        if previous is None or moment <= previous:
+            history[user][_login_key(event)] = moment
+    judged: dict[str, list[tuple[int, datetime]]] = defaultdict(list)
+    for index, event in context.of("ssh.login.accepted"):
+        moment = parse_time(event.corrected)
+        user = event.fields.get("user")
+        if event.own_session or moment is None or not user or user in scanners:
+            continue
+        if previous is not None and moment <= previous:
+            continue
+        judged[user].append((index, moment.astimezone(UTC)))
+    findings, unjudged = [], 0
+    for user, logins in sorted(judged.items()):
+        past = sorted(history.get(user, {}).values())
+        if len(past) < HOURS_MIN_LOGINS or (past[-1] - past[0]) < timedelta(days=HOURS_MIN_DAYS):
+            unjudged += 1
+            continue
+        usual = {
+            (moment.astimezone(UTC).hour + shift) % 24
+            for moment in past
+            for shift in range(-HOURS_MARGIN, HOURS_MARGIN + 1)
+        }
+        odd = [(i, m) for i, m in logins if m.hour not in usual]
+        if not odd:
+            continue
+        hours = sorted({m.hour for _, m in odd})
+        findings.append(
+            Finding(
+                "ssh.login_hours",
+                "Logins at hours unusual for the account",
+                COMPROMISE,
+                "low",
+                f"{user}: {len(odd)} login(s) at {', '.join(f'{h:02d}:00' for h in hours)} UTC;"
+                f" usually {_hour_ranges(usual)} UTC ({len(past)} logins over"
+                f" {(past[-1] - past[0]).days} days)",
+                [f"account:{user}"],
+                [{"event": i} for i, _ in odd[:20]],
+                odd[0][1].isoformat(),
+                odd[-1][1].isoformat(),
+            )
+        )
+    if unjudged:
+        context.gaps.append(
+            f"login hours not judged for {unjudged} account{'s' if unjudged != 1 else ''}:"
+            f" fewer than {HOURS_MIN_LOGINS} logins or {HOURS_MIN_DAYS} days of history"
+        )
+    return findings
+
+
+def _hour_ranges(hours: set[int]) -> str:
+    """{8, 9, 10, 17} as "08-10, 17"."""
+    ranges, run = [], []
+    for hour in sorted(hours):
+        if run and hour == run[-1] + 1:
+            run.append(hour)
+        else:
+            if run:
+                ranges.append(run)
+            run = [hour]
+    if run:
+        ranges.append(run)
+    if len(ranges) > 1 and ranges[0][0] == 0 and ranges[-1][-1] == 23:
+        ranges[0] = ranges.pop() + ranges[0]  # across midnight
+    return ", ".join(f"{r[0]:02d}" if len(r) == 1 else f"{r[0]:02d}-{r[-1]:02d}" for r in ranges)
+
+
 @check("account.password", "su use, password changes and refused sudo")
 def su_and_passwords(context: Context) -> list[Finding]:
     kinds = {

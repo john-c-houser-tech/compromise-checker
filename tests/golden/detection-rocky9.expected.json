@@ -291,6 +291,11 @@
    "status": "ran"
   },
   {
+   "check": "ssh.login_hours",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "sshd.config",
    "findings": 1,
    "status": "ran"

@@ -284,6 +284,7 @@ def analyze(
         "checks": ran,
         "coverage": coverage(row, identity, parsed.events, parsed.summary, snapshot),
     }
+    assessment["coverage"]["gaps"] += context.gaps
     store_assessment(store, row, recipients, assessment)
     return assessment
 

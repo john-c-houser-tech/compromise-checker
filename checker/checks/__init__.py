@@ -20,8 +20,8 @@ from checker.snapshot import Snapshot
 # entities_complete; 5: sudo.rules name the account or group; 6: account
 # and key variants; 7: network checks (8.8); 8: anti-forensics (8.10); 9:
 # software changes (8.11); 10: outgoing mail (8.9); 11: web applications (8.12);
-# 12: containers (8.13).
-CHECKS_VERSION = 12
+# 12: containers (8.13); 13: logins at unusual hours (Phase 3, decision 4).
+CHECKS_VERSION = 13
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"
@@ -87,6 +87,9 @@ class Context:
     # (mail volume), and its live part against this one's (queue size).
     baseline_time: str | None = None
     baseline_snapshot: Snapshot | None = None
+    # What a check couldn't judge, for the assessment's coverage (checks add
+    # to it as they run).
+    gaps: list[str] = field(default_factory=list)
 
     def of(self, *types: str) -> Iterator[tuple[int, Event]]:
         """(index, event) for events of these types (or type prefixes ending

@@ -766,8 +766,12 @@ def build(layers: list[tuple[str, str, Layer]]) -> Whitelist:
             raise WhitelistError(f"{file}: rule id {rule.id!r} is already used in the set")
         placed.append(Placed(rule, label, file))
 
+    applied: set[str] = set()
     for label, file, layer in layers:
         for name in layer.profiles:
+            if name in applied:
+                continue  # named by a wider layer too: its rules are in already
+            applied.add(name)
             path = profile_file(name)
             profile = read_layer(path)
             for rule in [*profile.rules, *profile.maintenance]:

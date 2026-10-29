@@ -452,7 +452,7 @@ async def detect(
             # On standard input, not as `bash -c <script>`: otherwise the
             # script's own shell would carry every pattern its pgrep checks
             # look for, and they would always succeed.
-            done = await conn.run("bash -s", input=attacks, timeout=300)
+            done = await conn.run("bash -s", input=attacks, timeout=900)
             for line in done.stderr.splitlines():
                 if line.startswith("ATTACK FAILED"):
                     result.missing.append(line)

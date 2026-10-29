@@ -193,20 +193,24 @@ Each change, with the reason the results gave for it:
 - **Accounts a package creates are low, not medium** (`account.log_changes`).
   Installing Postfix, nginx or PHP-FPM creates accounts and groups and adds
   them to groups; on clean servers these were the largest contributors
-  (Ubuntu 14%, Rocky 20%). An account with a system UID, no login shell,
-  made with no terminal (`useradd`'s `from=none`: a package's install
-  script), and such an account's group memberships, are now low. A login
-  shell, a terminal, a person's UID or UID 0 keep them medium, and a root
-  group keeps a membership high. Clean golden servers: Ubuntu 5.8%, Rocky
-  8.4%, both Low.
+  (Ubuntu 14%, Rocky 20%). An account logged within 15 minutes of a
+  package's install (the snapshot's install times), with a system UID, no
+  login shell as logged and as it is now, made with no terminal
+  (`useradd`'s `from=none`), and such an account's group memberships, are
+  now low. "No terminal" alone proves nothing (any script has none, a web
+  shell's too): the install nearby is the evidence. A login shell, a
+  terminal, a person's UID, UID 0, a web account, or no install nearby
+  keep them medium, and a root or root-equivalent group (now also
+  `libvirt`, `incus-admin`, `kmem`) keeps a membership high.
 - **`(sd-pam)` is judged by what PID 1 loaded** (`process.injected`). It is
   forked from PID 1's child before that becomes the user manager, so it
   holds the libraries PID 1 loaded at boot; an update replacing one made it
   look like code from a deleted file (high on Ubuntu 22.04). It is now the
   replaced-library hygiene finding, as the rest of the system is.
-- **The `base` profile** suppresses Python's libffi closures (firewalld on
-  the RHEL family; the `libffi` kind only, for the system's Python) and
-  AlmaLinux 10's `/boot/efi` modes.
+- **The `base` profile** suppresses firewalld's libffi closures (on the
+  RHEL family; the `libffi` kind only, firewalld only, on the system's
+  Python) and AlmaLinux 10's `/boot/efi` modes. A profile named in several
+  layers applies once.
 - Four medium findings from different checks still take a 2% prior to
   about 72%: kept, since four unrelated medium signs on one host are worth
   a look; the fixes above stop clean servers producing them.

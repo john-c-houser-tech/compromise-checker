@@ -1,5 +1,8 @@
 # Compromise Checker's web profile, for hosts whose web applications send
-# their own mail (plan 2.10). Apply with `profiles: [base, web]`.
+# their own mail (plan 2.10). Apply with `profiles: [base, web]` only where
+# the application does send mail: with it, mail a web shell sends is seen
+# only in bulk (mail.volume, mail.domains, which need a baseline), not one
+# message at a time.
 rules:
   - id: web-app-mail-www-data
     match: {check: mail.web_user, account: www-data}

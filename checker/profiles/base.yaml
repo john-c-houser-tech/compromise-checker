@@ -3,18 +3,14 @@
 # Apply it with `profiles: [base]` in a whitelist file. Every rule here
 # names what it covers narrowly; none hides a whole check.
 rules:
-  - id: base-python-libffi
-    match: {check: process.injected, variant: libffi, exe: "/usr/bin/python3*"}
+  - id: base-firewalld-libffi
+    match: {check: process.injected, variant: libffi, exe: "/usr/bin/python3*", program: firewalld}
     reason: >-
-      Python's ctypes (firewalld on RHEL, Rocky and Alma; cloud-init) has
-      libffi make its closures in memory-only files. Only the libffi kind,
-      only for the system's Python: code from a deleted or scratch file
-      stays a finding.
-    owner: Compromise Checker defaults
-    expires: never
-  - id: base-platform-python-libffi
-    match: {check: process.injected, variant: libffi, exe: /usr/libexec/platform-python*}
-    reason: RHEL's platform Python (firewalld, dnf) makes libffi closures in memory too.
+      firewalld (RHEL, Rocky, Alma) runs on Python, whose ctypes has libffi
+      make its closures in memory-only files. Only the libffi kind, only
+      firewalld on the system's Python: another Python process with such a
+      file stays a (low) finding, and code from a deleted or scratch file
+      always does.
     owner: Compromise Checker defaults
     expires: never
   - id: base-efi-directory-mode

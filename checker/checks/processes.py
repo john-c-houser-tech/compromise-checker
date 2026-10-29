@@ -101,7 +101,15 @@ def _updated_since(context: Context, process: dict, mapping: str | None = None) 
     # manager: it holds what PID 1 loaded, though its listed parent (the
     # user manager, a fresh program) doesn't.
     first = processes.get(1)
-    if first is not None and first is not process and holds(first):
+    manager = processes.get(process.get("ppid"))
+    if (
+        process.get("comm") == "(sd-pam)"
+        and first is not None
+        and manager is not None
+        and manager.get("ppid") == 1
+        and str(manager.get("exe") or "") == str(process.get("exe") or "")
+        and holds(first)
+    ):
         starts.append(first.get("start_time"))
     try:
         loaded = min(datetime.fromisoformat(str(t)) for t in starts if t)

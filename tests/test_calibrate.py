@@ -47,6 +47,8 @@ def test_done_means_2_and_3_are_judged():
         "ubuntu24.04 (clean) scored Elevated (14.0%)",
         "ubuntu24.04: chain web-shell-used: not found",
     ]
+    _, problems = calibrate.table([], [{"distro": "x", "probability": 0.3, "band": "Elevated"}])
+    assert problems == ["x (compromised) scored Elevated (30.0%)"]
 
 
 def test_the_table_goes_between_its_markers(tmp_path, monkeypatch):

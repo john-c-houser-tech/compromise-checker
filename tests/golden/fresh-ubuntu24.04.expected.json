@@ -319,6 +319,59 @@
    "check": "account.log_changes",
    "contribution": 0.0,
    "entities": [
+    "account:dnsmasq"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 158
+    }
+   ],
+   "first_seen": "2026-10-29T07:15:32.252904+00:00",
+   "last_seen": "2026-10-29T07:15:32.252904+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: dnsmasq UID 999",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account).",
+    "rule": "proof-docker-dnsmasq-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 1.3863,
+   "entities": [
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 174
+    }
+   ],
+   "first_seen": "2026-10-29T07:15:51.981193+00:00",
+   "last_seen": "2026-10-29T07:15:51.981193+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: postfix UID 110",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
     "account:proofuser"
    ],
    "entities_complete": true,
@@ -443,36 +496,6 @@
    "check": "account.log_changes",
    "contribution": 0.0,
    "entities": [
-    "account:dnsmasq"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 158
-    }
-   ],
-   "first_seen": "2026-10-29T07:15:32.252904+00:00",
-   "last_seen": "2026-10-29T07:15:32.252904+00:00",
-   "new": true,
-   "ratio": 1.5,
-   "summary": "created: dnsmasq UID 999",
-   "suppressed_by": {
-    "file": "tests/integration/proof-whitelist.yaml",
-    "layer": "host ubuntu24.04",
-    "owner": "compromise-checker proofs",
-    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account).",
-    "rule": "proof-docker-dnsmasq-account"
-   },
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0,
-   "entities": [
     "group:docker"
    ],
    "entities_complete": true,
@@ -501,7 +524,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.4055,
+   "contribution": 0.231,
    "entities": [
     "group:postdrop"
    ],
@@ -565,29 +588,6 @@
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "group_created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.231,
-   "entities": [
-    "account:postfix"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 174
-    }
-   ],
-   "first_seen": "2026-10-29T07:15:51.981193+00:00",
-   "last_seen": "2026-10-29T07:15:51.981193+00:00",
-   "new": true,
-   "ratio": 1.5,
-   "summary": "created: postfix UID 110",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
   },
   {
    "band": "low",
@@ -941,16 +941,16 @@
   }
  ],
  "score": {
-  "band": "Low",
+  "band": "Elevated",
   "chains": [],
   "contributors": [
    {
     "capped": null,
     "check": "account.log_changes",
-    "contribution": 0.4055,
-    "finding": 6,
-    "ratio": 1.5,
-    "share": 0.3691,
+    "contribution": 1.3863,
+    "finding": 1,
+    "ratio": 4.0,
+    "share": 0.6667,
     "title": "An account or group was changed (from the logs)"
    },
    {
@@ -959,7 +959,7 @@
     "contribution": 0.231,
     "finding": 7,
     "ratio": 1.5,
-    "share": 0.2103,
+    "share": 0.1111,
     "title": "An account or group was changed (from the logs)"
    },
    {
@@ -968,7 +968,7 @@
     "contribution": 0.231,
     "finding": 8,
     "ratio": 1.5,
-    "share": 0.2103,
+    "share": 0.1111,
     "title": "An account or group was changed (from the logs)"
    },
    {
@@ -977,7 +977,7 @@
     "contribution": 0.231,
     "finding": 9,
     "ratio": 1.5,
-    "share": 0.2103,
+    "share": 0.1111,
     "title": "An account or group was changed (from the logs)"
    }
   ],
@@ -990,10 +990,10 @@
     }
    }
   },
-  "log_odds": -2.7932,
+  "log_odds": -1.8124,
   "prior": 0.02,
   "prior_source": "golden",
-  "probability": 0.0577,
+  "probability": 0.1404,
   "version": 2
  },
  "whitelist": {

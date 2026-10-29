@@ -31,16 +31,36 @@ def rules(name):
     return {r.id: r for r in read_layer(profile_file(name)).rules}
 
 
-def test_base_lets_python_s_libffi_through_but_no_other_injection():
-    def injected(exe, mapping):
-        p = proc(635, "firewalld", exe=exe, suspicious_mappings=[mapping])
+def test_base_lets_firewalld_s_libffi_through_but_no_other_injection():
+    def injected(comm, exe, mapping):
+        p = proc(635, comm, exe=exe, suspicious_mappings=[mapping])
         found = of(run([], snap({"processes": [p], "sockets": []})), "process.injected")
         return found[0].as_dict()
 
-    rule = rules("base")["base-python-libffi"]
-    assert matches(rule.match, injected("/usr/bin/python3.9", "/memfd:libffi (deleted)"))
-    assert not matches(rule.match, injected("/usr/bin/python3.9", "/tmp/.x.so (deleted)"))
-    assert not matches(rule.match, injected("/tmp/python3", "/memfd:libffi (deleted)"))
+    rule = rules("base")["base-firewalld-libffi"]
+    assert matches(
+        rule.match, injected("firewalld", "/usr/bin/python3.9", "/memfd:libffi (deleted)")
+    )
+    # Another Python program, a scratch file, a Python outside the system: not.
+    assert not matches(
+        rule.match, injected("loader", "/usr/bin/python3.9", "/memfd:libffi (deleted)")
+    )
+    assert not matches(
+        rule.match, injected("firewalld", "/usr/bin/python3.9", "/tmp/.x.so (deleted)")
+    )
+    assert not matches(rule.match, injected("firewalld", "/tmp/python3", "/memfd:libffi (deleted)"))
+
+
+def test_a_profile_named_in_two_layers_applies_once(tmp_path, monkeypatch):
+    from checker.whitelist import Layer, build
+
+    layers = [
+        ("global", "global.yaml", Layer(profiles=["base"])),
+        ("host web01", "hosts/web01.yaml", Layer(profiles=["base", "web", "base"])),
+    ]
+    whitelist = build(layers)
+    ids = [placed.rule.id for placed in whitelist.rules]
+    assert len(ids) == len(set(ids)) and "base-firewalld-libffi" in ids
 
 
 def test_web_lets_its_application_s_mail_through_not_volume():
@@ -77,54 +97,85 @@ def test_useradd_lines(line, fields):
     assert found == fields
 
 
-def created(user, uid, shell, origin):
-    return ev("account.created", 1, user=user, uid=uid, shell=shell, origin=origin)
+def created(user, uid, shell, origin, minutes=1):
+    fields = {"user": user, "uid": uid, "shell": shell}
+    if origin is not None:
+        fields["origin"] = origin
+    return ev("account.created", minutes, **fields)
 
 
-def test_a_package_s_account_is_low_anyone_else_s_medium():
-    findings = of(
-        run(
-            [
-                created("postfix", "110", "/usr/sbin/nologin", "none"),
-                created("apache", "48", "/sbin/nologin", "none"),
-                # A login shell, a terminal, a person's UID, UID 0: medium (or more).
-                created("svc", "998", "/bin/bash", "none"),
-                created("svc2", "997", "/usr/sbin/nologin", "/dev/pts/0"),
-                created("eve", "1001", "/usr/sbin/nologin", "none"),
-                created("toor", "0", "/usr/sbin/nologin", "none"),
-            ]
-        ),
-        "account.log_changes",
+INSTALLED = {
+    "postfix amd64": {"version": "3.8", "installed": (T0 + timedelta(minutes=2)).timestamp()}
+}
+
+
+def bands_of(events, **sections):
+    sections.setdefault("packages", INSTALLED)
+    return {
+        f.summary.split(": ")[1].split(" ")[0]
+        if "group" not in f.summary
+        else f.summary.split(": ")[1]: f.band
+        for f in of(run(events, snap(**sections)), "account.log_changes")
+    }
+
+
+def test_an_account_a_package_install_made_is_low_any_other_medium():
+    bands = bands_of(
+        [
+            created("postfix", "110", "/usr/sbin/nologin", "none"),
+            # A login shell, a terminal, a person's UID, UID 0, no origin
+            # logged, a web account (a web shell's), long after any install.
+            created("svc", "998", "/bin/bash", "none"),
+            created("svc2", "997", "/usr/sbin/nologin", "/dev/pts/0"),
+            created("eve", "1001", "/usr/sbin/nologin", "none"),
+            created("toor", "0", "/usr/sbin/nologin", "none"),
+            created("old", "996", "/usr/sbin/nologin", None),
+            created("www-data", "33", "/usr/sbin/nologin", "none"),
+            created("late", "995", "/usr/sbin/nologin", "none", minutes=120),
+        ]
     )
-    bands = {f.summary.split(" ")[1]: f.band for f in findings}
     assert bands == {
         "postfix": "low",
-        "apache": "low",
         "svc": "medium",
         "svc2": "medium",
         "eve": "medium",
         "toor": "medium",
+        "old": "medium",
+        "www-data": "medium",
+        "late": "medium",
     }
+
+
+def test_a_scripted_account_with_no_install_nearby_stays_medium():
+    events = [created("backdoor", "990", "/usr/sbin/nologin", "none")]
+    assert bands_of(events, packages={}) == {"backdoor": "medium"}
+
+
+def test_an_account_given_a_login_shell_since_isn_t_a_package_s():
+    events = [created("postfix", "110", "/usr/sbin/nologin", "none")]
+    accounts = {"postfix": {"uid": 110, "shell": "/bin/bash"}}
+    assert bands_of(events, accounts=accounts) == {"postfix": "medium"}
 
 
 def test_a_package_account_joining_a_group_is_low():
     accounts = {
         "postfix": {"uid": 89, "shell": "/sbin/nologin"},
         "eve": {"uid": 1001, "shell": "/bin/bash"},
+        "www-data": {"uid": 33, "shell": "/usr/sbin/nologin"},
     }
     events = [
         ev("group.member_added", 1, user="postfix", group="mail"),
         ev("group.member_added", 2, user="eve", group="mail"),
         ev("group.member_added", 3, user="postfix", group="wheel"),  # a root group: high
+        ev("group.member_added", 3, user="postfix", group="libvirt"),  # root-equivalent too
+        ev("group.member_added", 4, user="www-data", group="adm"),  # a web account: never
     ]
-    found = {
-        (f.summary.split(": ")[1]): f.band
-        for f in of(run(events, snap(accounts=accounts)), "account.log_changes")
-    }
-    assert found == {
+    assert bands_of(events, accounts=accounts) == {
         "postfix group mail": "low",
         "eve group mail": "medium",
         "postfix group wheel": "high",
+        "postfix group libvirt": "high",
+        "www-data group adm": "medium",
     }
 
 
@@ -176,3 +227,18 @@ def test_sd_pam_holds_what_pid_1_loaded():
     )
     [evil] = [f for f in found if "pid 901" in f.summary]
     assert (evil.variant, evil.band) == ("deleted", "high")
+    # PID 1's own program run by hand, holding its library: not (sd-pam).
+    processes[2] = proc(
+        901,
+        "systemd",
+        exe="/usr/lib/systemd/systemd",
+        start_time=login.isoformat(),
+        suspicious_mappings=[lib],
+        ppid=900,
+    )
+    found = of(
+        run([], snap({"processes": processes, "sockets": []}, checksum_store=checksum)),
+        "process.injected",
+    )
+    [other] = [f for f in found if "pid 901" in f.summary]
+    assert (other.variant, other.band) == ("deleted", "high")

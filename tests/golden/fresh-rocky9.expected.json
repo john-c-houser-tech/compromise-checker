@@ -317,6 +317,75 @@
    "band": "medium",
    "category": "compromise indicator",
    "check": "account.log_changes",
+   "contribution": 1.3863,
+   "entities": [
+    "account:apache"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 192
+    }
+   ],
+   "first_seen": "2026-10-29T07:21:21.598814+00:00",
+   "last_seen": "2026-10-29T07:21:21.598814+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: apache UID 48",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.1846,
+   "entities": [
+    "account:nginx"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 190
+    }
+   ],
+   "first_seen": "2026-10-29T07:21:21.426169+00:00",
+   "last_seen": "2026-10-29T07:21:21.426169+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: nginx UID 995",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.1846,
+   "entities": [
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 177
+    }
+   ],
+   "first_seen": "2026-10-29T07:21:09.732413+00:00",
+   "last_seen": "2026-10-29T07:21:09.732413+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: postfix UID 89",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
    "contribution": 0.0,
    "entities": [
     "account:proofuser"
@@ -441,30 +510,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.4055,
-   "entities": [
-    "account:apache"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 192
-    }
-   ],
-   "first_seen": "2026-10-29T07:21:21.598814+00:00",
-   "last_seen": "2026-10-29T07:21:21.598814+00:00",
-   "new": true,
-   "ratio": 1.5,
-   "summary": "created: apache UID 48",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0866,
+   "contribution": 0.054,
    "entities": [
     "group:apache"
    ],
@@ -487,7 +533,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0866,
+   "contribution": 0.054,
    "entities": [
     "group:nginx"
    ],
@@ -510,7 +556,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0866,
+   "contribution": 0.054,
    "entities": [
     "group:postdrop"
    ],
@@ -533,7 +579,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0866,
+   "contribution": 0.054,
    "entities": [
     "group:postfix"
    ],
@@ -556,53 +602,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0866,
-   "entities": [
-    "account:nginx"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 190
-    }
-   ],
-   "first_seen": "2026-10-29T07:21:21.426169+00:00",
-   "last_seen": "2026-10-29T07:21:21.426169+00:00",
-   "new": true,
-   "ratio": 1.5,
-   "summary": "created: nginx UID 995",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0866,
-   "entities": [
-    "account:postfix"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 177
-    }
-   ],
-   "first_seen": "2026-10-29T07:21:09.732413+00:00",
-   "last_seen": "2026-10-29T07:21:09.732413+00:00",
-   "new": true,
-   "ratio": 1.5,
-   "summary": "created: postfix UID 89",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0866,
+   "contribution": 0.054,
    "entities": [
     "account:postfix",
     "group:mail"
@@ -626,7 +626,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0866,
+   "contribution": 0.054,
    "entities": [
     "account:postfix",
     "group:mail"
@@ -968,16 +968,16 @@
   }
  ],
  "score": {
-  "band": "Low",
+  "band": "Elevated",
   "chains": [],
   "contributors": [
    {
     "capped": null,
     "check": "account.log_changes",
-    "contribution": 0.4055,
-    "finding": 4,
-    "ratio": 1.5,
-    "share": 0.2696,
+    "contribution": 1.3863,
+    "finding": 0,
+    "ratio": 4.0,
+    "share": 0.5579,
     "title": "An account or group was changed (from the logs)"
    },
    {
@@ -986,79 +986,79 @@
     "contribution": 0.4055,
     "finding": 13,
     "ratio": 1.5,
-    "share": 0.2696,
+    "share": 0.1632,
     "title": "A process has libffi code mapped from memory only"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0866,
-    "finding": 5,
-    "ratio": 1.5,
-    "share": 0.0576,
+    "contribution": 0.1846,
+    "finding": 1,
+    "ratio": 4.0,
+    "share": 0.0743,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0866,
-    "finding": 6,
-    "ratio": 1.5,
-    "share": 0.0576,
+    "contribution": 0.1846,
+    "finding": 2,
+    "ratio": 4.0,
+    "share": 0.0743,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0866,
+    "contribution": 0.054,
     "finding": 7,
     "ratio": 1.5,
-    "share": 0.0576,
+    "share": 0.0217,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0866,
+    "contribution": 0.054,
     "finding": 8,
     "ratio": 1.5,
-    "share": 0.0576,
+    "share": 0.0217,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0866,
+    "contribution": 0.054,
     "finding": 9,
     "ratio": 1.5,
-    "share": 0.0576,
+    "share": 0.0217,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0866,
+    "contribution": 0.054,
     "finding": 10,
     "ratio": 1.5,
-    "share": 0.0576,
+    "share": 0.0217,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0866,
+    "contribution": 0.054,
     "finding": 11,
     "ratio": 1.5,
-    "share": 0.0576,
+    "share": 0.0217,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0866,
+    "contribution": 0.054,
     "finding": 12,
     "ratio": 1.5,
-    "share": 0.0576,
+    "share": 0.0217,
     "title": "An account or group was changed (from the logs)"
    }
   ],
@@ -1070,10 +1070,10 @@
     }
    }
   },
-  "log_odds": -2.3877,
+  "log_odds": -1.4069,
   "prior": 0.02,
   "prior_source": "golden",
-  "probability": 0.0841,
+  "probability": 0.1967,
   "version": 2
  },
  "whitelist": {

@@ -1174,6 +1174,29 @@
    "check": "account.log_changes",
    "contribution": 1.3863,
    "entities": [
+    "account:apache"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 194
+    }
+   ],
+   "first_seen": "2026-10-29T07:21:21.599049+00:00",
+   "last_seen": "2026-10-29T07:21:21.599049+00:00",
+   "new": false,
+   "ratio": 4.0,
+   "summary": "created: apache UID 48",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.1204,
+   "entities": [
     "account:cc-toor"
    ],
    "entities_complete": true,
@@ -1187,6 +1210,52 @@
    "new": true,
    "ratio": 4.0,
    "summary": "created: cc-toor UID 0",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.1204,
+   "entities": [
+    "account:nginx"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 192
+    }
+   ],
+   "first_seen": "2026-10-29T07:21:21.426404+00:00",
+   "last_seen": "2026-10-29T07:21:21.426404+00:00",
+   "new": false,
+   "ratio": 4.0,
+   "summary": "created: nginx UID 995",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.1204,
+   "entities": [
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 174
+    }
+   ],
+   "first_seen": "2026-10-29T07:21:09.732648+00:00",
+   "last_seen": "2026-10-29T07:21:09.732648+00:00",
+   "new": false,
+   "ratio": 4.0,
+   "summary": "created: postfix UID 89",
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "created"
@@ -1247,6 +1316,29 @@
     "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up.",
     "rule": "proof-scanner-account"
    },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.1204,
+   "entities": [
+    "account:www-data"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 229
+    }
+   ],
+   "first_seen": "2026-10-29T07:22:14.875528+00:00",
+   "last_seen": "2026-10-29T07:22:14.875528+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: www-data UID 994",
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "created"
@@ -1877,30 +1969,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0693,
-   "entities": [
-    "account:apache"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 194
-    }
-   ],
-   "first_seen": "2026-10-29T07:21:21.599049+00:00",
-   "last_seen": "2026-10-29T07:21:21.599049+00:00",
-   "new": false,
-   "ratio": 1.5,
-   "summary": "created: apache UID 48",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0693,
+   "contribution": 0.0352,
    "entities": [
     "group:apache"
    ],
@@ -1923,7 +1992,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0693,
+   "contribution": 0.0352,
    "entities": [
     "group:nginx"
    ],
@@ -1946,7 +2015,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0693,
+   "contribution": 0.0352,
    "entities": [
     "group:postdrop"
    ],
@@ -1969,7 +2038,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0693,
+   "contribution": 0.0352,
    "entities": [
     "group:postfix"
    ],
@@ -1992,76 +2061,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0693,
-   "entities": [
-    "account:nginx"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 192
-    }
-   ],
-   "first_seen": "2026-10-29T07:21:21.426404+00:00",
-   "last_seen": "2026-10-29T07:21:21.426404+00:00",
-   "new": false,
-   "ratio": 1.5,
-   "summary": "created: nginx UID 995",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0693,
-   "entities": [
-    "account:postfix"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 174
-    }
-   ],
-   "first_seen": "2026-10-29T07:21:09.732648+00:00",
-   "last_seen": "2026-10-29T07:21:09.732648+00:00",
-   "new": false,
-   "ratio": 1.5,
-   "summary": "created: postfix UID 89",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0693,
-   "entities": [
-    "account:www-data"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 229
-    }
-   ],
-   "first_seen": "2026-10-29T07:22:14.875528+00:00",
-   "last_seen": "2026-10-29T07:22:14.875528+00:00",
-   "new": true,
-   "ratio": 1.5,
-   "summary": "created: www-data UID 994",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0693,
+   "contribution": 0.0352,
    "entities": [
     "account:postfix",
     "group:mail"
@@ -2085,7 +2085,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0693,
+   "contribution": 0.0352,
    "entities": [
     "account:postfix",
     "group:mail"
@@ -2899,7 +2899,7 @@
     "capped": null,
     "check": "mail.web_user",
     "contribution": 1.3863,
-    "finding": 33,
+    "finding": 37,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "Mail submitted by a web-server account"
@@ -2908,7 +2908,7 @@
     "capped": null,
     "check": "net.config",
     "contribution": 1.3863,
-    "finding": 34,
+    "finding": 38,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "A network configuration file was changed"
@@ -2917,7 +2917,7 @@
     "capped": null,
     "check": "net.metadata",
     "contribution": 1.3863,
-    "finding": 35,
+    "finding": 39,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "A program other than the cloud agent reached the metadata address"
@@ -2926,7 +2926,7 @@
     "capped": null,
     "check": "net.tunnel",
     "contribution": 1.3863,
-    "finding": 36,
+    "finding": 40,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "An SSH client forwarding ports (a tunnel)"
@@ -2935,7 +2935,7 @@
     "capped": null,
     "check": "persistence.changes",
     "contribution": 1.3863,
-    "finding": 39,
+    "finding": 43,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "A new cron file"
@@ -2944,7 +2944,7 @@
     "capped": null,
     "check": "software.repository",
     "contribution": 1.3863,
-    "finding": 42,
+    "finding": 46,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "A package signing key was added"
@@ -2953,7 +2953,7 @@
     "capped": null,
     "check": "software.tools",
     "contribution": 1.3863,
-    "finding": 44,
+    "finding": 48,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "An attack or tunnelling tool was installed"
@@ -2962,7 +2962,7 @@
     "capped": null,
     "check": "ssh.login",
     "contribution": 1.3863,
-    "finding": 46,
+    "finding": 50,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "Logins from an address never seen before"
@@ -2971,7 +2971,7 @@
     "capped": null,
     "check": "web.exploit",
     "contribution": 1.3863,
-    "finding": 49,
+    "finding": 53,
     "ratio": 4.0,
     "share": 0.0174,
     "title": "A traversal attack answered"
@@ -3025,7 +3025,7 @@
     "capped": "family",
     "check": "net.tunnel",
     "contribution": 0.6931,
-    "finding": 37,
+    "finding": 41,
     "ratio": 4.0,
     "share": 0.0087,
     "title": "An SSH session listening on a port (a remote forward)"
@@ -3034,7 +3034,7 @@
     "capped": "family",
     "check": "software.repository",
     "contribution": 0.6931,
-    "finding": 43,
+    "finding": 47,
     "ratio": 4.0,
     "share": 0.0087,
     "title": "A package repository was added"
@@ -3043,7 +3043,7 @@
     "capped": "family",
     "check": "software.tools",
     "contribution": 0.6931,
-    "finding": 45,
+    "finding": 49,
     "ratio": 4.0,
     "share": 0.0087,
     "title": "An attack or tunnelling tool was installed"
@@ -3115,7 +3115,7 @@
     "capped": "family",
     "check": "persistence.changes",
     "contribution": 0.3466,
-    "finding": 40,
+    "finding": 44,
     "ratio": 4.0,
     "share": 0.0043,
     "title": "A new systemd file"
@@ -3124,7 +3124,7 @@
     "capped": "family",
     "check": "persistence.changes",
     "contribution": 0.3466,
-    "finding": 41,
+    "finding": 45,
     "ratio": 4.0,
     "share": 0.0043,
     "title": "A new systemd file"
@@ -3222,91 +3222,91 @@
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0693,
-    "finding": 50,
-    "ratio": 1.5,
-    "share": 0.0009,
+    "contribution": 0.1204,
+    "finding": 31,
+    "ratio": 4.0,
+    "share": 0.0015,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0693,
-    "finding": 51,
-    "ratio": 1.5,
-    "share": 0.0009,
+    "contribution": 0.1204,
+    "finding": 32,
+    "ratio": 4.0,
+    "share": 0.0015,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0693,
-    "finding": 52,
-    "ratio": 1.5,
-    "share": 0.0009,
+    "contribution": 0.1204,
+    "finding": 33,
+    "ratio": 4.0,
+    "share": 0.0015,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0693,
-    "finding": 53,
-    "ratio": 1.5,
-    "share": 0.0009,
+    "contribution": 0.1204,
+    "finding": 36,
+    "ratio": 4.0,
+    "share": 0.0015,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0693,
+    "contribution": 0.0352,
     "finding": 54,
     "ratio": 1.5,
-    "share": 0.0009,
+    "share": 0.0004,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0693,
+    "contribution": 0.0352,
     "finding": 55,
     "ratio": 1.5,
-    "share": 0.0009,
+    "share": 0.0004,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0693,
+    "contribution": 0.0352,
     "finding": 56,
     "ratio": 1.5,
-    "share": 0.0009,
+    "share": 0.0004,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0693,
+    "contribution": 0.0352,
     "finding": 57,
     "ratio": 1.5,
-    "share": 0.0009,
+    "share": 0.0004,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0693,
+    "contribution": 0.0352,
     "finding": 58,
     "ratio": 1.5,
-    "share": 0.0009,
+    "share": 0.0004,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "account.log_changes",
-    "contribution": 0.0693,
+    "contribution": 0.0352,
     "finding": 59,
     "ratio": 1.5,
-    "share": 0.0009,
+    "share": 0.0004,
     "title": "An account or group was changed (from the logs)"
    }
   ],

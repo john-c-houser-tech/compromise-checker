@@ -50,11 +50,12 @@ disable:
 (`checker/profiles/`), owned by "Compromise Checker defaults", each rule
 with its reason:
 
-- `base`, for every host: Python's libffi closures (firewalld on the RHEL
-  family), AlmaLinux 10's `/boot/efi` modes;
-- `web`, for hosts whose web applications send their own mail:
-  `mail.web_user` for `www-data`, `apache`, `nginx` (bursts and new domains
-  still show);
+- `base`, for every host: firewalld's libffi closures (the RHEL family),
+  AlmaLinux 10's `/boot/efi` modes;
+- `web`, only for hosts whose web applications send their own mail:
+  `mail.web_user` for `www-data`, `apache`, `nginx`. With it, mail a web
+  shell sends shows only in bulk (`mail.volume`, `mail.domains`, which
+  need a baseline), not message by message;
 - `database`: database servers' own listeners (`mysql`, `postgres`,
   `redis`, `mongodb`, `mongod`);
 - `mail`, for relays: daily volume and new recipient domains (broad, on

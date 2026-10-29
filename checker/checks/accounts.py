@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from checker.checks import (
     COMPROMISE,
@@ -15,10 +15,23 @@ from checker.checks import (
     parse_time,
     span,
 )
+from checker.checks.web import WEB_USERS
 
 SYSTEM_UID_MAX = 999  # service accounts: 1-999 (login.defs SYS_UID_MAX)
 NO_LOGIN = ("nologin", "false", "sync", "shutdown", "halt")
-ROOT_GROUPS = {"root", "wheel", "sudo", "admin", "docker", "lxd", "disk", "shadow"}
+ROOT_GROUPS = {
+    "root",
+    "wheel",
+    "sudo",
+    "admin",
+    "docker",
+    "lxd",
+    "incus-admin",
+    "libvirt",
+    "disk",
+    "kmem",
+    "shadow",
+}
 LOG_GROUPS = {"adm", "systemd-journal"}
 # A "too many failures" line repeats the last attempt, so it isn't counted.
 FAILURES = ("ssh.login.failed", "ssh.invalid_user", "auth.failure")
@@ -260,25 +273,48 @@ LOG_CHANGE_VARIANTS = (
 
 
 NO_LOGIN_SHELL = re.compile(r"(?:^|/)(?:nologin|false)$")
-SYSTEM_UID_MAX = 999
+# How close to a package's install an account it made is logged.
+PACKAGE_WINDOW = timedelta(minutes=15)
 
 
-def _package_account(context: Context, fields: dict) -> bool:
-    """A package's own account: a system UID and no login shell, made with
-    no terminal (useradd's from=none: a package's install script), or, for
-    a group membership, an existing such account. It can't log in; a
-    package installing (software.packages) is the change worth knowing."""
+def _package_installs(context: Context) -> list[datetime]:
+    times = []
+    for item in context.items("packages").values():
+        try:
+            times.append(datetime.fromtimestamp(float(item["installed"]), UTC))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    return times
+
+
+def _package_account(context: Context, event, installs: list[datetime]) -> bool:
+    """A package's own account: logged within minutes of a package being
+    installed (no terminal is no proof: any script has none), a system UID,
+    and no login shell, both as logged and as it is now; a web account is
+    never one (a web shell's account). Such an account, or such an
+    account's group membership, is low: the install is the change worth
+    knowing (software.packages)."""
+    fields = event.fields
     user = fields.get("user")
+    if user in WEB_USERS:
+        return False
+    at = parse_time(event.corrected)
+    if at is None or not any(abs(at - t) <= PACKAGE_WINDOW for t in installs):
+        return False
     current = context.items("accounts").get(user) or {}
     uid = fields.get("uid") if fields.get("uid") is not None else current.get("uid")
-    shell = fields.get("shell") if fields.get("shell") is not None else current.get("shell")
     try:
-        system = uid is not None and int(uid) <= SYSTEM_UID_MAX and int(uid) != 0
+        if uid is None or not 0 < int(uid) <= SYSTEM_UID_MAX:
+            return False
     except (TypeError, ValueError):
         return False
-    if "origin" in fields and fields["origin"] != "none":
-        return False  # made at a terminal: someone's hand, not a package's
-    return system and bool(shell) and bool(NO_LOGIN_SHELL.search(str(shell)))
+    if event.type == "account.created":
+        if fields.get("origin") != "none":
+            return False  # made at a terminal (or not said): someone's hand
+        if not NO_LOGIN_SHELL.search(str(fields.get("shell") or "")):
+            return False
+    shells = [s for s in (current.get("shell"),) if s] or [fields.get("shell")]
+    return all(s and NO_LOGIN_SHELL.search(str(s)) for s in shells)
 
 
 @check(
@@ -288,6 +324,7 @@ def _package_account(context: Context, fields: dict) -> bool:
 )
 def log_changes(context: Context) -> list[Finding]:
     findings = []
+    installs = _package_installs(context)
     for index, event in context.of("account.", "group."):
         if event.type == "account.password_changed":
             continue  # account.password reports it
@@ -302,7 +339,7 @@ def log_changes(context: Context) -> list[Finding]:
             if privileged
             else "medium"
             if event.type in ("account.created", "group.member_added")
-            and not _package_account(context, f)
+            and not _package_account(context, event, installs)
             else "low"
         )
         who = f.get("user") or ""

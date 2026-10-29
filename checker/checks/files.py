@@ -25,6 +25,10 @@ SCRIPT = re.compile(r"\.(?:php\d?|phtml|phar|shtml|cfm|jsp|jspx|aspx?|ashx|cgi|p
 HANDLED = re.compile(r"\.(?:php\d?|phtml|phar|shtml|cfm|jsp|jspx|aspx?|ashx|cgi)\.", re.I)
 UPLOADS = re.compile(r"/(?:uploads?|files|media|images?|tmp|cache|wp-content/uploads)/", re.I)
 SECRET_FILES = {".env", ".htpasswd", ".git", ".svn", ".user.ini"}
+# The servers whose configuration says what they serve (web_served), and
+# the ports where another program would serve files they don't know about.
+WEB_SERVERS = {"nginx", "apache2", "httpd"}
+WEB_PORTS = {80, 443, 8080, 8443}
 
 
 def _leaves(path: str, item: dict) -> bool:
@@ -171,19 +175,78 @@ def dev(context: Context) -> list[Finding]:
     return findings
 
 
-@check("files.web", "Web shells: new scripts in web roots, scripts in upload directories")
+def served_folders(context: Context) -> list[str] | None:
+    """The folders the web servers serve, from their configuration; None
+    when that can't be told, and then everything in a web root counts as
+    served: the configuration not fully collected or naming no folder, a
+    folder written with a variable or relative to the server's prefix, or a
+    web port held by a program other than nginx or Apache."""
+    config = context.snapshot.sections.get("web_config")
+    served = context.snapshot.sections.get("web_served")
+    listeners = context.snapshot.sections.get("listeners")
+    if not (config and config.complete and served and served.complete and served.items):
+        return None
+    if listeners is None or not listeners.complete:
+        return None
+    for key, item in listeners.items.items():
+        protocol, address = (key.split(" ") + [""])[:2]
+        port = address.rsplit(":", 1)[-1]
+        if protocol.startswith("tcp") and port.isdigit() and int(port) in WEB_PORTS:
+            programs = set(item.get("programs") or [])
+            if not programs or programs - WEB_SERVERS:
+                return None
+    folders = [str(item.get("folder") or "") for item in served.items.values()]
+    if any(not f.startswith("/") or "$" in f for f in folders):
+        return None
+    return sorted({posixpath.normpath(f) for f in folders})
+
+
+def _inside(path: str, folders: list[str]) -> bool:
+    return any(path == f or path.startswith(f.rstrip("/") + "/") for f in folders)
+
+
+def _outside_group(item: dict, path: str) -> str:
+    """Where scripts outside the served folders are counted: the
+    application's folder and the one below it (vendor, var, src)."""
+    application = _group(item, path)
+    rest = path[len(application) :].lstrip("/").split("/")
+    return application + ("/" + rest[0] if len(rest) > 1 else "")
+
+
+@check(
+    "files.web",
+    "Web shells: new or changed scripts in web roots, scripts in upload directories; new or changed"
+    " scripts outside what the web servers serve",
+)
 def web(context: Context) -> list[Finding]:
     findings = []
     diff = context.changes("web_files")
     added = diff["added"] if diff else {}
+    # Content, not times: a checkout rewrites times without changing a line.
+    edited = {
+        k
+        for k, fields in (diff["changed"] if diff else {}).items()
+        if None not in fields.get("sha256", [None])
+    }
     uncertain = context.uncertain("web_files")
+    served = served_folders(context)
+    outside: dict[str, list[str]] = {}
     for path, item in context.items("web_files").items():
         name = path.rsplit("/", 1)[-1]
         double = not SCRIPT.search(name) and HANDLED.search(name) is not None
         script = double or SCRIPT.search(name) is not None or item.get("kind") == "script"
+        if served is not None and not _inside(path, served) and item.get("kind") != "elf":
+            # No request reaches it, but the application may run it (its
+            # libraries, its compiled cache): a deploy rewrites hundreds.
+            if (path in added or path in edited) and (script or _runnable(item)):
+                outside.setdefault(_outside_group(item, path), []).append(path)
+            continue
         reason = None
         if path in added and (script or _runnable(item)):
             reason, band = "A new script in a web root", "high"
+        elif path in edited and (script or _runnable(item)):
+            # A few lines added to an existing index.php: a web shell too.
+            reason, band = "A changed script in a web root", "high"
         elif item.get("kind") == "elf":
             reason, band = "A program in a web root", "high"
         elif script and UPLOADS.search(path):
@@ -216,12 +279,33 @@ def web(context: Context) -> list[Finding]:
                 path + (f" (SHA-256 {item['sha256'][:16]}…)" if item.get("sha256") else ""),
                 [f"path:{path}"],
                 [
-                    context.change_ref("web_files", path, "added")
-                    if path in added
+                    context.change_ref("web_files", path, "added" if path in added else "changed")
+                    if path in added or path in edited
                     else {"item": ["web_files", path]}
                 ],
-                new=path in added and context.new_since_previous("web_files", path),
-                uncertain=uncertain if path in added else None,
+                new=(path in added or path in edited)
+                and context.new_since_previous("web_files", path),
+                uncertain=uncertain if path in added or path in edited else None,
+            )
+        )
+    for group, paths in sorted(outside.items()):
+        paths.sort()
+        findings.append(
+            Finding(
+                "files.web",
+                "New or changed scripts outside what the web servers serve",
+                COMPROMISE,
+                "low",
+                f"{len(paths)} in {group} (a deploy or an update does this): "
+                + ", ".join(p[len(group) :].lstrip("/") for p in paths[:3])
+                + (", …" if len(paths) > 3 else ""),
+                [f"path:{group}"],
+                [
+                    context.change_ref("web_files", p, "added" if p in added else "changed")
+                    for p in paths[:20]
+                ],
+                new=any(context.new_since_previous("web_files", p) for p in paths),
+                uncertain=uncertain,
             )
         )
     return findings

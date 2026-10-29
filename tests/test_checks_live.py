@@ -281,6 +281,95 @@ def test_a_translation_is_not_a_script_behind_a_second_extension():
     ]
 
 
+APP = "/var/www/app"
+SERVED = {"/etc/nginx/sites-available/app: root /var/www/app/public": {"folder": f"{APP}/public"}}
+NGINX = {"tcp 0.0.0.0:443 netns=net:[1]": {"programs": ["nginx"]}}
+
+
+def web(items, served=None, listeners=None):
+    return snap(
+        web_files={p: {"place": "/var/www", "type": "-", **i} for p, i in items.items()},
+        web_config={"/etc/nginx/nginx.conf": {}},
+        web_served=SERVED if served is None else served,
+        listeners=NGINX if listeners is None else listeners,
+    )
+
+
+def test_what_the_web_server_does_not_serve_is_no_web_shell():
+    # A Symfony application: nginx serves public/; the libraries, the
+    # compiled cache and the repository sit beside it.
+    items = {
+        f"{APP}/public/index.php": {"sha256": "aa"},
+        f"{APP}/public/uploads/x.php": {"sha256": "bb"},
+        f"{APP}/public/.env": {},
+        f"{APP}/vendor/symfony/cache/Adapter/AbstractAdapter.php": {"sha256": "cc"},
+        f"{APP}/var/cache/prod/ContainerRgxCWWf/getRouterService.php": {"sha256": "dd"},
+        f"{APP}/.env": {},
+        f"{APP}/.git": {"type": "d"},
+        f"{APP}/bin/helper": {"kind": "elf"},
+    }
+    found = of(run([], web(items)), "files.web")
+    assert sorted((f.title, f.summary.split(" (")[0]) for f in found) == [
+        ("A program in a web root", f"{APP}/bin/helper"),
+        ("A script in an upload directory", f"{APP}/public/uploads/x.php"),
+        (
+            "A secrets or repository file inside a web root",
+            f"{APP}/public/.env: a web server may serve it",
+        ),
+    ]
+    # Without knowing what is served, all of it counts, as before.
+    for unsure in (
+        web(items, served={}),
+        web(items, served={"x: root /var/www/$host": {"folder": "/var/www/$host"}}),
+        web(items, served={"x: root html": {"folder": "html"}}),
+        web(items, listeners={"tcp 0.0.0.0:8080 netns=net:[1]": {"programs": ["node"]}}),
+        web(items, listeners={"tcp :::80 netns=net:[1]": {"programs": []}}),
+    ):
+        titles = [f.title for f in of(run([], unsure), "files.web")]
+        assert titles.count("A script in an upload directory") == 3, titles
+    incomplete = web(items)
+    incomplete.sections["web_served"].complete = False
+    assert len(of(run([], incomplete), "files.web")) > 3
+
+
+def test_a_deploy_is_one_low_finding_per_folder_and_an_edited_front_controller_is_high():
+    before = {
+        f"{APP}/public/index.php": {"sha256": "aa", "mtime": "1"},
+        f"{APP}/var/cache/prod/ContainerAAAA/a.php": {"sha256": "c1"},
+        f"{APP}/vendor/twig/twig/src/Environment.php": {"sha256": "t1", "mtime": "1"},
+        f"{APP}/src/Kernel.php": {"sha256": "k1"},
+    }
+    after = {
+        # The deploy: a checkout rewrote index.php's times, not its text;
+        # a new compiled cache; one library updated; Kernel.php unchanged.
+        f"{APP}/public/index.php": {"sha256": "aa", "mtime": "2"},
+        **{f"{APP}/var/cache/prod/ContainerBBBB/s{n}.php": {"sha256": f"n{n}"} for n in range(5)},
+        f"{APP}/vendor/twig/twig/src/Environment.php": {"sha256": "t2", "mtime": "2"},
+        f"{APP}/src/Kernel.php": {"sha256": "k1"},
+    }
+    found = of(run([], web(after), baseline=web(before)), "files.web")
+    assert sorted((f.title, f.band, f.summary.split(":")[0]) for f in found) == [
+        (
+            "New or changed scripts outside what the web servers serve",
+            "low",
+            f"1 in {APP}/vendor (a deploy or an update does this)",
+        ),
+        (
+            "New or changed scripts outside what the web servers serve",
+            "low",
+            f"5 in {APP}/var (a deploy or an update does this)",
+        ),
+    ]
+    # A few lines added to the front controller: a web shell.
+    after[f"{APP}/public/index.php"] = {"sha256": "ee", "mtime": "2"}
+    found = of(run([], web(after), baseline=web(before)), "files.web")
+    [edited] = [f for f in found if f.band == "high"]
+    assert edited.title == "A changed script in a web root"
+    assert edited.evidence == [
+        {"change": ["b0", "web_files", f"{APP}/public/index.php", "changed"]}
+    ]
+
+
 def test_web_shells():
     items = {
         "/var/www/html/index.php": {"place": "/var/www", "type": "-"},

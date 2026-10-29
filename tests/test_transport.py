@@ -115,6 +115,55 @@ async def test_agent_keys_are_offered_and_the_agent_closed(server, monkeypatch):
     assert FakeAgent.closed
 
 
+async def test_a_silent_server_times_out_with_a_reason(server, monkeypatch):
+    # Accepts the connection and never speaks: the wait runs out. With an
+    # agent, its passphrase prompt gets time too, and the message says so.
+    async def silent(reader, writer):
+        await reader.read()  # until the client gives up and hangs up
+        writer.close()
+
+    quiet = await asyncio.start_server(silent, "127.0.0.1", 0)
+    port = quiet.sockets[0].getsockname()[1]
+    try:
+        with pytest.raises(TransportError, match=r"cannot connect: timed out after 0\.2 seconds$"):
+            await run(server, host(server, port=port), connect_timeout=0.2)
+
+        class FakeAgent:
+            async def get_keys(self):
+                return [server.client_key]
+
+            def close(self):
+                pass
+
+        async def connect_agent(path=()):
+            return FakeAgent()
+
+        monkeypatch.setattr(transport.asyncssh, "connect_agent", connect_agent)
+        monkeypatch.setattr(transport, "AGENT_PROMPT_SECONDS", 0.2)
+        with pytest.raises(TransportError, match=r"0\.4 seconds \(was the SSH agent waiting"):
+            await run(
+                server, host(server, port=port, auth="agent", key_path=None), connect_timeout=0.2
+            )
+    finally:
+        quiet.close()
+        await quiet.wait_closed()
+
+
+async def test_the_systems_own_timeout_is_reported_as_it_is(server, monkeypatch):
+    # No answer to the TCP connect: the kernel gives up (ETIMEDOUT) before
+    # our wait does, and that has nothing to do with an agent.
+    import errno
+
+    async def unanswered(*args, **kwargs):
+        raise TimeoutError(errno.ETIMEDOUT, "Connection timed out")
+
+    monkeypatch.setattr(transport.asyncssh, "connect", unanswered)
+    with pytest.raises(
+        TransportError, match=r"cannot connect: \[Errno 110\] Connection timed out$"
+    ):
+        await run(server, host(server))
+
+
 # --- Host keys ----------------------------------------------------------------------
 
 

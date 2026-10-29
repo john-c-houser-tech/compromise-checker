@@ -236,6 +236,9 @@ async def collect(
 
     keys, agent = await _client_keys(host, agent_path)
     client = _Client(keys, password if host.auth == "password" else None)
+    # The agent may ask its user for a passphrase before it signs the
+    # login (gpg-agent's pop-up), inside this wait.
+    wait = connect_timeout + (AGENT_PROMPT_SECONDS if host.auth == "agent" else 0)
     try:
         conn = await asyncio.wait_for(
             asyncssh.connect(
@@ -250,7 +253,7 @@ async def collect(
                 gss_host=None,  # no Kerberos logins; also avoids a slow hostname lookup
                 config=None,  # the operator's ~/.ssh/config must not change behaviour
             ),
-            connect_timeout,
+            wait,
         )
     except asyncssh.HostKeyNotVerifiable as exc:
         raise UnknownHostKey(
@@ -260,7 +263,14 @@ async def collect(
     except asyncssh.PermissionDenied as exc:
         # A refused login still leaves sshd records: keep what was tried.
         raise _failed(session, client, f"{host.name}: login refused for {host.user}") from exc
-    except (OSError, TimeoutError, asyncssh.Error) as exc:
+    except TimeoutError as exc:
+        if exc.errno is not None:  # the system's own (no answer to the TCP connect)
+            raise _failed(session, client, f"{host.name}: cannot connect: {exc}") from exc
+        why = f"{host.name}: cannot connect: timed out after {wait:g} seconds"
+        if host.auth == "agent":
+            why += " (was the SSH agent waiting for a passphrase?)"
+        raise _failed(session, client, why) from exc
+    except (OSError, asyncssh.Error) as exc:
         raise _failed(session, client, f"{host.name}: cannot connect: {exc}") from exc
     finally:
         if agent is not None:  # only needed to sign during authentication
@@ -440,6 +450,9 @@ class HostKeyCheck:
             return "new"
         return "same" if self.fingerprint in self.known_fingerprints else "changed"
 
+
+# Time for an SSH agent's passphrase prompt, on top of the connection's own.
+AGENT_PROMPT_SECONDS = 120
 
 # The host key to trust when a server has several: the strongest first.
 # asyncssh's own order puts RSA first, so a server with an ED25519 key too

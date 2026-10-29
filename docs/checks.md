@@ -185,6 +185,30 @@ sshd listener. A forged log line alone can't make anything the tool's own.
 | `process.miner` | a known miner by name; or at least half a core on average over ten minutes or more, with a connection to a common mining-pool port on a public address | high |
 | `process.injected` | code mapped from a scratch or home file, or a deleted file outside the system directories, or a deleted system library no update explains (high); from memory only (medium: JITs do this too; low when it is libffi's, as firewalld's on RHEL); system libraries an update replaced, still in use (low hygiene) | |
 
+### 8.8 Network and data transfer
+
+Connections are a sample: only those open (or closing) when the collector
+looked; a socket whose process isn't visible still counts, under its
+owner's account. Without firewall or proxy logs, transfer evidence is
+weak. Rules inside the chains Docker, Kubernetes and fail2ban manage aren't
+compared: on a host where that software really runs, a rule slipped into
+one of its own chains doesn't show (a new jump into such a chain from an
+ordinary chain does; `DOCKER-USER`, where administrators add rules, is
+compared).
+
+| Check | What | Band | Baseline |
+|---|---|---|---|
+| `net.listener` | a new listening port | low | yes |
+| `net.peer` | a new outgoing destination for a program (`new_destination`) | low | yes |
+| | over a Tor port (9001, 9030, 9050, 9051, 9150) or from `tor` (`tor`) | medium | yes |
+| `net.metadata` | a program other than a known cloud agent connected to the metadata address (169.254.169.254, or AWS's `fd00:ec2::254`). Agents are known by the file they run (or, run by an interpreter, their script), in a system directory, never by their self-chosen name; another root program in a system directory (an SDK using the instance's role) is low, unless it is a shell, an interpreter given no script, or a generic tool (`curl`, `nc`, `sleep`…). On AWS, EC2 Instance Connect runs `curl` as root at each login, so expect a medium finding there | medium | no |
+| `net.directory` | ★ a process running as a web-server account (`www-data`, `apache`, `nginx`…, by its effective UID) connected to SMB or WinRM (high, `smb_winrm`), or LDAP, LDAPS or Kerberos (medium, `ldap_kerberos`: web apps that log users in against a directory use these). Judged by the account, not a host role, so a domain-joined server's own lookups don't count | | no |
+| `net.tunnel` | an `ssh` client forwarding: its options read as ssh reads them, up to the destination (`-L`, `-R`, `-D`, `-W`, `-J`, combined like `-fNR`, or `-o LocalForward=`/`RemoteForward=`/`DynamicForward=`/`ProxyJump=`/`Tunnel=`; `ssh host ls -lR` forwards nothing); an sshd session process (not the listener) holding a listening socket, a remote forward into this host (X11's loopback ports 6000–6099 left out) | medium | no |
+| `net.config` | `/etc/hosts`, resolver, NSS, TCP-wrapper or firewall configuration files added, removed or changed (`file`); loaded firewall rules added or removed, one finding per direction (`firewall`) | medium | yes |
+| `net.managed_chain` | a firewall chain named like one Docker, Kubernetes, Calico, Cilium, fail2ban, Flannel, libvirt or Tailscale writes (whose rules aren't compared: they change all the time), while that program isn't running (known by the file it runs) | medium | no |
+| `net.promiscuous` | an interface in promiscuous mode that isn't a bridge, a bridge port, or enslaved to something (a bond, Open vSwitch); low when a known capture tool (by the file it runs) holds a packet socket | medium | no |
+| `net.transfer` | weak signs, mostly material for chains: an archive of 50 MB or more in a scratch place (`archive`); `curl`, `wget`, `scp`, `rsync`, `rclone`, `nc`… connected to a public address (`tool`); an interface that sent over 1 GB and ten times what it received (`counters`) | low | no |
+
 ## Coverage
 
 Beside the findings, each assessment says what the collection couldn't see

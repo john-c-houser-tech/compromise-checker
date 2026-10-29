@@ -35,3 +35,13 @@ rules:
     reason: "The proof queues an at job for the persistence modules to find."
     owner: compromise-checker proofs
     expires: never
+  - id: proof-docker-dnsmasq-account
+    match: {check: account.log_changes, variant: created, account: dnsmasq}
+    reason: "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account)."
+    owner: compromise-checker proofs
+    expires: never
+  - id: proof-docker-group
+    match: {check: account.log_changes, variant: group_created, group: docker}
+    reason: "The proof installs Docker on Ubuntu, which creates the docker group."
+    owner: compromise-checker proofs
+    expires: never

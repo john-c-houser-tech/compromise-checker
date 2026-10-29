@@ -89,7 +89,37 @@ grep -qi '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config \
 echo 'PermitRootLogin yes' > /etc/ssh/sshd_config.d/00-cc-proof.conf || fail sshd
 # A pam_exec line (runs /bin/true at each login).
 echo 'session optional pam_exec.so quiet /bin/true' >> /etc/pam.d/sshd || fail pam
+# --- Network (2.4b) ---
+# A shell holding a connection to the cloud metadata address.
+setsid -f bash -c 'exec 3<>/dev/tcp/169.254.169.254/80 || exit 1; sleep 7200' \
+    </dev/null >/dev/null 2>&1
+# A web-server account reaching SMB: a local listener on port 445 (so the
+# connection is really established, whatever the network does), and
+# www-data connecting to it.
+id www-data >/dev/null 2>&1 || useradd -r -M -s /usr/sbin/nologin www-data
+setsid -f python3 -c 'import socket,time
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 445)); s.listen(1); c, _ = s.accept(); time.sleep(7200)' \
+    </dev/null >/dev/null 2>&1
+for _ in $(seq 20); do
+    grep -q ' 0100007F:01BD 00000000:0000 0A ' /proc/net/tcp && break
+    sleep 0.5
+done
+setsid -f runuser -u www-data -- bash -c \
+    'exec 3<>/dev/tcp/127.0.0.1/445 || exit 1; sleep 7200' </dev/null >/dev/null 2>&1
+# An SSH remote forward into this host, with a key made for it.
+ssh-keygen -q -t ed25519 -N '' -f /root/.ssh/cc_tunnel \
+    && cat /root/.ssh/cc_tunnel.pub >> /root/.ssh/authorized_keys \
+    && ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel \
+        -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1 || fail ssh-tunnel
+# /etc/hosts redirecting a name.
+echo '203.0.113.66 github.com' >> /etc/hosts || fail hosts
 sleep 2
+# By their sockets: bash replaces itself with its last command (sleep), so
+# its own command line is gone.
+ss -tnH state established dst 169.254.169.254 | grep -q . || fail metadata
+ss -tnH state established dst 127.0.0.1:445 | grep -q . || fail directory
+pgrep -f 'R 127.0.0.1:2222' >/dev/null || fail ssh-tunnel-running
 """
 
 
@@ -131,6 +161,19 @@ def expectations(root_fingerprint: str) -> list[Expected]:
         ),
         Expected("sshd allowing root login", "sshd.config", "permitrootlogin yes", "high"),
         Expected("a pam_exec line added", "pam.changes", "pam_exec.so", "high"),
+        Expected(
+            "a shell reaching the metadata address", "net.metadata", "169.254.169.254", "medium"
+        ),
+        Expected("a web-server account reaching SMB", "net.directory", "port 445", "high"),
+        Expected("an SSH remote forward", "net.tunnel", "-r 127.0.0.1:2222", "medium", "client"),
+        Expected(
+            "the SSH session holding the forward",
+            "net.tunnel",
+            "port 2222",
+            "medium",
+            "session",
+        ),
+        Expected("/etc/hosts rewritten", "net.config", "/etc/hosts", "medium"),
     ]
 
 

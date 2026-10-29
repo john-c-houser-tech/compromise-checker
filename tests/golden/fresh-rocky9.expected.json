@@ -84,6 +84,48 @@
    "status": "ran"
   },
   {
+   "check": "net.config",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "net.directory",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.listener",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "net.managed_chain",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.metadata",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.peer",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "net.promiscuous",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.transfer",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.tunnel",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "package.changed",
    "findings": 9,
    "status": "ran"
@@ -181,8 +223,8 @@
      "event": 68
     }
    ],
-   "first_seen": "2026-10-28T20:47:13.258646+00:00",
-   "last_seen": "2026-10-28T20:47:13.258646+00:00",
+   "first_seen": "2026-10-28T23:56:08.851275+00:00",
+   "last_seen": "2026-10-28T23:56:08.851275+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -211,8 +253,8 @@
      "event": 65
     }
    ],
-   "first_seen": "2026-10-28T20:38:40.199922+00:00",
-   "last_seen": "2026-10-28T20:38:40.199922+00:00",
+   "first_seen": "2026-10-28T23:55:49.661493+00:00",
+   "last_seen": "2026-10-28T23:55:49.661493+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -233,14 +275,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/at/a0000101c80a97"
+    "path:/var/spool/at/a0000101c80b54"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/at/a0000101c80a97"
+      "/var/spool/at/a0000101c80b54"
      ]
     }
    ],
@@ -248,7 +290,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/at/a0000101c80a97 (owner UID 0)",
+   "summary": "/var/spool/at/a0000101c80b54 (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -267,7 +309,7 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.13"
+    "address:203.0.113.2"
    ],
    "entities_complete": true,
    "evidence": [
@@ -275,11 +317,11 @@
      "event": 59
     }
    ],
-   "first_seen": "2026-10-28T20:38:39.232627+00:00",
-   "last_seen": "2026-10-28T20:38:39.232627+00:00",
+   "first_seen": "2026-10-28T23:55:45.271895+00:00",
+   "last_seen": "2026-10-28T23:55:45.271895+00:00",
    "new": true,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.13 (publickey)",
+   "summary": "root from 203.0.113.2 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -310,8 +352,8 @@
      ]
     }
    ],
-   "first_seen": "2026-10-28T20:38:27.750000+00:00",
-   "last_seen": "2026-10-28T20:38:27.750000+00:00",
+   "first_seen": "2026-10-28T23:55:37.260000+00:00",
+   "last_seen": "2026-10-28T23:55:37.260000+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "firewalld (pid 635): /memfd:libffi (deleted)",
@@ -621,7 +663,7 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "268f59cd3433e6e4838efff3a6da228f714210280703adcb93827ad794b26b7c",
+  "hash": "162263db45d56330e0146efab45607fae3ef21c3fff8ccfc74348fc393427c80",
   "maintenance": 0,
   "matched": {
    "host rocky9/proof-at-job-redhat": 1,
@@ -630,6 +672,34 @@
    "host rocky9/proof-scanner-account": 1
   },
   "rules": [
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-docker-group",
+    "layer": "host rocky9",
+    "match": {
+     "check": "account.log_changes",
+     "group": "docker",
+     "variant": "group_created"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu, which creates the docker group."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-docker-dnsmasq-account",
+    "layer": "host rocky9",
+    "match": {
+     "account": "dnsmasq",
+     "check": "account.log_changes",
+     "variant": "created"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account)."
+   },
    {
     "broad": false,
     "expires": "never",

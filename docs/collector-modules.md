@@ -720,10 +720,15 @@ firewall changes, promiscuous interfaces.
 
 **Runs** (decision 2 of the Phase 2 plan), only for a firewall that is
 already loaded, so listing it never loads a kernel module:
-- `nft list ruleset` when nf_tables is loaded **and nft_compat isn't**.
-  With nft_compat loaded the rules are iptables-nft rules (ufw, Docker),
-  and printing them asks the kernel about xtables extensions it may load on
-  demand; they are not listed, and a `not_examined` record says why. A set
+- `nft list ruleset` when nf_tables is loaded. That includes iptables-nft
+  rules (ufw, Docker: nft_compat loaded). Printing those asks the kernel
+  about the xtables extensions they use, so it was measured first: on
+  Ubuntu 22.04, 24.04 and 26.04 with ufw and Docker running, 45 listings
+  with `nft`, `iptables-nft-save` and `ip6tables-nft-save` loaded no
+  module (plan 2.4b), and the read-only proof keeps checking it (on the
+  Ubuntu images; Docker on RHEL-family hosts also uses iptables-nft, which
+  the proof doesn't run there: Rocky and Alma are proved with firewalld's
+  native nftables). A set
   with more than 50 elements or lines (a fail2ban or CrowdSec blocklist) is
   sent as one line with its element count and a SHA-256 of its masked
   lines, never element by element; its lines aren't held past 50 or
@@ -734,9 +739,9 @@ already loaded, so listing it never loads a kernel module:
 A command that can't run (`command_unavailable`), fails
 (`command_failed`: the other listings still run) or ends inside a set
 (`set_unterminated`) leaves only the `firewall_rules` section incomplete.
-The read-only proof enables ufw on the Ubuntu images (Rocky and Alma run
-firewalld), and checks that no firewall module is loaded or unloaded
-during any collection.
+The read-only proof enables ufw and runs a Docker container on the Ubuntu
+images (Rocky and Alma run firewalld), and checks that no firewall module
+is loaded or unloaded during any collection.
 
 ## Protected files
 

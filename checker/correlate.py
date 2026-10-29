@@ -230,6 +230,9 @@ class Chain:
     steps: tuple[Step, ...]
     within: timedelta
     ratio: float  # the bonus likelihood ratio, once per chain
+    # Ordered: each later step overlaps the time from the first step's
+    # first event to `within` after its last (not either side of it).
+    ordered: bool = False
 
 
 PRIVILEGE = (
@@ -277,8 +280,9 @@ CHAINS = (
             Step("a new script answering requests", (("web.new_script_hit", None),)),
             Step("the web account starting a shell or tool", (("web.worker_child", None),)),
         ),
-        timedelta(hours=24),
+        timedelta(hours=1),
         5.0,
+        ordered=True,
     ),
 )
 
@@ -341,6 +345,7 @@ def find_chains(
 def _complete(chain, account, live, events, previous: datetime | None) -> Found | None:
     hit = Found(chain, account)
     anchor: datetime | None = None
+    until: datetime | None = None  # ordered chains: the first step's last event
     used_events: set[int] = set()
     for step in chain.steps:
         if step.event is not None:
@@ -369,7 +374,11 @@ def _complete(chain, account, live, events, previous: datetime | None) -> Found 
             if cites & used_events:
                 continue  # one log line is one step, not two
             when = time_of(f.get("first_seen"))
-            if when is None:
+            if chain.ordered and anchor is not None:
+                last = time_of(f.get("last_seen")) or when
+                if when is not None and last >= anchor and when <= (until or anchor) + chain.within:
+                    matching.append((i, when, cites))
+            elif when is None:
                 if f.get("new"):  # state, changed since the previous bundle
                     matching.append((i, None, cites))
             elif anchor is None or anchor - chain.within <= when <= anchor + chain.within:
@@ -381,7 +390,12 @@ def _complete(chain, account, live, events, previous: datetime | None) -> Found 
         used_events |= cites
         if anchor is None and when is not None:
             anchor = when
+            until = time_of(live_by_index(live, index).get("last_seen")) or when
     return hit
+
+
+def live_by_index(live, index):
+    return next(f for i, f in live if i == index)
 
 
 def chain_contribution(found: dict[str, Any]) -> float:

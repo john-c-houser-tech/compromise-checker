@@ -401,7 +401,7 @@ for path in '/?token=proofwebsecret' '/missing.php?id=proofwebsecret' '/x?f=../.
         "http://127.0.0.1$path" || true
 done
 web=$(id -u www-data >/dev/null 2>&1 && echo www-data || echo nginx)
-runuser -u "$web" -- /usr/bin/id >/dev/null
+runuser -u "$web" -- /usr/bin/date >/dev/null  # recorded, and nothing a check flags
 # Something for the collector to find in the authentication log.
 logger -p authpriv.notice "compromise-checker read-only proof: marker" || true
 """

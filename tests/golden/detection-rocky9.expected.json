@@ -167,7 +167,7 @@
   },
   {
    "check": "package.changed",
-   "findings": 10,
+   "findings": 11,
    "status": "ran"
   },
   {
@@ -227,17 +227,17 @@
   },
   {
    "check": "software.packages",
-   "findings": 0,
+   "findings": 1,
    "status": "ran"
   },
   {
    "check": "software.repository",
-   "findings": 0,
+   "findings": 2,
    "status": "ran"
   },
   {
    "check": "software.tools",
-   "findings": 0,
+   "findings": 2,
    "status": "ran"
   },
   {
@@ -337,7 +337,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "accounts",
       "cc-toor",
       "added"
@@ -365,7 +365,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "unusual_files",
       "/tmp/.cc-sh",
       "added"
@@ -464,7 +464,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "logging",
       "service: auditd",
       "removed"
@@ -488,11 +488,11 @@
    "entities": [],
    "entities_complete": true,
    "evidence": [],
-   "first_seen": "2026-10-29T00:51:46+00:00",
-   "last_seen": "2026-10-29T00:51:46+00:00",
+   "first_seen": "2026-10-29T01:18:09+00:00",
+   "last_seen": "2026-10-29T01:18:09+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "type=DAEMON_END msg=audit(1793235106.561:5962): op=terminate auid=0 uid=0 ses=1 pid=13112 subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 res=success\u001dAUID=\"root\" UID=\"root\"",
+   "summary": "type=DAEMON_END msg=audit(1793236689.761:8006): op=terminate auid=0 uid=0 ses=1 pid=13081 subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 res=success\u001dAUID=\"root\" UID=\"root\"",
    "title": "The audit daemon stopped, not during a shutdown",
    "uncertain": null,
    "variant": "audit_daemon"
@@ -507,7 +507,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "logging",
       "selinux",
       "changed"
@@ -531,7 +531,7 @@
    "entities": [
     "address:127.0.0.1",
     "account:www-data",
-    "pid:13086",
+    "pid:13056",
     "program:sleep",
     "exe:/usr/bin/sleep"
    ],
@@ -540,15 +540,15 @@
     {
      "live": [
       "processes",
-      13086
+      13056
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:51:43.900000+00:00",
-   "last_seen": "2026-10-29T00:51:43.900000+00:00",
+   "first_seen": "2026-10-29T01:18:07+00:00",
+   "last_seen": "2026-10-29T01:18:07+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "sleep (pid 13086, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
+   "summary": "sleep (pid 13056, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
    "title": "A web-server account reached SMB",
    "uncertain": null,
    "variant": "smb_winrm"
@@ -566,7 +566,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "pam_rules",
       "/etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true",
       "added"
@@ -594,7 +594,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "startup",
       "/etc/ld.so.preload",
       "added"
@@ -617,7 +617,7 @@
    "contribution": 2.9957,
    "entities": [
     "program:cc-sleep",
-    "pid:13044",
+    "pid:13015",
     "exe:/root/cc-sleep (deleted)"
    ],
    "entities_complete": true,
@@ -625,15 +625,15 @@
     {
      "live": [
       "processes",
-      13044
+      13015
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:51:40.740000+00:00",
-   "last_seen": "2026-10-29T00:51:40.740000+00:00",
+   "first_seen": "2026-10-29T01:18:03.850000+00:00",
+   "last_seen": "2026-10-29T01:18:03.850000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "cc-sleep (pid 13044): /root/cc-sleep (deleted)",
+   "summary": "cc-sleep (pid 13015): /root/cc-sleep (deleted)",
    "title": "A process whose program was deleted",
    "uncertain": null,
    "variant": null
@@ -645,7 +645,7 @@
    "contribution": 0.6931,
    "entities": [
     "program:cc-sleep",
-    "pid:13044",
+    "pid:13015",
     "exe:/root/cc-sleep (deleted)"
    ],
    "entities_complete": true,
@@ -653,15 +653,15 @@
     {
      "live": [
       "processes",
-      13044
+      13015
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:51:40.740000+00:00",
-   "last_seen": "2026-10-29T00:51:40.740000+00:00",
+   "first_seen": "2026-10-29T01:18:03.850000+00:00",
+   "last_seen": "2026-10-29T01:18:03.850000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "cc-sleep (pid 13044): /root/cc-sleep (deleted)",
+   "summary": "cc-sleep (pid 13015): /root/cc-sleep (deleted)",
    "title": "A process has code mapped from a scratch or home file",
    "uncertain": null,
    "variant": null
@@ -673,7 +673,7 @@
    "contribution": 2.9957,
    "entities": [
     "program:bash",
-    "pid:13056",
+    "pid:13027",
     "exe:/usr/bin/bash"
    ],
    "entities_complete": true,
@@ -681,15 +681,15 @@
     {
      "live": [
       "processes",
-      13056
+      13027
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:51:42.280000+00:00",
-   "last_seen": "2026-10-29T00:51:42.280000+00:00",
+   "first_seen": "2026-10-29T01:18:05.390000+00:00",
+   "last_seen": "2026-10-29T01:18:05.390000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "bash (pid 13056): stdin is tcp to 127.0.0.1:4444",
+   "summary": "bash (pid 13027): stdin is tcp to 127.0.0.1:4444",
    "title": "A shell talking to a network socket (a reverse shell)",
    "uncertain": null,
    "variant": null
@@ -701,15 +701,15 @@
    "contribution": 2.9957,
    "entities": [
     "account:operator",
-    "key:SHA256:LgIURMx3jM7Vpcn4gen+InUx+EldltlgyqObpkyLlq4"
+    "key:SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "authorized_keys",
-      "operator SHA256:LgIURMx3jM7Vpcn4gen+InUx+EldltlgyqObpkyLlq4 /root/.ssh/authorized_keys",
+      "operator SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0 /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -718,7 +718,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "operator: ssh-ed25519 SHA256:LgIURMx3jM7Vpcn4gen+InUx+EldltlgyqObpkyLlq4 in /root/.ssh/authorized_keys",
+   "summary": "operator: ssh-ed25519 SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0 in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -730,15 +730,15 @@
    "contribution": 0.231,
    "entities": [
     "account:operator",
-    "key:SHA256:Tv/R0WBsilZxvNTYIS7VzbQYqwENfMg+Qeae6aAdfcw"
+    "key:SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "authorized_keys",
-      "operator SHA256:Tv/R0WBsilZxvNTYIS7VzbQYqwENfMg+Qeae6aAdfcw /root/.ssh/authorized_keys",
+      "operator SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -747,7 +747,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "operator: ssh-ed25519 SHA256:Tv/R0WBsilZxvNTYIS7VzbQYqwENfMg+Qeae6aAdfcw in /root/.ssh/authorized_keys",
+   "summary": "operator: ssh-ed25519 SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -759,15 +759,15 @@
    "contribution": 0.231,
    "entities": [
     "account:root",
-    "key:SHA256:LgIURMx3jM7Vpcn4gen+InUx+EldltlgyqObpkyLlq4"
+    "key:SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "authorized_keys",
-      "root SHA256:LgIURMx3jM7Vpcn4gen+InUx+EldltlgyqObpkyLlq4 /root/.ssh/authorized_keys",
+      "root SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0 /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -776,7 +776,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "root: ssh-ed25519 SHA256:LgIURMx3jM7Vpcn4gen+InUx+EldltlgyqObpkyLlq4 in /root/.ssh/authorized_keys",
+   "summary": "root: ssh-ed25519 SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0 in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -788,15 +788,15 @@
    "contribution": 0.231,
    "entities": [
     "account:root",
-    "key:SHA256:Tv/R0WBsilZxvNTYIS7VzbQYqwENfMg+Qeae6aAdfcw"
+    "key:SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "authorized_keys",
-      "root SHA256:Tv/R0WBsilZxvNTYIS7VzbQYqwENfMg+Qeae6aAdfcw /root/.ssh/authorized_keys",
+      "root SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -805,7 +805,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "root: ssh-ed25519 SHA256:Tv/R0WBsilZxvNTYIS7VzbQYqwENfMg+Qeae6aAdfcw in /root/.ssh/authorized_keys",
+   "summary": "root: ssh-ed25519 SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -822,7 +822,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "sshd_config",
       "/etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes",
       "added"
@@ -850,7 +850,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "accounts",
       "cc-toor",
       "added"
@@ -878,7 +878,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "accounts",
       "www-data",
       "added"
@@ -905,11 +905,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 174
+     "event": 190
     }
    ],
-   "first_seen": "2026-10-29T00:51:41.097881+00:00",
-   "last_seen": "2026-10-29T00:51:41.097881+00:00",
+   "first_seen": "2026-10-29T01:18:04.363796+00:00",
+   "last_seen": "2026-10-29T01:18:04.363796+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: cc-toor UID 0",
@@ -928,11 +928,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 99
+     "event": 169
     }
    ],
-   "first_seen": "2026-10-29T00:50:40.649695+00:00",
-   "last_seen": "2026-10-29T00:50:40.649695+00:00",
+   "first_seen": "2026-10-29T01:17:07.320272+00:00",
+   "last_seen": "2026-10-29T01:17:07.320272+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -958,11 +958,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 67
+     "event": 161
     }
    ],
-   "first_seen": "2026-10-29T00:50:22.312464+00:00",
-   "last_seen": "2026-10-29T00:50:22.312464+00:00",
+   "first_seen": "2026-10-29T01:16:47.349691+00:00",
+   "last_seen": "2026-10-29T01:16:47.349691+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -988,11 +988,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 177
+     "event": 191
     }
    ],
-   "first_seen": "2026-10-29T00:51:43.752859+00:00",
-   "last_seen": "2026-10-29T00:51:43.752859+00:00",
+   "first_seen": "2026-10-29T01:18:06.997660+00:00",
+   "last_seen": "2026-10-29T01:18:06.997660+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: www-data UID 995",
@@ -1012,7 +1012,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "network_files",
       "/etc/hosts",
       "changed"
@@ -1036,7 +1036,7 @@
    "entities": [
     "address:169.254.169.254",
     "account:root",
-    "pid:13067",
+    "pid:13038",
     "program:sleep",
     "exe:/usr/bin/sleep"
    ],
@@ -1045,15 +1045,15 @@
     {
      "live": [
       "processes",
-      13067
+      13038
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:51:43.310000+00:00",
-   "last_seen": "2026-10-29T00:51:43.310000+00:00",
+   "first_seen": "2026-10-29T01:18:06.420000+00:00",
+   "last_seen": "2026-10-29T01:18:06.420000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "sleep (pid 13067, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
+   "summary": "sleep (pid 13038, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
    "title": "A program other than the cloud agent reached the metadata address",
    "uncertain": null,
    "variant": null
@@ -1064,7 +1064,7 @@
    "check": "net.tunnel",
    "contribution": 1.3863,
    "entities": [
-    "pid:13095",
+    "pid:13064",
     "program:ssh",
     "account:root",
     "exe:/usr/bin/ssh"
@@ -1074,15 +1074,15 @@
     {
      "live": [
       "processes",
-      13095
+      13064
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:51:44.100000+00:00",
-   "last_seen": "2026-10-29T00:51:44.100000+00:00",
+   "first_seen": "2026-10-29T01:18:07.160000+00:00",
+   "last_seen": "2026-10-29T01:18:07.160000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "ssh (pid 13095, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
+   "summary": "ssh (pid 13064, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
    "title": "An SSH client forwarding ports (a tunnel)",
    "uncertain": null,
    "variant": null
@@ -1093,7 +1093,7 @@
    "check": "net.tunnel",
    "contribution": 0.6931,
    "entities": [
-    "pid:13098",
+    "pid:13067",
     "program:sshd"
    ],
    "entities_complete": true,
@@ -1101,15 +1101,15 @@
     {
      "live": [
       "processes",
-      13098
+      13067
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:51:44.140000+00:00",
-   "last_seen": "2026-10-29T00:51:44.140000+00:00",
+   "first_seen": "2026-10-29T01:18:07.190000+00:00",
+   "last_seen": "2026-10-29T01:18:07.190000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "sshd session (pid 13098) listening on 127.0.0.1 port 2222",
+   "summary": "sshd session (pid 13067) listening on 127.0.0.1 port 2222",
    "title": "An SSH session listening on a port (a remote forward)",
    "uncertain": null,
    "variant": null
@@ -1120,14 +1120,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/at/a0000101c80b8a"
+    "path:/var/spool/at/a0000101c80ba5"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/at/a0000101c80b8a"
+      "/var/spool/at/a0000101c80ba5"
      ]
     }
    ],
@@ -1135,7 +1135,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/at/a0000101c80b8a (owner UID 0)",
+   "summary": "/var/spool/at/a0000101c80ba5 (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -1159,7 +1159,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "cron",
       "/etc/cron.d/cc-proof",
       "added"
@@ -1187,7 +1187,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "systemd",
       "/etc/systemd/system/cc-proof.service",
       "added"
@@ -1215,7 +1215,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "systemd",
       "/etc/systemd/system/cc-proof.timer",
       "added"
@@ -1234,6 +1234,118 @@
   {
    "band": "medium",
    "category": "compromise indicator",
+   "check": "software.repository",
+   "contribution": 1.3863,
+   "entities": [
+    "path:/etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "rocky9-20261029T011707Z-a1651965",
+      "software_files",
+      "/etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 4.0,
+   "summary": "/etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof",
+   "title": "A package signing key was added",
+   "uncertain": null,
+   "variant": "key"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "software.repository",
+   "contribution": 0.6931,
+   "entities": [
+    "path:/etc/yum.repos.d/cc-proof.repo"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "rocky9-20261029T011707Z-a1651965",
+      "software_files",
+      "/etc/yum.repos.d/cc-proof.repo",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 4.0,
+   "summary": "/etc/yum.repos.d/cc-proof.repo",
+   "title": "A package repository was added",
+   "uncertain": null,
+   "variant": "repository"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "software.tools",
+   "contribution": 1.3863,
+   "entities": [
+    "package:nmap"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "rocky9-20261029T011707Z-a1651965",
+      "packages",
+      "nmap x86_64",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T01:18:12+00:00",
+   "last_seen": "2026-10-29T01:18:12+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "nmap 3:7.92-5.el9",
+   "title": "An attack or tunnelling tool was installed",
+   "uncertain": null,
+   "variant": "attack_tool"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "software.tools",
+   "contribution": 0.6931,
+   "entities": [
+    "package:nmap-ncat"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "rocky9-20261029T011707Z-a1651965",
+      "packages",
+      "nmap-ncat x86_64",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T01:18:12+00:00",
+   "last_seen": "2026-10-29T01:18:12+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "nmap-ncat 3:7.92-5.el9",
+   "title": "An attack or tunnelling tool was installed",
+   "uncertain": null,
+   "variant": "attack_tool"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
    "check": "ssh.login",
    "contribution": 1.3863,
    "entities": [
@@ -1243,11 +1355,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 180
+     "event": 195
     }
    ],
-   "first_seen": "2026-10-29T00:51:44.513567+00:00",
-   "last_seen": "2026-10-29T00:51:44.513567+00:00",
+   "first_seen": "2026-10-29T01:18:07.720858+00:00",
+   "last_seen": "2026-10-29T01:18:07.720858+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "127.0.0.1: 1 login(s) as root",
@@ -1267,11 +1379,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 180
+     "event": 195
     }
    ],
-   "first_seen": "2026-10-29T00:51:44.513567+00:00",
-   "last_seen": "2026-10-29T00:51:44.513567+00:00",
+   "first_seen": "2026-10-29T01:18:07.720858+00:00",
+   "last_seen": "2026-10-29T01:18:07.720858+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "root from 127.0.0.1 (publickey)",
@@ -1293,19 +1405,19 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.3"
+    "address:203.0.113.8"
    ],
    "entities_complete": true,
    "evidence": [
     {
-     "event": 57
+     "event": 152
     }
    ],
-   "first_seen": "2026-10-29T00:50:21.477707+00:00",
-   "last_seen": "2026-10-29T00:50:21.477707+00:00",
+   "first_seen": "2026-10-29T01:16:46.576376+00:00",
+   "last_seen": "2026-10-29T01:16:46.576376+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.3 (publickey)",
+   "summary": "root from 203.0.113.8 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -1331,7 +1443,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "listeners",
       "tcp 127.0.0.1:2222 netns=net:[4026531840]",
       "added"
@@ -1361,7 +1473,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "listeners",
       "tcp 127.0.0.1:4444 netns=net:[4026531840]",
       "added"
@@ -1391,7 +1503,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T005040Z-30f567a1",
+      "rocky9-20261029T011707Z-a1651965",
       "listeners",
       "tcp 127.0.0.1:445 netns=net:[4026531840]",
       "added"
@@ -1410,11 +1522,53 @@
   {
    "band": "low",
    "category": "compromise indicator",
+   "check": "package.changed",
+   "contribution": 0.4055,
+   "entities": [],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "rocky9-20261029T011707Z-a1651965",
+      "checksum_store",
+      "/var/lib/rpm/rpmdb.sqlite",
+      "changed"
+     ]
+    },
+    {
+     "change": [
+      "rocky9-20261029T011707Z-a1651965",
+      "checksum_store",
+      "/var/lib/rpm/rpmdb.sqlite-shm",
+      "changed"
+     ]
+    },
+    {
+     "change": [
+      "rocky9-20261029T011707Z-a1651965",
+      "checksum_store",
+      "/var/lib/rpm/rpmdb.sqlite-wal",
+      "changed"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.5,
+   "summary": "3 list file(s): expected after package installs and updates; a rewrite to hide a replaced file would show here too",
+   "title": "The package managers' checksum lists changed since the baseline",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
    "check": "process.injected",
    "contribution": 0.4055,
    "entities": [
     "program:firewalld",
-    "pid:637",
+    "pid:635",
     "exe:/usr/bin/python3.9"
    ],
    "entities_complete": true,
@@ -1422,18 +1576,73 @@
     {
      "live": [
       "processes",
-      637
+      635
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:50:11.220000+00:00",
-   "last_seen": "2026-10-29T00:50:11.220000+00:00",
+   "first_seen": "2026-10-29T01:16:35.750000+00:00",
+   "last_seen": "2026-10-29T01:16:35.750000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "firewalld (pid 637): /memfd:libffi (deleted)",
+   "summary": "firewalld (pid 635): /memfd:libffi (deleted)",
    "title": "A process has libffi code mapped from memory only",
    "uncertain": null,
    "variant": null
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "software.packages",
+   "contribution": 0.4055,
+   "entities": [
+    "package:libibverbs",
+    "package:libpcap",
+    "package:nmap",
+    "package:nmap-ncat"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "rocky9-20261029T011707Z-a1651965",
+      "packages",
+      "libibverbs x86_64",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "rocky9-20261029T011707Z-a1651965",
+      "packages",
+      "libpcap x86_64",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "rocky9-20261029T011707Z-a1651965",
+      "packages",
+      "nmap x86_64",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "rocky9-20261029T011707Z-a1651965",
+      "packages",
+      "nmap-ncat x86_64",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T01:18:12+00:00",
+   "last_seen": "2026-10-29T01:18:12+00:00",
+   "new": true,
+   "ratio": 1.5,
+   "summary": "4: libibverbs, libpcap, nmap, nmap-ncat",
+   "title": "Packages installed since the baseline",
+   "uncertain": null,
+   "variant": "installed"
   },
   {
    "band": "info",
@@ -1742,7 +1951,7 @@
     "contribution": 4.6052,
     "finding": 0,
     "ratio": 100.0,
-    "share": 0.0752,
+    "share": 0.0696,
     "title": "An account other than root has UID 0"
    },
    {
@@ -1751,7 +1960,7 @@
     "contribution": 4.6052,
     "finding": 1,
     "ratio": 100.0,
-    "share": 0.0752,
+    "share": 0.0696,
     "title": "/etc/ld.so.preload loads a library into every program"
    },
    {
@@ -1760,7 +1969,7 @@
     "contribution": 2.9957,
     "finding": 2,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "A new account whose primary group is root-equivalent"
    },
    {
@@ -1769,7 +1978,7 @@
     "contribution": 2.9957,
     "finding": 3,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "A new privileged file since the baseline"
    },
    {
@@ -1778,7 +1987,7 @@
     "contribution": 2.9957,
     "finding": 5,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "A shell history file is a link to /dev/null"
    },
    {
@@ -1787,7 +1996,7 @@
     "contribution": 2.9957,
     "finding": 6,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "A log was truncated since the previous collection"
    },
    {
@@ -1796,7 +2005,7 @@
     "contribution": 2.9957,
     "finding": 7,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "A logging service that ran at the baseline isn't running"
    },
    {
@@ -1805,7 +2014,7 @@
     "contribution": 2.9957,
     "finding": 9,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "SELinux was turned down since the baseline"
    },
    {
@@ -1814,7 +2023,7 @@
     "contribution": 2.9957,
     "finding": 10,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "A web-server account reached SMB"
    },
    {
@@ -1823,7 +2032,7 @@
     "contribution": 2.9957,
     "finding": 11,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "A PAM line was added that runs a program (pam_exec)"
    },
    {
@@ -1832,7 +2041,7 @@
     "contribution": 2.9957,
     "finding": 13,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "A process whose program was deleted"
    },
    {
@@ -1841,7 +2050,7 @@
     "contribution": 2.9957,
     "finding": 15,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "A shell talking to a network socket (a reverse shell)"
    },
    {
@@ -1850,7 +2059,7 @@
     "contribution": 2.9957,
     "finding": 16,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "A new authorized SSH key"
    },
    {
@@ -1859,7 +2068,7 @@
     "contribution": 2.9957,
     "finding": 20,
     "ratio": 20.0,
-    "share": 0.0489,
+    "share": 0.0453,
     "title": "An sshd setting was added"
    },
    {
@@ -1868,7 +2077,7 @@
     "contribution": 1.3863,
     "finding": 23,
     "ratio": 4.0,
-    "share": 0.0226,
+    "share": 0.0209,
     "title": "An account or group was changed (from the logs)"
    },
    {
@@ -1877,7 +2086,7 @@
     "contribution": 1.3863,
     "finding": 27,
     "ratio": 4.0,
-    "share": 0.0226,
+    "share": 0.0209,
     "title": "A network configuration file was changed"
    },
    {
@@ -1886,7 +2095,7 @@
     "contribution": 1.3863,
     "finding": 28,
     "ratio": 4.0,
-    "share": 0.0226,
+    "share": 0.0209,
     "title": "A program other than the cloud agent reached the metadata address"
    },
    {
@@ -1895,7 +2104,7 @@
     "contribution": 1.3863,
     "finding": 29,
     "ratio": 4.0,
-    "share": 0.0226,
+    "share": 0.0209,
     "title": "An SSH client forwarding ports (a tunnel)"
    },
    {
@@ -1904,16 +2113,34 @@
     "contribution": 1.3863,
     "finding": 32,
     "ratio": 4.0,
-    "share": 0.0226,
+    "share": 0.0209,
     "title": "A new cron file"
+   },
+   {
+    "capped": null,
+    "check": "software.repository",
+    "contribution": 1.3863,
+    "finding": 35,
+    "ratio": 4.0,
+    "share": 0.0209,
+    "title": "A package signing key was added"
+   },
+   {
+    "capped": null,
+    "check": "software.tools",
+    "contribution": 1.3863,
+    "finding": 37,
+    "ratio": 4.0,
+    "share": 0.0209,
+    "title": "An attack or tunnelling tool was installed"
    },
    {
     "capped": null,
     "check": "ssh.login",
     "contribution": 1.3863,
-    "finding": 35,
+    "finding": 39,
     "ratio": 4.0,
-    "share": 0.0226,
+    "share": 0.0209,
     "title": "Logins from an address never seen before"
    },
    {
@@ -1922,7 +2149,7 @@
     "contribution": 0.6931,
     "finding": 4,
     "ratio": 20.0,
-    "share": 0.0113,
+    "share": 0.0105,
     "title": "A program in a scratch directory"
    },
    {
@@ -1931,7 +2158,7 @@
     "contribution": 0.6931,
     "finding": 8,
     "ratio": 20.0,
-    "share": 0.0113,
+    "share": 0.0105,
     "title": "The audit daemon stopped, not during a shutdown"
    },
    {
@@ -1940,7 +2167,7 @@
     "contribution": 0.6931,
     "finding": 12,
     "ratio": 20.0,
-    "share": 0.0113,
+    "share": 0.0105,
     "title": "A new startup file"
    },
    {
@@ -1949,7 +2176,7 @@
     "contribution": 0.6931,
     "finding": 14,
     "ratio": 20.0,
-    "share": 0.0113,
+    "share": 0.0105,
     "title": "A process has code mapped from a scratch or home file"
    },
    {
@@ -1958,7 +2185,7 @@
     "contribution": 0.6931,
     "finding": 26,
     "ratio": 4.0,
-    "share": 0.0113,
+    "share": 0.0105,
     "title": "An account or group was changed (from the logs)"
    },
    {
@@ -1967,26 +2194,62 @@
     "contribution": 0.6931,
     "finding": 30,
     "ratio": 4.0,
-    "share": 0.0113,
+    "share": 0.0105,
     "title": "An SSH session listening on a port (a remote forward)"
+   },
+   {
+    "capped": "family",
+    "check": "software.repository",
+    "contribution": 0.6931,
+    "finding": 36,
+    "ratio": 4.0,
+    "share": 0.0105,
+    "title": "A package repository was added"
+   },
+   {
+    "capped": "family",
+    "check": "software.tools",
+    "contribution": 0.6931,
+    "finding": 38,
+    "ratio": 4.0,
+    "share": 0.0105,
+    "title": "An attack or tunnelling tool was installed"
    },
    {
     "capped": null,
     "check": "net.listener",
     "contribution": 0.4055,
-    "finding": 38,
+    "finding": 42,
     "ratio": 1.5,
-    "share": 0.0066,
+    "share": 0.0061,
     "title": "A new listening port"
+   },
+   {
+    "capped": null,
+    "check": "package.changed",
+    "contribution": 0.4055,
+    "finding": 45,
+    "ratio": 1.5,
+    "share": 0.0061,
+    "title": "The package managers' checksum lists changed since the baseline"
    },
    {
     "capped": null,
     "check": "process.injected",
     "contribution": 0.4055,
-    "finding": 41,
+    "finding": 46,
     "ratio": 1.5,
-    "share": 0.0066,
+    "share": 0.0061,
     "title": "A process has libffi code mapped from memory only"
+   },
+   {
+    "capped": null,
+    "check": "software.packages",
+    "contribution": 0.4055,
+    "finding": 47,
+    "ratio": 1.5,
+    "share": 0.0061,
+    "title": "Packages installed since the baseline"
    },
    {
     "capped": "family",
@@ -1994,7 +2257,7 @@
     "contribution": 0.3466,
     "finding": 21,
     "ratio": 4.0,
-    "share": 0.0057,
+    "share": 0.0052,
     "title": "A new account"
    },
    {
@@ -2003,7 +2266,7 @@
     "contribution": 0.3466,
     "finding": 22,
     "ratio": 4.0,
-    "share": 0.0057,
+    "share": 0.0052,
     "title": "A new account"
    },
    {
@@ -2012,7 +2275,7 @@
     "contribution": 0.3466,
     "finding": 33,
     "ratio": 4.0,
-    "share": 0.0057,
+    "share": 0.0052,
     "title": "A new systemd file"
    },
    {
@@ -2021,25 +2284,25 @@
     "contribution": 0.3466,
     "finding": 34,
     "ratio": 4.0,
-    "share": 0.0057,
+    "share": 0.0052,
     "title": "A new systemd file"
    },
    {
     "capped": "family",
     "check": "net.listener",
     "contribution": 0.3466,
-    "finding": 39,
+    "finding": 43,
     "ratio": 1.5,
-    "share": 0.0057,
+    "share": 0.0052,
     "title": "A new listening port"
    },
    {
     "capped": "family",
     "check": "net.listener",
     "contribution": 0.3466,
-    "finding": 40,
+    "finding": 44,
     "ratio": 1.5,
-    "share": 0.0057,
+    "share": 0.0052,
     "title": "A new listening port"
    },
    {
@@ -2048,7 +2311,7 @@
     "contribution": 0.231,
     "finding": 17,
     "ratio": 20.0,
-    "share": 0.0038,
+    "share": 0.0035,
     "title": "A new authorized SSH key"
    },
    {
@@ -2057,7 +2320,7 @@
     "contribution": 0.231,
     "finding": 18,
     "ratio": 20.0,
-    "share": 0.0038,
+    "share": 0.0035,
     "title": "A new authorized SSH key"
    },
    {
@@ -2066,7 +2329,7 @@
     "contribution": 0.231,
     "finding": 19,
     "ratio": 20.0,
-    "share": 0.0038,
+    "share": 0.0035,
     "title": "A new authorized SSH key"
    }
   ],
@@ -2078,7 +2341,7 @@
     }
    }
   },
-  "log_odds": 57.3275,
+  "log_odds": 62.2973,
   "prior": 0.02,
   "prior_source": "golden",
   "probability": 1.0,

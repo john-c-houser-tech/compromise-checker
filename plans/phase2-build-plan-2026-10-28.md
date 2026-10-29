@@ -547,6 +547,14 @@ signing key; both package managers are read where both exist, each part
 fails alone, and a pending write-ahead log is a gap; `socat` and `cpp` left
 off the lists.
 
+*2.6 proofs (2026-10-28, approved by John; 10 Nanodes, about 6 cents,
+every server deleted):* read-only PASS on all seven images (Ubuntu 26.04
+after one rerun: Linode's API timed out creating its first server; the
+collector reads rpm's database and dpkg's files and wrote nothing).
+Detection PASS on Ubuntu 24.04 and Rocky 9, all twenty-two behaviours
+(nmap installed; a repository and its signing key added). Golden cases
+re-exported from that run. Phase 2 spend so far: about 23 cents.
+
 ### 2.7 — Outgoing mail (8.9) (decision 3: decided)
 
 - **Collector, new module `mail`:** Postfix (`main.cf`, `master.cf`) and

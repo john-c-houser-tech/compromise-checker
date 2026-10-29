@@ -269,11 +269,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 102
+     "event": 172
     }
    ],
-   "first_seen": "2026-10-29T00:50:40.648345+00:00",
-   "last_seen": "2026-10-29T00:50:40.648345+00:00",
+   "first_seen": "2026-10-29T01:17:07.326793+00:00",
+   "last_seen": "2026-10-29T01:17:07.326793+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -299,11 +299,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 70
+     "event": 164
     }
    ],
-   "first_seen": "2026-10-29T00:50:22.311114+00:00",
-   "last_seen": "2026-10-29T00:50:22.311114+00:00",
+   "first_seen": "2026-10-29T01:16:47.356212+00:00",
+   "last_seen": "2026-10-29T01:16:47.356212+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -324,14 +324,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/at/a0000101c80b8a"
+    "path:/var/spool/at/a0000101c80ba5"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/at/a0000101c80b8a"
+      "/var/spool/at/a0000101c80ba5"
      ]
     }
    ],
@@ -339,7 +339,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/at/a0000101c80b8a (owner UID 0)",
+   "summary": "/var/spool/at/a0000101c80ba5 (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -358,19 +358,19 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.3"
+    "address:203.0.113.8"
    ],
    "entities_complete": true,
    "evidence": [
     {
-     "event": 60
+     "event": 155
     }
    ],
-   "first_seen": "2026-10-29T00:50:21.476357+00:00",
-   "last_seen": "2026-10-29T00:50:21.476357+00:00",
+   "first_seen": "2026-10-29T01:16:46.582897+00:00",
+   "last_seen": "2026-10-29T01:16:46.582897+00:00",
    "new": true,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.3 (publickey)",
+   "summary": "root from 203.0.113.8 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -389,7 +389,7 @@
    "contribution": 0.4055,
    "entities": [
     "program:firewalld",
-    "pid:637",
+    "pid:635",
     "exe:/usr/bin/python3.9"
    ],
    "entities_complete": true,
@@ -397,15 +397,15 @@
     {
      "live": [
       "processes",
-      637
+      635
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:50:11.220000+00:00",
-   "last_seen": "2026-10-29T00:50:11.220000+00:00",
+   "first_seen": "2026-10-29T01:16:35.750000+00:00",
+   "last_seen": "2026-10-29T01:16:35.750000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "firewalld (pid 637): /memfd:libffi (deleted)",
+   "summary": "firewalld (pid 635): /memfd:libffi (deleted)",
    "title": "A process has libffi code mapped from memory only",
    "uncertain": null,
    "variant": null

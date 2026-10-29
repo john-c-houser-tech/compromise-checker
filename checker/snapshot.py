@@ -18,7 +18,7 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 6  # 5: network sections; 6: logging, log_config, history flags
+SNAPSHOT_VERSION = 7  # 5: network; 6: logging, history flags; 7: software
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -67,6 +67,9 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "interfaces": ("network interfaces: flags, state, bridges", ("network",)),
     "firewall_rules": ("the firewall's loaded rules, line by line", ("network",)),
     "log_config": ("journald, rsyslog, audit and SELinux configuration files", ("logging_state",)),
+    "packages": ("installed packages: version, architecture, install time", ("software",)),
+    "software_files": ("package repositories (text) and signing keys (hashes)", ("software",)),
+    "global_packages": ("Python and Node packages installed system-wide by hand", ("software",)),
     "logging": (
         "SELinux and AppArmor state, journald storage, logging services and security agents"
         " running",
@@ -113,6 +116,7 @@ _FILE_SECTIONS = {
     "crash_dumps": "crash_dumps",
     "network": "network_files",
     "logging_state": "log_config",
+    "software": "software_files",
 }
 _FILE_RECORDS = {
     "file",
@@ -318,6 +322,12 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
         return {"unusual_files", "web_files", "privileged_files"}
     if module == "system_files":
         return {"privileged_files", "unowned_executables"}
+    if module == "software":
+        if path in (None, "packages", "/var/lib/dpkg/status") or str(path).endswith(".sqlite"):
+            return {"packages"}
+        if "node_modules" in str(path) or "python" in str(path):
+            return {"global_packages"}
+        return {"software_files"}
     if module == "network":
         if name in ("command_unavailable", "command_failed", "set_unterminated", "source") or (
             name == "not_examined" and path == "nft list ruleset"
@@ -720,6 +730,22 @@ class SnapshotBuilder:
                 # comes without a place.
                 item.setdefault("place", "/")
             self.section(sections[name]).items[data["path"]] = item
+
+    def _on_software(self, name: str, data: dict[str, Any]) -> None:
+        if name == "package" and data.get("name"):
+            key = f"{data['name']} {data.get('arch') or ''}".strip()
+            self.section("packages").items[key] = {
+                k: data.get(k) for k in ("manager", "version", "installed")
+            }
+        elif name == "signing_key" and data.get("path"):
+            self.section("software_files").items[data["path"]] = dict(
+                _meta(data), record="signing_key"
+            )
+        elif name == "global_package" and data.get("name"):
+            self.section("global_packages").items[f"{data['kind']}: {data['name']}"] = {
+                "version": data.get("version"),
+                "where": data.get("where"),
+            }
 
     def _on_logging_state(self, name: str, data: dict[str, Any]) -> None:
         if name == "log_file":

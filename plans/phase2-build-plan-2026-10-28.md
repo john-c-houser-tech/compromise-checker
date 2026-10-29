@@ -529,6 +529,14 @@ Phase 2 spend so far: about 17 cents.
 - **Detection behaviours:** `nmap` installed; a repository file added with
   a new key.
 
+*As built:* the collector's `software` module reads the installed
+packages itself (rpm's database immutable, dpkg's status file; the
+install time from rpm, or from dpkg's file lists), not the package logs:
+the checks need what is installed, and install times date it. Signing
+keys are hashed, not parsed (a new or changed key file is the finding).
+Package changes are grouped, one finding per kind; a maintenance window
+makes installs and removals informational.
+
 ### 2.7 — Outgoing mail (8.9) (decision 3: decided)
 
 - **Collector, new module `mail`:** Postfix (`main.cf`, `master.cf`) and

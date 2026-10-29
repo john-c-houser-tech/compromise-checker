@@ -221,6 +221,26 @@
    "status": "ran"
   },
   {
+   "check": "software.global",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "software.packages",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "software.repository",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "software.tools",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "ssh.authorized_keys",
    "findings": 4,
    "status": "ran"

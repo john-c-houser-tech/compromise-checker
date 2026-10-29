@@ -771,6 +771,30 @@ reconfigured logging and audit, SELinux and AppArmor turned down.
   profiles, by name and mode (`/sys/kernel/security/apparmor/profiles`, at
   most 5,000).
 
+## `software`
+
+**Why:** check 8.11 (software changes): packages installed or removed,
+repositories and signing keys added, attack tools and compilers appearing,
+packages installed system-wide by hand.
+
+**Reads:**
+- the installed packages (at most 20,000): from rpm's SQLite database,
+  opened immutable as `package_verify` opens it (no locks, no `-shm` or
+  `-wal` file), name, version-release (with its epoch), architecture and
+  install time; or from dpkg's status file, name, version and
+  architecture, with the modification time of the package's file list in
+  `/var/lib/dpkg/info` as its install time;
+- repositories as masked text (a password in a repository's URL is
+  masked): `/etc/apt/sources.list`, `sources.list.d`, `/etc/yum.repos.d`;
+- signing keys as file facts and SHA-256 only, never their bytes:
+  `/etc/apt/trusted.gpg`, `trusted.gpg.d`, `/etc/apt/keyrings`,
+  `/usr/share/keyrings`, `/etc/pki/rpm-gpg`;
+- the names (and, for Python, versions) of packages installed
+  system-wide by hand, from their folder names: `*.dist-info` and
+  `*.egg-info` in `/usr/local/lib/python3*/dist-packages` and
+  `site-packages`, and `node_modules` in `/usr/lib` and `/usr/local/lib`
+  (scoped `@org/name` packages too).
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,

@@ -213,6 +213,22 @@
    "status": "ran"
   },
   {
+   "check": "software.global",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "software.packages",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "software.repository",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "software.tools",
+   "status": "this bundle is the baseline"
+  },
+  {
    "check": "ssh.authorized_keys",
    "findings": 0,
    "status": "ran"

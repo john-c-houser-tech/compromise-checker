@@ -262,6 +262,8 @@ EXPECTED_RECORDS = (
     ("logging_state", "log_file"),
     ("logging_state", "audit_records"),
     ("logging_state", "mac_state"),
+    ("software", "package"),
+    ("software", "signing_key"),
 )
 EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal")
 

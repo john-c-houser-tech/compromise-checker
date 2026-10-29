@@ -224,6 +224,15 @@ compared).
 A journal gap inside one boot isn't checked: it needs the whole journal,
 which the collector doesn't read (plan 2.5).
 
+### 8.11 Software changes
+
+| Check | What | Band | Baseline |
+|---|---|---|---|
+| `software.packages` | packages installed (`installed`) or removed (`removed`) since the baseline, one finding each, naming them; informational when the automatic updater (unattended-upgrades, `apt-daily-upgrade`, `dnf-automatic`…) started within two hours before every install (`automatic`) or a maintenance window covers them; upgrades informational (`upgraded`) | low | yes |
+| `software.repository` | a package repository (`repository`) or signing key (`key`) added or changed | medium | yes |
+| `software.tools` | an attack or tunnelling tool installed (nmap, masscan, socat, ncat, proxychains, chisel, hydra, sqlmap, impacket…: `attack_tool`, medium); a compiler (gcc, clang, Go, Rust: `compiler`, low) | | yes |
+| `software.global` | Python packages installed system-wide by hand (in `/usr/local/lib/python3*`) or Node packages installed with `npm -g` | low | yes |
+
 ## Coverage
 
 Beside the findings, each assessment says what the collection couldn't see

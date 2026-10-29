@@ -25,6 +25,7 @@ import fnmatch
 import glob
 import gzip
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -853,7 +854,15 @@ def pump_lines(run, writer, reader, transform=None):
 
 
 def send_file(
-    run, module, absolute, text_only=False, rewrite=None, spool=False, walked=False, home=None
+    run,
+    module,
+    absolute,
+    text_only=False,
+    rewrite=None,
+    spool=False,
+    walked=False,
+    home=None,
+    transform=None,
 ):
     """Send one file as a source: decompressed, masked, chunked, capped.
     Returns True if sent, False if it could not be read (recorded instead).
@@ -867,7 +876,8 @@ def send_file(
     was found by walking a directory, not named by configuration, so no hard
     link is read; with `home` (see homes_for), it is a home file whose text
     the opt-in allows, and must lie in that home and in no home the opt-in
-    doesn't cover (Run.refusal)."""
+    doesn't cover (Run.refusal). With `transform`, each line goes through
+    `transform(line, masker)` instead of the plain masking (see pump_lines)."""
     suffix = os.path.splitext(absolute)[1]
     if suffix in _COMPRESSED and suffix not in _OPENERS:
         details = describe_unreadable(absolute)
@@ -924,7 +934,7 @@ def send_file(
         with raw:
             reader = opener(raw) if opener else raw
             with reader:
-                truncated_reason = pump_lines(run, writer, reader)
+                truncated_reason = pump_lines(run, writer, reader, transform)
     except _DECOMPRESS_ERRORS as exc:
         error = f"{type(exc).__name__}: {exc}"
     writer.finish(truncated_reason, error)
@@ -6677,6 +6687,300 @@ def module_software(run):
     part("global_packages", _global_packages, run, module)
 
 
+# --- Outgoing mail (DESIGN.md §8.9) ---------------------------------------------------
+
+MAIL_CONFIG_FILES = (
+    "/etc/postfix/main.cf",
+    "/etc/postfix/master.cf",
+    "/etc/exim4/update-exim4.conf.conf",
+    "/etc/exim4/exim4.conf.template",
+    "/etc/exim4/exim4.conf",
+    "/etc/exim/exim.conf",
+)
+# Debian's split Exim configuration. Postfix's lookup tables (sasl_passwd
+# and the rest) and Exim's passwd.client are never read: they hold
+# passwords and addresses.
+MAIL_CONFIG_DIRS = ("/etc/exim4/conf.d",)
+# syslog's mail logs (Debian's mail.log, RHEL's maillog), Postfix's own
+# (maillog_file), and Exim's main logs, with their rotated copies.
+MAIL_LOG_DIRS = (
+    ("/var/log", re.compile(r"^(?:mail\.log|maillog|postfix\.log)(?:[-.][\w.-]+)?$")),
+    ("/var/log/exim4", re.compile(r"^mainlog(?:[-.][\w.-]+)?$")),
+    ("/var/log/exim", re.compile(r"^main\.log(?:[-.][\w.-]+)?$")),
+)
+JOURNAL_MAIL_MATCHES = ("SYSLOG_FACILITY=2",)  # mail
+MAIL_KEY_HEX = re.compile(r"^[0-9a-f]{64}$")
+MAIL_FINGERPRINT_HEX = 12
+# An address: a local part (quoted, or anything up to a character that ends
+# one in a log line), @, and a domain or an address literal.
+_MAIL_ADDRESS = re.compile(
+    rb'(?P<local>"[^"\r\n]*"|[^\s<>()\[\]\\,;:"@=]+)@'
+    rb"(?P<domain>\[[^\]\s]*\]|[^\s<>()\[\]\\,;:\"@='`]+)"
+)
+# A sender or recipient without a domain (Postfix's from=<www-data>).
+_MAIL_BARE = re.compile(rb"\b(from|to|orig_to)=<([^<>@\s]+)>")
+# Exim's main log: the address after an arrival or delivery flag, which
+# for a local delivery may have no domain.
+_EXIM_LINE = re.compile(
+    rb"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)? (?:[+-]\d{4} )?(?:\[\d+\] )?\S+ "
+    rb"(<=|=>|->|\*>|\*\*|==) )(\S*)"
+)
+# Exim's subject (log_selector +subject), on arrival lines only: on
+# delivery lines T= names the transport.
+_EXIM_SUBJECT = re.compile(rb'(?<= )T=(?:"(?:[^"\\\r\n]|\\.)*"?|\S+)')
+# Postfix's header_checks and body_checks log the header or body line they
+# matched; only the envelope after it is kept.
+_POSTFIX_CONTENT = re.compile(
+    rb": (?:warning|info|reject|hold|discard|redirect|filter|replace|prepend|bcc|defer"
+    rb"|dunno|ignore|strip): (?:header|body|mime-header|nested-header) "
+)
+_POSTFIX_ENVELOPE = re.compile(rb"\b(?:from|to|helo)=<[^<>]*>|\bproto=\S+")
+
+
+def mail_key(run):
+    """The organization's mail key from the settings, or None."""
+    value = run.settings.get("mail_key")
+    return bytes.fromhex(value) if isinstance(value, str) and MAIL_KEY_HEX.match(value) else None
+
+
+def mail_key_id(value):
+    """What the manifest shows instead of the mail key: an identifier that
+    tells keys apart, from which the key can't be found."""
+    if not isinstance(value, str) or not MAIL_KEY_HEX.match(value):
+        return "withheld (not a valid key)"
+    digest = hashlib.sha256(b"compromise-checker mail key id\0" + bytes.fromhex(value))
+    return "id:" + digest.hexdigest()[:12]
+
+
+def mail_fingerprint(key, local):
+    """A local part's keyed fingerprint (policy §7): the same address always
+    gives the same one, and without the key none can be turned back."""
+    digest = hmac.new(key, local.lower(), hashlib.sha256).hexdigest()
+    return b"h:" + digest[:MAIL_FINGERPRINT_HEX].encode()
+
+
+def mask_mail(data, key, counts):
+    """A mail log line (bytes) with no address left in it: each local part
+    replaced by its fingerprint, the domain kept (lowercased); the header or
+    body text Postfix's checks matched, and Exim's subject, masked."""
+
+    def count(kind):
+        counts[kind] = counts.get(kind, 0) + 1
+
+    found = _POSTFIX_CONTENT.search(data)
+    if found:
+        envelope = _POSTFIX_ENVELOPE.findall(data[found.end() :])
+        ending = data[len(data.rstrip(b"\r\n")) :]
+        data = data[: found.end()] + MASK % b"mail_content"
+        data += (b"; " + b" ".join(envelope) if envelope else b"") + ending
+        count("mail_content")
+    exim = _EXIM_LINE.match(data)
+    if exim and exim.group(2) == b"<=":
+        data, subjects = _EXIM_SUBJECT.subn(b"T=" + MASK % b"mail_subject", data)
+        if subjects:
+            count("mail_subject")
+
+    def address(match):
+        local, domain = match.group("local"), match.group("domain")
+        lead = len(local) - len(local.lstrip(b"'`"))
+        if lead == len(local):
+            return match.group(0)
+        trimmed = domain.rstrip(b".")
+        count("mail_address")
+        return (
+            local[:lead]
+            + mail_fingerprint(key, local[lead:])
+            + b"@"
+            + trimmed.lower()
+            + domain[len(trimmed) :]
+        )
+
+    def bare(match):
+        count("mail_address")
+        return match.group(1) + b"=<" + mail_fingerprint(key, match.group(2)) + b">"
+
+    data = _MAIL_ADDRESS.sub(address, data)
+    data = _MAIL_BARE.sub(bare, data)
+    exim = _EXIM_LINE.match(data)
+    first = exim.group(3) if exim else b""
+    if first and b"@" not in first and first != b"<>" and not first.startswith((b"/", b"|", b":")):
+        count("mail_address")
+        data = exim.group(1) + mail_fingerprint(key, exim.group(3)) + data[exim.end() :]
+    return data
+
+
+def mail_line_masker(key):
+    """pump_lines' transform for a mail log file: secrets, then addresses."""
+
+    def transform(line, masker):
+        return mask_mail(masker.line(line), key, masker.counts)
+
+    return transform
+
+
+def mail_journal_masker(key):
+    """pump_lines' transform for the journal's mail messages: masked like
+    any journal line, then every field's addresses."""
+
+    def value(item, counts):
+        if isinstance(item, str):
+            masked = mask_mail(item.encode("utf-8", "surrogatepass"), key, counts)
+            return masked.decode("utf-8", "replace")
+        if isinstance(item, list):
+            if item and all(isinstance(b, int) and 0 <= b <= 255 for b in item):
+                return list(mask_mail(bytes(item), key, counts))
+            return [value(x, counts) for x in item]
+        return item
+
+    def transform(line, masker):
+        masked = mask_journal_line(line, masker)
+        try:
+            entry = json.loads(masked)
+        except ValueError:
+            return masked  # already the marker for a line that can't be parsed
+        entry = {name: value(item, masker.counts) for name, item in entry.items()}
+        return (json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+
+    return transform
+
+
+def _mail_logs(run, module, key):
+    """The mail log files last written within the window, and the journal's
+    mail messages, each address fingerprinted before it is sent."""
+    since = run.since.timestamp()
+    transform = mail_line_masker(key)
+    found = sent = skipped = 0
+    for directory, pattern in MAIL_LOG_DIRS:
+        try:
+            names = os.listdir(path(directory))
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            run.stream.record(module, "unreadable_file", {"path": directory, "reason": str(exc)})
+            continue
+        candidates = []
+        for name in names:
+            if not pattern.match(name):
+                continue
+            absolute = _join(directory, name)
+            try:
+                info = os.lstat(path(absolute))
+            except OSError:
+                continue
+            candidates.append((info.st_mtime, absolute, stat.S_ISREG(info.st_mode)))
+        found += len(candidates)
+        for mtime, absolute, regular in sorted(candidates):
+            run.check_time()
+            if regular and mtime < since:
+                skipped += 1
+                continue
+            if send_file(run, module, absolute, transform=transform):
+                sent += 1
+    run.stream.record(
+        module,
+        "mail_log_summary",
+        {"files_found": found, "files_sent": sent, "files_before_window": skipped},
+    )
+    run_command(
+        run,
+        module,
+        "journalctl",
+        journal_args(run) + list(JOURNAL_MAIL_MATCHES),
+        transform=mail_journal_masker(key),
+    )
+
+
+POSTFIX_QUEUES = ("maildrop", "incoming", "active", "deferred", "hold", "corrupt")
+POSTFIX_SPOOL = "/var/spool/postfix"
+EXIM_SPOOLS = ("/var/spool/exim4", "/var/spool/exim")
+MAX_QUEUE_FILES = 200000
+
+
+def _count_files(run, top, depth, suffix=b""):
+    """Regular files under `top`, `depth` levels down at most (with
+    `suffix`, only names ending so), never opened: (count, cut short)."""
+    count = 0
+    pending = [(top, 0)]
+    while pending:
+        run.check_time()
+        directory, level = pending.pop()
+        with os.scandir(os.fsencode(path(directory))) as listing:
+            for entry in listing:
+                if entry.is_dir(follow_symlinks=False):
+                    if level < depth:
+                        pending.append((_join(directory, os.fsdecode(entry.name)), level + 1))
+                elif entry.is_file(follow_symlinks=False) and entry.name.endswith(suffix):
+                    count += 1
+                    if count >= MAX_QUEUE_FILES:
+                        return count, True
+    return count, False
+
+
+def _mail_queue(run, module, server, directory, queues, depth, suffix=b""):
+    counts, cut, errors = {}, [], {}
+    for queue in queues:
+        try:
+            counts[queue], truncated = _count_files(run, _join(directory, queue), depth, suffix)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors[queue] = str(exc)
+            continue
+        if truncated:
+            cut.append(queue)
+    run.stream.record(
+        module,
+        "mail_queue",
+        {"server": server, "directory": directory, "queues": counts, "cut": cut, "errors": errors},
+    )
+
+
+def _postfix_spool():
+    """Postfix's queue directory: main.cf's queue_directory, if it names
+    one plainly, or the default."""
+    text = read_small("/etc/postfix/main.cf", CONFIG_FILE_BYTES) or ""
+    for line in text.splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name.strip() == "queue_directory" and not line[:1].isspace():
+            value = value.strip()
+            if value.startswith("/") and "$" not in value and ".." not in value.split("/"):
+                return value.rstrip("/") or "/"
+    return POSTFIX_SPOOL
+
+
+def module_mail(run):
+    """Outgoing mail (DESIGN.md §8.9): Postfix's and Exim's configuration
+    (masked text; never their password or lookup tables), the queue sizes,
+    counted from the spool directories (never by running mailq), and the
+    mail logs within the window, every address's local part replaced on
+    the server by a fingerprint keyed with the organization's mail key
+    (policy §7). Without that key, no mail log is sent."""
+    module = "mail"
+    seen = set()
+    send_config_files(run, module, MAIL_CONFIG_FILES, seen)
+    for directory in MAIL_CONFIG_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=2)
+    postfix = path_facts("/etc/postfix/main.cf") is not None
+    exim = any(path_facts(p) is not None for p in ("/etc/exim4", "/etc/exim/exim.conf"))
+    run.stream.record(module, "mail_servers", {"postfix": postfix, "exim": exim})
+    if postfix:
+        # Deferred mail sits two levels down (hash_queue_depth).
+        _mail_queue(run, module, "postfix", _postfix_spool(), POSTFIX_QUEUES, 3)
+    for spool in EXIM_SPOOLS if exim else ():
+        if path_facts(spool) is not None:
+            # One -H file per message, a level down with split_spool_directory.
+            _mail_queue(run, module, "exim", spool, ("input",), 1, b"-H")
+    key = mail_key(run)
+    if key is None:
+        run.stream.record(
+            module,
+            "mail_logs_withheld",
+            {"reason": "no mail key in the settings; mail logs are sent only fingerprinted"},
+        )
+        return
+    _mail_logs(run, module, key)
+
+
 MODULES = {
     "host_facts": module_host_facts,
     "auth_log": module_auth_log,
@@ -6701,6 +7005,7 @@ MODULES = {
     "network": module_network,
     "logging_state": module_logging_state,
     "software": module_software,
+    "mail": module_mail,
 }
 
 
@@ -6732,6 +7037,9 @@ def settings_problems(settings):
             unknown = [m for m in modules if m not in MODULES]
             if unknown:
                 problems.append("unknown modules: " + ", ".join(unknown))
+    mail = settings.get("mail_key")
+    if mail is not None and not (isinstance(mail, str) and MAIL_KEY_HEX.match(mail)):
+        problems.append("mail_key must be null or 64 lowercase hexadecimal digits")
     if settings.get("home_text", "off") not in ("off", "privileged", "all"):
         problems.append("home_text must be off, privileged or all")
     web_roots = settings.get("web_roots")
@@ -6757,6 +7065,17 @@ def settings_problems(settings):
             if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
                 problems.append(f"limits.{key} must be a positive number")
     return problems
+
+
+def settings_shown(settings):
+    """The settings as the manifest repeats them, with the mail key replaced
+    by its identifier: the key itself never leaves the server's memory."""
+    if not isinstance(settings, dict):
+        return None
+    shown = dict(settings)
+    if "mail_key" in shown and shown["mail_key"] is not None:
+        shown["mail_key"] = mail_key_id(shown["mail_key"])
+    return shown
 
 
 def main(settings_json, out=None):
@@ -6788,7 +7107,7 @@ def main(settings_json, out=None):
             "host": host_identity(),
             "python": {"version": platform.python_version(), "executable": sys.executable},
             "effective_uid": os.geteuid(),
-            "settings": settings if isinstance(settings, dict) else None,
+            "settings": settings_shown(settings),
             "modules_planned": planned,
             "masking_version": MASKING_VERSION,
             "priority": priority,

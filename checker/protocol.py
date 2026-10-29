@@ -75,6 +75,10 @@ class Settings(_Model):
     # Directories listed for web shells (DESIGN.md §8.6); None: the
     # collector's common defaults, a list (even empty) replaces them.
     web_roots: list[str] | None = None
+    # The organization's mail key (policy §7): mail log addresses are
+    # fingerprinted with it on the server. None: no mail log is sent. The
+    # manifest shows only its identifier, and repr never shows it.
+    mail_key: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", repr=False)
 
     @field_validator("web_roots")
     @classmethod

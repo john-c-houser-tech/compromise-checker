@@ -10,8 +10,10 @@ an append-only chain of custody. Bundles are never modified once written.
 import asyncio
 import getpass
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import socket
 import sqlite3
 import threading
@@ -120,8 +122,53 @@ def _initialise(
         home_text=home_text,
     )
     Store(database_file(home)).close()
+    mail_key(home)
     atomic_write(config_file(home), yaml.safe_dump(config.model_dump(), sort_keys=False))
     return config, identity_path
+
+
+# --- The mail key (policy §7) -------------------------------------------------------------
+
+MAIL_FINGERPRINT_HEX = 12  # as the collector's
+
+
+def mail_key_file(home: Path) -> Path:
+    return home / "keys" / "mail-key.txt"
+
+
+def mail_key(home: Path) -> str:
+    """The organization's mail key (64 hex digits), made on first use: the
+    collector replaces every address's local part in mail logs with a
+    fingerprint keyed by it, on the server, before anything is sent."""
+    path = mail_key_file(home)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with locked(path):
+        if not path.exists():
+            atomic_write(
+                path,
+                f"# Compromise Checker mail key. Created {datetime.now(UTC):%Y-%m-%d}.\n"
+                "# Mail log addresses are fingerprinted with it on each server; with it,\n"
+                "# `checker mail-hash` finds a known address. Keep it as private as the\n"
+                "# evidence key.\n"
+                f"{secrets.token_hex(32)}\n",
+            )
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if len(line) == 64 and all(c in "0123456789abcdef" for c in line):
+                return line
+    raise EvidenceError(f"no mail key in {path}")
+
+
+def mail_fingerprint(key: str, address: str) -> str:
+    """How a known address appears in collected mail logs: the collector's
+    keyed fingerprint of its local part, and its domain, lowercased."""
+    local, at, domain = address.strip().rpartition("@")
+    if not at:
+        local, domain = domain, ""
+    if not local:
+        raise ValueError(f"not an address: {address!r}")
+    digest = hmac.new(bytes.fromhex(key), local.encode("utf-8").lower(), hashlib.sha256).hexdigest()
+    return f"h:{digest[:MAIL_FINGERPRINT_HEX]}" + (f"@{domain.lower()}" if at else "")
 
 
 def load_identity(path: Path) -> x25519.Identity:

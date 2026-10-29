@@ -805,6 +805,56 @@ Each of the three parts (packages, repositories and keys, global
 packages) fails alone: a `not_examined` record for its own section, the
 others still collected.
 
+## `mail`
+
+**Why:** check 8.9 (outgoing mail): mail sent by web-server accounts,
+relays and open-relay settings, volume and queue growth, new recipient
+domains.
+
+**Reads:**
+- Postfix's and Exim's configuration as masked text:
+  `/etc/postfix/main.cf` and `master.cf`, `/etc/exim4/update-exim4.conf.conf`,
+  `exim4.conf.template`, `exim4.conf` and `conf.d`, `/etc/exim/exim.conf`.
+  Never Postfix's lookup tables (`sasl_passwd` and the rest) or Exim's
+  `passwd.client`: they hold passwords and addresses;
+- the queue sizes, counted from the spool directories, never by running
+  `mailq` and never opening a message: Postfix's `maildrop`, `incoming`,
+  `active`, `deferred`, `hold` and `corrupt` under its `queue_directory`
+  (from `main.cf`, if it names one plainly, else `/var/spool/postfix`),
+  and Exim's messages (`-H` files) in `/var/spool/exim4/input` or
+  `/var/spool/exim/input`, at most 200,000 counted each;
+- the mail logs within the window: syslog's (`/var/log/mail.log`,
+  `/var/log/maillog`) and Postfix's own (`/var/log/postfix.log`), Exim's
+  main logs (`/var/log/exim4/mainlog`, `/var/log/exim/main.log`), with
+  their rotated copies, last written within the window; and the journal's
+  mail facility (`SYSLOG_FACILITY=2`), with the same fields as
+  `auth_journal`.
+
+**Addresses (policy §7):** before a mail log line is sent, after secret
+masking, every address in it is changed: the local part is replaced by
+`h:` and the first 12 hex digits of its HMAC-SHA256, keyed with the
+organization's mail key and computed over the local part lowercased; the
+domain is kept, lowercased (`alice@example.org` becomes
+`h:3f9a1c2e5b7d@example.org`). Addresses without a domain (Postfix's
+`from=<www-data>`, `orig_to=<alias>`, Exim's local deliveries) are
+fingerprinted too. The header or body line Postfix's `header_checks` and
+`body_checks` log is replaced by `[MASKED:mail_content]`, keeping only the
+envelope after it (`from=<…> to=<…> proto=… helo=<…>`), and Exim's subject
+(`T="…"` on arrival lines, with `log_selector = +subject`) by
+`[MASKED:mail_subject]`. In journal entries every field is treated so.
+
+The key (`keys/mail-key.txt` in the tool's directory, made by `checker
+init`, or on first use for a directory set up before) travels in the
+settings, so it is in the collector's memory on the server for the run and
+never written there; the manifest shows only an identifier of it. Without a
+key no mail log is sent (`mail_logs_withheld`), and the coverage says so.
+
+An intruder with root on the server during a collection could read the key
+from the collector's memory, and then test guesses of addresses against
+that organization's fingerprints. Keeping one key per organization limits
+that; if a server is known to have been compromised, replacing the key
+(and so starting the fingerprints afresh) is a planned follow-up.
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,

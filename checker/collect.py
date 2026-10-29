@@ -15,6 +15,7 @@ from checker.evidence import (
     bundle_path,
     database_file,
     judge,
+    mail_key,
     seal_text,
     write_sidecar,
 )
@@ -55,6 +56,7 @@ async def collect_hosts(
         modules=modules,  # None: every module
         limits=limits,
         home_text=config.home_text,
+        mail_key=mail_key(home),
     )
     fingerprint = collector_sha256()
     store = Store(database_file(home))

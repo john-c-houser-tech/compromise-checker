@@ -121,6 +121,26 @@
    "status": "ran"
   },
   {
+   "check": "mail.domains",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.relay",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.volume",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.web_user",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "net.config",
    "findings": 1,
    "status": "ran"

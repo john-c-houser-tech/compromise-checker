@@ -78,6 +78,12 @@ recorded, which includes connecting and any prompt).
 | `system.boot_journal` | the journal's boot list | index, boot id, first and last entry |
 | `login.session`, `login.ended`, `system.boot`, `system.shutdown_record` | wtmp | user, line, host, address |
 | `login.failed` | btmp | user (masked unless a local account), host, address |
+| `mail.submitted` | Postfix's `pickup`, Exim's `<=` with `P=local` | queue_id, sender (fingerprinted), uid (Postfix) or user (Exim) |
+| `mail.sent`, `mail.deferred`, `mail.bounced` | Postfix's delivery agents (`status=sent`, `deferred`, `bounced` or `expired`); Exim's `=>`/`->`, `==`, `**` | queue_id, recipient (fingerprinted), domain, relay |
+
+Mail events come from the mail logs (`mail_log:<path>`) and the journal's
+mail facility (`mail_journal`); Exim's main log uses the host's time zone
+unless its lines carry an offset.
 
 Journal events also carry the journal's `audit_session`, `boot_id`,
 `systemd_unit`, `journal_comm` and `journal_uid` where present — fields the
@@ -91,7 +97,8 @@ collected text.
 
 The same record often reaches a bundle more than once: sshd and sudo lines
 are both in `/var/log/secure` (or `auth.log`) and in the journal, and
-logind's in both journal reads. Events alike to the second, in type,
+logind's in both journal reads; Postfix's are in `mail.log` (or `maillog`)
+and the journal. Events alike to the second, in type,
 process and fields are one record: the source with the most of them is kept
 (the journal on a tie, for its trusted fields), and the others are named in
 the event's `also_in`. Counting per source keeps real repeats — two failed

@@ -117,6 +117,24 @@
    "status": "ran"
   },
   {
+   "check": "mail.domains",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "mail.relay",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.volume",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "mail.web_user",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "net.config",
    "status": "this bundle is the baseline"
   },

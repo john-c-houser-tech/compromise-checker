@@ -27,7 +27,14 @@ from checker.snapshot import FULL, SNAPSHOT_VERSION, Snapshot
 from checker.whitelist import Whitelist
 
 # Logs whose reach (how far back they go) the coverage reports.
-LOG_SOURCES = ("auth_log", "auth_journal", "system_journal", "login_records")
+LOG_SOURCES = (
+    "auth_log",
+    "auth_journal",
+    "system_journal",
+    "login_records",
+    "mail_log",
+    "mail_journal",
+)
 LARGE_CLOCK_OFFSET = 120  # seconds
 # 2: scored (prior, each finding's ratio and contribution, the score).
 ASSESSMENT_FORMAT = 2
@@ -100,6 +107,9 @@ def coverage(
         gaps.append("no system journal events: kernel messages and shutdowns can't be checked")
     if not any(e.type in ("system.boot_journal", "system.boot") for e in events):
         gaps.append("no boot list or boot records: reboots can't be classified")
+    withheld = snapshot.live.get("mail_logs_withheld")
+    if withheld:
+        gaps.append(f"mail logs not collected ({withheld.get('reason')}): outgoing mail unchecked")
     offset = events_summary.get("clock_offset_seconds")
     if offset is not None and abs(offset) > LARGE_CLOCK_OFFSET:
         gaps.append(f"the host's clock is {offset:+.0f} s off the controller's")
@@ -184,6 +194,11 @@ def analyze(
             )
             if comparison.bundle_id == found.baseline_id:
                 since_baseline = comparison.differences
+    baseline_time = baseline_snapshot = None
+    if since_baseline is not None and found.baseline_id:
+        baseline_row = store.bundle(found.baseline_id)
+        baseline_time = baseline_row["started_at"]
+        baseline_snapshot = snapshot_of(store, baseline_row, identity, recipients)
     if found.baseline_id == row["id"] and not found.first:
         no_baseline = "this bundle is the baseline"
     if found.first:
@@ -208,6 +223,8 @@ def analyze(
         previous_time=previous_time,
         no_baseline=no_baseline,
         previous_snapshot=previous_snapshot,
+        baseline_time=baseline_time,
+        baseline_snapshot=baseline_snapshot,
     )
     found_dicts, ran, scored, applied = evaluate(context, prior, whitelist)
     counts = count(found_dicts)

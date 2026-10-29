@@ -112,6 +112,17 @@ include access tokens, and sometimes secrets typed into commands.
   reads and why. The time window collected is limited (30 days by default).
 - **Optional sources.** Full web server access logs are collected only if
   your organization chooses.
+- **Mail logs.** Outgoing mail logs (Postfix, Exim) are collected, because
+  mail sent from a compromised server is a common sign of misuse. Before they
+  leave the server, every email address in them is changed: the part before
+  the @ is replaced by a keyed fingerprint, made with a key your organization
+  holds (created at setup), and the domain is kept. The same address always
+  gives the same fingerprint, so volumes and new recipients can be counted
+  without any address being shown. Someone who holds the key can check
+  whether a given address appears (`checker mail-hash`); without it, the
+  fingerprints can't be turned back into addresses. The key is sent to the
+  server for each collection, in memory only, and never written there.
+  Message subjects and contents aren't in these logs and are never collected.
 - **Shell history.** Information *about* history files (whether they exist,
   their size and dates, and whether history has been switched off) is always
   collected, because switching history off is a common way of covering

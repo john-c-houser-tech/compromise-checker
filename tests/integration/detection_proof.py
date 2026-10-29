@@ -163,7 +163,16 @@ else
         'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof' \
         > /etc/yum.repos.d/cc-proof.repo || fail repository
 fi
-sleep 2
+# --- Outgoing mail (2.7) ---
+# A burst of mail from the web-server account (made above), as a mailer
+# script dropped in a web root would send it: 150 messages to 60 domains
+# under .invalid, which can't exist, so Postfix bounces them and nothing
+# leaves the server.
+for n in $(seq 1 150); do
+    printf 'Subject: offer\n\nhello\n' \
+        | runuser -u www-data -- /usr/sbin/sendmail "r$n@d$((n % 60)).invalid" || fail mail
+done
+sleep 30
 """
 
 
@@ -233,6 +242,9 @@ def expectations(root_fingerprint: str) -> list[Expected]:
             "a package repository added", "software.repository", "cc-proof", "medium", "repository"
         ),
         Expected("a signing key added", "software.repository", "cc-proof", "medium", "key"),
+        Expected("mail from the web-server account", "mail.web_user", "www-data", "medium"),
+        Expected("a burst of outgoing mail", "mail.volume", "deliveries attempted", "medium"),
+        Expected("mail to many new domains", "mail.domains", "new domains", "medium"),
     ]
 
 

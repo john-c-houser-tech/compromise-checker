@@ -35,6 +35,7 @@ import asyncssh
 
 from checker.analysis import parse_bundle
 from checker.assess import analyze
+from checker.bundle import walk_bundle
 from checker.collect import collect_hosts
 from checker.evidence import (
     Store,
@@ -42,6 +43,7 @@ from checker.evidence import (
     initialise,
     load_config,
     load_identity,
+    mail_key,
     open_bundle,
 )
 from checker.inventory import Host
@@ -242,6 +244,11 @@ class Result:
     modules_changed: list[str] = field(default_factory=list)
     modules_other: list[str] = field(default_factory=list)  # informational
     firewall_loaded: dict | None = None
+    # Plan 2.7: mail events parsed (must be some), and anything that must
+    # never leave the server found in the bundle: the mail key, or the
+    # mailed address's local part (must stay empty).
+    mail_events: int = 0
+    mail_leaks: list[str] = field(default_factory=list)
     error: str | None = None
 
 
@@ -264,8 +271,12 @@ EXPECTED_RECORDS = (
     ("logging_state", "mac_state"),
     ("software", "package"),
     ("software", "signing_key"),
+    ("mail", "mail_servers"),
+    ("mail", "mail_queue"),  # Postfix, installed by the setup
 )
-EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal")
+EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal", "mail")
+# The address the setup mails: its local part must never leave the server.
+PROOF_MAIL_LOCAL = "proofmail"
 
 SETUP = r"""
 set -eu
@@ -316,6 +327,20 @@ echo '*/30 * * * * /usr/bin/true proof' | crontab -u proofuser -
 install -d -o proofuser /home/proofuser/.config/systemd/user
 printf '[Service]\nExecStart=/usr/bin/true\n' > /home/proofuser/.config/systemd/user/proof.service
 echo 'export PROOF=1' >> /home/proofuser/.bashrc
+# A mail server, and mail for the mail module to find (plan 2.7): its log
+# lines name proofmail, which must arrive only as a fingerprint.
+if command -v apt-get >/dev/null 2>&1; then
+    echo "postfix postfix/main_mailer_type select Local only" | debconf-set-selections
+    echo "postfix postfix/mailname string proof.example" | debconf-set-selections
+    apt-get install -y -qq postfix >/dev/null
+else
+    dnf install -y -q postfix >/dev/null
+fi
+systemctl enable --now postfix >/dev/null 2>&1
+printf 'Subject: proof\n\nproof\n' \
+    | runuser -u proofuser -- /usr/sbin/sendmail proofmail@example.org
+printf 'Subject: proof\n\nproof\n' | /usr/sbin/sendmail root
+sleep 5
 # Something for the collector to find in the authentication log.
 logger -p authpriv.notice "compromise-checker read-only proof: marker" || true
 """
@@ -726,6 +751,8 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             and not result.snapshot
             and not result.checks_failed
             and not result.modules_changed
+            and result.mail_events > 0
+            and not result.mail_leaks
             # On Ubuntu, ufw (and Docker) put the rules through nft_compat:
             # that path must really have been exercised.
             and (
@@ -776,6 +803,44 @@ def proof_whitelist(home: Path, host: str):
     return whitelist_load(home, host, None)
 
 
+class MailLeaks:
+    """A bundle walk that looks for text that must never leave a server: the
+    mail key, and the mailed address's local part (policy §7)."""
+
+    def __init__(self, needles: list[str]) -> None:
+        self.needles = [n.encode() for n in needles]
+        self.found: list[str] = []
+
+    def _look(self, where: str, data: bytes) -> None:
+        for needle in self.needles:
+            if needle.lower() in data.lower() and len(self.found) < 20:
+                self.found.append(f"{needle.decode()[:12]}… in {where}")
+
+    def manifest(self, manifest) -> None:
+        self._look("the manifest", manifest.model_dump_json().encode())
+
+    def record(self, record) -> None:
+        self._look(f"record {record.module}.{record.name}", json.dumps(record.data).encode())
+
+    def source_start(self, start) -> None:
+        pass
+
+    def line(self, start, line: bytes) -> None:
+        self._look(f"source {start.name}", line)
+
+    def source_end(self, start, end) -> None:
+        pass
+
+    def source_cut(self, start) -> None:
+        pass
+
+    def error(self, error) -> None:
+        self._look("an error", error.message.encode())
+
+    def trailer(self, trailer) -> None:
+        pass
+
+
 def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path, key) -> None:
     """Parse the bundle as the controller does and check its snapshot holds
     what the setup put on the server."""
@@ -804,6 +869,10 @@ def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path,
         if f["band"] != "info" and not f.get("suppressed_by")
     ]
     result.events = len(parsed.events)
+    result.mail_events = sum(1 for e in parsed.events if e.type.startswith("mail."))
+    leaks = MailLeaks([mail_key(home), PROOF_MAIL_LOCAL])
+    walk_bundle(Path(row["path"]), identity, leaks)
+    result.mail_leaks = leaks.found
     if parsed.snapshot is not None:
         result.firewall_loaded = parsed.snapshot.live.get("firewall_loaded")
     result.own_events = parsed.summary.get("own_session") or 0
@@ -860,6 +929,11 @@ def report(results: list[Result]) -> bool:
                 print("  FAIL: no home start-up text was read, so those reads went unproven")
             for what in r.missing:
                 print(f"  FAIL: no {what} collected, so that read went unproven")
+            print(f"  mail events parsed: {r.mail_events}")
+            if not r.mail_events:
+                print("  FAIL: no mail event parsed, so the mail log reads went unproven")
+            for leak in r.mail_leaks:
+                print(f"  FAIL: left the server unmasked: {leak}")
             print(
                 f"  parsed: {r.events} events, {r.own_events} from this tool's own session;"
                 f" own login recognised: {r.own_login_found}"

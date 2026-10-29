@@ -175,6 +175,9 @@ def _excerpts(
                 ]
                 text = Shown(f"changed: {visible(key)}: " + "; ".join(changes))
             shown.append({"when": "", "where": f"{section}, since the baseline", "text": text})
+        elif "live" in ref and ref["live"][0] == "mail_queues":
+            for queue in snapshot.live.get("mail_queues", []):
+                shown.append({"when": "", "where": "mail queue", "text": _brief(queue)})
         elif "live" in ref:
             _, pid = ref["live"]
             process = next(

@@ -458,41 +458,75 @@ def test_coverage_only_names_modules_the_collector_has():
 # --- When the key is sent ------------------------------------------------------------------
 
 
+def load_collector_for_sudo(root):
+    spec = importlib.util.spec_from_file_location(
+        "collector_for_sudo", Path(__file__).parents[1] / "checker/collector/collector.py"
+    )
+    collector = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(collector)
+    collector.ROOT = str(root)
+    return collector
+
+
 @pytest.mark.parametrize(
-    ("sudoers", "sent"),
+    ("sudoers", "state"),
     [
-        ("root ALL=(ALL) ALL\n", True),
-        ("Defaults !log_input\nroot ALL=(ALL) ALL\n", True),
-        ("root ALL=(ALL) NOLOG_INPUT: ALL\n", True),
-        ("Defaults log_input\nroot ALL=(ALL) ALL\n", False),
-        ("Defaults:scanner log_input, log_output\n", False),
-        ("Defaults log_stdin\n", False),
-        ("scanner ALL=(root) NOPASSWD: LOG_INPUT: /usr/bin/python3 -I -B -\n", False),
+        ("root ALL=(ALL) ALL\n", "off"),
+        ("Defaults !log_input\nroot ALL=(ALL) ALL\n", "off"),
+        ("root ALL=(ALL) NOLOG_INPUT: ALL\n", "off"),
+        ("# Defaults log_input\n", "off"),
+        ("Defaults log_input\nroot ALL=(ALL) ALL\n", "on"),
+        ("Defaults:scanner log_input, log_output\n", "on"),
+        ("Defaults log_stdin\n", "on"),
+        ("scanner ALL=(root) NOPASSWD: LOG_INPUT: /usr/bin/python3 -I -B -\n", "on"),
     ],
 )
-def test_the_key_goes_only_where_sudo_doesnt_log_input(home, sudoers, sent):
-    from test_snapshot import add_bundle, host_records
+def test_sudo_input_logging_is_read_from_sudoers(tmp_path, sudoers, state):
+    collector = load_collector_for_sudo(tmp_path)
+    assert collector.sudo_input_logging([sudoers], True)["state"] == state
+    if state == "off":  # not sure of everything: not "off"
+        assert collector.sudo_input_logging([sudoers], False)["state"] == "unknown"
 
+
+def test_sudo_plugins_and_directory_rules_arent_off(tmp_path):
+    (tmp_path / "etc").mkdir()
+    collector = load_collector_for_sudo(tmp_path)
+    (tmp_path / "etc/sudo.conf").write_text("Plugin sudoers_policy sudoers.so\n")
+    assert collector.sudo_input_logging([""], True)["state"] == "off"
+    (tmp_path / "etc/sudo.conf").write_text("Plugin recorder_io recorder.so\n")
+    assert collector.sudo_input_logging([""], True)["state"] == "on"
+    (tmp_path / "etc/sudo.conf").write_text("")
+    (tmp_path / "etc/nsswitch.conf").write_text("passwd: files sss\nsudoers: files sss\n")
+    found = collector.sudo_input_logging([""], True)
+    assert found["state"] == "unknown" and found["rules_also_from"] == ["sss"]
+
+
+def test_the_gate_opens_only_on_a_collection_showing_no_input_logging(tmp_path):
     from checker.collect import mail_key_for
+    from checker.evidence import mail_gate_file, record_mail_gate
 
-    _, store, _, config = home
-    key, why = mail_key_for(store, config, "web01", KEY)
-    assert key is None and "first collection" in why
-    add_bundle(home, "b1", 0, host_records(sudoers=sudoers))
-    key, why = mail_key_for(store, config, "web01", KEY)
-    assert (key == KEY) is sent
-    assert (why is None) is sent
-    if not sent:
-        assert "logs its input" in why
+    key, why = mail_key_for(tmp_path, "web01", KEY)
+    assert key is None and "first" in why
+    record_mail_gate(tmp_path, KEY, "web01", "off")
+    assert mail_key_for(tmp_path, "web01", KEY) == (KEY, None)
+    assert mail_key_for(tmp_path, "db01", KEY)[0] is None
+    assert mail_key_for(tmp_path, "web01", "cd" * 32)[0] is None  # another key
+    # Without the key, the file says nothing: no state in clear.
+    assert "off" not in mail_gate_file(tmp_path).read_text()
+    for state in ("on", None, "garbage"):
+        record_mail_gate(tmp_path, KEY, "web01", state)
+        assert mail_key_for(tmp_path, "web01", KEY)[0] is None
 
 
-def test_without_the_evidence_key_here_no_mail_key_is_sent(home):
-    from test_snapshot import add_bundle, host_records
+def test_the_stream_summary_reads_sudo_s_input_logging():
+    from checker.evidence import Summary
+    from checker.protocol import Record
 
-    from checker.collect import mail_key_for
-
-    _, store, _, config = home
-    add_bundle(home, "b1", 0, host_records())
-    outside = config.model_copy(update={"identity_file": None})
-    key, why = mail_key_for(store, outside, "web01", KEY)
-    assert key is None and "evidence key" in why
+    summary = Summary()
+    assert summary.sudo_input_logging is None
+    data = {"state": "off"}
+    summary.add(Record(type="record", module="sudoers", name="sudo_input_logging", data=data))
+    assert summary.sudo_input_logging == "off"
+    data = {"state": "sideways"}
+    summary.add(Record(type="record", module="sudoers", name="sudo_input_logging", data=data))
+    assert summary.sudo_input_logging == "unknown"

@@ -159,6 +159,36 @@ def mail_key(home: Path) -> str:
     raise EvidenceError(f"no mail key in {path}")
 
 
+def mail_gate_file(home: Path) -> Path:
+    return home / "keys" / "mail-gate.json"
+
+
+def _gate_tag(key: str, host: str, state: str) -> str:
+    message = f"compromise-checker mail gate\0{host}\0{state}".encode()
+    return hmac.new(bytes.fromhex(key), message, hashlib.sha256).hexdigest()
+
+
+def record_mail_gate(home: Path, key: str, host: str, state: str | None) -> None:
+    """Remember what a collection showed about a host's sudo input logging
+    ("on", "off", or anything else: unknown), as a tag only the mail key
+    can check: without it, the file says nothing about any host (policy §8)."""
+    path = mail_gate_file(home)
+    with locked(path):
+        gates = json.loads(path.read_text()) if path.exists() else {}
+        gates[host] = _gate_tag(key, host, state if state in ("on", "off") else "unknown")
+        atomic_write(path, json.dumps(gates, sort_keys=True, indent=1) + "\n")
+
+
+def mail_gate_open(home: Path, key: str, host: str) -> bool:
+    """Whether the host's latest collection showed sudo doesn't log its input."""
+    path = mail_gate_file(home)
+    try:
+        tag = json.loads(path.read_text()).get(host) if path.exists() else None
+    except ValueError:
+        return False
+    return isinstance(tag, str) and hmac.compare_digest(tag, _gate_tag(key, host, "off"))
+
+
 def mail_fingerprint(key: str, address: str) -> str:
     """How a known address appears in collected mail logs: the collector's
     keyed fingerprint of its local part, and its domain, lowercased."""
@@ -198,6 +228,9 @@ class Summary:
     errors: list[dict[str, Any]] = field(default_factory=list)
     records: dict[str, int] = field(default_factory=dict)
     dropped: dict[str, int] = field(default_factory=dict)
+    # Whether the host's sudo logs its input (plan 2.7): read here, as the
+    # stream arrives, so the mail key's gate works without the evidence key.
+    sudo_input_logging: str | None = None
     _open: dict[int, dict[str, Any]] = field(default_factory=dict, repr=False)
 
     # Bounded: a target controls how many sources, errors and record names it
@@ -243,6 +276,9 @@ class Summary:
             else:
                 self._drop("errors")
         elif record.type == "record":
+            if (record.module, record.name) == ("sudoers", "sudo_input_logging"):
+                state = record.data.get("state")
+                self.sudo_input_logging = state if state in ("on", "off") else "unknown"
             key = f"{record.module}.{record.name}"[:200]
             if key in self.records or len(self.records) < self.MAX_RECORD_NAMES:
                 self.records[key] = self.records.get(key, 0) + 1

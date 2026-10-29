@@ -188,6 +188,11 @@ gets an `include_dir` record listing its files and whether sudo reads each
 one (sudo skips names ending in `~` or containing a `.`); every file is sent
 either way, since a skipped one is still evidence.
 
+Also a `sudo_input_logging` record: whether sudo writes its input to disk,
+judged from that text, `/etc/sudo.conf`'s plugins and `nsswitch.conf`'s
+`sudoers:` line (read, not sent). The controller sends the mail key only
+where it is `off` (see `mail`).
+
 ## `ssh`
 
 **Why:** `sshd_config` changes (root login, ports, key file locations,
@@ -863,15 +868,19 @@ init`, or on first use for a directory set up before) travels in the
 settings, so it is in the collector's memory on the server for the run; the
 manifest shows only an identifier of it. The program, settings included,
 reaches the collector on sudo's input, and sudo writes its input to disk
-where input logging is on (`log_input`, `log_stdin`, a `LOG_INPUT:` tag);
-the collector can't tell before sudo has logged it. So the controller sends
-the key only to a host whose latest stored collection shows sudo's rules,
-read whole, without input logging. A host's first collection, a host whose
-sudo logs its input, and a collection run where the evidence key isn't on
-the machine (so the earlier collection can't be read) get no key: no mail
-log is sent (`mail_logs_withheld`, with the controller's reason), and the
-coverage says so. Rules sudo gets from a directory (LDAP, SSSD) and I/O
-plugins in `/etc/sudo.conf` aren't seen.
+where input logging is on; the collector can't tell before sudo has logged
+it. So `sudoers` reports `sudo_input_logging`: `on` (an un-negated
+`log_input` or `log_stdin`, a `LOG_INPUT:` tag, or a `sudo.conf` plugin
+other than sudoers' own), `off` (every sudoers file read whole, none of
+those, and rules only from files in `nsswitch.conf`), or `unknown`. The
+controller reads it as the stream arrives and keeps, per host, an HMAC tag
+of it keyed with the mail key (`keys/mail-gate.json`: without the key it
+says nothing about any host), and sends the key only to a host whose
+latest collection said `off`. A host's first collection, a host whose sudo
+logs its input or takes rules from a directory (LDAP, SSSD), and a host
+whose last collection couldn't tell get no key: no mail log is sent
+(`mail_logs_withheld`, with the controller's reason), and the coverage
+says so. A run that leaves out `sudoers` keeps the host's last answer.
 
 An intruder with root on the server during a collection could read the key
 from the collector's memory, and then test guesses of addresses against

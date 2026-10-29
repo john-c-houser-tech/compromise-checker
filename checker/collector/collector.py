@@ -2368,11 +2368,59 @@ def _sudo_reads(name):
     return not name.endswith("~") and "." not in name
 
 
+# sudo's input logging (plan 2.7): an un-negated log_input or log_stdin, or
+# a LOG_INPUT: tag on a rule (NOLOG_INPUT: turns it off). Where sudo logs
+# its input, it writes the collector's program, and so the mail key, to disk.
+_SUDO_LOGS_INPUT = re.compile(r"(?<![!\w])(?:log_input|log_stdin)\b|(?<!NO)LOG_INPUT:")
+# sudo.conf plugins that don't record input beyond what sudoers says.
+SUDO_PLUGINS_KNOWN = frozenset(("sudoers_policy", "sudoers_io", "sudoers_audit"))
+_NSS_SUDOERS = re.compile(r"^\s*sudoers\s*:\s*(.*)$")
+
+
+def sudo_input_logging(texts, complete):
+    """Whether sudo writes its input to disk, from every sudoers file's text
+    (`complete`: all of them read whole), sudo.conf's plugins and where
+    nsswitch.conf says rules come from. "off" only when sure."""
+    logged = any(
+        _SUDO_LOGS_INPUT.search(line)
+        for text in texts
+        for line in text.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    plugins = []
+    for line in (read_small("/etc/sudo.conf") or "").splitlines():
+        words = line.split()
+        if len(words) >= 2 and words[0] == "Plugin":
+            plugins.append(words[1])
+    unknown = sorted(set(plugins) - SUDO_PLUGINS_KNOWN)
+    sources = []
+    for line in (read_small("/etc/nsswitch.conf") or "").splitlines():
+        match = _NSS_SUDOERS.match(line.split("#", 1)[0])
+        if match:
+            sources = match.group(1).split()
+    elsewhere = [s for s in sources if s != "files" and not s.startswith("[")]
+    if logged or unknown:
+        state = "on"
+    elif complete and not elsewhere:
+        state = "off"
+    else:
+        state = "unknown"
+    return {
+        "state": state,
+        "sudoers_complete": complete,
+        "plugins": plugins,
+        "rules_also_from": elsewhere,
+    }
+
+
 def module_sudoers(run):
-    """/etc/sudoers and everything it includes, masked."""
+    """/etc/sudoers and everything it includes, masked; and whether sudo
+    logs its input (the controller sends the mail key only where it
+    doesn't)."""
     module = "sudoers"
     seen = set()
     pending = [("/etc/sudoers", 0)]
+    texts, complete = [], True
     while pending:
         run.check_time()
         absolute, depth = pending.pop(0)
@@ -2381,14 +2429,22 @@ def module_sudoers(run):
         seen.add(absolute)
         sent = send_config_file(run, module, absolute)
         if sent is None:
+            complete = complete and not os.path.lexists(path(absolute))
             continue
         text = read_config_text(run, module, sent)
+        texts.append(text)
+        try:
+            if os.stat(path(sent)).st_size > CONFIG_FILE_BYTES:
+                complete = False
+        except OSError:
+            complete = False
         for line in text.splitlines():
             match = _SUDO_INCLUDE.match(line)
             if not match:
                 continue
             target = _sudo_include_path(match.group(2), absolute)
             if depth + 1 > MAX_INCLUDE_DEPTH:
+                complete = False
                 run.stream.record(
                     module, "include_not_followed", {"path": target, "reason": "depth"}
                 )
@@ -2398,15 +2454,18 @@ def module_sudoers(run):
                 continue
             directory, risk = resolve_links(target)
             if risk:
+                complete = False
                 run.stream.record(module, "not_examined", {"path": target, "reason": risk})
                 continue
             try:
                 names, listing_cut = list_directory(directory, MAX_DIR_FILES, run)
             except OSError as exc:
+                complete = complete and isinstance(exc, FileNotFoundError)
                 run.stream.record(
                     module, "include_dir", {"path": target, "from": absolute, "error": str(exc)}
                 )
                 continue
+            complete = complete and not listing_cut
             run.stream.record(
                 module,
                 "include_dir",
@@ -2419,6 +2478,7 @@ def module_sudoers(run):
             )
             # Every file is sent, including those sudo skips: evidence either way.
             pending.extend((_join(target, n), depth + 1) for n in names[:MAX_DIR_FILES])
+    run.stream.record(module, "sudo_input_logging", sudo_input_logging(texts, complete))
 
 
 # Who the home_text opt-in's "privileged" setting covers (policy §7: root,

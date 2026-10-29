@@ -5008,6 +5008,19 @@ class MailTests(FixtureRoot):
         [withheld] = named(records, "mail_logs_withheld")
         self.assertEqual(withheld["data"]["reason"], "sudo logs its input")
 
+    def test_sudoers_says_whether_sudo_logs_its_input(self):
+        self.write("etc/sudoers", b"root ALL=(ALL) ALL\n#includedir /etc/sudoers.d\n")
+        self.write("etc/sudoers.d/ops", b"Defaults:ops !log_input\n")
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "off")
+        self.write("etc/sudoers.d/audit", b"Defaults log_input\n")
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "on")
+        Path(self.root, "etc/sudoers.d/audit").unlink()
+        self.write("etc/sudoers.d/big", b"# x\n" * 300000)  # over 1 MiB: not read whole
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "unknown")
+
     def test_a_bad_key_is_refused(self):
         records = collect(self.root, ["mail"], mail_key="NOT-HEX")
         self.assertEqual(records[-1]["status"], "refused")

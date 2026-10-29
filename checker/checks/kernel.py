@@ -159,7 +159,11 @@ def kernel_errors(context: Context) -> list[Finding]:
     return findings
 
 
-@check("kernel.taint", "Kernel taint: out-of-tree or unsigned modules, taint changes")
+@check(
+    "kernel.taint",
+    "Kernel taint: out-of-tree or unsigned modules, taint changes",
+    variants=("unexplained", "unloaded"),
+)
 def kernel_taint(context: Context) -> list[Finding]:
     findings = []
     host = context.items("host")
@@ -181,7 +185,7 @@ def kernel_taint(context: Context) -> list[Finding]:
                 "kernel.taint",
                 "Kernel taint that no loaded module explains",
                 COMPROMISE,
-                "medium" if gone else "high",
+                "medium" if gone else "critical",
                 f"tainted by a module ({describe(unexplained)}), but no listed module carries"
                 " that flag: "
                 + (
@@ -192,6 +196,7 @@ def kernel_taint(context: Context) -> list[Finding]:
                 [],
                 [{"item": ["host", "kernel_taint"]}],
                 uncertain=context.uncertain("kernel_modules"),
+                variant="unloaded" if gone else "unexplained",
             )
         )
     # Changes since the baseline.

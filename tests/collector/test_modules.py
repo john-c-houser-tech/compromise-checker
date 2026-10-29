@@ -39,7 +39,9 @@ def load_collector(root):
     return module
 
 
-def settings(modules, days=30, source_bytes=1 << 20, module_seconds=60, home_text=None):
+def settings(
+    modules, days=30, source_bytes=1 << 20, module_seconds=60, home_text=None, mail_key=None
+):
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
     value = {
         "protocol": 1,
@@ -54,6 +56,8 @@ def settings(modules, days=30, source_bytes=1 << 20, module_seconds=60, home_tex
     }
     if home_text is not None:
         value["home_text"] = home_text
+    if mail_key is not None:
+        value["mail_key"] = mail_key
     return json.dumps(value)
 
 
@@ -61,6 +65,16 @@ def collect(root, modules, **kwargs):
     collector = load_collector(root)
     out = io.BytesIO()
     collector.main(settings(modules, **kwargs), out=out)
+    return [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+
+
+def collect_with(root, modules, **extra):
+    """collect, with settings the helper doesn't name."""
+    collector = load_collector(root)
+    value = json.loads(settings(modules))
+    value.update(extra)
+    out = io.BytesIO()
+    collector.main(json.dumps(value), out=out)
     return [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
 
 
@@ -1163,7 +1177,19 @@ class ResourceTests(FixtureRoot):
         manifest = collect(self.root, [])[0]
         self.assertEqual(
             manifest["commands_allowed"],
-            {"journalctl": ["/usr/bin/journalctl", "/bin/journalctl"]},
+            {
+                "journalctl": ["/usr/bin/journalctl", "/bin/journalctl"],
+                "nft": ["/usr/sbin/nft", "/sbin/nft"],
+                "iptables-legacy-save": [
+                    "/usr/sbin/iptables-legacy-save",
+                    "/sbin/iptables-legacy-save",
+                ],
+                "ip6tables-legacy-save": [
+                    "/usr/sbin/ip6tables-legacy-save",
+                    "/sbin/ip6tables-legacy-save",
+                ],
+                "sudo": ["/usr/bin/sudo", "/bin/sudo"],
+            },
         )
 
 
@@ -3794,6 +3820,8 @@ class ProcessTests(FixtureRoot):
         )
         fake_process(self.root, 31, comm="sshd", exe="/usr/sbin/sshd", fds=("socket:[4242]",))
         fake_process(self.root, 2, ppid=0, comm="kthreadd", cmdline=b"", exe=None)
+        Path(self.root, "proc/23/loginuid").write_bytes(b"1000")
+        Path(self.root, "proc/31/loginuid").write_bytes(b"4294967295")
 
     def test_processes_sockets_and_masking(self):
         self.fixture()
@@ -3815,6 +3843,8 @@ class ProcessTests(FixtureRoot):
         self.assertEqual(bad["std_streams"]["0"], {"kind": "socket", "inode": "4343"})
         self.assertEqual(bad["std_streams"]["1"], {"kind": "pipe"})
         self.assertTrue(procs[2]["kernel_thread"])
+        self.assertEqual((bad["loginuid"], procs[31]["loginuid"]), (1000, 4294967295))
+        self.assertNotIn("loginuid", procs[2])  # none to read
         sockets = {r["inode"]: r for r in records_named(records, "socket")}
         self.assertEqual(sockets["4242"]["local"], ["0.0.0.0", 4444])  # noqa: S104 - parsed, not bound
         self.assertEqual(sockets["4242"]["state"], "listen")
@@ -4470,6 +4500,1265 @@ class CanaryTests(FixtureRoot):
         self.assertIn(CANARIES["userunit"], text)
         trailer = json.loads(raw.splitlines()[-1])
         self.assertEqual(trailer["status"], "complete", trailer["modules"])
+
+
+# --- PR 2.4a: network ------------------------------------------------------------------
+
+BIG_SET = "".join(f"192.0.2.{i}, " for i in range(1, 120))
+FAKE_NFT = (
+    "#!/bin/sh\n"
+    "cat <<'EOF'\n"
+    "table inet filter {\n"
+    "\tset f2b {\n"
+    "\t\ttype ipv4_addr\n"
+    "\t\telements = { "
+    + BIG_SET.replace(", 192.0.2.60, ", ",\n\t\t\t     192.0.2.60, ")
+    + "192.0.2.200 }\n"
+    "\t}\n"
+    "\tset small {\n"
+    "\t\ttype ipv4_addr\n"
+    "\t\telements = { 198.51.100.1, 198.51.100.2 }\n"
+    "\t}\n"
+    "\tchain input {\n"
+    "\t\ttcp dport 22 counter packets 12 bytes 3456 accept\n"
+    "\t}\n"
+    "}\n"
+    "EOF\n"
+    'echo "args $*" >&2\n'
+).encode()
+
+
+class NetworkTests(FixtureRoot):
+    def setUp(self):
+        super().setUp()
+        self.write("etc/hosts", b"127.0.0.1 localhost\n")
+        self.write("etc/resolv.conf", b"nameserver 192.0.2.53\n")
+        self.write("etc/firewalld/zones/public.xml", b"<zone><service name='ssh'/></zone>\n")
+        self.write("sys/class/net/eth0/flags", b"0x1103\n")
+        self.write("sys/class/net/eth0/operstate", b"up\n")
+        self.write("sys/class/net/eth0/type", b"1\n")
+        self.write("sys/class/net/eth0/statistics/rx_bytes", b"1000\n")
+        self.write("sys/class/net/eth0/statistics/tx_bytes", b"2000\n")
+        self.write("sys/class/net/lo/flags", b"0x9\n")
+        self.write("proc/net/route", b"Iface\tDestination\tGateway\n")
+
+    def test_files_interfaces_and_routes(self):
+        records = collect(self.root, ["network"])
+        sent = sources(records)
+        self.assertIn("/etc/hosts", sent)
+        self.assertIn("/etc/resolv.conf", sent)
+        self.assertIn("/etc/firewalld/zones/public.xml", sent)
+        interfaces = {r["data"]["name"]: r["data"] for r in named(records, "interface")}
+        self.assertTrue(interfaces["eth0"]["promiscuous"])
+        self.assertFalse(interfaces["lo"]["promiscuous"])
+        self.assertEqual(interfaces["eth0"]["tx_bytes"], 2000)
+        self.assertEqual(named(records, "routes")[0]["data"]["table"], "/proc/net/route")
+
+    def test_no_firewall_command_runs_unless_the_firewall_is_loaded(self):
+        self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
+        records = collect(self.root, ["network"])
+        [loaded] = named(records, "firewall_loaded")
+        self.assertEqual(
+            loaded["data"],
+            {"nf_tables": False, "nft_compat": False, "ip_tables": False, "ip6_tables": False},
+        )
+        self.assertFalse([n for n in sources(records) if "nft" in n])
+
+    def test_a_loaded_nftables_is_listed_with_big_sets_reduced(self):
+        self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        records = collect(self.root, ["network"])
+        [(start, content, end)] = [v for n, v in sources(records).items() if "nft" in n]
+        self.assertEqual(start["meta"]["argv"], ["/usr/sbin/nft", "list", "ruleset"])
+        text = content.decode()
+        self.assertIn("elements = { [120 elements, sha256 ", text)
+        self.assertNotIn("192.0.2.7,", text)  # the blocklist itself isn't sent
+        self.assertIn("198.51.100.1, 198.51.100.2", text)  # a small set is
+        self.assertIn("counter packets 12 bytes 3456 accept", text)
+        trailer = records[-1]
+        self.assertEqual(trailer["modules"]["network"]["status"], "ok")
+
+    def test_legacy_iptables_only_when_its_tables_exist(self):
+        self.write("usr/sbin/iptables-legacy-save", b"#!/bin/sh\necho '*filter'\n").chmod(0o755)
+        records = collect(self.root, ["network"])
+        self.assertFalse([n for n in sources(records) if "iptables" in n])
+        self.write("proc/net/ip_tables_names", b"filter\n")
+        records = collect(self.root, ["network"])
+        self.assertTrue([n for n in sources(records) if "iptables-legacy-save" in n])
+
+    def test_a_huge_set_is_hashed_without_being_held(self):
+        collector = load_collector(self.root)
+        transform = collector.nft_sets_reduced()
+
+        class Masker:
+            def line(self, line):
+                return line
+
+        masker = Masker()
+        out = [transform(b"\t\telements = { 192.0.2.1,\n", masker)]
+        for i in range(10000):
+            out.append(transform(b"\t\t\t192.0.2.%d,\n" % (i % 250), masker))
+        out.append(transform(b"\t\t\t192.0.2.9 }\n", masker))
+        joined = b"".join(out)
+        self.assertTrue(joined.startswith(b"\t\telements = { [10002 elements, sha256 "))
+        self.assertEqual(joined.count(b"\n"), 1)
+
+    def test_iptables_nft_rules_are_listed_too(self):
+        # nft_compat loaded (ufw, Docker): listed, as the 2.4b experiment
+        # showed it loads nothing; the proof keeps checking that.
+        self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        Path(self.root, "sys/module/nft_compat").mkdir(parents=True)
+        records = collect(self.root, ["network"])
+        self.assertTrue([n for n in sources(records) if "nft" in n])
+        self.assertTrue(named(records, "firewall_loaded")[0]["data"]["nft_compat"])
+
+    def test_built_in_nf_tables_counts_as_loaded(self):
+        self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
+        release = __import__("platform").release()
+        self.write(
+            f"lib/modules/{release}/modules.builtin",
+            b"kernel/net/netfilter/nf_tables.ko\n",
+        )
+        records = collect(self.root, ["network"])
+        self.assertTrue(named(records, "firewall_loaded")[0]["data"]["nf_tables"])
+        self.assertTrue([n for n in sources(records) if "nft" in n])
+
+    def test_a_failing_nft_doesnt_stop_the_iptables_listings(self):
+        self.write("usr/sbin/nft", b"#!/bin/sh\necho broken >&2\nexit 1\n").chmod(0o755)
+        self.write("usr/sbin/ip6tables-legacy-save", b"#!/bin/sh\necho '*filter'\n").chmod(0o755)
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        self.write("proc/net/ip6_tables_names", b"filter\n")
+        records = collect(self.root, ["network"])
+        self.assertEqual(named(records, "command_failed")[0]["data"]["command"], "nft")
+        self.assertTrue([n for n in sources(records) if "ip6tables-legacy-save" in n])
+
+    def test_a_secret_in_a_small_set_is_masked(self):
+        collector = load_collector(self.root)
+        masker = collector.Masker()
+        transform = collector.nft_sets_reduced()
+        out = transform(b'\t\telements = { 192.0.2.1 comment "password=hunter2" }\n', masker)
+        self.assertNotIn(b"hunter2", out)
+
+    def test_a_short_set_over_many_lines_is_hashed_and_an_open_set_is_reported(self):
+        collector = load_collector(self.root)
+        masker = collector.Masker()
+        transform = collector.nft_sets_reduced()
+        out = [transform(b"\t\telements = {\n", masker)]
+        out += [transform(b"\n", masker) for _ in range(60)]
+        out.append(transform(b"\t\t\t192.0.2.1 }\n", masker))
+        self.assertIn(b"[1 elements, sha256 ", b"".join(out))
+        self.assertFalse(transform.open())
+        transform(b"\t\telements = { 192.0.2.1,\n", masker)
+        self.assertTrue(transform.open())
+
+    def test_odd_interface_names_and_long_route_tables(self):
+        Path(self.root, "sys/class/net", os.fsdecode(b"bad\xffname")).mkdir(parents=True)
+        self.write("proc/net/route", b"x\n" * 3000)
+        records = collect(self.root, ["network"])
+        names = [r["data"]["name"] for r in named(records, "interface")]
+        self.assertIn("bad\\xffname", names)
+        [route] = [r for r in named(records, "routes") if r["data"]["table"] == "/proc/net/route"]
+        self.assertTrue(route["data"]["truncated"])
+        self.assertEqual(records[-1]["modules"]["network"]["status"], "ok")
+
+
+# --- PR 2.5: logging, audit and MAC state ----------------------------------------------
+
+
+class LoggingStateTests(FixtureRoot):
+    def test_log_manifest_without_contents(self):
+        self.write("var/log/wtmp", b"x" * 384)
+        self.write("var/log/journal/abc/system.journal", b"j" * 10)
+        Path(self.root, "var/log/auth.log").symlink_to("/dev/null")
+        records = collect(self.root, ["logging_state"])
+        files = {r["data"]["path"]: r["data"] for r in named(records, "log_file")}
+        self.assertEqual(files["/var/log/wtmp"]["size"], 384)
+        self.assertEqual(files["/var/log/auth.log"]["link"], "/dev/null")
+        self.assertIn("/var/log/journal/abc/system.journal", files)
+        self.assertFalse([n for n in sources(records) if n.startswith("/var/log")])
+
+    def test_only_audit_records_about_audit_and_selinux_in_the_window(self):
+        now, old = int(NOW), int(NOW - 90 * DAY)
+        self.write(
+            "var/log/audit/audit.log",
+            (
+                f"type=CONFIG_CHANGE msg=audit({now}.1:1): op=remove_rule auid=0 res=1\n"
+                f'type=EXECVE msg=audit({now}.1:2): argc=2 a0="cat" a1="/etc/shadow"\n'
+                f'type=USER_LOGIN msg=audit({now}.1:3): acct="eve" res=success\n'
+                f"type=MAC_STATUS msg=audit({now}.1:4): enforcing=0 old_enforcing=1\n"
+                f"type=DAEMON_END msg=audit({old}.1:5): op=terminate\n"
+                f"type=CONFIG_CHANGE msg=audit({now}.1:6): op=x password=hunter2\n"
+            ).encode(),
+        )
+        records = collect(self.root, ["logging_state"])
+        [audit] = named(records, "audit_records")
+        lines = audit["data"]["lines"]
+        self.assertEqual(len(lines), 3)
+        self.assertFalse([line for line in lines if "EXECVE" in line or "USER_LOGIN" in line])
+        self.assertFalse([line for line in lines if "hunter2" in line])
+
+    def test_selinux_and_apparmor_state_and_config_text(self):
+        self.write("sys/fs/selinux/enforce", b"1")
+        self.write(
+            "sys/kernel/security/apparmor/profiles",
+            b"/usr/sbin/cupsd (enforce)\nnginx (complain)\n",
+        )
+        self.write("etc/systemd/journald.conf", b"[Journal]\nStorage=volatile\n")
+        records = collect(self.root, ["logging_state"])
+        [state] = named(records, "mac_state")
+        self.assertEqual(state["data"]["selinux"], "enforcing")
+        self.assertEqual(
+            state["data"]["apparmor"]["profiles"],
+            {"/usr/sbin/cupsd": "enforce", "nginx": "complain"},
+        )
+        self.assertIn("/etc/systemd/journald.conf", sources(records))
+        self.assertEqual(records[-1]["modules"]["logging_state"]["status"], "ok")
+
+    def test_node_prefixed_records_count_and_the_newest_are_kept(self):
+        collector = load_collector(self.root)
+        collector.AUDIT_LINES = 3
+        now = int(NOW)
+        lines = (
+            "".join(
+                f"node=web01 type=CONFIG_CHANGE msg=audit({now}.1:{n}): op=add_rule key=k{n}\n"
+                for n in range(5)
+            )
+            + f'node=web01 type=EXECVE msg=audit({now}.1:9): a0="x"\n'
+        )
+        self.write("var/log/audit/audit.log.1", lines.encode())
+        self.write(
+            "var/log/audit/audit.log",
+            f"node=web01 type=DAEMON_END msg=audit({now}.1:10): op=terminate\n".encode(),
+        )
+        out = io.BytesIO()
+        collector.main(settings(["logging_state"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        [audit] = named(records, "audit_records")
+        kept = audit["data"]["lines"]
+        self.assertEqual(len(kept), 3)
+        self.assertTrue(kept[-1].startswith("type=DAEMON_END"))  # newest kept, prefix gone
+        self.assertEqual(audit["data"]["older_left_out"], 3)
+        self.assertFalse([x for x in kept if "EXECVE" in x])
+
+    def test_a_record_merely_containing_a_wanted_type_is_left_out(self):
+        now = int(NOW)
+        self.write(
+            "var/log/audit/audit.log",
+            f'type=USER_CMD msg=audit({now}.1:1): cmd="echo type=CONFIG_CHANGE x" uid=0\n'.encode(),
+        )
+        [audit] = named(collect(self.root, ["logging_state"]), "audit_records")
+        self.assertEqual(audit["data"]["lines"], [])
+
+    def test_the_audit_folder_is_listed_first_and_the_cap_holds(self):
+        collector = load_collector(self.root)
+        collector.LOG_TREE_ENTRIES = 6
+        for n in range(10):
+            self.write(f"var/log/aaa/f{n}", b"x")
+        self.write("var/log/audit/audit.log", b"x")
+        out = io.BytesIO()
+        collector.main(settings(["logging_state"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        paths = [r["data"]["path"] for r in named(records, "log_file")]
+        self.assertIn("/var/log/audit/audit.log", paths)
+        self.assertLessEqual(len(paths), 6)
+        self.assertTrue(named(records, "log_manifest")[0]["data"]["truncated"])
+
+
+# --- PR 2.6: software ---------------------------------------------------------------------
+
+
+class SoftwareTests(FixtureRoot):
+    def test_dpkg_packages_with_their_install_times(self):
+        self.write(
+            "var/lib/dpkg/status",
+            b"Package: bash\nStatus: install ok installed\nArchitecture: amd64\nVersion: 5.2\n\n"
+            b"Package: gone\nStatus: deinstall ok config-files\nArchitecture: amd64\n"
+            b"Version: 1\n\n",
+        )
+        self.write("var/lib/dpkg/info/bash:amd64.list", b"/bin/bash\n", age_days=2)
+        records = collect(self.root, ["software"])
+        [bash] = named(records, "package")
+        self.assertEqual((bash["data"]["name"], bash["data"]["version"]), ("bash", "5.2"))
+        self.assertAlmostEqual(bash["data"]["installed"], NOW - 2 * DAY, delta=5)
+
+    def test_rpm_packages_read_from_its_database_without_writing(self):
+        import sqlite3
+
+        db = Path(self.root, "var/lib/rpm/rpmdb.sqlite")
+        db.parent.mkdir(parents=True)
+        connection = sqlite3.connect(db)
+        connection.execute("CREATE TABLE Packages (hnum INTEGER PRIMARY KEY, blob BLOB)")
+        blob = rpm_header(
+            [
+                (1000, 6, "nmap"),
+                (1001, 6, "7.92"),
+                (1002, 6, "1.el9"),
+                (1022, 6, "x86_64"),
+                (1008, 4, [1700000000]),
+            ]
+        )
+        connection.execute("INSERT INTO Packages (blob) VALUES (?)", (blob,))
+        connection.commit()
+        connection.close()
+        before = sorted(os.listdir(db.parent))
+        records = collect(self.root, ["software"])
+        [nmap] = named(records, "package")
+        self.assertEqual(nmap["data"]["version"], "7.92-1.el9")
+        self.assertEqual(nmap["data"]["installed"], 1700000000)
+        self.assertEqual(sorted(os.listdir(db.parent)), before)  # no -shm, no -wal
+
+    def test_repositories_as_text_keys_as_hashes_and_global_packages(self):
+        self.write("var/lib/dpkg/status", b"")
+        self.write(
+            "etc/apt/sources.list.d/x.list", b"deb https://u:secretpw@repo.example/ x main\n"
+        )
+        self.write("etc/apt/keyrings/x.gpg", b"KEYBYTES-NOT-TO-SEND")
+        self.write(
+            "usr/local/lib/python3.12/dist-packages/impacket-0.11.0.dist-info/METADATA", b"x"
+        )
+        Path(self.root, "usr/lib/node_modules/@evil/pkg").mkdir(parents=True)
+        records = collect(self.root, ["software"])
+        sent = sources(records)
+        self.assertIn("/etc/apt/sources.list.d/x.list", sent)
+        self.assertNotIn(b"secretpw", sent["/etc/apt/sources.list.d/x.list"][1])
+        self.assertNotIn("/etc/apt/keyrings/x.gpg", sent)
+        [key] = named(records, "signing_key")
+        self.assertEqual(len(key["data"]["sha256"]), 64)
+        globals_ = {
+            (r["data"]["kind"], r["data"]["name"]) for r in named(records, "global_package")
+        }
+        self.assertEqual(globals_, {("python", "impacket"), ("node", "@evil/pkg")})
+        raw = json.dumps(records)
+        self.assertNotIn("KEYBYTES", raw)
+
+    def test_dpkg_only_installed_packages_and_the_plain_list_name(self):
+        self.write(
+            "var/lib/dpkg/status",
+            b"Package: half\nStatus: install ok half-configured\nArchitecture: amd64\n"
+            b"Version: 1\n\nPackage: tzdata\nStatus: install ok installed\n"
+            b"Architecture: all\nVersion: 2\n",
+        )
+        self.write("var/lib/dpkg/info/tzdata.list", b"/usr/share/zoneinfo\n", age_days=3)
+        records = collect(self.root, ["software"])
+        [tz] = named(records, "package")
+        self.assertEqual(tz["data"]["name"], "tzdata")
+        self.assertAlmostEqual(tz["data"]["installed"], NOW - 3 * DAY, delta=5)
+
+    def test_the_package_cap_holds(self):
+        import sqlite3
+
+        collector = load_collector(self.root)
+        collector.MAX_PACKAGES = 1
+        db = Path(self.root, "var/lib/rpm/rpmdb.sqlite")
+        db.parent.mkdir(parents=True)
+        connection = sqlite3.connect(db)
+        connection.execute("CREATE TABLE Packages (hnum INTEGER PRIMARY KEY, blob BLOB)")
+        for name in ("a", "b", "c"):
+            blob = rpm_header([(1000, 6, name), (1001, 6, "1"), (1002, 6, "1")])
+            connection.execute("INSERT INTO Packages (blob) VALUES (?)", (blob,))
+        connection.commit()
+        connection.close()
+        out = io.BytesIO()
+        collector.main(settings(["software"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        self.assertEqual(len(named(records, "package")), 1)
+        self.assertTrue(named(records, "listing_truncated"))
+
+    def test_both_managers_a_pending_log_and_a_broken_database_failing_alone(self):
+        import sqlite3
+
+        db = Path(self.root, "var/lib/rpm/rpmdb.sqlite")
+        db.parent.mkdir(parents=True)
+        connection = sqlite3.connect(db)
+        connection.execute("CREATE TABLE Packages (hnum INTEGER PRIMARY KEY, blob BLOB)")
+        connection.execute("INSERT INTO Packages (blob) VALUES (?)", (b"short",))
+        connection.commit()
+        connection.close()
+        self.write("var/lib/rpm/rpmdb.sqlite-wal", b"x" * 100)
+        self.write(
+            "var/lib/dpkg/status",
+            b"Package: bash\nStatus: install ok installed\nArchitecture: amd64\nVersion: 5\n",
+        )
+        self.write("etc/yum.repos.d/x.repo", b"[x]\nbaseurl=https://repo.example/\n")
+        records = collect(self.root, ["software"])
+        self.assertEqual([r["data"]["name"] for r in named(records, "package")], ["bash"])
+        self.assertTrue(named(records, "malformed_header"))
+        self.assertEqual(named(records, "packages_pending")[0]["data"]["bytes"], 100)
+        self.assertIn("/etc/yum.repos.d/x.repo", sources(records))
+
+        Path(self.root, "var/lib/rpm/rpmdb.sqlite").write_bytes(b"not a database at all")
+        records = collect(self.root, ["software"])
+        [gap] = [
+            r for r in named(records, "not_examined") if r["data"].get("section") == "packages"
+        ]
+        self.assertIn("DatabaseError", gap["data"]["reason"])
+        self.assertIn("/etc/yum.repos.d/x.repo", sources(records))  # the rest still collected
+
+    def test_egg_info_names_lib64_and_linked_keys(self):
+        self.write("var/lib/dpkg/status", b"")
+        self.write("usr/local/lib/python3.9/site-packages/foo-1.0-py3.9.egg-info/PKG-INFO", b"x")
+        self.write("usr/local/lib64/python3.9/site-packages/bar-2.0.dist-info/METADATA", b"x")
+        self.write("usr/share/keyrings/real.gpg", b"KEY")
+        Path(self.root, "etc/apt/keyrings").mkdir(parents=True)
+        Path(self.root, "etc/apt/keyrings/link.gpg").symlink_to("/usr/share/keyrings/real.gpg")
+        records = collect(self.root, ["software"])
+        names = {
+            (r["data"]["name"], r["data"]["version"]) for r in named(records, "global_package")
+        }
+        self.assertEqual(names, {("foo", "1.0"), ("bar", "2.0")})
+        keys = {r["data"]["path"]: r["data"] for r in named(records, "signing_key")}
+        self.assertEqual(
+            keys["/etc/apt/keyrings/link.gpg"]["sha256"],
+            keys["/usr/share/keyrings/real.gpg"]["sha256"],
+        )
+
+
+MAIL_KEY = "ab" * 32
+POSTFIX_LOG = (
+    b"2026-10-28T10:00:01.000000+00:00 web01 postfix/pickup[900]: 4F1A2B3C: uid=33"
+    b" from=<www-data>\n"
+    b"2026-10-28T10:00:02.000000+00:00 web01 postfix/smtp[901]: 4F1A2B3C:"
+    b" to=<Alice.Smith@Example.ORG>, orig_to=<alice>, relay=mx.example.org[192.0.2.25]:25,"
+    b" delay=1, status=sent (250 2.0.0 Ok: queued as 99 <bob@example.net>)\n"
+    b"2026-10-28T10:00:03.000000+00:00 web01 postfix/cleanup[902]: 4F1A2B3D: warning:"
+    b" header Subject: Your invoice for jo@example.com from local; from=<www-data@web01>"
+    b" to=<x@example.com>: replaced\n"
+    b'2026-10-28T10:00:04.000000+00:00 web01 postfix/smtp[903]: 4F1A2B3E: to=<"j doe"@ex.org>,'
+    b" relay=none, delay=1, status=deferred (connect to ex.org: Connection timed out)\n"
+    b"2026-10-28T10:00:05.000000+00:00 web01 postfix/smtpd[904]: client=h[198.51.100.9],"
+    b" sasl_username=j\xc3\xb6rg@example.org password=hunter2\n"
+)
+EXIM_LOG = (
+    b"2026-10-28 10:00:01 1tA2b3-000ABC-DE <= www-data@web01 U=www-data P=local S=500"
+    b' T="Hello from me" id=abc@web01\n'
+    b"2026-10-28 10:00:02 1tA2b3-000ABC-DE => carol@example.com R=dnslookup"
+    b" T=remote_smtp H=mx.example.com [192.0.2.30]\n"
+    b"2026-10-28 10:00:02 1tA2b3-000ABC-DF => root <root@web01> R=local_user"
+    b" T=mail_spool\n"
+    b"2026-10-28 10:00:03 1tA2b3-000ABC-DG == dave@example.net R=dnslookup T=remote_smtp"
+    b" defer (-44): SMTP error\n"
+)
+
+
+class MailTests(FixtureRoot):
+    def setUp(self):
+        super().setUp()
+        self.collector = load_collector(self.root)
+        self.key = bytes.fromhex(MAIL_KEY)
+
+    def fp(self, local):
+        return self.collector.mail_fingerprint(self.key, local).decode()
+
+    def mask(self, line):
+        counts = {}
+        return self.collector.mask_mail(line, self.key, counts).decode("utf-8"), counts
+
+    def test_addresses_become_fingerprints_with_their_domains(self):
+        self.write("etc/postfix/main.cf", b"relayhost = [smtp.example.net]:587\n")
+        self.write("var/log/mail.log", POSTFIX_LOG)
+        records = collect(self.root, ["mail"], mail_key=MAIL_KEY)
+        text = sources(records)["/var/log/mail.log"][1].decode()
+        for address in ("alice", "Alice.Smith", "www-data", "bob", "jo@", "j doe", "jörg"):
+            self.assertNotIn(address, text)
+        self.assertIn(f"to=<{self.fp(b'alice.smith')}@example.org>", text)
+        self.assertIn(f"orig_to=<{self.fp(b'alice')}>", text)
+        self.assertIn(f"from=<{self.fp(b'www-data')}>", text)
+        self.assertIn("uid=33", text)
+        quoted = self.fp(b'"j doe"')
+        self.assertIn(f"to=<{quoted}@ex.org>", text)
+        self.assertIn(f"sasl_username={self.fp('jörg'.encode())}@example.org", text)
+        self.assertIn("password=[MASKED:password]", text)
+        # The header Postfix's checks matched is gone; the envelope stays.
+        self.assertIn("header [MASKED:mail_content]; from=<", text)
+        self.assertNotIn("invoice", text)
+        self.assertNotIn("replaced", text)
+        self.assertIn("relay=mx.example.org[192.0.2.25]:25", text)
+        # The configuration is text like any other, and the manifest never
+        # shows the key.
+        self.assertIn("/etc/postfix/main.cf", sources(records))
+        shown = records[0]["settings"]["mail_key"]
+        self.assertTrue(shown.startswith("id:") and MAIL_KEY not in json.dumps(records))
+
+    def test_exim_lines_lose_their_addresses_and_subjects(self):
+        self.write("etc/exim4/update-exim4.conf.conf", b"dc_eximconfig_configtype='internet'\n")
+        self.write("var/log/exim4/mainlog", EXIM_LOG)
+        text = sources(collect(self.root, ["mail"], mail_key=MAIL_KEY))["/var/log/exim4/mainlog"]
+        text = text[1].decode()
+        self.assertIn(f"<= {self.fp(b'www-data')}@web01 U=www-data P=local", text)
+        self.assertIn("T=[MASKED:mail_subject]", text)
+        self.assertNotIn("Hello", text)
+        self.assertIn(f"=> {self.fp(b'carol')}@example.com R=dnslookup T=remote_smtp", text)
+        self.assertIn(f"=> {self.fp(b'root')} <{self.fp(b'root')}@web01>", text)
+        self.assertIn(f"== {self.fp(b'dave')}@example.net", text)
+
+    def test_the_journal_s_mail_messages_are_fingerprinted(self):
+        self.write("usr/bin/journalctl", MAIL_JOURNALCTL).chmod(0o755)
+        records = collect(self.root, ["mail"], days=1, mail_key=MAIL_KEY)
+        ((start, content, _),) = [v for k, v in sources(records).items() if "journalctl" in k]
+        self.assertEqual(start["meta"]["argv"][-1], "SYSLOG_FACILITY=2")
+        entry = json.loads(content.splitlines()[-1])
+        self.assertEqual(entry["MESSAGE"], f"1A: to=<{self.fp(b'eve')}@example.com>, status=sent")
+        self.assertEqual(entry["SYSLOG_IDENTIFIER"], "postfix/smtp")
+
+    def test_without_a_key_no_mail_log_is_sent(self):
+        self.write("var/log/mail.log", POSTFIX_LOG)
+        self.write("usr/bin/journalctl", MAIL_JOURNALCTL).chmod(0o755)
+        records = collect(self.root, ["mail"])
+        self.assertEqual(sources(records), {})
+        self.assertTrue(named(records, "mail_logs_withheld"))
+
+    def test_the_controller_s_reason_for_no_key_is_recorded(self):
+        records = collect_with(self.root, ["mail"], mail_key_withheld="sudo logs its input")
+        [withheld] = named(records, "mail_logs_withheld")
+        self.assertEqual(withheld["data"]["reason"], "sudo logs its input")
+
+    def test_sudoers_says_whether_sudo_logs_its_input(self):
+        self.write("etc/sudoers", b"root ALL=(ALL) ALL\n#includedir /etc/sudoers.d\n")
+        self.write("etc/sudoers.d/ops", b"Defaults:ops !log_input\n")
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "off")
+        self.write("etc/sudoers.d/audit", b"Defaults log_input\n")
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "on")
+        Path(self.root, "etc/sudoers.d/audit").unlink()
+        self.write("etc/sudoers.d/big", b"# x\n" * 300000)  # over 1 MiB: not read whole
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "unknown")
+        Path(self.root, "etc/sudoers.d/big").unlink()
+        Path(self.root, "etc/sudoers").unlink()  # sudo reads its rules elsewhere
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "unknown")
+
+    def test_device_nodes_say_which_device(self):
+        collector = load_collector(self.root)
+        info = os.stat("/dev/null")
+        walk = collector.Walk(collector.Run(None, json.loads(settings([])), 1e12), "/", max_depth=0)
+        entry = walk._entry("/x", info)
+        self.assertEqual(entry["device"], [1, 3])
+
+    def directory_sudo(self, listing, status=0, nss=b"files sss", sssd=True, warn=b"", extra=b""):
+        self.write("etc/sudoers", b"root ALL=(ALL) ALL\n" + extra)
+        self.write("etc/nsswitch.conf", b"sudoers: " + nss + b"\n")
+        Path(self.root, "listing").write_bytes(listing)
+        script = b"#!/bin/sh\ncat " + str(Path(self.root, "listing")).encode() + b"\n"
+        if warn:
+            script += b"echo '" + warn + b"' >&2\n"
+        self.write("usr/bin/sudo", script + b"exit %d\n" % status).chmod(0o755)
+        pipe = Path(self.root, "var/lib/sss/pipes/sudo")
+        if not sssd and pipe.exists():
+            pipe.unlink()
+        if sssd and not pipe.exists():
+            pipe.parent.mkdir(parents=True, exist_ok=True)
+            server = socket.socket(socket.AF_UNIX)
+            server.bind(str(pipe))
+            self.addCleanup(server.close)
+            self.write("run/sssd.pid", b"%d\n" % os.getpid())
+            Path(self.root, f"proc/{os.getpid()}").mkdir(parents=True, exist_ok=True)
+        os.environ["SUDO_USER"] = "scanner"
+        self.addCleanup(os.environ.pop, "SUDO_USER", None)
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        return found["data"]
+
+    def test_directory_rules_are_asked_of_sudo(self):
+        found = self.directory_sudo(SUDO_LIST)
+        self.assertEqual((found["state"], found["directory_lookup"]), ("off", "off"))
+        self.assertEqual(found["lookup_command"]["argv"][1:], ["-n", "-ll", "-U", "scanner"])
+        self.assertTrue(found["lookup_command"]["executable_sha256"])
+        on = SUDO_LIST.replace(b"!authenticate", b"!authenticate, log_input")
+        self.assertEqual(self.directory_sudo(on)["state"], "on")
+        on = SUDO_LIST.replace(b"env_reset", b"env_reset, log_stdin")
+        self.assertEqual(self.directory_sudo(on)["state"], "on")
+        on = (
+            SUDO_LIST
+            + b"\nRunas and Command-specific defaults for scanner:\n"
+            + b"    Defaults!/usr/bin/python3 log_input\n"
+        )
+        self.assertEqual(self.directory_sudo(on)["state"], "on")
+        off = SUDO_LIST.replace(b"!authenticate", b"!authenticate, !log_input")
+        self.assertEqual(self.directory_sudo(off)["state"], "off")
+
+    def test_sudo_rs_and_header_less_listings_are_read(self):
+        sudo_rs = SUDO_LIST.split(b"\n\n", 1)[1]  # no "Matching Defaults" header
+        self.assertEqual(self.directory_sudo(sudo_rs)["state"], "off")
+        tagged = sudo_rs.replace(b"!authenticate", b"!authenticate, log_input")
+        self.assertEqual(self.directory_sudo(tagged)["state"], "on")
+
+    def test_a_lookup_that_proves_nothing_is_unknown(self):
+        cases = [
+            (dict(listing=SUDO_LIST, status=1), "exit status 1"),
+            (dict(listing=b"sudo: something else entirely"), "not a sudo listing"),
+            (dict(listing=SUDO_LIST + b"    Commands:\n" + b"x" * 300000), "too long"),
+            (dict(listing=SUDO_LIST, warn=b"sudo: unable to load sss"), "warned"),
+            (dict(listing=SUDO_LIST, sssd=False), "responder"),
+            (dict(listing=FILES_LIST, nss=b"files ldap"), "no rule came from LDAP"),
+            (dict(listing=SUDO_LIST, extra=b"Defaults mail_always\n"), "not looked up"),
+        ]
+        for kwargs, why in cases:
+            found = self.directory_sudo(**kwargs)
+            self.assertEqual(found["state"], "unknown", why)
+            self.assertIn(why, found["directory_lookup"])
+        found = self.directory_sudo(
+            SUDO_LIST.replace(b"LDAP Role", b"LDAP Role"), nss=b"files ldap"
+        )
+        self.assertEqual(found["state"], "off")  # the listing names an LDAP role
+
+    def test_the_lookup_asks_for_the_account_that_ran_the_collector(self):
+        collector = load_collector(self.root)
+        calls = []
+
+        def capture(run, name, args, **kwargs):
+            calls.append((name, args))
+            return {"status": 0, "output": SUDO_LIST, "output_cut": False, "stderr": ""}
+
+        collector.capture_command = capture
+        collector.sssd_answering = lambda: True
+        for account in ("scanner", "scanner@corp.example.com", "CORP\\scanner"):
+            os.environ["SUDO_USER"] = account
+            self.addCleanup(os.environ.pop, "SUDO_USER", None)
+            self.assertEqual(collector.sudo_directory_lookup(None, ["sss"])[0], "off")
+            self.assertEqual(calls[-1], ("sudo", ["-n", "-ll", "-U", account]))
+        os.environ["SUDO_USER"] = "-x"  # never an option
+        self.assertIn("not run under sudo", collector.sudo_directory_lookup(None, ["sss"])[0])
+
+    def test_a_bad_key_is_refused(self):
+        records = collect(self.root, ["mail"], mail_key="NOT-HEX")
+        self.assertEqual(records[-1]["status"], "refused")
+        self.assertNotIn("NOT-HEX", json.dumps(records[0]["settings"]))
+
+    def test_only_mail_configuration_is_read_never_lookup_tables(self):
+        self.write("etc/postfix/main.cf", b"smtp_sasl_password_maps = hash:/etc/postfix/sasl\n")
+        self.write("etc/postfix/sasl_passwd", b"[smtp.example.net] user:pw\n")
+        self.write("etc/exim4/passwd.client", b"*:user:pw\n")
+        self.write("etc/exim4/conf.d/router/200_smarthost", b"route_list = * relay.example\n")
+        sent = sources(collect(self.root, ["mail"], mail_key=MAIL_KEY))
+        self.assertIn("/etc/postfix/main.cf", sent)
+        self.assertIn("/etc/exim4/conf.d/router/200_smarthost", sent)
+        self.assertFalse([name for name in sent if "passw" in name])
+
+    def test_queues_are_counted_from_the_spool_never_read(self):
+        self.write("etc/postfix/main.cf", b"queue_directory = /var/spool/pf\n")
+        for name in ("deferred/A/A1", "deferred/B/B2", "deferred/B/B3", "active/C4"):
+            self.write("var/spool/pf/" + name, b"secret message body")
+        self.write("etc/exim4/update-exim4.conf.conf", b"")
+        self.write("var/spool/exim4/input/1tA-H", b"")
+        self.write("var/spool/exim4/input/1tA-D", b"body")
+        records = collect(self.root, ["mail"], mail_key=MAIL_KEY)
+        queues = {r["data"]["server"]: r["data"] for r in named(records, "mail_queue")}
+        self.assertEqual(queues["postfix"]["directory"], "/var/spool/pf")
+        self.assertEqual(queues["postfix"]["queues"], {"active": 1, "deferred": 3})
+        self.assertEqual(queues["exim"]["queues"], {"input": 1})
+        self.assertNotIn(b"secret message body", json.dumps(records).encode())
+
+    def test_review_cases_leave_no_local_part(self):
+        cases = {
+            # VERP: everything before the @ is the local part.
+            b"from=<list-bounces+alice=example.com@lists.org>": [b"alice"],
+            b"to=<=?utf-8?q?alice?=@x.org>": [b"alice"],
+            b'to=<"a\\"b"@x.org>': [b"a\\"],
+            b"to=<a(comment)lice@x.org>": [b"comment", b"lice"],
+            b"to=<alice@>": [b"alice"],
+            # Exim through syslog: the subject and a bare local delivery.
+            b'web01 exim[1]: 1tA2b3-000ABC-DE <= h@x U=www-data P=local T="Secret merger plans"': [
+                b"Secret",
+                b"merger",
+            ],
+            b"web01 exim[1]: 1tA2b3-000ABC-DF => bob R=local_user T=mail_spool": [b"bob"],
+            b"postfix/smtpd[1]: client=h[192.0.2.1], sasl_method=PLAIN, sasl_username=alice": [
+                b"alice"
+            ],
+            b"1tA2b3-000ABC-DE <= x@y A=plain:alice P=esmtpa": [b"alice"],
+            b"user=<alice>, rip=192.0.2.1": [b"alice"],
+            b'status=bounced (unknown user: "alice")': [b"alice"],
+            b"status=bounced (host mx[192.0.2.2] said: 550 5.1.1 alice... User unknown"
+            b" (in reply to RCPT TO command))": [b"alice"],
+            # Text in a matched header can't pass for the envelope.
+            b"4F1A: warning: header Subject: x from local; from=<top secret> to=<y>"
+            b" from local; from=<a@b.org> to=<c@d.org>": [b"top", b"y>"],
+            b"4F1A: warning: header Subject: hi; from=<top secret merger plan>"
+            b" proto=Board-only from local; from=<a@b.org> to=<c@d.org>": [
+                b"secret",
+                b"Board",
+            ],
+        }
+        for line, secrets in cases.items():
+            masked, _ = self.mask(line)
+            for secret in secrets:
+                self.assertNotIn(secret.decode(), masked, line)
+        masked, _ = self.mask(b"to=<list-bounces+alice=example.com@lists.org>")
+        self.assertEqual(masked, f"to=<{self.fp(b'list-bounces+alice=example.com')}@lists.org>")
+        masked, _ = self.mask(b"sasl_username=jo@example.org")
+        self.assertEqual(masked, f"sasl_username={self.fp(b'jo')}@example.org")
+
+    def test_addresses_are_fingerprinted_before_secrets_are_masked(self):
+        self.write(
+            "var/log/mail.log",
+            b"Oct 28 10:00:01 web01 postfix/smtp[1]: 4F: to=<bob-apikey=1@example.com>\n",
+        )
+        text = sources(collect(self.root, ["mail"], mail_key=MAIL_KEY))["/var/log/mail.log"][1]
+        self.assertNotIn(b"bob", text)
+        self.assertIn(self.fp(b"bob-apikey=1").encode() + b"@example.com", text)
+
+    def test_other_programs_lines_are_not_sent(self):
+        self.write(
+            "var/log/mail.log",
+            b"Oct 28 10:00:01 web01 dovecot: imap-login: Login: user=<alice>, subject=Secret\n"
+            b"Oct 28 10:00:02 web01 postfix/qmgr[2]: 4F: removed\n",
+        )
+        self.write("usr/bin/journalctl", OTHER_JOURNALCTL).chmod(0o755)
+        sent = sources(collect(self.root, ["mail"], days=1, mail_key=MAIL_KEY))
+        text = b"".join(content for _, content, _ in sent.values())
+        self.assertNotIn(b"Secret", text)
+        self.assertNotIn(b"dovecot", text)
+        self.assertIn(b"postfix/qmgr[2]: 4F: removed", text)
+
+    def test_mail_configuration_addresses_are_fingerprinted_or_marked(self):
+        self.write("etc/postfix/main.cf", b"always_bcc = ceo@example.com\n")
+        text = sources(collect(self.root, ["mail"], mail_key=MAIL_KEY))["/etc/postfix/main.cf"][1]
+        self.assertEqual(text, f"always_bcc = {self.fp(b'ceo')}@example.com\n".encode())
+        text = sources(collect(self.root, ["mail"]))["/etc/postfix/main.cf"][1]
+        self.assertEqual(text, b"always_bcc = [MASKED:mail_address]@example.com\n")
+
+    def test_a_long_line_is_masked_in_linear_time(self):
+        began = time.monotonic()
+        masked, _ = self.mask(b"a" * 500000 + b"@x.org " + b"b" * 500000)
+        self.assertLess(time.monotonic() - began, 2)
+        self.assertNotIn("aaaa", masked)
+        began = time.monotonic()
+        self.mask(b'"' * 200000 + b"@" * 1000)
+        self.assertLess(time.monotonic() - began, 2)
+
+    def test_masking_cases(self):
+        cases = {
+            b"to=<o'brien@x.org>": f"to=<{self.fp(b'o' + bytes([39]) + b'brien')}@x.org>",
+            b"see 'amy@x.org'.": f"see '{self.fp(b'amy')}@x.org'.",
+            b"to=<a@[192.0.2.1]>": f"to=<{self.fp(b'a')}@[192.0.2.1]>",
+            b"from=<>": "from=<>",
+            b"helo=<web01>": "helo=<web01>",
+            b"x: to=<bob@Mail.Example.COM.>,": f"x: to=<{self.fp(b'bob')}@mail.example.com.>,",
+        }
+        for line, expected in cases.items():
+            self.assertEqual(self.mask(line)[0], expected, line)
+        # The same address, whatever its case, gives the same fingerprint.
+        self.assertEqual(self.fp(b"Bob"), self.fp(b"bob"))
+
+
+SUDO_LIST = b"""Matching Defaults entries for scanner on web01:
+    env_reset, mail_badpass, secure_path=/usr/sbin\\:/usr/bin
+
+User scanner may run the following commands on web01:
+
+LDAP Role: compromise-checker
+    RunAsUsers: root
+    Options: !authenticate
+    Commands:
+\t/usr/bin/python3 -I -B -
+"""
+FILES_LIST = SUDO_LIST.replace(b"LDAP Role: compromise-checker", b"Sudoers entry: /etc/sudoers")
+OTHER_JOURNALCTL = b"""#!/bin/sh
+printf '{"MESSAGE":"Login: user=<alice>, subject=Secret","SYSLOG_IDENTIFIER":"dovecot"}\\n'
+printf '{"MESSAGE":"4F: removed","SYSLOG_IDENTIFIER":"postfix/qmgr"}\\n'
+exit 0
+"""
+MAIL_JOURNALCTL = b"""#!/bin/sh
+printf '{"MESSAGE":"args %s"}\\n' "$*"
+printf '{"MESSAGE":"1A: to=<eve@example.com>, status=sent","SYSLOG_IDENTIFIER":"postfix/smtp"}\\n'
+exit 0
+"""
+
+
+NGINX_ACCESS = (
+    b'203.0.113.9 - - [28/Oct/2026:10:00:01 +0000] "GET /shop?item=42&token=s3cr3t HTTP/1.1"'
+    b' 200 512 "https://ref.example/page?user=alice" "Mozilla/5.0 ' + b"x" * 400 + b'"\n'
+    b'203.0.113.9 - - [28/Oct/2026:10:00:02 +0000] "GET /x?f=../../etc/passwd&c=%24%7Bjndi:ldap'
+    b'://e%7D HTTP/1.1" 404 0 "-" "curl/8"\n'
+)
+NGINX_ERROR = (
+    b"2026/10/28 10:00:03 [error] 77#77: *5 open() failed, client: 198.51.100.4, server: x,"
+    b' request: "GET /a.php?id=5 HTTP/1.1", referrer: "https://ref.example/p?q=secret"\n'
+)
+AUDIT_EXEC = (
+    b"type=SYSCALL msg=audit(%d.100:701): arch=c000003e syscall=59 success=yes exit=0"
+    b' ppid=900 pid=901 auid=4294967295 uid=33 gid=33 euid=33 ses=4294967295 comm="sh"'
+    b' exe="/usr/bin/dash" key="cc-web-exec"\n'
+    b'type=EXECVE msg=audit(%d.100:701): argc=3 a0="sh" a1="-c" a2=6D7973716C202D7053336372657420'
+    b"2D65202273656C6563742031220A\n"
+    b'type=CWD msg=audit(%d.100:701): cwd="/var/www/html"\n'
+    b"type=SYSCALL msg=audit(%d.200:702): arch=c000003e syscall=59 success=yes exit=0"
+    b' ppid=1 pid=902 auid=1000 uid=1000 gid=1000 euid=1000 ses=3 comm="ls" exe="/usr/bin/ls"\n'
+    b'type=EXECVE msg=audit(%d.200:702): argc=1 a0="ls"\n'
+    b"type=SYSCALL msg=audit(%d.300:703): arch=c000003e syscall=59 success=yes exit=0"
+    b' ppid=900 pid=903 auid=4294967295 uid=33 gid=33 euid=33 ses=4294967295 comm="cat"'
+    b' exe="/usr/bin/cat"\n'
+    b'type=EXECVE msg=audit(%d.300:703): argc=2 a0="cat" a1_len=8 a1[0]=2F657463 a1[1]=2F706173\n'
+)
+
+
+class WebTests(FixtureRoot):
+    def setUp(self):
+        super().setUp()
+        self.collector = load_collector(self.root)
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0::/root:/bin/bash\nwww-data:x:33:33::/var/www:/usr/sbin/nologin\n"
+            b"jch:x:1000:1000::/home/jch:/bin/bash\n",
+        )
+        self.write("etc/group", b"sudo:x:27:jch\n")
+
+    def run_web(self, **extra):
+        records = collect_with(self.root, ["web_logs"], **extra)
+        return records, sources(records)
+
+    def mask(self, line):
+        return self.collector.mask_web(line, {}).decode()
+
+    def test_error_logs_always_access_logs_only_when_chosen(self):
+        self.write("var/log/nginx/access.log", NGINX_ACCESS)
+        self.write("var/log/nginx/error.log", NGINX_ERROR)
+        records, sent = self.run_web()
+        self.assertEqual(sorted(sent), ["/var/log/nginx/error.log"])
+        [summary] = named(records, "web_logs_summary")
+        self.assertEqual((summary["data"]["access_found"], summary["data"]["access_sent"]), (1, 0))
+        records, sent = self.run_web(web_access_logs=True)
+        self.assertEqual(sorted(sent), ["/var/log/nginx/access.log", "/var/log/nginx/error.log"])
+
+    def test_queries_and_referrers_are_masked_agents_cut(self):
+        self.write("var/log/nginx/access.log", NGINX_ACCESS)
+        self.write("var/log/nginx/error.log", NGINX_ERROR)
+        _, sent = self.run_web(web_access_logs=True)
+        access = sent["/var/log/nginx/access.log"][1].decode()
+        for secret in ("42", "s3cr3t", "alice", "user=", "/page", "jndi:ldap", "passwd"):
+            self.assertNotIn(secret, access)
+        self.assertIn("/shop?item=[MASKED:value]&token=[MASKED:value]", access)
+        self.assertIn('"https://ref.example/[MASKED:referrer]"', access)
+        self.assertIn("f=[MASKED:exploit:traversal]&c=[MASKED:exploit:jndi]", access)
+        self.assertIn("x" * 200, access)
+        self.assertNotIn("x" * 300, access)
+        self.assertIn("[cut]", access)
+        error = sent["/var/log/nginx/error.log"][1].decode()
+        self.assertIn('request: "GET /a.php?id=[MASKED:value] HTTP/1.1"', error)
+        self.assertIn('referrer: "https://ref.example/[MASKED:referrer]"', error)
+        self.assertIn("client: 198.51.100.4", error)  # visitors' addresses are kept
+
+    def test_masking_cases(self):
+        cases = {
+            b"GET /p?<?php system($_GET[1]);?> HTTP/1.1": "GET /p?[MASKED:exploit:php_code]",
+            b"GET /p?x=php://filter/resource=x HTTP/1.1": "x=[MASKED:exploit:php_wrapper]",
+            b"GET /p?x=a%253B%2520sh HTTP/1.1": "x=[MASKED:exploit:shell]",
+            b"GET /p?x=a%00 HTTP/1.1": "x=[MASKED:exploit:nul]",
+            b"GET /p?q=1+union+select+2 HTTP/1.1": "q=[MASKED:exploit:sql]",
+            b"GET /p?a=&b HTTP/1.1": "a=&[MASKED:value]",
+        }
+        for line, expected in cases.items():
+            self.assertIn(expected, self.mask(line), line)
+
+    def test_configured_log_paths_are_found(self):
+        self.write(
+            "etc/nginx/nginx.conf",
+            b"http {\n  access_log /var/log/site/visits.log combined;\n"
+            b"  error_log /var/log/site/oops.log warn;\n  access_log syslog:server=x;\n}\n",
+        )
+        self.write("var/log/site/visits.log", NGINX_ACCESS)
+        self.write("var/log/site/visits.log.1", NGINX_ACCESS, age_days=1)
+        self.write("var/log/site/oops.log", NGINX_ERROR)
+        self.write("var/log/site/unrelated.log", b"not a web log\n")
+        _, sent = self.run_web(web_access_logs=True)
+        self.assertIn("/etc/nginx/nginx.conf", sent)
+        logs = sorted(n for n in sent if n.startswith("/var/log"))
+        self.assertEqual(
+            logs,
+            ["/var/log/site/oops.log", "/var/log/site/visits.log", "/var/log/site/visits.log.1"],
+        )
+
+    def test_program_starts_by_web_accounts_masked(self):
+        now = int(NOW)
+        self.write("var/log/audit/audit.log", AUDIT_EXEC % ((now,) * 7))
+        records, _ = self.run_web()
+        starts = [r["data"] for r in named(records, "exec_record")]
+        self.assertEqual([s["pid"] for s in starts], [901, 903])  # not jch's ls
+        first = starts[0]
+        self.assertEqual(
+            (first["uid"], first["exe"], first["cwd"]), (33, "/usr/bin/dash", "/var/www/html")
+        )
+        self.assertIn("mysql -p[MASKED:mysql_password]", first["argv"])
+        self.assertNotIn("S3cret", json.dumps(records))
+        self.assertEqual(starts[1]["argv"], "cat /etc/pas")  # an argument in pieces
+        # More accounts with the opt-in: jch is in sudo, so "privileged" has him.
+        records, _ = self.run_web(exec_records="privileged")
+        self.assertEqual(len(named(records, "exec_record")), 3)
+        records, _ = self.run_web(exec_records="all")
+        self.assertEqual(len(named(records, "exec_record")), 3)
+
+    def test_older_program_starts_and_no_audit_log(self):
+        old = int(NOW - 40 * DAY)
+        self.write("var/log/audit/audit.log", AUDIT_EXEC % ((old,) * 7))
+        records, _ = self.run_web()
+        self.assertEqual(named(records, "exec_record"), [])
+        Path(self.root, "var/log/audit/audit.log").unlink()
+        records, _ = self.run_web()
+        self.assertTrue(named(records, "exec_records_unavailable"))
+
+    def test_linked_sites_are_read_and_their_logs_found(self):
+        self.write(
+            "etc/apache2/sites-available/shop.conf",
+            b"CustomLog /var/log/vhosts/shop.log combined\nErrorLog /var/log/vhosts/shop-err.log\n",
+        )
+        Path(self.root, "etc/apache2/sites-enabled").mkdir(parents=True)
+        Path(self.root, "etc/apache2/sites-enabled/shop.conf").symlink_to(
+            "../sites-available/shop.conf"
+        )
+        self.write("var/log/vhosts/shop.log", NGINX_ACCESS)
+        self.write("var/log/vhosts/shop-err.log", NGINX_ERROR)
+        _, sent = self.run_web(web_access_logs=True)
+        self.assertIn("/etc/apache2/sites-available/shop.conf", sent)
+        self.assertIn("/var/log/vhosts/shop.log", sent)
+        self.assertIn("/var/log/vhosts/shop-err.log", sent)
+
+    def test_access_logs_never_pass_as_error_logs(self):
+        self.write(
+            "etc/nginx/nginx.conf",
+            b"error_log /var/log/nginx/shop;\naccess_log /var/log/nginx/shop.access.log;\n",
+        )
+        self.write("var/log/nginx/shop", NGINX_ERROR)
+        self.write("var/log/nginx/shop.access.log", NGINX_ACCESS)
+        self.write("var/log/nginx/shop.access.log.1", NGINX_ACCESS)  # a rotated copy
+        self.write("var/log/nginx/site-errors-and-access.log", NGINX_ACCESS)
+        self.write("var/log/nginx/requests.log", NGINX_ACCESS)
+        _, sent = self.run_web()
+        self.assertEqual(sorted(n for n in sent if n.startswith("/var")), ["/var/log/nginx/shop"])
+
+    def test_other_formats_keep_no_referrer_path_and_cut_agents(self):
+        agent = "Ö" * 300
+        cases = [
+            # Apache's vhost_combined.
+            'shop.example:443 203.0.113.9 - - [28/Oct/2026:10:00:01 +0000] "GET / HTTP/1.1" 200 5'
+            f' "https://ex.com/account/12345/john.doe" "{agent}"',
+            # A custom field between size and referrer.
+            '203.0.113.9 - - [28/Oct/2026:10:00:01 +0000] "GET / HTTP/1.1" 200 5 rt=0.012'
+            f' "https://ex.com/account/12345/john.doe" "{agent}"',
+            # JSON.
+            '{"remote_addr":"203.0.113.9","http_referer":"https://ex.com/account/12345/john.doe",'
+            f'"http_user_agent":"{agent}","cookie":"session=abcdef0123456789; csrftoken=zzz"}}',
+        ]
+        for line in cases:
+            masked = self.mask(line.encode())
+            self.assertNotIn("john.doe", masked, line[:40])
+            self.assertNotIn("abcdef0123", masked)
+            self.assertIn("https://ex.com/[MASKED:referrer]", masked)
+            self.assertIn("Ö" * 256 + "[cut]", masked)
+            self.assertNotIn("Ö" * 257, masked)
+        # A combined line's added fields: cookies and form fields masked.
+        line = (
+            b'203.0.113.9 - - [28/Oct/2026:10:00:01 +0000] "POST /login HTTP/1.1" 200 5 "-" "x"'
+            b' "user=alice&ssn=123-45-6789"'
+        )
+        self.assertNotIn("alice", self.mask(line))
+        self.assertNotIn("6789", self.mask(line))
+        # Apache's error log, a quoted referrer.
+        line = b'[x] [client 1.2.3.4:5] File not found, referer: "https://ex.com/private/jdoe"'
+        masked = self.collector.mask_web(line, {}, "error").decode()
+        self.assertNotIn("jdoe", masked)
+
+    def test_escapes_and_fragments_stay_in_the_query(self):
+        masked = self.mask(
+            b'1.2.3.4 - - [x] "GET /?a=1\\"&ssn=99&b=2#x&k=v HTTP/1.1" 200 1 "-" "x"'
+        )
+        self.assertNotIn("99", masked)
+        self.assertNotIn("k=v", masked)
+
+    def test_a_long_hostile_line_is_masked_quickly(self):
+        began = time.monotonic()
+        masker = self.collector.Masker()
+        line = b"a a a [" + b"x" * 100000 + b"\n"
+        self.collector.web_line_masker("access")(line, masker)
+        self.collector.web_line_masker("error")(line, masker)
+        self.assertLess(time.monotonic() - began, 1.5)
+
+    def test_long_and_odd_program_starts(self):
+        now = int(NOW)
+        long_arg = b"A" * 3000
+        records = (
+            b"type=SYSCALL msg=audit(%d.1:801): arch=c000003e syscall=59 success=yes exit=0"
+            b' ppid=1 pid=950 uid=33 euid=33 comm="sh" exe="/usr/bin/dash"\n'
+            % now
+            + b'type=EXECVE msg=audit(%d.1:801): argc=3 a0="sh" a1="-c" a2_len=6000\n' % now
+            + b"type=EXECVE msg=audit(%d.1:801): a2[0]=%s\n" % (now, long_arg.hex().encode())
+            + b"type=EXECVE msg=audit(%d.1:801): a2[1]=%s\n" % (now, long_arg.hex().encode())
+            + b"type=SYSCALL msg=audit(%d.2:802): arch=c000003e syscall=59 success=yes exit=0"
+            b' ppid=1 pid=951 uid=33 euid=33 comm="x" exe="/usr/bin/x"\n'
+            % now
+            + b'type=EXECVE msg=audit(%d.2:802): argc=2 a0="x" a1=%s\n'
+            % (now, b"--password=\rhunter2".hex().encode())
+            + b"type=SYSCALL msg=audit(%d.3:803): arch=c000003e syscall=59 success=yes exit=0"
+            b' ppid=1 pid=952 uid=33 euid=33 comm="x" exe="/usr/bin/x"\n'
+            % now
+            + b'type=EXECVE msg=audit(%d.3:803): argc=2 a0="%s" a1="AKIAABCDEFGHIJKLMNOP"\n'
+            % (now, b"y" * 4090)
+        )
+        self.write("var/log/audit/audit.log", records)
+        records, _ = self.run_web()
+        starts = {r["data"]["pid"]: r["data"] for r in named(records, "exec_record")}
+        self.assertEqual(starts[950]["argc"], 3)
+        self.assertTrue(starts[950]["argv"].startswith("sh -c AAAA"))
+        self.assertTrue(starts[950]["argv_cut"])
+        self.assertNotIn("hunter2", json.dumps(starts[951]))
+        self.assertNotIn("AKIAABCDEF", json.dumps(starts[952]))
+
+    def test_the_newest_audit_log_is_read_under_the_cap(self):
+        collector = load_collector(self.root)
+        collector.AUDIT_BYTES = 200
+        old = b"type=SYSCALL msg=audit(1.0:1): old\n" * 20
+        self.write("var/log/audit/audit.log.1", old)
+        self.write("var/log/audit/audit.log", b"type=SYSCALL msg=audit(2.0:2): new\n" * 3)
+        files = collector.audit_files()
+        self.assertEqual(files[-1], ("/var/log/audit/audit.log", 0))
+        self.assertGreater(files[0][1], 0)  # the older one only from part-way
+
+    def test_web_users_add_accounts(self):
+        now = int(NOW)
+        self.write("var/log/audit/audit.log", AUDIT_EXEC % ((now,) * 7))
+        records, _ = self.run_web(web_users=["jch"])
+        self.assertEqual(len(named(records, "exec_record")), 3)
+        [accounts] = named(records, "web_accounts")
+        self.assertIn("jch", accounts["data"]["names"])
+        self.assertIn("www-data", accounts["data"]["names"])
+
+    def test_bad_web_settings_are_refused(self):
+        for extra in (
+            {"web_access_logs": "yes"},
+            {"exec_records": "everyone"},
+            {"web_users": ["-x"]},
+        ):
+            records = collect_with(self.root, ["web_logs"], **extra)
+            self.assertEqual(records[-1]["status"], "refused", extra)
+
+
+DOCKER_ID = "a" * 64
+PODMAN_ID = "b" * 64
+
+
+def docker_config(name, env="DB_PASSWORD=CanaryContainerEnv"):
+    return json.dumps(
+        {
+            "ID": DOCKER_ID,
+            "Name": "/" + name,
+            "Created": "2026-10-28T10:00:00Z",
+            "Config": {
+                "Image": "docker.io/library/alpine",
+                "Env": [env],
+                "Labels": {"l": "CanaryLabel"},
+            },
+            "State": {"Running": True, "Pid": 4242},
+            "MountPoints": {
+                "/host": {"Type": "bind", "Source": "/", "Destination": "/host", "RW": True},
+                "/data": {
+                    "Type": "bind",
+                    "Source": "/srv/data",
+                    "Destination": "/data",
+                    "RW": False,
+                },
+                # A volume the image declares (postgres's data): no host path.
+                "/var/lib/postgresql/data": {
+                    "Type": "volume",
+                    "Name": "f00",
+                    "Source": "",
+                    "Destination": "/var/lib/postgresql/data",
+                    "RW": True,
+                },
+                "/scratch": {"Type": "tmpfs", "Source": "", "Destination": "/scratch", "RW": True},
+                # A named volume: Docker's own storage, not a host folder chosen.
+                "/cache": {
+                    "Type": "volume",
+                    "Name": "cache",
+                    "Source": "/var/lib/docker/volumes/cache/_data",
+                    "Destination": "/cache",
+                    "RW": True,
+                },
+            },
+        }
+    ).encode()
+
+
+DOCKER_HOST = json.dumps(
+    {
+        "Privileged": True,
+        "CapAdd": ["net_admin", "CAP_SYS_PTRACE"],
+        "PidMode": "host",
+        "NetworkMode": "cc_project_default",
+        "IpcMode": "private",
+        "Devices": [{"PathOnHost": "/dev/kvm"}],
+        "SecurityOpt": ["seccomp=unconfined"],
+    }
+).encode()
+
+
+def podman_layout(root, oci, driver="overlay", metadata=None):
+    listing = [
+        {
+            "id": PODMAN_ID,
+            "names": ["cc-pod"],
+            "image": "c" * 64,
+            "metadata": json.dumps(
+                {"image-name": "docker.io/library/alpine:latest", "name": "cc-pod"}
+                if metadata is None
+                else metadata
+            ),
+        }
+    ]
+    Path(root, f"srv/podman/{driver}-containers").mkdir(parents=True, exist_ok=True)
+    Path(root, f"srv/podman/{driver}-containers/containers.json").write_text(json.dumps(listing))
+    if oci is not None:
+        target = Path(root, f"srv/podman/{driver}-containers/{PODMAN_ID}/userdata/config.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(oci))
+
+
+POD_OCI = {
+    "process": {
+        "env": ["TOKEN=CanaryPodmanEnv"],
+        "capabilities": {"effective": [], "bounding": ["CAP_CHOWN", "CAP_SYS_ADMIN"]},
+    },
+    "annotations": {"io.podman.annotations.privileged": "TRUE"},
+    "linux": {
+        "namespaces": [{"type": "mount"}, {"type": "network"}, {"type": "ipc"}],
+        "devices": [{"path": "/dev/fuse"}],
+    },
+    "mounts": [
+        {"destination": "/host", "type": "bind", "source": "/", "options": ["rbind", "rw"]},
+        {"destination": "/proc", "type": "proc", "source": "proc"},
+        # Podman's own, named by the container's ID: left out.
+        {
+            "destination": "/dev/shm",
+            "type": "bind",
+            "source": f"/srv/podman/overlay-containers/{PODMAN_ID}/userdata/shm",
+        },
+        {
+            "destination": "/etc/hosts",
+            "type": "bind",
+            "source": f"/run/containers/storage/overlay-containers/{PODMAN_ID}/userdata/hosts",
+        },
+    ],
+}
+STORAGE_CONF = (
+    b'[storage]\ndriver = "overlay"  # comment\ngraphroot = "/srv/podman"\n'
+    b'[storage.options]\ngraphroot = "/wrong"\n'
+)
+
+
+class ContainerTests(FixtureRoot):
+    def test_docker_containers_from_their_state_files(self):
+        self.write(
+            f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("cc-priv")
+        )
+        self.write(f"var/lib/docker/containers/{DOCKER_ID}/hostconfig.json", DOCKER_HOST)
+        records = collect(self.root, ["containers"])
+        [container] = [r["data"] for r in named(records, "container")]
+        self.assertEqual(
+            (container["runtime"], container["name"], container["image"], container["privileged"]),
+            ("docker", "cc-priv", "docker.io/library/alpine", True),
+        )
+        self.assertEqual(container["capabilities"], ["NET_ADMIN", "SYS_PTRACE"])
+        self.assertEqual(
+            (container["host_pid"], container["host_network"], container["host_ipc"]),
+            (True, False, False),
+        )
+        self.assertEqual(container["devices"], ["/dev/kvm"])
+        mounts = {m["destination"]: m for m in container["mounts"]}
+        self.assertEqual(mounts["/host"]["source"], "/")
+        self.assertIsNone(mounts["/var/lib/postgresql/data"]["source"])  # a volume
+        self.assertIsNone(mounts["/scratch"]["source"])  # a tmpfs
+        self.assertIsNone(mounts["/cache"]["source"])  # a named volume
+        self.assertEqual(mounts["/cache"]["volume"], "cache")
+        text = json.dumps(records)
+        for never in ("CanaryContainerEnv", "CanaryLabel", "cc_project_default", "4242"):
+            self.assertNotIn(never, text)  # the environment, labels, network names, pids
+        self.assertEqual(sources(records), {})  # no file text at all
+
+    def test_a_missing_hostconfig_is_a_gap_not_unprivileged(self):
+        self.write(f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("web"))
+        records = collect(self.root, ["containers"])
+        [container] = [r["data"] for r in named(records, "container")]
+        self.assertNotIn("privileged", container)
+        [gap] = named(records, "containers_unreadable")
+        self.assertTrue(gap["data"]["path"].endswith("hostconfig.json"))
+
+    def test_docker_s_data_root_snap_and_userns_remap_are_followed(self):
+        self.write("etc/docker/daemon.json", b'{"data-root": "/srv/docker"}')
+        self.write(f"srv/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("one"))
+        self.write(
+            f"srv/docker/100000.100000/containers/{DOCKER_ID}/config.v2.json", docker_config("two")
+        )
+        self.write(
+            f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("not-used")
+        )
+        names = sorted(
+            r["data"]["name"] for r in named(collect(self.root, ["containers"]), "container")
+        )
+        self.assertEqual(names, ["one", "two"])
+        Path(self.root, "etc/docker/daemon.json").unlink()
+        self.write(
+            f"var/snap/docker/common/var-lib-docker/containers/{DOCKER_ID}/config.v2.json",
+            docker_config("snapped"),
+        )
+        names = sorted(
+            r["data"]["name"] for r in named(collect(self.root, ["containers"]), "container")
+        )
+        self.assertEqual(names, ["not-used", "snapped"])
+
+    def test_podman_containers_from_containers_json_and_oci_config(self):
+        self.write("etc/containers/storage.conf", STORAGE_CONF)
+        podman_layout(self.root, POD_OCI)
+        records = collect(self.root, ["containers"])
+        [container] = [r["data"] for r in named(records, "container")]
+        self.assertEqual((container["runtime"], container["name"]), ("podman", "cc-pod"))
+        self.assertEqual(container["image"], "docker.io/library/alpine:latest")
+        self.assertEqual((container["host_pid"], container["host_network"]), (True, False))
+        # --privileged by Podman's own annotation, even run as a user (empty
+        # effective set); the bounding set is what it holds.
+        self.assertTrue(container["privileged"])
+        self.assertIn("SYS_ADMIN", container["capabilities"])
+        self.assertEqual(
+            container["mounts"],
+            [{"type": "bind", "source": "/", "destination": "/host", "rw": True}],
+        )
+        self.assertNotIn("CanaryPodmanEnv", json.dumps(records))
+
+    def test_other_podman_drivers_buildah_and_unstarted_containers(self):
+        self.write(
+            "etc/containers/storage.conf", b'[storage]\ndriver = "vfs"\ngraphroot = "/srv/podman"\n'
+        )
+        podman_layout(self.root, POD_OCI, driver="vfs")
+        names = [r["data"]["name"] for r in named(collect(self.root, ["containers"]), "container")]
+        self.assertEqual(names, ["cc-pod"])
+        shutil.rmtree(Path(self.root, "srv/podman"))
+        podman_layout(self.root, None)  # created, never started: no runtime spec
+        records = collect(self.root, ["containers"])
+        self.assertEqual(named(records, "container"), [])
+        self.assertEqual(named(records, "containers_unreadable"), [])
+        [summary] = named(records, "containers_summary")
+        self.assertEqual(summary["data"]["created_not_started"], 1)
+        shutil.rmtree(Path(self.root, "srv/podman"))
+        podman_layout(self.root, POD_OCI, metadata={})  # a Buildah working container
+        records = collect(self.root, ["containers"])
+        self.assertEqual(named(records, "container"), [])
+
+    def test_unreadable_layouts_and_other_runtimes_are_said(self):
+        self.write(f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", b"{not json")
+        Path(self.root, "var/lib/kubelet/pods").mkdir(parents=True)
+        Path(self.root, "var/lib/containerd").mkdir(parents=True)  # Docker's own containerd
+        Path(self.root, "run/containerd/io.containerd.runtime.v2.task/moby/x").mkdir(parents=True)
+        Path(self.root, "home/alice/.local/share/containers/storage").mkdir(parents=True)
+        records = collect(self.root, ["containers"])
+        [bad] = named(records, "containers_unreadable")
+        self.assertIn("not JSON", bad["data"]["reason"])
+        [summary] = named(records, "containers_summary")
+        self.assertEqual(
+            summary["data"]["not_inventoried"],
+            ["Kubernetes (kubelet)", "rootless Podman in home directories"],
+        )
+        Path(self.root, "run/containerd/io.containerd.runtime.v2.task/k8s.io/y").mkdir(parents=True)
+        [summary] = named(collect(self.root, ["containers"]), "containers_summary")
+        self.assertIn("containerd (k8s.io)", summary["data"]["not_inventoried"])
 
 
 if __name__ == "__main__":

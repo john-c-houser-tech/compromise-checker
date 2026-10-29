@@ -72,10 +72,20 @@ Any login leaves records. The tool's runs leave these:
   account uses sudo, sudo's one-time notice marker;
 - records of the commands run, if the server's audit system is configured to
   keep them;
+- on a server whose `sudo` takes rules from a directory service (such as
+  SSSD or LDAP), the tool's look-up of the scanner account's own `sudo`
+  rules: the directory service may refresh its cache of those rules as it
+  answers, and if `sudo` can't reach it, `sudo` may mail the administrators
+  about it (for the tool's own `sudo` as well as the look-up);
 - the system's ordinary session setup for the account: a per-login runtime
   area in memory (`/run/user/…`) and, on Ubuntu, its login-message files,
   including one small marker file (`.cache/motd.legal-displayed`) in the
-  scanner account's home directory on its first login.
+  scanner account's home directory on its first login; where Ubuntu's
+  Landscape client is installed, the login message's system summary also
+  refreshes its cache and log file (under `/var/lib/landscape` and
+  `/var/log/landscape`); on Red Hat Enterprise Linux 9 and later, and its
+  rebuilds, a login session that lasts a few minutes also has the system
+  record that the last boot succeeded (`/boot/grub2/grubenv`).
 
 **The tool never removes, edits or suppresses any of these.** On a server
 that may be compromised, changing logs destroys evidence, and it is exactly
@@ -105,13 +115,43 @@ findings.
 ## 7. What is collected
 
 Evidence from a server contains personal and sensitive information:
-usernames, IP addresses, email addresses in mail logs, web addresses that may
-include access tokens, and sometimes secrets typed into commands.
+usernames, IP addresses, the domains of email addresses in mail logs (the
+rest of each address is replaced by a fingerprint, see below), web addresses
+that may include access tokens, and sometimes secrets typed into commands.
 
 - **Only what the checks need.** Each part of the collector documents what it
   reads and why. The time window collected is limited (30 days by default).
-- **Optional sources.** Full web server access logs are collected only if
-  your organization chooses.
+- **Web server logs.** Web server *error* logs (nginx, Apache, PHP-FPM) are
+  always collected, because attacks on web applications usually show there
+  first. Full *access* logs, which record every visitor's request, are
+  collected only if your organization chooses this during setup. In both,
+  visitors' IP addresses are kept, since they are what an investigation
+  follows. The values in web addresses' query strings and in referrers are
+  replaced by a marker, with their names kept, except that a value matching
+  a known attack pattern is replaced by a marker naming that pattern. User
+  agents are cut to 256 characters, and secret masking always applies.
+- **Programs started by web server accounts.** Where the server's audit
+  system records program starts, those started by the web server's accounts
+  (`www-data`, `apache`, `nginx`, and any your organization names) are
+  collected, with their arguments masked like other command lines, because a
+  web server starting a shell is one of the clearest signs of a break-in.
+  Your organization can choose during setup to collect program starts for
+  root, service accounts and accounts with administrator rights too, and,
+  only with that, for ordinary users.
+- **Mail logs.** Outgoing mail logs (Postfix, Exim) are collected, because
+  mail sent from a compromised server is a common sign of misuse. Before they
+  leave the server, every email address in them is changed: the part before
+  the @ is replaced by a keyed fingerprint, made with a key your organization
+  holds (created at setup), and the domain is kept. The same address always
+  gives the same fingerprint, so volumes and new recipients can be counted
+  without any address being shown. Someone who holds the key can check
+  whether a given address appears (`checker mail-hash`); without it, the
+  fingerprints can't be turned back into addresses. The key is sent to a
+  server only for a collection, held in memory and never written there: it
+  isn't sent before a first collection has shown that the server's `sudo`
+  doesn't record its input, nor to a server whose `sudo` did so at its last
+  collection; such a server's mail logs aren't collected.
+  Message subjects and contents aren't in these logs and are never collected.
 - **Shell history.** Information *about* history files (whether they exist,
   their size and dates, and whether history has been switched off) is always
   collected, because switching history off is a common way of covering
@@ -119,6 +159,12 @@ include access tokens, and sometimes secrets typed into commands.
   chooses this during setup, and then only for root, service accounts and
   accounts with administrator rights unless you also enable it for ordinary
   users.
+- **Containers.** Where Docker or Podman runs, what each container is
+  allowed to do is read from the runtimes' own state files, never by
+  connecting to them: its name and image, whether it is privileged, its
+  capabilities and devices, whether it shares the host's processes or
+  network, and which host folders it mounts. A container's environment and
+  labels, which often hold passwords and keys, are never collected.
 - **Scheduled jobs and start-up files.** Crontabs and queued `at` jobs are
   collected as masked text, but each `at` job's stored copy of the
   submitting user's environment is left out; only the variable names are
@@ -167,8 +213,13 @@ include access tokens, and sometimes secrets typed into commands.
   collections are never modified.
 - **Retention.** Evidence, snapshots and reports are kept for 90 days by
   default. You can change the period. A `purge` command deletes everything for
-  a server or a date range, and data for a server removed from the inventory
-  is deleted when its retention period ends.
+  a server or a date range, and `purge --expired`, which you can run on a
+  schedule, deletes whatever is past its retention period; the tool reminds
+  you when anything is due. One exception: a server's current baseline, the
+  collection later checks compare against, is kept until a newer one is
+  accepted, because deleting it would hide changes made since. Data for a
+  server removed from the inventory has no such exception. Each purge is
+  recorded by identifiers, times and counts only, never content.
 - **Reports are confidential documents.** They describe weaknesses an attacker
   could use. Handle them like the evidence.
 

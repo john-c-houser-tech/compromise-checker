@@ -16,6 +16,7 @@ needs a Linode API token with Linodes: Read/Write only, from $LINODE_TOKEN or
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import os
 import re
@@ -27,7 +28,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -35,18 +36,22 @@ import asyncssh
 
 from checker.analysis import parse_bundle
 from checker.assess import analyze
+from checker.bundle import walk_bundle
 from checker.collect import collect_hosts
+from checker.events import classify as classify_message
 from checker.evidence import (
     Store,
     database_file,
     initialise,
     load_config,
     load_identity,
+    mail_key,
     open_bundle,
 )
 from checker.inventory import Host
 from checker.protocol import Limits
 from checker.transport import fetch_host_key, trust_host_key
+from checker.whitelist import load as whitelist_load
 
 API = "https://api.linode.com/v4"
 TAG = "compromise-checker-test"
@@ -86,7 +91,23 @@ DISCLOSED = [
         re.compile(r"^/home/[^/]+/\.cache(/motd\.legal-displayed)?$"),
         "Ubuntu login-message marker, first login only (disk)",
     ),
+    (
+        re.compile(r"^/var/(lib|log)/landscape(/|$)"),
+        "Ubuntu login message: Landscape's system summary cache and log (disk)",
+    ),
+    (
+        re.compile(r"^/boot/grub2/grubenv(\.\d+)?$"),
+        "RHEL 9+ session: GRUB's boot-success flag (disk)",
+    ),
+    (
+        re.compile(r"^/var/spool/postfix/maildrop/"),
+        "sudo's mail to the administrators, queued for local delivery (disk)",
+    ),
 ]
+# The login message's Landscape system summary runs on Python too; its own
+# writes are login machinery, judged by path like the rest, never the
+# collector's.
+_LOGIN_PYTHON = ("landscape-sysin",)
 # Socket calls the audit rule also catches; they create no file.
 _SOCKET_CALLS = {"bind", "connect", "sendto", "sendmsg"}
 # Attribute changes on an already-open file carry no path in the audit log.
@@ -104,6 +125,11 @@ _PLACEHOLDER_NAMES = {"/", "/inaccessible", "/dir", "/reg", "/chr", "/blk", "/fi
 # /run/user/<uid>/systemd, also through a handle.
 _USER_GENERATORS = "/usr/lib/systemd/user-generators/"
 PLACEHOLDERS = "session setup: the user manager's placeholder nodes in its runtime area (memory)"
+# At a later login the user manager runs the generators again, first
+# removing their earlier output (links and .wants directories), through a
+# handle on that same in-memory directory.
+_GENERATOR_OUTPUT = re.compile(r"^/?[^/]+(\.(service|target|socket|timer|path|mount)|\.wants)$")
+REGENERATED = "session setup: the user manager clearing its generators' earlier output (memory)"
 
 
 # --- Linode API ------------------------------------------------------------------
@@ -235,6 +261,29 @@ class Result:
     # (informational) show the false alarms a clean server raises.
     checks_failed: list[str] = field(default_factory=list)  # must stay empty
     findings: list[str] = field(default_factory=list)
+    # Decision 2 (plan 2.4): reading the firewall never loads a kernel
+    # module. Modules loaded or unloaded during the collection: must stay
+    # empty. And which firewall was loaded, so which commands ran.
+    modules_changed: list[str] = field(default_factory=list)
+    modules_other: list[str] = field(default_factory=list)  # informational
+    firewall_loaded: dict | None = None
+    # Plan 2.7: mail events parsed (must be some), and anything that must
+    # never leave the server found in the bundle: the mail key, or the
+    # mailed address's local part (must stay empty).
+    mail_events: int = 0
+    # Calibration (plan 2.10): the clean bundle's score, with the proof's
+    # whitelist and the base profile, and its compromise findings by band.
+    probability: float | None = None
+    band: str | None = None
+    findings_by_band: dict = field(default_factory=dict)
+    # Plan 2.7b: real `sudo -ll` output read as the collector reads it (off,
+    # then on once the scanner's input is logged), and sudo's log line for
+    # the lookup parsed as the own-session marking expects: problems found
+    # (must stay empty).
+    sudo_listing: list[str] = field(default_factory=list)
+    root_mail: list[str] = field(default_factory=list)  # informational
+    sudo_mail: str = ""  # sudo's security mail to root, if any
+    mail_leaks: list[str] = field(default_factory=list)
     error: str | None = None
 
 
@@ -250,8 +299,25 @@ EXPECTED_RECORDS = (
     ("unusual_files", "walk_summary"),  # /tmp exists everywhere
     ("processes", "process"),
     ("processes", "socket"),  # sshd listens on every server
+    ("network", "interface"),
+    ("network", "firewall_loaded"),
+    ("logging_state", "log_file"),
+    ("logging_state", "audit_records"),
+    ("logging_state", "mac_state"),
+    ("software", "package"),
+    ("software", "signing_key"),
+    ("mail", "mail_servers"),
+    ("mail", "mail_queue"),  # Postfix, installed by the setup
+    ("web_logs", "web_logs_summary"),
+    ("web_logs", "exec_record"),  # the web account's program start, by the shipped rules
+    ("containers", "container"),  # Docker's on Ubuntu, Podman's on the RHEL family
 )
-EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal")
+EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal", "mail")
+# The address the setup mails: its local part must never leave the server.
+PROOF_MAIL_LOCAL = "proofmail"
+# A value the setup puts in web requests' query strings and referrers:
+# it must never leave the server either (policy §7).
+PROOF_WEB_SECRET = "proofwebsecret"
 
 SETUP = r"""
 set -eu
@@ -261,6 +327,24 @@ if ! command -v auditctl >/dev/null 2>&1; then
         || dnf install -y -q audit >/dev/null
 fi
 systemctl enable --now auditd >/dev/null 2>&1 || service auditd start >/dev/null
+# A firewall as servers often have one: on Ubuntu, ufw enabled and Docker
+# running a container (iptables-nft rules: nft_compat is loaded, and the
+# collector lists them; the module check guards that it loads nothing);
+# firewalld is already on Rocky and Alma (native nftables).
+if command -v ufw >/dev/null 2>&1; then
+    ufw allow 22/tcp >/dev/null && ufw --force enable >/dev/null
+    (apt-get install -y -qq docker.io >/dev/null 2>&1 \
+        && systemctl enable --now docker >/dev/null 2>&1 \
+        && docker run -d --name cc-proof-web docker.io/library/nginx:alpine >/dev/null 2>&1) \
+        || echo "proof setup: Docker not started" >&2
+fi
+# Containers for the containers module (plan 2.9): Docker's above on Ubuntu;
+# Podman with one running container on the RHEL family.
+if ! command -v ufw >/dev/null 2>&1; then
+    (dnf install -y -q podman >/dev/null \
+        && podman run -d --name cc-proof-pod docker.io/library/alpine:latest sleep 7200 \
+            >/dev/null) || echo "proof setup: Podman container not started" >&2
+fi
 # The scanner account, exactly as docs/scanner-account.md sets it up.
 useradd --create-home --shell /bin/sh --comment "Compromise Checker" scanner
 passwd -l scanner >/dev/null
@@ -291,6 +375,46 @@ echo '*/30 * * * * /usr/bin/true proof' | crontab -u proofuser -
 install -d -o proofuser /home/proofuser/.config/systemd/user
 printf '[Service]\nExecStart=/usr/bin/true\n' > /home/proofuser/.config/systemd/user/proof.service
 echo 'export PROOF=1' >> /home/proofuser/.bashrc
+# A mail server, and mail for the mail module to find (plan 2.7): its log
+# lines name proofmail, which must arrive only as a fingerprint.
+if command -v apt-get >/dev/null 2>&1; then
+    echo "postfix postfix/main_mailer_type select Local only" | debconf-set-selections
+    echo "postfix postfix/mailname string proof.example" | debconf-set-selections
+    apt-get install -y -qq postfix >/dev/null
+else
+    dnf install -y -q postfix >/dev/null
+fi
+systemctl enable --now postfix >/dev/null 2>&1
+printf 'Subject: proof\n\nproof\n' \
+    | runuser -u proofuser -- /usr/sbin/sendmail proofmail@example.org
+printf 'Subject: proof\n\nproof\n' | /usr/sbin/sendmail root
+sleep 5
+# A web server and PHP-FPM (plan 2.8), audit rules for the web accounts'
+# program starts (docs/auditd-web.rules, lines for accounts that exist),
+# requests with a secret in their query strings and referrer, and one
+# program started by the web account.
+if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx php-fpm >/dev/null
+else
+    dnf install -y -q nginx php-fpm >/dev/null
+fi
+systemctl enable --now nginx >/dev/null 2>&1
+fpm=$(systemctl list-unit-files 'php*-fpm.service' --no-legend | awk '{print $1; exit}')
+[ -n "$fpm" ] && systemctl enable --now "$fpm" >/dev/null 2>&1 || true
+for account in www-data apache nginx; do
+    if id -u "$account" >/dev/null 2>&1; then
+        for arch in b64 b32; do
+            auditctl -a always,exit -F arch=$arch -S execve,execveat \
+                -F euid="$account" -k cc-web-exec >/dev/null
+        done
+    fi
+done
+for path in '/?token=proofwebsecret' '/missing.php?id=proofwebsecret' '/x?f=../../etc/passwd'; do
+    curl -s -o /dev/null -e 'https://ref.example/page?u=proofwebsecret' \
+        "http://127.0.0.1$path" || true
+done
+web=$(id -u www-data >/dev/null 2>&1 && echo www-data || echo nginx)
+runuser -u "$web" -- /usr/bin/date >/dev/null  # recorded, and nothing a check flags
 # Something for the collector to find in the authentication log.
 logger -p authpriv.notice "compromise-checker read-only proof: marker" || true
 """
@@ -373,6 +497,7 @@ def parse_audit(text: str, syscalls: dict[tuple[str, str], str] | None = None) -
                 "syscall": event["syscall"],
                 "comm": event["comm"],
                 "exe": event["exe"],
+                "cwd": event["cwd"],
                 "paths": paths,
             }
         )
@@ -443,7 +568,8 @@ def classify(events: list[dict], memory: set[str] | None = None) -> Verdict:
     verdict = Verdict()
     for event in events:
         who = f"{event['comm']} ({event['exe']}) {event['syscall']}"
-        if event["comm"].startswith("python") or "python" in event["exe"]:
+        login_python = event["comm"] in _LOGIN_PYTHON
+        if not login_python and (event["comm"].startswith("python") or "python" in event["exe"]):
             # The collector itself must write nothing at all.
             paths = [path for path, _, _ in event["paths"]] or ["-"]
             verdict.collector.extend(f"{who} {path}" for path in paths)
@@ -462,6 +588,8 @@ def classify(events: list[dict], memory: set[str] | None = None) -> Verdict:
                 verdict.disclosed.append(
                     f"{who} (open file)  — session setup: permissions on its own runtime files"
                 )
+            elif event["exe"] in _OWN_FILE_WRITERS and event["syscall"] in _OWN_FILE_CALLS:
+                verdict.disclosed.append(f"{who} (open file)  — {_OWN_FILE_WRITERS[event['exe']]}")
             else:
                 verdict.unexpected.append(f"{who} (no path)")
             continue
@@ -475,6 +603,16 @@ def classify(events: list[dict], memory: set[str] | None = None) -> Verdict:
                 for path in targets
             )
             continue
+        if (
+            event["exe"] == _SESSION_MANAGER
+            and event["syscall"] in ("unlinkat", "unlink", "rmdir")
+            and all(
+                _GENERATOR_OUTPUT.match(path) and _in_memory_relative(facts[path], memory)
+                for path in targets
+            )
+        ):
+            verdict.disclosed.extend(f"{who} {path}  — {REGENERATED}" for path in targets)
+            continue
         placeholder = event["exe"] == _SESSION_MANAGER and event["syscall"] in _PLACEHOLDER_CALLS
         for path in targets:
             # A ".." could climb out of a disclosed prefix (/run/user/1000/../../etc):
@@ -487,7 +625,11 @@ def classify(events: list[dict], memory: set[str] | None = None) -> Verdict:
                 reason = PLACEHOLDERS
             elif ".." in path.split("/"):
                 reason = None
-            elif not facts[path]["raw"].startswith("/") and not _in_memory(facts[path], memory):
+            elif (
+                not facts[path]["raw"].startswith("/")
+                and not _in_memory(facts[path], memory)
+                and (event["exe"], event.get("cwd")) not in _CWD_RELATIVE
+            ):
                 # A relative name through an unknown directory handle, on a
                 # disk: where it really is can't be told, so it isn't excused.
                 reason = None
@@ -558,6 +700,17 @@ async def _create_server(api: Linode, *args) -> dict:
         raise
 
 
+FIREWALL_MODULES = re.compile(
+    r"(nf_|nft_|xt_|x_tables|ip6?t_|ip6?table_|ip6?_tables|ebt|arpt|ipt_)"
+)
+
+
+async def _kernel_modules(conn) -> set[str]:
+    """The kernel's loaded modules, by name."""
+    listed = await conn.run("cut -d' ' -f1 /proc/modules", check=True, timeout=60)
+    return set(listed.stdout.split())
+
+
 async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -> Result:
     result = Result(distro)
     root_key = asyncssh.generate_private_key("ssh-ed25519")
@@ -606,7 +759,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
 
             home = work / f"{distro}-home"
             # The widest setting, so the proof covers every read the collector can make.
-            config, _ = initialise(home, home_text="all")
+            config, _ = initialise(home, home_text="all", web_access_logs=True, exec_records="all")
             scanner = Host(
                 name=distro,
                 address=address,
@@ -615,16 +768,75 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 key_path=str(scanner_key_file),
                 sudo="nopasswd",
             )
-            [outcome] = await collect_hosts(
+            loaded_before = await _kernel_modules(conn)
+            # Each login mounts a fresh in-memory runtime area, gone once
+            # the session ends: sample the mount table throughout, so every
+            # session's in-memory devices are known when the writes are judged.
+            seen_mounts: list[str] = []
+
+            async def sample_mounts() -> None:
+                while True:
+                    sampled = await conn.run("cat /proc/self/mountinfo", timeout=60)
+                    seen_mounts.append(sampled.stdout or "")
+                    await asyncio.sleep(1)
+
+            sampler = asyncio.create_task(sample_mounts())
+            # Twice: the mail key goes only to a host whose earlier
+            # collection showed sudo doesn't log its input (plan 2.7), so
+            # the second collection is the one that reads the mail logs.
+            runs = []
+            for _ in range(2):
+                [outcome] = await collect_hosts(
+                    home,
+                    config,
+                    [scanner],
+                    known_hosts=known,
+                    limits=Limits(overall_seconds=600, module_seconds=300, source_bytes=1 << 28),
+                )
+                runs.append(outcome)
+            # A third, with sudo told to take rules from SSSD too (its
+            # library installed, SSSD itself not running): the collector's
+            # own `sudo -ll` look-up runs inside an audited collection, and
+            # must find the directory not answering (plan 2.7b).
+            await conn.run(DIRECTORY_SUDO, check=True, timeout=600)
+            [third] = await collect_hosts(
                 home,
                 config,
                 [scanner],
                 known_hosts=known,
                 limits=Limits(overall_seconds=600, module_seconds=300, source_bytes=1 << 28),
             )
+            await asyncio.sleep(10)  # let local mail be delivered
+            # Informational: what sudo mailed the administrators, if anything.
+            subjects = await conn.run(
+                "cat /var/mail/root /var/spool/mail/root 2>/dev/null | grep -a '^Subject:'"
+                " | sort | uniq -c",
+                timeout=60,
+            )
+            result.root_mail = subjects.stdout.strip().splitlines()[:10]
+            # Mail queued in the scanner's session is disclosed only as
+            # sudo's to the administrators: its messages must be there, and
+            # say what sudo reported.
+            bodies = await conn.run(
+                "cat /var/mail/root /var/spool/mail/root 2>/dev/null"
+                " | grep -a -A12 '^Subject: \\*\\*\\* SECURITY information'",
+                timeout=60,
+            )
+            result.sudo_mail = bodies.stdout[:4000]
             result.status = outcome.status
             if outcome.error:
                 result.error = outcome.error
+            if runs[0].status != "complete":  # fails the proof: status must be "complete"
+                result.status = f"first {runs[0].status}, second {outcome.status}"
+            loaded_after = await _kernel_modules(conn)
+            changed = sorted(
+                [f"+{m}" for m in loaded_after - loaded_before]
+                + [f"-{m}" for m in loaded_before - loaded_after]
+            )
+            # Only firewall modules could come from the collector's listing;
+            # anything else (udev, the session) is reported, not failed.
+            result.modules_changed = [m for m in changed if FIREWALL_MODULES.match(m[1:])]
+            result.modules_other = [m for m in changed if m not in result.modules_changed]
             await asyncio.sleep(2)  # let auditd flush
 
             # --input-logs: without a terminal, ausearch would otherwise wait
@@ -641,8 +853,14 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             if not events:
                 # A login always causes some writes; none means no usable evidence.
                 raise RuntimeError("the audit log holds no events for the scanner's session")
+            sampler.cancel()
             mounts = await conn.run("cat /proc/self/mountinfo", check=True, timeout=60)
-            result.audit = classify(events, memory_devices(mounts.stdout))
+            memory = memory_devices(mounts.stdout)
+            for sample in seen_mounts:
+                memory |= memory_devices(sample)
+            result.audit = classify(events, memory)
+            # After the collections, so nothing here is in their evidence.
+            result.sudo_listing = await check_sudo_listing(conn)
 
         bundle = home / "evidence" / distro / f"{outcome.bundle_id}.age"
         if bundle.exists():
@@ -669,6 +887,9 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             with_sources = {s.get("module") for s in opened.summary.sources if s.get("bytes")}
             result.missing += [f"{m} (source)" for m in EXPECTED_SOURCES if m not in with_sources]
             check_parse(result, home, outcome.bundle_id, Path(config.identity_file), scanner_key)
+            result.sudo_listing += check_directory_lookup(
+                home, third.bundle_id, Path(config.identity_file)
+            )
         audit = result.audit
         result.passed = (
             result.status == "complete"
@@ -679,6 +900,20 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             and not result.missing
             and not result.snapshot
             and not result.checks_failed
+            and not result.modules_changed
+            and result.mail_events > 0
+            and not result.sudo_listing
+            and (not _queued_mail(audit) or "SECURITY information" in result.sudo_mail)
+            and not result.mail_leaks
+            # On Ubuntu, ufw (and Docker) put the rules through nft_compat:
+            # that path must really have been exercised.
+            and (
+                not distro.startswith("ubuntu")
+                or (
+                    (result.firewall_loaded or {}).get("nft_compat") is True
+                    and any(s.startswith("/usr/sbin/nft") for s in result.sources)
+                )
+            )
         )
     except Exception as exc:  # report it; the server is still deleted below
         result.error = f"{type(exc).__name__}: {exc}"
@@ -708,6 +943,185 @@ COMPLETE_SECTIONS = (
 )
 
 
+PROOF_WHITELIST = Path(__file__).resolve().parent / "proof-whitelist.yaml"
+
+
+def proof_whitelist(home: Path, host: str):
+    """The proofs' own whitelist (their setup, explained), installed as the
+    host's whitelist file in the proof's home, as an operator would."""
+    target = home / "whitelist" / "hosts" / f"{host}.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(PROOF_WHITELIST.read_text(encoding="utf-8"), encoding="utf-8")
+    return whitelist_load(home, host, None)
+
+
+COLLECTOR_FILE = Path(__file__).resolve().parents[2] / "checker" / "collector" / "collector.py"
+DIRECTORY_SUDO = r"""
+set -eu
+if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libsss-sudo >/dev/null
+else
+    dnf install -y -q libsss_sudo >/dev/null
+fi
+nss=$(readlink -f /etc/nsswitch.conf)
+sed -i '/^[[:space:]]*sudoers[[:space:]]*:/d' "$nss"
+echo 'sudoers: files sss' >> "$nss"
+"""
+
+
+# Writes with no path, on a file the program itself opened: GRUB's
+# boot-success flag (grubenv) and postdrop's queue file.
+_OWN_FILE_WRITERS = {
+    "/usr/sbin/grub2-set-bootflag": "RHEL session: GRUB's boot-success flag (disk)",
+    "/usr/sbin/postdrop": "sudo's mail to the administrators, queued for local delivery (disk)",
+}
+_OWN_FILE_CALLS = {"ftruncate", "fchmod", "fchown", "fsync", "write"}
+# Programs that work relative to a folder of their own (postdrop changes to
+# Postfix's queue directory): their relative names are read against it.
+_CWD_RELATIVE = {("/usr/sbin/postdrop", "/var/spool/postfix")}
+
+
+def _queued_mail(audit) -> bool:
+    """Whether anything was queued for local mail in the scanner's session."""
+    return any("/var/spool/postfix/maildrop/" in line for line in audit.disclosed)
+
+
+class _LookupRecord:
+    """A bundle walk keeping the sudoers module's sudo_input_logging record."""
+
+    def __init__(self) -> None:
+        self.data = None
+
+    def record(self, record) -> None:
+        if (record.module, record.name) == ("sudoers", "sudo_input_logging"):
+            self.data = record.data
+
+    def __getattr__(self, name):
+        return lambda *args: None
+
+
+def check_directory_lookup(home: Path, bundle_id: str, identity_file: Path) -> list[str]:
+    """The third collection's: the look-up ran, found SSSD not answering and
+    left the state unknown (no key), and its log line is the tool's own."""
+    store = Store(database_file(home))
+    identity = load_identity(identity_file)
+    try:
+        row = store.bundle(bundle_id)
+        found = _LookupRecord()
+        walk_bundle(Path(row["path"]), identity, found)
+        parsed = parse_bundle(row, identity)
+    finally:
+        store.close()
+    data = found.data or {}
+    problems = []
+    if data.get("state") != "unknown" or "responder" not in str(data.get("directory_lookup")):
+        problems.append(f"directory look-up: {data}")
+    if not data.get("lookup_command"):
+        problems.append("the look-up didn't run")
+    listings = [
+        e
+        for e in parsed.events
+        if e.type == "sudo.command" and (e.fields.get("command") or "").split() == ["list"]
+    ]
+    if listings and not any(e.own_session for e in listings):
+        problems.append(f"sudo's look-up line wasn't marked as the tool's own: {listings[:2]}")
+    return problems
+
+
+SUDO_LISTING = r"""
+set -u
+sudo -n -ll -U scanner > /root/cc-list-off 2>/root/cc-list-off.err; echo "off status $?"
+echo 'Defaults:scanner log_input' > /etc/sudoers.d/zz-cc-proof-input
+chmod 440 /etc/sudoers.d/zz-cc-proof-input
+sudo -n -ll -U scanner > /root/cc-list-on 2>/root/cc-list-on.err; echo "on status $?"
+echo 'Defaults!/usr/bin/python3 log_input' > /etc/sudoers.d/zz-cc-proof-input
+sudo -n -ll -U scanner > /root/cc-list-cmnd 2>/root/cc-list-cmnd.err; echo "cmnd status $?"
+echo 'scanner ALL=(root) NOPASSWD: LOG_INPUT: /usr/bin/true' > /etc/sudoers.d/zz-cc-proof-input
+sudo -n -ll -U scanner > /root/cc-list-tag 2>/root/cc-list-tag.err; echo "tag status $?"
+rm -f /etc/sudoers.d/zz-cc-proof-input
+sleep 2
+"""
+
+
+def _collector_module():
+    spec = importlib.util.spec_from_file_location("collector_for_proof", COLLECTOR_FILE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def check_sudo_listing(conn) -> list[str]:
+    """The collector's reading of real `sudo -ll` output, and sudo's log
+    line for such a lookup, on this distribution."""
+    problems = []
+    statuses = (await conn.run(SUDO_LISTING, check=True, timeout=120)).stdout
+    version = (await conn.run("sudo --version | head -1", timeout=60)).stdout
+    # sudo-rs (Ubuntu 26.04) has no input logging: it ignores log_input and
+    # LOG_INPUT, so every listing must read "off".
+    sudo_rs = "sudo-rs" in version
+    if any(f"{n} status 0" not in statuses for n in ("off", "on", "cmnd", "tag")):
+        problems.append(f"sudo -ll failed: {statuses.strip()}")
+    collector = _collector_module()
+    for name, expected in (("off", "off"), ("on", "on"), ("cmnd", "on"), ("tag", "on")):
+        expected = "off" if sudo_rs else expected
+        listing = (await conn.run(f"cat /root/cc-list-{name}", check=True, timeout=60)).stdout
+        found = collector.sudo_list_logs_input(listing)
+        if found != expected:
+            problems.append(f"listing read as {found!r}, expected {expected!r}: {listing[:300]!r}")
+    logged = await conn.run(
+        "journalctl -q --no-pager -o cat _COMM=sudo | grep 'COMMAND=list' | tail -1", timeout=60
+    )
+    line = logged.stdout.strip()
+    kind = classify_message("sudo", line)
+    # Root's listing is seldom logged at all; a line, if there is one, must
+    # be one the own-session marking recognises.
+    if not line:
+        pass
+    elif kind is None or kind[0] != "sudo.command" or kind[1].get("user") != "root":
+        problems.append(f"sudo's lookup line isn't parsed as root's sudo.command: {line!r}")
+    elif (kind[1].get("command") or "").split() not in (["list"], ["list", "scanner"]):
+        problems.append(f"sudo's lookup line names an unexpected command: {line!r}")
+    return problems
+
+
+class MailLeaks:
+    """A bundle walk that looks for text that must never leave a server: the
+    mail key, and the mailed address's local part (policy §7)."""
+
+    def __init__(self, needles: list[str]) -> None:
+        self.needles = [n.encode() for n in needles]
+        self.found: list[str] = []
+
+    def _look(self, where: str, data: bytes) -> None:
+        for needle in self.needles:
+            if needle.lower() in data.lower() and len(self.found) < 20:
+                self.found.append(f"{needle.decode()[:12]}… in {where}")
+
+    def manifest(self, manifest) -> None:
+        self._look("the manifest", manifest.model_dump_json().encode())
+
+    def record(self, record) -> None:
+        self._look(f"record {record.module}.{record.name}", json.dumps(record.data).encode())
+
+    def source_start(self, start) -> None:
+        pass
+
+    def line(self, start, line: bytes) -> None:
+        self._look(f"source {start.name}", line)
+
+    def source_end(self, start, end) -> None:
+        pass
+
+    def source_cut(self, start) -> None:
+        pass
+
+    def error(self, error) -> None:
+        self._look("an error", error.message.encode())
+
+    def trailer(self, trailer) -> None:
+        pass
+
+
 def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path, key) -> None:
     """Parse the bundle as the controller does and check its snapshot holds
     what the setup put on the server."""
@@ -716,9 +1130,25 @@ def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path,
     try:
         row = store.bundle(bundle_id)
         parsed = parse_bundle(row, identity)
-        assessment = analyze(store, row["host"], identity, load_config(home).recipients)
+        # This bundle (the clean one), not the host's latest: a later
+        # collection may follow it (the directory look-up's).
+        assessment = analyze(
+            store,
+            row["host"],
+            identity,
+            load_config(home).recipients,
+            bundle_id=bundle_id,
+            whitelist=proof_whitelist(home, row["host"]),
+        )
     finally:
         store.close()
+    score = assessment.get("score") or {}
+    result.probability, result.band = score.get("probability"), score.get("band")
+    result.findings_by_band = {}
+    for f in assessment["findings"]:
+        if f.get("suppressed_by") or f["category"] != "compromise indicator":
+            continue
+        result.findings_by_band[f["band"]] = result.findings_by_band.get(f["band"], 0) + 1
     result.checks_failed = [
         f"{c['check']}: {c['status']}"
         for c in assessment["checks"]
@@ -727,9 +1157,15 @@ def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path,
     result.findings = [
         f"{f['band']} {f['category']}: {f['title']} — {f['summary'][:120]}"
         for f in assessment["findings"]
-        if f["band"] != "info"
+        if f["band"] != "info" and not f.get("suppressed_by")
     ]
     result.events = len(parsed.events)
+    result.mail_events = sum(1 for e in parsed.events if e.type.startswith("mail."))
+    leaks = MailLeaks([mail_key(home), PROOF_MAIL_LOCAL, PROOF_WEB_SECRET])
+    walk_bundle(Path(row["path"]), identity, leaks)
+    result.mail_leaks = leaks.found
+    if parsed.snapshot is not None:
+        result.firewall_loaded = parsed.snapshot.live.get("firewall_loaded")
     result.own_events = parsed.summary.get("own_session") or 0
     result.own_login_found = parsed.summary.get("own_login_found")
     sections = parsed.snapshot.sections
@@ -784,6 +1220,24 @@ def report(results: list[Result]) -> bool:
                 print("  FAIL: no home start-up text was read, so those reads went unproven")
             for what in r.missing:
                 print(f"  FAIL: no {what} collected, so that read went unproven")
+            print(f"  mail events parsed: {r.mail_events}")
+            if not r.mail_events:
+                print("  FAIL: no mail event parsed, so the mail log reads went unproven")
+            for subject in r.root_mail:
+                print(f"  mail to root during the run: {subject}")
+            if r.audit is not None and _queued_mail(r.audit):
+                if "SECURITY information" in r.sudo_mail:
+                    print("  sudo's mail to root (what queued mail in the session was):")
+                    for line in r.sudo_mail.splitlines()[:20]:
+                        print(f"    {line}")
+                else:
+                    print(
+                        "  FAIL: mail was queued in the scanner's session, and none of it is sudo's"
+                    )
+            for problem in r.sudo_listing:
+                print(f"  FAIL: sudo listing: {problem}")
+            for leak in r.mail_leaks:
+                print(f"  FAIL: left the server unmasked: {leak}")
             print(
                 f"  parsed: {r.events} events, {r.own_events} from this tool's own session;"
                 f" own login recognised: {r.own_login_found}"
@@ -799,6 +1253,18 @@ def report(results: list[Result]) -> bool:
                 print(f"  snapshot section incomplete: {gap}")
             for failed in r.checks_failed:
                 print(f"  FAIL: check {failed}")
+            print(f"  firewall loaded (so its rules were listed): {r.firewall_loaded}")
+            if r.distro.startswith("ubuntu") and not (r.firewall_loaded or {}).get("nft_compat"):
+                print(
+                    "  FAIL: ufw/Docker rules weren't in place, so the nft_compat path"
+                    " went unproven"
+                )
+            if r.modules_changed:
+                print(f"  FAIL: firewall modules changed during collection: {r.modules_changed}")
+            else:
+                print("  firewall modules unchanged by the collection")
+            if r.modules_other:
+                print(f"  other modules changed meanwhile (not the collector's): {r.modules_other}")
             print(f"  findings on a fresh server (false alarms to tune): {len(r.findings)}")
             for finding in r.findings:
                 print(f"    {finding}")
@@ -836,6 +1302,7 @@ async def main() -> int:
     )
     parser.add_argument("--region", default="us-sea")
     parser.add_argument("--keep", action="store_true", help="don't delete the servers")
+    parser.add_argument("--json", type=Path, help="also write the results here (calibrate.py)")
     args = parser.parse_args()
     if "all" in args.distro:
         args.distro = list(IMAGES)  # the whole matrix Linode offers (no RHEL there)
@@ -851,6 +1318,8 @@ async def main() -> int:
     finally:
         if not args.keep:
             await asyncio.to_thread(sweep_run, api)
+    if args.json:
+        args.json.write_text(json.dumps([asdict(r) for r in results], default=str, indent=1))
     return 0 if report(list(results)) else 1
 
 

@@ -1,8 +1,8 @@
 """Checks (DESIGN.md §8): small rules over a bundle's events and snapshot,
 and its changes since the host's baseline, each producing findings.
 
-A finding says what was seen, how much it matters (a band: the likelihood
-ratios behind the bands are Phase 2), whether it is a sign of compromise,
+A finding says what was seen, how much it matters (a band, and the
+likelihood ratio scoring gives it, checker/scoring.py), whether it is a sign of compromise,
 of poor hygiene or of exposure (principle 9), what it involves, and which
 events, snapshot items and changes show it."""
 
@@ -16,13 +16,21 @@ from typing import Any
 from checker.events import Event
 from checker.snapshot import Snapshot
 
-CHECKS_VERSION = 1
+# 2: the critical band, variants; 3: more variants; 4: exe entities and
+# entities_complete; 5: sudo.rules name the account or group; 6: account
+# and key variants; 7: network checks (8.8); 8: anti-forensics (8.10); 9:
+# software changes (8.11); 10: outgoing mail (8.9); 11: web applications (8.12);
+# 12: containers (8.13).
+CHECKS_VERSION = 12
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"
 EXPOSURE = "exposure"
 CATEGORIES = (COMPROMISE, EXPOSURE, HYGIENE)
-BANDS = ("high", "medium", "low", "info")  # high: DESIGN.md §8's ★ checks
+# critical: the strongest signs (DESIGN.md §11.1's critical examples);
+# high: DESIGN.md §8's ★ checks. The likelihood ratio behind each band is
+# in checker/scoring.py.
+BANDS = ("critical", "high", "medium", "low", "info")
 
 
 @dataclass
@@ -40,6 +48,13 @@ class Finding:
     last_seen: str | None = None
     new: bool = False  # changed since the previous bundle, not only since the baseline
     uncertain: str | None = None  # why it may be wrong (a section not fully collected)
+    # Which of a check's kinds of finding this is, where they differ in
+    # weight (scoring's overrides, whitelists).
+    variant: str | None = None
+    # False when `entities` lists only some of what the finding is about (a
+    # group of many files): a whitelist rule naming an entity can't vouch
+    # for the ones not listed, so it doesn't match.
+    entities_complete: bool = True
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -64,6 +79,14 @@ class Context:
     previous_time: str | None = None
     # Why change-based checks can't run, when they can't.
     no_baseline: str = "no baseline yet"
+    # The previous bundle's snapshot, for what only its live part shows (a
+    # log that shrank since then).
+    previous_snapshot: Snapshot | None = None
+    # When the baseline was collected (controller clock), and its snapshot:
+    # what logs show after it is judged against what they showed before
+    # (mail volume), and its live part against this one's (queue size).
+    baseline_time: str | None = None
+    baseline_snapshot: Snapshot | None = None
 
     def of(self, *types: str) -> Iterator[tuple[int, Event]]:
         """(index, event) for events of these types (or type prefixes ending
@@ -125,37 +148,54 @@ class Check:
     title: str
     needs_baseline: bool
     run: Callable[[Context], list[Finding]]
+    # The kinds of finding it reports, where they weigh differently or a
+    # whitelist rule may want one only (Finding.variant).
+    variants: tuple[str, ...] = ()
 
 
 REGISTRY: list[Check] = []
 
 
-def check(id: str, title: str, *, needs_baseline: bool = False):
+def check(id: str, title: str, *, needs_baseline: bool = False, variants: tuple[str, ...] = ()):
     """Register a check: a function from a Context to findings."""
 
     def register(run: Callable[[Context], list[Finding]]):
-        REGISTRY.append(Check(id, title, needs_baseline, run))
+        REGISTRY.append(Check(id, title, needs_baseline, run, variants))
         return run
 
     return register
 
 
-def run_checks(context: Context) -> tuple[list[Finding], list[dict[str, Any]]]:
-    """Every check's findings, most serious first, and a line per check:
-    whether it ran, was skipped (no baseline yet) or failed."""
+def load_checks() -> dict[str, Check]:
+    """Every check, by id (importing the modules registers them)."""
     from checker.checks import (  # noqa: F401 - they register
         accounts,
+        antiforensics,
+        containers,
         files,
         integrity,
         kernel,
+        mail,
+        network,
         persistence,
         processes,
         reboots,
+        software,
+        web,
     )
 
+    return {c.id: c for c in REGISTRY}
+
+
+def run_checks(context: Context) -> tuple[list[Finding], list[dict[str, Any]]]:
+    """Every check's findings, most serious first, and a line per check:
+    whether it ran, was skipped (no baseline yet) or failed."""
+    load_checks()
     findings: list[Finding] = []
     ran: list[dict[str, Any]] = []
-    for item in REGISTRY:
+    # By id: the registry's order is whatever order the modules happened to
+    # be imported in, and the list of what ran must not depend on that.
+    for item in sorted(REGISTRY, key=lambda c: c.id):
         if item.needs_baseline and context.since_baseline is None:
             ran.append({"check": item.id, "status": context.no_baseline})
             continue

@@ -92,7 +92,9 @@ def test_init_with_an_outside_recipient_keeps_no_private_key(checker_home, tmp_p
     public = str(x25519.Identity.generate().to_public())
     config, identity_path = initialise(checker_home, public)
     assert identity_path is None and config.recipients == [public]
-    assert not (checker_home / "keys").exists()
+    # Only the mail key, which collection needs: no evidence identity.
+    kept = {p.name for p in (checker_home / "keys").iterdir()} - {"mail-key.txt.lock"}
+    assert kept == {"mail-key.txt"}
     with pytest.raises(EvidenceError, match="not an age public key"):
         initialise(tmp_path / "other", "age1notakey")
 

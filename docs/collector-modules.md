@@ -188,6 +188,32 @@ gets an `include_dir` record listing its files and whether sudo reads each
 one (sudo skips names ending in `~` or containing a `.`); every file is sent
 either way, since a skipped one is still evidence.
 
+Also a `sudo_input_logging` record: whether sudo writes its input to disk,
+judged from that text, `/etc/sudo.conf`'s plugins and `nsswitch.conf`'s
+`sudoers:` line (read, not sent). Where that line names a directory as
+well (`sss`, `ldap`), sudo itself is asked what it applies to the account
+that ran the collector (`SUDO_USER`): `sudo -n -ll -U <account>`, whose
+listing shows directory rules too; `log_input`, `log_stdin` or `LOG_INPUT`
+in its defaults or a rule's options is `on`. `off` needs proof the
+directory answered, since sudo quietly lists only the files' rules when it
+can't reach it: SSSD's sudo responder running (its socket, and the process
+in its pid file), for `sss`; a listed `LDAP Role:`, for `ldap`; and no
+warning from sudo. A failed, cut-short (over 256 KiB) or unrecognised
+listing leaves it `unknown` (`directory_lookup` says which;
+`lookup_command` records the command and its executable's SHA-256). Where
+the sudoers files set `mail_always`, `mail_all_cmnds` or `log_servers`,
+the look-up isn't made (it would mail the administrators or reach a log
+server) and the state stays `unknown`. The answer holds as of the look-up:
+directory rules can change before the next collection. sudo logged
+nothing about root's listing on any of the seven proof images; should a
+sudo log it (`COMMAND=list`), the analysis marks that one line as the
+tool's own, only for a bundle whose look-up ran and only after the
+collector's own sudo. Ubuntu 26.04's `sudo-rs` has no input logging at
+all (it ignores `log_input` and `LOG_INPUT`) and lists rules without the
+defaults' header; its listings are read the same way. Account names may be fully
+qualified (`scanner@corp.example.com`, `CORP\scanner`). The controller sends the mail key only where it is `off`
+(see `mail`).
+
 ## `ssh`
 
 **Why:** `sshd_config` changes (root login, ports, key file locations,
@@ -633,7 +659,8 @@ with its own share of the module's time — the listing at most 40%, the
 hidden-process probe at most half of what is left, the sockets the rest —
 and writes a `process_summary` however far it got. It **sends**:
 - a `process` record for each process: PID, parent, state, real, effective,
-  saved and filesystem user and group IDs, threads, CPU seconds, start time,
+  saved and filesystem user and group IDs, the login UID it descends from
+  (`/proc/<pid>/loginuid`), threads, CPU seconds, start time,
   the executable (`exe_deleted` when its file has been deleted, `exe_memfd`
   when it runs from memory only; `kernel_thread` or `exe_unreadable` when
   there is none to read), working directory, root (a `chroot` or container
@@ -693,6 +720,305 @@ none hidden from `/proc`'s listing, not proof that nothing is hidden. Such a
 rootkit's traces, where it leaves any, are in `kernel_modules` (the
 kernel's taint flags, unsigned or out-of-tree modules) and
 `system_journal` (module loads).
+
+## `network`
+
+**Why:** check 8.8 (network and data transfer): resolver and hosts changes,
+firewall changes, promiscuous interfaces.
+
+**Reads:**
+- `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`,
+  `/etc/hosts.allow`, `/etc/hosts.deny`, as masked text;
+- firewall configuration, as masked text: `/etc/nftables.conf`,
+  `/etc/sysconfig/nftables.conf`, `/etc/nftables.d`,
+  `/etc/sysconfig/nftables.d`, `/etc/firewalld` (three levels), ufw's
+  files under `/etc/ufw` and `/etc/default/ufw`, `/etc/iptables/rules.v4`
+  and `rules.v6`, `/etc/sysconfig/iptables` and `ip6tables`;
+- per interface in `/sys/class/net` (at most 256): its name (bytes that
+  aren't UTF-8 escaped), flags (promiscuous), state, type, whether it is a
+  bridge or a bridge port, and its received and sent byte counters. Not its
+  hardware (MAC) address;
+- `/proc/net/route` and `/proc/net/ipv6_route` (up to 1 MB and 2,000 lines
+  each; `truncated` says when cut);
+- whether a firewall is loaded: nf_tables (`/sys/module/nf_tables`, or
+  built into the kernel per `modules.builtin`), nft_compat
+  (`/sys/module/nft_compat`), and legacy tables
+  (`/proc/net/ip_tables_names`, `ip6_tables_names`).
+
+**Runs** (decision 2 of the Phase 2 plan), only for a firewall that is
+already loaded, so listing it never loads a kernel module:
+- `nft list ruleset` when nf_tables is loaded. That includes iptables-nft
+  rules (ufw, Docker: nft_compat loaded). Printing those asks the kernel
+  about the xtables extensions they use, so it was measured first: on
+  Ubuntu 22.04, 24.04 and 26.04 with ufw and Docker running, 45 listings
+  with `nft`, `iptables-nft-save` and `ip6tables-nft-save` loaded no
+  module (plan 2.4b), and the read-only proof keeps checking it (on the
+  Ubuntu images; Docker on RHEL-family hosts also uses iptables-nft, which
+  the proof doesn't run there: Rocky and Alma are proved with firewalld's
+  native nftables). A set
+  with more than 50 elements or lines (a fail2ban or CrowdSec blocklist) is
+  sent as one line with its element count and a SHA-256 of its masked
+  lines, never element by element; its lines aren't held past 50 or
+  256 KB. Every line sent or hashed is masked first;
+- `iptables-legacy-save` / `ip6tables-legacy-save` when legacy tables
+  exist.
+
+A command that can't run (`command_unavailable`), fails
+(`command_failed`: the other listings still run) or ends inside a set
+(`set_unterminated`) leaves only the `firewall_rules` section incomplete.
+The read-only proof enables ufw and runs a Docker container on the Ubuntu
+images (Rocky and Alma run firewalld), and checks that no firewall module
+is loaded or unloaded during any collection.
+
+## `logging_state`
+
+**Why:** check 8.10 (anti-forensics): cleared or truncated logs, stopped or
+reconfigured logging and audit, SELinux and AppArmor turned down.
+
+**Reads:**
+- a manifest of `/var/log` (three levels, at most 5,000 entries, breadth
+  first with `audit` and `journal` first, so a cut-short listing keeps
+  them): each entry's name, type, size, inode, times and link target.
+  **Never a log's contents** through this module;
+- journald, rsyslog, auditd and SELinux configuration as masked text:
+  `/etc/systemd/journald.conf`, `/usr/lib/systemd/journald.conf` and the
+  drop-ins in `/etc`, `/run` and `/usr/lib`, `/etc/rsyslog.conf` and
+  `rsyslog.d`, `/etc/audit/auditd.conf`, `audit.rules` and `rules.d`,
+  `/etc/selinux/config`;
+- from `/var/log/audit/audit.log` and up to four rotated copies, within the
+  look-back, **only** the records about the audit system and SELinux
+  themselves: `CONFIG_CHANGE`, `DAEMON_START`, `DAEMON_END`,
+  `DAEMON_ABORT`, `MAC_STATUS`, `MAC_POLICY_LOAD` (with or without
+  auditd's `node=` prefix, which is dropped), matched at the start of the
+  record only; the newest 2,000 kept (rotated files read oldest first, so
+  a flood of earlier records can't push the latest out), at most 64 MB
+  read, each line masked and cut at 4 KiB. Never the commands, logins or
+  file accesses audit also records;
+- SELinux's mode (`/sys/fs/selinux/enforce`) and AppArmor's loaded
+  profiles, by name and mode (`/sys/kernel/security/apparmor/profiles`, at
+  most 5,000).
+
+## `software`
+
+**Why:** check 8.11 (software changes): packages installed or removed,
+repositories and signing keys added, attack tools and compilers appearing,
+packages installed system-wide by hand.
+
+**Reads:**
+- the installed packages (at most 20,000): from rpm's SQLite database,
+  opened immutable as `package_verify` opens it (no locks, no `-shm` or
+  `-wal` file; changes still only in its write-ahead log aren't seen, and
+  `packages_pending` says so), name, version-release (with its epoch),
+  architecture and install time; and from dpkg's status file, where there
+  is one too, name, version and architecture, with the modification time
+  of the package's file list in `/var/lib/dpkg/info` as its install time;
+- repositories as masked text (a password in a repository's URL is
+  masked): `/etc/apt/sources.list`, `sources.list.d`, `/etc/yum.repos.d`,
+  `/etc/dnf/dnf.conf`, `/etc/yum.conf`, `/etc/dnf/vars`, `/etc/yum/vars`
+  (apt's `Dir::Etc::SourceParts` lives in `apt.conf.d`, which `hooks`
+  collects);
+- signing keys as file facts and SHA-256 only, never their bytes (for a
+  link, the SHA-256 of what it points to):
+  `/etc/apt/trusted.gpg`, `trusted.gpg.d`, `/etc/apt/keyrings`,
+  `/usr/share/keyrings`, `/etc/pki/rpm-gpg`;
+- the names (and, for Python, versions) of packages installed
+  system-wide by hand, from their folder names: `*.dist-info` and
+  `*.egg-info` in `/usr/local/lib/python3*/dist-packages` and
+  `site-packages` and `/usr/local/lib64/python3*/site-packages`, and
+  `node_modules` in `/usr/lib` and `/usr/local/lib` (scoped `@org/name`
+  packages too).
+
+Each of the three parts (packages, repositories and keys, global
+packages) fails alone: a `not_examined` record for its own section, the
+others still collected.
+
+## `mail`
+
+**Why:** check 8.9 (outgoing mail): mail sent by web-server accounts,
+relays and open-relay settings, volume and queue growth, new recipient
+domains.
+
+**Reads:**
+- Postfix's and Exim's configuration as masked text:
+  `/etc/postfix/main.cf` and `master.cf`, `/etc/exim4/update-exim4.conf.conf`,
+  `exim4.conf.template`, `exim4.conf` and `conf.d`, `/etc/exim/exim.conf`.
+  Never Postfix's lookup tables (`sasl_passwd` and the rest) or Exim's
+  `passwd.client`: they hold passwords and addresses;
+- the queue sizes, counted from the spool directories, never by running
+  `mailq` and never opening a message: Postfix's `maildrop`, `incoming`,
+  `active`, `deferred`, `hold` and `corrupt` under its `queue_directory`
+  (from `main.cf`, if it names one plainly, else `/var/spool/postfix`),
+  and Exim's messages (`-H` files) in `/var/spool/exim4/input` or
+  `/var/spool/exim/input`, at most 200,000 counted each;
+- the mail logs within the window: syslog's (`/var/log/mail.log`,
+  `/var/log/maillog`) and Postfix's own (`/var/log/postfix.log`), Exim's
+  main logs (`/var/log/exim4/mainlog`, `/var/log/exim/main.log`), with
+  their rotated copies, last written within the window; and the journal's
+  mail facility (`SYSLOG_FACILITY=2`), with the same fields as
+  `auth_journal`.
+
+**Addresses (policy §7):** only Postfix's lines (`postfix/…`) and Exim's
+are sent, from the syslog files and the journal alike: the mail logs'
+other writers (Dovecot, spam filters) log user names and subjects in their
+own ways, so their lines are left out (counted as `mail_other_line`).
+Before a line is sent, and before secret masking (so that no secret rule
+can take an address's `@` and leave its local part), every address in it
+is changed: the local part is replaced by `h:` and the first 12 hex digits
+of its HMAC-SHA256, keyed with the organization's mail key and computed
+over the local part lowercased; the domain is kept, lowercased
+(`alice@example.org` becomes `h:3f9a1c2e5b7d@example.org`). The local part
+is everything before the `@` back to a space, `<`, `,`, `;`, `:` or `"`
+(VERP and SRS addresses, `list-bounces+alice=example.com@…`, are hashed
+whole), except a known field name (`sasl_username=`, `from=`…); a quoted
+local part is hashed with its quotes. Names without a domain are
+fingerprinted too: Postfix's `from=<www-data>`, `to=<…>`, `orig_to=<…>`,
+`user=<…>`, `sasl_username=`, Exim's authenticated id (`A=plain:…`) and
+local deliveries, and local's `unknown user: "…"`. What a remote server
+answered (after `said:`, or Exim's `SMTP error from remote mail server`)
+is masked after its status codes (`[MASKED:remote_reply]`). The header or
+body line Postfix's `header_checks` and `body_checks` log is replaced by
+`[MASKED:mail_content]`, keeping only the envelope after the last
+`from <client>;` (`from=<…> to=<…> proto=… helo=<…>`), and Exim's subject
+(`T="…"` on arrival lines, with `log_selector = +subject`) by
+`[MASKED:mail_subject]`. Mail configuration text gets the same address
+treatment (`always_bcc`, notice recipients); without a key its local
+parts become `[MASKED:mail_address]`. Masking reads each line once, left
+to right, so a long line costs no more than its length.
+
+The key (`keys/mail-key.txt` in the tool's directory, made by `checker
+init`, or on first use for a directory set up before) travels in the
+settings, so it is in the collector's memory on the server for the run; the
+manifest shows only an identifier of it. The program, settings included,
+reaches the collector on sudo's input, and sudo writes its input to disk
+where input logging is on; the collector can't tell before sudo has logged
+it. So `sudoers` reports `sudo_input_logging`: `on` (an un-negated
+`log_input` or `log_stdin`, a `LOG_INPUT:` tag, or a `sudo.conf` plugin
+other than sudoers' own), `off` (every sudoers file read whole, none of
+those, and rules only from files in `nsswitch.conf`), or `unknown` (also when `/etc/sudoers` is missing, `sudo.conf` or
+`nsswitch.conf` can't be read whole through their links, or a `sudo.conf`
+plugin line has arguments, which can point sudo at other rules). Sudo's
+lexer is followed: `!!log_input` sets it, blanks may precede a tag's
+colon, and `#1000` starts a rule, not a comment. The
+controller reads it as the stream arrives and keeps, per host, an HMAC tag
+of it, its host's address and a fresh random nonce, keyed with the mail key
+(`keys/mail-gate.json`: without the key it shows neither the state nor
+whether it changed), and sends the key only to a host whose latest
+collection, at the same address, said `off`. Deciding closes the host's
+gate until the run's own answer is recorded (after its bundle), so a run
+whose answer is lost leaves it closed; a damaged gate file counts as
+closed for every host. A host's first collection, a host whose sudo
+logs its input, and a host whose last collection couldn't tell (sudo's
+own listing failing, where rules come from a directory) get no key: no mail log is sent
+(`mail_logs_withheld`, with the controller's reason), and the coverage
+says so. A run that leaves out `sudoers` keeps the host's last answer.
+
+An intruder with root on the server during a collection could read the key
+from the collector's memory, and then test guesses of addresses against
+that organization's fingerprints. Keeping one key per organization limits
+that; if a server is known to have been compromised, replacing the key
+(and so starting the fingerprints afresh) is a planned follow-up.
+
+## `web_logs`
+
+**Why:** check 8.12 (web applications): web shells and what they start,
+exploit attempts that got an answer, error bursts.
+
+**Reads:**
+- nginx's, Apache's and PHP-FPM's configuration as masked text:
+  `/etc/nginx/nginx.conf`, `conf.d`, `sites-enabled`;
+  `/etc/apache2/apache2.conf`, `envvars`, `sites-enabled`, `conf-enabled`;
+  `/etc/httpd/conf/httpd.conf`, `conf.d`; `/etc/php-fpm.conf`,
+  `/etc/php-fpm.d`, `/etc/php/*/fpm/php-fpm.conf` and `pool.d`;
+- the log files that configuration names (`access_log`, `error_log`,
+  `CustomLog`, `TransferLog`, `ErrorLog`, PHP-FPM's `error_log`, `slowlog`
+  and `access.log`; `${APACHE_LOG_DIR}` and RHEL's relative `logs/`
+  understood; pipes and syslog targets skipped), with their rotated copies,
+  and the files in `/var/log/nginx`, `/var/log/apache2`, `/var/log/httpd`
+  and `/var/log/php-fpm`, and `/var/log/php*-fpm.log`, told apart by name
+  (`access`, or `error`/`slow`). Error logs are always sent; access logs
+  only where the organization chose them in `checker init
+  --web-access-logs` (policy §7); a file named both ways, or neither, in
+  the web log folders counts as an access log. Links in `sites-enabled`
+  and `conf-enabled` are followed, as the server follows them. Only files
+  last written within the
+  window; `web_logs_summary` counts what was found and sent;
+- program starts from the audit log (`/var/log/audit/audit.log` and
+  `.1`–`.4`, read oldest first, at most 64 MiB): `SYSCALL` records for
+  `execve`/`execveat` with their `EXECVE` and `CWD` records, joined by
+  serial, for the chosen accounts (`--exec-records`: `web` — `www-data`,
+  `apache`, `nginx`, `http`, `wwwrun`, `lighttpd` and the configuration's
+  `web_users` — by default; `privileged` adds root, service and
+  administrator accounts as `home_text` reads them; `all`), within the
+  window, newest 20,000 kept (at most the newest 64 MiB of the logs; a
+  command split over several `EXECVE` records joined; records matched by
+  time and serial). Each `exec_record` carries the user (`uid`,
+  `euid`, `auid`), `pid`, `ppid`, `comm`, `exe`, `cwd` and the arguments
+  joined and masked like any command line, control characters included,
+  then cut to 4,096 characters (hex and split arguments decoded); `comm`,
+  `exe` and `cwd` masked too. With no audit log, `exec_records_unavailable`
+  says so; `docs/auditd-web.rules` sets auditd up to record them.
+
+A `web_accounts` record names the accounts that count as the web
+server's (the usual ones and `web_users`), for the checks.
+
+**Masking (policy §7):** before secret masking, every query string in a
+line (the request's, and a referrer's; escaped characters and fragments
+included) keeps its names and has each value replaced by `[MASKED:value]`,
+or, where the value (percent-decoded twice) matches an attack, by a marker
+naming it: `traversal` (`../`), `php_wrapper` (`php://`, `phar://`,
+`data://`…), `php_code` (`<?php`), `jndi` (`${jndi:`…), `shellshock`
+(`() { :;};`), `shell` (`;sh`, `|curl`, `$(`…), `nul` (`%00`), `sql`
+(`union select`, `sleep(`). A referrer keeps its scheme and host; the rest
+becomes `[MASKED:referrer]` (or an attack marker). In an access log, a
+combined-format line (with or without Apache's virtual host first) has its
+user agent cut to 256 characters (`[cut]`; characters, never splitting
+one), and anything a custom format adds after it is masked field by field;
+a line in no known format (custom, JSON) is masked the same way throughout:
+every quoted URL cut to its scheme and host, every `name=value`'s value
+masked (cookies, form fields), every quoted field over 256 characters cut.
+Error logs get the query, referrer (quoted or not) and quoted-URL masking.
+Visitors' addresses are kept. Logs are read newest first; program starts
+are read before the logs, so long logs can't crowd them out, and the
+summary is written however the module ends. Each pattern reads a line
+once, left to right.
+
+## `containers`
+
+**Why:** check 8.13 (containers): containers that hold the host, new
+containers and images.
+
+**Reads** (decision 4: the runtimes' state files only, never their sockets;
+Podman's is usually socket-activated, so connecting would start
+`podman.service`):
+- Docker: its data roots (`data-root`, or the old `graph`, from
+  `/etc/docker/daemon.json`; else `/var/lib/docker` and the snap's
+  `/var/snap/docker/common/var-lib-docker`) and their userns-remap
+  subdirectories (`<uid>.<gid>`): each container's `config.v2.json` and
+  `hostconfig.json` (at most 4 MiB each, 2,000 containers);
+- Podman (root): its storage root and driver (`graphroot` and `driver`
+  from `storage.conf`'s `[storage]` table; else `/var/lib/containers/storage`):
+  `<driver>-containers/containers.json` (any driver: overlay, vfs, btrfs,
+  zfs), and each container's OCI `userdata/config.json`. Buildah's working
+  containers are skipped; a container created but never started (no
+  runtime spec yet) is counted, not read.
+
+**Sends** a `container` record per container with only: runtime, id, name,
+image, created; Docker's running flag; privileged (Docker's flag; Podman's
+`io.podman.annotations.privileged`, or every capability), capabilities
+(Docker's added ones; Podman's bounding set, which a set-user-ID program
+regains even when the container runs as a user), canonical (`SYS_ADMIN`);
+whether it shares the host's PID, network and IPC namespaces (booleans:
+never network names); devices; security options; and mounts: type, host
+source (bind mounts only: a volume or tmpfs has none; Podman's own mounts
+from its storage are left out), destination, read-write. Names, images and
+paths are masked like any text a user chose. Never the environment (it
+holds secrets), labels, process IDs, or any file's text. A file that can't
+be read or parsed, including a missing `hostconfig.json` (then nothing is
+said of its privileges, rather than "none"), is a `containers_unreadable`
+record; `containers_summary` counts what was inventoried and created but
+not started, and names what is present but not read: Kubernetes
+(`kubelet`), k3s, MicroK8s, containerd namespaces other than Docker's own
+`moby`, LXD, LXC, and rootless Podman or Docker in home directories.
 
 ## Protected files
 
@@ -785,7 +1111,9 @@ follow links too (see `ssh`); logs never do.
 Where a file can't practically be read directly, a module runs a command
 from the collector's fixed allow-list (DESIGN.md §5.4). The settings can't
 add to the list or change a command's arguments. Today the list is
-`journalctl`; the manifest carries the list as `commands_allowed`.
+`journalctl`, `nft`, `iptables-legacy-save`, `ip6tables-legacy-save` and
+`sudo` (only `sudo -n -ll -U <account>`, see `sudoers`); the manifest
+carries the list as `commands_allowed`.
 
 A command runs only from its absolute path (`/usr/bin/…` or `/bin/…`, never
 a search of `PATH`), and only if that file is owned by root and writable by
@@ -801,6 +1129,11 @@ output, masked; if that output was longer, or the command was stopped
 part-way through a line, that unfinished line is left out
 (`stderr_truncated`). A command that fails on its own (non-zero exit
 status) ends its module with status `error`.
+
+`sudo`'s listing is the one exception to sending: the collector reads it
+for input logging and sends only its verdict. It runs the same way (from
+its absolute path, no input, the fixed environment), stopped after 20
+seconds.
 
 ## Directory walks
 

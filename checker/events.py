@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-PARSER_VERSION = 2
+PARSER_VERSION = 7  # 3: clock_changed; 4: unit.starting/finished; 5: mail; 6: web; 7: useradd shell
 MAX_EVENT_LINE = 2048  # characters of the source line kept on each event
 
 _MONTHS = {m: i for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)}
@@ -120,7 +120,11 @@ _RULES: list[tuple[str | None, re.Pattern[str], str]] = [
     ("su", re.compile(r"^\(to (?P<target>\S+)\) (?P<user>\S+) on (?P<tty>\S+)"), "su.switch"),
     (
         "useradd",
-        re.compile(r"^new user: name=(?P<user>[^,]+), UID=(?P<uid>\d+)"),
+        re.compile(
+            r"^new user: name=(?P<user>[^,]+), UID=(?P<uid>\d+)"
+            r"(?:, GID=\d+)?(?:, home=[^,]*)?(?:, shell=(?P<shell>[^,]*))?"
+            r"(?:, from=(?P<origin>\S+))?"
+        ),
         "account.created",
     ),
     ("userdel", re.compile(r"^delete user '(?P<user>[^']+)'"), "account.deleted"),
@@ -216,6 +220,11 @@ _RULES: list[tuple[str | None, re.Pattern[str], str]] = [
     ),
     ("systemd", re.compile(r"^Started (?P<what>.+?)\.?$"), "unit.started"),
     ("systemd", re.compile(r"^Stopped (?P<what>.+?)\.?$"), "unit.stopped"),
+    ("systemd", re.compile(r"^Time has been changed$"), "system.clock_changed"),
+    # Oneshot services (the automatic updaters) log Starting… and Finished…,
+    # never Started.
+    ("systemd", re.compile(r"^Starting (?P<what>.+?)(?:\.\.\.|…)$"), "unit.starting"),
+    ("systemd", re.compile(r"^Finished (?P<what>.+?)\.?$"), "unit.finished"),
     (
         "systemd",
         re.compile(r"^Reached target (?P<target>(?:System )?(?:Shutdown|Reboot|Power-Off)\S*)"),
@@ -258,6 +267,92 @@ def classify(program: str | None, message: str) -> tuple[str, dict[str, Any]] | 
             kind = "session." + fields.pop("action")
         return kind, fields
     return None
+
+
+# --- Mail (DESIGN.md §8.9) ---------------------------------------------------------------
+
+# Postfix's daemons log as postfix/<daemon> (postfix-<instance>/<daemon>
+# for a second instance). Every address arrives fingerprinted (h:…@domain).
+_POSTFIX = re.compile(r"^postfix[\w.-]*/(?P<daemon>[\w-]+)$")
+_POSTFIX_PICKUP = re.compile(r"^(?P<queue_id>\w+): uid=(?P<uid>\d+) from=<(?P<sender>[^>]*)>")
+_POSTFIX_DELIVERY = re.compile(
+    r"^(?P<queue_id>\w+): to=<(?P<recipient>[^>]*)>,(?: orig_to=<[^>]*>,)? "
+    r"relay=(?P<relay>[^,\s]+),.*? status=(?P<status>sent|deferred|bounced|expired)\b"
+)
+# Postfix's agents that deliver into mailboxes on the host itself, and the
+# relays that say so (Dovecot's LMTP socket, private/…).
+_LOCAL_AGENTS = {"local", "virtual", "lmtp"}
+_LOCAL_RELAYS = ("local", "virtual", "private/", "dovecot")
+_DELIVERY_STATUS = {
+    "sent": "mail.sent",
+    "deferred": "mail.deferred",
+    "bounced": "mail.bounced",
+    "expired": "mail.bounced",
+}
+_EXIM = re.compile(
+    r"^(?P<date>\d{4}-\d\d-\d\d) (?P<clock>\d\d:\d\d:\d\d)(?:\.\d+)?(?: (?P<zone>[+-]\d{4}))?"
+    r"(?: \[(?P<pid>\d+)\])? (?P<queue_id>\S+) (?P<flag><=|=>|->|\*\*|==) (?P<address>\S+)"
+    r"(?P<rest>.*)$"
+)
+_EXIM_FLAGS = {"=>": "mail.sent", "->": "mail.sent", "==": "mail.deferred", "**": "mail.bounced"}
+_EXIM_HOST = re.compile(r" H=(\S+(?: \[[^\]]+\])?)")
+_EXIM_FIELD = re.compile(r" (U|P|R|T)=(\S+)")
+
+
+def _domain(address: str) -> str:
+    return address.rpartition("@")[2].lower() if "@" in address else ""
+
+
+def classify_mail(program: str | None, message: str) -> tuple[str, dict[str, Any]] | None:
+    """(event type, fields) for a Postfix log message about outgoing mail:
+    a local submission (pickup, with the submitting UID), and each
+    delivery attempt sent, deferred or bounced."""
+    daemon = _POSTFIX.match(program or "")
+    if daemon is None:
+        return None
+    if daemon["daemon"] == "pickup":
+        found = _POSTFIX_PICKUP.search(message)
+        if found:
+            fields = found.groupdict()
+            fields["uid"] = int(fields["uid"])
+            return "mail.submitted", fields
+        return None
+    found = _POSTFIX_DELIVERY.search(message)
+    if found is None:
+        return None
+    fields = found.groupdict()
+    status = fields.pop("status")
+    fields["domain"] = _domain(fields["recipient"])
+    if daemon["daemon"] in _LOCAL_AGENTS or fields["relay"].startswith(_LOCAL_RELAYS):
+        fields["local"] = True  # delivered into a mailbox here: not outgoing
+    return _DELIVERY_STATUS[status], fields
+
+
+def classify_exim(line: str) -> tuple[str, dict[str, Any], dict[str, str]] | None:
+    """(event type, fields, the line's date parts) for an Exim main log line
+    about outgoing mail: a local submission (P=local, with the submitting
+    user) and each delivery sent, deferred or bounced."""
+    found = _EXIM.match(line)
+    if found is None:
+        return None
+    rest = found["rest"]
+    named = dict(_EXIM_FIELD.findall(rest))
+    when = {k: found[k] for k in ("date", "clock", "zone") if found[k]}
+    if found["flag"] == "<=":
+        if not named.get("P", "").startswith("local") or "U" not in named:
+            return None  # mail received from elsewhere, not submitted here
+        fields = {"queue_id": found["queue_id"], "user": named["U"], "sender": found["address"]}
+        return "mail.submitted", fields, when
+    host = _EXIM_HOST.search(rest)
+    fields = {
+        "queue_id": found["queue_id"],
+        "recipient": found["address"],
+        "relay": host.group(1) if host else named.get("T", "local"),
+        "domain": _domain(found["address"]),
+    }
+    if host is None and found["flag"] in ("=>", "->"):
+        fields["local"] = True  # no remote host: a local delivery
+    return _EXIM_FLAGS[found["flag"]], fields, when
 
 
 # --- Times ---------------------------------------------------------------------------
@@ -340,6 +435,9 @@ class EventBuilder:
         # Per open auth_log source: the classified lines with traditional
         # syslog dates, waiting for the source's end to learn their years.
         self._syslog: dict[int, list[tuple[tuple[int, int, str], tuple]]] = {}
+        # Whether the collector asked sudo for the account's rules (2.7b).
+        self.sudo_lookup = False
+        self.web = WebLogs()
 
     # Consumer interface
     def manifest(self, manifest: Manifest) -> None:
@@ -356,26 +454,39 @@ class EventBuilder:
             self.zone, self.zone_assumed = host_zone(record.data.get("localtime_link"))
         elif record.module == "login_records" and record.name == "login_record":
             self._login_record(record.data)
+        elif (record.module, record.name) == ("sudoers", "sudo_input_logging"):
+            self.sudo_lookup = bool(record.data.get("lookup_command"))
+        elif (record.module, record.name) == ("web_logs", "exec_record"):
+            self._exec_record(record.data)
 
     def source_start(self, start: SourceStart) -> None:
-        if start.module == "auth_log":
+        if _log_kind(start) is not None:
             self._syslog[start.source_id] = []
 
     def line(self, start: SourceStart, line: bytes) -> None:
         text = line.decode("utf-8", "replace")
-        if start.module == "auth_log":
+        if start.module == "web_logs" and start.kind == "file":
+            if start.name.startswith("/var/log/"):
+                self.web.line(self, start.name, text.rstrip("\n"))
+            return
+        kind = _log_kind(start)
+        if kind == "exim":
+            self._exim_line(start, text)
+        elif kind is not None:
             self._log_line(start, text)
         elif start.module in ("auth_journal", "system_journal"):
             self._journal_line(start, text)
+        elif start.module == "mail" and start.kind == "command":
+            self._journal_line(start, text, "mail_journal", classify_mail)
         elif start.module == "boots":
             self._boot_line(start, text)
 
     def source_end(self, start: SourceStart, end: SourceEnd) -> None:
-        if start.module == "auth_log":
+        if start.source_id in self._syslog:
             self._flush_syslog(start)
 
     def source_cut(self, start: SourceStart) -> None:
-        if start.module == "auth_log":
+        if start.source_id in self._syslog:
             self._flush_syslog(start, cut=True)
 
     def error(self, error: Error) -> None:
@@ -401,19 +512,21 @@ class EventBuilder:
         )
 
     def _log_line(self, start: SourceStart, text: str) -> None:
-        source = f"auth_log:{start.name}"
+        source, rules = _log_source(start)
         match = _RFC3339.match(text)
         if match:
             try:
                 moment = datetime.fromisoformat(match["ts"].replace("Z", "+00:00"))
             except ValueError:
                 moment = None
-            self._message(moment, source, match["prog"], match["msg"], match["pid"], text)
+            self._message(
+                moment, source, match["prog"], match["msg"], match["pid"], text, rules=rules
+            )
             return
         match = _SYSLOG.match(text)
         if match and match["mon"] in _MONTHS:
             # Classified now, so only lines that are events wait for their year.
-            found = classify(match["prog"], match["msg"])
+            found = rules(match["prog"], match["msg"])
             if found is None:
                 return
             key = (_MONTHS[match["mon"]], int(match["day"]), match["time"])
@@ -436,7 +549,7 @@ class EventBuilder:
         if newest is None:
             newest = datetime.now(UTC)
         years = resolve_syslog_years([key for key, _ in pending], newest, self.zone)
-        source = f"auth_log:{start.name}"
+        source, _ = _log_source(start)
         for (moment, uncertain), (_, (program, pid, found, text)) in zip(
             years, pending, strict=True
         ):
@@ -447,8 +560,25 @@ class EventBuilder:
                 extra["source_cut"] = True
             self._emit(moment, source, program, found, pid, text, extra)
 
-    def _message(self, moment, source, program, message, pid, text, extra=None):
-        found = classify(program, message)
+    def _exim_line(self, start: SourceStart, text: str) -> None:
+        found = classify_exim(text.rstrip("\n"))
+        if found is None:
+            return
+        kind, fields, when = found
+        try:
+            moment = datetime.fromisoformat(f"{when['date']}T{when['clock']}")
+            if "zone" in when:
+                moment = datetime.fromisoformat(
+                    f"{when['date']}T{when['clock']}{when['zone'][:3]}:{when['zone'][3:]}"
+                )
+            else:  # Exim logs local time unless told otherwise
+                moment = moment.replace(tzinfo=self.zone)
+        except ValueError:
+            moment = None
+        self._add(moment, f"mail_log:{start.name}", kind, fields, "exim", text)
+
+    def _message(self, moment, source, program, message, pid, text, extra=None, rules=None):
+        found = (rules or classify)(program, message)
         if found is not None:
             self._emit(moment, source, program, found, pid, text, extra)
 
@@ -460,7 +590,7 @@ class EventBuilder:
             fields.update(extra)
         self._add(moment, source, kind, fields, program, text)
 
-    def _journal_line(self, start: SourceStart, text: str) -> None:
+    def _journal_line(self, start: SourceStart, text: str, source=None, rules=None) -> None:
         try:
             entry = json.loads(text)
         except ValueError:
@@ -500,7 +630,27 @@ class EventBuilder:
                 extra[name] = entry[key]
         pid = entry.get("SYSLOG_PID") or entry.get("_PID")
         pid = pid if isinstance(pid, str) and pid.isdigit() else None
-        self._message(moment, start.module, program, message, pid, message, extra)
+        self._message(moment, source or start.module, program, message, pid, message, extra, rules)
+
+    def _exec_record(self, data: dict[str, Any]) -> None:
+        try:
+            moment = datetime.fromisoformat(data["time"]) if data.get("time") else None
+        except ValueError:
+            moment = None
+        fields = {
+            k: data[k]
+            for k in ("pid", "ppid", "uid", "euid", "auid", "session", "comm", "exe", "cwd", "argv")
+            if data.get(k) not in (None, "")
+        }
+        fields["success"] = data.get("success") == "yes"
+        self._add(
+            moment,
+            "web_logs:audit",
+            "process.exec",
+            fields,
+            data.get("comm"),
+            data.get("argv") or "",
+        )
 
     _BOOT = re.compile(
         r"^\s*(?P<index>-?\d+)\s+(?P<boot_id>[0-9a-f]{32})\s+(?:\w{3}\s+)?"
@@ -548,6 +698,208 @@ class EventBuilder:
         self._add(moment, f"login_records:{path}", kind, fields)
 
 
+# --- Web server logs (DESIGN.md §8.12) ------------------------------------------------------
+
+_WEB_COMBINED = re.compile(
+    r'^(?P<client>\S+) \S+ (?P<user>\S+) \[(?P<time>[^\]]+)\] "(?P<request>(?:[^"\\]|\\.)*)" '
+    r'(?P<status>\d{3}) (?P<size>\d+|-)(?: "(?P<referrer>(?:[^"\\]|\\.)*)" '
+    r'"(?P<agent>(?:[^"\\]|\\.)*)")?'
+)
+_WEB_NGINX_ERROR = re.compile(
+    r"^(?P<time>\d{4}/\d\d/\d\d \d\d:\d\d:\d\d) \[(?P<level>\w+)\] [^:]*: (?P<message>.*)$"
+)
+_WEB_APACHE_ERROR = re.compile(
+    r"^\[(?P<time>\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d(?:\.\d+)? \d{4})\] "
+    r"\[(?:[\w-]+:)?(?P<level>\w+)\](?: \[pid [^\]]*\])?(?: \[client (?P<client>[^\]]+)\])? "
+    r"(?P<message>.*)$"
+)
+_WEB_PHP_FPM = re.compile(
+    r"^\[(?P<time>\d\d-\w{3}-\d{4} \d\d:\d\d:\d\d(?:\.\d+)?)\] (?P<level>\w+): (?P<message>.*)$"
+)
+_WEB_ERROR_CLIENT = re.compile(r"client: ([^,\s]+)")
+_WEB_ERROR_REQUEST = re.compile(r'request: "([^"]*)"')
+# Paths a check looks at even when answered 2xx: scripts, and files a site
+# should never serve (secrets, repositories, backups).
+WEB_SCRIPT_PATH = re.compile(
+    r"\.(?:php\d?|phtml|phar|cgi|pl|py|jsp|jspx|aspx?|sh)(?:$|[/?;])", re.I
+)
+WEB_SENSITIVE_PATH = re.compile(
+    r"/\.(?:env|git|svn|hg|htpasswd|aws|ssh|docker)(?:$|[/?.])"
+    r"|\.(?:bak|old|orig|swp|sql|tar|tgz|gz|zip|7z)$|~$",
+    re.I,
+)
+# The attacks the collector names in masked values, matched here on what it
+# leaves visible: the path, and the user agent (Log4Shell, Shellshock).
+WEB_PATH_ATTACKS = (
+    ("traversal", re.compile(r"\.\.[/\\]|[/\\]\.\.(?:[/\\]|$)|%2e%2e(?:%2f|%5c|/)", re.I)),
+    ("php_code", re.compile(r"<\?(?:php|=)", re.I)),
+    ("jndi", re.compile(r"\$\{\s*(?:jndi|lower|upper|env|sys)\s*:", re.I)),
+    ("shellshock", re.compile(r"\(\s*\)\s*\{\s*:?\s*;?\s*\}\s*;")),
+    ("nul", re.compile(r"%00|\x00")),
+)
+_WEB_MARKER = re.compile(r"\[MASKED:exploit:(\w+)\]")
+WEB_NETWORKS = 2000  # source networks counted per bundle
+
+
+def _client_address(text: str) -> str:
+    """A client as logged, without a port ("1.2.3.4:5678",
+    "[2001:db8::1]:5678", or Apache's "2001:db8::1:5678")."""
+    text = text.strip()
+    if text.startswith("[") and "]" in text:
+        return text[1 : text.index("]")]
+    try:
+        ipaddress.ip_address(text.split("%")[0])
+        return text
+    except ValueError:
+        pass
+    host, _, port = text.rpartition(":")
+    return host if port.isdigit() and host else text
+
+
+def _network(address: str) -> str:
+    try:
+        ip = ipaddress.ip_address(_client_address(address).split("%")[0])
+    except ValueError:
+        return "unknown"
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    prefix = 24 if ip.version == 4 else 48
+    return str(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))
+
+
+class WebLogs:
+    """Web server log lines as events: every error-log line; access-log
+    lines answered 5xx, carrying an attack marker, or for a script. The
+    rest are counted per source network and status class
+    (`requests`), and lines in no known format per file (`unparsed`)."""
+
+    def __init__(self) -> None:
+        self.requests: dict[str, dict[str, int]] = {}
+        self.lines: dict[str, int] = {}
+        self.unparsed: dict[str, int] = {}
+
+    def line(self, builder: EventBuilder, name: str, text: str) -> None:
+        self.lines[name] = self.lines.get(name, 0) + 1
+        source = f"web_logs:{name}"
+        found = _WEB_COMBINED.match(text)
+        if found:
+            self._request(builder, source, found, text)
+            return
+        for pattern, form in (
+            (_WEB_NGINX_ERROR, "%Y/%m/%d %H:%M:%S"),
+            (_WEB_APACHE_ERROR, "%a %b %d %H:%M:%S.%f %Y"),
+            (_WEB_PHP_FPM, "%d-%b-%Y %H:%M:%S"),
+        ):
+            found = pattern.match(text)
+            if found:
+                self._error(builder, source, found, form, text)
+                return
+        self.unparsed[name] = self.unparsed.get(name, 0) + 1
+
+    def _request(self, builder: EventBuilder, source: str, found, text: str) -> None:
+        method, _, rest = found["request"].partition(" ")
+        target = rest.rsplit(" ", 1)[0] if " " in rest else rest
+        status = int(found["status"])
+        # Markers count only where the collector puts them: the request and
+        # the referrer (a user agent could carry a fake one).
+        attacks = set(_WEB_MARKER.findall(found["request"] + " " + (found["referrer"] or "")))
+        path = target.split("?", 1)[0]
+        agent = found["agent"] or ""
+        agent_attacks = set()
+        for name, pattern in WEB_PATH_ATTACKS:
+            if pattern.search(path):
+                attacks.add(name)
+            elif name != "traversal" and pattern.search(agent):
+                agent_attacks.add(name)
+        network = _network(found["client"])
+        keep = (
+            status >= 500
+            or attacks
+            or agent_attacks
+            or WEB_SCRIPT_PATH.search(target)
+            or (status < 300 and WEB_SENSITIVE_PATH.search(path))
+        )
+        if not keep:
+            if network in self.requests or len(self.requests) < WEB_NETWORKS:
+                counts = self.requests.setdefault(network, {})
+                kind = f"{status // 100}xx"
+                counts[kind] = counts.get(kind, 0) + 1
+            return
+        try:
+            moment = datetime.strptime(found["time"], "%d/%b/%Y:%H:%M:%S %z")
+        except ValueError:
+            moment = None
+        fields: dict[str, Any] = {
+            "client": found["client"],
+            "network": network,
+            "method": method,
+            "path": target,
+            "status": status,
+        }
+        if found["size"].isdigit():
+            fields["size"] = int(found["size"])
+        if found["referrer"] not in (None, "-", ""):
+            fields["referrer"] = found["referrer"]
+        if found["agent"]:
+            fields["agent"] = found["agent"]
+        if attacks:
+            fields["attacks"] = sorted(attacks)
+        if agent_attacks - attacks:
+            # In the user agent only: the request itself didn't carry it.
+            fields["agent_attacks"] = sorted(agent_attacks - attacks)
+        builder._add(moment, source, "web.request", fields, None, text)
+
+    def _error(self, builder: EventBuilder, source: str, found, form: str, text: str) -> None:
+        stamp = found["time"]
+        if "%f" in form and "." not in stamp:
+            form = form.replace(".%f", "")
+        elif "%f" not in form and "." in stamp:
+            stamp = stamp.split(".", 1)[0]
+        try:
+            moment = datetime.strptime(" ".join(stamp.split()), form).replace(tzinfo=builder.zone)
+        except ValueError:
+            moment = None
+        message = found["message"]
+        fields: dict[str, Any] = {"level": found["level"].lower(), "message": message[:500]}
+        client = found.groupdict().get("client") or None
+        if client is None:
+            match = _WEB_ERROR_CLIENT.search(message)
+            client = match.group(1) if match else None
+        if client:
+            fields["client"] = _client_address(client)
+            fields["network"] = _network(fields["client"])
+        request = _WEB_ERROR_REQUEST.search(message)
+        if request:
+            fields["request"] = request.group(1)
+        builder._add(moment, source, "web.error", fields, None, text)
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "requests_by_network": self.requests,
+            "networks_cut": len(self.requests) >= WEB_NETWORKS,
+            "lines": self.lines,
+            "unparsed": self.unparsed,
+        }
+
+
+def _log_kind(start: SourceStart) -> str | None:
+    """Which kind of log file a source is: "syslog" (the authentication
+    logs, and syslog's or Postfix's mail logs), "exim" (Exim's main log),
+    or None (not a log file read for events)."""
+    if start.module == "auth_log":
+        return "syslog"
+    if start.module == "mail" and start.kind == "file" and start.name.startswith("/var/log/"):
+        return "exim" if start.name.startswith("/var/log/exim") else "syslog"
+    return None
+
+
+def _log_source(start: SourceStart):
+    """An event's source name for a log file, and the rules for its lines."""
+    if start.module == "mail":
+        return f"mail_log:{start.name}", classify_mail
+    return f"auth_log:{start.name}", classify
+
+
 # --- One record logged to several places -------------------------------------------------
 
 # Fields only one kind of source carries, or that describe how an event was
@@ -570,7 +922,8 @@ def merge_duplicates(events: list[Event]) -> list[Event]:
     lines in both journal reads. Events alike to the second, in type,
     process and fields are one record: the source that has the most of them
     is kept (the journal, on a tie, for its trusted fields) and the others
-    are named in `also_in`. Counting per source keeps real repeats."""
+    are named in `also_in`. Mail lines reach both syslog's mail log and the
+    journal the same way. Counting per source keeps real repeats."""
     groups: dict[tuple, dict[str, list[Event]]] = {}
     alone: list[Event] = []
     for event in events:
@@ -583,7 +936,12 @@ def merge_duplicates(events: list[Event]) -> list[Event]:
     kept = alone
     for by_source in groups.values():
         best = max(
-            by_source, key=lambda src: (len(by_source[src]), not src.startswith("auth_log:"), src)
+            by_source,
+            key=lambda src: (
+                len(by_source[src]),
+                not src.startswith(("auth_log:", "mail_log:")),
+                src,
+            ),
         )
         others = sorted(src for src in by_source if src != best)
         for event in by_source[best]:
@@ -632,7 +990,9 @@ def _public(address: str | None) -> bool:
         return False
 
 
-def mark_own_session(events: list[Event], session: dict[str, Any] | None) -> int:
+def mark_own_session(
+    events: list[Event], session: dict[str, Any] | None, sudo_lookup: bool = False
+) -> int:
     """Mark the events the tool's own connection caused, each tied to that
     connection rather than to its account or time alone:
 
@@ -644,7 +1004,8 @@ def mark_own_session(events: list[Event], session: dict[str, Any] | None) -> int
       itself gave that PAM session — never a number read from a message —
       and its session scope's start and stop;
     - its sudo of exactly the collector's command (in that audit session,
-      when the journal says), and that sudo process's PAM session;
+      when the journal says), and that sudo process's PAM session; and the
+      collector's own listing of the account's sudo rules;
     - a systemd user manager for the user starting within seconds of it.
 
     Returns how many were marked."""
@@ -759,6 +1120,30 @@ def mark_own_session(events: list[Event], session: dict[str, Any] | None) -> int
             and f.get("pid") in sudo_pids
         ):
             mark(event)
+
+    # 4b. The collector's own `sudo -ll -U <account>` (plan 2.7b), only when
+    # the bundle says it ran one: root's `list` (sudo logs no more than
+    # that), after the collector's own sudo, from that audit session when
+    # the journal says; one at most, so another listing nearby stays.
+    if sudo_lookup and sudo_pids:
+        started_sudo = min(
+            (moment(e) for e in candidates if e.type == "sudo.command" and e.own_session),
+            default=None,
+        )
+        for event in candidates:
+            f = event.fields
+            if event.type != "sudo.command" or event.own_session or f.get("user") != "root":
+                continue
+            if (f.get("command") or "").split() != ["list"]:
+                continue
+            if f.get("runas", "root") != "root" or f.get("tty", "unknown") != "unknown":
+                continue
+            if "audit_session" in f and f["audit_session"] not in audit_sessions:
+                continue
+            if started_sudo is None or moment(event) < started_sudo:
+                continue
+            mark(event)
+            break
 
     # 5. The user manager systemd starts for a first login.
     for event in candidates:

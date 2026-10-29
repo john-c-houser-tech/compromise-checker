@@ -10,24 +10,29 @@ an append-only chain of custody. Bundles are never modified once written.
 import asyncio
 import getpass
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import socket
 import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import pyrage
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pyrage import x25519
 
 from checker.files import atomic_write, locked
 from checker.protocol import (
+    ACCOUNT_NAME,
+    MAX_WEB_USERS,
     Error,
+    ExecRecords,
     HomeText,
     IncompleteStream,
     Manifest,
@@ -52,9 +57,20 @@ class Config(BaseModel):
 
     recipients: list[str]  # age public keys bundles are encrypted to
     identity_file: str | None = None  # where the matching private key is, if here
-    retention_days: int = 90
+    retention_days: int = Field(default=90, ge=1)
+    # The prior probability of compromise scoring starts from (DESIGN.md
+    # §11.2), and per host group; a host's own, in the inventory, wins.
+    prior: float = Field(default=0.02, gt=0, lt=1)
+    group_priors: dict[str, Annotated[float, Field(gt=0, lt=1)]] = {}
     # Opt-in chosen in `checker init` (policy §7); see protocol HomeText.
     home_text: HomeText = "off"
+    # Web access logs (opt-in), whose program starts are collected, and
+    # the organization's own web-server accounts (policy §7).
+    web_access_logs: bool = False
+    exec_records: ExecRecords = "web"
+    web_users: list[Annotated[str, Field(pattern=ACCOUNT_NAME)]] = Field(
+        default=[], max_length=MAX_WEB_USERS
+    )
 
 
 def config_file(home: Path) -> Path:
@@ -73,7 +89,11 @@ def load_config(home: Path) -> Config:
 
 
 def initialise(
-    home: Path, recipient: str | None = None, home_text: HomeText = "off"
+    home: Path,
+    recipient: str | None = None,
+    home_text: HomeText = "off",
+    web_access_logs: bool = False,
+    exec_records: ExecRecords = "web",
 ) -> tuple[Config, Path | None]:
     """Create the tool's directory, evidence key and database. With
     `recipient`, bundles are encrypted to that key and its private half stays
@@ -84,11 +104,15 @@ def initialise(
     with locked(config_file(home)):
         if config_file(home).exists():
             raise EvidenceError(f"already set up ({config_file(home)}); nothing changed")
-        return _initialise(home, recipient, home_text)
+        return _initialise(home, recipient, home_text, web_access_logs, exec_records)
 
 
 def _initialise(
-    home: Path, recipient: str | None, home_text: HomeText
+    home: Path,
+    recipient: str | None,
+    home_text: HomeText,
+    web_access_logs: bool = False,
+    exec_records: ExecRecords = "web",
 ) -> tuple[Config, Path | None]:
     identity_path = None
     if recipient:
@@ -114,10 +138,107 @@ def _initialise(
         recipients=recipients,
         identity_file=str(identity_path) if identity_path else None,
         home_text=home_text,
+        web_access_logs=web_access_logs,
+        exec_records=exec_records,
     )
     Store(database_file(home)).close()
+    mail_key(home)
     atomic_write(config_file(home), yaml.safe_dump(config.model_dump(), sort_keys=False))
     return config, identity_path
+
+
+# --- The mail key (policy §7) -------------------------------------------------------------
+
+MAIL_FINGERPRINT_HEX = 12  # as the collector's
+
+
+def mail_key_file(home: Path) -> Path:
+    return home / "keys" / "mail-key.txt"
+
+
+def mail_key(home: Path) -> str:
+    """The organization's mail key (64 hex digits), made on first use: the
+    collector replaces every address's local part in mail logs with a
+    fingerprint keyed by it, on the server, before anything is sent."""
+    path = mail_key_file(home)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with locked(path):
+        if not path.exists():
+            atomic_write(
+                path,
+                f"# Compromise Checker mail key. Created {datetime.now(UTC):%Y-%m-%d}.\n"
+                "# Mail log addresses are fingerprinted with it on each server; with it,\n"
+                "# `checker mail-hash` finds a known address. Keep it as private as the\n"
+                "# evidence key.\n"
+                f"{secrets.token_hex(32)}\n",
+            )
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if len(line) == 64 and all(c in "0123456789abcdef" for c in line):
+                return line
+    raise EvidenceError(f"no mail key in {path}")
+
+
+def mail_gate_file(home: Path) -> Path:
+    return home / "keys" / "mail-gate.json"
+
+
+def _gate_tag(key: str, nonce: str, host: str, address: str, state: str) -> str:
+    message = f"compromise-checker mail gate\0{nonce}\0{host}\0{address}\0{state}".encode()
+    return hmac.new(bytes.fromhex(key), message, hashlib.sha256).hexdigest()
+
+
+def _gates(path: Path) -> dict[str, Any]:
+    """The gate file's entries; anything unreadable or malformed counts as
+    none (no key is sent)."""
+    try:
+        gates = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return gates if isinstance(gates, dict) else {}
+
+
+def record_mail_gate(home: Path, key: str, host: str, address: str, state: str | None) -> None:
+    """Remember what a collection showed about a host's sudo input logging
+    ("on", "off", or anything else: unknown), as a tag only the mail key can
+    check, made with a fresh random nonce each time: without the key, the
+    file says neither the state nor whether it changed (policy §8). The
+    host's address is part of it, so a host moved to another address starts
+    again from a first collection."""
+    path = mail_gate_file(home)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with locked(path):
+        gates = _gates(path)
+        nonce = secrets.token_hex(16)
+        state = state if state in ("on", "off") else "unknown"
+        gates[host] = {"nonce": nonce, "tag": _gate_tag(key, nonce, host, address, state)}
+        atomic_write(path, json.dumps(gates, sort_keys=True, indent=1) + "\n")
+
+
+def mail_gate_open(home: Path, key: str, host: str, address: str) -> bool:
+    """Whether the host's latest collection, at this address, showed sudo
+    doesn't log its input."""
+    entry = _gates(mail_gate_file(home)).get(host)
+    if not isinstance(entry, dict):
+        return False
+    nonce, tag = entry.get("nonce"), entry.get("tag")
+    if not isinstance(nonce, str) or not isinstance(tag, str):
+        return False
+    return hmac.compare_digest(tag, _gate_tag(key, nonce, host, address, "off"))
+
+
+def mail_fingerprint(key: str, address: str) -> str:
+    """How a known address appears in collected mail logs: the collector's
+    keyed fingerprint of its local part, and its domain, lowercased."""
+    local, at, domain = address.strip().rpartition("@")
+    if not at:
+        local, domain = domain, ""
+    if not local:
+        raise ValueError(f"not an address: {address!r}")
+    digest = hmac.new(bytes.fromhex(key), local.encode("utf-8").lower(), hashlib.sha256).hexdigest()
+    # Lowercased as the collector does, bytewise: ASCII letters only.
+    domain = domain.encode("utf-8").lower().decode("utf-8")
+    return f"h:{digest[:MAIL_FINGERPRINT_HEX]}" + (f"@{domain}" if at else "")
 
 
 def load_identity(path: Path) -> x25519.Identity:
@@ -145,6 +266,9 @@ class Summary:
     errors: list[dict[str, Any]] = field(default_factory=list)
     records: dict[str, int] = field(default_factory=dict)
     dropped: dict[str, int] = field(default_factory=dict)
+    # Whether the host's sudo logs its input (plan 2.7): read here, as the
+    # stream arrives, so the mail key's gate works without the evidence key.
+    sudo_input_logging: str | None = None
     _open: dict[int, dict[str, Any]] = field(default_factory=dict, repr=False)
 
     # Bounded: a target controls how many sources, errors and record names it
@@ -190,6 +314,9 @@ class Summary:
             else:
                 self._drop("errors")
         elif record.type == "record":
+            if (record.module, record.name) == ("sudoers", "sudo_input_logging"):
+                state = record.data.get("state")
+                self.sudo_input_logging = state if state in ("on", "off") else "unknown"
             key = f"{record.module}.{record.name}"[:200]
             if key in self.records or len(self.records) < self.MAX_RECORD_NAMES:
                 self.records[key] = self.records.get(key, 0) + 1
@@ -470,24 +597,45 @@ CREATE TABLE IF NOT EXISTS assessments (
     ciphertext_sha256 TEXT NOT NULL,
     summary BLOB
 );
--- Append-only, enforced by the database itself (DESIGN.md §3.4).
-CREATE TRIGGER IF NOT EXISTS bundles_no_update BEFORE UPDATE ON bundles
-    BEGIN SELECT RAISE(ABORT, 'bundles are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS bundles_no_delete BEFORE DELETE ON bundles
-    BEGIN SELECT RAISE(ABORT, 'bundles are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS custody_no_update BEFORE UPDATE ON custody
-    BEGIN SELECT RAISE(ABORT, 'custody is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS custody_no_delete BEFORE DELETE ON custody
-    BEGIN SELECT RAISE(ABORT, 'custody is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS baselines_no_update BEFORE UPDATE ON baselines
-    BEGIN SELECT RAISE(ABORT, 'baselines are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS baselines_no_delete BEFORE DELETE ON baselines
-    BEGIN SELECT RAISE(ABORT, 'baselines are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS assessments_no_update BEFORE UPDATE ON assessments
-    BEGIN SELECT RAISE(ABORT, 'assessments are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS assessments_no_delete BEFORE DELETE ON assessments
-    BEGIN SELECT RAISE(ABORT, 'assessments are append-only'); END;
+-- Each purge (policy §8): what it removed, by identifiers and counts only,
+-- so a deleted bundle still shows it existed and why it is gone. Never
+-- purged itself.
+CREATE TABLE IF NOT EXISTS purges (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    controller TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    bundles TEXT NOT NULL,
+    counts TEXT NOT NULL,
+    baselines TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS purges_no_update BEFORE UPDATE ON purges
+    BEGIN SELECT RAISE(ABORT, 'purges are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS purges_no_delete BEFORE DELETE ON purges
+    BEGIN SELECT RAISE(ABORT, 'purges are append-only'); END;
 """
+
+
+# Append-only, enforced by the database itself (DESIGN.md §3.4). Only
+# `purge` lifts it, inside its own transaction (Store.purge).
+APPEND_ONLY = (
+    ("bundles", "bundles are"),
+    ("custody", "custody is"),
+    ("baselines", "baselines are"),
+    ("assessments", "assessments are"),
+)
+
+
+def _append_only_triggers() -> list[str]:
+    statements = []
+    for table, label in APPEND_ONLY:
+        for action in ("update", "delete"):
+            statements.append(
+                f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action} BEFORE {action.upper()}"
+                f" ON {table} BEGIN SELECT RAISE(ABORT, '{label} append-only'); END"
+            )
+    return statements
 
 
 BUNDLE_COLUMNS = (
@@ -529,7 +677,7 @@ class Store:
         self._db.execute("PRAGMA foreign_keys = ON")
         # So INSERT OR REPLACE's implicit delete fires the append-only triggers.
         self._db.execute("PRAGMA recursive_triggers = ON")
-        self._db.executescript(_SCHEMA)
+        self._db.executescript(_SCHEMA + "".join(f"{sql};\n" for sql in _append_only_triggers()))
 
     def close(self) -> None:
         self._db.close()
@@ -588,7 +736,7 @@ class Store:
         ).fetchone()
 
     def record_baseline(self, host: str, bundle_id: str, how: str, reason: bytes | None) -> None:
-        """A new baseline for `host` (how: first or accepted), with its
+        """A new baseline for `host` (how: first, accepted or after purge), with its
         custody entry, in one transaction."""
         operator, controller = who_and_where()
         with self._db:
@@ -633,6 +781,102 @@ class Store:
         return self._db.execute(
             "SELECT * FROM custody WHERE bundle_id = ? ORDER BY seq", (bundle_id,)
         ).fetchall()
+
+    def purge_state(self, host: str) -> list[Any]:
+        """What a purge plan for `host` depends on: its current baseline
+        (the latest row's sequence number) and how many bundles it has."""
+        latest = self._db.execute(
+            "SELECT MAX(seq) FROM baselines WHERE host = ?", (host,)
+        ).fetchone()[0]
+        count = self._db.execute("SELECT COUNT(*) FROM bundles WHERE host = ?", (host,)).fetchone()
+        return [latest, count[0]]
+
+    def purge(
+        self,
+        bundle_ids: list[str],
+        scope: dict[str, Any],
+        baselines: dict[str, str],
+        expect: dict[str, list[Any]] | None = None,
+    ) -> dict[str, int]:
+        """Delete these bundles and everything recorded about them, and add
+        a `purges` row saying what went (policy §8): the one sanctioned way
+        to delete. The append-only triggers are dropped and recreated inside
+        the same transaction, so a failure leaves them, and every row, in
+        place. `baselines` maps each host whose baseline goes to what
+        happens to it ("moved" or "emptied"). `expect` is each affected
+        host's purge_state when the purge was planned: if another command
+        changed it since (a new baseline, a new bundle), nothing is deleted.
+        Returns the rows deleted per table."""
+        if not bundle_ids:
+            raise ValueError("nothing to purge")
+        operator, controller = who_and_where()
+        marks = ", ".join("?" for _ in bundle_ids)
+        hosts = {}
+        counts: dict[str, int] = {}
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            for row in self._db.execute(
+                f"SELECT id, host FROM bundles WHERE id IN ({marks})",  # noqa: S608 - placeholders
+                bundle_ids,
+            ):
+                hosts[row["id"]] = row["host"]
+            if set(hosts) != set(bundle_ids):
+                missing = sorted(set(bundle_ids) - set(hosts))
+                raise EvidenceError(f"no bundle {missing[0]!r} to purge")
+            for host, state in (expect or {}).items():
+                if self.purge_state(host) != list(state):
+                    raise EvidenceError(
+                        f"{host}'s stored evidence changed while the purge was being planned"
+                        " (a new bundle or baseline); nothing was deleted: run it again"
+                    )
+            for table, _ in APPEND_ONLY:
+                for action in ("update", "delete"):
+                    self._db.execute(f"DROP TRIGGER {table}_no_{action}")
+            for table, column in (
+                ("assessments", "bundle_id"),
+                ("derived", "bundle_id"),
+                ("baselines", "bundle_id"),
+                ("custody", "bundle_id"),
+                ("bundles", "id"),
+            ):
+                counts[table] = self._db.execute(
+                    f"DELETE FROM {table} WHERE {column} IN ({marks})",  # noqa: S608 - fixed names
+                    bundle_ids,
+                ).rowcount
+            for sql in _append_only_triggers():
+                self._db.execute(sql)
+            self._db.execute(
+                "INSERT INTO purges (at, operator, controller, scope, bundles, counts, baselines)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    datetime.now(UTC).isoformat(),
+                    operator,
+                    controller,
+                    json.dumps(scope),
+                    json.dumps(sorted([b, hosts[b]] for b in bundle_ids)),
+                    json.dumps(counts),
+                    json.dumps(baselines),
+                ),
+            )
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+        return counts
+
+    def purges(self) -> list[sqlite3.Row]:
+        return self._db.execute("SELECT * FROM purges ORDER BY seq").fetchall()
+
+    def baseline_purged(self, host: str, since: str | None = None) -> bool:
+        """The host's current baseline was purged (after `since`, the time
+        of its latest remaining baseline row) and its bundles weren't all:
+        its next baseline is chosen again, and says why. An older baseline
+        row that survived the purge doesn't come back into force."""
+        for row in reversed(self.purges()):
+            what = json.loads(row["baselines"]).get(host)
+            if what is not None:
+                return what == "moved" and (since is None or row["at"] > since)
+        return False
 
 
 def bundle_id(host: str, started: datetime, run_id: str) -> str:

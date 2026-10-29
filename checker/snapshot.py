@@ -11,13 +11,16 @@ reports what is merely missing from it as removed."""
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 4
+SNAPSHOT_VERSION = (
+    10  # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers
+)
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -55,6 +58,35 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "unusual_files": ("unusual files in writable and web directories", ("unusual_files",)),
     "web_files": ("executable or script files in web roots", ("unusual_files",)),
     "listeners": ("listening and raw sockets, with their programs", ("processes",)),
+    "peers": (
+        "outbound connections open at collection, by program and remote network and port",
+        ("processes",),
+    ),
+    "network_files": (
+        "resolver, hosts, TCP-wrapper and firewall configuration files",
+        ("network",),
+    ),
+    "interfaces": ("network interfaces: flags, state, bridges", ("network",)),
+    "firewall_rules": ("the firewall's loaded rules, line by line", ("network",)),
+    "log_config": ("journald, rsyslog, audit and SELinux configuration files", ("logging_state",)),
+    "packages": ("installed packages: version, architecture, install time", ("software",)),
+    "software_files": ("package repositories (text) and signing keys (hashes)", ("software",)),
+    "global_packages": ("Python and Node packages installed system-wide by hand", ("software",)),
+    "logging": (
+        "SELinux and AppArmor state, journald storage, logging services and security agents"
+        " running",
+        ("logging_state", "processes"),
+    ),
+    "mail_files": ("Postfix and Exim configuration files", ("mail",)),
+    "web_config": ("nginx, Apache and PHP-FPM configuration files", ("web_logs",)),
+    "containers": (
+        "Docker and Podman containers: image, privilege, capabilities, namespaces, devices, mounts",
+        ("containers",),
+    ),
+    "mail_config": (
+        "mail server settings: relay host, trusted networks, relay restrictions, services",
+        ("mail",),
+    ),
 }
 
 # Every module the sections come from: a bundle that planned them all is a
@@ -64,6 +96,10 @@ FULL = frozenset(m for _, modules in SECTIONS.values() for m in modules)
 # Sections holding masked text, hashes of it, or masked names: a new masking
 # version can change them without any change on the host.
 _MASKED = {
+    "software_files",
+    "log_config",
+    "firewall_rules",
+    "network_files",
     "sudo_rules",
     "pam_rules",
     "sshd_config",
@@ -79,6 +115,10 @@ _MASKED = {
     "web_files",
     "listeners",
     "shell_history",
+    "mail_files",
+    "mail_config",
+    "web_config",
+    "containers",
 }
 
 # Which section a module's text sources and file records go to.
@@ -91,6 +131,11 @@ _FILE_SECTIONS = {
     "startup": "startup",
     "hooks": "hooks",
     "crash_dumps": "crash_dumps",
+    "network": "network_files",
+    "logging_state": "log_config",
+    "software": "software_files",
+    "mail": "mail_files",  # configuration only: mail logs are read for events
+    "web_logs": "web_config",  # configuration only: web logs are read for events
 }
 _FILE_RECORDS = {
     "file",
@@ -101,8 +146,179 @@ _FILE_RECORDS = {
     "ssh_dir",
     "include_dir",
 }
+# What changes in the firewall's output without the rules changing:
+# counters, quotas used, timeouts running down, last-used times, and a big
+# set's elements (a blocklist): left out of the compared lines.
+_VOLATILE = (
+    (re.compile(r"\bcounter packets \d+ bytes \d+"), "counter"),
+    (re.compile(r"\bpackets \d+ bytes \d+"), ""),
+    (re.compile(r"\bused \d+ \w+"), ""),
+    (re.compile(r"\bexpires \S+"), ""),
+    (re.compile(r"\blast used \S+(?: ago)?"), ""),
+    (re.compile(r"\[\d+:\d+\]"), ""),
+    (re.compile(r"\[\d+ elements, sha256 [0-9a-f]+\]"), "[a large set: elements not compared]"),
+)
+# Chains other software rewrites all the time (Docker, Kubernetes, CNI
+# plugins, fail2ban): one line saying they're there, not their rules.
+# DOCKER-USER is where administrators put their own rules: compared.
+_MANAGED_CHAIN = re.compile(
+    r"^(?!DOCKER-USER$)(?:DOCKER|KUBE-|cali-|CILIUM|f2b-|FLANNEL|CNI-|LIBVIRT_|ts-)",
+    re.IGNORECASE,
+)
+_NFT_TABLE = re.compile(r"^table (\S+ \S+) \{$")
+_NFT_CHAIN = re.compile(r"^(chain|set|map|flowtable|counter|quota) (\S+) \{$")
+
+
+def firewall_lines(lines: list[str]) -> list[str]:
+    """The loaded rules as comparable lines, each with where it is (an nft
+    table and chain or set, an iptables table), so the same rule added to
+    another chain is a change; volatile parts, comments and blank lines left
+    out, spaces collapsed; a line repeated in one place numbered."""
+    out: list[str] = []
+    seen: dict[str, int] = {}
+    table = block = ""
+    for line in lines:
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        for pattern, replacement in _VOLATILE:
+            text = pattern.sub(replacement, text)
+        text = " ".join(text.split())
+        if match := _NFT_TABLE.match(text):
+            table, block = match.group(1), ""
+        elif match := _NFT_CHAIN.match(text):
+            block = f"{match.group(1)} {match.group(2)}"
+        elif text.startswith("*"):  # iptables-save: a table
+            table, block = text[1:], ""
+        elif text == "}":
+            if block:
+                block = ""
+            else:
+                table = ""
+            continue
+        chain = block.split(" ", 1)[1] if block.startswith("chain ") else ""
+        if text.startswith(("-A ", "-I ")):  # iptables-save: the chain is in the line
+            chain = text.split()[1]
+        if chain and _MANAGED_CHAIN.match(chain):
+            text = "(managed by other software: rules not compared)"
+        where = " / ".join(p for p in (table, block or (f"chain {chain}" if chain else "")) if p)
+        key = f"[{where}] {text}" if where else text
+        if text.startswith("(managed") and key in seen:
+            continue
+        seen[key] = seen.get(key, 0) + 1
+        out.append(key if seen[key] == 1 else f"{key} #{seen[key]}")
+    return out
+
+
+def remote_network(address: str) -> str | None:
+    """A remote address's network (/24 for IPv4, /48 for IPv6); None for
+    loopback, link-local and unspecified addresses."""
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return None
+    if parsed.version == 6 and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
+    if parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified:
+        return None
+    prefix = 24 if parsed.version == 4 else 48
+    return str(ipaddress.ip_network(f"{parsed}/{prefix}", strict=False))
+
+
+# Packages of which several versions are installed at once.
+VERSIONED_PACKAGES = {
+    "gpg-pubkey",
+    "kernel",
+    "kernel-core",
+    "kernel-modules",
+    "kernel-modules-core",
+    "kernel-modules-extra",
+    "kernel-devel",
+    "kernel-uek",
+    "installonlypkg",
+}
+# A start-up file that switches shell history off for everyone.
+HISTORY_OFF = re.compile(
+    r"^\s*(?:export\s+|declare\s+-x\s+|readonly\s+)?(?:unset\s+(?:-v\s+)?HISTFILE\b"
+    r"|HISTFILE=[\"']?/dev/null[\"']?(?:\s|;|$)|HISTSIZE=[\"']?0[\"']?(?:\s|;|$)"
+    r"|HISTFILESIZE=[\"']?0[\"']?(?:\s|;|$)|set\s+\+o\s+history\b)"
+)
+# Files a shell reads at start: only these can switch history off for users.
+SHELL_STARTUP = re.compile(
+    r"^/etc/(?:profile|profile\.d/.*|bash\.bashrc|bashrc|zsh/.*|zshrc|zprofile|environment)$"
+)
+LOGGING_SERVICES = {"auditd", "rsyslogd", "systemd-journald", "syslog-ng", "journald"}
+SECURITY_AGENTS = {
+    "fail2ban-server",
+    "wazuh-agentd",
+    "wazuh-modulesd",
+    "ossec-agentd",
+    "osqueryd",
+    "falcon-sensor",
+    "auditbeat",
+    "crowdsec",
+    "clamd",
+    "ds_agent",
+    "wdavdaemon",
+    "s1-agent",
+    "elastic-agent",
+}
+_INTERPRETER = re.compile(r"^(?:python[\d.]*|perl[\d.]*|ruby[\d.]*|node|bash|sh)$")
+
+
+def _runs(process: dict[str, Any]) -> tuple[str, str]:
+    """(name, path) of the file a process runs; for an interpreter, its
+    script."""
+    exe = str(process.get("exe") or "").removesuffix(" (deleted)")
+    name = exe.rsplit("/", 1)[-1]
+    if _INTERPRETER.match(name):
+        args = str(process.get("cmdline") or "").split()
+        script = next((a for a in args[1:] if not a.startswith("-")), "")
+        if script.startswith("/"):
+            return script.rsplit("/", 1)[-1], script
+    return name, exe
+
+
+_JOURNALD_DIRS = (
+    "/etc/systemd/journald.conf.d/",
+    "/run/systemd/journald.conf.d/",
+    "/usr/lib/systemd/journald.conf.d/",
+)
+
+
+def journald_storage(settings: list[tuple[str, list[str]]]) -> str | None:
+    """journald's effective Storage=, as systemd reads it: the main file
+    (/etc over /usr/lib), then the *.conf drop-ins of all three folders in
+    file-name order, a name in /etc masking it in /run and /usr/lib, and
+    /run masking /usr/lib; the last setting wins."""
+    by_path = dict(settings)
+    main = next(
+        (
+            by_path[p]
+            for p in ("/etc/systemd/journald.conf", "/usr/lib/systemd/journald.conf")
+            if p in by_path
+        ),
+        [],
+    )
+    dropins: dict[str, list[str]] = {}
+    for folder in reversed(_JOURNALD_DIRS):  # /usr/lib first, /etc last: it masks
+        for path, lines in settings:
+            name = path[len(folder) :]
+            if path.startswith(folder) and name.endswith(".conf") and "/" not in name:
+                dropins[name] = lines
+    storage = None
+    for lines in [main] + [dropins[n] for n in sorted(dropins)]:
+        for line in lines:
+            text = line.split("#", 1)[0].strip()
+            if text.startswith("Storage="):
+                storage = text.split("=", 1)[1].strip()
+    return storage
+
+
 # Records that mean some of a module's data is missing.
 _GAPS = {
+    "packages_pending",
+    "malformed_header",
     "unreadable_file",
     "listing_truncated",
     "phase_time_limit",
@@ -135,10 +351,30 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
         if name in ("config_dir", "source") or str(path or "").startswith("/etc/"):
             return {"pam_rules", "pam"}
         return {"pam"}
+    if module == "web_logs":
+        # Only its configuration is a section: logs and audit records are
+        # coverage, reported there.
+        return {"web_config"} if str(path or "").startswith("/etc/") else set()
+    if module == "mail" and str(path or "").startswith("/var/log/"):
+        return set()  # a mail log: the coverage reports it, the settings are whole
     if module == "unusual_files":
         return {"unusual_files", "web_files", "privileged_files"}
     if module == "system_files":
         return {"privileged_files", "unowned_executables"}
+    if module == "software":
+        if data.get("section") in ("packages", "software_files", "global_packages"):
+            return {data["section"]}
+        if name in ("packages_pending", "malformed_header") or path == "/var/lib/dpkg/status":
+            return {"packages"}
+        return {"software_files"}
+    if module == "network":
+        if name in ("command_unavailable", "command_failed", "set_unterminated", "source") or (
+            name == "not_examined" and path == "nft list ruleset"
+        ):
+            return {"firewall_rules"}
+        if path == "/sys/class/net":
+            return {"interfaces"}
+        return {"network_files"}
     return None
 
 
@@ -290,6 +526,9 @@ class SnapshotBuilder:
         self._gaps: dict[str, list[tuple[str, set[str] | None]]] = {}
         self._names: dict[str, dict[str, int]] = {}
         self._unread: list[tuple[str, dict[str, Any]]] = []
+        self._settings: list[tuple[str, list[str]]] = []  # logging configuration text
+        self._mail_text: list[tuple[str, list[str]]] = []  # mail configuration text
+        self._mac: dict[str, Any] | None = None
 
     def section(self, name: str) -> Section:
         return self.sections.setdefault(name, Section())
@@ -331,7 +570,9 @@ class SnapshotBuilder:
         handler = getattr(self, f"_on_{module}", None)
         if handler is not None:
             handler(name, data)
-        if module in _FILE_SECTIONS and name in _FILE_RECORDS and data.get("path"):
+        if module in ("mail", "web_logs") and not str(data.get("path") or "").startswith("/etc/"):
+            pass  # logs aren't configuration
+        elif module in _FILE_SECTIONS and name in _FILE_RECORDS and data.get("path"):
             item = self.section(_FILE_SECTIONS[module]).items.setdefault(data["path"], {})
             item.update(_meta(data))
             item.setdefault("record", name)
@@ -342,8 +583,18 @@ class SnapshotBuilder:
                     item.pop(volatile, None)
 
     def source_start(self, start: SourceStart) -> None:
+        if start.kind == "command" and start.module == "network":
+            # The firewall's loaded rules (nft, iptables-legacy-save).
+            self._text[start.source_id] = ((start, hashlib.sha256()), [])
+            return
         wanted = start.kind == "file" and start.module in _FILE_SECTIONS
-        lines: list[str] | None = [] if start.module in ("sudoers", "ssh", "pam") else None
+        if start.module in ("mail", "web_logs") and not start.name.startswith("/etc/"):
+            wanted = False  # a log, read for events
+        lines: list[str] | None = (
+            []
+            if start.module in ("sudoers", "ssh", "pam", "startup", "logging_state", "mail")
+            else None
+        )
         if wanted:
             self._text[start.source_id] = ((start, hashlib.sha256()), lines)
 
@@ -375,6 +626,14 @@ class SnapshotBuilder:
         if held is None:
             return
         (_, digest), lines = held
+        if start.kind == "command":
+            program = (start.name.split(" ", 1)[0]).rsplit("/", 1)[-1]
+            section = self.section("firewall_rules")
+            for text in firewall_lines(lines or []):
+                section.items[f"{program}: {text}"] = {"program": program}
+            if cut:
+                self._module_gap("network", f"{program} output cut short", "source", {})
+            return
         section = _FILE_SECTIONS[start.module]
         item = self.section(section).items.setdefault(start.name, {})
         for key, value in (start.meta or {}).items():
@@ -384,6 +643,16 @@ class SnapshotBuilder:
             item["content_cut"] = True
             self._module_gap(start.module, f"{start.name} cut short", "source", {})
         if lines is None:
+            return
+        if start.module == "startup":
+            if SHELL_STARTUP.match(start.name) and any(HISTORY_OFF.search(x) for x in lines):
+                item["disables_history"] = True
+            return
+        if start.module == "logging_state":
+            self._settings.append((start.name, lines))
+            return
+        if start.module == "mail":
+            self._mail_text.append((start.name, lines))
             return
         if start.module == "sudoers":
             rules = self.section("sudo_rules")
@@ -511,6 +780,185 @@ class SnapshotBuilder:
                 item.setdefault("place", "/")
             self.section(sections[name]).items[data["path"]] = item
 
+    def _on_software(self, name: str, data: dict[str, Any]) -> None:
+        if name == "package" and data.get("name"):
+            key = f"{data['name']} {data.get('arch') or ''}".strip()
+            if data["name"] in VERSIONED_PACKAGES:
+                # Several at once: rpm's imported keys (each a gpg-pubkey,
+                # no architecture), kernels installed side by side.
+                key = f"{key} {data.get('version')}"
+            self.section("packages").items[key] = {
+                k: data.get(k) for k in ("manager", "version", "installed")
+            }
+        elif name == "signing_key" and data.get("path"):
+            self.section("software_files").items[data["path"]] = dict(
+                _meta(data), record="signing_key"
+            )
+        elif name == "global_package" and data.get("name"):
+            self.section("global_packages").items[f"{data['kind']}: {data['name']}"] = {
+                "version": data.get("version"),
+                "where": data.get("where"),
+            }
+
+    def _on_logging_state(self, name: str, data: dict[str, Any]) -> None:
+        if name == "log_file":
+            self.live.setdefault("log_files", []).append(data)
+        elif name == "log_manifest" and data.get("truncated"):
+            # Not a gap of the compared sections: the listing is live data,
+            # and the checks know not to read a missing log as deleted.
+            self.live["log_manifest_truncated"] = True
+        elif name == "audit_records":
+            self.live["audit_records"] = data.get("lines") or []
+            if data.get("truncated"):
+                self._module_gap("logging_state", "audit records cut short", name, data)
+        elif name == "mac_state":
+            self._mac = data
+
+    def _logging(self) -> None:
+        """The compared state anti-forensics changes: SELinux's mode and
+        configured mode, journald's storage, AppArmor's profiles, and which
+        logging services and security agents are running (by the file they
+        run)."""
+        planned = self._planned()
+        if "logging_state" not in planned:
+            return
+        section = self.section("logging")
+        mac = self._mac or {}
+        configured = None
+        for path, lines in self._settings:
+            if path == "/etc/selinux/config":
+                for line in lines:
+                    text = line.split("#", 1)[0].strip()
+                    if text.startswith("SELINUX="):
+                        configured = text.split("=", 1)[1].strip()
+        storage = journald_storage(self._settings)
+        section.items["selinux"] = {"mode": mac.get("selinux"), "configured": configured}
+        section.items["journald"] = {"storage": storage or "auto (default)"}
+        apparmor = mac.get("apparmor")
+        if apparmor is not None:
+            profiles = apparmor.get("profiles") or {}
+            section.items["apparmor"] = {"loaded": True, "profiles": len(profiles)}
+            for name, mode in profiles.items():
+                section.items[f"apparmor: {name}"] = {"mode": mode}
+        results = self.trailer_data.modules if self.trailer_data else {}
+        listing = results.get("processes")
+        if "processes" not in planned or listing is None or listing.status != "ok":
+            # Without a full process listing, nothing can be said about what
+            # runs: no service or agent items (the checks see `unknown`).
+            section.items["services"] = {"known": False}
+            return
+        running: dict[str, set[str]] = {}
+        for process in self.live.get("processes", []):
+            if process.get("kernel_thread"):
+                continue
+            name, exe = _runs(process)
+            if name in LOGGING_SERVICES | SECURITY_AGENTS:
+                running.setdefault(name, set()).add(exe)
+        for name, exes in sorted(running.items()):
+            kind = "service" if name in LOGGING_SERVICES else "agent"
+            # The file it runs: a copy of sleep named auditd in /dev/shm
+            # changes it.
+            section.items[f"{kind}: {name}"] = {"running": True, "exe": ", ".join(sorted(exes))}
+
+    def _on_containers(self, name: str, data: dict[str, Any]) -> None:
+        if name == "container" and data.get("name"):
+            # By name: a redeploy replaces a container's ID, not what it is.
+            key = f"{data.get('runtime')}: {data['name']}"
+            mounts = data.get("mounts") or []
+            item = {
+                "image": data.get("image"),
+                # A bind mount by host path; a volume (no host path) by where it goes.
+                "mounts": sorted(
+                    f"{m.get('source')} -> {m.get('destination')} ({'rw' if m.get('rw') else 'ro'})"
+                    if m.get("source")
+                    else f"{m.get('type') or 'volume'} -> {m.get('destination')}"
+                    for m in mounts
+                    if isinstance(m, dict)
+                ),
+                # Host paths it mounts, kept apart so a ":" in a destination
+                # can't hide one.
+                "mount_sources": sorted(
+                    {m["source"] for m in mounts if isinstance(m, dict) and m.get("source")}
+                ),
+            }
+            if "privileged" in data:  # its host configuration was read
+                item.update(
+                    {
+                        "privileged": bool(data.get("privileged")),
+                        "capabilities": sorted(set(data.get("capabilities") or [])),
+                        "host_pid": bool(data.get("host_pid")),
+                        "host_network": bool(data.get("host_network")),
+                        "host_ipc": bool(data.get("host_ipc")),
+                        "devices": sorted(d for d in data.get("devices") or [] if d),
+                        "security_opt": sorted(data.get("security_opt") or []),
+                    }
+                )
+            self.section("containers").items[key] = item
+            # Its ID and running state: seen, not compared.
+            self.live.setdefault("containers", []).append(data)
+        elif name == "containers_summary":
+            self.live["containers_summary"] = data
+        elif name in ("containers_unreadable", "containers_cut"):
+            self._module_gap("containers", f"{name}: {data.get('path')}", name, data)
+
+    def _on_web_logs(self, name: str, data: dict[str, Any]) -> None:
+        if name in (
+            "web_logs_summary",
+            "exec_records_summary",
+            "exec_records_unavailable",
+            "web_accounts",
+        ):
+            self.live[name] = data
+            if name == "exec_records_summary" and data.get("truncated"):
+                self._module_gap("web_logs", "audit log read cut short", name, {})
+
+    def _on_mail(self, name: str, data: dict[str, Any]) -> None:
+        if name == "mail_queue":
+            self.live.setdefault("mail_queues", []).append(data)
+            if data.get("cut") or data.get("errors"):
+                self.live["mail_queue_incomplete"] = True
+        elif name in ("mail_servers", "mail_log_summary", "mail_logs_withheld"):
+            self.live[name] = data
+
+    def _mail(self) -> None:
+        """Postfix's and Exim's settings, one item each, by program and name."""
+        if "mail" not in self._planned():
+            return
+        section = self.section("mail_config")
+        for path, lines in self._mail_text:
+            if path.endswith("/main.cf"):
+                found = [(f"postfix: {n}", v) for n, v in postfix_settings(lines)]
+            elif path.endswith("/master.cf"):
+                found = [(f"postfix service: {n}", v) for n, v in postfix_services(lines)]
+            elif "/exim" in path:
+                found = [(f"exim: {n}", v) for n, v in exim_settings(path, lines)]
+            else:
+                continue
+            for key, value in found:
+                if key in section.items and section.items[key]["path"] != path:
+                    key = f"{key} ({path})"
+                section.items[key] = {"value": value, "path": path}
+
+    def _on_network(self, name: str, data: dict[str, Any]) -> None:
+        if name == "interface" and data.get("name"):
+            # A container's veth pair is renamed with every restart: seen
+            # (live), not compared.
+            if not str(data["name"]).startswith("veth"):
+                self.section("interfaces").items[data["name"]] = {
+                    k: data.get(k)
+                    for k in ("promiscuous", "state", "type", "bridge", "bridge_port", "master")
+                }
+            # Counters change all the time: seen, never compared.
+            self.live.setdefault("interfaces", []).append(data)
+        elif name == "routes":
+            self.live.setdefault("routes", []).append(data)
+        elif name == "firewall_loaded":
+            self.live["firewall_loaded"] = data
+        elif name in ("command_unavailable", "command_failed", "set_unterminated"):
+            self._module_gap(
+                "network", f"{name}: {data.get('command')} {data.get('reason') or ''}", name, data
+            )
+
     def _on_processes(self, name: str, data: dict[str, Any]) -> None:
         if name in ("process", "hidden_process") and isinstance(data.get("pid"), int):
             self._processes[data["pid"]] = data.get("comm") or "?"
@@ -558,6 +1006,48 @@ class SnapshotBuilder:
             programs = {self._processes.get(pid, "?") for pid in sock.get("pids") or []}
             item["programs"] = sorted(set(item["programs"]) | programs)
 
+    def _peers(self) -> None:
+        """Outgoing connections open at collection, by program and remote
+        network (/24, /48) and port: a new destination is new for that
+        program, not a new ephemeral address."""
+        if not self._sockets and "processes" not in self._planned():
+            return
+        section = self.section("peers")
+        # A connection accepted on one of the host's listening ports came in:
+        # its remote port is the client's, not a destination.
+        listening = {
+            (str(s.get("protocol")), (s.get("local") or [None, None])[1], s.get("netns"))
+            for s in self._sockets
+            if str(s.get("state") or "").lower() == "listen"
+        }
+        for sock in self._sockets:
+            local = sock.get("local") or [None, None]
+            port = local[1] if len(local) == 2 else None
+            if (str(sock.get("protocol")), port, sock.get("netns")) in listening:
+                continue
+            # Open connections only, held by a process: a closing socket
+            # (TIME_WAIT and the like) has no owner and comes and goes.
+            if str(sock.get("state") or "").lower() not in ("established", "syn_sent"):
+                continue
+            if not sock.get("pids"):
+                continue
+            protocol = str(sock.get("protocol") or "?")
+            remote = sock.get("remote") or []
+            if not protocol.startswith("tcp") or len(remote) != 2 or not remote[1]:
+                continue
+            if str(sock.get("state") or "").lower() == "listen":
+                continue
+            network = remote_network(str(remote[0]))
+            if network is None:
+                continue
+            programs = sorted({self._processes.get(pid, "?") for pid in sock.get("pids") or []})
+            for program in programs:
+                key = f"{program} {network} port {remote[1]}"
+                section.items.setdefault(key, {"program": program})
+                # How many: changes all the time (pools, keep-alives), not compared.
+                counts = self.live.setdefault("peer_connections", {})
+                counts[key] = counts.get(key, 0) + 1
+
     def _planned(self) -> set[str]:
         return set(self.manifest_data.modules_planned) if self.manifest_data else set()
 
@@ -578,6 +1068,9 @@ class SnapshotBuilder:
     def finish(self) -> Snapshot:
         self._settle_unread()
         self._listeners()
+        self._peers()
+        self._logging()
+        self._mail()
         planned = self._planned()
         results = self.trailer_data.modules if self.trailer_data else {}
         for section_name, (_, modules) in SECTIONS.items():
@@ -610,6 +1103,72 @@ class SnapshotBuilder:
             "full": FULL <= planned,
         }
         return Snapshot(meta, dict(sorted(self.sections.items())), self.live)
+
+
+# --- Mail server settings (DESIGN.md §8.9) ------------------------------------------------------
+
+
+def postfix_settings(lines: list[str]) -> list[tuple[str, str]]:
+    """main.cf's `name = value` settings, continuation lines (starting with
+    white space) joined; comment lines (starting with #) left out."""
+    found: list[tuple[str, str]] = []
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[:1].isspace() and found:
+            name, value = found[-1]
+            found[-1] = (name, f"{value} {line.strip()}".strip())
+            continue
+        name, sep, value = line.partition("=")
+        if sep and name.strip() and " " not in name.strip():
+            found.append((name.strip(), value.strip()))
+    return found
+
+
+def postfix_services(lines: list[str]) -> list[tuple[str, str]]:
+    """master.cf's services: ("service type", the rest of its definition)."""
+    found: list[tuple[str, list[str]]] = []
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[:1].isspace() and found:
+            found[-1][1].extend(line.split())
+            continue
+        words = line.split()
+        if len(words) >= 2:
+            found.append((f"{words[0]} {words[1]}", words[2:]))
+    return [(name, " ".join(rest)) for name, rest in found]
+
+
+_EXIM_DEBIAN = re.compile(r"^(dc_\w+)=(['\"]?)(.*)\2\s*$")
+_EXIM_LIST = re.compile(r"^\s*((?:host|domain|address|localpart)list)\s+(\w+)\s*=\s*(.*?)\s*$")
+_EXIM_OPTION = re.compile(
+    r"^\s*(route_list|route_data|local_interfaces|daemon_smtp_ports)"
+    r"\s*=\s*(.*?)\s*$"
+)
+
+
+def exim_settings(path: str, lines: list[str]) -> list[tuple[str, str]]:
+    """Debian's update-exim4.conf.conf (dc_ settings), and from Exim's own
+    configuration its named lists and the options naming relays, listening
+    addresses and ports."""
+    found = []
+    for line in lines:
+        if line.lstrip().startswith("#"):
+            continue
+        if path.endswith("update-exim4.conf.conf"):
+            match = _EXIM_DEBIAN.match(line.strip())
+            if match:
+                found.append((match[1], match[3]))
+            continue
+        match = _EXIM_LIST.match(line)
+        if match:
+            found.append((f"{match[1]} {match[2]}", match[3]))
+            continue
+        match = _EXIM_OPTION.match(line)
+        if match:
+            found.append((match[1], match[2]))
+    return found
 
 
 # --- Comparing two ---------------------------------------------------------------------------

@@ -10,12 +10,20 @@ first.
 ## What it holds
 
 - **A confidential banner** on every page, and the notes every reader needs:
-  - it shows findings and bands only (a scored probability comes in Phase 2);
+  - the probability of compromise is an estimate, shown with a band, and is
+    read beside the coverage ([scoring](scoring.md));
   - no findings is not proof of a clean server;
   - a high band is a reason to investigate, not proof of an intrusion.
-- **Summary:** each host's high, medium and low compromise indicators,
-  hygiene and exposure counts, and coverage gaps.
+- **Summary:** each host's probability of compromise and band, its
+  critical, high, medium and low compromise indicators, hygiene and
+  exposure counts, and coverage gaps.
 - **Each host:**
+  - its probability of compromise, band and prior (and where the prior
+    came from), the hygiene and exposure rating, and the contributors:
+    each finding's likelihood ratio and share of the score, largest first,
+    and whether a cap cut it. A stored assessment scored from another
+    prior than the host's current one is scored again from its stored
+    findings (the checks don't run again) and kept as a new assessment;
   - its compromise indicators, most serious first (informational ones
     folded away);
   - its exposure and hygiene findings, in a section of their own (DESIGN.md
@@ -34,7 +42,9 @@ first.
     SHA-256, the host facts, the modules, the masking version;
   - the analysis's time and checks version;
   - the full chain of custody;
-  - suppressed findings (none until whitelists exist).
+  - each host's suppressed findings, with the rule, layer, reason and
+    owner that suppressed them, the whitelist's hash, and any expired rules
+    ([whitelists](whitelists.md)).
 
 ## Host text is untrusted
 
@@ -86,5 +96,6 @@ Reports are confidential (policy §8): they describe weaknesses an attacker
 could use, and they repeat much of the evidence: file names, log lines,
 command lines (already masked). The report file itself is not encrypted, so
 keep the reports folder out of backups and synced folders, and delete
-reports you no longer need. Deleting them after the retention period is
-part of `purge`, still to come.
+reports you no longer need. `checker purge` deletes the reports in the
+reports folder that show a purged bundle; a report written elsewhere with
+`--output` is yours to delete ([retention](retention.md)).

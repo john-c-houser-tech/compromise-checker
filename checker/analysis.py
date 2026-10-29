@@ -60,7 +60,7 @@ def parse_bundle(row: Any, identity: x25519.Identity) -> Parsed:
     if walked.plaintext_sha256 != row["plaintext_sha256"]:
         raise EvidenceError(f"bundle {row['id']}'s content doesn't match its recorded hash")
     events = merge_duplicates(builder.events)
-    own = mark_own_session(events, session)
+    own = mark_own_session(events, session, builder.sudo_lookup)
     events.sort(key=lambda e: (e.corrected or "", e.source))
     counts: dict[str, int] = {}
     for event in events:
@@ -82,7 +82,12 @@ def parse_bundle(row: Any, identity: x25519.Identity) -> Parsed:
         "time_zone_assumed": builder.zone_assumed,
         "problem": walked.problem,
     }
-    return Parsed(events, summary, state.finish())
+    snapshot = state.finish()
+    # Ordinary web requests are counted, not kept as events: the counts are
+    # live data, never compared.
+    if builder.web.lines and snapshot is not None:
+        snapshot.live["web_requests"] = builder.web.summary()
+    return Parsed(events, summary, snapshot)
 
 
 def store_parsed(store: Store, row: Any, recipients: list[str], parsed: Parsed) -> Path:

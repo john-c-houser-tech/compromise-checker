@@ -107,14 +107,16 @@ def _difference(path: str, item: dict) -> tuple[str, str, str] | None:
 
     def consider(title, band, detail):
         nonlocal worst
-        order = {"high": 0, "medium": 1, "low": 2, "info": 3}
+        order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
         if worst is None or order[band] < order[worst[1]]:
             worst = (title, band, detail)
 
     if results & {"changed", "missing"}:
         what = "changed" if "changed" in results else "missing"
         if critical:
-            consider("A critical system program or library differs from its package", "high", what)
+            consider(
+                "A critical system program or library differs from its package", "critical", what
+            )
         elif program:
             consider("A system program or library differs from its package", "medium", what)
         else:
@@ -244,6 +246,11 @@ def package_changed(context: Context) -> list[Finding]:
     return findings
 
 
+# Character devices (major, minor) that give no access to anything: null,
+# zero, full, random and urandom.
+HARMLESS_DEVICES = ([1, 3], [1, 5], [1, 7], [1, 8], [1, 9])
+
+
 @check(
     "files.privileged", "Set-user-ID, set-group-ID and capability files; device nodes out of place"
 )
@@ -276,6 +283,10 @@ def privileged(context: Context) -> list[Finding]:
         capabilities = str(item.get("capabilities") or "")
         root_capability = any(c in capabilities for c in ROOT_CAPABILITIES)
         device = item.get("type") in ("b", "c")
+        if device and item.get("type") == "c" and item.get("device") in HARMLESS_DEVICES:
+            # null, zero, full, random, urandom: daemons' chroots (Postfix's
+            # /var/spool/postfix/dev) hold copies, and they grant nothing.
+            continue
         outside = bool(item.get("place"))  # found outside the system directories
         unowned = not outside and owners and not item.get("package")
         is_new = path in added and path not in removed

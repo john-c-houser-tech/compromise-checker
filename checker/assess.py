@@ -8,7 +8,7 @@ import gzip
 import hashlib
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,13 +18,33 @@ from pyrage import x25519
 from checker.analysis import load_events, parse_bundle, snapshot_of, store_parsed
 from checker.baseline import changes, usable_bundles
 from checker.checks import CHECKS_VERSION, Context, run_checks
+from checker.checks.containers import uninventoried
+from checker.correlate import find_chains
 from checker.events import PARSER_VERSION, Event
-from checker.evidence import EvidenceError, Store, open_text, seal_text
+from checker.evidence import Config, EvidenceError, Store, open_text, seal_text
+from checker.inventory import Inventory
+from checker.scoring import DEFAULT_PRIOR, SCORING_VERSION, score
 from checker.snapshot import FULL, SNAPSHOT_VERSION, Snapshot
+from checker.whitelist import Whitelist
 
 # Logs whose reach (how far back they go) the coverage reports.
 LOG_SOURCES = ("auth_log", "auth_journal", "system_journal", "login_records")
+# Event sources whose reach is reported too, though no module has their name.
+REACH_ONLY = ("mail_log", "mail_journal")
 LARGE_CLOCK_OFFSET = 120  # seconds
+# 2: scored (prior, each finding's ratio and contribution, the score).
+ASSESSMENT_FORMAT = 2
+
+
+def prior_for(host: str, config: Config, inventory: Inventory) -> tuple[float, str]:
+    """The prior a host's score starts from, and where it comes from: the
+    host's own in the inventory, its group's, or the configuration's."""
+    entry = next((h for h in inventory.hosts if h.name == host), None)
+    if entry is not None and entry.prior is not None:
+        return entry.prior, "host"
+    if entry is not None and entry.group in config.group_priors:
+        return config.group_priors[entry.group], f"group {entry.group}"
+    return config.prior, "configuration"
 
 
 def events_of(store: Store, row: Any, identity, recipients: list[str]) -> list[Event]:
@@ -64,7 +84,7 @@ def coverage(
         if not section.complete:
             gaps.append(f"{name} incomplete: " + "; ".join(section.gaps[:3]))
     reach = {}
-    for prefix in LOG_SOURCES:
+    for prefix in LOG_SOURCES + REACH_ONLY:
         times = sorted(
             e.corrected
             for e in events
@@ -83,6 +103,19 @@ def coverage(
         gaps.append("no system journal events: kernel messages and shutdowns can't be checked")
     if not any(e.type in ("system.boot_journal", "system.boot") for e in events):
         gaps.append("no boot list or boot records: reboots can't be classified")
+    gaps += web_gaps(snapshot)
+    others = (snapshot.live.get("containers_summary") or {}).get("not_inventoried") or []
+    if others:
+        gaps.append("containers not inventoried: " + ", ".join(others))
+    missing = uninventoried(snapshot)
+    if missing:
+        gaps.append(
+            f"{missing} running container{'s' if missing != 1 else ''} (by their processes'"
+            " cgroups) that no runtime state file described: a layout not recognised"
+        )
+    withheld = snapshot.live.get("mail_logs_withheld")
+    if withheld:
+        gaps.append(f"mail logs not collected ({withheld.get('reason')}): outgoing mail unchecked")
     offset = events_summary.get("clock_offset_seconds")
     if offset is not None and abs(offset) > LARGE_CLOCK_OFFSET:
         gaps.append(f"the host's clock is {offset:+.0f} s off the controller's")
@@ -96,15 +129,74 @@ def coverage(
     return {"gaps": gaps, "log_reach": reach}
 
 
+def web_gaps(snapshot: Snapshot) -> list[str]:
+    """What the web checks couldn't see: access logs not chosen at setup,
+    no audit log for program starts, logs in a format not recognised."""
+    gaps: list[str] = []
+    web = snapshot.live.get("web_logs_summary")
+    if web and not web.get("access_logs_opted_in") and web.get("access_found"):
+        gaps.append(
+            "web access logs not collected (not chosen at setup): web checks use error logs,"
+            " processes and audit records only"
+        )
+    if snapshot.live.get("exec_records_unavailable"):
+        gaps.append(
+            "no audit log: earlier program starts by web accounts can't be checked"
+            " (docs/auditd-web.rules sets auditd up for them)"
+        )
+    elif (snapshot.live.get("exec_records_summary") or {}).get("starts") == 0:
+        gaps.append(
+            "no program starts in the audit log: auditd isn't recording them, so earlier"
+            " ones by web accounts can't be checked (docs/auditd-web.rules)"
+        )
+    requests = snapshot.live.get("web_requests") or {}
+    for name, unparsed in sorted((requests.get("unparsed") or {}).items()):
+        if unparsed * 2 > (requests.get("lines") or {}).get(name, 0):
+            gaps.append(f"web log format not recognised: {name} ({unparsed} lines)")
+    return gaps
+
+
+def count(findings: list[dict[str, Any]]) -> dict[str, int]:
+    """Findings by category and band, suppressed ones left out."""
+    counts: dict[str, int] = {}
+    for finding in findings:
+        if finding.get("suppressed_by"):
+            continue
+        key = f"{finding['category']}/{finding['band']}"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def evaluate(
+    context: Context,
+    prior: tuple[float, str],
+    whitelist: Whitelist | None = None,
+    today: date | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
+    """The checks over a context, the whitelist over their findings, and the
+    score: the findings (as stored, suppressed ones marked), which checks
+    ran, the score, and what the whitelist did. What `analyze` stores, and
+    what the golden reports pin (tests/golden)."""
+    findings, ran = run_checks(context)
+    found = [f.as_dict() for f in findings]
+    applied = whitelist.apply(found, today, context.events) if whitelist is not None else None
+    chains = find_chains(found, context.events, context.previous_time)
+    scored = score(found, prior[0], chains) | {"prior_source": prior[1], "chains": chains}
+    return found, ran, scored, applied
+
+
 def analyze(
     store: Store,
     host: str,
     identity: x25519.Identity,
     recipients: list[str],
     bundle_id: str | None = None,
+    prior: tuple[float, str] = (DEFAULT_PRIOR, "default"),
+    whitelist: Whitelist | None = None,
 ) -> dict[str, Any]:
-    """Run every check on a host's bundle (by default its latest) and store
-    the assessment; returns it."""
+    """Run every check on a host's bundle (by default its latest), score
+    the findings from `prior` (value, source) and store the assessment;
+    returns it."""
     found = changes(store, host, identity, recipients, bundle_id)
     row = store.bundle(found.bundle_id)
     snapshot = snapshot_of(store, row, identity, recipients)
@@ -114,6 +206,7 @@ def analyze(
         store_parsed(store, row, recipients, parsed)
     since_baseline = since_previous = None
     previous_time = None
+    previous_snapshot = None
     no_baseline = "no baseline yet"
     notes = list(found.notes)
     for comparison in found.comparisons:
@@ -129,8 +222,16 @@ def analyze(
         else:
             since_previous = comparison.differences
             previous_time = store.bundle(comparison.bundle_id)["started_at"]
+            previous_snapshot = snapshot_of(
+                store, store.bundle(comparison.bundle_id), identity, recipients
+            )
             if comparison.bundle_id == found.baseline_id:
                 since_baseline = comparison.differences
+    baseline_time = baseline_snapshot = None
+    if since_baseline is not None and found.baseline_id:
+        baseline_row = store.bundle(found.baseline_id)
+        baseline_time = baseline_row["started_at"]
+        baseline_snapshot = snapshot_of(store, baseline_row, identity, recipients)
     if found.baseline_id == row["id"] and not found.first:
         no_baseline = "this bundle is the baseline"
     if found.first:
@@ -154,13 +255,14 @@ def analyze(
         earlier_events=earlier,
         previous_time=previous_time,
         no_baseline=no_baseline,
+        previous_snapshot=previous_snapshot,
+        baseline_time=baseline_time,
+        baseline_snapshot=baseline_snapshot,
     )
-    findings, ran = run_checks(context)
-    counts: dict[str, int] = {}
-    for finding in findings:
-        key = f"{finding.category}/{finding.band}"
-        counts[key] = counts.get(key, 0) + 1
+    found_dicts, ran, scored, applied = evaluate(context, prior, whitelist)
+    counts = count(found_dicts)
     assessment = {
+        "format": ASSESSMENT_FORMAT,
         "host": host,
         "bundle_id": row["id"],
         "analysed_at": datetime.now(UTC).isoformat(),
@@ -169,12 +271,16 @@ def analyze(
             "checks": CHECKS_VERSION,
             "parser": PARSER_VERSION,
             "snapshot": SNAPSHOT_VERSION,
+            "scoring": SCORING_VERSION,
         },
         "baseline_id": found.baseline_id,
         "baseline_set_now": found.baseline_set_now,
+        "previous_time": previous_time,
         "notes": notes,
         "counts": counts,
-        "findings": [f.as_dict() for f in findings],
+        "score": scored,
+        "whitelist": applied,
+        "findings": found_dicts,
         "checks": ran,
         "coverage": coverage(row, identity, parsed.events, parsed.summary, snapshot),
     }
@@ -210,7 +316,16 @@ def store_assessment(store: Store, row: Any, recipients: list[str], assessment: 
             "baseline_id": assessment["baseline_id"],
             "path": str(target),
             "ciphertext_sha256": digest,
-            "summary": seal_text(json.dumps(assessment["counts"]), recipients),
+            "summary": seal_text(
+                json.dumps(
+                    {
+                        "counts": assessment["counts"],
+                        "probability": (assessment.get("score") or {}).get("probability"),
+                        "band": (assessment.get("score") or {}).get("band"),
+                    }
+                ),
+                recipients,
+            ),
         }
     )
     return target

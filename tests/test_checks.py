@@ -81,10 +81,11 @@ def test_taint_flags():
     assert taint_flags("junk") == set()
 
 
-def test_taint_no_module_explains_is_high():
+def test_taint_no_module_explains_is_critical():
     hidden = snap(host={"kernel_taint": {"value": 4096}}, kernel_modules={"ext4": {"taint": ""}})
     [finding] = of(run([], hidden), "kernel.taint")
-    assert finding.band == "high" and "hiding" in finding.summary
+    assert finding.band == "critical" and "hiding" in finding.summary
+    assert finding.variant == "unexplained"
     # A tainting module loaded and since unloaded explains it, more mildly.
     unloaded = [ev("kernel.module_taint", source="system_journal", module="vboxdrv")]
     found = of(run(unloaded, hidden), "kernel.taint")
@@ -461,7 +462,9 @@ def test_cli_analyze(home, capsys):
     add_bundle(home, "d1", 0, host_records(), host="db01")
     assert cli.main(["analyze", "web01"]) == 0
     out = capsys.readouterr().out
-    assert "Compromise indicators:" in out and "HIGH   An account other than root has UID 0" in out
+    assert (
+        "Compromise indicators:" in out and "CRITICAL An account other than root has UID 0" in out
+    )
     assert "Coverage:" in out
     assert cli.main(["analyze", "--all"]) == 0
     out = capsys.readouterr().out
@@ -605,6 +608,8 @@ def test_coverage_names_missing_system_logs(home):
     gaps = analyze(store, "web01", identity, config.recipients)["coverage"]["gaps"]
     assert any("no system journal events" in g for g in gaps)
     assert any("reboots can't be classified" in g for g in gaps)
+    # Mail's event sources have no module of their own to be missing.
+    assert not any("mail_log" in g or "mail_journal" in g for g in gaps)
 
 
 def test_an_invalid_user_attempt_counts_once():

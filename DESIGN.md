@@ -107,11 +107,21 @@ first.
   disk) and, on first use by that account, its "lecture" marker.
 - auditd records of the commands run, where auditd is configured to record
   them.
+- Where `sudo` takes rules from a directory (SSSD, LDAP), the collector's
+  `sudo -ll -U` look-up of the scanner account's rules (PR 2.7b; root's
+  listing isn't logged): the directory service may refresh its cache as it
+  answers, and a `sudo` that can't reach it may mail the administrators
+  (for the collector's own `sudo` too).
 - The system's ordinary session setup for the account: a per-login runtime
   area in memory (`/run/user/…`, control groups) and, on Ubuntu, its
   login-message files, including one small marker file
   (`.cache/motd.legal-displayed`) in the scanner account's home on its first
-  login. Measured by the read-only proof (PR 0.7) on Ubuntu 24.04 and Rocky 9.
+  login; where Ubuntu's Landscape client is installed, the login message's
+  system summary refreshes its cache and log (`/var/lib/landscape`,
+  `/var/log/landscape`). Measured by the read-only proof (PR 0.7) on Ubuntu
+  24.04 and Rocky 9, the Landscape writes on Ubuntu 26.04 (PR 2.7). On
+  RHEL 9 and later and their rebuilds, a session lasting a few minutes has
+  `grub2-set-bootflag` record a successful boot in `/boot/grub2/grubenv`.
 
 **Never done:** removing, editing, or suppressing any of those traces.
 Changing logs on a system that may be compromised destroys evidence, and it
@@ -141,7 +151,8 @@ them by), never to the account or the time alone (docs/events.md).
 ### 3.4 What is collected, and how it is treated
 
 Evidence from a server contains personal and sensitive data: usernames, IP
-addresses, email addresses in mail logs, URLs that may carry tokens, and
+addresses, the domains of email addresses in mail logs (their local parts
+are fingerprinted on the server, policy §7), URLs that may carry tokens, and
 sometimes secrets typed into shell commands.
 
 - **Minimum necessary.** Each collector module states what it reads and why.
@@ -170,6 +181,8 @@ sometimes secrets typed into shell commands.
 - **Retention.** The default is 90 days, configurable. A `purge` command
   deletes bundles, snapshots and reports for a host or a date range. A host
   removed from the inventory has its data purged after the retention period.
+  Automatic expiry keeps a host's current baseline until a newer one is
+  accepted, because later analyses compare with it (docs/retention.md).
 - **Reports are confidential documents** and are marked as such. They contain
   enough detail to help an attacker, so they should be handled like the
   evidence.
@@ -319,8 +332,10 @@ and only these: `journalctl` (read options only), `rpm -Va` / `rpm -qa`
 (in practice rpm's database is read directly instead: run as root, rpm
 makes SQLite write `-shm`/`-wal` files),
 `dpkg-query`, `ss` only as a cross-check against `/proc/net`, `systemctl show` /
-`list-unit-files`, `sestatus` / `aa-status`, `iptables-save` / `nft list
-ruleset` (read), `docker`/`podman` `ps --all` and `inspect` (read). Each
+`list-unit-files`, `sestatus` / `aa-status`, `nft list ruleset` and
+`iptables-legacy-save` / `ip6tables-legacy-save` (read, and only when that
+firewall is already loaded, so a listing never loads a kernel module:
+decision 2 of the Phase 2 plan), `docker`/`podman` `ps --all` and `inspect` (read). Each
 use is recorded in the manifest. File capabilities are read directly from
 extended attributes with `os.getxattr`, so `getcap` is not needed.
 
@@ -553,26 +568,37 @@ or switch off a group rule (with a reason).
 
 ```yaml
 # whitelist/groups/web.yaml
-- id: deploy-after-login
-  match:
-    rule: ssh.login.new_source
-    correlated_with:
-      event: git.pull
-      path: /var/www/*
-      within: 30s
-      same_user: true
-  reason: "Deploys log in from wherever John happens to be, then pull at once."
-  owner: john
-  expires: never
-
-- id: home-office
-  match:
-    rule: ssh.login.new_source
-    source: 203.0.113.10
-  reason: "Home office."
-  owner: john
-  expires: 2027-10-25
+profiles: [web]                  # shipped rule sets (plan 2.10)
+rules:
+  - id: home-office
+    match:
+      check: ssh.login
+      variant: new_address
+      address: 203.0.113.10/32
+    reason: "Home office."
+    owner: john
+    expires: 2027-10-25
+  - id: deploy-after-login       # correlated_with arrives with plan 2.3
+    match:
+      check: ssh.login
+      variant: new_address
+      correlated_with:
+        event: sudo.command      # e.g. sudo -u deploy git pull
+        within: 30s
+        same_user: true
+    reason: "Deploys log in from wherever John happens to be, then pull at once."
+    owner: john
+    expires: never
+disable:                         # switch off a rule from a wider layer
+  - id: global-rule-id
+    reason: "Not on these hosts."
+    owner: john
 ```
+
+Rules match typed fields only: the check, its variant, and the finding's
+entities (account, group, key, module, package, program, an address or
+network, an anchored path pattern), never free text from the host. The
+full reference is docs/whitelists.md.
 
 - Every rule needs a `reason` and an `owner`. `expires` is required; `never`
   must be written out.
@@ -817,7 +843,7 @@ checker baseline accept web01 --reason "Planned upgrade to 24.04"
 checker whitelist test whitelist/groups/web.yaml
 checker packs pull && checker packs list
 checker advise web01                 # AI advisor on the latest assessment
-checker purge --host web01 --before 2026-07-01
+checker purge web01 --before 2026-07-01
 ```
 
 ---

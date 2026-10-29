@@ -78,6 +78,15 @@ recorded, which includes connecting and any prompt).
 | `system.boot_journal` | the journal's boot list | index, boot id, first and last entry |
 | `login.session`, `login.ended`, `system.boot`, `system.shutdown_record` | wtmp | user, line, host, address |
 | `login.failed` | btmp | user (masked unless a local account), host, address |
+| `web.request` | web access logs (combined format, nginx's default): only lines answered 5xx, with an attack (a marker the collector put in the request or referrer, or traversal, `<?php`, `${jndi:`, Shellshock or `%00` in the path, and the last four in the user agent), for a script (`.php`, `.cgi`, `.jsp`…), or answered 2xx for a file a site shouldn't serve (`/.env`, `/.git/`, backups); the rest are counted per source network and status class in the snapshot's live `web_requests` | client, network (/24 or /48), method, path (query values masked), status, size, referrer, agent, attacks |
+| `web.error` | nginx, Apache and PHP-FPM error logs (the host's time zone) | level, message (500 characters), client, network, request |
+| `process.exec` | program starts from the audit log (`web_logs`) | pid, ppid, uid, euid, auid, session, comm, exe, cwd, argv (masked), success |
+| `mail.submitted` | Postfix's `pickup`, Exim's `<=` with `P=local` | queue_id, sender (fingerprinted), uid (Postfix) or user (Exim) |
+| `mail.sent`, `mail.deferred`, `mail.bounced` | Postfix's delivery agents (`status=sent`, `deferred`, `bounced` or `expired`); Exim's `=>`/`->`, `==`, `**` | queue_id, recipient (fingerprinted), domain, relay; `local` for a delivery into a mailbox on the host |
+
+Mail events come from the mail logs (`mail_log:<path>`) and the journal's
+mail facility (`mail_journal`); Exim's main log uses the host's time zone
+unless its lines carry an offset.
 
 Journal events also carry the journal's `audit_session`, `boot_id`,
 `systemd_unit`, `journal_comm` and `journal_uid` where present — fields the
@@ -91,7 +100,8 @@ collected text.
 
 The same record often reaches a bundle more than once: sshd and sudo lines
 are both in `/var/log/secure` (or `auth.log`) and in the journal, and
-logind's in both journal reads. Events alike to the second, in type,
+logind's in both journal reads; Postfix's are in `mail.log` (or `maillog`)
+and the journal. Events alike to the second, in type,
 process and fields are one record: the source with the most of them is kept
 (the journal on a tie, for its trusted fields), and the others are named in
 the event's `also_in`. Counting per source keeps real repeats — two failed

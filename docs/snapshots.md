@@ -42,6 +42,19 @@ added.
 | `unowned_executables` | path: executables in system directories that no package installed | `system_files` |
 | `unusual_files` | path: unusual files in writable and web directories | `unusual_files` |
 | `web_files` | path: executable and script files in web roots | `unusual_files` |
+| `network_files` | path: resolver, hosts, TCP-wrapper and firewall configuration files, and the SHA-256 of their (masked) text | `network` |
+| `interfaces` | interface name: promiscuous, state, type, bridge, bridge port (byte counters, and containers' `veth` interfaces, which are renamed at every restart, are in the uncompared `live` part) | `network` |
+| `firewall_rules` | program, table and chain (or set), and line: the loaded rules from `nft` or `iptables-legacy-save`, with what changes by itself left out (counters, quotas used, expiry timers, last-used times, a large set's elements, and the rules of chains Docker, Kubernetes, CNI plugins, fail2ban, libvirt and Tailscale rewrite, which become one line per chain, except `DOCKER-USER`), comments dropped, spaces collapsed, a line repeated in one place numbered | `network` |
+| `log_config` | path: journald, rsyslog, audit and SELinux configuration files, and the SHA-256 of their (masked) text | `logging_state` |
+| `logging` | `selinux` (running and configured mode), `journald` (its effective `Storage=`, as systemd orders the main file and drop-ins), `apparmor` (loaded, how many profiles) and `apparmor: <profile>` (its mode), `service: <name>` for logging services running and `agent: <name>` for security agents running, each known by the file it runs (or its script) and recording that file's path; `services: {known: false}` instead when the process listing didn't complete. The `/var/log` manifest and the audit records are in the uncompared `live` part; a start-up file that switches history off carries `disables_history` | `logging_state`, `processes` |
+| `packages` | name and architecture (and version, for packages installed side by side: rpm's imported keys, `gpg-pubkey`, and kernels): the package manager, version and install time | `software` |
+| `software_files` | path: repository files (and the SHA-256 of their masked text) and signing keys (their SHA-256; `record: signing_key`) | `software` |
+| `global_packages` | `python: <name>` or `node: <name>`: version and folder | `software` |
+| `containers` | runtime and name (`docker: web`): image, privileged, capabilities, host PID/network/IPC namespaces, devices, mounts (`source:destination:rw`), security options; the ID, process and running state are in the uncompared `live` part, with the summary | `containers` |
+| `web_config` | path: nginx, Apache and PHP-FPM configuration files, and the SHA-256 of their (masked) text; the logs' summary, the program starts' summary and the counted requests (`web_requests`) are in the uncompared `live` part | `web_logs` |
+| `mail_files` | path: Postfix and Exim configuration files, and the SHA-256 of their (masked) text | `mail` |
+| `mail_config` | `postfix: <setting>` (each `main.cf` setting, continuation lines joined), `postfix service: <service> <type>` (each `master.cf` service), `exim: <dc_ setting>` (Debian's `update-exim4.conf.conf`), `exim: <hostlist\|domainlist…> <name>`, `exim: route_list`, `route_data`, `local_interfaces`, `daemon_smtp_ports`: the value and its file. The queue sizes are in the uncompared `live` part | `mail` |
+| `peers` | program, remote network (/24 or /48) and port: outgoing TCP connections open at collection, established or connecting, held by a process (not loopback or link-local; connections accepted on one of the host's listening ports, in the same network namespace, are incoming and left out). How many is in the uncompared `live` part | `processes` |
 | `listeners` | protocol, address and port (for a packet socket: its type, ethertype and interface), network namespace: listening TCP, unconnected UDP, raw and packet sockets, with the owning UIDs, the programs holding them (hidden processes included) and how many sockets share the key | `processes` |
 
 Running processes, sockets and anything else that changes by itself
@@ -123,8 +136,14 @@ always run from the older bundle to the newer.
 - **Asking about an older bundle.** `checker changes HOST --bundle ID` with
   a bundle older than the baseline compares it forwards, to the baseline,
   and says the baseline is the newer one.
+- **After a purge.** Automatic expiry (`checker purge --expired`) never
+  takes a host's current baseline. An explicit purge can, and then the
+  host's next analysis takes its oldest remaining usable bundle as the
+  baseline (how: `after purge`); every analysis against that baseline says
+  so, because changes made before it no longer show
+  ([retention](retention.md)).
 - **Recorded.** Baselines are kept in an append-only table, enforced by the
-  database: host, bundle, time, how (`first` or `accepted`), the operator
+  database: host, bundle, time, how (`first`, `accepted` or `after purge`), the operator
   and the controller; the reason is encrypted to the evidence key, like
   everything else that could describe the host. Each new baseline also adds
   a `baseline` entry to its bundle's chain of custody. `checker baseline

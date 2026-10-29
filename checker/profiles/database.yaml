@@ -1,0 +1,28 @@
+# Compromise Checker's database profile (plan 2.10): a database server's
+# own listeners. Apply with `profiles: [base, database]`.
+rules:
+  - id: database-mysql-listener
+    match: {check: net.listener, account: mysql}
+    reason: MySQL and MariaDB listen as mysql; a new one is the server set up or moved.
+    owner: Compromise Checker defaults
+    expires: never
+  - id: database-postgres-listener
+    match: {check: net.listener, account: postgres}
+    reason: PostgreSQL listens as postgres.
+    owner: Compromise Checker defaults
+    expires: never
+  - id: database-redis-listener
+    match: {check: net.listener, account: redis}
+    reason: Redis and Valkey listen as redis.
+    owner: Compromise Checker defaults
+    expires: never
+  - id: database-mongodb-listener
+    match: {check: net.listener, account: mongodb}
+    reason: MongoDB listens as mongodb (mongod on RHEL; see database-mongod-listener).
+    owner: Compromise Checker defaults
+    expires: never
+  - id: database-mongod-listener
+    match: {check: net.listener, account: mongod}
+    reason: MongoDB's account on RHEL.
+    owner: Compromise Checker defaults
+    expires: never

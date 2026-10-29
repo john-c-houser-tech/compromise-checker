@@ -33,6 +33,8 @@ SYSCALLS = {
     (X86, "259"): "mknodat",
     (X86, "265"): "linkat",
     (X86, "266"): "symlinkat",
+    (X86, "77"): "ftruncate",
+    (X86, "263"): "unlinkat",
 }
 NUMBERS = {name: number for (_, number), name in SYSCALLS.items()}
 _serial = 0
@@ -108,6 +110,77 @@ def test_ordinary_login_and_session_setup_is_disclosed():
 def test_any_write_by_the_collector_fails():
     python = event("python3", "/usr/bin/python3.12", "openat", ("/dev/null", "NORMAL"))
     assert judge(SESSION + python).collector == ["python3 (/usr/bin/python3.12) openat /dev/null"]
+
+
+def test_landscape_s_login_summary_is_login_machinery_but_only_in_its_own_folders():
+    py = "/usr/bin/python3.14"
+    writes = event(
+        "landscape-sysin", py, "openat", ("/var/log/landscape/sysinfo.log", "NORMAL")
+    ) + event("landscape-sysin", py, "bind")
+    verdict = judge(SESSION + writes)
+    assert verdict.collector == [] and verdict.unexpected == []
+    elsewhere = event("landscape-sysin", py, "openat", ("/etc/passwd", "NORMAL"))
+    assert judge(elsewhere).unexpected == [f"landscape-sysin ({py}) openat /etc/passwd"]
+    # The collector can't pass for it by name alone: python3 is still the collector.
+    assert judge(event("python3", py, "bind")).collector
+
+
+def test_rhel_10_s_boot_flag_and_sudo_s_mail_are_disclosed():
+    writes = event(
+        "grub2-set-bootf",
+        "/usr/sbin/grub2-set-bootflag",
+        "rename",
+        ("/boot/grub2/grubenv.1000", "DELETE"),
+        ("/boot/grub2/grubenv", "CREATE"),
+    ) + event(
+        "postdrop",
+        "/usr/sbin/postdrop",
+        "openat",
+        ("/var/spool/postfix/maildrop/300725.5186", "CREATE"),
+    )
+    verdict = judge(writes)
+    assert verdict.unexpected == [] and len(verdict.disclosed) == 3
+    elsewhere = event(
+        "grub2-set-bootf", "/usr/sbin/grub2-set-bootflag", "openat", ("/boot/x", "CREATE")
+    )
+    assert judge(elsewhere).unexpected
+
+
+def test_postdrop_s_queue_files_and_grub_s_open_file_are_disclosed():
+    queued = event(
+        "postdrop",
+        "/usr/sbin/postdrop",
+        "openat",
+        ("maildrop/883674.5178", "CREATE", "fd:01"),
+        cwd="/var/spool/postfix",
+    ) + event("grub2-set-bootf", "/usr/sbin/grub2-set-bootflag", "ftruncate")
+    verdict = judge(queued)
+    assert verdict.unexpected == [] and len(verdict.disclosed) == 2
+    # The same relative name from another folder, or another program: not excused.
+    other = event(
+        "postdrop", "/usr/sbin/postdrop", "openat", ("maildrop/x", "CREATE", "fd:01"), cwd="/etc"
+    ) + event(
+        "evil", "/tmp/evil", "openat", ("maildrop/x", "CREATE", "fd:01"), cwd="/var/spool/postfix"
+    )
+    assert len(judge(other).unexpected) == 2
+    assert judge(event("evil", "/tmp/evil", "ftruncate")).unexpected
+
+
+def test_the_user_manager_clearing_generator_output_in_memory_is_disclosed():
+    cleared = event(
+        "systemd",
+        SYSTEMD,
+        "unlinkat",
+        ("app-snap\\x2duserd\\x2dautostart@autostart.service", "DELETE", MEMORY),
+    ) + event(
+        "systemd", SYSTEMD, "unlinkat", ("xdg-desktop-autostart.target.wants", "DELETE", MEMORY)
+    )
+    verdict = judge(cleared)
+    assert verdict.unexpected == [] and len(verdict.disclosed) == 2
+    # On a disk, by another program, or something that isn't generator output: not excused.
+    assert judge(event("systemd", SYSTEMD, "unlinkat", ("x.service", "DELETE", "fd:01"))).unexpected
+    assert judge(event("evil", "/tmp/evil", "unlinkat", ("x.service", "DELETE", MEMORY))).unexpected
+    assert judge(event("systemd", SYSTEMD, "unlinkat", ("passwd", "DELETE", MEMORY))).unexpected
 
 
 def test_an_undisclosed_write_by_login_machinery_fails():

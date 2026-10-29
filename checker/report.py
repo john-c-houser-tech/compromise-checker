@@ -14,6 +14,7 @@ import json
 import os
 import tempfile
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,11 +26,14 @@ from pyrage import x25519
 
 from checker import __version__
 from checker.analysis import load_events, snapshot_of
-from checker.assess import analyze, events_of, load_assessment
+from checker.assess import analyze, count, events_of, load_assessment, store_assessment
 from checker.baseline import USABLE, usable_bundles
 from checker.checks import BANDS, CATEGORIES, CHECKS_VERSION
+from checker.correlate import find_chains
 from checker.evidence import EvidenceError, Store, open_text, who_and_where
+from checker.scoring import DEFAULT_PRIOR, percent, score
 from checker.snapshot import Snapshot
+from checker.whitelist import Whitelist, reapply
 
 MAX_EVIDENCE = 5  # excerpts shown per finding
 MAX_TIMELINE = 300
@@ -39,9 +43,15 @@ MAX_TEXT = 300
 def current_versions() -> dict[str, int]:
     """What an assessment's evidence references depend on."""
     from checker.events import PARSER_VERSION
+    from checker.scoring import SCORING_VERSION
     from checker.snapshot import SNAPSHOT_VERSION
 
-    return {"checks": CHECKS_VERSION, "parser": PARSER_VERSION, "snapshot": SNAPSHOT_VERSION}
+    return {
+        "checks": CHECKS_VERSION,
+        "parser": PARSER_VERSION,
+        "snapshot": SNAPSHOT_VERSION,
+        "scoring": SCORING_VERSION,
+    }
 
 
 class Shown(str):
@@ -112,6 +122,7 @@ class HostReport:
     manifest: dict
     custody: list
     findings: dict[str, list[dict]] = field(default_factory=dict)  # by category
+    suppressed: list[dict] = field(default_factory=list)  # whitelisted, for the appendix
     timeline: list[dict] = field(default_factory=list)
     counts: dict[str, dict[str, int]] = field(default_factory=dict)
 
@@ -164,6 +175,18 @@ def _excerpts(
                 ]
                 text = Shown(f"changed: {visible(key)}: " + "; ".join(changes))
             shown.append({"when": "", "where": f"{section}, since the baseline", "text": text})
+        elif "live" in ref and ref["live"][0] == "web_requests":
+            requests = snapshot.live.get("web_requests") or {}
+            shown.append(
+                {
+                    "when": "",
+                    "where": "web requests, counted",
+                    "text": _brief({"networks": len(requests.get("requests_by_network") or {})}),
+                }
+            )
+        elif "live" in ref and ref["live"][0] == "mail_queues":
+            for queue in snapshot.live.get("mail_queues", []):
+                shown.append({"when": "", "where": "mail queue", "text": _brief(queue)})
         elif "live" in ref:
             _, pid = ref["live"]
             process = next(
@@ -183,9 +206,48 @@ def _excerpts(
     return shown
 
 
-def host_report(store: Store, host: str, identity, recipients, bundle_id=None) -> HostReport:
+def reassess(
+    store: Store,
+    row,
+    recipients,
+    assessment: dict,
+    prior: tuple[float, str],
+    whitelist: Whitelist | None,
+    events: list,
+) -> dict:
+    """The assessment's findings with another whitelist or prior: the
+    whitelist applied again, chains found again and the findings scored
+    again, without running the checks (which could see another baseline by
+    now). Stored as a new assessment; the earlier one is kept."""
+    again = json.loads(json.dumps(assessment))
+    again["analysed_at"] = datetime.now(UTC).isoformat()
+    again["whitelist"] = reapply(again["findings"], whitelist, events=events)
+    chains = find_chains(again["findings"], events, assessment.get("previous_time"))
+    again["score"] = score(again["findings"], prior[0], chains) | {
+        "prior_source": prior[1],
+        "chains": chains,
+    }
+    again["counts"] = count(again["findings"])
+    store_assessment(store, row, recipients, again)
+    return again
+
+
+def whitelist_hash(assessment: dict) -> str | None:
+    return (assessment.get("whitelist") or {}).get("hash")
+
+
+def host_report(
+    store: Store,
+    host: str,
+    identity,
+    recipients,
+    bundle_id=None,
+    prior: tuple[float, str] = (DEFAULT_PRIOR, "default"),
+    whitelist: Whitelist | None = None,
+) -> HostReport:
     """A host's latest (or a given) bundle, analysed with the current
-    checks if its stored assessment is missing or older."""
+    checks, whitelist and prior: analysed again if its stored assessment is
+    missing or older, reassessed if only the whitelist or prior changed."""
     rows = usable_bundles(store, host)
     if bundle_id is None and not rows:
         raise EvidenceError(f"no usable bundle for {host}")
@@ -198,7 +260,16 @@ def host_report(store: Store, host: str, identity, recipients, bundle_id=None) -
     # Its evidence points into one parse of the bundle (event numbers,
     # snapshot keys): any newer parser or checks means analysing again.
     if assessment is None or assessment.get("versions") != current_versions():
-        assessment = analyze(store, host, identity, recipients, row["id"])
+        assessment = analyze(store, host, identity, recipients, row["id"], prior, whitelist)
+    elif (
+        (assessment["score"]["prior"], assessment["score"]["prior_source"]) != prior
+        or whitelist_hash(assessment) != (whitelist.digest() if whitelist else None)
+        # A rule that has expired since the assessment stops suppressing.
+        or (whitelist and whitelist.expired() != assessment["whitelist"].get("expired"))
+    ):
+        parsed = load_events(store, row, identity)
+        events = parsed.events if parsed else events_of(store, row, identity, recipients)
+        assessment = reassess(store, row, recipients, assessment, prior, whitelist, events)
     parsed = load_events(store, row, identity)
     events = parsed.events if parsed else events_of(store, row, identity, recipients)
     snapshot = snapshot_of(store, row, identity, recipients)
@@ -224,6 +295,9 @@ def host_report(store: Store, host: str, identity, recipients, bundle_id=None) -
     timeline = {}
     for finding in assessment["findings"]:
         finding = dict(finding, excerpts=_excerpts(finding, events, snapshot, baselines))
+        if finding.get("suppressed_by"):
+            report.suppressed.append(finding)
+            continue  # in the appendix, with its rule; not in the timeline
         report.findings.setdefault(finding["category"], []).append(finding)
         counts = report.counts.setdefault(finding["category"], dict.fromkeys(BANDS, 0))
         counts[finding["band"]] += 1
@@ -243,6 +317,9 @@ def host_report(store: Store, host: str, identity, recipients, bundle_id=None) -
                 )
                 if finding["title"] not in entry["findings"]:
                     entry["findings"].append(finding["title"])
+    order = {band: i for i, band in enumerate(BANDS)}
+    for listed in report.findings.values():
+        listed.sort(key=lambda f: order[f["band"]])  # a maintenance window moves a band
     ordered = sorted(timeline.values(), key=lambda e: e["when"])
     if len(ordered) > MAX_TIMELINE:
         # The earliest events are often the first signs: keep both ends.
@@ -267,6 +344,7 @@ def render(reports: list[HostReport], generated_by: tuple[str, str]) -> str:
         finalize=_finalize,
     )
     environment.filters["visible"] = visible
+    environment.filters["percent"] = percent
     template = environment.get_template("report.html.j2")
     return template.render(
         reports=reports,
@@ -288,10 +366,17 @@ def write_report(
     directory: Path,
     bundle_id: str | None = None,
     output: Path | None = None,
+    priors: Callable[[str], tuple[float, str]] | None = None,
+    whitelists: Callable[[str], Whitelist | None] | None = None,
 ) -> Path:
     """Write the report (owner-only, like the evidence) and add a
     `reported` entry, with the report's hash, to each bundle's custody."""
-    reports = [host_report(store, h, identity, recipients, bundle_id) for h in hosts]
+    priors = priors or (lambda _: (DEFAULT_PRIOR, "default"))
+    whitelists = whitelists or (lambda _: None)
+    reports = [
+        host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h))
+        for h in hosts
+    ]
     html = render(reports, who_and_where())
     if output is None:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)

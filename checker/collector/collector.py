@@ -17,6 +17,7 @@ what each module reads, and why, is in docs/collector-modules.md.
 
 import base64
 import binascii
+import collections
 import contextlib
 import datetime
 import errno
@@ -24,6 +25,7 @@ import fnmatch
 import glob
 import gzip
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -329,7 +331,8 @@ MASKING_RULES = UNKNOWN_USER_RULES + [
     _rule("stripe_key", rb"\b", rb"(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"),
     _rule("anthropic_key", rb"\b", rb"sk-ant-[A-Za-z0-9_-]{20,}"),
     _rule("jwt", rb"\b", rb"eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
-    _rule("url_password", rb"[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]+:", rb"[^\s@/]+(?=@)"),
+    # (The scheme bounded: an unbounded one is quadratic on long letter runs.)
+    _rule("url_password", rb"[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s:/@]+:", rb"[^\s@/]+(?=@)"),
     _rule("auth_header", rb"(?i)authorization:\s*(?:bearer|basic|token)?\s*", rb"[^\s\"']+"),
     _rule("bearer_token", rb"(?i)\bbearer\s+", rb"[A-Za-z0-9._~+/=-]{8,}"),
     _rule(
@@ -852,7 +855,15 @@ def pump_lines(run, writer, reader, transform=None):
 
 
 def send_file(
-    run, module, absolute, text_only=False, rewrite=None, spool=False, walked=False, home=None
+    run,
+    module,
+    absolute,
+    text_only=False,
+    rewrite=None,
+    spool=False,
+    walked=False,
+    home=None,
+    transform=None,
 ):
     """Send one file as a source: decompressed, masked, chunked, capped.
     Returns True if sent, False if it could not be read (recorded instead).
@@ -866,7 +877,8 @@ def send_file(
     was found by walking a directory, not named by configuration, so no hard
     link is read; with `home` (see homes_for), it is a home file whose text
     the opt-in allows, and must lie in that home and in no home the opt-in
-    doesn't cover (Run.refusal)."""
+    doesn't cover (Run.refusal). With `transform`, each line goes through
+    `transform(line, masker)` instead of the plain masking (see pump_lines)."""
     suffix = os.path.splitext(absolute)[1]
     if suffix in _COMPRESSED and suffix not in _OPENERS:
         details = describe_unreadable(absolute)
@@ -923,7 +935,7 @@ def send_file(
         with raw:
             reader = opener(raw) if opener else raw
             with reader:
-                truncated_reason = pump_lines(run, writer, reader)
+                truncated_reason = pump_lines(run, writer, reader, transform)
     except _DECOMPRESS_ERRORS as exc:
         error = f"{type(exc).__name__}: {exc}"
     writer.finish(truncated_reason, error)
@@ -1079,6 +1091,10 @@ class Walk:
             entry["time_out_of_range"] = {"mtime": info.st_mtime, "ctime": info.st_ctime}
         if link_target is not None:
             entry["link_target"] = link_target
+        if stat.S_ISCHR(info.st_mode) or stat.S_ISBLK(info.st_mode):
+            # Which device it opens: a copy of /dev/urandom in a mail
+            # server's chroot is harmless, one of /dev/mem is not.
+            entry["device"] = [os.major(info.st_rdev), os.minor(info.st_rdev)]
         if stat.S_ISREG(info.st_mode) and self._wants_hash(info):
             # A hash is no text, but a short file's hash can still be
             # guessed: protected files are never hashed either.
@@ -1198,6 +1214,15 @@ class Walk:
 # command line, the executable's hash, the exit status and its error output.
 COMMANDS = {
     "journalctl": ("/usr/bin/journalctl", "/bin/journalctl"),
+    # Firewall rules, read only, and only when the firewall is already
+    # loaded (module_network), so listing them never loads a kernel module.
+    "nft": ("/usr/sbin/nft", "/sbin/nft"),
+    "iptables-legacy-save": ("/usr/sbin/iptables-legacy-save", "/sbin/iptables-legacy-save"),
+    "ip6tables-legacy-save": ("/usr/sbin/ip6tables-legacy-save", "/sbin/ip6tables-legacy-save"),
+    # Only `sudo -n -ll -U <the account that ran the collector>`, where sudo
+    # takes rules from a directory (sudo_input_logging): what sudo applies
+    # to that account, read for input logging and never sent.
+    "sudo": ("/usr/bin/sudo", "/bin/sudo"),
 }
 # A fixed, minimal environment: nothing from the login session reaches a command.
 _COMMAND_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C.UTF-8"}
@@ -1228,6 +1253,89 @@ def find_command(name):
         else:
             return candidate, info, None
     return None, None, "; ".join(reasons) or "not installed"
+
+
+def capture_command(run, name, args, limit=256 * 1024, seconds=20.0):
+    """Run an allow-listed command for the collector's own use, never sent:
+    a dict with its `argv`, `executable_sha256`, and either `status`,
+    `output` (at most `limit` bytes), `output_cut` (more than that) and
+    `stderr` (its first 4 KiB), or `failed` (why it couldn't run or
+    finish). Stopped, its whole process group, after `seconds` or at the
+    module's deadline; not started at all past the deadline."""
+    executable, _, problem = find_command(name)
+    if executable is None:
+        return {"failed": problem}
+    digest, _ = hash_file(run, executable)
+    found = {"argv": [executable] + list(args), "executable_sha256": digest}
+    remaining = min(seconds, run.deadline - time.monotonic())
+    if remaining <= 0:
+        return dict(found, failed="no time left")
+    try:
+        no_input = os.open(os.devnull, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        return dict(found, failed=str(exc))
+    try:
+        process = subprocess.Popen(  # noqa: S603 - allow-listed executable, fixed arguments
+            [path(executable)] + list(args),
+            stdin=no_input,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_COMMAND_ENV,
+            cwd="/",
+            close_fds=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return dict(found, failed=str(exc))
+    finally:
+        os.close(no_input)
+    stopped = {"time": False}
+
+    def stop():
+        stopped["time"] = True
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    errors = {"kept": b""}
+
+    def drain():
+        while True:
+            piece = process.stderr.read(4096)
+            if not piece:
+                return
+            if len(errors["kept"]) < _STDERR_KEEP:
+                errors["kept"] += piece[: _STDERR_KEEP - len(errors["kept"])]
+
+    watchdog = threading.Timer(remaining, stop)
+    watchdog.daemon = True
+    watchdog.start()
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    try:
+        output = process.stdout.read(limit + 1)
+        if len(output) > limit:
+            os.killpg(process.pid, signal.SIGKILL)  # enough read; nothing more is wanted
+        status = process.wait()
+    finally:
+        watchdog.cancel()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)  # anything it left behind
+        except OSError:
+            pass
+        reader.join(1)
+        process.stdout.close()
+        process.stderr.close()
+    if stopped["time"]:
+        return dict(found, failed="timed out")
+    return dict(
+        found,
+        status=status,
+        output=output[:limit],
+        output_cut=len(output) > limit,
+        stderr=errors["kept"].decode("utf-8", "replace"),
+    )
 
 
 def run_command(run, module, name, args, transform=None):
@@ -2300,7 +2408,7 @@ def resolve_links(absolute):
     return resolved or "/", None
 
 
-def send_config_file(run, module, absolute, text_only=False):
+def send_config_file(run, module, absolute, text_only=False, transform=None):
     """Send a configuration file the way its program reads it: through
     symbolic links (RHEL's authselect and crypto-policies use them by
     design). A link is recorded, then its resolved target is sent, still only
@@ -2314,7 +2422,7 @@ def send_config_file(run, module, absolute, text_only=False):
         facts["resolved"] = resolved
         run.stream.record(module, "config_link", facts)
     absolute = resolved
-    return absolute if send_file(run, module, absolute, text_only) else None
+    return absolute if send_file(run, module, absolute, text_only, transform=transform) else None
 
 
 def read_config_text(run, module, absolute):
@@ -2352,11 +2460,185 @@ def _sudo_reads(name):
     return not name.endswith("~") and "." not in name
 
 
+# sudo's input logging (plan 2.7): log_input or log_stdin set (sudo's lexer
+# cancels pairs of !, so !!log_input sets it), or a LOG_INPUT tag on a rule
+# (blanks may precede its colon; NOLOG_INPUT turns it off). Where sudo logs
+# its input, it writes the collector's program, and so the mail key, to disk.
+_SUDO_INPUT_FLAG = re.compile(r"(?<![\w!])(!*)\s*(?:log_input|log_stdin)\b")
+_SUDO_INPUT_TAG = re.compile(r"(?<!NO)LOG_INPUT\s*:")
+# A sudoers comment: # not followed by a digit (#1000 is a user ID) and not
+# an #include or #includedir.
+_SUDO_COMMENT_LINE = re.compile(r"^\s*#(?!\d|include)")
+# sudo.conf plugins that don't record input beyond what sudoers says.
+SUDO_PLUGINS_KNOWN = frozenset(("sudoers_policy", "sudoers_io", "sudoers_audit"))
+_NSS_SUDOERS = re.compile(r"^\s*sudoers\s*:\s*(.*)$")
+SUDO_SETTINGS_BYTES = 65536
+
+
+def _settings_text(absolute):
+    """A small settings file's text as its program reads it, through links:
+    ("", True) if it doesn't exist; (None, False) if it exists but can't be
+    read whole."""
+    resolved, risk = resolve_links(absolute)
+    if risk:
+        return None, False
+    try:
+        if not os.path.lexists(path(resolved)):
+            return "", True
+        if os.stat(path(resolved)).st_size > SUDO_SETTINGS_BYTES:
+            return None, False
+    except OSError:
+        return None, False
+    text = read_small(resolved, SUDO_SETTINGS_BYTES)
+    return text, text is not None
+
+
+def sudo_logs_input(line):
+    """Whether one sudoers line turns input logging on."""
+    if _SUDO_COMMENT_LINE.match(line):
+        return False
+    if _SUDO_INPUT_TAG.search(line):
+        return True
+    return any(len(m.group(1)) % 2 == 0 for m in _SUDO_INPUT_FLAG.finditer(line))
+
+
+# Local, fully qualified (scanner@corp.example.com) and domain (CORP\scanner)
+# account names; never one sudo could take for an option.
+_SUDO_ACCOUNT = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.@\\$-]{0,255}$")
+_SUDO_LIST_OPTION = re.compile(r"[\s,:]")
+# sudo settings that make a look-up leave more traces (mail the
+# administrators, send the event to a log server): no look-up then.
+_SUDO_LOOKUP_NOISY = re.compile(r"(?<![!\w])(?:mail_always|mail_all_cmnds|log_servers)\b")
+SSSD_SUDO_PIPE = "/var/lib/sss/pipes/sudo"
+SSSD_PID_FILES = ("/run/sssd.pid", "/var/run/sssd.pid")
+
+
+def sssd_answering():
+    """Whether SSSD's sudo responder can answer: its socket exists and the
+    process its pid file names is alive. If it can't, sudo quietly lists
+    only the files' rules, which proves nothing about the directory's."""
+    try:
+        if not stat.S_ISSOCK(os.lstat(path(SSSD_SUDO_PIPE)).st_mode):
+            return False
+    except OSError:
+        return False
+    for pid_file in SSSD_PID_FILES:
+        text = (read_small(pid_file, 64) or "").strip()
+        if text.isdigit() and os.path.isdir(path(f"/proc/{int(text)}")):
+            return True
+    return False
+
+
+def sudo_directory_lookup(run, sources):
+    """Whether sudo logs the input of the account that ran the collector,
+    asked of sudo itself (`sudo -n -ll -U <account>`), so rules it takes
+    from a directory count too: ("on" | "off" | why it can't be told, the
+    command's argv and executable hash). "off" needs proof the directory
+    answered: SSSD's responder running (for sss), a listed LDAP role (for
+    ldap), and no warning from sudo. It holds as of the look-up: directory
+    rules can change between collections. sudo records the look-up in the
+    authentication log."""
+    account = os.environ.get("SUDO_USER", "")
+    if not _SUDO_ACCOUNT.match(account):
+        return "not run under sudo by a named account", None
+    ran = capture_command(run, "sudo", ["-n", "-ll", "-U", account])
+    trail = {k: ran[k] for k in ("argv", "executable_sha256") if k in ran}
+    if "failed" in ran:
+        return f"lookup failed: {ran['failed']}", trail or None
+    if ran["output_cut"]:  # (stopped once enough was read: its status says nothing)
+        return "lookup failed: listing too long to read whole", trail
+    if ran["status"] != 0:
+        return f"lookup failed: exit status {ran['status']}", trail
+    if ran["stderr"].strip():
+        return "lookup failed: sudo warned while listing", trail
+    text = ran["output"].decode("utf-8", "replace")
+    verdict = sudo_list_logs_input(text)
+    if verdict != "off":
+        return verdict, trail
+    if "sss" in sources and not sssd_answering():
+        return "lookup failed: SSSD's sudo responder isn't running", trail
+    if "ldap" in sources and "LDAP Role:" not in text:
+        return "lookup failed: no rule came from LDAP", trail
+    return verdict, trail
+
+
+def sudo_list_logs_input(text):
+    """From `sudo -ll`'s listing: "on" if its defaults or a rule's options
+    log input, "off" if not, or why the listing can't be read. sudo leaves
+    the defaults' header out when none match, and sudo-rs (Ubuntu 26.04),
+    which has no input logging, always does; a listing for an account
+    with no rules can't be read."""
+    if "Matching Defaults entries for" not in text and "may run the following commands" not in text:
+        return "lookup failed: not a sudo listing"
+    words = set(_SUDO_LIST_OPTION.split(text))
+    return "on" if words & {"log_input", "log_stdin", "LOG_INPUT"} else "off"
+
+
+def sudo_input_logging(texts, complete, run=None):
+    """Whether sudo writes its input to disk, from every sudoers file's text
+    (`complete`: all of them read whole), sudo.conf's plugins and where
+    nsswitch.conf says rules come from. "off" only when sure. Where rules
+    may also come from a directory, sudo itself is asked (with `run`)."""
+    logged = any(sudo_logs_input(line) for text in texts for line in text.splitlines())
+    plugins, redirected = [], False
+    conf, readable = _settings_text("/etc/sudo.conf")
+    complete = complete and readable
+    for line in (conf or "").splitlines():
+        words = line.split("#", 1)[0].split()
+        if len(words) >= 2 and words[0].lower() == "plugin":
+            plugins.append(words[1])
+            # Arguments can point sudoers elsewhere (sudoers_file=, ldap_conf=).
+            redirected = redirected or len(words) > 3
+    unknown = sorted(set(plugins) - SUDO_PLUGINS_KNOWN)
+    sources = []
+    nss, readable = _settings_text("/etc/nsswitch.conf")
+    complete = complete and readable
+    for line in (nss or "").splitlines():
+        match = _NSS_SUDOERS.match(line.split("#", 1)[0])
+        if match:
+            sources = match.group(1).split()
+    elsewhere = [s for s in sources if s != "files" and not s.startswith("[")]
+    lookup = trail = None
+    if logged or unknown:
+        state = "on"
+    elif complete and not redirected and not elsewhere:
+        state = "off"
+    elif complete and not redirected and run is not None:
+        noisy = any(
+            _SUDO_LOOKUP_NOISY.search(line)
+            for text in texts
+            for line in text.splitlines()
+            if not _SUDO_COMMENT_LINE.match(line)
+        )
+        if noisy:
+            lookup = "not looked up: sudo would mail or forward the look-up"
+        else:
+            lookup, trail = sudo_directory_lookup(run, elsewhere)
+        state = lookup if lookup in ("on", "off") else "unknown"
+    else:
+        state = "unknown"
+    found = {
+        "state": state,
+        "sudoers_complete": complete,
+        "plugins": plugins,
+        "plugin_arguments": redirected,
+        "rules_also_from": elsewhere,
+    }
+    if lookup is not None:
+        found["directory_lookup"] = lookup
+        if trail:
+            found["lookup_command"] = trail
+    return found
+
+
 def module_sudoers(run):
-    """/etc/sudoers and everything it includes, masked."""
+    """/etc/sudoers and everything it includes, masked; and whether sudo
+    logs its input (the controller sends the mail key only where it
+    doesn't)."""
     module = "sudoers"
     seen = set()
     pending = [("/etc/sudoers", 0)]
+    texts, complete = [], True
     while pending:
         run.check_time()
         absolute, depth = pending.pop(0)
@@ -2365,14 +2647,25 @@ def module_sudoers(run):
         seen.add(absolute)
         sent = send_config_file(run, module, absolute)
         if sent is None:
+            # A missing include is missing for sudo too; a missing
+            # /etc/sudoers means sudo reads its rules from elsewhere.
+            missing = not os.path.lexists(path(absolute))
+            complete = complete and missing and absolute != "/etc/sudoers"
             continue
         text = read_config_text(run, module, sent)
+        texts.append(text)
+        try:
+            if os.stat(path(sent)).st_size > CONFIG_FILE_BYTES:
+                complete = False
+        except OSError:
+            complete = False
         for line in text.splitlines():
             match = _SUDO_INCLUDE.match(line)
             if not match:
                 continue
             target = _sudo_include_path(match.group(2), absolute)
             if depth + 1 > MAX_INCLUDE_DEPTH:
+                complete = False
                 run.stream.record(
                     module, "include_not_followed", {"path": target, "reason": "depth"}
                 )
@@ -2382,15 +2675,18 @@ def module_sudoers(run):
                 continue
             directory, risk = resolve_links(target)
             if risk:
+                complete = False
                 run.stream.record(module, "not_examined", {"path": target, "reason": risk})
                 continue
             try:
                 names, listing_cut = list_directory(directory, MAX_DIR_FILES, run)
             except OSError as exc:
+                complete = complete and isinstance(exc, FileNotFoundError)
                 run.stream.record(
                     module, "include_dir", {"path": target, "from": absolute, "error": str(exc)}
                 )
                 continue
+            complete = complete and not listing_cut
             run.stream.record(
                 module,
                 "include_dir",
@@ -2403,6 +2699,7 @@ def module_sudoers(run):
             )
             # Every file is sent, including those sudo skips: evidence either way.
             pending.extend((_join(target, n), depth + 1) for n in names[:MAX_DIR_FILES])
+    run.stream.record(module, "sudo_input_logging", sudo_input_logging(texts, complete, run))
 
 
 # Who the home_text opt-in's "privileged" setting covers (policy §7: root,
@@ -3125,7 +3422,16 @@ def _text(relative):
 
 
 def collect_tree(
-    run, module, top, seen, max_depth=4, choose=_text, extra=None, spool=False, home=None
+    run,
+    module,
+    top,
+    seen,
+    max_depth=4,
+    choose=_text,
+    extra=None,
+    spool=False,
+    home=None,
+    transform=None,
 ):
     """Walk one directory (see "Directory walks"), recording each entry as a
     `file` record, then send the text of the small text files in it, masked.
@@ -3231,13 +3537,15 @@ def collect_tree(
             spool=spool,
             walked=True,
             home=home,
+            transform=transform,
         ):
             seen.add(absolute)
 
 
-def send_config_files(run, module, names, seen):
+def send_config_files(run, module, names, seen, transform=None):
     """Send each of these single files that exists, through links, as text,
-    unless already sent (`seen`, as in collect_tree)."""
+    unless already sent (`seen`, as in collect_tree); with `transform`, its
+    lines go through it (see pump_lines)."""
     for absolute in names:
         run.check_time()
         resolved, risk = resolve_links(absolute)
@@ -3247,7 +3555,7 @@ def send_config_files(run, module, names, seen):
             continue
         elif resolved not in seen:
             seen.add(resolved)
-            send_config_file(run, module, absolute, text_only=True)
+            send_config_file(run, module, absolute, text_only=True, transform=transform)
         else:
             # Its target was sent already; the link itself is still evidence
             # (/etc/profile -> /etc/rc.d/rc.local).
@@ -5662,6 +5970,11 @@ def describe_process(run, pid, boot_time, ticks, sockets_of):
         "cpu_seconds": round(cpu, 2),
         "start_time": iso_from_timestamp(start) if start is not None else None,
     }
+    # The login session it descends from (audit's login UID): a web server
+    # an administrator started by hand carries theirs.
+    loginuid = (read_proc(base + "/loginuid", 64) or b"").strip()
+    if loginuid.isdigit():
+        process["loginuid"] = int(loginuid)
     process["comm"], counts = masked(comm)
     _add_counts(found, counts)
     exe = read_link(base + "/exe")
@@ -6037,6 +6350,1879 @@ def module_processes(run):
 
 
 # Collection modules, by name, in their default order.
+# --- Network (DESIGN.md §8.8) ----------------------------------------------------------
+
+NETWORK_FILES = (
+    "/etc/hosts",
+    "/etc/resolv.conf",
+    "/etc/nsswitch.conf",
+    "/etc/hosts.allow",
+    "/etc/hosts.deny",
+    # Firewall configuration: what loads at boot.
+    "/etc/nftables.conf",
+    "/etc/sysconfig/nftables.conf",
+    "/etc/iptables/rules.v4",
+    "/etc/iptables/rules.v6",
+    "/etc/sysconfig/iptables",
+    "/etc/sysconfig/ip6tables",
+    "/etc/default/ufw",
+    "/etc/ufw/ufw.conf",
+    "/etc/ufw/before.rules",
+    "/etc/ufw/after.rules",
+    "/etc/ufw/user.rules",
+    "/etc/ufw/before6.rules",
+    "/etc/ufw/after6.rules",
+    "/etc/ufw/user6.rules",
+)
+NETWORK_DIRS = ("/etc/firewalld", "/etc/nftables.d", "/etc/sysconfig/nftables.d")
+IFF_PROMISC = 0x100
+# A set with more elements or lines than this (a fail2ban or CrowdSec
+# blocklist) is sent as its element count and a SHA-256 of its masked
+# lines, never element by element; nor are its lines held past these.
+NFT_SET_LIMIT = 50
+NFT_SET_HELD_BYTES = 256 * 1024
+_NFT_ELEMENTS = re.compile(rb"^(\s*)elements = \{")
+ROUTE_BYTES = 1024 * 1024
+ROUTE_LINES = 2000
+
+
+def nft_sets_reduced():
+    """A transform for `nft list ruleset` lines: a set whose elements fit in
+    the limits goes as it is; a longer one becomes one line with its element
+    count and a SHA-256 of its masked lines. Every line sent or hashed is
+    masked first. Stateful (one per command run); `transform.open()` says
+    whether a set was still open when the output ended."""
+    state = {"open": None}
+
+    def transform(line, masker):
+        held = state["open"]
+        if held is None:
+            match = _NFT_ELEMENTS.match(line)
+            if not match:
+                return masker.line(line)
+            held = {
+                "indent": match.group(1),
+                "lines": [],
+                "bytes": 0,
+                "count": 0,
+                "digest": hashlib.sha256(),
+            }
+            state["open"] = held
+            body = line.split(b"{", 1)[1]
+        else:
+            body = line
+        masked = masker.line(line)
+        held["digest"].update(masked)
+        held["count"] += len([e for e in body.split(b"}")[0].split(b",") if e.strip()])
+        if held["lines"] is not None:
+            held["lines"].append(masked)
+            held["bytes"] += len(masked)
+            if (
+                len(held["lines"]) > NFT_SET_LIMIT
+                or held["count"] > NFT_SET_LIMIT
+                or held["bytes"] > NFT_SET_HELD_BYTES
+            ):
+                held["lines"] = None  # too long to send: count and hash only
+        if b"}" not in line:
+            return b""
+        state["open"] = None
+        if held["lines"] is not None:
+            return b"".join(held["lines"])
+        return held["indent"] + b"elements = { [%d elements, sha256 %s] }\n" % (
+            held["count"],
+            held["digest"].hexdigest().encode(),
+        )
+
+    transform.open = lambda: state["open"] is not None
+    return transform
+
+
+def _read_int(absolute):
+    text = read_small(absolute, 64)
+    try:
+        return int(text.strip(), 0) if text is not None else None
+    except ValueError:
+        return None
+
+
+def _printable(name):
+    """A file name as text: bytes that aren't UTF-8 escaped, so they can be
+    sent (an interface name may hold any byte but '/', ':' and spaces)."""
+    return name.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+
+
+def _built_in(module_name):
+    """Whether the running kernel has this module built in (so listing its
+    rules can't load it): modules.builtin lists it."""
+    text = read_small(f"/lib/modules/{platform.release()}/modules.builtin", 4 * 1024 * 1024)
+    if not text:
+        return False
+    return any(line.rsplit("/", 1)[-1] == module_name + ".ko" for line in text.splitlines())
+
+
+def firewall_state():
+    """Which firewalls are loaded. nft_compat (iptables-nft rules: ufw,
+    Docker) is reported: the 2.4b experiment listed such rules 45 times on
+    Ubuntu 22.04, 24.04 and 26.04 with ufw and Docker running, and no
+    module was ever loaded, so they are listed too, and the read-only proof
+    keeps checking it."""
+    nf_tables = os.path.isdir(path("/sys/module/nf_tables")) or _built_in("nf_tables")
+    return {
+        "nf_tables": nf_tables,
+        "nft_compat": os.path.isdir(path("/sys/module/nft_compat")),
+        "ip_tables": bool((read_small("/proc/net/ip_tables_names", 4096) or "").strip()),
+        "ip6_tables": bool((read_small("/proc/net/ip6_tables_names", 4096) or "").strip()),
+    }
+
+
+def _firewall_command(run, module, name, args, transform=None):
+    """One firewall listing; a failure is recorded and the others still run."""
+    try:
+        run_command(run, module, name, args, transform=transform)
+    except CommandFailed as exc:
+        run.stream.record(module, "command_failed", {"command": name, "reason": str(exc)})
+    if transform is not None and transform.open():
+        run.stream.record(module, "set_unterminated", {"command": name})
+
+
+def module_network(run):
+    """Resolver, hosts and TCP-wrapper files; firewall configuration;
+    interfaces (flags, state, byte counters), routes; and the firewall's
+    loaded rules, read with `nft` or `iptables-legacy-save` only when that
+    firewall is already loaded (decision 2): listing an unloaded one could
+    make the kernel load its module."""
+    module = "network"
+    seen = set()
+    send_config_files(run, module, NETWORK_FILES, seen)
+    for directory in NETWORK_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=3)
+    try:
+        names, truncated = list_directory("/sys/class/net", 256, run)
+    except OSError as exc:
+        run.stream.record(module, "not_examined", {"path": "/sys/class/net", "reason": str(exc)})
+        names, truncated = [], False
+    if truncated:
+        run.stream.record(module, "listing_truncated", {"path": "/sys/class/net"})
+    for name in names:
+        run.check_time()
+        if "/" in name or name in (".", ".."):
+            continue
+        base = f"/sys/class/net/{name}"
+        flags = _read_int(f"{base}/flags")
+        state = read_small(f"{base}/operstate", 64)
+        run.stream.record(
+            module,
+            "interface",
+            {
+                "name": _printable(name),
+                "flags": flags,
+                "promiscuous": bool(flags & IFF_PROMISC) if flags is not None else None,
+                "state": state.strip() if state else None,
+                "type": _read_int(f"{base}/type"),
+                "bridge": os.path.isdir(path(f"{base}/bridge")),
+                "bridge_port": os.path.isdir(path(f"{base}/brport")),
+                # Enslaved to a bridge, bond or Open vSwitch: promiscuous by design.
+                "master": os.path.lexists(path(f"{base}/master")),
+                "rx_bytes": _read_int(f"{base}/statistics/rx_bytes"),
+                "tx_bytes": _read_int(f"{base}/statistics/tx_bytes"),
+            },
+        )
+    for table in ("/proc/net/route", "/proc/net/ipv6_route"):
+        text, cut = read_whole_lines(table, ROUTE_BYTES)
+        if text is None:
+            continue
+        lines = text.splitlines()
+        run.stream.record(
+            module,
+            "routes",
+            {
+                "table": table,
+                "lines": lines[:ROUTE_LINES],
+                "truncated": cut or len(lines) > ROUTE_LINES,
+            },
+        )
+    loaded = firewall_state()
+    run.stream.record(module, "firewall_loaded", loaded)
+    if loaded["nf_tables"]:
+        _firewall_command(run, module, "nft", ["list", "ruleset"], nft_sets_reduced())
+    if loaded["ip_tables"]:
+        _firewall_command(run, module, "iptables-legacy-save", [])
+    if loaded["ip6_tables"]:
+        _firewall_command(run, module, "ip6tables-legacy-save", [])
+
+
+# --- Logging, audit and mandatory access control (DESIGN.md §8.10) --------------------
+
+LOGGING_FILES = (
+    "/etc/systemd/journald.conf",
+    "/usr/lib/systemd/journald.conf",
+    "/etc/rsyslog.conf",
+    "/etc/audit/auditd.conf",
+    "/etc/audit/audit.rules",
+    "/etc/selinux/config",
+)
+LOGGING_DIRS = (
+    "/etc/systemd/journald.conf.d",
+    "/run/systemd/journald.conf.d",
+    "/usr/lib/systemd/journald.conf.d",
+    "/etc/rsyslog.d",
+    "/etc/audit/rules.d",
+)
+LOG_TREE = "/var/log"
+LOG_TREE_DEPTH = 3
+LOG_TREE_ENTRIES = 5000
+AUDIT_LOGS = ("/var/log/audit/audit.log",) + tuple(
+    f"/var/log/audit/audit.log.{n}" for n in range(1, 5)
+)
+# Only records about the audit system and SELinux themselves: never the
+# commands, logins or file accesses audit also records.
+AUDIT_TYPES = (
+    b"type=CONFIG_CHANGE ",
+    b"type=DAEMON_START ",
+    b"type=DAEMON_END ",
+    b"type=DAEMON_ABORT ",
+    b"type=MAC_STATUS ",
+    b"type=MAC_POLICY_LOAD ",
+)
+AUDIT_LINES = 2000
+AUDIT_BYTES = 64 * 1024 * 1024
+_AUDIT_TIME = re.compile(rb"msg=audit\((\d+)\.\d+:\d+\)")
+# With auditd's name_format set, each record starts with its node's name.
+_AUDIT_NODE = re.compile(rb"^node=\S+ ")
+# Walked first, so a cut-short listing still holds what matters most.
+LOG_TREE_FIRST = ("/var/log/audit", "/var/log/journal")
+
+
+def _log_manifest(run, module):
+    """Every file and link under /var/log (three levels, at most 5,000
+    entries), breadth first, the audit and journal folders first: name,
+    type, size, inode, times. Never contents."""
+    count, truncated = 0, False
+    pending = collections.deque([(LOG_TREE, 0)])
+    while pending:
+        run.check_time()
+        if count >= LOG_TREE_ENTRIES:
+            truncated = True
+            break
+        directory, depth = pending.popleft()
+        try:
+            names, cut = list_directory(directory, LOG_TREE_ENTRIES - count, run)
+        except OSError as exc:
+            run.stream.record(module, "not_examined", {"path": directory, "reason": str(exc)})
+            continue
+        truncated = truncated or cut
+        deeper = []
+        for name in names:
+            if count >= LOG_TREE_ENTRIES:
+                truncated = True
+                break
+            absolute = f"{directory}/{name}"
+            try:
+                info = os.lstat(path(absolute))
+            except OSError:
+                continue
+            count += 1
+            kind = (
+                "d"
+                if stat.S_ISDIR(info.st_mode)
+                else "l"
+                if stat.S_ISLNK(info.st_mode)
+                else "f"
+                if stat.S_ISREG(info.st_mode)
+                else "o"
+            )
+            data = {
+                "path": _printable(absolute),
+                "type": kind,
+                "size": info.st_size,
+                "inode": info.st_ino,
+                "mtime": info.st_mtime,
+                "ctime": info.st_ctime,
+            }
+            if kind == "l":
+                try:
+                    data["link"] = _printable(os.readlink(path(absolute)))
+                except OSError:
+                    data["link"] = None
+            run.stream.record(module, "log_file", data)
+            if kind == "d" and depth + 1 < LOG_TREE_DEPTH:
+                deeper.append((absolute, depth + 1))
+        deeper.sort(key=lambda d: (not d[0].startswith(LOG_TREE_FIRST), d[0]))
+        pending.extend(deeper)
+    run.stream.record(module, "log_manifest", {"entries": count, "truncated": truncated})
+
+
+def _audit_records(run, module):
+    """From the audit logs, within the look-back, only the records about
+    audit and SELinux themselves (AUDIT_TYPES), masked: rules changed,
+    audit started or stopped, enforcement switched. The newest are kept
+    (rotated files read oldest first), so a flood of earlier records can't
+    push the latest out."""
+    since = run.since.timestamp()
+    found = collections.deque(maxlen=AUDIT_LINES)
+    matched, read = 0, 0
+    files = audit_files()
+    cut = bool(files) and files[0][1] > 0
+    for absolute, skip in files:
+        run.check_time()
+        try:
+            raw, _ = open_regular_file(absolute)
+        except (OSError, ValueError):
+            continue
+        with raw:
+            for line in read_audit_lines(raw, skip):
+                read += len(line)
+                record = _AUDIT_NODE.sub(b"", line, count=1)
+                if not record.startswith(AUDIT_TYPES):
+                    continue
+                when = _AUDIT_TIME.search(record)
+                if when is None or int(when.group(1)) < since:
+                    continue
+                masked, _ = mask_text(record.rstrip(b"\n")[:4096])
+                found.append(masked.decode("utf-8", "replace"))
+                matched += 1
+    run.stream.record(
+        module,
+        "audit_records",
+        {
+            "lines": list(found),
+            "truncated": cut,
+            "older_left_out": max(0, matched - AUDIT_LINES),
+            "bytes_read": read,
+        },
+    )
+
+
+def _mac_state(run, module):
+    """SELinux's mode and AppArmor's loaded profiles (names and modes)."""
+    selinux = "absent"
+    if os.path.isdir(path("/sys/fs/selinux")):
+        value = read_small("/sys/fs/selinux/enforce", 16)
+        selinux = {"1": "enforcing", "0": "permissive"}.get((value or "").strip(), "unknown")
+    apparmor = None
+    text = read_small("/sys/kernel/security/apparmor/profiles", 4 * 1024 * 1024)
+    if text is not None:
+        profiles = {}
+        for line in text.splitlines()[:5000]:
+            name, _, mode = line.rpartition(" (")
+            if name:
+                profiles[_printable(name)] = mode.rstrip(")")
+        apparmor = {"profiles": profiles}
+    elif os.path.isdir(path("/sys/kernel/security/apparmor")):
+        apparmor = {"profiles": {}, "unreadable": True}
+    run.stream.record(module, "mac_state", {"selinux": selinux, "apparmor": apparmor})
+
+
+def module_logging_state(run):
+    """What anti-forensics touches (DESIGN.md §8.10): the logs' own
+    manifest (sizes, inodes, times: a truncated or deleted log shows), the
+    logging and audit configuration (masked text), the audit records about
+    audit and SELinux themselves, and the SELinux and AppArmor state."""
+    module = "logging_state"
+    seen = set()
+    send_config_files(run, module, LOGGING_FILES, seen)
+    for directory in LOGGING_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=1)
+    _log_manifest(run, module)
+    _audit_records(run, module)
+    _mac_state(run, module)
+
+
+# --- Software changes (DESIGN.md §8.11) -----------------------------------------------
+
+REPOSITORY_FILES = ("/etc/apt/sources.list", "/etc/dnf/dnf.conf", "/etc/yum.conf")
+REPOSITORY_DIRS = ("/etc/apt/sources.list.d", "/etc/yum.repos.d", "/etc/dnf/vars", "/etc/yum/vars")
+# Signing keys: hashed and listed, never sent (a key is no secret, but its
+# bytes say nothing a hash doesn't).
+KEY_FILES = ("/etc/apt/trusted.gpg",)
+KEY_DIRS = (
+    "/etc/apt/trusted.gpg.d",
+    "/etc/apt/keyrings",
+    "/usr/share/keyrings",
+    "/etc/pki/rpm-gpg",
+)
+GLOBAL_PYTHON = (
+    "/usr/local/lib/python3*/dist-packages",
+    "/usr/local/lib/python3*/site-packages",
+    "/usr/local/lib64/python3*/site-packages",
+)
+GLOBAL_NODE = ("/usr/lib/node_modules", "/usr/local/lib/node_modules")
+RPMTAG_VERSION, RPMTAG_RELEASE, RPMTAG_EPOCH = 1001, 1002, 1003
+RPMTAG_INSTALLTIME, RPMTAG_ARCH = 1008, 1022
+MAX_PACKAGES = 20000
+_DIST_INFO = re.compile(
+    r"^(?P<name>.+?)-(?P<version>[^-]+?)(?:-py\d+(?:\.\d+)*)?\.(?:dist|egg)-info$"
+)
+
+
+def _first(value):
+    return value[0] if isinstance(value, list) and value else value
+
+
+def rpm_packages(run, module, database):
+    """Installed packages from rpm's SQLite database, opened immutable (no
+    locks, no -shm or -wal file): name, version, architecture, install
+    time."""
+    import sqlite3  # standard library; only needed on rpm systems
+    from urllib.parse import quote
+
+    wal = path(database) + "-wal"
+    try:
+        pending = os.lstat(wal).st_size
+    except OSError:
+        pending = 0
+    if pending:
+        # Opened immutable, the database is read without its write-ahead
+        # log: changes still only there (a very recent install) aren't seen.
+        run.stream.record(module, "packages_pending", {"path": database + "-wal", "bytes": pending})
+    uri = "file:" + quote(path(database)) + "?immutable=1&mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    count = 0
+    try:
+        for (blob,) in connection.execute("SELECT blob FROM Packages"):
+            run.check_time()
+            if count >= MAX_PACKAGES:
+                run.stream.record(module, "listing_truncated", {"path": database})
+                break
+            try:
+                header = RpmHeader(blob)
+                epoch = _first(header.get(RPMTAG_EPOCH))
+                version = f"{header.get(RPMTAG_VERSION)}-{header.get(RPMTAG_RELEASE)}"
+                run.stream.record(
+                    module,
+                    "package",
+                    {
+                        "manager": "rpm",
+                        "name": header.get(RPMTAG_NAME),
+                        "version": f"{epoch}:{version}" if epoch else version,
+                        "arch": header.get(RPMTAG_ARCH),
+                        "installed": _first(header.get(RPMTAG_INSTALLTIME)),
+                    },
+                )
+                count += 1
+            except (ValueError, struct.error):
+                run.stream.record(module, "malformed_header", {"path": database})
+    finally:
+        connection.close()
+
+
+def dpkg_packages(run, module):
+    """Installed packages from dpkg's status file: name, version,
+    architecture, and as install time the modification time of the
+    package's file list (dpkg rewrites it when it installs or upgrades)."""
+    text, truncated = read_whole_lines(DPKG_STATUS, 64 * 1024 * 1024)
+    if text is None:
+        raise OSError(f"{DPKG_STATUS} could not be read")
+    if truncated:
+        run.stream.record(module, "listing_truncated", {"path": DPKG_STATUS})
+    count = 0
+    for stanza in text.split("\n\n"):
+        run.check_time()
+        fields = {}
+        for line in stanza.splitlines():
+            key, sep, value = line.partition(":")
+            if sep and not line.startswith((" ", "\t")):
+                fields[key] = value.strip()
+        if not fields.get("Package") or "installed" not in fields.get("Status", "").split():
+            continue
+        if fields.get("Status", "").split()[-1] != "installed":
+            continue
+        if count >= MAX_PACKAGES:
+            run.stream.record(module, "listing_truncated", {"path": DPKG_STATUS})
+            break
+        name, arch = fields["Package"], fields.get("Architecture")
+        installed = None
+        for candidate in (f"{name}:{arch}.list", f"{name}.list"):
+            try:
+                installed = os.lstat(path(f"{DPKG_INFO}/{candidate}")).st_mtime
+                break
+            except OSError:
+                continue
+        run.stream.record(
+            module,
+            "package",
+            {
+                "manager": "dpkg",
+                "name": name,
+                "version": fields.get("Version"),
+                "arch": arch,
+                "installed": installed,
+            },
+        )
+        count += 1
+
+
+def _key_files(run, module):
+    """Signing-key files: facts and SHA-256, never their bytes."""
+    names = list(KEY_FILES)
+    for directory in KEY_DIRS:
+        try:
+            listed, cut = list_directory(directory, 1000, run)
+        except OSError:
+            continue
+        if cut:
+            run.stream.record(module, "listing_truncated", {"path": directory})
+        names += [f"{directory}/{n}" for n in listed]
+    for absolute in names:
+        run.check_time()
+        facts = path_facts(absolute)
+        if facts is None or facts.get("type") not in ("-", "l"):
+            continue
+        target = absolute
+        if facts.get("type") == "l":
+            # A link's own facts don't change when its target does: hash
+            # what it points to.
+            target, risk = resolve_links(absolute)
+            if risk:
+                facts["problem"] = risk
+        if target and not facts.get("problem"):
+            digest, problem = digest_of(run, target, "sha256")
+            facts["sha256"] = digest
+            if problem:
+                facts["problem"] = problem
+        run.stream.record(module, "signing_key", facts)
+
+
+def _global_packages(run, module):
+    """Names and versions of Python and Node packages installed system-wide
+    by hand (pip as root, npm -g), from their folders' names."""
+    skipped = []
+    for pattern in GLOBAL_PYTHON:
+        for directory in glob_absolute(pattern, skipped, run):
+            try:
+                listed, _ = list_directory(directory, 5000, run)
+            except OSError:
+                continue
+            for name in listed:
+                match = _DIST_INFO.match(name)
+                if match:
+                    run.stream.record(
+                        module,
+                        "global_package",
+                        {
+                            "kind": "python",
+                            "name": match.group("name"),
+                            "version": match.group("version"),
+                            "where": directory,
+                        },
+                    )
+    for directory in GLOBAL_NODE:
+        try:
+            listed, _ = list_directory(directory, 5000, run)
+        except OSError:
+            continue
+        for name in listed:
+            names = [name]
+            if name.startswith("@"):
+                try:
+                    scoped, _ = list_directory(f"{directory}/{name}", 1000, run)
+                except OSError:
+                    scoped = []
+                names = [f"{name}/{s}" for s in scoped]
+            for package in names:
+                if package.startswith("."):
+                    continue
+                run.stream.record(
+                    module,
+                    "global_package",
+                    {"kind": "node", "name": package, "version": None, "where": directory},
+                )
+    for gap in skipped:
+        run.stream.record(module, "not_examined", dict(gap, section="global_packages"))
+
+
+def module_software(run):
+    """What software is installed and where it comes from (DESIGN.md
+    §8.11): the installed packages (rpm's and dpkg's, both where both are
+    present), the repositories (masked text), the signing keys (hashes),
+    and packages installed system-wide with pip or npm. Each part fails
+    alone: a gap for its own section, the rest still collected."""
+    module = "software"
+
+    def part(section, work, *args):
+        try:
+            work(*args)
+        except ModuleTimeout:
+            raise
+        except Exception as exc:  # noqa: BLE001 - recorded, the other parts still run
+            run.stream.record(
+                module,
+                "not_examined",
+                {"path": section, "section": section, "reason": f"{type(exc).__name__}: {exc}"},
+            )
+
+    def packages():
+        found = False
+        for database in RPM_DATABASES:
+            resolved, risk = resolve_links(database)
+            if risk or not resolved or not os.path.isfile(path(resolved)):
+                continue
+            found = True
+            rpm_packages(run, module, resolved)
+            break
+        if os.path.isfile(path(DPKG_STATUS)):
+            found = True
+            dpkg_packages(run, module)
+        if not found:
+            raise OSError("no rpm or dpkg database")
+
+    def repositories():
+        seen = set()
+        send_config_files(run, module, REPOSITORY_FILES, seen)
+        for directory in REPOSITORY_DIRS:
+            collect_tree(run, module, directory, seen, max_depth=1)
+        _key_files(run, module)
+
+    part("packages", packages)
+    part("software_files", repositories)
+    part("global_packages", _global_packages, run, module)
+
+
+# --- Outgoing mail (DESIGN.md §8.9) ---------------------------------------------------
+
+MAIL_CONFIG_FILES = (
+    "/etc/postfix/main.cf",
+    "/etc/postfix/master.cf",
+    "/etc/exim4/update-exim4.conf.conf",
+    "/etc/exim4/exim4.conf.template",
+    "/etc/exim4/exim4.conf",
+    "/etc/exim/exim.conf",
+)
+# Debian's split Exim configuration. Postfix's lookup tables (sasl_passwd
+# and the rest) and Exim's passwd.client are never read: they hold
+# passwords and addresses.
+MAIL_CONFIG_DIRS = ("/etc/exim4/conf.d",)
+# syslog's mail logs (Debian's mail.log, RHEL's maillog), Postfix's own
+# (maillog_file), and Exim's main logs, with their rotated copies.
+MAIL_LOG_DIRS = (
+    ("/var/log", re.compile(r"^(?:mail\.log|maillog|postfix\.log)(?:[-.][\w.-]+)?$")),
+    ("/var/log/exim4", re.compile(r"^mainlog(?:[-.][\w.-]+)?$")),
+    ("/var/log/exim", re.compile(r"^main\.log(?:[-.][\w.-]+)?$")),
+)
+JOURNAL_MAIL_MATCHES = ("SYSLOG_FACILITY=2",)  # mail
+MAIL_KEY_HEX = re.compile(r"^[0-9a-f]{64}$")
+MAIL_FINGERPRINT_HEX = 12
+# Words of a log line, any one of which may be an address: a quoted local
+# part with its domain, or a run of characters that can't end one. Matched
+# left to right, each character once (no backtracking over a long line).
+_MAIL_TOKEN = re.compile(rb'"(?:[^"\\\r\n]|\\.){0,256}"@[^\s<>,;:"\'()]*|[^\s<>,;:"]+')
+# Log fields an address may follow directly (sasl_username=alice@x.org):
+# their name stays. Anything else before an = is part of the local part
+# (VERP: list-bounces+alice=example.com@lists.org).
+_MAIL_FIELDS = frozenset(
+    b"from to orig_to sasl_username sasl_sender user sender recipient rcpt orig_rcpt"
+    b" envelope_from mail_from rcpt_to id msgid message-id resent-message-id a f u r".split()
+)
+# Account names and recipients without a domain: Postfix's from=<www-data>,
+# Dovecot's user=<alice>, SASL logins, Exim's authenticated id (A=plain:alice),
+# and local's bounce reason (unknown user: "alice").
+_MAIL_BARE = (
+    re.compile(rb"\b((?:from|to|orig_to|user)=<)([^<>@\s]{1,512})(>)"),
+    re.compile(rb"\b(sasl_username=)([^\s,;@]{1,512})(?=[\s,;]|$)"),
+    re.compile(rb"(?:^|(?<=\s))(A=[\w-]{1,64}:)([^\s@]{1,512})(?=\s|$)"),
+    re.compile(rb'(unknown user: ")([^"\r\n]{1,512})(")'),
+)
+# What a remote server answered can name the recipient in any form
+# ("550 5.1.1 alice... User unknown"): only its status codes are kept.
+_MAIL_REPLY = (
+    re.compile(rb"( said: \d{3}(?:[ -]\d\.\d{1,3}\.\d{1,3})?)[^)\r\n]*"),
+    re.compile(
+        rb"(SMTP error from remote mail server after [^\r\n]{0,600}?: \d{3}"
+        rb"(?:[ -]\d\.\d{1,3}\.\d{1,3})?)[^\r\n]*"
+    ),
+)
+# Exim's arrival and delivery lines, in its main log or through syslog: the
+# message id, the flag, and the first address (which for a local delivery
+# may have no domain).
+_EXIM_FLAG = re.compile(
+    rb"(?:^|(?<=\s))[0-9A-Za-z]{6}-[0-9A-Za-z]{6,11}-[0-9A-Za-z]{2,4} "
+    rb"(<=|=>|->|\*>|\*\*|==) (\S*)"
+)
+# Exim's subject (log_selector +subject), on arrival lines only: on
+# delivery lines T= names the transport.
+_EXIM_SUBJECT = re.compile(rb'(?<= )T=(?:"(?:[^"\\\r\n]|\\.)*"?|\S+)')
+# Postfix's header_checks and body_checks log the header or body line they
+# matched, then where the message came from and its envelope; only that
+# envelope is kept, taken after the last "from <client>;" so that text in
+# the header can't pass for it.
+_POSTFIX_CONTENT = re.compile(
+    rb": (?:warning|info|reject|hold|discard|redirect|filter|replace|prepend|bcc|defer"
+    rb"|dunno|ignore|strip): (?:header|body|mime-header|nested-header) "
+)
+_POSTFIX_ENVELOPE = re.compile(
+    rb" from (?:local|[^\s;\[]{1,255}\[[^\]\s]{0,64}\]); "
+    rb"(from=<[^<>\r\n]{0,512}> to=<[^<>\r\n]{0,512}>(?: proto=\S{1,32} helo=<[^<>\r\n]{0,512}>)?)"
+)
+# Programs whose mail log lines are sent; the mail logs' other writers
+# (Dovecot, spam filters) log user names and subjects in their own ways.
+MAIL_PROGRAMS = re.compile(r"^(?:postfix[\w.-]*/[\w-]+|exim\d?)$")
+_MAIL_SYSLOG_PROGRAM = re.compile(
+    rb"^(?:\d{4}-\d\d-\d\dT\S+|[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d) \S+ ([^:\[\s]+)"
+)
+
+
+def mail_key(run):
+    """The organization's mail key from the settings, or None."""
+    value = run.settings.get("mail_key")
+    return bytes.fromhex(value) if isinstance(value, str) and MAIL_KEY_HEX.match(value) else None
+
+
+def mail_key_id(value):
+    """What the manifest shows instead of the mail key: an identifier that
+    tells keys apart, from which the key can't be found."""
+    if not isinstance(value, str) or not MAIL_KEY_HEX.match(value):
+        return "withheld (not a valid key)"
+    digest = hashlib.sha256(b"compromise-checker mail key id\0" + bytes.fromhex(value))
+    return "id:" + digest.hexdigest()[:12]
+
+
+def mail_fingerprint(key, local):
+    """A local part's keyed fingerprint (policy §7): the same address always
+    gives the same one, and without the key none can be turned back. With
+    no key, only a marker."""
+    if key is None:
+        return MASK % b"mail_address"
+    digest = hmac.new(key, local.lower(), hashlib.sha256).hexdigest()
+    return b"h:" + digest[:MAIL_FINGERPRINT_HEX].encode()
+
+
+def mask_mail(data, key, counts):
+    """Mail log or configuration text (bytes) with no address left in it:
+    each local part replaced by its fingerprint, the domain kept
+    (lowercased); account names without a domain fingerprinted too; the
+    header or body text Postfix's checks matched, Exim's subject, and what
+    remote servers answered, masked. Run before secret masking, so that no
+    secret rule can take an address's @ and leave its local part."""
+
+    def count(kind):
+        counts[kind] = counts.get(kind, 0) + 1
+
+    ending = data[len(data.rstrip(b"\r\n")) :]
+    found = _POSTFIX_CONTENT.search(data)
+    if found:
+        envelopes = list(_POSTFIX_ENVELOPE.finditer(data, found.end()))
+        envelope = envelopes[-1] if envelopes else None
+        data = data[: found.end()] + MASK % b"mail_content"
+        data += (b"; " + envelope.group(1) if envelope else b"") + ending
+        count("mail_content")
+    exim = _EXIM_FLAG.search(data)
+    if exim and exim.group(1) == b"<=":
+        data, subjects = _EXIM_SUBJECT.subn(b"T=" + MASK % b"mail_subject", data)
+        if subjects:
+            count("mail_subject")
+    for reply in _MAIL_REPLY:
+        data, replies = reply.subn(lambda m: m.group(1) + b" " + MASK % b"remote_reply", data)
+        if replies:
+            count("remote_reply")
+
+    def address(match):
+        token = match.group(0)
+        if b"@" not in token:
+            return token
+        if token.startswith(b'"'):
+            close = token.rindex(b'"@')
+            prefix, local, domain = b"", token[: close + 1], token[close + 2 :]
+        else:
+            local, _, domain = token.rpartition(b"@")
+            prefix = b""
+            name, equals, rest = local.partition(b"=")
+            if equals and name.lower() in _MAIL_FIELDS:
+                prefix, local = name + b"=", rest
+            lead = len(local) - len(local.lstrip(b"([{'`"))
+            prefix, local = prefix + local[:lead], local[lead:]
+        if not local:
+            return token
+        if domain.startswith(b"["):
+            trimmed = domain[: domain.find(b"]") + 1] if b"]" in domain else domain
+        else:
+            trimmed = domain.rstrip(b".)]}'`")
+        count("mail_address")
+        return (
+            prefix + mail_fingerprint(key, local) + b"@" + trimmed.lower() + domain[len(trimmed) :]
+        )
+
+    data = _MAIL_TOKEN.sub(address, data)
+    for bare in _MAIL_BARE:
+        data, n = bare.subn(
+            lambda m: (
+                m.group(1)
+                + mail_fingerprint(key, m.group(2))
+                + (m.group(3) if m.lastindex >= 3 else b"")
+            ),
+            data,
+        )
+        if n:
+            counts["mail_address"] = counts.get("mail_address", 0) + n
+    exim = _EXIM_FLAG.search(data)
+    first = exim.group(2) if exim else b""
+    if first and b"@" not in first and first != b"<>" and not first.startswith((b"/", b"|", b":")):
+        count("mail_address")
+        data = data[: exim.start(2)] + mail_fingerprint(key, first) + data[exim.end(2) :]
+    return data
+
+
+def mail_line_masker(key, exim_log=False):
+    """pump_lines' transform for a mail log file: only Postfix's and Exim's
+    lines (all of an Exim main log), addresses first, then secrets."""
+
+    def transform(line, masker):
+        if not exim_log:
+            program = _MAIL_SYSLOG_PROGRAM.match(line)
+            if program is None or not MAIL_PROGRAMS.match(program.group(1).decode("latin-1")):
+                masker.counts["mail_other_line"] = masker.counts.get("mail_other_line", 0) + 1
+                return b""
+        return masker.line(mask_mail(line, key, masker.counts))
+
+    return transform
+
+
+def mail_text_masker(key):
+    """pump_lines' transform for mail configuration: addresses, then secrets."""
+
+    def transform(line, masker):
+        return masker.line(mask_mail(line, key, masker.counts))
+
+    return transform
+
+
+def mail_journal_masker(key):
+    """pump_lines' transform for the journal's mail messages: only Postfix's
+    and Exim's entries, every field's addresses fingerprinted, then masked
+    like any journal line."""
+
+    def value(item, counts):
+        if isinstance(item, str):
+            masked = mask_mail(item.encode("utf-8", "surrogatepass"), key, counts)
+            return masked.decode("utf-8", "replace")
+        if isinstance(item, list):
+            if item and all(isinstance(b, int) and 0 <= b <= 255 for b in item):
+                return list(mask_mail(bytes(item), key, counts))
+            return [value(x, counts) for x in item]
+        return item
+
+    def transform(line, masker):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            entry = None
+        if not isinstance(entry, dict):
+            masker.counts["unparsed_line"] = masker.counts.get("unparsed_line", 0) + 1
+            return b"[MASKED:unparsed_line %d bytes]\n" % len(line)
+        program = entry.get("SYSLOG_IDENTIFIER")
+        if not isinstance(program, str) or not MAIL_PROGRAMS.match(program):
+            masker.counts["mail_other_line"] = masker.counts.get("mail_other_line", 0) + 1
+            return b""
+        entry = {name: value(item, masker.counts) for name, item in entry.items()}
+        text = json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
+        return mask_journal_line(text.encode("utf-8", "surrogatepass"), masker)
+
+    return transform
+
+
+def _mail_logs(run, module, key):
+    """The mail log files last written within the window, and the journal's
+    mail messages, each address fingerprinted before it is sent."""
+    since = run.since.timestamp()
+    found = sent = skipped = 0
+    for directory, pattern in MAIL_LOG_DIRS:
+        transform = mail_line_masker(key, exim_log=directory != "/var/log")
+        try:
+            names = os.listdir(path(directory))
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            run.stream.record(module, "unreadable_file", {"path": directory, "reason": str(exc)})
+            continue
+        candidates = []
+        for name in names:
+            if not pattern.match(name):
+                continue
+            absolute = _join(directory, name)
+            try:
+                info = os.lstat(path(absolute))
+            except OSError:
+                continue
+            candidates.append((info.st_mtime, absolute, stat.S_ISREG(info.st_mode)))
+        found += len(candidates)
+        for mtime, absolute, regular in sorted(candidates):
+            run.check_time()
+            if regular and mtime < since:
+                skipped += 1
+                continue
+            if send_file(run, module, absolute, transform=transform):
+                sent += 1
+    run.stream.record(
+        module,
+        "mail_log_summary",
+        {"files_found": found, "files_sent": sent, "files_before_window": skipped},
+    )
+    run_command(
+        run,
+        module,
+        "journalctl",
+        journal_args(run) + list(JOURNAL_MAIL_MATCHES),
+        transform=mail_journal_masker(key),
+    )
+
+
+POSTFIX_QUEUES = ("maildrop", "incoming", "active", "deferred", "hold", "corrupt")
+POSTFIX_SPOOL = "/var/spool/postfix"
+EXIM_SPOOLS = ("/var/spool/exim4", "/var/spool/exim")
+MAX_QUEUE_FILES = 200000
+
+
+def _count_files(run, top, depth, suffix=b""):
+    """Regular files under `top`, `depth` levels down at most (with
+    `suffix`, only names ending so), never opened: (count, cut short)."""
+    count = 0
+    pending = [(top, 0)]
+    while pending:
+        run.check_time()
+        directory, level = pending.pop()
+        with os.scandir(os.fsencode(path(directory))) as listing:
+            for entry in listing:
+                if entry.is_dir(follow_symlinks=False):
+                    if level < depth:
+                        pending.append((_join(directory, os.fsdecode(entry.name)), level + 1))
+                elif entry.is_file(follow_symlinks=False) and entry.name.endswith(suffix):
+                    count += 1
+                    if count >= MAX_QUEUE_FILES:
+                        return count, True
+    return count, False
+
+
+def _mail_queue(run, module, server, directory, queues, depth, suffix=b""):
+    counts, cut, errors = {}, [], {}
+    for queue in queues:
+        try:
+            counts[queue], truncated = _count_files(run, _join(directory, queue), depth, suffix)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors[queue] = str(exc)
+            continue
+        if truncated:
+            cut.append(queue)
+    run.stream.record(
+        module,
+        "mail_queue",
+        {"server": server, "directory": directory, "queues": counts, "cut": cut, "errors": errors},
+    )
+
+
+def _postfix_spool():
+    """Postfix's queue directory: main.cf's queue_directory, if it names
+    one plainly, or the default."""
+    text = read_small("/etc/postfix/main.cf", CONFIG_FILE_BYTES) or ""
+    for line in text.splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name.strip() == "queue_directory" and not line[:1].isspace():
+            value = value.strip()
+            if value.startswith("/") and "$" not in value and ".." not in value.split("/"):
+                return value.rstrip("/") or "/"
+    return POSTFIX_SPOOL
+
+
+def module_mail(run):
+    """Outgoing mail (DESIGN.md §8.9): Postfix's and Exim's configuration
+    (masked text; never their password or lookup tables), the queue sizes,
+    counted from the spool directories (never by running mailq), and the
+    mail logs within the window, every address's local part replaced on
+    the server by a fingerprint keyed with the organization's mail key
+    (policy §7). Without that key, no mail log is sent."""
+    module = "mail"
+    seen = set()
+    key = mail_key(run)
+    # Configuration can name addresses too (always_bcc, notice recipients):
+    # fingerprinted like the logs', or without a key replaced by a marker.
+    text = mail_text_masker(key)
+    send_config_files(run, module, MAIL_CONFIG_FILES, seen, text)
+    for directory in MAIL_CONFIG_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=2, transform=text)
+    postfix = path_facts("/etc/postfix/main.cf") is not None
+    exim = any(path_facts(p) is not None for p in ("/etc/exim4", "/etc/exim/exim.conf"))
+    run.stream.record(module, "mail_servers", {"postfix": postfix, "exim": exim})
+    if postfix:
+        # Deferred mail sits two levels down (hash_queue_depth).
+        _mail_queue(run, module, "postfix", _postfix_spool(), POSTFIX_QUEUES, 3)
+    for spool in EXIM_SPOOLS if exim else ():
+        if path_facts(spool) is not None:
+            # One -H file per message, a level down with split_spool_directory.
+            _mail_queue(run, module, "exim", spool, ("input",), 1, b"-H")
+    if key is None:
+        run.stream.record(
+            module,
+            "mail_logs_withheld",
+            {
+                "reason": run.settings.get("mail_key_withheld")
+                or "no mail key in the settings; mail logs are sent only fingerprinted"
+            },
+        )
+        return
+    _mail_logs(run, module, key)
+
+
+# --- Web applications (DESIGN.md §8.12) -------------------------------------------------
+
+WEB_CONFIG_FILES = (
+    "/etc/nginx/nginx.conf",
+    "/etc/apache2/apache2.conf",
+    "/etc/apache2/envvars",
+    "/etc/httpd/conf/httpd.conf",
+    "/etc/php-fpm.conf",
+)
+# Debian and Ubuntu enable sites and configuration by linking them into
+# these folders: the links are followed, as the server follows them.
+WEB_CONFIG_DIRS = (
+    "/etc/nginx/conf.d",
+    "/etc/nginx/sites-enabled",
+    "/etc/apache2/sites-enabled",
+    "/etc/apache2/conf-enabled",
+    "/etc/httpd/conf.d",
+    "/etc/php-fpm.d",
+)
+WEB_CONFIG_GLOBS = ("/etc/php/*/fpm/php-fpm.conf", "/etc/php/*/fpm/pool.d")
+# Where web servers log when their configuration doesn't say otherwise.
+WEB_LOG_DIRS = ("/var/log/nginx", "/var/log/apache2", "/var/log/httpd", "/var/log/php-fpm")
+_PHP_FPM_LOG = re.compile(r"^php[\d.]*-fpm\.log(?:[-.][\w.-]+)?$")
+# Log directives: nginx's access_log and error_log, Apache's CustomLog,
+# TransferLog and ErrorLog, PHP-FPM's error_log, slowlog and access.log.
+_WEB_LOG_DIRECTIVE = re.compile(
+    r"^\s*(access_log|error_log|CustomLog|TransferLog|ErrorLog|slowlog|access\.log)"
+    r"\s*=?\s*\"?([^\"\s;]+)",
+    re.IGNORECASE,
+)
+_WEB_ACCESS_DIRECTIVES = ("access_log", "customlog", "transferlog", "access.log")
+WEB_USERS = ("www-data", "apache", "nginx", "http", "wwwrun", "lighttpd")
+# Values in a query string or referrer that match an attack are replaced
+# by a marker naming the attack, not just masked (policy §7).
+WEB_EXPLOITS = (
+    ("traversal", re.compile(rb"\.\.[/\\]|[/\\]\.\.(?:[/\\]|$)")),
+    ("php_wrapper", re.compile(rb"\b(?:php|phar|expect|zip|data)://")),
+    ("php_code", re.compile(rb"<\?(?:php|=)")),
+    ("jndi", re.compile(rb"\$\{\s*(?:jndi|lower|upper|env|sys)\s*:")),
+    ("shellshock", re.compile(rb"\(\s*\)\s*\{\s*:?\s*;?\s*\}\s*;")),
+    ("shell", re.compile(rb"[;|`&]\s*(?:sh|bash|curl|wget|nc|python3?|perl|id|whoami)\b|\$\(")),
+    ("nul", re.compile(rb"\x00")),
+    ("sql", re.compile(rb"\bunion\b[\s+/*]+(?:all[\s+/*]+)?select\b|\bsleep\s*\(\s*\d")),
+)
+# A query string: to the end of its field (a space or quote), escaped
+# characters (Apache's \") and fragments included.
+_WEB_QUERY = re.compile(rb'\?((?:[^\s"\\]|\\.)*)')
+_WEB_PERCENT = re.compile(rb"%([0-9A-Fa-f]{2})")
+_WEB_QUOTED = rb'"((?:[^"\\\n]|\\.)*)"'
+# A combined-format line, with an optional virtual host first (Apache's
+# vhost_combined): [vhost:port] client ident user [time] "request" status
+# size "referrer" "user agent", then anything a custom format adds.
+_WEB_COMBINED = re.compile(
+    rb"^((?:\S+ )?\S+ \S+ \S+ \[[^\]\n]*\] "
+    + _WEB_QUOTED
+    + rb" \d{3} (?:\d+|-) )"
+    + _WEB_QUOTED
+    + rb" "
+    + _WEB_QUOTED
+)
+# A referrer named in an error log, quoted or not.
+_WEB_REFERRER_FIELD = re.compile(rb'((?:referrer|referer): "?)([^"\s]+)')
+# Any quoted URL (custom and JSON formats name referrers their own way).
+_WEB_QUOTED_URL = re.compile(rb'"([A-Za-z][A-Za-z0-9+.-]{0,30}://(?:[^"\\\n]|\\.)*)"')
+_WEB_URL_HEAD = re.compile(rb"^([A-Za-z][A-Za-z0-9+.-]{0,30}://[^/?#\s\"\\]*)")
+_WEB_LONG_QUOTED = re.compile(rb'"((?:[^"\\\n]|\\.){257,})"')
+# name=value outside the request: cookies, form fields, custom fields.
+_WEB_PAIR = re.compile(rb"([\w.\[\]-]{1,128})=([^\s;&\"',]+)")
+WEB_AGENT_CHARS = 256
+
+
+def _unquote(value):
+    """A value percent-decoded twice (attackers encode twice), and "+" read
+    as a space, lowercased: what the attack patterns are matched on."""
+    for _ in range(2):
+        value = _WEB_PERCENT.sub(lambda m: bytes([int(m.group(1), 16)]), value.replace(b"+", b" "))
+    return value.lower()
+
+
+def web_attack(value):
+    """The name of the attack a value matches, or None."""
+    decoded = _unquote(value)
+    for name, pattern in WEB_EXPLOITS:
+        if pattern.search(decoded):
+            return name
+    return None
+
+
+def _count(counts, kind):
+    counts[kind] = counts.get(kind, 0) + 1
+
+
+def _web_marker(value, counts, plain=b"value"):
+    if not value or value.startswith(b"[MASKED:"):
+        return value
+    attack = web_attack(value)
+    if attack:
+        _count(counts, "web_exploit")
+        return MASK % (b"exploit:" + attack.encode())
+    _count(counts, "web_" + plain.decode())
+    return MASK % plain
+
+
+def _mask_query(match, counts):
+    pairs = []
+    for pair in re.split(rb"([&;])", match.group(1)):
+        if pair in (b"&", b";"):
+            pairs.append(pair)
+            continue
+        name, equals, value = pair.partition(b"=")
+        if equals:
+            pairs.append(name + b"=" + _web_marker(value, counts))
+        else:  # a bare value (?secret): no name to keep
+            pairs.append(_web_marker(name, counts))
+    return b"?" + b"".join(pairs)
+
+
+def _mask_referrer(value, counts):
+    """A referrer or other URL: where it came from (scheme and host) kept,
+    the rest a marker; a value that isn't a URL, wholly a marker."""
+    if value in (b"", b"-"):
+        return value
+    head = _WEB_URL_HEAD.match(value)
+    rest = value[head.end() :] if head else value
+    if not rest or rest == b"/":
+        return value
+    return (head.group(1) + b"/" if head else b"") + _web_marker(rest, counts, b"referrer")
+
+
+def _cut(value, counts):
+    """A field cut to 256 characters (not bytes: no character is split)."""
+    text = value.decode("utf-8", "surrogateescape")
+    if len(text) <= WEB_AGENT_CHARS:
+        return value
+    _count(counts, "web_field_cut")
+    return text[:WEB_AGENT_CHARS].encode("utf-8", "surrogateescape") + b"[cut]"
+
+
+def _mask_fields(data, counts):
+    """What a custom format adds (cookies, form fields, timings, JSON):
+    every quoted URL cut to its scheme and host, every name=value's value
+    masked, every quoted field over 256 characters cut."""
+    data = _WEB_QUOTED_URL.sub(lambda m: b'"' + _mask_referrer(m.group(1), counts) + b'"', data)
+    data = _WEB_PAIR.sub(lambda m: m.group(1) + b"=" + _web_marker(m.group(2), counts), data)
+    return _WEB_LONG_QUOTED.sub(lambda m: b'"' + _cut(m.group(1), counts) + b'"', data)
+
+
+def mask_web(data, counts, kind="access"):
+    """A web server log line with every query-string value and referrer
+    masked (names kept; an attack's value replaced by a marker naming it)
+    and user agents cut to 256 characters (policy §7). An access-log line
+    in no known format is masked field by field (`_mask_fields`). Each
+    pattern reads the line left to right once."""
+    queries = lambda text: _WEB_QUERY.sub(lambda m: _mask_query(m, counts), text)  # noqa: E731
+    if kind == "access":
+        combined = _WEB_COMBINED.match(data)
+        if combined:
+            head, referrer, agent = combined.group(1), combined.group(3), combined.group(4)
+            return (
+                queries(head)
+                + b'"'
+                + _mask_referrer(referrer, counts)
+                + b'" "'
+                + _cut(agent, counts)
+                + b'"'
+                + _mask_fields(queries(data[combined.end() :]), counts)
+            )
+        return _mask_fields(queries(data), counts)
+    data = _WEB_REFERRER_FIELD.sub(lambda m: m.group(1) + _mask_referrer(m.group(2), counts), data)
+    data = _WEB_QUOTED_URL.sub(lambda m: b'"' + _mask_referrer(m.group(1), counts) + b'"', data)
+    return queries(data)
+
+
+def web_line_masker(kind):
+    """pump_lines' transform for one kind of web server log: queries,
+    referrers and fields, then secrets."""
+
+    def transform(line, masker):
+        return masker.line(mask_web(line, masker.counts, kind))
+
+    return transform
+
+
+def _web_log_paths(texts):
+    """Log files the configuration names, as {path: "access" | "error"}:
+    absolute paths, or Apache's ${APACHE_LOG_DIR} and RHEL's relative
+    logs/; never pipes or syslog."""
+    found = {}
+    for _config_path, text in texts:
+        for line in text.splitlines():
+            match = _WEB_LOG_DIRECTIVE.match(line)
+            if not match:
+                continue
+            directive, target = match.group(1).lower(), match.group(2)
+            target = target.replace("${APACHE_LOG_DIR}", "/var/log/apache2")
+            if target.startswith("logs/"):
+                target = "/var/log/httpd/" + target[5:]
+            if not target.startswith("/") or ".." in target.split("/"):
+                continue
+            kind = "access" if directive in _WEB_ACCESS_DIRECTIVES else "error"
+            # Named as both: access (sent only with the opt-in).
+            found[target] = "access" if found.get(target) == "access" else kind
+    return found
+
+
+def _web_kind(name):
+    """A log's kind by its name: error only when it says so and not
+    "access"; anything else counts as access (sent only with the opt-in)."""
+    lowered = name.lower()
+    if "access" not in lowered and (
+        "error" in lowered or "slow" in lowered or _PHP_FPM_LOG.match(name)
+    ):
+        return "error"
+    return "access"
+
+
+def _named_kind(absolute, named):
+    """The kind the configuration gives a file: its own path's, else the
+    longest configured path it is a rotated copy of (path.1, path-2026…)."""
+    if absolute in named:
+        return named[absolute]
+    bases = [p for p in named if absolute.startswith(p + ".") or absolute.startswith(p + "-")]
+    return named[max(bases, key=len)] if bases else None
+
+
+def _web_logs(run, module, texts):
+    """The web servers' log files last written within the window, newest
+    first: error logs always, access logs only with the organization's
+    opt-in. The summary is written however this ends."""
+    named = _web_log_paths(texts)
+    candidates = {}  # path: kind
+    directories = set(WEB_LOG_DIRS) | {p.rsplit("/", 1)[0] for p in named}
+    for directory in sorted(directories):
+        try:
+            names = os.listdir(path(directory))
+        except OSError:
+            continue
+        for name in names:
+            absolute = _join(directory, name)
+            kind = _named_kind(absolute, named)
+            if kind is None and directory in WEB_LOG_DIRS:
+                kind = _web_kind(name)
+            if kind:
+                candidates[absolute] = kind
+    try:
+        for name in os.listdir(path("/var/log")):
+            if _PHP_FPM_LOG.match(name):
+                candidates.setdefault("/var/log/" + name, "error")
+    except OSError:
+        pass
+    since = run.since.timestamp()
+    counts = {"access": [0, 0], "error": [0, 0]}  # found, sent
+    entries = []
+    for absolute, kind in candidates.items():
+        try:
+            info = os.lstat(path(absolute))
+        except OSError:
+            continue
+        counts[kind][0] += 1
+        entries.append((info.st_mtime, absolute, kind, stat.S_ISREG(info.st_mode)))
+    access = bool(run.settings.get("web_access_logs"))
+    try:
+        for mtime, absolute, kind, regular in sorted(entries, reverse=True):
+            run.check_time()
+            if kind == "access" and not access:
+                continue
+            if regular and mtime < since:
+                continue
+            if send_file(run, module, absolute, transform=web_line_masker(kind)):
+                counts[kind][1] += 1
+    finally:
+        run.stream.record(
+            module,
+            "web_logs_summary",
+            {
+                "access_logs_opted_in": access,
+                "access_found": counts["access"][0],
+                "access_sent": counts["access"][1],
+                "error_found": counts["error"][0],
+                "error_sent": counts["error"][1],
+            },
+        )
+
+
+# Program starts from the audit log (policy §7): execve and execveat, by
+# architecture.
+EXEC_SYSCALLS = {
+    "c000003e": ("59", "322"),  # x86_64
+    "c00000b7": ("221", "281"),  # aarch64
+    "40000003": ("11", "358"),  # i386
+    "40000028": ("11", "387"),  # 32-bit ARM
+    "c0000015": ("11", "362"),  # ppc64le
+    "80000016": ("11", "354"),  # s390x
+}
+EXEC_TYPES = (b"type=SYSCALL ", b"type=EXECVE ", b"type=CWD ")
+MAX_EXEC_RECORDS = 20000
+MAX_EXEC_ARGV = 4096
+_AUDIT_SERIAL = re.compile(rb"msg=audit\((\d+)\.(\d+):(\d+)\)")
+_AUDIT_FIELD = re.compile(rb'(\w+(?:\[\d+\])?)=("[^"]*"|\S+)')
+
+
+def audit_files():
+    """The audit logs to read, oldest first, as (path, bytes to skip at its
+    start): the newest AUDIT_BYTES of them, so a cap never leaves out the
+    current log."""
+    chosen, left = [], AUDIT_BYTES
+    for absolute in AUDIT_LOGS:  # newest first
+        if left <= 0:
+            break
+        try:
+            size = os.stat(path(absolute)).st_size
+        except OSError:
+            continue
+        chosen.append((absolute, max(0, size - left)))
+        left -= size
+    return list(reversed(chosen))
+
+
+def read_audit_lines(raw, skip):
+    """An audit log's lines from `skip` bytes in (the first, partial line
+    after a skip left out)."""
+    if skip:
+        raw.seek(skip)
+        raw.readline(65536)
+    while True:
+        line = raw.readline(65536)  # an over-long line comes in pieces
+        if not line:
+            return
+        yield line
+
+
+def _audit_value(raw):
+    """An audit field's value: quoted text, or hex-encoded bytes."""
+    if raw.startswith(b'"') and raw.endswith(b'"'):
+        return raw[1:-1]
+    if raw and len(raw) % 2 == 0 and all(c in b"0123456789ABCDEFabcdef" for c in raw):
+        try:
+            return binascii.unhexlify(raw)
+        except binascii.Error:
+            return raw
+    return raw
+
+
+def _exec_uids(run):
+    """The UIDs whose program starts are collected, or None for all."""
+    choice = run.settings.get("exec_records") or "web"
+    if choice == "all":
+        return None
+    accounts, _ = read_accounts()
+    accounts = accounts or []
+    names = set(WEB_USERS) | set(run.settings.get("web_users") or ())
+    if choice == "privileged":
+        privileged, _ = privileged_accounts(run, accounts)
+        names |= privileged
+    return {a["uid"] for a in accounts if a["name"] in names and a["uid"] is not None}
+
+
+def _exec_record(parts, uids):
+    """One program start from its audit records, if it is one and its
+    account is chosen: user, program, parent, and masked arguments."""
+    syscall = parts.get(b"SYSCALL")
+    if syscall is None:
+        return None
+    fields = dict(_AUDIT_FIELD.findall(syscall))
+    if fields.get(b"syscall", b"").decode() not in EXEC_SYSCALLS.get(
+        fields.get(b"arch", b"").decode(), ()
+    ):
+        return None
+
+    def number(name):
+        value = fields.get(name, b"")
+        return int(value) if value.isdigit() else None
+
+    uid, euid = number(b"uid"), number(b"euid")
+    if uids is not None and uid not in uids and euid not in uids:
+        return None
+    # A long argument list comes in several EXECVE records: their fields
+    # together.
+    execve = {}
+    for line in parts.get(b"EXECVE", ()):
+        execve.update(_AUDIT_FIELD.findall(line))
+    argc = int(execve.get(b"argc", b"0")) if execve.get(b"argc", b"0").isdigit() else 0
+    argv = []
+    for n in range(min(argc, 512)):
+        key = b"a%d" % n
+        if key in execve:
+            argv.append(_audit_value(execve[key]))
+        else:  # a long argument, logged in pieces a<n>[0], a<n>[1]…
+            pieces, i = [], 0
+            while b"%s[%d]" % (key, i) in execve:
+                pieces.append(_audit_value(execve[b"%s[%d]" % (key, i)]))
+                i += 1
+            argv.append(b"".join(pieces))
+    joined = b" ".join(argv)
+    # Masked whole, then cut: a cut could leave part of a secret unmasked.
+    command, _ = masked(joined)
+    cwd = dict(_AUDIT_FIELD.findall(parts.get(b"CWD", b""))).get(b"cwd")
+
+    def text(value):
+        return masked(_audit_value(value))[0] if value else None
+
+    return {
+        "time": iso_from_timestamp(parts["time"]),
+        "serial": parts["serial"],
+        "pid": number(b"pid"),
+        "ppid": number(b"ppid"),
+        "uid": uid,
+        "euid": euid,
+        "auid": number(b"auid"),
+        "session": number(b"ses"),
+        "success": fields.get(b"success", b"").decode("ascii", "replace") or None,
+        "comm": text(fields.get(b"comm")),
+        "exe": text(fields.get(b"exe")),
+        "cwd": text(cwd),
+        "argc": argc,
+        "argv": command[:MAX_EXEC_ARGV],
+        "argv_cut": len(command) > MAX_EXEC_ARGV,
+    }
+
+
+def _exec_records(run, module):
+    """Program starts within the look-back from the audit logs, for the
+    chosen accounts (policy §7), newest kept, arguments masked like any
+    command line. Without them, a record says why."""
+    files = audit_files()
+    if not files:
+        run.stream.record(
+            module,
+            "exec_records_unavailable",
+            {"reason": "no audit log: program starts aren't recorded on this server"},
+        )
+        return
+    uids = _exec_uids(run)
+    since = run.since.timestamp()
+    found = collections.deque(maxlen=MAX_EXEC_RECORDS)
+    pending = collections.OrderedDict()  # (seconds, serial): {type: line(s)}
+    starts, read = 0, 0
+
+    def settle(keep=0):
+        nonlocal starts
+        while len(pending) > keep:
+            _, parts = pending.popitem(last=False)
+            record = _exec_record(parts, uids)
+            if record is not None:
+                found.append(record)
+                starts += 1
+
+    for absolute, skip in files:
+        run.check_time()
+        try:
+            raw, _ = open_regular_file(absolute)
+        except (OSError, ValueError):
+            continue
+        with raw:
+            for line in read_audit_lines(raw, skip):
+                read += len(line)
+                record = _AUDIT_NODE.sub(b"", line, count=1)
+                if not record.startswith(EXEC_TYPES):
+                    continue
+                stamp = _AUDIT_SERIAL.search(record)
+                if stamp is None or int(stamp.group(1)) < since:
+                    continue
+                seconds, serial = int(stamp.group(1)), int(stamp.group(3))
+                parts = pending.setdefault((seconds, serial), {"time": seconds, "serial": serial})
+                kind = record.split(b" ", 1)[0][5:]
+                if kind == b"EXECVE":
+                    parts.setdefault(kind, []).append(record.rstrip(b"\n"))
+                else:
+                    parts[kind] = record.rstrip(b"\n")
+                if len(pending) > 256:
+                    settle(128)
+    settle()
+    for record in found:
+        run.stream.record(module, "exec_record", record)
+    run.stream.record(
+        module,
+        "exec_records_summary",
+        {
+            "accounts": run.settings.get("exec_records") or "web",
+            "starts": starts,
+            "kept": len(found),
+            "older_left_out": max(0, starts - MAX_EXEC_RECORDS),
+            "older_logs_left_out": files[0][1] > 0
+            or len(files) < len([p for p in AUDIT_LOGS if os.path.exists(path(p))]),
+            "bytes_read": read,
+        },
+    )
+
+
+def module_web_logs(run):
+    """Web applications (DESIGN.md §8.12): from the audit log, program
+    starts by the web server's accounts (more with the opt-in), read first
+    so long logs can't crowd them out; the web servers' configuration
+    (masked text); their error logs within the window, newest first; and
+    their access logs only where the organization opted in (policy §7:
+    query and referrer values masked, user agents cut)."""
+    module = "web_logs"
+    # Which accounts count as the web server's: the checks judge these.
+    run.stream.record(
+        module,
+        "web_accounts",
+        {"names": sorted(set(WEB_USERS) | set(run.settings.get("web_users") or ()))},
+    )
+    _exec_records(run, module)
+    seen = set()
+    send_config_files(run, module, WEB_CONFIG_FILES, seen)
+    for directory in WEB_CONFIG_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=2)
+        try:
+            names = sorted(os.listdir(path(directory)))
+        except OSError:
+            names = []
+        links = [_join(directory, n) for n in names if os.path.islink(path(_join(directory, n)))]
+        send_config_files(run, module, links[:MAX_DIR_FILES], seen)
+    for pattern in WEB_CONFIG_GLOBS:
+        for found in glob_absolute(pattern, run=run):
+            if os.path.isdir(path(found)):
+                collect_tree(run, module, found, seen, max_depth=1)
+            else:
+                send_config_files(run, module, (found,), seen)
+    texts = [
+        (absolute, read_config_text(run, module, absolute))
+        for absolute in sorted(p for p in seen if isinstance(p, str))
+    ]
+    with time_share(run, module, "logs", 1.0):
+        _web_logs(run, module, texts)
+
+
+# --- Containers (DESIGN.md §8.13) -------------------------------------------------------
+#
+# Decision 4: the runtimes' state files only, never their sockets (Podman's
+# is usually socket-activated: connecting would start podman.service).
+# Only the fields listed here leave the server; never a container's
+# environment (it holds secrets) or labels.
+
+DOCKER_DAEMON_JSON = "/etc/docker/daemon.json"
+DOCKER_ROOTS = ("/var/lib/docker", "/var/snap/docker/common/var-lib-docker")
+PODMAN_STORAGE_CONF = "/etc/containers/storage.conf"
+PODMAN_ROOT = "/var/lib/containers/storage"
+PODMAN_RUNROOT = "/run/containers/storage"
+CONTAINER_JSON_BYTES = 4 * 1024 * 1024
+MAX_CONTAINERS = 2000
+_STORAGE_SETTING = re.compile(r'^\s*(graphroot|runroot|driver)\s*=\s*["\']([^"\']*)["\']')
+CONTAINERD_TASKS = "/run/containerd/io.containerd.runtime.v2.task"
+# What's there but not inventoried: a coverage note, never "no containers".
+# (Docker runs its own containers through containerd, in its "moby"
+# namespace: only other namespaces are someone else's.)
+CONTAINER_NOT_INVENTORIED = (
+    ("/var/lib/kubelet", "Kubernetes (kubelet)"),
+    ("/var/lib/rancher/k3s", "k3s"),
+    ("/var/snap/microk8s", "MicroK8s"),
+    ("/var/lib/lxd/containers", "LXD"),
+    ("/var/snap/lxd/common/lxd/containers", "LXD"),
+    ("/var/lib/lxc", "LXC"),
+)
+
+
+def read_json(absolute, limit=CONTAINER_JSON_BYTES):
+    """A JSON file, read safely and whole: (value, None) or (None, why not)."""
+    try:
+        raw, info = open_regular_file(absolute)
+    except (OSError, ValueError) as exc:
+        return None, str(exc)
+    try:
+        with raw:
+            if info.st_size > limit:
+                return None, f"larger than {limit} bytes"
+            data = raw.read(limit + 1)
+    except OSError as exc:
+        return None, str(exc)
+    try:
+        return json.loads(data.decode("utf-8", "replace")), None
+    except ValueError as exc:
+        return None, f"not JSON: {exc}"
+
+
+def _container_text(value, limit=512):
+    """A name, image or path from a container's state, masked like any
+    text a user chose."""
+    if value is None:
+        return None
+    return masked(str(value)[:limit])[0]
+
+
+def capability(name):
+    """A capability's canonical name: SYS_ADMIN for sys_admin or CAP_SYS_ADMIN."""
+    name = str(name).upper()
+    return name[4:] if name.startswith("CAP_") else name
+
+
+def _mount(source, destination, rw, kind):
+    return {
+        "type": kind,
+        "source": _container_text(source) if source else None,
+        "destination": _container_text(destination),
+        "rw": bool(rw),
+    }
+
+
+def _docker_container(directory):
+    """One Docker container from its state files: the listed fields only."""
+    config, problem = read_json(_join(directory, "config.v2.json"))
+    if config is None:
+        return None, problem
+    host, host_problem = read_json(_join(directory, "hostconfig.json"))
+    state = config.get("State") or {}
+    inner = config.get("Config") or {}
+    mounts = []
+    for point in (config.get("MountPoints") or {}).values():
+        if not isinstance(point, dict):
+            continue
+        # A volume an image declares (postgres's data) or a tmpfs has no
+        # host path: Source is empty. Only binds name one.
+        kind = point.get("Type") or ("bind" if point.get("Source") else "volume")
+        source = point.get("Source") if kind == "bind" else None
+        mounts.append(
+            _mount(source, point.get("Destination"), point.get("RW"), kind)
+            | ({"volume": _container_text(point.get("Name"), 128)} if point.get("Name") else {})
+        )
+    found = {
+        "runtime": "docker",
+        "id": str(config.get("ID") or "")[:64],
+        "name": _container_text(str(config.get("Name") or "").lstrip("/")),
+        "image": _container_text(inner.get("Image")),
+        "created": config.get("Created"),
+        "running_state": bool(state.get("Running")),
+        "mounts": mounts,
+    }
+    if not isinstance(host, dict):
+        # Without it, nothing can be said of privilege: a gap, not "no".
+        found["hostconfig_unreadable"] = host_problem or "not an object"
+        return found, None
+    found.update(
+        {
+            "privileged": bool(host.get("Privileged")),
+            "capabilities": sorted(capability(c) for c in host.get("CapAdd") or [] if c),
+            "host_pid": host.get("PidMode") == "host",
+            "host_network": host.get("NetworkMode") == "host",
+            "host_ipc": host.get("IpcMode") == "host",
+            "devices": sorted(
+                _container_text(d.get("PathOnHost"))
+                for d in host.get("Devices") or []
+                if isinstance(d, dict) and d.get("PathOnHost")
+            ),
+            "security_opt": sorted(
+                _container_text(o, 128) for o in host.get("SecurityOpt") or [] if o
+            ),
+        }
+    )
+    return found, None
+
+
+def _docker_roots():
+    """Docker's data roots (daemon.json's data-root or the old graph, and
+    the snap's), each with its userns-remap subdirectories (<uid>.<gid>)."""
+    roots = list(DOCKER_ROOTS)
+    settings, _ = read_json(DOCKER_DAEMON_JSON, 1024 * 1024)
+    if isinstance(settings, dict):
+        chosen = settings.get("data-root") or settings.get("graph")
+        if isinstance(chosen, str) and chosen.startswith("/") and ".." not in chosen.split("/"):
+            roots = [chosen.rstrip("/") or "/"]
+    found = []
+    for root in roots:
+        found.append(root)
+        try:
+            found += [
+                _join(root, n) for n in sorted(os.listdir(path(root))) if re.match(r"^\d+\.\d+$", n)
+            ]
+        except OSError:
+            pass
+    return found
+
+
+def _podman_storage():
+    """Podman's storage root, run root and driver from storage.conf's
+    [storage] table (comments and other tables ignored), or the defaults."""
+    found = {"graphroot": PODMAN_ROOT, "runroot": PODMAN_RUNROOT, "driver": ""}
+    section = ""
+    for line in (read_small(PODMAN_STORAGE_CONF) or "").splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if stripped.startswith("["):
+            section = stripped
+            continue
+        match = _STORAGE_SETTING.match(stripped)
+        if match and section in ("", "[storage]"):
+            name, value = match.groups()
+            if name == "driver":
+                found[name] = value
+            elif value.startswith("/") and ".." not in value.split("/"):
+                found[name] = value.rstrip("/") or "/"
+    return found
+
+
+def _oci_container(listed, bundle, storage):
+    """One Podman container from containers.json's entry and its OCI
+    config.json (the runtime's own view: namespaces, capabilities, mounts,
+    devices), the listed fields only."""
+    config, problem = read_json(_join(bundle, "userdata/config.json"))
+    if config is None:
+        return None, problem
+    linux = config.get("linux") or {}
+    kinds = {n.get("type") for n in linux.get("namespaces") or [] if isinstance(n, dict)}
+    caps = (config.get("process") or {}).get("capabilities") or {}
+    # The bounding set: a non-root container's effective set is empty, but a
+    # set-user-ID program in it regains these.
+    held = caps.get("bounding") or caps.get("effective") or []
+    annotations = config.get("annotations") or {}
+    names = listed.get("names") or []
+    try:
+        metadata = json.loads(listed.get("metadata") or "{}")
+    except ValueError:
+        metadata = {}
+    own = (storage["graphroot"] + "/", storage["runroot"] + "/")
+    return {
+        "runtime": "podman",
+        "id": str(listed.get("id") or "")[:64],
+        "name": _container_text(names[0] if names else metadata.get("name")),
+        "image": _container_text(metadata.get("image-name") or listed.get("image")),
+        "created": listed.get("created"),
+        "privileged": str(annotations.get("io.podman.annotations.privileged")).upper() == "TRUE"
+        or ("CAP_SYS_ADMIN" in held and len(held) >= 38),
+        "capabilities": sorted(capability(c) for c in held if c),
+        "host_pid": "pid" not in kinds,
+        "host_network": "network" not in kinds,
+        "host_ipc": "ipc" not in kinds,
+        "devices": sorted(
+            _container_text(d.get("path"))
+            for d in linux.get("devices") or []
+            if isinstance(d, dict) and d.get("path")
+        ),
+        "security_opt": [],
+        # Podman's own mounts (the container's /etc/hosts, /dev/shm) come
+        # from its storage, named by the container's ID: left out.
+        "mounts": [
+            _mount(
+                m.get("source"), m.get("destination"), "ro" not in (m.get("options") or []), "bind"
+            )
+            for m in config.get("mounts") or []
+            if isinstance(m, dict)
+            and m.get("type") in ("bind", None)
+            and not str(m.get("source") or "").startswith(own)
+        ],
+    }, None
+
+
+def _not_inventoried():
+    """Container runtimes present whose containers aren't read."""
+    found = [label for where, label in CONTAINER_NOT_INVENTORIED if _has_entries(where)]
+    try:
+        namespaces = [n for n in os.listdir(path(CONTAINERD_TASKS)) if n != "moby"]
+    except OSError:
+        namespaces = []
+    if any(_has_entries(_join(CONTAINERD_TASKS, n)) for n in namespaces):
+        found.append("containerd (" + ", ".join(sorted(namespaces)) + ")")
+    return found
+
+
+def _has_entries(absolute):
+    try:
+        with os.scandir(path(absolute)) as listing:
+            return any(True for _ in listing)
+    except OSError:
+        return False
+
+
+def module_containers(run):
+    """Containers (DESIGN.md §8.13), from the runtimes' state files only
+    (decision 4): Docker's per-container config.v2.json and hostconfig.json
+    under its data roots, Podman's <driver>-containers/containers.json and
+    each container's OCI config.json under its storage root. Only the
+    listed fields leave the server, never the environment. A layout not
+    recognised, and runtimes not inventoried (Kubernetes, containerd, LXD,
+    rootless Podman), are recorded so the coverage says so; the controller
+    also matches running containers' cgroups against what was read."""
+    module = "containers"
+    found, created = 0, 0
+
+    def gap(where, reason):
+        run.stream.record(module, "containers_unreadable", {"path": where, "reason": reason})
+
+    for root in _docker_roots():
+        directory = _join(root, "containers")
+        try:
+            names = sorted(os.listdir(path(directory)))
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            gap(directory, str(exc))
+            continue
+        for name in names[:MAX_CONTAINERS]:
+            run.check_time()
+            container, problem = _docker_container(_join(directory, name))
+            if container is None:
+                gap(_join(directory, name), problem)
+                continue
+            if "hostconfig_unreadable" in container:
+                gap(_join(directory, name) + "/hostconfig.json", container["hostconfig_unreadable"])
+            run.stream.record(module, "container", container)
+            found += 1
+        if len(names) > MAX_CONTAINERS:
+            run.stream.record(module, "containers_cut", {"path": directory, "count": len(names)})
+    storage = _podman_storage()
+    listings = []
+    if storage["driver"]:
+        listings.append(
+            _join(storage["graphroot"], storage["driver"] + "-containers/containers.json")
+        )
+    listings += [
+        p
+        for p in glob_absolute(storage["graphroot"] + "/*-containers/containers.json", run=run)
+        if p not in listings
+    ]
+    for listing_path in listings:
+        listing, problem = read_json(listing_path)
+        if listing is None:
+            if path_facts(listing_path) is not None:
+                gap(listing_path, problem)
+            continue
+        if not isinstance(listing, list):
+            gap(listing_path, "not a list")
+            continue
+        for listed in listing[:MAX_CONTAINERS]:
+            run.check_time()
+            if not isinstance(listed, dict) or not re.match(
+                r"^[0-9a-f]{64}$", str(listed.get("id"))
+            ):
+                continue
+            try:
+                metadata = json.loads(listed.get("metadata") or "{}")
+            except ValueError:
+                metadata = {}
+            if not metadata.get("image-name") and not metadata.get("name"):
+                continue  # a Buildah working container, not one Podman runs
+            bundle = _join(listing_path.rsplit("/", 1)[0], listed["id"])
+            container, problem = _oci_container(listed, bundle, storage)
+            if container is None:
+                # Created but never started: no runtime spec yet, nothing runs.
+                created += 1
+                continue
+            run.stream.record(module, "container", container)
+            found += 1
+        if len(listing) > MAX_CONTAINERS:
+            run.stream.record(
+                module, "containers_cut", {"path": listing_path, "count": len(listing)}
+            )
+    others = _not_inventoried()
+    if glob_absolute("/home/*/.local/share/containers/storage", run=run):
+        others.append("rootless Podman in home directories")
+    if glob_absolute("/home/*/.local/share/docker/containers", run=run):
+        others.append("rootless Docker in home directories")
+    run.stream.record(
+        module,
+        "containers_summary",
+        {
+            "inventoried": found,
+            "created_not_started": created,
+            "not_inventoried": sorted(set(others)),
+        },
+    )
+
+
 MODULES = {
     "host_facts": module_host_facts,
     "auth_log": module_auth_log,
@@ -6058,6 +8244,12 @@ MODULES = {
     "system_files": module_system_files,
     "unusual_files": module_unusual_files,
     "processes": module_processes,
+    "network": module_network,
+    "logging_state": module_logging_state,
+    "software": module_software,
+    "mail": module_mail,
+    "web_logs": module_web_logs,
+    "containers": module_containers,
 }
 
 
@@ -6089,6 +8281,23 @@ def settings_problems(settings):
             unknown = [m for m in modules if m not in MODULES]
             if unknown:
                 problems.append("unknown modules: " + ", ".join(unknown))
+    if not isinstance(settings.get("web_access_logs", False), bool):
+        problems.append("web_access_logs must be true or false")
+    if settings.get("exec_records", "web") not in ("web", "privileged", "all"):
+        problems.append("exec_records must be web, privileged or all")
+    web_users = settings.get("web_users", [])
+    if not (
+        isinstance(web_users, list)
+        and len(web_users) <= 64
+        and all(isinstance(u, str) and _SUDO_ACCOUNT.match(u) for u in web_users)
+    ):
+        problems.append("web_users must be a list of at most 64 account names")
+    withheld = settings.get("mail_key_withheld")
+    if withheld is not None and not (isinstance(withheld, str) and len(withheld) <= 300):
+        problems.append("mail_key_withheld must be null or text of at most 300 characters")
+    mail = settings.get("mail_key")
+    if mail is not None and not (isinstance(mail, str) and MAIL_KEY_HEX.match(mail)):
+        problems.append("mail_key must be null or 64 lowercase hexadecimal digits")
     if settings.get("home_text", "off") not in ("off", "privileged", "all"):
         problems.append("home_text must be off, privileged or all")
     web_roots = settings.get("web_roots")
@@ -6114,6 +8323,17 @@ def settings_problems(settings):
             if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
                 problems.append(f"limits.{key} must be a positive number")
     return problems
+
+
+def settings_shown(settings):
+    """The settings as the manifest repeats them, with the mail key replaced
+    by its identifier: the key itself never leaves the server's memory."""
+    if not isinstance(settings, dict):
+        return None
+    shown = dict(settings)
+    if "mail_key" in shown and shown["mail_key"] is not None:
+        shown["mail_key"] = mail_key_id(shown["mail_key"])
+    return shown
 
 
 def main(settings_json, out=None):
@@ -6145,7 +8365,7 @@ def main(settings_json, out=None):
             "host": host_identity(),
             "python": {"version": platform.python_version(), "executable": sys.executable},
             "effective_uid": os.geteuid(),
-            "settings": settings if isinstance(settings, dict) else None,
+            "settings": settings_shown(settings),
             "modules_planned": planned,
             "masking_version": MASKING_VERSION,
             "priority": priority,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from checker.checks import (
     COMPROMISE,
@@ -15,10 +15,23 @@ from checker.checks import (
     parse_time,
     span,
 )
+from checker.checks.web import WEB_USERS
 
 SYSTEM_UID_MAX = 999  # service accounts: 1-999 (login.defs SYS_UID_MAX)
 NO_LOGIN = ("nologin", "false", "sync", "shutdown", "halt")
-ROOT_GROUPS = {"root", "wheel", "sudo", "admin", "docker", "lxd", "disk", "shadow"}
+ROOT_GROUPS = {
+    "root",
+    "wheel",
+    "sudo",
+    "admin",
+    "docker",
+    "lxd",
+    "incus-admin",
+    "libvirt",
+    "disk",
+    "kmem",
+    "shadow",
+}
 LOG_GROUPS = {"adm", "systemd-journal"}
 # A "too many failures" line repeats the last attempt, so it isn't counted.
 FAILURES = ("ssh.login.failed", "ssh.invalid_user", "auth.failure")
@@ -104,7 +117,7 @@ def uid0(context: Context) -> list[Finding]:
                     "account.uid0",
                     "An account other than root has UID 0",
                     COMPROMISE,
-                    "high",
+                    "critical",
                     f"{key} has UID 0: it is root under another name",
                     [f"account:{key}"],
                     [{"item": ["accounts", key]}],
@@ -133,6 +146,7 @@ def uid0(context: Context) -> list[Finding]:
     "account.changes",
     "New and removed accounts; service accounts able to log in",
     needs_baseline=True,
+    variants=("new", "removed", "root_group", "service_login"),
 )
 def account_changes(context: Context) -> list[Finding]:
     diff = context.changes("accounts")
@@ -152,6 +166,7 @@ def account_changes(context: Context) -> list[Finding]:
                 [context.change_ref("accounts", key, "added")],
                 new=context.new_since_previous("accounts", key),
                 uncertain=uncertain,
+                variant="new",
             )
         )
     if diff["comparable"]:
@@ -166,6 +181,7 @@ def account_changes(context: Context) -> list[Finding]:
                     [f"account:{base_name(key)}"],
                     [context.change_ref("accounts", key, "removed")],
                     new=context.new_since_previous("accounts", key),
+                    variant="removed",
                 )
             )
     accounts = context.items("accounts")
@@ -191,6 +207,7 @@ def account_changes(context: Context) -> list[Finding]:
                 [context.change_ref("accounts", key, how)],
                 new=context.new_since_previous("accounts", key),
                 uncertain=uncertain,
+                variant="root_group",
             )
         )
 
@@ -235,14 +252,80 @@ def account_changes(context: Context) -> list[Finding]:
                     [context.change_ref("accounts", key, "changed")],
                     new=context.new_since_previous("accounts", key),
                     uncertain=uncertain,
+                    variant="service_login",
                 )
             )
     return findings
 
 
-@check("account.log_changes", "Account and group changes recorded in the logs")
+LOG_CHANGE_VARIANTS = (
+    "created",
+    "deleted",
+    "modified",
+    "renamed",
+    "locked",
+    "unlocked",
+    "group_created",
+    "group_member_added",
+    "group_member_removed",
+    "group_members_set",
+)
+
+
+NO_LOGIN_SHELL = re.compile(r"(?:^|/)(?:nologin|false)$")
+# How close to a package's install an account it made is logged.
+PACKAGE_WINDOW = timedelta(minutes=15)
+
+
+def _package_installs(context: Context) -> list[datetime]:
+    times = []
+    for item in context.items("packages").values():
+        try:
+            times.append(datetime.fromtimestamp(float(item["installed"]), UTC))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    return times
+
+
+def _package_account(context: Context, event, installs: list[datetime]) -> bool:
+    """A package's own account: logged within minutes of a package being
+    installed (no terminal is no proof: any script has none), a system UID,
+    and no login shell, both as logged and as it is now. Such an account,
+    or such an account's group membership, is low: the install is the
+    change worth knowing (software.packages). Packages create the web
+    accounts too (nginx, apache on RHEL), but a web account joining a group
+    is never a package's: it is what a web shell would gain."""
+    fields = event.fields
+    user = fields.get("user")
+    if event.type != "account.created" and user in WEB_USERS:
+        return False
+    at = parse_time(event.corrected)
+    if at is None or not any(abs(at - t) <= PACKAGE_WINDOW for t in installs):
+        return False
+    current = context.items("accounts").get(user) or {}
+    uid = fields.get("uid") if fields.get("uid") is not None else current.get("uid")
+    try:
+        if uid is None or not 0 < int(uid) <= SYSTEM_UID_MAX:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if event.type == "account.created":
+        if fields.get("origin") != "none":
+            return False  # made at a terminal (or not said): someone's hand
+        if not NO_LOGIN_SHELL.search(str(fields.get("shell") or "")):
+            return False
+    shells = [s for s in (current.get("shell"),) if s] or [fields.get("shell")]
+    return all(s and NO_LOGIN_SHELL.search(str(s)) for s in shells)
+
+
+@check(
+    "account.log_changes",
+    "Account and group changes recorded in the logs",
+    variants=LOG_CHANGE_VARIANTS,
+)
 def log_changes(context: Context) -> list[Finding]:
     findings = []
+    installs = _package_installs(context)
     for index, event in context.of("account.", "group."):
         if event.type == "account.password_changed":
             continue  # account.password reports it
@@ -257,6 +340,7 @@ def log_changes(context: Context) -> list[Finding]:
             if privileged
             else "medium"
             if event.type in ("account.created", "group.member_added")
+            and not _package_account(context, event, installs)
             else "low"
         )
         who = f.get("user") or ""
@@ -288,9 +372,35 @@ def log_changes(context: Context) -> list[Finding]:
                 [{"event": index}],
                 event.corrected,
                 event.corrected,
+                variant=event.type.replace("account.", "").replace("group.", "group_"),
             )
         )
     return findings
+
+
+_SUDO_USER = re.compile(r"[a-z_][a-z0-9_.-]{0,31}\$?")
+
+
+def _sudo_who(rule: str) -> list[str]:
+    """Everyone a sudoers line grants to, as entities, so a chain can follow
+    the account and a whitelist rule must cover them all: its user list
+    (`eve, bob ALL=…`, `%wheel ALL=…`), when every member is a plain user
+    or `%group`. A list with anything else (an alias, `ALL`, `#uid`,
+    `+netgroup`, `!negation`) names no one plainly: no entities, so only a
+    broad rule can match it."""
+    head = rule.split("=", 1)[0]
+    if not head.strip() or head.split(None, 1)[0] in ("Defaults", "#include", "#includedir"):
+        return []
+    users = re.sub(r"\s*,\s*", ",", head.strip()).split(None, 1)[0]
+    found = []
+    for member in users.split(","):
+        if member.startswith("%") and _SUDO_USER.fullmatch(member[1:]):
+            found.append(f"group:{member[1:]}")
+        elif _SUDO_USER.fullmatch(member):
+            found.append(f"account:{member}")
+        else:
+            return []
+    return found
 
 
 @check("sudo.rules", "New sudo rights", needs_baseline=True)
@@ -308,7 +418,7 @@ def sudo_rules(context: Context) -> list[Finding]:
                 COMPROMISE,
                 "high",
                 f"{item.get('path')}: {rule}",
-                [f"path:{item.get('path')}"],
+                [f"path:{item.get('path')}", *_sudo_who(rule)],
                 [context.change_ref("sudo_rules", key, "added")],
                 new=context.new_since_previous("sudo_rules", key),
                 uncertain=uncertain,
@@ -355,7 +465,11 @@ def privileged_groups(context: Context) -> list[Finding]:
 # --- SSH keys and logins ----------------------------------------------------------------
 
 
-@check("ssh.authorized_keys", "New, changed or unattributed authorized SSH keys")
+@check(
+    "ssh.authorized_keys",
+    "New, changed or unattributed authorized SSH keys",
+    variants=("unattributed", "new_key", "options"),
+)
 def authorized_keys(context: Context) -> list[Finding]:
     findings = []
     uncertain = context.uncertain("authorized_keys")
@@ -370,6 +484,7 @@ def authorized_keys(context: Context) -> list[Finding]:
                     f"{item.get('fingerprint')} in {item.get('path')}",
                     [f"key:{item.get('fingerprint')}", f"path:{item.get('path')}"],
                     [{"item": ["authorized_keys", key]}],
+                    variant="unattributed",
                 )
             )
     diff = context.changes("authorized_keys")
@@ -388,6 +503,7 @@ def authorized_keys(context: Context) -> list[Finding]:
                 [context.change_ref("authorized_keys", key, "added")],
                 new=context.new_since_previous("authorized_keys", key),
                 uncertain=uncertain,
+                variant="new_key",
             )
         )
     for key, fields in diff["changed"].items():
@@ -403,6 +519,7 @@ def authorized_keys(context: Context) -> list[Finding]:
                 [context.change_ref("authorized_keys", key, "changed")],
                 new=context.new_since_previous("authorized_keys", key),
                 uncertain=uncertain,
+                variant="options",
             )
         )
     return findings
@@ -464,7 +581,11 @@ def guessed(context: Context) -> list[Finding]:
     return findings
 
 
-@check("ssh.login", "Direct root logins; logins from sources never seen before")
+@check(
+    "ssh.login",
+    "Direct root logins; logins from sources never seen before",
+    variants=("root_login", "new_address"),
+)
 def logins(context: Context) -> list[Finding]:
     accepted = list(context.of("ssh.login.accepted"))
     findings = []
@@ -482,6 +603,7 @@ def logins(context: Context) -> list[Finding]:
                     [{"event": index}],
                     event.corrected,
                     event.corrected,
+                    variant="root_login",
                 )
             )
     if not accepted:
@@ -513,6 +635,7 @@ def logins(context: Context) -> list[Finding]:
                 [{"event": i} for i, _ in hits],
                 first,
                 last,
+                variant="new_address",
             )
         )
     return findings

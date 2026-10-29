@@ -107,6 +107,10 @@ first.
   disk) and, on first use by that account, its "lecture" marker.
 - auditd records of the commands run, where auditd is configured to record
   them.
+- Where `sudo` takes rules from a directory (SSSD, LDAP), a second `sudo`
+  line in the authentication log for the collector's `sudo -ll -U` look-up
+  of the scanner account's rules (PR 2.7b); the directory service may
+  refresh its cache as it answers.
 - The system's ordinary session setup for the account: a per-login runtime
   area in memory (`/run/user/…`, control groups) and, on Ubuntu, its
   login-message files, including one small marker file

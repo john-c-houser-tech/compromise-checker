@@ -72,6 +72,10 @@ Any login leaves records. The tool's runs leave these:
   account uses sudo, sudo's one-time notice marker;
 - records of the commands run, if the server's audit system is configured to
   keep them;
+- on a server whose `sudo` takes rules from a directory service (such as
+  SSSD or LDAP), a second `sudo` entry in the authentication log, for the
+  tool's look-up of the scanner account's own `sudo` rules; the directory
+  service may refresh its cache of those rules as it answers;
 - the system's ordinary session setup for the account: a per-login runtime
   area in memory (`/run/user/…`) and, on Ubuntu, its login-message files,
   including one small marker file (`.cache/motd.legal-displayed`) in the

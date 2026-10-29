@@ -141,7 +141,8 @@ them by), never to the account or the time alone (docs/events.md).
 ### 3.4 What is collected, and how it is treated
 
 Evidence from a server contains personal and sensitive data: usernames, IP
-addresses, email addresses in mail logs, URLs that may carry tokens, and
+addresses, the domains of email addresses in mail logs (their local parts
+are fingerprinted on the server, policy §7), URLs that may carry tokens, and
 sometimes secrets typed into shell commands.
 
 - **Minimum necessary.** Each collector module states what it reads and why.

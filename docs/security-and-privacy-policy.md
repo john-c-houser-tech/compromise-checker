@@ -105,8 +105,9 @@ findings.
 ## 7. What is collected
 
 Evidence from a server contains personal and sensitive information:
-usernames, IP addresses, email addresses in mail logs, web addresses that may
-include access tokens, and sometimes secrets typed into commands.
+usernames, IP addresses, the domains of email addresses in mail logs (the
+rest of each address is replaced by a fingerprint, see below), web addresses
+that may include access tokens, and sometimes secrets typed into commands.
 
 - **Only what the checks need.** Each part of the collector documents what it
   reads and why. The time window collected is limited (30 days by default).

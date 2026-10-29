@@ -1,7 +1,7 @@
 # Phase 3 build plan — 2026-10-29
 
 > **Status: DRAFT 1, 2026-10-29** — shape agreed by John; decisions 1,
-> 2 and 6 settled; 3–5 and 7–8 open. Nothing built yet.
+> 2, 3 and 6 settled; 4, 5, 7 and 8 open. Nothing built yet.
 
 **Goal (DESIGN.md §18, Phase 3):** an operator who turns the advisor on
 gets a plain-language reading of an assessment, whitelist proposals they can
@@ -332,13 +332,23 @@ The advisor's answers can't be golden-tested, so they are measured.
    placeholders for each `checker advise` run, never stored; within one run
    the roles share one numbering, so their answers agree on who `USER-2` is.
    Nothing sent lets the provider connect one run to another by name.
-3. **Before 3.2 — refusals.** When a request is declined by a safety
-   classifier, either let Anthropic re-run it on the model it recommends
-   for that category (`fallbacks: "default"`; the request goes to another
-   Claude model under the same account, and the report names the model
-   that answered), or record the refusal and stop. Recommendation: allow
-   the fallback by default, setting `advisor.fallback: off` to turn it off,
-   and the policy says so.
+3. ~~Before 3.2 — refusals.~~ **Decided 2026-10-29:** `advisor.fallback`,
+   default `anthropic`; only a decline (`stop_reason: refusal`) triggers it,
+   never an outage or an error:
+   - `off`: the configured model or nothing; the decline and its category
+     are recorded and reported.
+   - `anthropic`: Anthropic's recommended fallback for that kind of decline
+     (`fallbacks: "default"`, server side); same provider and account.
+   - `model`: a fallback model the organization names in
+     `advisor.fallback_model` (`api: anthropic | openai`, `base_url`,
+     `model`, its own `api_key_source`, optional for a local model):
+     another vendor, an open-weight service or a local model. Choosing it
+     prints who would receive the case on a decline.
+   The fallback gets the same request (same redaction and placeholders) and
+   its answer the same validation; the report names the model that
+   declined and the model and provider that answered, from the response.
+   `off` and `anthropic` arrive in 3.2; `model` in 3.7 with local models
+   (same endpoint code). Policy §9 says so in 3.8.
 4. **Before 3.1 — login hours.** The Phase 2 plan left "logins at unusual
    hours" (DESIGN.md §8.3) for the advisor to propose. Deterministic is
    better here: learn each host's normal hours from its own stored

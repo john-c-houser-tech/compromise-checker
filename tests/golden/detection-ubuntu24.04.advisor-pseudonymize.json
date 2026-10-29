@@ -1006,7 +1006,7 @@
    "suppressed_by": null,
    "title": "An SSH client forwarding ports (a tunnel)",
    "from_host": {
-    "summary": "ssh (pid 11438, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 EMAIL-1",
+    "summary": "ssh (pid 11438, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
     "entities": [
      "pid:11438",
      "program:ssh",
@@ -1017,7 +1017,7 @@
     "excerpts": [
      {
       "where": "running process",
-      "text": "pid=11438 ppid=1 comm=ssh exe=/usr/bin/ssh cmdline=ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 EMAIL-1 uids=[0, 0, 0, 0] start_time=2026-10-29T15:50:53.750000+00:00 cwd=/root"
+      "text": "pid=11438 ppid=1 comm=ssh exe=/usr/bin/ssh cmdline=ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1 uids=[0, 0, 0, 0] start_time=2026-10-29T15:50:53.750000+00:00 cwd=/root"
      }
     ],
     "uncertain": null,
@@ -2184,7 +2184,7 @@
    "category": "compromise indicator",
    "new": false,
    "contribution": 0.0,
-   "suppressed_by": "proof-proofuser-account",
+   "suppressed_by": "proof-USER-3-account",
    "title": "An account or group was changed (from the logs)",
    "from_host": {
     "summary": "created: USER-3 UID 1001",
@@ -2212,7 +2212,7 @@
    "category": "compromise indicator",
    "new": false,
    "contribution": 0.0,
-   "suppressed_by": "proof-scanner-account",
+   "suppressed_by": "proof-USER-4-account",
    "title": "An account or group was changed (from the logs)",
    "from_host": {
     "summary": "created: USER-4 UID 1000",
@@ -2440,7 +2440,7 @@
    "expires": "never"
   },
   {
-   "id": "proof-proofuser-account",
+   "id": "proof-USER-3-account",
    "layer": "host HOST-1",
    "match": {
     "check": "account.log_changes",
@@ -2450,13 +2450,13 @@
    "expires": "never"
   },
   {
-   "id": "proof-scanner-account",
+   "id": "proof-USER-4-account",
    "layer": "host HOST-1",
    "match": {
     "check": "account.log_changes",
     "account": "USER-4"
    },
-   "reason": "The proof creates the USER-4 account, as docs/scanner-account.md sets it up.",
+   "reason": "The proof creates the USER-4 account, as docs/USER-4-account.md sets it up.",
    "expires": "never"
   }
  ],

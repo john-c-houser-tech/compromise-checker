@@ -31,7 +31,8 @@ rules below.
 
 `OVERRIDES` in `checker/scoring.py` can give one check, or one variant of
 it, its own ratio where calibration shows its band misjudges it. There are
-none yet; Phase 2's calibration (plan 2.10) sets them, each with its
+none: Phase 2's calibration (plan 2.10) needed none, since fixing the checks
+themselves (below) put every clean image in Low. Any later one gets its
 reason recorded here.
 
 ## Rules
@@ -100,10 +101,9 @@ data like the ratios):
   with the findings that made it listed under it in the report; the
   assessment records each chain's findings and events.
 
-More chains arrive with the checks they need: a web worker's child, a file
-in a scratch place and an outbound connection (2.4, 2.8); anything high,
-then logging stopped or history wiped (2.5); a new web script, then
-successful requests to it (2.8).
+Not chains yet, though their checks exist: a file in a scratch place, then
+an outbound connection; anything high, then logging stopped or history
+wiped. Each would need its own proof before it is added.
 
 ## The prior
 

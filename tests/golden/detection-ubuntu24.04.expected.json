@@ -317,7 +317,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "accounts",
       "cc-toor",
       "added"
@@ -345,7 +345,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "unusual_files",
       "/tmp/.cc-sh",
       "added"
@@ -444,7 +444,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "service: auditd",
       "removed"
@@ -472,11 +472,11 @@
      "event": 78
     }
    ],
-   "first_seen": "2026-10-29T00:41:54.783881+00:00",
-   "last_seen": "2026-10-29T00:41:54.783881+00:00",
+   "first_seen": "2026-10-29T00:52:24.059665+00:00",
+   "last_seen": "2026-10-29T00:52:24.059665+00:00",
    "new": true,
    "ratio": 20.0,
-   "summary": "auditd.service - Security Auditing Service (stopped) at 2026-10-29T00:41:54.783881+00:00, not during a shutdown and not started again",
+   "summary": "auditd.service - Security Auditing Service (stopped) at 2026-10-29T00:52:24.059665+00:00, not during a shutdown and not started again",
    "title": "A logging or audit service was stopped",
    "uncertain": null,
    "variant": "unit"
@@ -489,11 +489,11 @@
    "entities": [],
    "entities_complete": true,
    "evidence": [],
-   "first_seen": "2026-10-29T00:41:54+00:00",
-   "last_seen": "2026-10-29T00:41:54+00:00",
+   "first_seen": "2026-10-29T00:52:24+00:00",
+   "last_seen": "2026-10-29T00:52:24+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "type=DAEMON_END msg=audit(1793234514.733:3014): op=terminate auid=0 uid=0 ses=4294967295 pid=1 subj=unconfined res=success\u001dAUID=\"root\" UID=\"root\"",
+   "summary": "type=DAEMON_END msg=audit(1793235144.007:8989): op=terminate auid=0 uid=0 ses=4294967295 pid=1 subj=unconfined res=success\u001dAUID=\"root\" UID=\"root\"",
    "title": "The audit daemon stopped, not during a shutdown",
    "uncertain": null,
    "variant": "audit_daemon"
@@ -508,7 +508,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: /usr/bin/man",
       "removed"
@@ -516,7 +516,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: /usr/lib/snapd/snap-confine",
       "removed"
@@ -524,7 +524,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: /usr/sbin/haveged",
       "removed"
@@ -532,7 +532,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: lsb_release",
       "removed"
@@ -540,7 +540,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: man_filter",
       "removed"
@@ -548,7 +548,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: man_groff",
       "removed"
@@ -556,7 +556,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: nvidia_modprobe",
       "removed"
@@ -564,7 +564,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: nvidia_modprobe//kmod",
       "removed"
@@ -572,7 +572,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: plasmashell",
       "removed"
@@ -580,7 +580,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: plasmashell//QtWebEngineProcess",
       "removed"
@@ -588,7 +588,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: rsyslogd",
       "removed"
@@ -596,7 +596,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: tcpdump",
       "removed"
@@ -604,7 +604,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: transmission-cli",
       "removed"
@@ -612,7 +612,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: transmission-daemon",
       "removed"
@@ -620,7 +620,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: transmission-gtk",
       "removed"
@@ -628,7 +628,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: transmission-qt",
       "removed"
@@ -636,7 +636,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: ubuntu_pro_apt_news",
       "removed"
@@ -644,7 +644,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: ubuntu_pro_esm_cache",
       "removed"
@@ -652,7 +652,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: ubuntu_pro_esm_cache//apt_methods",
       "removed"
@@ -660,7 +660,7 @@
     },
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "logging",
       "apparmor: ubuntu_pro_esm_cache//apt_methods_gpgv",
       "removed"
@@ -684,7 +684,7 @@
    "entities": [
     "address:127.0.0.1",
     "account:www-data",
-    "pid:3658",
+    "pid:3649",
     "program:sleep",
     "exe:/usr/bin/sleep"
    ],
@@ -693,15 +693,15 @@
     {
      "live": [
       "processes",
-      3658
+      3649
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:41:52.350000+00:00",
-   "last_seen": "2026-10-29T00:41:52.350000+00:00",
+   "first_seen": "2026-10-29T00:52:20.740000+00:00",
+   "last_seen": "2026-10-29T00:52:20.740000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "sleep (pid 3658, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
+   "summary": "sleep (pid 3649, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
    "title": "A web-server account reached SMB",
    "uncertain": null,
    "variant": "smb_winrm"
@@ -719,7 +719,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "pam_rules",
       "/etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true",
       "added"
@@ -747,7 +747,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "startup",
       "/etc/ld.so.preload",
       "added"
@@ -770,7 +770,7 @@
    "contribution": 2.9957,
    "entities": [
     "program:cc-sleep",
-    "pid:3624",
+    "pid:3615",
     "exe:/root/cc-sleep (deleted)"
    ],
    "entities_complete": true,
@@ -778,15 +778,15 @@
     {
      "live": [
       "processes",
-      3624
+      3615
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:41:49.230000+00:00",
-   "last_seen": "2026-10-29T00:41:49.230000+00:00",
+   "first_seen": "2026-10-29T00:52:17.630000+00:00",
+   "last_seen": "2026-10-29T00:52:17.630000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "cc-sleep (pid 3624): /root/cc-sleep (deleted)",
+   "summary": "cc-sleep (pid 3615): /root/cc-sleep (deleted)",
    "title": "A process whose program was deleted",
    "uncertain": null,
    "variant": null
@@ -798,7 +798,7 @@
    "contribution": 0.6931,
    "entities": [
     "program:cc-sleep",
-    "pid:3624",
+    "pid:3615",
     "exe:/root/cc-sleep (deleted)"
    ],
    "entities_complete": true,
@@ -806,15 +806,15 @@
     {
      "live": [
       "processes",
-      3624
+      3615
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:41:49.230000+00:00",
-   "last_seen": "2026-10-29T00:41:49.230000+00:00",
+   "first_seen": "2026-10-29T00:52:17.630000+00:00",
+   "last_seen": "2026-10-29T00:52:17.630000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "cc-sleep (pid 3624): /root/cc-sleep (deleted)",
+   "summary": "cc-sleep (pid 3615): /root/cc-sleep (deleted)",
    "title": "A process has code mapped from a scratch or home file",
    "uncertain": null,
    "variant": null
@@ -826,7 +826,7 @@
    "contribution": 2.9957,
    "entities": [
     "program:bash",
-    "pid:3636",
+    "pid:3627",
     "exe:/usr/bin/bash"
    ],
    "entities_complete": true,
@@ -834,15 +834,15 @@
     {
      "live": [
       "processes",
-      3636
+      3627
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:41:50.780000+00:00",
-   "last_seen": "2026-10-29T00:41:50.780000+00:00",
+   "first_seen": "2026-10-29T00:52:19.170000+00:00",
+   "last_seen": "2026-10-29T00:52:19.170000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "bash (pid 3636): stdin is tcp to 127.0.0.1:4444",
+   "summary": "bash (pid 3627): stdin is tcp to 127.0.0.1:4444",
    "title": "A shell talking to a network socket (a reverse shell)",
    "uncertain": null,
    "variant": null
@@ -854,15 +854,15 @@
    "contribution": 2.9957,
    "entities": [
     "account:root",
-    "key:SHA256:BJclm16lHsuVhntQ0Eqx7WTGEESSJ2sW7TjCFq3e0Ys"
+    "key:SHA256:7Qz4hi8fQz/GrHZ49Uh/JNI8Y9efgO49lmCONUoXCYI"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "authorized_keys",
-      "root SHA256:BJclm16lHsuVhntQ0Eqx7WTGEESSJ2sW7TjCFq3e0Ys /root/.ssh/authorized_keys",
+      "root SHA256:7Qz4hi8fQz/GrHZ49Uh/JNI8Y9efgO49lmCONUoXCYI /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -871,7 +871,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "root: ssh-ed25519 SHA256:BJclm16lHsuVhntQ0Eqx7WTGEESSJ2sW7TjCFq3e0Ys in /root/.ssh/authorized_keys",
+   "summary": "root: ssh-ed25519 SHA256:7Qz4hi8fQz/GrHZ49Uh/JNI8Y9efgO49lmCONUoXCYI in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -883,15 +883,15 @@
    "contribution": 0.6931,
    "entities": [
     "account:root",
-    "key:SHA256:QbbbRvf9qH48hnTVt6j6VSYP0mj4w62lfmBXnliQPtE"
+    "key:SHA256:SaLga2PGIg+jJuZAWRfhXTK4blleQUAoaFQw2FzY6zw"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "authorized_keys",
-      "root SHA256:QbbbRvf9qH48hnTVt6j6VSYP0mj4w62lfmBXnliQPtE /root/.ssh/authorized_keys",
+      "root SHA256:SaLga2PGIg+jJuZAWRfhXTK4blleQUAoaFQw2FzY6zw /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -900,7 +900,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "root: ssh-ed25519 SHA256:QbbbRvf9qH48hnTVt6j6VSYP0mj4w62lfmBXnliQPtE in /root/.ssh/authorized_keys",
+   "summary": "root: ssh-ed25519 SHA256:SaLga2PGIg+jJuZAWRfhXTK4blleQUAoaFQw2FzY6zw in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -917,7 +917,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "sshd_config",
       "/etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes",
       "added"
@@ -945,7 +945,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "accounts",
       "cc-toor",
       "added"
@@ -975,8 +975,8 @@
      "event": 71
     }
    ],
-   "first_seen": "2026-10-29T00:41:49.316649+00:00",
-   "last_seen": "2026-10-29T00:41:49.316649+00:00",
+   "first_seen": "2026-10-29T00:52:18.574799+00:00",
+   "last_seen": "2026-10-29T00:52:18.574799+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: cc-toor UID 0",
@@ -998,8 +998,8 @@
      "event": 47
     }
    ],
-   "first_seen": "2026-10-29T00:40:21.942998+00:00",
-   "last_seen": "2026-10-29T00:40:21.942998+00:00",
+   "first_seen": "2026-10-29T00:50:50.724495+00:00",
+   "last_seen": "2026-10-29T00:50:50.724495+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: dnsmasq UID 999",
@@ -1028,8 +1028,8 @@
      "event": 54
     }
    ],
-   "first_seen": "2026-10-29T00:40:38.379739+00:00",
-   "last_seen": "2026-10-29T00:40:38.379739+00:00",
+   "first_seen": "2026-10-29T00:51:06.601003+00:00",
+   "last_seen": "2026-10-29T00:51:06.601003+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -1058,8 +1058,8 @@
      "event": 52
     }
    ],
-   "first_seen": "2026-10-29T00:40:30.878577+00:00",
-   "last_seen": "2026-10-29T00:40:30.878577+00:00",
+   "first_seen": "2026-10-29T00:51:00.294250+00:00",
+   "last_seen": "2026-10-29T00:51:00.294250+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -1086,7 +1086,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "network_files",
       "/etc/hosts",
       "changed"
@@ -1110,7 +1110,7 @@
    "entities": [
     "address:169.254.169.254",
     "account:root",
-    "pid:3647",
+    "pid:3638",
     "program:sleep",
     "exe:/usr/bin/sleep"
    ],
@@ -1119,15 +1119,15 @@
     {
      "live": [
       "processes",
-      3647
+      3638
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:41:51.810000+00:00",
-   "last_seen": "2026-10-29T00:41:51.810000+00:00",
+   "first_seen": "2026-10-29T00:52:20.210000+00:00",
+   "last_seen": "2026-10-29T00:52:20.210000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "sleep (pid 3647, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
+   "summary": "sleep (pid 3638, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
    "title": "A program other than the cloud agent reached the metadata address",
    "uncertain": null,
    "variant": null
@@ -1138,7 +1138,7 @@
    "check": "net.tunnel",
    "contribution": 1.3863,
    "entities": [
-    "pid:3663",
+    "pid:3654",
     "program:ssh",
     "account:root",
     "exe:/usr/bin/ssh"
@@ -1148,15 +1148,15 @@
     {
      "live": [
       "processes",
-      3663
+      3654
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:41:52.550000+00:00",
-   "last_seen": "2026-10-29T00:41:52.550000+00:00",
+   "first_seen": "2026-10-29T00:52:20.940000+00:00",
+   "last_seen": "2026-10-29T00:52:20.940000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "ssh (pid 3663, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
+   "summary": "ssh (pid 3654, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
    "title": "An SSH client forwarding ports (a tunnel)",
    "uncertain": null,
    "variant": null
@@ -1167,7 +1167,7 @@
    "check": "net.tunnel",
    "contribution": 0.6931,
    "entities": [
-    "pid:3661",
+    "pid:3652",
     "program:sshd"
    ],
    "entities_complete": true,
@@ -1175,15 +1175,15 @@
     {
      "live": [
       "processes",
-      3661
+      3652
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:41:52.370000+00:00",
-   "last_seen": "2026-10-29T00:41:52.370000+00:00",
+   "first_seen": "2026-10-29T00:52:20.770000+00:00",
+   "last_seen": "2026-10-29T00:52:20.770000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "sshd session (pid 3661) listening on 127.0.0.1 port 2222",
+   "summary": "sshd session (pid 3652) listening on 127.0.0.1 port 2222",
    "title": "An SSH session listening on a port (a remote forward)",
    "uncertain": null,
    "variant": null
@@ -1194,14 +1194,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/cron/atjobs/a0000101c80b80"
+    "path:/var/spool/cron/atjobs/a0000101c80b8b"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/cron/atjobs/a0000101c80b80"
+      "/var/spool/cron/atjobs/a0000101c80b8b"
      ]
     }
    ],
@@ -1209,7 +1209,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/cron/atjobs/a0000101c80b80 (owner UID 0)",
+   "summary": "/var/spool/cron/atjobs/a0000101c80b8b (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -1233,7 +1233,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "cron",
       "/etc/cron.d/cc-proof",
       "added"
@@ -1261,7 +1261,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "systemd",
       "/etc/systemd/system/cc-proof.service",
       "added"
@@ -1289,7 +1289,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "systemd",
       "/etc/systemd/system/cc-proof.timer",
       "added"
@@ -1320,8 +1320,8 @@
      "event": 74
     }
    ],
-   "first_seen": "2026-10-29T00:41:52.669413+00:00",
-   "last_seen": "2026-10-29T00:41:52.669413+00:00",
+   "first_seen": "2026-10-29T00:52:21.927838+00:00",
+   "last_seen": "2026-10-29T00:52:21.927838+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "127.0.0.1: 1 login(s) as root",
@@ -1344,8 +1344,8 @@
      "event": 74
     }
    ],
-   "first_seen": "2026-10-29T00:41:52.669413+00:00",
-   "last_seen": "2026-10-29T00:41:52.669413+00:00",
+   "first_seen": "2026-10-29T00:52:21.927838+00:00",
+   "last_seen": "2026-10-29T00:52:21.927838+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "root from 127.0.0.1 (publickey)",
@@ -1367,7 +1367,7 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.8"
+    "address:203.0.113.9"
    ],
    "entities_complete": true,
    "evidence": [
@@ -1375,11 +1375,11 @@
      "event": 31
     }
    ],
-   "first_seen": "2026-10-29T00:39:43.965512+00:00",
-   "last_seen": "2026-10-29T00:39:43.965512+00:00",
+   "first_seen": "2026-10-29T00:50:13.820173+00:00",
+   "last_seen": "2026-10-29T00:50:13.820173+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.8 (publickey)",
+   "summary": "root from 203.0.113.9 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -1405,8 +1405,8 @@
      "event": 49
     }
    ],
-   "first_seen": "2026-10-29T00:40:23.687699+00:00",
-   "last_seen": "2026-10-29T00:40:23.687699+00:00",
+   "first_seen": "2026-10-29T00:50:52.321795+00:00",
+   "last_seen": "2026-10-29T00:50:52.321795+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "created: group docker",
@@ -1435,7 +1435,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "listeners",
       "tcp 127.0.0.1:2222 netns=net:[4026531840]",
       "added"
@@ -1465,7 +1465,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "listeners",
       "tcp 127.0.0.1:4444 netns=net:[4026531840]",
       "added"
@@ -1495,7 +1495,7 @@
    "evidence": [
     {
      "change": [
-      "ubuntu24.04-20261029T004038Z-56caf47c",
+      "ubuntu24.04-20261029T005106Z-a76e1670",
       "listeners",
       "tcp 127.0.0.1:445 netns=net:[4026531840]",
       "added"
@@ -1518,7 +1518,7 @@
    "contribution": 0.0,
    "entities": [
     "program:(sd-pam)",
-    "pid:838",
+    "pid:845",
     "exe:/usr/lib/systemd/systemd-executor"
    ],
    "entities_complete": true,
@@ -1526,15 +1526,15 @@
     {
      "live": [
       "processes",
-      838
+      845
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:39:45.420000+00:00",
-   "last_seen": "2026-10-29T00:39:45.420000+00:00",
+   "first_seen": "2026-10-29T00:50:13.520000+00:00",
+   "last_seen": "2026-10-29T00:50:13.520000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "(sd-pam) (pid 838): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "(sd-pam) (pid 845): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -1546,7 +1546,7 @@
    "contribution": 0.0,
    "entities": [
     "program:dbus-daemon",
-    "pid:664",
+    "pid:672",
     "exe:/usr/bin/dbus-daemon"
    ],
    "entities_complete": true,
@@ -1554,15 +1554,15 @@
     {
      "live": [
       "processes",
-      664
+      672
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:39:41.380000+00:00",
-   "last_seen": "2026-10-29T00:39:41.380000+00:00",
+   "first_seen": "2026-10-29T00:50:09.370000+00:00",
+   "last_seen": "2026-10-29T00:50:09.370000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "dbus-daemon (pid 664): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "dbus-daemon (pid 672): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -1574,7 +1574,7 @@
    "contribution": 0.0,
    "entities": [
     "program:systemd",
-    "pid:837",
+    "pid:844",
     "exe:/usr/lib/systemd/systemd"
    ],
    "entities_complete": true,
@@ -1582,15 +1582,15 @@
     {
      "live": [
       "processes",
-      837
+      844
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:39:45.410000+00:00",
-   "last_seen": "2026-10-29T00:39:45.410000+00:00",
+   "first_seen": "2026-10-29T00:50:13.500000+00:00",
+   "last_seen": "2026-10-29T00:50:13.500000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "systemd (pid 837): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "systemd (pid 844): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -1602,7 +1602,7 @@
    "contribution": 0.0,
    "entities": [
     "program:systemd-logind",
-    "pid:673",
+    "pid:681",
     "exe:/usr/lib/systemd/systemd-logind"
    ],
    "entities_complete": true,
@@ -1610,15 +1610,15 @@
     {
      "live": [
       "processes",
-      673
+      681
      ]
     }
    ],
-   "first_seen": "2026-10-29T00:39:41.650000+00:00",
-   "last_seen": "2026-10-29T00:39:41.650000+00:00",
+   "first_seen": "2026-10-29T00:50:09.670000+00:00",
+   "last_seen": "2026-10-29T00:50:09.670000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "systemd-logind (pid 673): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "systemd-logind (pid 681): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null

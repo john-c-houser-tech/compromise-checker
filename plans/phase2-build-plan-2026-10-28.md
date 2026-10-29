@@ -489,6 +489,17 @@ deletion; `node=`-prefixed audit records count and the newest are kept;
 agents and services are keyed by the file they run; no service findings
 without a full process listing; journald precedence as systemd's.
 
+*2.5 proofs (2026-10-28, approved by John; 11 Nanodes, about 6 cents,
+every server deleted):* read-only PASS on all seven images (the collector
+reads /var/log and the audit log and wrote nothing; no firewall module
+changed). Detection PASS on Ubuntu 24.04 and Rocky 9, all nineteen
+behaviours, after one rerun: the first run's Rocky server timed out at
+Linode's API, and on Ubuntu `aa-teardown` unloaded 28 of its profiles,
+under half, which the most-of-them rule rated medium; ten or more is now
+high, and the proof checks the profile count fell rather than
+aa-teardown's exit code. Golden cases re-exported from the passing run.
+Phase 2 spend so far: about 17 cents.
+
 ### 2.6 — Software changes (8.11)
 
 - **Collector, new module `software`:** package logs within the look-back

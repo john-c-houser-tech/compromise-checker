@@ -677,13 +677,17 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 sudo="nopasswd",
             )
             loaded_before = await _kernel_modules(conn)
-            [outcome] = await collect_hosts(
-                home,
-                config,
-                [scanner],
-                known_hosts=known,
-                limits=Limits(overall_seconds=600, module_seconds=300, source_bytes=1 << 28),
-            )
+            # Twice: the mail key goes only to a host whose earlier
+            # collection showed sudo doesn't log its input (plan 2.7), so
+            # the second collection is the one that reads the mail logs.
+            for _ in range(2):
+                [outcome] = await collect_hosts(
+                    home,
+                    config,
+                    [scanner],
+                    known_hosts=known,
+                    limits=Limits(overall_seconds=600, module_seconds=300, source_bytes=1 << 28),
+                )
             result.status = outcome.status
             if outcome.error:
                 result.error = outcome.error

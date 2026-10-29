@@ -79,6 +79,8 @@ class Settings(_Model):
     # fingerprinted with it on the server. None: no mail log is sent. The
     # manifest shows only its identifier, and repr never shows it.
     mail_key: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", repr=False)
+    # Why the controller didn't send the key to this host, if it didn't.
+    mail_key_withheld: str | None = Field(default=None, max_length=300)
 
     @field_validator("web_roots")
     @classmethod

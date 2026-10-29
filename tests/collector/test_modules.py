@@ -68,6 +68,16 @@ def collect(root, modules, **kwargs):
     return [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
 
 
+def collect_with(root, modules, **extra):
+    """collect, with settings the helper doesn't name."""
+    collector = load_collector(root)
+    value = json.loads(settings(modules))
+    value.update(extra)
+    out = io.BytesIO()
+    collector.main(json.dumps(value), out=out)
+    return [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+
+
 def sources(records):
     """Reassemble every source: {name: (start, content bytes, end)}."""
     starts, data, result = {}, {}, {}
@@ -4992,6 +5002,11 @@ class MailTests(FixtureRoot):
         records = collect(self.root, ["mail"])
         self.assertEqual(sources(records), {})
         self.assertTrue(named(records, "mail_logs_withheld"))
+
+    def test_the_controller_s_reason_for_no_key_is_recorded(self):
+        records = collect_with(self.root, ["mail"], mail_key_withheld="sudo logs its input")
+        [withheld] = named(records, "mail_logs_withheld")
+        self.assertEqual(withheld["data"]["reason"], "sudo logs its input")
 
     def test_a_bad_key_is_refused(self):
         records = collect(self.root, ["mail"], mail_key="NOT-HEX")

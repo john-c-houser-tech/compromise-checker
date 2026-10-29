@@ -2,19 +2,24 @@
 
 import asyncio
 import json
+import re
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from checker.analysis import snapshot_of
+from checker.baseline import usable_bundles
 from checker.evidence import (
     BundleWriter,
     Config,
+    EvidenceError,
     Store,
     bundle_id,
     bundle_path,
     database_file,
     judge,
+    load_identity,
     mail_key,
     seal_text,
     write_sidecar,
@@ -24,6 +29,36 @@ from checker.protocol import Limits, Settings, build_program, collector_sha256
 from checker.transport import PasswordProvider, Session, TransportError, collect, collect_many
 
 DEFAULT_LIMITS = Limits(overall_seconds=600, module_seconds=120, source_bytes=256 * 1024 * 1024)
+# sudo's input logging: an un-negated log_input or log_stdin in a Defaults
+# line, or a LOG_INPUT: tag on a rule (NOLOG_INPUT: turns it off).
+_SUDO_LOGS_INPUT = re.compile(r"(?<![!\w])(?:log_input|log_stdin)\b|(?<!NO)LOG_INPUT:")
+
+
+def mail_key_for(
+    store: Store, config: Config, host: str, key: str
+) -> tuple[str | None, str | None]:
+    """The mail key to send to a host, or why not (policy §7: the key is
+    never written on a server). The program, key included, reaches the
+    collector on sudo's input, which sudo writes to disk where its input
+    logging is on; the collector can't tell before sudo has logged it. So
+    the key goes only to a host whose latest stored collection shows
+    sudo's rules, read whole, without input logging."""
+    rows = usable_bundles(store, host)
+    if not rows:
+        return None, "first collection: sudo's settings not seen yet, so the mail key wasn't sent"
+    if not config.identity_file:
+        return None, "the evidence key isn't on this machine, so sudo's settings can't be read"
+    try:
+        identity = load_identity(Path(config.identity_file))
+        snapshot = snapshot_of(store, rows[-1], identity, config.recipients)
+    except EvidenceError as exc:
+        return None, f"sudo's settings can't be read ({exc})"
+    rules = snapshot.sections.get("sudo_rules")
+    if rules is None or not rules.complete:
+        return None, "sudo's settings weren't fully collected last time"
+    if any(_SUDO_LOGS_INPUT.search(line) for line in rules.items):
+        return None, "sudo logs its input on this host, so the mail key would be written there"
+    return key, None
 
 
 @dataclass
@@ -56,8 +91,8 @@ async def collect_hosts(
         modules=modules,  # None: every module
         limits=limits,
         home_text=config.home_text,
-        mail_key=mail_key(home),
     )
+    key = mail_key(home)
     fingerprint = collector_sha256()
     store = Store(database_file(home))
     outcomes: list[Outcome] = []
@@ -66,8 +101,17 @@ async def collect_hosts(
         run_started = datetime.now(UTC)
         identifier = bundle_id(host.name, run_started, settings.run_id)
         writer = BundleWriter(bundle_path(home, host.name, identifier), config.recipients)
+        host_key, withheld = mail_key_for(store, config, host.name, key)
         # The host's own web roots, if it has any, replace the defaults.
-        program = build_program(settings.model_copy(update={"web_roots": host.web_roots}))
+        program = build_program(
+            settings.model_copy(
+                update={
+                    "web_roots": host.web_roots,
+                    "mail_key": host_key,
+                    "mail_key_withheld": withheld,
+                }
+            )
+        )
         session: Session | None = None
         error: TransportError | None = None
         try:

@@ -453,3 +453,46 @@ def test_coverage_only_names_modules_the_collector_has():
     collector = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(collector)
     assert (FULL | set(LOG_SOURCES) | {"boots"}) <= set(collector.MODULES)
+
+
+# --- When the key is sent ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("sudoers", "sent"),
+    [
+        ("root ALL=(ALL) ALL\n", True),
+        ("Defaults !log_input\nroot ALL=(ALL) ALL\n", True),
+        ("root ALL=(ALL) NOLOG_INPUT: ALL\n", True),
+        ("Defaults log_input\nroot ALL=(ALL) ALL\n", False),
+        ("Defaults:scanner log_input, log_output\n", False),
+        ("Defaults log_stdin\n", False),
+        ("scanner ALL=(root) NOPASSWD: LOG_INPUT: /usr/bin/python3 -I -B -\n", False),
+    ],
+)
+def test_the_key_goes_only_where_sudo_doesnt_log_input(home, sudoers, sent):
+    from test_snapshot import add_bundle, host_records
+
+    from checker.collect import mail_key_for
+
+    _, store, _, config = home
+    key, why = mail_key_for(store, config, "web01", KEY)
+    assert key is None and "first collection" in why
+    add_bundle(home, "b1", 0, host_records(sudoers=sudoers))
+    key, why = mail_key_for(store, config, "web01", KEY)
+    assert (key == KEY) is sent
+    assert (why is None) is sent
+    if not sent:
+        assert "logs its input" in why
+
+
+def test_without_the_evidence_key_here_no_mail_key_is_sent(home):
+    from test_snapshot import add_bundle, host_records
+
+    from checker.collect import mail_key_for
+
+    _, store, _, config = home
+    add_bundle(home, "b1", 0, host_records())
+    outside = config.model_copy(update={"identity_file": None})
+    key, why = mail_key_for(store, outside, "web01", KEY)
+    assert key is None and "evidence key" in why

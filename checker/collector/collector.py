@@ -7073,7 +7073,10 @@ def module_mail(run):
         run.stream.record(
             module,
             "mail_logs_withheld",
-            {"reason": "no mail key in the settings; mail logs are sent only fingerprinted"},
+            {
+                "reason": run.settings.get("mail_key_withheld")
+                or "no mail key in the settings; mail logs are sent only fingerprinted"
+            },
         )
         return
     _mail_logs(run, module, key)
@@ -7135,6 +7138,9 @@ def settings_problems(settings):
             unknown = [m for m in modules if m not in MODULES]
             if unknown:
                 problems.append("unknown modules: " + ", ".join(unknown))
+    withheld = settings.get("mail_key_withheld")
+    if withheld is not None and not (isinstance(withheld, str) and len(withheld) <= 300):
+        problems.append("mail_key_withheld must be null or text of at most 300 characters")
     mail = settings.get("mail_key")
     if mail is not None and not (isinstance(mail, str) and MAIL_KEY_HEX.match(mail)):
         problems.append("mail_key must be null or 64 lowercase hexadecimal digits")

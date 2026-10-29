@@ -33,6 +33,7 @@ SYSCALLS = {
     (X86, "259"): "mknodat",
     (X86, "265"): "linkat",
     (X86, "266"): "symlinkat",
+    (X86, "77"): "ftruncate",
 }
 NUMBERS = {name: number for (_, number), name in SYSCALLS.items()}
 _serial = 0
@@ -142,6 +143,26 @@ def test_rhel_10_s_boot_flag_and_sudo_s_mail_are_disclosed():
         "grub2-set-bootf", "/usr/sbin/grub2-set-bootflag", "openat", ("/boot/x", "CREATE")
     )
     assert judge(elsewhere).unexpected
+
+
+def test_postdrop_s_queue_files_and_grub_s_open_file_are_disclosed():
+    queued = event(
+        "postdrop",
+        "/usr/sbin/postdrop",
+        "openat",
+        ("maildrop/883674.5178", "CREATE", "fd:01"),
+        cwd="/var/spool/postfix",
+    ) + event("grub2-set-bootf", "/usr/sbin/grub2-set-bootflag", "ftruncate")
+    verdict = judge(queued)
+    assert verdict.unexpected == [] and len(verdict.disclosed) == 2
+    # The same relative name from another folder, or another program: not excused.
+    other = event(
+        "postdrop", "/usr/sbin/postdrop", "openat", ("maildrop/x", "CREATE", "fd:01"), cwd="/etc"
+    ) + event(
+        "evil", "/tmp/evil", "openat", ("maildrop/x", "CREATE", "fd:01"), cwd="/var/spool/postfix"
+    )
+    assert len(judge(other).unexpected) == 2
+    assert judge(event("evil", "/tmp/evil", "ftruncate")).unexpected
 
 
 def test_an_undisclosed_write_by_login_machinery_fails():

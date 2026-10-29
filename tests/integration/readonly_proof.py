@@ -448,6 +448,7 @@ def parse_audit(text: str, syscalls: dict[tuple[str, str], str] | None = None) -
                 "syscall": event["syscall"],
                 "comm": event["comm"],
                 "exe": event["exe"],
+                "cwd": event["cwd"],
                 "paths": paths,
             }
         )
@@ -538,6 +539,8 @@ def classify(events: list[dict], memory: set[str] | None = None) -> Verdict:
                 verdict.disclosed.append(
                     f"{who} (open file)  — session setup: permissions on its own runtime files"
                 )
+            elif event["exe"] in _OWN_FILE_WRITERS and event["syscall"] in _OWN_FILE_CALLS:
+                verdict.disclosed.append(f"{who} (open file)  — {_OWN_FILE_WRITERS[event['exe']]}")
             else:
                 verdict.unexpected.append(f"{who} (no path)")
             continue
@@ -563,7 +566,11 @@ def classify(events: list[dict], memory: set[str] | None = None) -> Verdict:
                 reason = PLACEHOLDERS
             elif ".." in path.split("/"):
                 reason = None
-            elif not facts[path]["raw"].startswith("/") and not _in_memory(facts[path], memory):
+            elif (
+                not facts[path]["raw"].startswith("/")
+                and not _in_memory(facts[path], memory)
+                and (event["exe"], event.get("cwd")) not in _CWD_RELATIVE
+            ):
                 # A relative name through an unknown directory handle, on a
                 # disk: where it really is can't be told, so it isn't excused.
                 reason = None
@@ -703,6 +710,18 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 sudo="nopasswd",
             )
             loaded_before = await _kernel_modules(conn)
+            # Each login mounts a fresh in-memory runtime area, gone once
+            # the session ends: sample the mount table throughout, so every
+            # session's in-memory devices are known when the writes are judged.
+            seen_mounts: list[str] = []
+
+            async def sample_mounts() -> None:
+                while True:
+                    sampled = await conn.run("cat /proc/self/mountinfo", timeout=60)
+                    seen_mounts.append(sampled.stdout or "")
+                    await asyncio.sleep(1)
+
+            sampler = asyncio.create_task(sample_mounts())
             # Twice: the mail key goes only to a host whose earlier
             # collection showed sudo doesn't log its input (plan 2.7), so
             # the second collection is the one that reads the mail logs.
@@ -775,8 +794,12 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             if not events:
                 # A login always causes some writes; none means no usable evidence.
                 raise RuntimeError("the audit log holds no events for the scanner's session")
+            sampler.cancel()
             mounts = await conn.run("cat /proc/self/mountinfo", check=True, timeout=60)
-            result.audit = classify(events, memory_devices(mounts.stdout))
+            memory = memory_devices(mounts.stdout)
+            for sample in seen_mounts:
+                memory |= memory_devices(sample)
+            result.audit = classify(events, memory)
             # After the collections, so nothing here is in their evidence.
             result.sudo_listing = await check_sudo_listing(conn)
 
@@ -887,6 +910,18 @@ echo 'sudoers: files sss' >> "$nss"
 """
 
 
+# Writes with no path, on a file the program itself opened: GRUB's
+# boot-success flag (grubenv) and postdrop's queue file.
+_OWN_FILE_WRITERS = {
+    "/usr/sbin/grub2-set-bootflag": "RHEL session: GRUB's boot-success flag (disk)",
+    "/usr/sbin/postdrop": "sudo's mail to the administrators, queued for local delivery (disk)",
+}
+_OWN_FILE_CALLS = {"ftruncate", "fchmod", "fchown", "fsync", "write"}
+# Programs that work relative to a folder of their own (postdrop changes to
+# Postfix's queue directory): their relative names are read against it.
+_CWD_RELATIVE = {("/usr/sbin/postdrop", "/var/spool/postfix")}
+
+
 def _queued_mail(audit) -> bool:
     """Whether anything was queued for local mail in the scanner's session."""
     return any("/var/spool/postfix/maildrop/" in line for line in audit.disclosed)
@@ -936,14 +971,14 @@ def check_directory_lookup(home: Path, bundle_id: str, identity_file: Path) -> l
 
 SUDO_LISTING = r"""
 set -u
-sudo -n -ll -U scanner > /root/cc-list-off 2>&1; echo "off status $?"
+sudo -n -ll -U scanner > /root/cc-list-off 2>/root/cc-list-off.err; echo "off status $?"
 echo 'Defaults:scanner log_input' > /etc/sudoers.d/zz-cc-proof-input
 chmod 440 /etc/sudoers.d/zz-cc-proof-input
-sudo -n -ll -U scanner > /root/cc-list-on 2>&1; echo "on status $?"
+sudo -n -ll -U scanner > /root/cc-list-on 2>/root/cc-list-on.err; echo "on status $?"
 echo 'Defaults!/usr/bin/python3 log_input' > /etc/sudoers.d/zz-cc-proof-input
-sudo -n -ll -U scanner > /root/cc-list-cmnd 2>&1; echo "cmnd status $?"
+sudo -n -ll -U scanner > /root/cc-list-cmnd 2>/root/cc-list-cmnd.err; echo "cmnd status $?"
 echo 'scanner ALL=(root) NOPASSWD: LOG_INPUT: /usr/bin/true' > /etc/sudoers.d/zz-cc-proof-input
-sudo -n -ll -U scanner > /root/cc-list-tag 2>&1; echo "tag status $?"
+sudo -n -ll -U scanner > /root/cc-list-tag 2>/root/cc-list-tag.err; echo "tag status $?"
 rm -f /etc/sudoers.d/zz-cc-proof-input
 sleep 2
 """

@@ -212,6 +212,21 @@ assessment, its events, snapshot and whitelist, by one module
   valid answer, unknown identifier, verdict contradicting the band,
   refusal, max_tokens cut-off, rate limit then success.
 
+### 3.2b — Logins at unusual hours (decision 4)
+
+- `ssh.login_hours` (checks version 13): the logins since the previous
+  collection (all of them on the first) at hours unusual for the account;
+  each is judged against the account's logins before it, from every
+  stored bundle, each once (by the host's clock: bundles correct times by
+  their own offsets), in UTC with an hour's margin either side (summer
+  time); an hour is usual once logins at it came on two days. An account
+  needs 10 logins over 21 days first; until then coverage says how many
+  weren't judged (checks can now add coverage gaps). Past runs' own logins
+  don't count; the account this run logged in as (its stored session, so
+  also behind NAT) isn't judged. Band low,
+  compromise indicator; whitelistable by account. Controller-only: no proof
+  run needed; golden expectations list the new check, scores unchanged.
+
 ### 3.3 — Role 2: whitelist proposals
 
 - **Schema:** each proposal is a rule in `checker/whitelist.py`'s own

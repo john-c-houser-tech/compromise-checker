@@ -866,6 +866,7 @@ GAP_KINDS: list[tuple[str, str]] = [
     (r"no audit log", "no audit log"),
     (r"no program starts in the audit log", "no program starts in the audit log"),
     (r"web log format not recognised", "a web log format not recognised"),
+    (r"login hours not judged", "login hours not judged for some accounts (too little history)"),
 ]
 
 

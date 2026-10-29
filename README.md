@@ -38,8 +38,7 @@ What works today:
   account names, host names, email addresses, IP addresses and SSH key
   fingerprints become placeholders (USER-2-7f3a) made fresh for each run;
   *strict* sends only the kinds of finding, counts, scores and kinds of
-  coverage gap. Sending
-  arrives later in Phase 3.
+  coverage gap.
 - `checker config show|set|history|check-key` — the settings in words;
   change one after `init` (validated, and recorded with who, when, old and
   new value; the file is written back whole, so hand-added comments go);

@@ -1,7 +1,7 @@
 # Phase 3 build plan — 2026-10-29
 
-> **Status: DRAFT 1, 2026-10-29** — shape agreed by John; decision 1
-> settled, 2–8 open. Nothing built yet.
+> **Status: DRAFT 1, 2026-10-29** — shape agreed by John; decisions 1
+> and 6 settled; 2–5 and 7–8 open. Nothing built yet.
 
 **Goal (DESIGN.md §18, Phase 3):** an operator who turns the advisor on
 gets a plain-language reading of an assessment, whitelist proposals they can
@@ -344,9 +344,9 @@ The advisor's answers can't be golden-tested, so they are measured.
    empty so every request uses the main model unless an organization
    chooses otherwise. This is a cost-versus-quality choice that belongs to
    John and each organization; the eval can measure both before deciding.
-6. **Before 3.0 — role 5 (threat-pack drafting).** DESIGN.md §18 lists
-   "all roles" for Phase 3, but packs have no format until Phase 4.
-   Recommendation: move role 5 to Phase 4 with the pack format.
+6. ~~Before 3.0 — role 5 (threat-pack drafting).~~ **Decided 2026-10-29:**
+   moved to Phase 4, built with the pack format. Phase 3 delivers roles
+   1–4; DESIGN.md §12.1 and §18 say so.
 7. **Before 3.3 — protected checks.** Whether the advisor may propose
    whitelist rules for findings in the critical band (`ld.so.preload`,
    hidden processes, a second UID 0 account…) and for any finding that is

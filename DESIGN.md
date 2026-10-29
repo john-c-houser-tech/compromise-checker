@@ -781,7 +781,8 @@ each release.
    preservation, eradication, recovery, and what to tell whom, scaled to the
    finding.
 5. **Threat-pack drafting** — from advisories supplied by the operator, a
-   draft pack for human review.
+   draft pack for human review. Built in Phase 4 with the pack format
+   (decided 2026-10-29).
 
 ### 12.2 Interface
 
@@ -928,8 +929,8 @@ Lessons that changed this design:
 | 0 | Repository, policy text, collector skeleton, transport, evidence bundles, read-only test |
 | 1 | Parsers for both families, snapshots and baselines, core checks 8.1–8.7, HTML report |
 | 2 | Whitelist layers and tooling, scoring and calibration harness, checks 8.8–8.13 |
-| 3 | AI advisor (all roles), redaction modes |
-| 4 | Threat packs: format, signing, PHP2Shell pack, pack drafting |
+| 3 | AI advisor (roles 1–4), redaction modes |
+| 4 | Threat packs: format, signing, PHP2Shell pack, pack drafting (advisor role 5) |
 | 5 | Fleet view, PDF/JSON, PostgreSQL, web interface |
 
 ---

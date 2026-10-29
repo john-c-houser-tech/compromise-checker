@@ -209,9 +209,7 @@ def served_folders(context: Context) -> tuple[list[str], list[str]] | None:
             return None
     entries = list(served.items.values())
     if any(
-        e.get("directive") in ("include", "includeoptional")
-        and str(e.get("folder") or "").startswith("/")
-        and not str(e["folder"]).startswith("/etc/")
+        e.get("directive") in _INCLUDES and _foreign_include(str(e.get("folder") or ""))
         for e in entries
     ):
         return None
@@ -252,6 +250,17 @@ def served_folders(context: Context) -> tuple[list[str], list[str]] | None:
 
 
 _INCLUDES = ("include", "includeoptional")
+
+
+def _foreign_include(target: str) -> bool:
+    """A configuration file kept outside the system's places: an
+    application's own, which the collector doesn't read. RHEL's nginx
+    includes its packaged modules from /usr/share/nginx/modules."""
+    if not target.startswith("/"):
+        return False  # relative to /etc/nginx or Apache's ServerRoot
+    return not target.startswith(("/etc/", "/usr/")) or target.startswith("/usr/share/nginx/html")
+
+
 # At most this many new or changed scripts in an application, outside what
 # is served, is a small edit, not a deploy or an update.
 SMALL_EDIT = 3

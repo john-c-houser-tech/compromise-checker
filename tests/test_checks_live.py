@@ -462,6 +462,11 @@ def test_programs_that_serve_files_themselves_and_outside_includes_leave_it_unkn
             "directive": "include",
             "folder": "/etc/nginx/sites-enabled/*",
         },
+        # RHEL's nginx.conf: its packaged modules.
+        "m: include /usr/share/nginx/modules/*.conf": {
+            "directive": "include",
+            "folder": "/usr/share/nginx/modules/*.conf",
+        },
     }
     assert NEW_SHELL not in [t[:2] for t in _served_titles(after, before, served=stock)]
 

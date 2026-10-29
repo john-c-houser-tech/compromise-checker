@@ -7362,6 +7362,421 @@ def module_mail(run):
     _mail_logs(run, module, key)
 
 
+# --- Web applications (DESIGN.md §8.12) -------------------------------------------------
+
+WEB_CONFIG_FILES = (
+    "/etc/nginx/nginx.conf",
+    "/etc/apache2/apache2.conf",
+    "/etc/apache2/envvars",
+    "/etc/httpd/conf/httpd.conf",
+    "/etc/php-fpm.conf",
+)
+WEB_CONFIG_DIRS = (
+    "/etc/nginx/conf.d",
+    "/etc/nginx/sites-enabled",
+    "/etc/apache2/sites-enabled",
+    "/etc/apache2/conf-enabled",
+    "/etc/httpd/conf.d",
+    "/etc/php-fpm.d",
+)
+WEB_CONFIG_GLOBS = ("/etc/php/*/fpm/php-fpm.conf", "/etc/php/*/fpm/pool.d")
+# Where web servers log when their configuration doesn't say otherwise.
+WEB_LOG_DIRS = ("/var/log/nginx", "/var/log/apache2", "/var/log/httpd", "/var/log/php-fpm")
+_PHP_FPM_LOG = re.compile(r"^php[\d.]*-fpm\.log(?:[-.][\w.-]+)?$")
+# Log directives: nginx's access_log and error_log, Apache's CustomLog,
+# TransferLog and ErrorLog, PHP-FPM's error_log, slowlog and access.log.
+_WEB_LOG_DIRECTIVE = re.compile(
+    r"^\s*(access_log|error_log|CustomLog|TransferLog|ErrorLog|slowlog|access\.log)"
+    r"\s*=?\s*\"?([^\"\s;]+)",
+    re.IGNORECASE,
+)
+_WEB_ACCESS_DIRECTIVES = ("access_log", "customlog", "transferlog", "access.log")
+WEB_USERS = ("www-data", "apache", "nginx", "http", "wwwrun", "lighttpd")
+# Values in a query string or referrer that match an attack are replaced
+# by a marker naming the attack, not just masked (policy §7).
+WEB_EXPLOITS = (
+    ("traversal", re.compile(rb"\.\.[/\\]|[/\\]\.\.(?:[/\\]|$)")),
+    ("php_wrapper", re.compile(rb"\b(?:php|phar|expect|zip|data)://")),
+    ("php_code", re.compile(rb"<\?(?:php|=)")),
+    ("jndi", re.compile(rb"\$\{\s*(?:jndi|lower|upper|env|sys)\s*:")),
+    ("shell", re.compile(rb"[;|`&]\s*(?:sh|bash|curl|wget|nc|python3?|perl|id|whoami)\b|\$\(")),
+    ("nul", re.compile(rb"\x00")),
+    ("sql", re.compile(rb"\bunion\b[\s+/*]+(?:all[\s+/*]+)?select\b|\bsleep\s*\(\s*\d")),
+)
+_WEB_QUERY = re.compile(rb'\?([^\s"#]*)')
+_WEB_PERCENT = re.compile(rb"%([0-9A-Fa-f]{2})")
+# A combined-format line: client, ident, user, [time], "request", status,
+# size, then "referrer" "user agent" (nginx's default is the same).
+_WEB_COMBINED = re.compile(
+    rb'^(\S{1,255} \S{1,255} \S{1,255} \[[^\]\n]{1,64}\] "(?:[^"\\\n]|\\.){0,16384}" \d{3} '
+    rb'(?:\d{1,20}|-) )"((?:[^"\\\n]|\\.){0,16384})" "((?:[^"\\\n]|\\.){0,16384})"'
+)
+_WEB_REFERRER_FIELD = re.compile(rb'(referrer: "|referer: )([^"\s]{1,16384})')
+_WEB_URL_HEAD = re.compile(rb"^([A-Za-z][A-Za-z0-9+.-]{0,30}://[^/?#\s\"]*)")
+WEB_AGENT_CHARS = 256
+
+
+def _unquote(value):
+    """A query value percent-decoded twice (attackers encode twice), and
+    "+" read as a space, lowercased: what the attack patterns are matched on."""
+    for _ in range(2):
+        value = _WEB_PERCENT.sub(lambda m: bytes([int(m.group(1), 16)]), value.replace(b"+", b" "))
+    return value.lower()
+
+
+def _web_marker(value, counts):
+    if not value:
+        return value
+    decoded = _unquote(value)
+    for name, pattern in WEB_EXPLOITS:
+        if pattern.search(decoded):
+            counts["web_exploit"] = counts.get("web_exploit", 0) + 1
+            return MASK % (b"exploit:" + name.encode())
+    counts["web_value"] = counts.get("web_value", 0) + 1
+    return MASK % b"value"
+
+
+def _mask_query(match, counts):
+    pairs = []
+    for pair in re.split(rb"([&;])", match.group(1)):
+        if pair in (b"&", b";"):
+            pairs.append(pair)
+            continue
+        name, equals, value = pair.partition(b"=")
+        if equals:
+            pairs.append(name + b"=" + _web_marker(value, counts))
+        else:  # a bare value (?secret): no name to keep
+            pairs.append(_web_marker(name, counts))
+    return b"?" + b"".join(pairs)
+
+
+def _mask_referrer(value, counts):
+    """A referrer: where it came from (scheme and host) kept, the rest a
+    marker; a value that isn't a URL, wholly a marker."""
+    if value in (b"", b"-"):
+        return value
+    head = _WEB_URL_HEAD.match(value)
+    rest = value[head.end() :] if head else value
+    if not rest or rest == b"/":
+        return value
+    marker = _web_marker(rest, counts)
+    if marker == MASK % b"value":
+        marker = MASK % b"referrer"
+    return (head.group(1) + b"/" if head else b"") + marker
+
+
+def mask_web(data, counts):
+    """A web server log line with every query-string value and referrer
+    masked (names kept; an attack's value replaced by a marker naming it)
+    and a combined-format line's user agent cut to 256 characters (policy
+    §7). Each pattern reads the line left to right once."""
+    combined = _WEB_COMBINED.match(data)
+    if combined:
+        head, referrer, agent = combined.group(1), combined.group(2), combined.group(3)
+        if len(agent) > WEB_AGENT_CHARS:
+            agent = agent[:WEB_AGENT_CHARS] + b"[cut]"
+            counts["web_agent_cut"] = counts.get("web_agent_cut", 0) + 1
+        head = _WEB_QUERY.sub(lambda m: _mask_query(m, counts), head)
+        data = (
+            head
+            + b'"'
+            + _mask_referrer(referrer, counts)
+            + b'" "'
+            + agent
+            + b'"'
+            + _WEB_QUERY.sub(lambda m: _mask_query(m, counts), data[combined.end() :])
+        )
+        return data
+    data = _WEB_REFERRER_FIELD.sub(lambda m: m.group(1) + _mask_referrer(m.group(2), counts), data)
+    return _WEB_QUERY.sub(lambda m: _mask_query(m, counts), data)
+
+
+def web_line_masker(line, masker):
+    """pump_lines' transform for web server logs: queries and referrers,
+    then secrets."""
+    return masker.line(mask_web(line, masker.counts))
+
+
+def _web_log_paths(texts):
+    """Log files the configuration names, as (path, "access" | "error"):
+    absolute paths, or Apache's ${APACHE_LOG_DIR} and RHEL's relative
+    logs/; never pipes or syslog."""
+    found = {}
+    for _config_path, text in texts:
+        for line in text.splitlines():
+            match = _WEB_LOG_DIRECTIVE.match(line)
+            if not match:
+                continue
+            directive, target = match.group(1).lower(), match.group(2)
+            target = target.replace("${APACHE_LOG_DIR}", "/var/log/apache2")
+            if target.startswith("logs/"):
+                target = "/var/log/httpd/" + target[5:]
+            if not target.startswith("/") or ".." in target.split("/"):
+                continue
+            kind = "access" if directive in _WEB_ACCESS_DIRECTIVES else "error"
+            found.setdefault(target, kind)
+    return found
+
+
+def _web_kind(name):
+    lowered = name.lower()
+    if "access" in lowered:
+        return "access"
+    if "error" in lowered or "slow" in lowered or _PHP_FPM_LOG.match(name):
+        return "error"
+    return None
+
+
+def _web_logs(run, module, texts):
+    """The web servers' log files last written within the window: error
+    logs always, access logs only with the organization's opt-in."""
+    named = _web_log_paths(texts)
+    candidates = {}  # path: kind
+    directories = set(WEB_LOG_DIRS) | {p.rsplit("/", 1)[0] for p in named}
+    for directory in sorted(directories):
+        try:
+            names = os.listdir(path(directory))
+        except OSError:
+            continue
+        for name in names:
+            absolute = _join(directory, name)
+            base = next(
+                (
+                    p
+                    for p in named
+                    if absolute == p or absolute.startswith(p + ".") or absolute.startswith(p + "-")
+                ),
+                None,
+            )
+            kind = named[base] if base else (_web_kind(name) if directory in WEB_LOG_DIRS else None)
+            if kind:
+                candidates[absolute] = kind
+    for name in os.listdir(path("/var/log")) if os.path.isdir(path("/var/log")) else ():
+        if _PHP_FPM_LOG.match(name):
+            candidates["/var/log/" + name] = "error"
+    since = run.since.timestamp()
+    counts = {"access": [0, 0], "error": [0, 0]}  # found, sent
+    entries = []
+    for absolute, kind in candidates.items():
+        try:
+            info = os.lstat(path(absolute))
+        except OSError:
+            continue
+        counts[kind][0] += 1
+        entries.append((info.st_mtime, absolute, kind, stat.S_ISREG(info.st_mode)))
+    access = bool(run.settings.get("web_access_logs"))
+    for mtime, absolute, kind, regular in sorted(entries):
+        run.check_time()
+        if kind == "access" and not access:
+            continue
+        if regular and mtime < since:
+            continue
+        if send_file(run, module, absolute, transform=web_line_masker):
+            counts[kind][1] += 1
+    run.stream.record(
+        module,
+        "web_logs_summary",
+        {
+            "access_logs_opted_in": access,
+            "access_found": counts["access"][0],
+            "access_sent": counts["access"][1],
+            "error_found": counts["error"][0],
+            "error_sent": counts["error"][1],
+        },
+    )
+
+
+# Program starts from the audit log (policy §7): execve and execveat, by
+# architecture.
+EXEC_SYSCALLS = {
+    "c000003e": ("59", "322"),  # x86_64
+    "c00000b7": ("221", "281"),  # aarch64
+    "40000003": ("11", "358"),  # i386
+}
+EXEC_TYPES = (b"type=SYSCALL ", b"type=EXECVE ", b"type=CWD ")
+MAX_EXEC_RECORDS = 20000
+MAX_EXEC_ARGV = 4096
+_AUDIT_SERIAL = re.compile(rb"msg=audit\((\d+)\.(\d+):(\d+)\)")
+_AUDIT_FIELD = re.compile(rb'(\w+(?:\[\d+\])?)=("[^"]*"|\S+)')
+
+
+def _audit_value(raw):
+    """An audit field's value: quoted text, or hex-encoded bytes."""
+    if raw.startswith(b'"') and raw.endswith(b'"'):
+        return raw[1:-1]
+    if raw and len(raw) % 2 == 0 and all(c in b"0123456789ABCDEFabcdef" for c in raw):
+        try:
+            return binascii.unhexlify(raw)
+        except binascii.Error:
+            return raw
+    return raw
+
+
+def _exec_uids(run):
+    """The UIDs whose program starts are collected, or None for all."""
+    choice = run.settings.get("exec_records") or "web"
+    if choice == "all":
+        return None
+    accounts, _ = read_accounts()
+    accounts = accounts or []
+    names = set(WEB_USERS) | set(run.settings.get("web_users") or ())
+    if choice == "privileged":
+        privileged, _ = privileged_accounts(run, accounts)
+        names |= privileged
+    return {a["uid"] for a in accounts if a["name"] in names and a["uid"] is not None}
+
+
+def _exec_record(parts, uids):
+    """One program start from its audit records, if it is one and its
+    account is chosen: user, program, parent, and masked arguments."""
+    syscall = parts.get(b"SYSCALL")
+    if syscall is None:
+        return None
+    fields = dict(_AUDIT_FIELD.findall(syscall))
+    if fields.get(b"syscall", b"").decode() not in EXEC_SYSCALLS.get(
+        fields.get(b"arch", b"").decode(), ()
+    ):
+        return None
+
+    def number(name):
+        value = fields.get(name, b"")
+        return int(value) if value.isdigit() else None
+
+    uid, euid = number(b"uid"), number(b"euid")
+    if uids is not None and uid not in uids and euid not in uids:
+        return None
+    argv = []
+    execve = dict(_AUDIT_FIELD.findall(parts.get(b"EXECVE", b"")))
+    argc = int(execve.get(b"argc", b"0")) if execve.get(b"argc", b"0").isdigit() else 0
+    for n in range(min(argc, 512)):
+        key = b"a%d" % n
+        if key in execve:
+            argv.append(_audit_value(execve[key]))
+        else:  # a long argument, logged in pieces a<n>[0], a<n>[1]…
+            pieces, i = [], 0
+            while b"%s[%d]" % (key, i) in execve:
+                pieces.append(_audit_value(execve[b"%s[%d]" % (key, i)]))
+                i += 1
+            argv.append(b"".join(pieces))
+    command = b" ".join(argv)[:MAX_EXEC_ARGV]
+    masked, _ = mask_text(command.replace(b"\n", b" "))
+    cwd = dict(_AUDIT_FIELD.findall(parts.get(b"CWD", b""))).get(b"cwd")
+    return {
+        "time": iso_from_timestamp(parts["time"]),
+        "serial": parts["serial"],
+        "pid": number(b"pid"),
+        "ppid": number(b"ppid"),
+        "uid": uid,
+        "euid": euid,
+        "auid": number(b"auid"),
+        "session": number(b"ses"),
+        "success": fields.get(b"success", b"").decode("ascii", "replace") or None,
+        "comm": _audit_value(fields.get(b"comm", b"")).decode("utf-8", "replace"),
+        "exe": _audit_value(fields.get(b"exe", b"")).decode("utf-8", "replace"),
+        "cwd": _audit_value(cwd).decode("utf-8", "replace") if cwd else None,
+        "argc": argc,
+        "argv": masked.decode("utf-8", "replace"),
+        "argv_cut": len(b" ".join(argv)) > MAX_EXEC_ARGV,
+    }
+
+
+def _exec_records(run, module):
+    """Program starts within the look-back from the audit logs, for the
+    chosen accounts (policy §7), newest kept, arguments masked like any
+    command line. Without them, a record says why."""
+    uids = _exec_uids(run)
+    since = run.since.timestamp()
+    found = collections.deque(maxlen=MAX_EXEC_RECORDS)
+    pending = collections.OrderedDict()  # serial: {type: line}
+    starts, read, cut, files = 0, 0, False, 0
+
+    def settle(keep=0):
+        nonlocal starts
+        while len(pending) > keep:
+            _, parts = pending.popitem(last=False)
+            record = _exec_record(parts, uids)
+            if record is not None:
+                found.append(record)
+                starts += 1
+
+    for absolute in reversed(AUDIT_LOGS):
+        run.check_time()
+        try:
+            raw, _ = open_regular_file(absolute)
+        except (OSError, ValueError):
+            continue
+        files += 1
+        with raw:
+            while True:
+                line = raw.readline(65536)
+                if not line:
+                    break
+                read += len(line)
+                if read > AUDIT_BYTES:
+                    cut = True
+                    break
+                record = _AUDIT_NODE.sub(b"", line, count=1)
+                if not record.startswith(EXEC_TYPES):
+                    continue
+                stamp = _AUDIT_SERIAL.search(record)
+                if stamp is None or int(stamp.group(1)) < since:
+                    continue
+                serial = int(stamp.group(3))
+                parts = pending.setdefault(serial, {"time": int(stamp.group(1)), "serial": serial})
+                parts[record.split(b" ", 1)[0][5:]] = record.rstrip(b"\n")
+                if len(pending) > 256:
+                    settle(128)
+        if cut:
+            break
+    settle()
+    if not files:
+        run.stream.record(
+            module,
+            "exec_records_unavailable",
+            {"reason": "no audit log: program starts aren't recorded on this server"},
+        )
+        return
+    for record in found:
+        run.stream.record(module, "exec_record", record)
+    run.stream.record(
+        module,
+        "exec_records_summary",
+        {
+            "accounts": run.settings.get("exec_records") or "web",
+            "starts": starts,
+            "kept": len(found),
+            "older_left_out": max(0, starts - MAX_EXEC_RECORDS),
+            "truncated": cut,
+            "bytes_read": read,
+        },
+    )
+
+
+def module_web_logs(run):
+    """Web applications (DESIGN.md §8.12): the web servers' configuration
+    (masked text), their error logs within the window, their access logs
+    only where the organization opted in (policy §7: query and referrer
+    values masked, user agents cut), and, from the audit log, program
+    starts by the web server's accounts (more with the opt-in)."""
+    module = "web_logs"
+    seen = set()
+    send_config_files(run, module, WEB_CONFIG_FILES, seen)
+    for directory in WEB_CONFIG_DIRS:
+        collect_tree(run, module, directory, seen, max_depth=2)
+    for pattern in WEB_CONFIG_GLOBS:
+        for found in glob_absolute(pattern, run=run):
+            if os.path.isdir(path(found)):
+                collect_tree(run, module, found, seen, max_depth=1)
+            else:
+                send_config_files(run, module, (found,), seen)
+    texts = [
+        (absolute, read_config_text(run, module, absolute))
+        for absolute in sorted(p for p in seen if isinstance(p, str))
+    ]
+    _web_logs(run, module, texts)
+    _exec_records(run, module)
+
+
 MODULES = {
     "host_facts": module_host_facts,
     "auth_log": module_auth_log,
@@ -7387,6 +7802,7 @@ MODULES = {
     "logging_state": module_logging_state,
     "software": module_software,
     "mail": module_mail,
+    "web_logs": module_web_logs,
 }
 
 
@@ -7418,6 +7834,17 @@ def settings_problems(settings):
             unknown = [m for m in modules if m not in MODULES]
             if unknown:
                 problems.append("unknown modules: " + ", ".join(unknown))
+    if not isinstance(settings.get("web_access_logs", False), bool):
+        problems.append("web_access_logs must be true or false")
+    if settings.get("exec_records", "web") not in ("web", "privileged", "all"):
+        problems.append("exec_records must be web, privileged or all")
+    web_users = settings.get("web_users", [])
+    if not (
+        isinstance(web_users, list)
+        and len(web_users) <= 64
+        and all(isinstance(u, str) and _SUDO_ACCOUNT.match(u) for u in web_users)
+    ):
+        problems.append("web_users must be a list of at most 64 account names")
     withheld = settings.get("mail_key_withheld")
     if withheld is not None and not (isinstance(withheld, str) and len(withheld) <= 300):
         problems.append("mail_key_withheld must be null or text of at most 300 characters")

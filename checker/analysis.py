@@ -82,7 +82,12 @@ def parse_bundle(row: Any, identity: x25519.Identity) -> Parsed:
         "time_zone_assumed": builder.zone_assumed,
         "problem": walked.problem,
     }
-    return Parsed(events, summary, state.finish())
+    snapshot = state.finish()
+    # Ordinary web requests are counted, not kept as events: the counts are
+    # live data, never compared.
+    if builder.web.lines and snapshot is not None:
+        snapshot.live["web_requests"] = builder.web.summary()
+    return Parsed(events, summary, snapshot)
 
 
 def store_parsed(store: Store, row: Any, recipients: list[str], parsed: Parsed) -> Path:

@@ -5263,5 +5263,146 @@ exit 0
 """
 
 
+NGINX_ACCESS = (
+    b'203.0.113.9 - - [28/Oct/2026:10:00:01 +0000] "GET /shop?item=42&token=s3cr3t HTTP/1.1"'
+    b' 200 512 "https://ref.example/page?user=alice" "Mozilla/5.0 ' + b"x" * 400 + b'"\n'
+    b'203.0.113.9 - - [28/Oct/2026:10:00:02 +0000] "GET /x?f=../../etc/passwd&c=%24%7Bjndi:ldap'
+    b'://e%7D HTTP/1.1" 404 0 "-" "curl/8"\n'
+)
+NGINX_ERROR = (
+    b"2026/10/28 10:00:03 [error] 77#77: *5 open() failed, client: 198.51.100.4, server: x,"
+    b' request: "GET /a.php?id=5 HTTP/1.1", referrer: "https://ref.example/p?q=secret"\n'
+)
+AUDIT_EXEC = (
+    b"type=SYSCALL msg=audit(%d.100:701): arch=c000003e syscall=59 success=yes exit=0"
+    b' ppid=900 pid=901 auid=4294967295 uid=33 gid=33 euid=33 ses=4294967295 comm="sh"'
+    b' exe="/usr/bin/dash" key="cc-web-exec"\n'
+    b'type=EXECVE msg=audit(%d.100:701): argc=3 a0="sh" a1="-c" a2=6D7973716C202D7053336372657420'
+    b"2D65202273656C6563742031220A\n"
+    b'type=CWD msg=audit(%d.100:701): cwd="/var/www/html"\n'
+    b"type=SYSCALL msg=audit(%d.200:702): arch=c000003e syscall=59 success=yes exit=0"
+    b' ppid=1 pid=902 auid=1000 uid=1000 gid=1000 euid=1000 ses=3 comm="ls" exe="/usr/bin/ls"\n'
+    b'type=EXECVE msg=audit(%d.200:702): argc=1 a0="ls"\n'
+    b"type=SYSCALL msg=audit(%d.300:703): arch=c000003e syscall=59 success=yes exit=0"
+    b' ppid=900 pid=903 auid=4294967295 uid=33 gid=33 euid=33 ses=4294967295 comm="cat"'
+    b' exe="/usr/bin/cat"\n'
+    b'type=EXECVE msg=audit(%d.300:703): argc=2 a0="cat" a1_len=8 a1[0]=2F657463 a1[1]=2F706173\n'
+)
+
+
+class WebTests(FixtureRoot):
+    def setUp(self):
+        super().setUp()
+        self.collector = load_collector(self.root)
+        self.write(
+            "etc/passwd",
+            b"root:x:0:0::/root:/bin/bash\nwww-data:x:33:33::/var/www:/usr/sbin/nologin\n"
+            b"jch:x:1000:1000::/home/jch:/bin/bash\n",
+        )
+        self.write("etc/group", b"sudo:x:27:jch\n")
+
+    def run_web(self, **extra):
+        records = collect_with(self.root, ["web_logs"], **extra)
+        return records, sources(records)
+
+    def mask(self, line):
+        return self.collector.mask_web(line, {}).decode()
+
+    def test_error_logs_always_access_logs_only_when_chosen(self):
+        self.write("var/log/nginx/access.log", NGINX_ACCESS)
+        self.write("var/log/nginx/error.log", NGINX_ERROR)
+        records, sent = self.run_web()
+        self.assertEqual(sorted(sent), ["/var/log/nginx/error.log"])
+        [summary] = named(records, "web_logs_summary")
+        self.assertEqual((summary["data"]["access_found"], summary["data"]["access_sent"]), (1, 0))
+        records, sent = self.run_web(web_access_logs=True)
+        self.assertEqual(sorted(sent), ["/var/log/nginx/access.log", "/var/log/nginx/error.log"])
+
+    def test_queries_and_referrers_are_masked_agents_cut(self):
+        self.write("var/log/nginx/access.log", NGINX_ACCESS)
+        self.write("var/log/nginx/error.log", NGINX_ERROR)
+        _, sent = self.run_web(web_access_logs=True)
+        access = sent["/var/log/nginx/access.log"][1].decode()
+        for secret in ("42", "s3cr3t", "alice", "user=", "/page", "jndi:ldap", "passwd"):
+            self.assertNotIn(secret, access)
+        self.assertIn("/shop?item=[MASKED:value]&token=[MASKED:value]", access)
+        self.assertIn('"https://ref.example/[MASKED:referrer]"', access)
+        self.assertIn("f=[MASKED:exploit:traversal]&c=[MASKED:exploit:jndi]", access)
+        self.assertIn("x" * 200, access)
+        self.assertNotIn("x" * 300, access)
+        self.assertIn("[cut]", access)
+        error = sent["/var/log/nginx/error.log"][1].decode()
+        self.assertIn('request: "GET /a.php?id=[MASKED:value] HTTP/1.1"', error)
+        self.assertIn('referrer: "https://ref.example/[MASKED:referrer]"', error)
+        self.assertIn("client: 198.51.100.4", error)  # visitors' addresses are kept
+
+    def test_masking_cases(self):
+        cases = {
+            b"GET /p?<?php system($_GET[1]);?> HTTP/1.1": "GET /p?[MASKED:exploit:php_code]",
+            b"GET /p?x=php://filter/resource=x HTTP/1.1": "x=[MASKED:exploit:php_wrapper]",
+            b"GET /p?x=a%253B%2520sh HTTP/1.1": "x=[MASKED:exploit:shell]",
+            b"GET /p?x=a%00 HTTP/1.1": "x=[MASKED:exploit:nul]",
+            b"GET /p?q=1+union+select+2 HTTP/1.1": "q=[MASKED:exploit:sql]",
+            b"GET /p?a=&b HTTP/1.1": "a=&[MASKED:value]",
+        }
+        for line, expected in cases.items():
+            self.assertIn(expected, self.mask(line), line)
+
+    def test_configured_log_paths_are_found(self):
+        self.write(
+            "etc/nginx/nginx.conf",
+            b"http {\n  access_log /var/log/site/visits.log combined;\n"
+            b"  error_log /var/log/site/oops.log warn;\n  access_log syslog:server=x;\n}\n",
+        )
+        self.write("var/log/site/visits.log", NGINX_ACCESS)
+        self.write("var/log/site/visits.log.1", NGINX_ACCESS, age_days=1)
+        self.write("var/log/site/oops.log", NGINX_ERROR)
+        self.write("var/log/site/unrelated.log", b"not a web log\n")
+        _, sent = self.run_web(web_access_logs=True)
+        self.assertIn("/etc/nginx/nginx.conf", sent)
+        logs = sorted(n for n in sent if n.startswith("/var/log"))
+        self.assertEqual(
+            logs,
+            ["/var/log/site/oops.log", "/var/log/site/visits.log", "/var/log/site/visits.log.1"],
+        )
+
+    def test_program_starts_by_web_accounts_masked(self):
+        now = int(NOW)
+        self.write("var/log/audit/audit.log", AUDIT_EXEC % ((now,) * 7))
+        records, _ = self.run_web()
+        starts = [r["data"] for r in named(records, "exec_record")]
+        self.assertEqual([s["pid"] for s in starts], [901, 903])  # not jch's ls
+        first = starts[0]
+        self.assertEqual(
+            (first["uid"], first["exe"], first["cwd"]), (33, "/usr/bin/dash", "/var/www/html")
+        )
+        self.assertIn("mysql -p[MASKED:mysql_password]", first["argv"])
+        self.assertNotIn("S3cret", json.dumps(records))
+        self.assertEqual(starts[1]["argv"], "cat /etc/pas")  # an argument in pieces
+        # More accounts with the opt-in: jch is in sudo, so "privileged" has him.
+        records, _ = self.run_web(exec_records="privileged")
+        self.assertEqual(len(named(records, "exec_record")), 3)
+        records, _ = self.run_web(exec_records="all", web_users=["deploy"])
+        self.assertEqual(len(named(records, "exec_record")), 3)
+
+    def test_older_program_starts_and_no_audit_log(self):
+        old = int(NOW - 40 * DAY)
+        self.write("var/log/audit/audit.log", AUDIT_EXEC % ((old,) * 7))
+        records, _ = self.run_web()
+        self.assertEqual(named(records, "exec_record"), [])
+        Path(self.root, "var/log/audit/audit.log").unlink()
+        records, _ = self.run_web()
+        self.assertTrue(named(records, "exec_records_unavailable"))
+
+    def test_bad_web_settings_are_refused(self):
+        for extra in (
+            {"web_access_logs": "yes"},
+            {"exec_records": "everyone"},
+            {"web_users": ["-x"]},
+        ):
+            records = collect_with(self.root, ["web_logs"], **extra)
+            self.assertEqual(records[-1]["status"], "refused", extra)
+
+
 if __name__ == "__main__":
     unittest.main()

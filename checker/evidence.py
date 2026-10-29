@@ -30,6 +30,7 @@ from pyrage import x25519
 from checker.files import atomic_write, locked
 from checker.protocol import (
     Error,
+    ExecRecords,
     HomeText,
     IncompleteStream,
     Manifest,
@@ -61,6 +62,11 @@ class Config(BaseModel):
     group_priors: dict[str, Annotated[float, Field(gt=0, lt=1)]] = {}
     # Opt-in chosen in `checker init` (policy §7); see protocol HomeText.
     home_text: HomeText = "off"
+    # Web access logs (opt-in), whose program starts are collected, and
+    # the organization's own web-server accounts (policy §7).
+    web_access_logs: bool = False
+    exec_records: ExecRecords = "web"
+    web_users: list[str] = []
 
 
 def config_file(home: Path) -> Path:
@@ -79,7 +85,11 @@ def load_config(home: Path) -> Config:
 
 
 def initialise(
-    home: Path, recipient: str | None = None, home_text: HomeText = "off"
+    home: Path,
+    recipient: str | None = None,
+    home_text: HomeText = "off",
+    web_access_logs: bool = False,
+    exec_records: ExecRecords = "web",
 ) -> tuple[Config, Path | None]:
     """Create the tool's directory, evidence key and database. With
     `recipient`, bundles are encrypted to that key and its private half stays
@@ -90,11 +100,15 @@ def initialise(
     with locked(config_file(home)):
         if config_file(home).exists():
             raise EvidenceError(f"already set up ({config_file(home)}); nothing changed")
-        return _initialise(home, recipient, home_text)
+        return _initialise(home, recipient, home_text, web_access_logs, exec_records)
 
 
 def _initialise(
-    home: Path, recipient: str | None, home_text: HomeText
+    home: Path,
+    recipient: str | None,
+    home_text: HomeText,
+    web_access_logs: bool = False,
+    exec_records: ExecRecords = "web",
 ) -> tuple[Config, Path | None]:
     identity_path = None
     if recipient:
@@ -120,6 +134,8 @@ def _initialise(
         recipients=recipients,
         identity_file=str(identity_path) if identity_path else None,
         home_text=home_text,
+        web_access_logs=web_access_logs,
+        exec_records=exec_records,
     )
     Store(database_file(home)).close()
     mail_key(home)

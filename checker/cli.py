@@ -50,6 +50,11 @@ from checker.whitelist_review import compare as whitelist_compare
 from checker.whitelist_review import stale as whitelist_stale
 
 # What `checker init --home-text` means, as `init` reports it.
+EXEC_RECORDS = {
+    "web": "the web server's accounts",
+    "privileged": "the web server's, root, service and administrator accounts",
+    "all": "every account",
+}
 HOME_TEXT = {
     "off": "not collected (hashes only)",
     "privileged": "collected, masked, for root, service and administrator accounts",
@@ -156,7 +161,9 @@ def cmd_trust(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
 def cmd_init(args: argparse.Namespace) -> int:
     base = home()
     try:
-        config, identity_path = initialise(base, args.recipient, args.home_text)
+        config, identity_path = initialise(
+            base, args.recipient, args.home_text, args.web_access_logs, args.exec_records
+        )
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
@@ -171,6 +178,11 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(
         f"Text of start-up files and user units in home directories: {HOME_TEXT[config.home_text]}"
     )
+    print(
+        "Web access logs: "
+        + ("collected, masked" if config.web_access_logs else "not collected (error logs only)")
+    )
+    print(f"Program starts from the audit log, for: {EXEC_RECORDS[config.exec_records]}")
     print(f"Mail logs' addresses are fingerprinted with the mail key in {mail_key_file(base)};")
     print("keep it as private as the evidence key.")
     print("Next: `checker hosts add`, then `checker trust`, then `checker collect`.")
@@ -598,6 +610,24 @@ def build_parser() -> argparse.ArgumentParser:
             "also collect the masked text of start-up files and user units in home"
             " directories: off (hashes only, the default), privileged (root, service"
             " and administrator accounts) or all"
+        ),
+    )
+    init.add_argument(
+        "--web-access-logs",
+        action="store_true",
+        help=(
+            "also collect web servers' access logs (visitors' requests), masked; error"
+            " logs are always collected"
+        ),
+    )
+    init.add_argument(
+        "--exec-records",
+        choices=sorted(EXEC_RECORDS),
+        default="web",
+        help=(
+            "whose program starts to collect from the audit log: web (the web server's"
+            " accounts, the default), privileged (also root, service and administrator"
+            " accounts) or all"
         ),
     )
     init.set_defaults(handler=cmd_init)

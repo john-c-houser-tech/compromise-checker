@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-PARSER_VERSION = 5  # 3: system.clock_changed; 4: unit.starting, unit.finished; 5: mail
+PARSER_VERSION = 6  # 3: system.clock_changed; 4: unit.starting, unit.finished; 5: mail; 6: web
 MAX_EVENT_LINE = 2048  # characters of the source line kept on each event
 
 _MONTHS = {m: i for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)}
@@ -433,6 +433,7 @@ class EventBuilder:
         self._syslog: dict[int, list[tuple[tuple[int, int, str], tuple]]] = {}
         # Whether the collector asked sudo for the account's rules (2.7b).
         self.sudo_lookup = False
+        self.web = WebLogs()
 
     # Consumer interface
     def manifest(self, manifest: Manifest) -> None:
@@ -451,6 +452,8 @@ class EventBuilder:
             self._login_record(record.data)
         elif (record.module, record.name) == ("sudoers", "sudo_input_logging"):
             self.sudo_lookup = bool(record.data.get("lookup_command"))
+        elif (record.module, record.name) == ("web_logs", "exec_record"):
+            self._exec_record(record.data)
 
     def source_start(self, start: SourceStart) -> None:
         if _log_kind(start) is not None:
@@ -458,6 +461,10 @@ class EventBuilder:
 
     def line(self, start: SourceStart, line: bytes) -> None:
         text = line.decode("utf-8", "replace")
+        if start.module == "web_logs" and start.kind == "file":
+            if start.name.startswith("/var/log/"):
+                self.web.line(self, start.name, text.rstrip("\n"))
+            return
         kind = _log_kind(start)
         if kind == "exim":
             self._exim_line(start, text)
@@ -621,6 +628,26 @@ class EventBuilder:
         pid = pid if isinstance(pid, str) and pid.isdigit() else None
         self._message(moment, source or start.module, program, message, pid, message, extra, rules)
 
+    def _exec_record(self, data: dict[str, Any]) -> None:
+        try:
+            moment = datetime.fromisoformat(data["time"]) if data.get("time") else None
+        except ValueError:
+            moment = None
+        fields = {
+            k: data[k]
+            for k in ("pid", "ppid", "uid", "euid", "auid", "session", "comm", "exe", "cwd", "argv")
+            if data.get(k) not in (None, "")
+        }
+        fields["success"] = data.get("success") == "yes"
+        self._add(
+            moment,
+            "web_logs:audit",
+            "process.exec",
+            fields,
+            data.get("comm"),
+            data.get("argv") or "",
+        )
+
     _BOOT = re.compile(
         r"^\s*(?P<index>-?\d+)\s+(?P<boot_id>[0-9a-f]{32})\s+(?:\w{3}\s+)?"
         r"(?P<first>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?: \S+)?\s+(?:\w{3}\s+|—\s*)?"
@@ -665,6 +692,139 @@ class EventBuilder:
             if data.get(k) not in (None, "")
         }
         self._add(moment, f"login_records:{path}", kind, fields)
+
+
+# --- Web server logs (DESIGN.md §8.12) ------------------------------------------------------
+
+_WEB_COMBINED = re.compile(
+    r'^(?P<client>\S+) \S+ (?P<user>\S+) \[(?P<time>[^\]]+)\] "(?P<request>(?:[^"\\]|\\.)*)" '
+    r'(?P<status>\d{3}) (?P<size>\d+|-)(?: "(?P<referrer>(?:[^"\\]|\\.)*)" '
+    r'"(?P<agent>(?:[^"\\]|\\.)*)")?'
+)
+_WEB_NGINX_ERROR = re.compile(
+    r"^(?P<time>\d{4}/\d\d/\d\d \d\d:\d\d:\d\d) \[(?P<level>\w+)\] [^:]*: (?P<message>.*)$"
+)
+_WEB_APACHE_ERROR = re.compile(
+    r"^\[(?P<time>\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d(?:\.\d+)? \d{4})\] "
+    r"\[(?:[\w-]+:)?(?P<level>\w+)\](?: \[pid [^\]]*\])?(?: \[client (?P<client>[^\]]+)\])? "
+    r"(?P<message>.*)$"
+)
+_WEB_PHP_FPM = re.compile(
+    r"^\[(?P<time>\d\d-\w{3}-\d{4} \d\d:\d\d:\d\d(?:\.\d+)?)\] (?P<level>\w+): (?P<message>.*)$"
+)
+_WEB_ERROR_CLIENT = re.compile(r"client: ([^,\s]+)")
+_WEB_ERROR_REQUEST = re.compile(r'request: "([^"]*)"')
+# Paths a check looks at even when answered 2xx: scripts, and anything an
+# attack marker was put in.
+WEB_SCRIPT_PATH = re.compile(
+    r"\.(?:php\d?|phtml|phar|cgi|pl|py|jsp|jspx|aspx?|sh)(?:$|[/?;])", re.I
+)
+WEB_NETWORKS = 2000  # source networks counted per bundle
+
+
+def _network(address: str) -> str:
+    try:
+        ip = ipaddress.ip_address(address.split("%")[0].strip("[]"))
+    except ValueError:
+        return "unknown"
+    prefix = 24 if ip.version == 4 else 48
+    return str(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))
+
+
+class WebLogs:
+    """Web server log lines as events: every error-log line; access-log
+    lines answered 5xx, carrying an attack marker, or for a script. The
+    rest are counted per source network and status class
+    (`requests`), and lines in no known format per file (`unparsed`)."""
+
+    def __init__(self) -> None:
+        self.requests: dict[str, dict[str, int]] = {}
+        self.lines: dict[str, int] = {}
+        self.unparsed: dict[str, int] = {}
+
+    def line(self, builder: EventBuilder, name: str, text: str) -> None:
+        self.lines[name] = self.lines.get(name, 0) + 1
+        source = f"web_logs:{name}"
+        found = _WEB_COMBINED.match(text)
+        if found:
+            self._request(builder, source, found, text)
+            return
+        for pattern, form in (
+            (_WEB_NGINX_ERROR, "%Y/%m/%d %H:%M:%S"),
+            (_WEB_APACHE_ERROR, "%a %b %d %H:%M:%S.%f %Y"),
+            (_WEB_PHP_FPM, "%d-%b-%Y %H:%M:%S"),
+        ):
+            found = pattern.match(text)
+            if found:
+                self._error(builder, source, found, form, text)
+                return
+        self.unparsed[name] = self.unparsed.get(name, 0) + 1
+
+    def _request(self, builder: EventBuilder, source: str, found, text: str) -> None:
+        method, _, rest = found["request"].partition(" ")
+        target = rest.rsplit(" ", 1)[0] if " " in rest else rest
+        status = int(found["status"])
+        marked = "[MASKED:exploit:" in text
+        network = _network(found["client"])
+        if not (status >= 500 or marked or WEB_SCRIPT_PATH.search(target)):
+            if network in self.requests or len(self.requests) < WEB_NETWORKS:
+                counts = self.requests.setdefault(network, {})
+                kind = f"{status // 100}xx"
+                counts[kind] = counts.get(kind, 0) + 1
+            return
+        try:
+            moment = datetime.strptime(found["time"], "%d/%b/%Y:%H:%M:%S %z")
+        except ValueError:
+            moment = None
+        fields: dict[str, Any] = {
+            "client": found["client"],
+            "network": network,
+            "method": method,
+            "path": target,
+            "status": status,
+        }
+        if found["size"].isdigit():
+            fields["size"] = int(found["size"])
+        if found["referrer"] not in (None, "-", ""):
+            fields["referrer"] = found["referrer"]
+        if found["agent"]:
+            fields["agent"] = found["agent"]
+        attacks = sorted(set(re.findall(r"\[MASKED:exploit:(\w+)\]", text)))
+        if attacks:
+            fields["attacks"] = attacks
+        builder._add(moment, source, "web.request", fields, None, text)
+
+    def _error(self, builder: EventBuilder, source: str, found, form: str, text: str) -> None:
+        stamp = found["time"]
+        if "%f" in form and "." not in stamp:
+            form = form.replace(".%f", "")
+        elif "%f" not in form and "." in stamp:
+            stamp = stamp.split(".", 1)[0]
+        try:
+            moment = datetime.strptime(" ".join(stamp.split()), form).replace(tzinfo=builder.zone)
+        except ValueError:
+            moment = None
+        message = found["message"]
+        fields: dict[str, Any] = {"level": found["level"].lower(), "message": message[:500]}
+        client = found.groupdict().get("client") or None
+        if client is None:
+            match = _WEB_ERROR_CLIENT.search(message)
+            client = match.group(1) if match else None
+        if client:
+            fields["client"] = client.rsplit(":", 1)[0] if client.count(":") == 1 else client
+            fields["network"] = _network(fields["client"])
+        request = _WEB_ERROR_REQUEST.search(message)
+        if request:
+            fields["request"] = request.group(1)
+        builder._add(moment, source, "web.error", fields, None, text)
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "requests_by_network": self.requests,
+            "networks_cut": len(self.requests) >= WEB_NETWORKS,
+            "lines": self.lines,
+            "unparsed": self.unparsed,
+        }
 
 
 def _log_kind(start: SourceStart) -> str | None:

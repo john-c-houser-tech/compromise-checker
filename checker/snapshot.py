@@ -18,7 +18,7 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 8  # 5: network; 6: logging, history flags; 7: software; 8: mail
+SNAPSHOT_VERSION = 9  # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -76,6 +76,7 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
         ("logging_state", "processes"),
     ),
     "mail_files": ("Postfix and Exim configuration files", ("mail",)),
+    "web_config": ("nginx, Apache and PHP-FPM configuration files", ("web_logs",)),
     "mail_config": (
         "mail server settings: relay host, trusted networks, relay restrictions, services",
         ("mail",),
@@ -110,6 +111,7 @@ _MASKED = {
     "shell_history",
     "mail_files",
     "mail_config",
+    "web_config",
 }
 
 # Which section a module's text sources and file records go to.
@@ -126,6 +128,7 @@ _FILE_SECTIONS = {
     "logging_state": "log_config",
     "software": "software_files",
     "mail": "mail_files",  # configuration only: mail logs are read for events
+    "web_logs": "web_config",  # configuration only: web logs are read for events
 }
 _FILE_RECORDS = {
     "file",
@@ -341,7 +344,7 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
         if name in ("config_dir", "source") or str(path or "").startswith("/etc/"):
             return {"pam_rules", "pam"}
         return {"pam"}
-    if module == "mail" and str(path or "").startswith("/var/log/"):
+    if module in ("mail", "web_logs") and str(path or "").startswith("/var/log/"):
         return set()  # a mail log: the coverage reports it, the settings are whole
     if module == "unusual_files":
         return {"unusual_files", "web_files", "privileged_files"}
@@ -556,8 +559,8 @@ class SnapshotBuilder:
         handler = getattr(self, f"_on_{module}", None)
         if handler is not None:
             handler(name, data)
-        if module == "mail" and not str(data.get("path") or "").startswith("/etc/"):
-            pass  # mail logs aren't configuration
+        if module in ("mail", "web_logs") and not str(data.get("path") or "").startswith("/etc/"):
+            pass  # logs aren't configuration
         elif module in _FILE_SECTIONS and name in _FILE_RECORDS and data.get("path"):
             item = self.section(_FILE_SECTIONS[module]).items.setdefault(data["path"], {})
             item.update(_meta(data))
@@ -574,8 +577,8 @@ class SnapshotBuilder:
             self._text[start.source_id] = ((start, hashlib.sha256()), [])
             return
         wanted = start.kind == "file" and start.module in _FILE_SECTIONS
-        if start.module == "mail" and not start.name.startswith("/etc/"):
-            wanted = False  # a mail log, read for events
+        if start.module in ("mail", "web_logs") and not start.name.startswith("/etc/"):
+            wanted = False  # a log, read for events
         lines: list[str] | None = (
             []
             if start.module in ("sudoers", "ssh", "pam", "startup", "logging_state", "mail")
@@ -845,6 +848,12 @@ class SnapshotBuilder:
             # The file it runs: a copy of sleep named auditd in /dev/shm
             # changes it.
             section.items[f"{kind}: {name}"] = {"running": True, "exe": ", ".join(sorted(exes))}
+
+    def _on_web_logs(self, name: str, data: dict[str, Any]) -> None:
+        if name in ("web_logs_summary", "exec_records_summary", "exec_records_unavailable"):
+            self.live[name] = data
+            if name == "exec_records_summary" and data.get("truncated"):
+                self._module_gap("web_logs", "audit log read cut short", name, {})
 
     def _on_mail(self, name: str, data: dict[str, Any]) -> None:
         if name == "mail_queue":

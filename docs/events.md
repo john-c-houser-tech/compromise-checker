@@ -78,6 +78,9 @@ recorded, which includes connecting and any prompt).
 | `system.boot_journal` | the journal's boot list | index, boot id, first and last entry |
 | `login.session`, `login.ended`, `system.boot`, `system.shutdown_record` | wtmp | user, line, host, address |
 | `login.failed` | btmp | user (masked unless a local account), host, address |
+| `web.request` | web access logs (combined format, nginx's default): only lines answered 5xx, carrying an attack marker, or for a script (`.php`, `.cgi`, `.jsp`…); the rest are counted per source network and status class in the snapshot's live `web_requests` | client, network (/24 or /48), method, path (query values masked), status, size, referrer, agent, attacks |
+| `web.error` | nginx, Apache and PHP-FPM error logs (the host's time zone) | level, message (500 characters), client, network, request |
+| `process.exec` | program starts from the audit log (`web_logs`) | pid, ppid, uid, euid, auid, session, comm, exe, cwd, argv (masked), success |
 | `mail.submitted` | Postfix's `pickup`, Exim's `<=` with `P=local` | queue_id, sender (fingerprinted), uid (Postfix) or user (Exim) |
 | `mail.sent`, `mail.deferred`, `mail.bounced` | Postfix's delivery agents (`status=sent`, `deferred`, `bounced` or `expired`); Exim's `=>`/`->`, `==`, `**` | queue_id, recipient (fingerprinted), domain, relay; `local` for a delivery into a mailbox on the host |
 

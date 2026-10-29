@@ -917,7 +917,51 @@ that organization's fingerprints. Keeping one key per organization limits
 that; if a server is known to have been compromised, replacing the key
 (and so starting the fingerprints afresh) is a planned follow-up.
 
-## Protected files
+## `web_logs`
+
+**Why:** check 8.12 (web applications): web shells and what they start,
+exploit attempts that got an answer, error bursts.
+
+**Reads:**
+- nginx's, Apache's and PHP-FPM's configuration as masked text:
+  `/etc/nginx/nginx.conf`, `conf.d`, `sites-enabled`;
+  `/etc/apache2/apache2.conf`, `envvars`, `sites-enabled`, `conf-enabled`;
+  `/etc/httpd/conf/httpd.conf`, `conf.d`; `/etc/php-fpm.conf`,
+  `/etc/php-fpm.d`, `/etc/php/*/fpm/php-fpm.conf` and `pool.d`;
+- the log files that configuration names (`access_log`, `error_log`,
+  `CustomLog`, `TransferLog`, `ErrorLog`, PHP-FPM's `error_log`, `slowlog`
+  and `access.log`; `${APACHE_LOG_DIR}` and RHEL's relative `logs/`
+  understood; pipes and syslog targets skipped), with their rotated copies,
+  and the files in `/var/log/nginx`, `/var/log/apache2`, `/var/log/httpd`
+  and `/var/log/php-fpm`, and `/var/log/php*-fpm.log`, told apart by name
+  (`access`, or `error`/`slow`). Error logs are always sent; access logs
+  only where the organization chose them in `checker init
+  --web-access-logs` (policy §7). Only files last written within the
+  window; `web_logs_summary` counts what was found and sent;
+- program starts from the audit log (`/var/log/audit/audit.log` and
+  `.1`–`.4`, read oldest first, at most 64 MiB): `SYSCALL` records for
+  `execve`/`execveat` with their `EXECVE` and `CWD` records, joined by
+  serial, for the chosen accounts (`--exec-records`: `web` — `www-data`,
+  `apache`, `nginx`, `http`, `wwwrun`, `lighttpd` and the configuration's
+  `web_users` — by default; `privileged` adds root, service and
+  administrator accounts as `home_text` reads them; `all`), within the
+  window, newest 20,000 kept. Each `exec_record` carries the user (`uid`,
+  `euid`, `auid`), `pid`, `ppid`, `comm`, `exe`, `cwd` and the arguments
+  joined and masked like any command line (at most 4,096 bytes, hex and
+  split arguments decoded). With no audit log, `exec_records_unavailable`
+  says so; `docs/auditd-web.rules` sets auditd up to record them.
+
+**Masking (policy §7):** before secret masking, every query string in a
+line (the request's, and a referrer's) keeps its names and has each value
+replaced by `[MASKED:value]`, or, where the value (percent-decoded twice)
+matches an attack, by a marker naming it: `traversal` (`../`),
+`php_wrapper` (`php://`, `phar://`, `data://`…), `php_code` (`<?php`),
+`jndi` (`${jndi:`…), `shell` (`;sh`, `|curl`, `$(`…), `nul` (`%00`), `sql`
+(`union select`, `sleep(`). A referrer keeps its scheme and host; the rest
+becomes `[MASKED:referrer]` (or an attack marker). In a combined-format
+line the user agent is cut to 256 characters (`[cut]`). Visitors'
+addresses are kept. Each pattern reads a line once, left to right.
+
 
 Some files are collected only as structured records, status or metadata,
 never as text: `/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow` and

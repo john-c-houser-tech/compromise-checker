@@ -303,10 +303,15 @@ EXPECTED_RECORDS = (
     ("software", "signing_key"),
     ("mail", "mail_servers"),
     ("mail", "mail_queue"),  # Postfix, installed by the setup
+    ("web_logs", "web_logs_summary"),
+    ("web_logs", "exec_record"),  # the web account's program start, by the shipped rules
 )
 EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal", "mail")
 # The address the setup mails: its local part must never leave the server.
 PROOF_MAIL_LOCAL = "proofmail"
+# A value the setup puts in web requests' query strings and referrers:
+# it must never leave the server either (policy §7).
+PROOF_WEB_SECRET = "proofwebsecret"
 
 SETUP = r"""
 set -eu
@@ -371,6 +376,32 @@ printf 'Subject: proof\n\nproof\n' \
     | runuser -u proofuser -- /usr/sbin/sendmail proofmail@example.org
 printf 'Subject: proof\n\nproof\n' | /usr/sbin/sendmail root
 sleep 5
+# A web server and PHP-FPM (plan 2.8), audit rules for the web accounts'
+# program starts (docs/auditd-web.rules, lines for accounts that exist),
+# requests with a secret in their query strings and referrer, and one
+# program started by the web account.
+if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx php-fpm >/dev/null
+else
+    dnf install -y -q nginx php-fpm >/dev/null
+fi
+systemctl enable --now nginx >/dev/null 2>&1
+fpm=$(systemctl list-unit-files 'php*-fpm.service' --no-legend | awk '{print $1; exit}')
+[ -n "$fpm" ] && systemctl enable --now "$fpm" >/dev/null 2>&1 || true
+for account in www-data apache nginx; do
+    if id -u "$account" >/dev/null 2>&1; then
+        for arch in b64 b32; do
+            auditctl -a always,exit -F arch=$arch -S execve,execveat \
+                -F euid="$account" -k cc-web-exec >/dev/null
+        done
+    fi
+done
+for path in '/?token=proofwebsecret' '/missing.php?id=proofwebsecret' '/x?f=../../etc/passwd'; do
+    curl -s -o /dev/null -e 'https://ref.example/page?u=proofwebsecret' \
+        "http://127.0.0.1$path" || true
+done
+web=$(id -u www-data >/dev/null 2>&1 && echo www-data || echo nginx)
+runuser -u "$web" -- /usr/bin/id >/dev/null
 # Something for the collector to find in the authentication log.
 logger -p authpriv.notice "compromise-checker read-only proof: marker" || true
 """
@@ -715,7 +746,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
 
             home = work / f"{distro}-home"
             # The widest setting, so the proof covers every read the collector can make.
-            config, _ = initialise(home, home_text="all")
+            config, _ = initialise(home, home_text="all", web_access_logs=True, exec_records="all")
             scanner = Host(
                 name=distro,
                 address=address,
@@ -1107,7 +1138,7 @@ def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path,
     ]
     result.events = len(parsed.events)
     result.mail_events = sum(1 for e in parsed.events if e.type.startswith("mail."))
-    leaks = MailLeaks([mail_key(home), PROOF_MAIL_LOCAL])
+    leaks = MailLeaks([mail_key(home), PROOF_MAIL_LOCAL, PROOF_WEB_SECRET])
     walk_bundle(Path(row["path"]), identity, leaks)
     result.mail_leaks = leaks.found
     if parsed.snapshot is not None:

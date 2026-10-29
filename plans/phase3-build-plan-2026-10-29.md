@@ -178,10 +178,14 @@ assessment, its events, snapshot and whitelist, by one module
   the report say both: declined by the configured model, answered by the
   fallback (read from the response, never assumed). If none answered, the
   report says no advice was produced and why.
-- **Cost:** `count_tokens` on the exact request, an estimated cost from a
-  price table in one place (`checker/advisor/prices.py`, dated, overridable
-  in the configuration), shown before sending; above `max_cost_per_run` it
-  asks; `--yes` for scripts. Real usage from the response is stored.
+- **Cost:** estimated here from the request's length (about three
+  characters a token, which errs high; built 2026-10-29 in place of
+  `count_tokens`, which would have sent the case before the operator said
+  yes), from a price table in one place (`checker/advisor/prices.py`,
+  dated), counting a possible fallback re-run; shown before sending; above
+  `max_cost_per_run` (or with no price for the model) it asks; `--yes` for
+  scripts. The real cost, each model at its own rate from the usage per
+  model, is stored. Nothing at all leaves before the yes.
 - **Prompt caching:** the system prompt and the case file come first and
   are marked for caching; the role instruction comes after. Running
   several roles on one case (`checker advise HOST` runs 1, then 2–4 as

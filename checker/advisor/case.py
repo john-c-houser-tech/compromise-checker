@@ -296,6 +296,8 @@ def build_case(
             "by_check": dict(sorted(omitted.items())),
         }
     included = {f["id"] for f in case["findings"]}
+    for chain in case["chains"]:  # only findings the case holds can be cited
+        chain["findings"] = [f for f in chain["findings"] if f in included]
     top = []
     for contributor in score.get("contributors") or []:
         index = contributor.get("finding")

@@ -2,10 +2,12 @@
 from the case file to the stored, restored answer (Phase 3 plan, PR 3.2).
 
 The steps, each visible to the operator: build the case and redact it;
-count its tokens and show the estimated cost, asking first above the
-configured limit; send; check the answer against the case; turn the
-placeholders back into names; store the request and the answer encrypted,
-append-only. Nothing here changes a score, a whitelist or a setting.
+estimate its size here (nothing is sent to estimate it) and show the
+estimated cost, asking first above the configured limit; send; check the
+answer against the case; turn the placeholders back into names; store the
+request and what came of it encrypted, append-only, for every request
+that was sent, whatever came of it. Nothing here changes a score, a
+whitelist or a setting.
 """
 
 from __future__ import annotations
@@ -22,12 +24,11 @@ from checker.advisor.client import (
     AdvisorError,
     Outcome,
     build_request,
-    count_tokens,
     make_client,
     send,
 )
 from checker.advisor.keys import KeySourceError, read_api_key
-from checker.advisor.prices import cost, estimate
+from checker.advisor.prices import cost, estimate, tokens_in
 from checker.advisor.roles import CHECKS, InvalidAnswer
 from checker.evidence import Config, open_text, seal_text
 
@@ -79,25 +80,73 @@ def advise(
     )
     payload, pseudonyms = redact(built, advisor.redaction, known)
     request = build_request(payload, role, advisor)
+    tokens = tokens_in(json.dumps(request.body, ensure_ascii=False))
+    with_fallback = advisor.fallback == "anthropic"
+    priced = estimate(advisor.model, tokens, MAX_TOKENS, with_fallback)
+    if priced is None:
+        line = f"About {tokens} input tokens to {advisor.model}; no price is known for that model."
+        reason = "not sent: no price is known for the model, and it wasn't confirmed"
+    else:
+        rerun = ", counting a possible re-run on a fallback model" if with_fallback else ""
+        line = (
+            f"About {tokens} input tokens to {advisor.model} (estimated here; nothing sent"
+            f" yet): at most about ${priced[0]:.2f} for the input and ${priced[1]:.2f} for"
+            f" the answer{rerun}; usually much less."
+        )
+        reason = "not sent: the estimate is above advisor.max_cost_per_run, and it wasn't confirmed"
+    say(line)
+    if priced is None or sum(priced) > advisor.max_cost_per_run:
+        if confirm is None or not confirm(f"{line} Send it? [y/N] "):
+            return Advice("not sent", None, None, reason)
     if client is None:
         try:
             client = make_client(read_api_key(advisor.api_key_source))
         except KeySourceError as exc:
             raise AdvisorError(f"no API key: {exc}") from None
-    tokens = count_tokens(client, request, role)
-    priced = estimate(advisor.model, tokens, MAX_TOKENS)
-    if priced is None:
-        line = f"{tokens} input tokens to {advisor.model}; no price is known for that model."
-    else:
-        line = (
-            f"{tokens} input tokens to {advisor.model}: about ${priced[0]:.2f}, plus up to"
-            f" ${priced[1]:.2f} for the answer (usually much less)."
+
+    def record(outcome: Outcome | None, status: str, raw, answer, note: str) -> None:
+        asked = outcome.model_asked if outcome else advisor.model
+        store.record_advice(
+            {
+                "bundle_id": which["bundle_id"],
+                "host": host,
+                "assessed_at": which["assessed_at"] or "",
+                "role": role,
+                "at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "status": status,
+                "redaction": advisor.redaction,
+                "model_asked": asked,
+                "model_answered": outcome.model_answered if outcome else None,
+                "declined_by": json.dumps(outcome.declined_by)
+                if outcome and outcome.declined_by
+                else None,
+                "refusal_category": outcome.refusal_category if outcome else None,
+                "effort": advisor.effort,
+                "request_id": outcome.request_id if outcome else None,
+                "usage": json.dumps(
+                    {"total": outcome.usage, "per_model": outcome.iterations} if outcome else {}
+                ),
+                "estimated_cost": cost(
+                    outcome.model_answered or asked, outcome.usage, outcome.iterations
+                )
+                if outcome
+                else None,
+                "request": seal_text(
+                    json.dumps(request.shown(), ensure_ascii=False), config.recipients
+                ),
+                "answer": seal_text(
+                    json.dumps({"raw": raw, "restored": answer, "note": note}, ensure_ascii=False),
+                    config.recipients,
+                ),
+            }
         )
-    say(line)
-    if priced is None or sum(priced) > advisor.max_cost_per_run:
-        if confirm is None or not confirm(f"{line} Send it? [y/N] "):
-            return Advice("not sent", None, None, "not sent: above the cost limit, not confirmed")
-    outcome = send(client, request, role)
+
+    try:
+        outcome = send(client, request, role)
+    except AdvisorError as exc:
+        # It may have reached the provider: recorded all the same.
+        record(None, "failed", None, None, str(exc))
+        raise
     status, answer, note = outcome.status, None, ""
     raw = outcome.answer.model_dump() if outcome.answer is not None else None
     if outcome.status == "answered":
@@ -116,43 +165,31 @@ def advise(
         )
     elif outcome.status == "cut off":
         note = "the answer was cut off at its length limit"
-    answered_by = outcome.model_answered or outcome.model_asked
-    store.record_advice(
-        {
-            "bundle_id": which["bundle_id"],
-            "host": host,
-            "assessed_at": which["assessed_at"] or "",
-            "role": role,
-            "at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "status": status,
-            "redaction": advisor.redaction,
-            "model_asked": outcome.model_asked,
-            "model_answered": outcome.model_answered,
-            "declined_by": json.dumps(outcome.declined_by) if outcome.declined_by else None,
-            "refusal_category": outcome.refusal_category,
-            "effort": advisor.effort,
-            "request_id": outcome.request_id,
-            "usage": json.dumps(outcome.usage),
-            "estimated_cost": cost(answered_by, outcome.usage),
-            "request": seal_text(json.dumps(request, ensure_ascii=False), config.recipients),
-            "answer": seal_text(
-                json.dumps({"raw": raw, "restored": answer, "note": note}, ensure_ascii=False),
-                config.recipients,
-            ),
-        }
-    )
+    elif outcome.status == "unreadable":
+        note = "the answer didn't fit the requested form"
+    record(outcome, status, raw, answer, note)
     return Advice(status, outcome, answer, note)
 
 
-def latest_advice(store, bundle_id: str, identity) -> dict[str, dict[str, Any]]:
-    """The latest record per role for a bundle, decrypted, for the report."""
-    latest: dict[str, dict[str, Any]] = {}
-    for row in store.advice(bundle_id):
+def latest_advice(
+    store, host: str, identity, bundle_id: str, assessed_at: str | None
+) -> dict[str, dict[str, Any]]:
+    """For the report, per role: the latest answer for the host (marked
+    stale when it read another bundle or an earlier assessment of this
+    one), and, when a later request came to nothing, that too."""
+    shown: dict[str, dict[str, Any]] = {}
+    for row in store.advice_for_host(host):
         record = dict(row)
-        answer = json.loads(open_text(row["answer"], identity) or "{}")
         record.pop("request", None)
-        record["answer"] = answer.get("restored")
-        record["note"] = answer.get("note") or ""
+        saved = json.loads(open_text(row["answer"], identity) or "{}")
+        record["answer"] = saved.get("restored")
+        record["note"] = saved.get("note") or ""
         record["declined_by"] = json.loads(row["declined_by"]) if row["declined_by"] else []
-        latest[row["role"]] = record
-    return latest
+        record["stale"] = row["bundle_id"] != bundle_id or row["assessed_at"] != assessed_at
+        entry = shown.setdefault(row["role"], {})
+        if record["answer"] is not None:
+            entry["answered"] = record
+            entry.pop("later", None)
+        else:
+            entry["later"] = record
+    return shown

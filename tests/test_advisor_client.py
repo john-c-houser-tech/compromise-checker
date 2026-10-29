@@ -116,8 +116,7 @@ def test_the_request_as_sent(enabled):
     for field in ("temperature", "top_p", "top_k", "thinking"):
         assert field not in body
     assert "jch" not in json.dumps(body) and "toor" not in json.dumps(body)
-    counted = [b for p, _, b in provider.requests if p.endswith("/count_tokens")]
-    assert counted and counted[0]["messages"] == body["messages"]
+    assert [p for p, _, _ in provider.requests] == ["/v1/messages"]  # nothing else left
 
 
 def test_without_the_fallback_nothing_extra_is_asked(enabled):
@@ -145,11 +144,13 @@ def test_an_answer_is_restored_and_stored_with_what_was_sent(enabled):
     assert row["status"] == "answered" and row["model_answered"] == "claude-opus-5-5"
     assert row["redaction"] == "pseudonymize" and row["role"] == "explain"
     request = json.loads(open_text(row["request"], identity))
-    assert request["messages"] == provider.sent()[0]["messages"]  # exactly what left
+    assert request["body"] == provider.sent()[0]  # exactly what left
+    assert request["anthropic-beta"] == [FALLBACK_BETA]
     assert "jch" not in json.dumps(request)
     assert row["estimated_cost"] == pytest.approx((12_000 * 4 + 400 * 20) / 1e6)
-    record = latest_advice(store, "b1", identity)["explain"]
-    assert record["answer"] == advice.answer
+    assessed = row["assessed_at"]
+    record = latest_advice(store, "web01", identity, "b1", assessed)["explain"]["answered"]
+    assert record["answer"] == advice.answer and record["stale"] is False
 
 
 def test_an_answer_naming_a_finding_not_in_the_case_is_set_aside(enabled):
@@ -295,9 +296,195 @@ def test_purge_takes_the_advice_with_its_bundle(enabled):
 
 def test_show_prints_the_whole_request(enabled, capsys):
     assert cli.main(["advise", "web01", "--show"]) == 0
-    request = json.loads(capsys.readouterr().out)
-    assert request == build_request(
-        json.loads(case_text(request).removeprefix("The case file:\n")),
-        "explain",
-        load_config(enabled[0]).advisor,
+    shown = json.loads(capsys.readouterr().out)
+    case = json.loads(case_text(shown["body"]).removeprefix("The case file:\n"))
+    assert shown == build_request(case, "explain", load_config(enabled[0]).advisor).shown()
+    assert shown["body"]["output_config"]["format"]["type"] == "json_schema"
+
+
+# --- Responses with partial text, and what the review of 3.2 found -----------------------------
+
+
+def message(body, content, stop_reason="end_turn", model=None, **extra):
+    return {
+        "id": "msg_9", "type": "message", "role": "assistant", "model": model or body["model"],
+        "content": content, "stop_reason": stop_reason, "stop_sequence": None,
+        "usage": {"input_tokens": 12_000, "output_tokens": 300}, **extra,
+    }  # fmt: skip
+
+
+def test_a_decline_after_partial_text(enabled):
+    def declined(body):
+        return message(
+            body, [{"type": "text", "text": '{"summary": "The host'}], "refusal",
+            stop_details={"type": "refusal", "category": "cyber"},
+        )  # fmt: skip
+
+    advice = run(enabled, Provider(declined))
+    assert advice.status == "declined" and advice.outcome.refusal_category == "cyber"
+    assert enabled[1].advice("b1")[0]["status"] == "declined"
+
+
+def test_a_fallback_answer_after_the_declined_models_partial_text(enabled):
+    def served(body):
+        good = answer_message(body)["content"][-1]
+        return message(
+            body,
+            [
+                {"type": "text", "text": '{"summary": "The ho'},
+                {"type": "fallback", "from": {"model": "claude-opus-5-5"},
+                 "to": {"model": "claude-opus-4-8"}},
+                good,
+            ],
+            model="claude-opus-4-8",
+            usage={
+                "input_tokens": 24_000, "output_tokens": 700,
+                "iterations": [
+                    {"type": "message", "model": "claude-opus-5-5",
+                     "input_tokens": 12_000, "output_tokens": 300},
+                    {"type": "fallback_message", "model": "claude-opus-4-8",
+                     "input_tokens": 12_000, "output_tokens": 400},
+                ],
+            },
+        )  # fmt: skip
+
+    advice = run(enabled, Provider(served))
+    assert advice.status == "answered", advice.note
+    assert advice.outcome.declined_by == ["claude-opus-5-5"]
+    assert advice.outcome.model_answered == "claude-opus-4-8"
+    row = enabled[1].advice("b1")[0]
+    each_at_its_own_rate = (12_000 * 4 + 300 * 20 + 12_000 * 5 + 400 * 25) / 1e6
+    assert row["estimated_cost"] == pytest.approx(each_at_its_own_rate)
+
+
+def test_a_fallback_shown_only_in_the_usage(enabled):
+    def served(body):
+        reply = answer_message(body, model="claude-opus-4-8")
+        reply["usage"]["iterations"] = [
+            {"type": "message", "model": "claude-opus-5-5", "input_tokens": 1, "output_tokens": 1},
+            {"type": "fallback_message", "model": "claude-opus-4-8", "input_tokens": 1,
+             "output_tokens": 1},
+        ]  # fmt: skip
+        return reply
+
+    advice = run(enabled, Provider(served))
+    assert advice.outcome.declined_by == ["claude-opus-5-5"]
+
+
+@pytest.mark.parametrize(
+    ("content", "stop", "status"),
+    [
+        ([{"type": "text", "text": '{"summary": "cut'}], "max_tokens", "cut off"),
+        ([{"type": "text", "text": ""}], "end_turn", "unreadable"),
+        ([], "end_turn", "unreadable"),
+        ([{"type": "text", "text": '{"summary": 1}'}], "end_turn", "unreadable"),
+    ],
+)
+def test_answers_that_cant_be_read_are_recorded(enabled, content, stop, status):
+    advice = run(enabled, Provider(lambda body: message(body, content, stop)))
+    assert advice.status == status and advice.answer is None
+    assert enabled[1].advice("b1")[0]["status"] == status
+
+
+def test_a_request_that_failed_is_recorded(enabled):
+    store, identity = enabled[1], enabled[2]
+    with pytest.raises(AdvisorError):
+        run(enabled, Provider(status=500))
+    (row,) = store.advice("b1")
+    assert row["status"] == "failed"
+    assert json.loads(open_text(row["request"], identity))["body"]["model"] == "claude-opus-5-5"
+    assert "error (500)" in json.loads(open_text(row["answer"], identity))["note"]
+
+
+def test_rate_limited_then_answered(enabled):
+    base, store, identity, _ = enabled
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx2.Response(429, headers={"retry-after": "0"}, json={"type": "error"})
+        return httpx2.Response(200, json=answer_message(json.loads(request.content)))
+
+    client = anthropic.Anthropic(
+        api_key=KEY,
+        max_retries=1,
+        http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(handler)),
     )
+    config = load_config(base)
+    advice = advise(
+        store, "web01", identity, config, Inventory(), (0.02, "default"), None,
+        client=client, confirm=lambda q: True, say=lambda line: None,
+    )  # fmt: skip
+    assert advice.status == "answered" and len(calls) == 2
+
+
+def test_the_estimate_counts_a_fallback_and_a_no_sends_nothing_at_all(enabled):
+    base = enabled[0]
+    change(base, "advisor.max_cost_per_run", "0.01")
+    said = []
+    provider = Provider()
+    base_, store, identity, _ = enabled
+    advice = advise(
+        store, "web01", identity, load_config(base), Inventory(), (0.02, "default"), None,
+        client=provider.client(), confirm=lambda q: False, say=said.append,
+    )  # fmt: skip
+    assert advice.status == "not sent" and provider.requests == []
+    assert "estimated here; nothing sent yet" in said[0]
+    assert "counting a possible re-run on a fallback model" in said[0]
+    assert "above advisor.max_cost_per_run" in advice.note
+
+
+def test_a_model_without_a_price_says_so(enabled):
+    base = enabled[0]
+    change(base, "advisor.model", "claude-something-new")
+    advice = run(enabled, Provider(), confirm=lambda q: False)
+    assert advice.status == "not sent" and "no price is known" in advice.note
+
+
+def test_a_finding_cited_in_free_text_must_be_in_the_case(enabled):
+    def citing(body):
+        reply = answer_message(body)
+        answer = json.loads(reply["content"][-1]["text"])
+        answer["summary"] += " See also F-999."
+        reply["content"][-1]["text"] = json.dumps(answer)
+        return reply
+
+    advice = run(enabled, Provider(citing))
+    assert advice.status == "invalid" and "F-999" in advice.note
+
+
+def test_the_terminal_gets_the_models_words_escaped(enabled, capsys, monkeypatch):
+    def ansi(body):
+        reply = answer_message(body)
+        answer = json.loads(reply["content"][-1]["text"])
+        answer["summary"] = "fine\x1b[2Jcleared"
+        reply["content"][-1]["text"] = json.dumps(answer)
+        return reply
+
+    provider = Provider(ansi)
+    monkeypatch.setattr(advise_module, "make_client", lambda key: provider.client())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    assert cli.main(["advise", "web01", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "fine\\u001b[2Jcleared" in out
+
+
+def test_the_report_keeps_the_last_good_answer_and_marks_old_ones_stale(enabled):
+    from checker.report import write_report
+
+    base, store, identity, config = enabled
+    run(enabled, Provider())
+    declined = Provider(
+        lambda body: message(
+            body, [], "refusal", stop_details={"type": "refusal", "category": "cyber"}
+        )
+    )
+    run(enabled, declined)
+    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    section = html.split("AI advisor (advice")[1].split("</div>")[0]
+    assert "Verdict: strong signs of compromise." in section
+    assert "A later request" in section and "(cyber)" in section
+    add_bundle(enabled, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))))
+    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    assert "stale: it read an earlier collection" in html

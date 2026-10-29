@@ -941,6 +941,11 @@ class Store:
                 row,
             )
 
+    def advice_for_host(self, host: str) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM advice WHERE host = ? ORDER BY seq", (host,)
+        ).fetchall()
+
     def advice(self, bundle_id: str) -> list[sqlite3.Row]:
         return self._db.execute(
             "SELECT * FROM advice WHERE bundle_id = ? ORDER BY seq", (bundle_id,)

@@ -31,23 +31,57 @@ PRICES = {
 }
 
 
-def estimate(model: str, input_tokens: int, max_output_tokens: int) -> tuple[float, float] | None:
+# The models Anthropic's server-side fallback may re-run a declined request
+# on (decision 3): an estimate with the fallback on allows for the dearest.
+FALLBACK_MODELS = ("claude-opus-5", "claude-opus-4-8")
+CHARACTERS_PER_TOKEN = 3  # generous for JSON: an estimate errs high
+
+
+def tokens_in(text: str) -> int:
+    """About how many tokens a request is, counted here: nothing is sent to
+    estimate it."""
+    return len(text) // CHARACTERS_PER_TOKEN + 1
+
+
+def estimate(
+    model: str, input_tokens: int, max_output_tokens: int, fallback: bool = False
+) -> tuple[float, float] | None:
     """(the input's cost, the most the output can cost) for a request, or
-    None for a model without a price."""
+    None for a model without a price. With the fallback on, a declined
+    request may be billed again on the dearest fallback model."""
     price = PRICES.get(model)
     if price is None:
         return None
-    return input_tokens * price.input / 1e6, max_output_tokens * price.output / 1e6
+    first = (input_tokens * price.input / 1e6, max_output_tokens * price.output / 1e6)
+    if not fallback:
+        return first
+    dearest = max((PRICES[m] for m in FALLBACK_MODELS), key=lambda p: p.input + p.output)
+    return (
+        first[0] + input_tokens * dearest.input / 1e6,
+        first[1] + max_output_tokens * dearest.output / 1e6,
+    )
 
 
-def cost(model: str, usage: dict[str, Any]) -> float | None:
-    """What a request cost, from the usage the response reported."""
-    price = PRICES.get(model)
-    if price is None:
-        return None
+def _priced(price: Price, usage: dict[str, Any]) -> float:
     return (
         (usage.get("input_tokens") or 0) * price.input
         + (usage.get("cache_creation_input_tokens") or 0) * price.cache_write
         + (usage.get("cache_read_input_tokens") or 0) * price.cache_read
         + (usage.get("output_tokens") or 0) * price.output
     ) / 1e6
+
+
+def cost(model: str, usage: dict[str, Any], iterations: list[dict[str, Any]] = ()) -> float | None:
+    """What a request cost: each model that ran priced at its own rate
+    (the usage per model), else the whole usage at `model`'s; None when a
+    model that ran has no price."""
+    if iterations:
+        total = 0.0
+        for hop in iterations:
+            price = PRICES.get(hop.get("model") or model)
+            if price is None:
+                return None
+            total += _priced(price, hop)
+        return total
+    price = PRICES.get(model)
+    return _priced(price, usage) if price is not None else None

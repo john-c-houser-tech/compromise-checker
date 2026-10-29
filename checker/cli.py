@@ -958,21 +958,27 @@ def _print_advice(advice, role: str) -> None:
     answer = advice.answer
     if not answer:
         return
+
+    def shown(text) -> str:  # the model's words, made safe for a terminal
+        from checker.report import visible
+
+        return str(visible(text, 4000))
+
     print()
-    print(f"Verdict: {answer['verdict']}")
-    print(answer["summary"])
+    print(f"Verdict: {shown(answer['verdict'])}")
+    print(shown(answer["summary"]))
     if answer["most_important"]:
         print("\nMost important:")
         for point in answer["most_important"]:
-            print(f"  {point['finding']}: {point['why']}")
+            print(f"  {shown(point['finding'])}: {shown(point['why'])}")
     if answer["innocent_explanations"]:
         print("\nPossible innocent explanations:")
         for item in answer["innocent_explanations"]:
-            print(f"  {item['finding']}: {item['explanation']}")
+            print(f"  {shown(item['finding'])}: {shown(item['explanation'])}")
     if answer["what_would_settle_it"]:
         print("\nWhat would settle it:")
         for question in answer["what_would_settle_it"]:
-            print(f"  - {question}")
+            print(f"  - {shown(question)}")
     print("\n(AI advice: the score is the tool's own and is unchanged. Stored, encrypted.)")
 
 
@@ -999,7 +1005,7 @@ def cmd_advise(args: argparse.Namespace) -> int:
             mode = args.redaction or config.advisor.redaction
             payload, pseudonyms = redact(built, mode, known)
             request = build_request(payload, args.role, config.advisor)
-            text = json.dumps(request, indent=1, ensure_ascii=False)
+            text = json.dumps(request.shown(), indent=1, ensure_ascii=False)
             print(text)
             placeholders = len(pseudonyms.originals) if pseudonyms else 0
             print(

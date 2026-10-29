@@ -303,9 +303,7 @@ def host_report(
     )
     from checker.advisor.advise import latest_advice
 
-    for record in latest_advice(store, row["id"], identity).values():
-        record["stale"] = record["assessed_at"] != assessment.get("analysed_at")
-        report.advice[record["role"]] = record
+    report.advice = latest_advice(store, host, identity, row["id"], assessment.get("analysed_at"))
     timeline = {}
     for number, finding in enumerate(assessment["findings"], 1):
         finding = dict(

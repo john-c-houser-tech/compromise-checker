@@ -370,7 +370,7 @@ def test_advise_with_the_advisor_off_sends_nothing(home, capsys):
 
 def case_in(request):
     """The case file inside a request, as `--show` prints it."""
-    text = request["messages"][0]["content"][0]["text"]
+    text = request["body"]["messages"][0]["content"][0]["text"]
     return json.loads(text.removeprefix("The case file:\n"))
 
 
@@ -885,3 +885,16 @@ def test_odd_inputs_dont_crash(call):
 def test_redact_refuses_what_isnt_a_case():
     with pytest.raises(ValueError, match="not a case"):
         redact(None, "pseudonymize", Known())
+
+
+def test_chains_cite_only_findings_the_case_holds():
+    path = GOLDEN[0]
+    case = golden.load_case(path)
+    result = golden.run_case(case)
+    target = case["target"]
+    snapshots = {k: Snapshot.from_dict(v) for k, v in case["snapshots"].items()}
+    events = [Event(**e) for e in case["events"][target]]
+    built = build_case(case["host"], result, events, snapshots[target], snapshots, max_chars=5000)
+    included = {f["id"] for f in built["findings"]}
+    for chain in built["chains"]:
+        assert set(chain["findings"]) <= included

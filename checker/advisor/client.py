@@ -5,6 +5,12 @@ an answer that fits the role's schema, or why there is none. Checking the
 answer against the case, restoring its placeholders and storing it are
 the caller's.
 
+The response is read in this order, because a decline, a fallback or a
+cut-off answer can each come with partial text: first whether it was
+declined (`stop_reason: refusal`), then the fallback blocks and the usage
+per model, then whether it was cut off, and only then the answer, which
+is the last text after the last fallback block.
+
 Declines (decision 3): with `advisor.fallback: anthropic` a request the
 model's safety checks decline is re-run, server side, on the model
 Anthropic recommends for that kind of decline; the outcome names the
@@ -19,6 +25,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import ValidationError
+
 from checker.advisor.roles import ROLES, SYSTEM_PROMPT
 from checker.evidence import Advisor
 
@@ -32,7 +40,7 @@ class AdvisorError(Exception):
 
 @dataclass
 class Outcome:
-    status: str  # answered, declined, cut off
+    status: str  # answered, declined, cut off, unreadable
     model_asked: str
     model_answered: str | None = None
     declined_by: list[str] = field(default_factory=list)  # models that declined, in order
@@ -40,14 +48,35 @@ class Outcome:
     answer: Any = None  # the role's schema, before checking and restoring
     request_id: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
+    # Usage per model that ran (the asked model, then any fallback), for cost.
+    iterations: list[dict[str, Any]] = field(default_factory=list)
 
 
-def build_request(payload: dict[str, Any], role: str, advisor: Advisor) -> dict[str, Any]:
-    """The request's parameters, as `--show` prints them and `send` sends
-    them: the system prompt and the case first, both marked for caching,
-    then the role's question."""
+def output_format(role: str) -> dict[str, Any]:
+    """The role's schema as the API takes it (the SDK's own conversion, as
+    `messages.parse` makes it)."""
+    from anthropic.lib._parse._transform import to_json_output_format
+
+    schema, _ = ROLES[role]
+    return dict(to_json_output_format(schema))
+
+
+@dataclass
+class Request:
+    body: dict[str, Any]
+    betas: list[str]
+
+    def shown(self) -> dict[str, Any]:
+        """As `--show` prints it: the beta header and the body, exactly."""
+        return {"anthropic-beta": self.betas, "body": self.body}
+
+
+def build_request(payload: dict[str, Any], role: str, advisor: Advisor) -> Request:
+    """The request, as `--show` prints it and `send` sends it: the system
+    prompt and the case first, both marked for caching, then the role's
+    question; the answer's schema in output_config."""
     _, question = ROLES[role]
-    request: dict[str, Any] = {
+    body: dict[str, Any] = {
         "model": advisor.model,
         "max_tokens": MAX_TOKENS,
         "system": [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
@@ -65,14 +94,15 @@ def build_request(payload: dict[str, Any], role: str, advisor: Advisor) -> dict[
                 ],
             }
         ],
-        "output_config": {"effort": advisor.effort},
+        "output_config": {"effort": advisor.effort, "format": output_format(role)},
     }
     if advisor.inference_geo:
-        request["inference_geo"] = advisor.inference_geo
+        body["inference_geo"] = advisor.inference_geo
+    betas = []
     if advisor.fallback == "anthropic":
-        request["fallbacks"] = "default"
-        request["betas"] = [FALLBACK_BETA]
-    return request
+        body["fallbacks"] = "default"
+        betas.append(FALLBACK_BETA)
+    return Request(body, betas)
 
 
 def make_client(api_key: str):
@@ -85,38 +115,40 @@ def make_client(api_key: str):
     return anthropic.Anthropic(api_key=api_key)
 
 
-def count_tokens(client, request: dict[str, Any], role: str) -> int:
+def _model(part) -> str | None:
+    return getattr(part, "model", None) if part is not None else None
+
+
+def send(client, request: Request, role: str) -> Outcome:
     schema, _ = ROLES[role]
     try:
-        counted = client.messages.count_tokens(
-            model=request["model"],
-            system=request["system"],
-            messages=request["messages"],
-            output_format=schema,
-        )
+        kwargs = dict(request.body)
+        if request.betas:
+            kwargs["betas"] = request.betas
+        response = client.beta.messages.create(**kwargs)
     except Exception as exc:  # noqa: BLE001 - the SDK's error kinds, explained below
-        raise AdvisorError(_explain(exc)) from None
-    return counted.input_tokens
-
-
-def send(client, request: dict[str, Any], role: str) -> Outcome:
-    schema, _ = ROLES[role]
-    try:
-        response = client.beta.messages.parse(**request, output_format=schema)
-    except Exception as exc:  # noqa: BLE001
         raise AdvisorError(_explain(exc)) from None
     outcome = Outcome(
         status="answered",
-        model_asked=request["model"],
+        model_asked=request.body["model"],
         model_answered=getattr(response, "model", None),
         request_id=getattr(response, "_request_id", None) or getattr(response, "id", None),
         usage=_usage(getattr(response, "usage", None)),
+        iterations=_iterations(getattr(response, "usage", None)),
     )
-    for block in getattr(response, "content", None) or []:
+    content = list(getattr(response, "content", None) or [])
+    last_fallback = -1
+    for index, block in enumerate(content):
         if getattr(block, "type", None) == "fallback":
-            declined = getattr(getattr(block, "from_", None), "model", None)
-            if declined:
+            last_fallback = index
+            declined = _model(getattr(block, "from_", None))
+            if declined and declined not in outcome.declined_by:
                 outcome.declined_by.append(declined)
+    # A fallback-served turn may carry no fallback block: the usage per
+    # model says so too.
+    for hop in outcome.iterations[:-1]:
+        if hop.get("model") and hop["model"] not in outcome.declined_by:
+            outcome.declined_by.append(hop["model"])
     if response.stop_reason == "refusal":
         details = getattr(response, "stop_details", None)
         outcome.status = "declined"
@@ -128,9 +160,18 @@ def send(client, request: dict[str, Any], role: str) -> Outcome:
     if response.stop_reason == "max_tokens":
         outcome.status = "cut off"
         return outcome
-    outcome.answer = getattr(response, "parsed_output", None)
-    if outcome.answer is None:
-        raise AdvisorError("the answer didn't fit the requested form")
+    texts = [
+        block.text
+        for block in content[last_fallback + 1 :]
+        if getattr(block, "type", None) == "text" and getattr(block, "text", "")
+    ]
+    if not texts:
+        outcome.status = "unreadable"
+        return outcome
+    try:
+        outcome.answer = schema.model_validate_json(texts[-1])
+    except ValidationError:
+        outcome.status = "unreadable"
     return outcome
 
 
@@ -145,6 +186,24 @@ def _usage(usage) -> dict[str, Any]:
         "inference_geo",
     )
     return {key: getattr(usage, key, None) for key in keep if getattr(usage, key, None) is not None}
+
+
+def _iterations(usage) -> list[dict[str, Any]]:
+    """Usage per model that ran (`message`, `fallback_message` entries)."""
+    hops = []
+    for item in getattr(usage, "iterations", None) or []:
+        if getattr(item, "type", None) not in ("message", "fallback_message"):
+            continue
+        hop = {"model": getattr(item, "model", None), "type": item.type}
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ):
+            hop[key] = getattr(item, key, None) or 0
+        hops.append(hop)
+    return hops
 
 
 def _explain(exc: Exception) -> str:

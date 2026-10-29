@@ -180,9 +180,10 @@ def dev(context: Context) -> list[Finding]:
     return findings
 
 
-def served_folders(context: Context) -> list[str] | None:
-    """The folders the web servers serve, from their configuration, with
-    the links into and out of them followed; None when that can't be told,
+def served_folders(context: Context) -> tuple[list[str], list[str]] | None:
+    """The folders the web servers serve, with the links into and out of
+    them followed, and those the configuration names (with the links on
+    their path followed only); None when that can't be told,
     and then everything in a web root counts as served: the configuration
     not fully collected or naming no folder, a folder written with a
     variable or relative to the server's prefix, a configuration file
@@ -226,18 +227,28 @@ def served_folders(context: Context) -> list[str] | None:
         for path, item in context.items("web_files").items()
         if item.get("type") == "l" and item.get("link_target")
     }
-    for _ in range(8):  # links to links, a few deep
-        more = {target for link, target in links.items() if _inside(link, folders)}
-        more |= {
-            target + f[len(link) :]
-            for f in folders
-            for link, target in links.items()
-            if f.startswith(link + "/")
-        }
-        if more <= folders:
-            break
-        folders |= more
-    return sorted(folders)
+
+    def through_links(found: set[str], inside: bool) -> set[str]:
+        for _ in range(8):  # links to links, a few deep
+            more = {
+                target + f[len(link) :]
+                for f in found
+                for link, target in links.items()
+                if f.startswith(link + "/")
+            }
+            if inside:
+                more |= {target for link, target in links.items() if _inside(link, found)}
+            if more <= found:
+                break
+            found = found | more
+        return found
+
+    # Only the configuration's own folders (through the links on their
+    # path) say which applications are judged: a link planted in one
+    # application's public folder, leading into another, makes what it
+    # leads to served, never the other application judged.
+    configured = through_links(folders, inside=False)
+    return sorted(through_links(configured, inside=True)), sorted(configured)
 
 
 _INCLUDES = ("include", "includeoptional")
@@ -250,18 +261,17 @@ def _inside(path: str, folders) -> bool:
     return any(path == f or path.startswith(f.rstrip("/") + "/") for f in folders)
 
 
-def _judged(items: dict[str, dict], served: list[str] | None) -> set[str]:
+def _judged(items: dict[str, dict], configured: list[str]) -> set[str]:
     """The applications (folders directly in a web root) whose files can be
-    judged by what is served: a served folder lies in it, and some file was
-    listed inside that folder, so the folder as written is where the files
-    are. Any other application keeps every file counted as served."""
-    if served is None:
-        return set()
+    judged by what is served: a folder the configuration names lies in it,
+    and some file was listed inside that folder, so the folder as written is
+    where the files are. Any other application keeps every file counted as
+    served."""
     judged = set()
     for path, item in items.items():
-        if _inside(path, served):
+        if _inside(path, configured):
             application = _group(item, path)
-            if any(_inside(f, [application]) for f in served):
+            if any(_inside(f, [application]) for f in configured):
                 judged.add(application)
     return judged
 
@@ -291,18 +301,15 @@ def web(context: Context) -> list[Finding]:
     }
     uncertain = context.uncertain("web_files")
     items = context.items("web_files")
-    served = served_folders(context)
-    judged = _judged(items, served)
+    found = served_folders(context)
+    served, configured = found if found else ([], [])
+    judged = _judged(items, configured)
     outside: dict[tuple[str, str], list[str]] = {}
     for path, item in items.items():
         name = path.rsplit("/", 1)[-1]
         double = not SCRIPT.search(name) and HANDLED.search(name) is not None
         script = double or SCRIPT.search(name) is not None or item.get("kind") == "script"
-        if (
-            _group(item, path) in judged
-            and not _inside(path, served or [])
-            and item.get("kind") != "elf"
-        ):
+        if _group(item, path) in judged and not _inside(path, served) and item.get("kind") != "elf":
             # No request reaches it, but the application may run it (its
             # libraries, its compiled cache): a deploy rewrites hundreds.
             if (path in added or path in edited) and (script or _runnable(item)):

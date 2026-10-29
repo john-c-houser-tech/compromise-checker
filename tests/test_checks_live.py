@@ -424,6 +424,19 @@ def test_what_a_link_in_a_served_folder_leads_to_is_served():
     assert (*NEW_SHELL, f"{target}/s.php") in _served_titles(after, before)
 
 
+def test_a_link_planted_into_another_application_doesnt_get_it_judged():
+    # blog's real root is set in a snippet the collector doesn't read; a
+    # link from app's public folder into blog must not make blog judged.
+    link = {f"{APP}/public/x": {"type": "l", "link_target": "../../blog/public"}}
+    before = {
+        f"{APP}/public/index.php": {"sha256": "aa"},
+        "/var/www/blog/public/a.css.php": {"sha256": "c1"},
+        **link,
+    }
+    after = {**before, "/var/www/blog/web/shell.php": {"sha256": "bb"}}
+    assert (*NEW_SHELL, "/var/www/blog/web/shell.php") in _served_titles(after, before)
+
+
 def test_programs_that_serve_files_themselves_and_outside_includes_leave_it_unknown():
     before = {f"{APP}/public/index.php": {"sha256": "aa"}}
     after = {**before, f"{APP}/var/x.php": {"sha256": "bb"}}

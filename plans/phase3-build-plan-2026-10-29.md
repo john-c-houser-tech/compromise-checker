@@ -1,7 +1,7 @@
 # Phase 3 build plan — 2026-10-29
 
-> **Status: DRAFT 1, 2026-10-29** — for John's review. Decisions 1–8 open.
-> Nothing built yet.
+> **Status: DRAFT 1, 2026-10-29** — shape agreed by John; decision 1
+> settled, 2–8 open. Nothing built yet.
 
 **Goal (DESIGN.md §18, Phase 3):** an operator who turns the advisor on
 gets a plain-language reading of an assessment, whitelist proposals they can
@@ -312,12 +312,14 @@ The advisor's answers can't be golden-tested, so they are measured.
 
 ## Decisions to confirm with John (one at a time, before the PR that needs it)
 
-1. **Before 3.0 — where the API key lives.** Options: an environment
-   variable (`ANTHROPIC_API_KEY`), the OS keyring (the `keyring` extra the
-   tool already has for SSH passwords), or a command whose output is the
-   key (`op read 'op://…'`, as with the Linode token). Never in the
-   configuration file. Recommendation: allow all three, configured by
-   `advisor.api_key_source`, default the environment variable.
+1. ~~Before 3.0 — where the API key lives.~~ **Decided 2026-10-29:** all
+   three sources, chosen by `advisor.api_key_source`: `env`
+   (`ANTHROPIC_API_KEY`, the default), `keyring` (the existing `keyring`
+   extra), or `command:<command>` whose output is the key (`op read
+   'op://…'`, as with the Linode token). Never in the configuration file;
+   only the chosen source is recorded. `checker init` asks which; the key
+   is read only when a request is about to be sent, so `--show` works
+   without it.
 2. **Before 3.1 — pseudonym scope.** Fresh tokens per request (the
    provider can't link two requests about the same host or user) or stable
    tokens per organization (advice across runs talks about the same
@@ -359,6 +361,11 @@ The advisor's answers can't be golden-tested, so they are measured.
 ## After Phase 3
 
 - Threat packs and pack drafting (Phase 4).
+- **Scheduled checks** of production servers, run from a permanent
+  controller (the Mac mini or a small Linode), not the laptop. To discuss
+  with John later: unattended runs need a key source that doesn't prompt
+  (an environment file, or a 1Password service account for the command
+  source) and an SSH key that doesn't need an agent prompt.
 - Carried over: RHEL proof only if there is interest; package verification
   against vendor packages; report encryption at rest (John's decision
   2026-10-27: revisit after the currently planned phases); outbound

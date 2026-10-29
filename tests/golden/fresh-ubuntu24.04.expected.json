@@ -178,7 +178,7 @@
   },
   {
    "check": "package.changed",
-   "findings": 4,
+   "findings": 5,
    "status": "ran"
   },
   {
@@ -281,7 +281,7 @@
   },
   {
    "check": "web.exploit",
-   "findings": 0,
+   "findings": 1,
    "status": "ran"
   },
   {
@@ -311,11 +311,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 156
+     "event": 153
     }
    ],
-   "first_seen": "2026-10-29T03:04:51.328149+00:00",
-   "last_seen": "2026-10-29T03:04:51.328149+00:00",
+   "first_seen": "2026-10-29T06:22:59.354721+00:00",
+   "last_seen": "2026-10-29T06:22:59.354721+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: dnsmasq UID 999",
@@ -341,11 +341,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 174
+     "event": 169
     }
    ],
-   "first_seen": "2026-10-29T03:05:11.008220+00:00",
-   "last_seen": "2026-10-29T03:05:11.008220+00:00",
+   "first_seen": "2026-10-29T06:23:21.298649+00:00",
+   "last_seen": "2026-10-29T06:23:21.298649+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: postfix UID 110",
@@ -364,11 +364,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 171
+     "event": 166
     }
    ],
-   "first_seen": "2026-10-29T03:05:06.701585+00:00",
-   "last_seen": "2026-10-29T03:05:06.701585+00:00",
+   "first_seen": "2026-10-29T06:23:16.830518+00:00",
+   "last_seen": "2026-10-29T06:23:16.830518+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -394,11 +394,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 166
+     "event": 163
     }
    ],
-   "first_seen": "2026-10-29T03:05:00.223983+00:00",
-   "last_seen": "2026-10-29T03:05:00.223983+00:00",
+   "first_seen": "2026-10-29T06:23:10.285993+00:00",
+   "last_seen": "2026-10-29T06:23:10.285993+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -419,14 +419,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/cron/atjobs/a0000101c80c11"
+    "path:/var/spool/cron/atjobs/a0000101c80cd7"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/cron/atjobs/a0000101c80c11"
+      "/var/spool/cron/atjobs/a0000101c80cd7"
      ]
     }
    ],
@@ -434,7 +434,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/cron/atjobs/a0000101c80c11 (owner UID 0)",
+   "summary": "/var/spool/cron/atjobs/a0000101c80cd7 (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -461,8 +461,8 @@
      "event": 127
     }
    ],
-   "first_seen": "2026-10-29T03:04:18.122936+00:00",
-   "last_seen": "2026-10-29T03:04:18.122936+00:00",
+   "first_seen": "2026-10-29T06:22:18.530635+00:00",
+   "last_seen": "2026-10-29T06:22:18.530635+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "root from 203.0.113.6 (publickey)",
@@ -488,11 +488,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 161
+     "event": 158
     }
    ],
-   "first_seen": "2026-10-29T03:04:52.971353+00:00",
-   "last_seen": "2026-10-29T03:04:52.971353+00:00",
+   "first_seen": "2026-10-29T06:23:01.313072+00:00",
+   "last_seen": "2026-10-29T06:23:01.313072+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group docker",
@@ -518,11 +518,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 175
+     "event": 170
     }
    ],
-   "first_seen": "2026-10-29T03:05:11.136692+00:00",
-   "last_seen": "2026-10-29T03:05:11.136692+00:00",
+   "first_seen": "2026-10-29T06:23:21.444708+00:00",
+   "last_seen": "2026-10-29T06:23:21.444708+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group postdrop",
@@ -541,11 +541,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 173
+     "event": 168
     }
    ],
-   "first_seen": "2026-10-29T03:05:10.933541+00:00",
-   "last_seen": "2026-10-29T03:05:10.933541+00:00",
+   "first_seen": "2026-10-29T06:23:21.216932+00:00",
+   "last_seen": "2026-10-29T06:23:21.216932+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group postfix",
@@ -564,11 +564,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 172
+     "event": 167
     }
    ],
-   "first_seen": "2026-10-29T03:05:08.590588+00:00",
-   "last_seen": "2026-10-29T03:05:08.590588+00:00",
+   "first_seen": "2026-10-29T06:23:19.052223+00:00",
+   "last_seen": "2026-10-29T06:23:19.052223+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group ssl-cert",
@@ -583,7 +583,7 @@
    "contribution": 0.0,
    "entities": [
     "program:(sd-pam)",
-    "pid:838",
+    "pid:849",
     "exe:/usr/lib/systemd/systemd-executor"
    ],
    "entities_complete": true,
@@ -591,15 +591,15 @@
     {
      "live": [
       "processes",
-      838
+      849
      ]
     }
    ],
-   "first_seen": "2026-10-29T03:04:18.550000+00:00",
-   "last_seen": "2026-10-29T03:04:18.550000+00:00",
+   "first_seen": "2026-10-29T06:22:19.340000+00:00",
+   "last_seen": "2026-10-29T06:22:19.340000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "(sd-pam) (pid 838): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "(sd-pam) (pid 849): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -611,7 +611,7 @@
    "contribution": 0.0,
    "entities": [
     "program:dbus-daemon",
-    "pid:665",
+    "pid:672",
     "exe:/usr/bin/dbus-daemon"
    ],
    "entities_complete": true,
@@ -619,15 +619,15 @@
     {
      "live": [
       "processes",
-      665
+      672
      ]
     }
    ],
-   "first_seen": "2026-10-29T03:04:13.330000+00:00",
-   "last_seen": "2026-10-29T03:04:13.330000+00:00",
+   "first_seen": "2026-10-29T06:22:14.730000+00:00",
+   "last_seen": "2026-10-29T06:22:14.730000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "dbus-daemon (pid 665): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "dbus-daemon (pid 672): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -639,7 +639,7 @@
    "contribution": 0.0,
    "entities": [
     "program:sshd",
-    "pid:832",
+    "pid:843",
     "exe:/usr/sbin/sshd"
    ],
    "entities_complete": true,
@@ -647,15 +647,15 @@
     {
      "live": [
       "processes",
-      832
+      843
      ]
     }
    ],
-   "first_seen": "2026-10-29T03:04:18.230000+00:00",
-   "last_seen": "2026-10-29T03:04:18.230000+00:00",
+   "first_seen": "2026-10-29T06:22:19.020000+00:00",
+   "last_seen": "2026-10-29T06:22:19.020000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "sshd (pid 832): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "sshd (pid 843): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -667,7 +667,7 @@
    "contribution": 0.0,
    "entities": [
     "program:systemd",
-    "pid:837",
+    "pid:848",
     "exe:/usr/lib/systemd/systemd"
    ],
    "entities_complete": true,
@@ -675,15 +675,15 @@
     {
      "live": [
       "processes",
-      837
+      848
      ]
     }
    ],
-   "first_seen": "2026-10-29T03:04:18.530000+00:00",
-   "last_seen": "2026-10-29T03:04:18.530000+00:00",
+   "first_seen": "2026-10-29T06:22:19.320000+00:00",
+   "last_seen": "2026-10-29T06:22:19.320000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "systemd (pid 837): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "systemd (pid 848): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -695,7 +695,7 @@
    "contribution": 0.0,
    "entities": [
     "program:systemd-logind",
-    "pid:674",
+    "pid:681",
     "exe:/usr/lib/systemd/systemd-logind"
    ],
    "entities_complete": true,
@@ -703,15 +703,15 @@
     {
      "live": [
       "processes",
-      674
+      681
      ]
     }
    ],
-   "first_seen": "2026-10-29T03:04:13.620000+00:00",
-   "last_seen": "2026-10-29T03:04:13.620000+00:00",
+   "first_seen": "2026-10-29T06:22:15.020000+00:00",
+   "last_seen": "2026-10-29T06:22:15.020000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "systemd-logind (pid 674): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "systemd-logind (pid 681): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -767,6 +767,29 @@
    "title": "A user's own systemd unit",
    "uncertain": null,
    "variant": null
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "web.exploit",
+   "contribution": 0.0,
+   "entities": [
+    "address:127.0.0.0/24"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 200
+    }
+   ],
+   "first_seen": "2026-10-29T06:24:03.031260+00:00",
+   "last_seen": "2026-10-29T06:24:03.031260+00:00",
+   "new": true,
+   "ratio": 1.0,
+   "summary": "127.0.0.0/24: 1 request (status 404), e.g. /x?f=[MASKED:exploit:traversal]",
+   "title": "A traversal attack refused",
+   "uncertain": null,
+   "variant": "refused"
   },
   {
    "band": "info",
@@ -855,6 +878,33 @@
    "check": "package.changed",
    "contribution": 0.0,
    "entities": [
+    "path:/etc/nginx/sites-available/default",
+    "package:nginx-common"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/nginx/sites-available/default"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": false,
+   "ratio": 1.0,
+   "summary": "/etc/nginx/sites-available/default (nginx-common): changed",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
     "path:/etc/thermald/thermal-cpu-cdev-order.xml",
     "package:thermald"
    ],
@@ -922,7 +972,7 @@
    "band": "low",
    "counts": {
     "hygiene": {
-     "info": 4,
+     "info": 5,
      "low": 5
     }
    }

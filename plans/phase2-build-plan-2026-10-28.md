@@ -696,6 +696,32 @@ too). Read-only proof PASS 7/7 with nginx and PHP-FPM, the shipped rules
 and secret-bearing queries and referrers (none left the server); 7
 Nanodes, about 5 cents. Phase 2 spend so far: about 55 cents.
 
+*2.8b as built (checks):* `web.worker_child` judges a shell by what it was
+asked (PHP runs every `exec()` through `sh -c`; each program it starts is
+judged by its own start), skips audit records with a login UID set (an
+administrator's or cron's session) unless a running web worker carries
+that login UID (a web server started by hand; the processes module now
+records each process's login UID), makes interpreters medium, and counts
+live web-account processes only inside a web server's own service;
+`web.new_script_hit` (normalised paths, `PATH_INFO`, uncertain for a
+second site's same path, the file's owner as its account); `web.exploit`
+answered only when a script took the attack or the server failed;
+`web.errors` (upstream lines only without access lines); `web.noise` as
+one informational line. Chain `web-shell-used`, ordered, one hour after
+the script's last request. Network findings name `address:<cidr>`, which
+whitelist address rules cover. Web accounts named at setup reach the
+checks (`web_accounts` record). Installing nginx showed RHEL's stock page
+(links into `/usr/share`) reported as links out of the web root:
+`/usr/share` is now treated as distribution data. Independent review: 5
+high, 5 medium and several low findings, all fixed (the proof's web-shell
+expectation passed for the wrong reason: auditd was already stopped).
+Proofs (approved by John; 9 Nanodes, about 7 cents, all deleted):
+detection PASS on Ubuntu 24.04 and Rocky 9, 28/28 behaviours (the web
+shell found from the audit log, its new script answering, the traversal
+it answered); read-only PASS 7/7. Golden cases re-exported (fresh: 14%
+Ubuntu, 20% Rocky, both from accounts packages create: 2.10). Phase 2
+spend so far: about 62 cents.
+
 ### 2.9 — Containers (8.13) (decision 4: decided)
 
 - **Collector, new module `containers`**, reading files only (decision 4),

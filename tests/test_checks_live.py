@@ -272,6 +272,17 @@ def test_web_shells():
         "/var/www/html/bin": {"place": "/var/www", "type": "-", "kind": "elf"},
         "/var/www/html/.env": {"place": "/var/www", "type": "-"},
         "/var/www/html/root.txt": {"place": "/var/www", "type": "l", "link_target": "/"},
+        # RHEL's nginx stock page: links into the distribution's shared data.
+        "/var/www/html/index.html": {
+            "place": "/var/www",
+            "type": "l",
+            "link_target": "../../../usr/share/testpage/index.html",
+        },
+        "/var/www/html/logo.png": {
+            "place": "/var/www",
+            "type": "l",
+            "link_target": "/usr/share/pixmaps/system-noindex-logo.png",
+        },
     }
     found = of(run([], snap(web_files=items)), "files.web")
     assert sorted((f.title, f.band) for f in found) == [

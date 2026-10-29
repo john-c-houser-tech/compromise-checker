@@ -26,13 +26,17 @@ SECRET_FILES = {".env", ".htpasswd", ".git", ".svn", ".user.ini"}
 
 def _leaves(path: str, item: dict) -> bool:
     """A link that leads out of its web root to somewhere a web server
-    shouldn't serve: not to a system program or library (a venv's python)."""
+    shouldn't serve: not to a system program or library (a venv's python),
+    nor to the distribution's shared data (RHEL's nginx links its stock
+    page and logos into /usr/share/testpage and /usr/share/pixmaps)."""
     target = str(item.get("link_target"))
     resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
     root = str(item.get("place") or "/").rstrip("/") + "/"
     if resolved.startswith(root):
         return False
-    return not resolved.startswith(("/usr/bin/", "/usr/lib", "/usr/local/bin/", "/bin/", "/lib"))
+    return not resolved.startswith(
+        ("/usr/bin/", "/usr/lib", "/usr/local/bin/", "/bin/", "/lib", "/usr/share/")
+    )
 
 
 def _executable(item: dict) -> bool:

@@ -487,7 +487,7 @@ def test_the_report_keeps_the_last_good_answer_and_marks_old_ones_stale(enabled)
     assert "A later request" in section and "(cyber)" in section
     add_bundle(enabled, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))))
     html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
-    assert "stale: it read an earlier collection" in html
+    assert "stale: it read another collection or assessment" in html
 
 
 def test_the_estimate_errs_high_for_a_real_case():
@@ -499,3 +499,106 @@ def test_the_estimate_errs_high_for_a_real_case():
     assert tokens >= 35_831
     input_cost, _ = estimate("claude-opus-5-5", tokens, 16_000)
     assert input_cost >= 35_831 * 4 * 1.25 / 1e6
+
+
+# --- What the second review of 3.2 found ---------------------------------------------------------
+
+
+def test_an_interrupted_request_is_recorded(enabled):
+    def handler(request):
+        if request.url.path.endswith("/messages"):
+            raise KeyboardInterrupt
+        return httpx2.Response(404)
+
+    client = anthropic.Anthropic(
+        api_key=KEY, max_retries=0,
+        http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(handler)),
+    )  # fmt: skip
+    base, store, identity, _ = enabled
+    with pytest.raises(KeyboardInterrupt):
+        advise(
+            store, "web01", identity, load_config(base), Inventory(), (0.02, "default"), None,
+            client=client, confirm=lambda q: True, say=lambda line: None,
+        )  # fmt: skip
+    assert store.advice("b1")[0]["status"] == "interrupted"
+
+
+def test_an_error_before_sending_records_nothing(enabled):
+    class Broken:
+        class beta:  # noqa: N801
+            class messages:  # noqa: N801
+                @staticmethod
+                def create(**kwargs):
+                    raise ValueError("max_tokens too large for a non-streaming request")
+
+    base, store, identity, _ = enabled
+    with pytest.raises(AdvisorError, match="couldn't be made .ValueError: max_tokens"):
+        advise(
+            store, "web01", identity, load_config(base), Inventory(), (0.02, "default"), None,
+            client=Broken(), confirm=lambda q: True, say=lambda line: None,
+        )  # fmt: skip
+    assert store.advice("b1") == []
+
+
+def test_a_provider_error_keeps_its_request_id(enabled):
+    store = enabled[1]
+
+    def handler(request):
+        return httpx2.Response(500, headers={"request-id": "req_abc"}, json={"type": "error"})
+
+    client = anthropic.Anthropic(
+        api_key=KEY, max_retries=0,
+        http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(handler)),
+    )  # fmt: skip
+    base, _, identity, _ = enabled
+    with pytest.raises(AdvisorError):
+        advise(
+            store, "web01", identity, load_config(base), Inventory(), (0.02, "default"), None,
+            client=client, confirm=lambda q: True, say=lambda line: None,
+        )  # fmt: skip
+    assert store.advice("b1")[0]["request_id"] == "req_abc"
+
+
+def test_both_models_declining(enabled):
+    def declined(body):
+        return message(
+            body,
+            [{"type": "fallback", "from": {"model": "claude-opus-5-5"},
+              "to": {"model": "claude-opus-4-8"}}],
+            "refusal",
+            stop_details={"type": "refusal", "category": "cyber"},
+            usage={"input_tokens": 2, "output_tokens": 0, "iterations": [
+                {"type": "message", "input_tokens": 1, "output_tokens": 0},
+                {"type": "fallback_message", "input_tokens": 1, "output_tokens": 0},
+            ]},
+        )  # fmt: skip
+
+    advice = run(enabled, Provider(declined))
+    assert advice.outcome.declined_by == ["claude-opus-5-5", "claude-opus-4-8"]
+    assert "and by the fallback too" in advice.note
+    hops = advice.outcome.iterations
+    assert [h["model"] for h in hops] == ["claude-opus-5-5", "claude-opus-4-8"]
+
+
+def test_a_window_too_small_is_cut_off(enabled):
+    advice = run(enabled, Provider(lambda b: message(b, [], "model_context_window_exceeded")))
+    assert advice.status == "cut off"
+
+
+def test_finding_numbers_the_host_wrote_may_be_quoted(enabled):
+    from checker.advisor.roles import Explanation, InvalidAnswer, check_explanation
+
+    answer = Explanation(
+        summary="A file /tmp/.F-31337 appeared.", verdict="strong signs of compromise",
+        most_important=[{"finding": "F-1", "why": "see backup-F-2024.tar"}],
+        innocent_explanations=[], what_would_settle_it=[],
+    )  # fmt: skip
+    check_explanation(answer, {"F-1"}, "Critical", {"F-31337", "F-2024"})
+    with pytest.raises(InvalidAnswer, match="F-31337"):
+        check_explanation(answer, {"F-1"}, "Critical")
+
+
+def test_advisor_requests_are_never_retried_automatically():
+    from checker.advisor.client import make_client
+
+    assert make_client(KEY).max_retries == 0

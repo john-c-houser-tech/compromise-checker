@@ -29,7 +29,7 @@ from checker.advisor.client import (
 )
 from checker.advisor.keys import KeySourceError, read_api_key
 from checker.advisor.prices import cost, estimate, tokens_in
-from checker.advisor.roles import CHECKS, InvalidAnswer
+from checker.advisor.roles import CHECKS, FINDING_ID, InvalidAnswer
 from checker.evidence import Config, open_text, seal_text
 
 
@@ -104,7 +104,9 @@ def advise(
         except KeySourceError as exc:
             raise AdvisorError(f"no API key: {exc}") from None
 
-    def record(outcome: Outcome | None, status: str, raw, answer, note: str) -> None:
+    def record(
+        outcome: Outcome | None, status: str, raw, answer, note: str, request_id=None
+    ) -> None:
         asked = outcome.model_asked if outcome else advisor.model
         store.record_advice(
             {
@@ -122,7 +124,7 @@ def advise(
                 else None,
                 "refusal_category": outcome.refusal_category if outcome else None,
                 "effort": advisor.effort,
-                "request_id": outcome.request_id if outcome else None,
+                "request_id": outcome.request_id if outcome else request_id,
                 "usage": json.dumps(
                     {"total": outcome.usage, "per_model": outcome.iterations} if outcome else {}
                 ),
@@ -144,15 +146,18 @@ def advise(
     try:
         outcome = send(client, request, role)
     except AdvisorError as exc:
-        # It may have reached the provider: recorded all the same.
-        record(None, "failed", None, None, str(exc))
+        if exc.sent:  # it may have reached the provider: recorded all the same
+            record(None, "failed", None, None, str(exc), exc.request_id)
+        raise
+    except BaseException:  # Ctrl-C: it has left and may be billed
+        record(None, "interrupted", None, None, "interrupted before the answer came")
         raise
     status, answer, note = outcome.status, None, ""
     raw = outcome.answer.model_dump() if outcome.answer is not None else None
     if outcome.status == "answered":
         ids = {f["id"] for f in payload.get("findings") or []}
         try:
-            CHECKS[role](outcome.answer, ids, which["band"])
+            CHECKS[role](outcome.answer, ids, which["band"], _quoted(payload))
         except InvalidAnswer as exc:
             status, note = "invalid", f"the answer was set aside: it {exc}"
         else:
@@ -171,14 +176,39 @@ def advise(
     return Advice(status, outcome, answer, note)
 
 
+def _quoted(payload: dict[str, Any]) -> set[str]:
+    """F-n strings in the case's host text, which an answer may quote."""
+    found: set[str] = set()
+
+    def walk(value: Any, host: bool) -> None:
+        if isinstance(value, str):
+            if host:
+                found.update(FINDING_ID.findall(value))
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, host)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                walk(item, host or key in ("from_host", "os", "kernel", "account"))
+
+    walk(payload, False)
+    return found
+
+
 def latest_advice(
     store, host: str, identity, bundle_id: str, assessed_at: str | None
 ) -> dict[str, dict[str, Any]]:
-    """For the report, per role: the latest answer for the host (marked
-    stale when it read another bundle or an earlier assessment of this
-    one), and, when a later request came to nothing, that too."""
+    """For the report, per role: the latest answer about this bundle, else
+    the host's latest answer about another (either marked stale when it
+    read another collection or assessment than the report shows), and,
+    when a later request about this bundle came to nothing, that too."""
     shown: dict[str, dict[str, Any]] = {}
-    for row in store.advice_for_host(host):
+    rows = store.advice_for_host(host)
+    # Other bundles' rows first, this bundle's last: this bundle's win.
+    rows = [r for r in rows if r["bundle_id"] != bundle_id] + [
+        r for r in rows if r["bundle_id"] == bundle_id
+    ]
+    for row in rows:
         record = dict(row)
         record.pop("request", None)
         saved = json.loads(open_text(row["answer"], identity) or "{}")
@@ -190,6 +220,6 @@ def latest_advice(
         if record["answer"] is not None:
             entry["answered"] = record
             entry.pop("later", None)
-        else:
+        elif row["bundle_id"] == bundle_id:
             entry["later"] = record
     return shown

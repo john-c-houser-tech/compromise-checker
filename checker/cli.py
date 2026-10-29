@@ -945,24 +945,24 @@ SHOWN = 20  # items listed per kind and section without --all
 
 
 def _print_advice(advice, role: str) -> None:
+    from checker.report import visible
+
+    def shown(text) -> str:  # the provider's and the model's words, safe for a terminal
+        return str(visible(text, 4000))
+
     outcome = advice.outcome
     if outcome is not None:
-        line = f"Asked {outcome.model_asked}"
+        line = f"Asked {shown(outcome.model_asked)}"
         if outcome.declined_by:
-            line += f"; declined by {', '.join(outcome.declined_by)}"
+            line += f"; declined by {shown(', '.join(outcome.declined_by))}"
         if outcome.model_answered:
-            line += f"; answered by {outcome.model_answered}"
+            line += f"; answered by {shown(outcome.model_answered)}"
         print(line + ".")
     if advice.note:
-        print(advice.note[0].upper() + advice.note[1:] + ".")
+        print(shown(advice.note[0].upper() + advice.note[1:]) + ".")
     answer = advice.answer
     if not answer:
         return
-
-    def shown(text) -> str:  # the model's words, made safe for a terminal
-        from checker.report import visible
-
-        return str(visible(text, 4000))
 
     print()
     print(f"Verdict: {shown(answer['verdict'])}")
@@ -988,6 +988,7 @@ def cmd_advise(args: argparse.Namespace) -> int:
     from checker.advisor.advise import advise
     from checker.advisor.case import case_for_host, redact
     from checker.advisor.client import AdvisorError, build_request
+    from checker.advisor.prices import tokens_in
 
     base = home()
     store = Store(database_file(base))
@@ -1009,7 +1010,8 @@ def cmd_advise(args: argparse.Namespace) -> int:
             print(text)
             placeholders = len(pseudonyms.originals) if pseudonyms else 0
             print(
-                f"[{len(text)} characters, about {len(text) // 4} tokens; redaction {mode};"
+                f"[{len(text)} characters, at most about {tokens_in(text)} tokens;"
+                f" redaction {mode};"
                 f" {placeholders} placeholders, kept only for this run. Nothing was sent.]",
                 file=sys.stderr,
             )
@@ -1041,6 +1043,9 @@ def cmd_advise(args: argparse.Namespace) -> int:
     except (EvidenceError, OSError, AdvisorError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("checker: interrupted; the request had been sent and is recorded", file=sys.stderr)
+        return 130
     finally:
         store.close()
     _print_advice(advice, args.role)

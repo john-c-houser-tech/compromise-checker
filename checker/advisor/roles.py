@@ -118,13 +118,22 @@ def _strings(value) -> list[str]:
     return []
 
 
-def check_explanation(answer: Explanation, finding_ids: set[str], band: str | None) -> None:
+def check_explanation(
+    answer: Explanation, finding_ids: set[str], band: str | None, quoted: set[str] = frozenset()
+) -> None:
+    """`quoted` holds F-n strings that appear in the case's host text (a
+    file named .F-31337): the answer may quote them."""
     named = [p.finding for p in answer.most_important] + [
         i.finding for i in answer.innocent_explanations
     ]
     # In its own words too: a finding left out of the case (past its size
     # cap) or one that doesn't exist can't be cited.
-    named += [m for text in _strings(answer.model_dump()) for m in FINDING_ID.findall(text)]
+    named += [
+        m
+        for text in _strings(answer.model_dump())
+        for m in FINDING_ID.findall(text)
+        if m not in quoted
+    ]
     unknown = sorted({f for f in named if f not in finding_ids})
     if unknown:
         raise InvalidAnswer(f"names findings that aren't in the case: {', '.join(unknown)}")

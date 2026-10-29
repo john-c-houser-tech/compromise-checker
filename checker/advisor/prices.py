@@ -76,8 +76,9 @@ def _priced(price: Price, usage: dict[str, Any]) -> float:
 
 def cost(model: str, usage: dict[str, Any], iterations: list[dict[str, Any]] = ()) -> float | None:
     """What a request cost: each model that ran priced at its own rate
-    (the usage per model), else the whole usage at `model`'s; None when a
-    model that ran has no price."""
+    (the usage per model, which `send` fills in from the fallback chain),
+    else the whole usage at `model`'s; None when a model that ran has no
+    price."""
     if iterations:
         total = 0.0
         for hop in iterations:

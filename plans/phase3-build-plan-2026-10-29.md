@@ -168,7 +168,9 @@ assessment, its events, snapshot and whitelist, by one module
   `client.messages.parse()` with a Pydantic schema per role
   (`output_config.format`); adaptive thinking (always on for
   `claude-opus-5-5`), `effort` from the configuration, non-streaming with
-  `max_tokens` 16 000; SDK retries (2) left on; typed error handling
+  `max_tokens` 16 000; no automatic retries (a request that timed out may
+  still be billed, and a retry would bill it again past the confirmed
+  estimate); typed error handling
   (authentication, rate limit, server, connection) with plain messages.
 - **Refusals:** `stop_reason == "refusal"` is checked before anything is
   read. A compromise assessment is exactly the kind of text cyber

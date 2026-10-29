@@ -35,7 +35,14 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
 class AdvisorError(Exception):
-    """The request couldn't be made or didn't finish; the message says why."""
+    """The request couldn't be made or didn't finish; the message says why.
+    `sent` says whether it may have reached the provider (False: it
+    certainly didn't), and `request_id` is the provider's, when it gave one."""
+
+    def __init__(self, message: str, sent: bool = False, request_id: str | None = None):
+        super().__init__(message)
+        self.sent = sent
+        self.request_id = request_id
 
 
 @dataclass
@@ -112,7 +119,10 @@ def make_client(api_key: str):
         raise AdvisorError(
             "the advisor needs the Anthropic SDK: pip install 'checker[advisor]'"
         ) from exc
-    return anthropic.Anthropic(api_key=api_key)
+    # No automatic retries: a request that timed out may still be answered
+    # and billed, and a retry would bill it again past the confirmed
+    # estimate. A rate-limited run is simply run again.
+    return anthropic.Anthropic(api_key=api_key, max_retries=0)
 
 
 def _model(part) -> str | None:
@@ -127,7 +137,9 @@ def send(client, request: Request, role: str) -> Outcome:
             kwargs["betas"] = request.betas
         response = client.beta.messages.create(**kwargs)
     except Exception as exc:  # noqa: BLE001 - the SDK's error kinds, explained below
-        raise AdvisorError(_explain(exc)) from None
+        raise AdvisorError(
+            _explain(exc), _may_have_left(exc), getattr(exc, "request_id", None)
+        ) from None
     outcome = Outcome(
         status="answered",
         model_asked=request.body["model"],
@@ -144,6 +156,15 @@ def send(client, request: Request, role: str) -> Outcome:
             declined = _model(getattr(block, "from_", None))
             if declined and declined not in outcome.declined_by:
                 outcome.declined_by.append(declined)
+    # Each model that ran, in order: the one asked, then each fallback's
+    # target. A hop the usage reports without a model is that one.
+    chain = [outcome.model_asked] + [
+        _model(getattr(content[i], "to", None)) for i in range(len(content))
+        if getattr(content[i], "type", None) == "fallback"
+    ]  # fmt: skip
+    for index, hop in enumerate(outcome.iterations):
+        if not hop.get("model") and index < len(chain):
+            hop["model"] = chain[index]
     # A fallback-served turn may carry no fallback block: the usage per
     # model says so too.
     for hop in outcome.iterations[:-1]:
@@ -153,11 +174,15 @@ def send(client, request: Request, role: str) -> Outcome:
         details = getattr(response, "stop_details", None)
         outcome.status = "declined"
         outcome.refusal_category = getattr(details, "category", None)
-        if outcome.model_answered and outcome.model_answered not in outcome.declined_by:
-            outcome.declined_by.append(outcome.model_answered)
+        last = [outcome.model_answered, chain[-1] if len(chain) > 1 else None]
+        if outcome.iterations:
+            last.append(outcome.iterations[-1].get("model"))
+        for model in last:
+            if model and model not in outcome.declined_by:
+                outcome.declined_by.append(model)
         outcome.model_answered = None
         return outcome
-    if response.stop_reason == "max_tokens":
+    if response.stop_reason in ("max_tokens", "model_context_window_exceeded"):
         outcome.status = "cut off"
         return outcome
     texts = [
@@ -206,6 +231,17 @@ def _iterations(usage) -> list[dict[str, Any]]:
     return hops
 
 
+def _may_have_left(exc: Exception) -> bool:
+    """Whether a failed request may have reached the provider: an error it
+    answered, or a lost connection or timeout (it may be running there);
+    not one the SDK raised before sending."""
+    try:
+        import anthropic
+    except ImportError:
+        return False
+    return isinstance(exc, anthropic.APIError)
+
+
 def _explain(exc: Exception) -> str:
     """The SDK's errors in plain words, most specific first; never the key."""
     try:
@@ -226,4 +262,4 @@ def _explain(exc: Exception) -> str:
         return f"the provider answered with an error ({exc.status_code}); try again later"
     if isinstance(exc, anthropic.APIConnectionError):
         return "could not reach the provider (network)"
-    return f"the request failed: {type(exc).__name__}"
+    return f"the request couldn't be made ({type(exc).__name__}: {str(exc)[:200]})"

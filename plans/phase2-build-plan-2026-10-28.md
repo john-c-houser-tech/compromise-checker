@@ -745,6 +745,30 @@ spend so far: about 62 cents.
 - **Detection behaviour:** a privileged container mounting `/` started with
   Docker on Ubuntu and Podman on Rocky.
 
+*2.9 as built:* the `containers` module reads Docker's `config.v2.json`
+and `hostconfig.json` (data root from `daemon.json`, the snap's, userns-remap
+folders) and Podman's `<driver>-containers/containers.json` and OCI
+`config.json` (graphroot and driver from `storage.conf`), never a socket,
+never the environment, labels, network names or PIDs. Mounts carry a host
+source only for binds (volumes and tmpfs have none; Podman's own mounts
+are left out). Running state from the processes' cgroups; a running
+container no state file described is a coverage gap, as are Kubernetes,
+k3s, MicroK8s, containerd's own namespaces, LXD, LXC and rootless runtimes.
+`container.privileged` covers privilege, host-reaching mounts (`/`, inside
+or holding `/etc`, `/root`, `/boot`, `/proc`, `/sys`, `/dev`, the
+runtimes' state and sockets), capabilities and unusual devices: high only
+when held in a way it wasn't at the baseline, else medium hygiene;
+`container.host_namespace`; `container.new` (also another image's
+repository under the same name, a side agent's catch). Whitelist rules
+gain `container` and `image` (a repository), narrowing only together.
+Policy §7's containers bullet worded with John (2026-10-29). Independent
+review: 2 high, 6 medium and 10 low findings, all fixed. Proofs (approved
+by John; 9 Nanodes, about 7 cents, all deleted): detection PASS on Ubuntu
+24.04 (Docker) and Rocky 9 (Podman), 30/30 behaviours; read-only PASS 7/7
+with Docker on Ubuntu and Podman on the RHEL family. Golden cases
+re-exported (clean servers unchanged: 14% and 20%). Phase 2 spend so far:
+about 69 cents.
+
 ### 2.10 — Default profiles and calibration
 
 - **Profiles** shipped as `checker/profiles/*.yaml`, applied by a layer's

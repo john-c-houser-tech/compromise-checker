@@ -10,8 +10,10 @@ an append-only chain of custody. Bundles are never modified once written.
 import asyncio
 import getpass
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import socket
 import sqlite3
 import threading
@@ -120,8 +122,103 @@ def _initialise(
         home_text=home_text,
     )
     Store(database_file(home)).close()
+    mail_key(home)
     atomic_write(config_file(home), yaml.safe_dump(config.model_dump(), sort_keys=False))
     return config, identity_path
+
+
+# --- The mail key (policy §7) -------------------------------------------------------------
+
+MAIL_FINGERPRINT_HEX = 12  # as the collector's
+
+
+def mail_key_file(home: Path) -> Path:
+    return home / "keys" / "mail-key.txt"
+
+
+def mail_key(home: Path) -> str:
+    """The organization's mail key (64 hex digits), made on first use: the
+    collector replaces every address's local part in mail logs with a
+    fingerprint keyed by it, on the server, before anything is sent."""
+    path = mail_key_file(home)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with locked(path):
+        if not path.exists():
+            atomic_write(
+                path,
+                f"# Compromise Checker mail key. Created {datetime.now(UTC):%Y-%m-%d}.\n"
+                "# Mail log addresses are fingerprinted with it on each server; with it,\n"
+                "# `checker mail-hash` finds a known address. Keep it as private as the\n"
+                "# evidence key.\n"
+                f"{secrets.token_hex(32)}\n",
+            )
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if len(line) == 64 and all(c in "0123456789abcdef" for c in line):
+                return line
+    raise EvidenceError(f"no mail key in {path}")
+
+
+def mail_gate_file(home: Path) -> Path:
+    return home / "keys" / "mail-gate.json"
+
+
+def _gate_tag(key: str, nonce: str, host: str, address: str, state: str) -> str:
+    message = f"compromise-checker mail gate\0{nonce}\0{host}\0{address}\0{state}".encode()
+    return hmac.new(bytes.fromhex(key), message, hashlib.sha256).hexdigest()
+
+
+def _gates(path: Path) -> dict[str, Any]:
+    """The gate file's entries; anything unreadable or malformed counts as
+    none (no key is sent)."""
+    try:
+        gates = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return gates if isinstance(gates, dict) else {}
+
+
+def record_mail_gate(home: Path, key: str, host: str, address: str, state: str | None) -> None:
+    """Remember what a collection showed about a host's sudo input logging
+    ("on", "off", or anything else: unknown), as a tag only the mail key can
+    check, made with a fresh random nonce each time: without the key, the
+    file says neither the state nor whether it changed (policy §8). The
+    host's address is part of it, so a host moved to another address starts
+    again from a first collection."""
+    path = mail_gate_file(home)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with locked(path):
+        gates = _gates(path)
+        nonce = secrets.token_hex(16)
+        state = state if state in ("on", "off") else "unknown"
+        gates[host] = {"nonce": nonce, "tag": _gate_tag(key, nonce, host, address, state)}
+        atomic_write(path, json.dumps(gates, sort_keys=True, indent=1) + "\n")
+
+
+def mail_gate_open(home: Path, key: str, host: str, address: str) -> bool:
+    """Whether the host's latest collection, at this address, showed sudo
+    doesn't log its input."""
+    entry = _gates(mail_gate_file(home)).get(host)
+    if not isinstance(entry, dict):
+        return False
+    nonce, tag = entry.get("nonce"), entry.get("tag")
+    if not isinstance(nonce, str) or not isinstance(tag, str):
+        return False
+    return hmac.compare_digest(tag, _gate_tag(key, nonce, host, address, "off"))
+
+
+def mail_fingerprint(key: str, address: str) -> str:
+    """How a known address appears in collected mail logs: the collector's
+    keyed fingerprint of its local part, and its domain, lowercased."""
+    local, at, domain = address.strip().rpartition("@")
+    if not at:
+        local, domain = domain, ""
+    if not local:
+        raise ValueError(f"not an address: {address!r}")
+    digest = hmac.new(bytes.fromhex(key), local.encode("utf-8").lower(), hashlib.sha256).hexdigest()
+    # Lowercased as the collector does, bytewise: ASCII letters only.
+    domain = domain.encode("utf-8").lower().decode("utf-8")
+    return f"h:{digest[:MAIL_FINGERPRINT_HEX]}" + (f"@{domain}" if at else "")
 
 
 def load_identity(path: Path) -> x25519.Identity:
@@ -149,6 +246,9 @@ class Summary:
     errors: list[dict[str, Any]] = field(default_factory=list)
     records: dict[str, int] = field(default_factory=dict)
     dropped: dict[str, int] = field(default_factory=dict)
+    # Whether the host's sudo logs its input (plan 2.7): read here, as the
+    # stream arrives, so the mail key's gate works without the evidence key.
+    sudo_input_logging: str | None = None
     _open: dict[int, dict[str, Any]] = field(default_factory=dict, repr=False)
 
     # Bounded: a target controls how many sources, errors and record names it
@@ -194,6 +294,9 @@ class Summary:
             else:
                 self._drop("errors")
         elif record.type == "record":
+            if (record.module, record.name) == ("sudoers", "sudo_input_logging"):
+                state = record.data.get("state")
+                self.sudo_input_logging = state if state in ("on", "off") else "unknown"
             key = f"{record.module}.{record.name}"[:200]
             if key in self.records or len(self.records) < self.MAX_RECORD_NAMES:
                 self.records[key] = self.records.get(key, 0) + 1

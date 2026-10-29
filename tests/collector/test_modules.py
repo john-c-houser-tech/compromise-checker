@@ -39,7 +39,9 @@ def load_collector(root):
     return module
 
 
-def settings(modules, days=30, source_bytes=1 << 20, module_seconds=60, home_text=None):
+def settings(
+    modules, days=30, source_bytes=1 << 20, module_seconds=60, home_text=None, mail_key=None
+):
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
     value = {
         "protocol": 1,
@@ -54,6 +56,8 @@ def settings(modules, days=30, source_bytes=1 << 20, module_seconds=60, home_tex
     }
     if home_text is not None:
         value["home_text"] = home_text
+    if mail_key is not None:
+        value["mail_key"] = mail_key
     return json.dumps(value)
 
 
@@ -61,6 +65,16 @@ def collect(root, modules, **kwargs):
     collector = load_collector(root)
     out = io.BytesIO()
     collector.main(settings(modules, **kwargs), out=out)
+    return [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
+
+
+def collect_with(root, modules, **extra):
+    """collect, with settings the helper doesn't name."""
+    collector = load_collector(root)
+    value = json.loads(settings(modules))
+    value.update(extra)
+    out = io.BytesIO()
+    collector.main(json.dumps(value), out=out)
     return [json.loads(line) for line in gzip.decompress(out.getvalue()).splitlines()]
 
 
@@ -4893,6 +4907,263 @@ class SoftwareTests(FixtureRoot):
             keys["/etc/apt/keyrings/link.gpg"]["sha256"],
             keys["/usr/share/keyrings/real.gpg"]["sha256"],
         )
+
+
+MAIL_KEY = "ab" * 32
+POSTFIX_LOG = (
+    b"2026-10-28T10:00:01.000000+00:00 web01 postfix/pickup[900]: 4F1A2B3C: uid=33"
+    b" from=<www-data>\n"
+    b"2026-10-28T10:00:02.000000+00:00 web01 postfix/smtp[901]: 4F1A2B3C:"
+    b" to=<Alice.Smith@Example.ORG>, orig_to=<alice>, relay=mx.example.org[192.0.2.25]:25,"
+    b" delay=1, status=sent (250 2.0.0 Ok: queued as 99 <bob@example.net>)\n"
+    b"2026-10-28T10:00:03.000000+00:00 web01 postfix/cleanup[902]: 4F1A2B3D: warning:"
+    b" header Subject: Your invoice for jo@example.com from local; from=<www-data@web01>"
+    b" to=<x@example.com>: replaced\n"
+    b'2026-10-28T10:00:04.000000+00:00 web01 postfix/smtp[903]: 4F1A2B3E: to=<"j doe"@ex.org>,'
+    b" relay=none, delay=1, status=deferred (connect to ex.org: Connection timed out)\n"
+    b"2026-10-28T10:00:05.000000+00:00 web01 postfix/smtpd[904]: client=h[198.51.100.9],"
+    b" sasl_username=j\xc3\xb6rg@example.org password=hunter2\n"
+)
+EXIM_LOG = (
+    b"2026-10-28 10:00:01 1tA2b3-000ABC-DE <= www-data@web01 U=www-data P=local S=500"
+    b' T="Hello from me" id=abc@web01\n'
+    b"2026-10-28 10:00:02 1tA2b3-000ABC-DE => carol@example.com R=dnslookup"
+    b" T=remote_smtp H=mx.example.com [192.0.2.30]\n"
+    b"2026-10-28 10:00:02 1tA2b3-000ABC-DF => root <root@web01> R=local_user"
+    b" T=mail_spool\n"
+    b"2026-10-28 10:00:03 1tA2b3-000ABC-DG == dave@example.net R=dnslookup T=remote_smtp"
+    b" defer (-44): SMTP error\n"
+)
+
+
+class MailTests(FixtureRoot):
+    def setUp(self):
+        super().setUp()
+        self.collector = load_collector(self.root)
+        self.key = bytes.fromhex(MAIL_KEY)
+
+    def fp(self, local):
+        return self.collector.mail_fingerprint(self.key, local).decode()
+
+    def mask(self, line):
+        counts = {}
+        return self.collector.mask_mail(line, self.key, counts).decode("utf-8"), counts
+
+    def test_addresses_become_fingerprints_with_their_domains(self):
+        self.write("etc/postfix/main.cf", b"relayhost = [smtp.example.net]:587\n")
+        self.write("var/log/mail.log", POSTFIX_LOG)
+        records = collect(self.root, ["mail"], mail_key=MAIL_KEY)
+        text = sources(records)["/var/log/mail.log"][1].decode()
+        for address in ("alice", "Alice.Smith", "www-data", "bob", "jo@", "j doe", "jörg"):
+            self.assertNotIn(address, text)
+        self.assertIn(f"to=<{self.fp(b'alice.smith')}@example.org>", text)
+        self.assertIn(f"orig_to=<{self.fp(b'alice')}>", text)
+        self.assertIn(f"from=<{self.fp(b'www-data')}>", text)
+        self.assertIn("uid=33", text)
+        quoted = self.fp(b'"j doe"')
+        self.assertIn(f"to=<{quoted}@ex.org>", text)
+        self.assertIn(f"sasl_username={self.fp('jörg'.encode())}@example.org", text)
+        self.assertIn("password=[MASKED:password]", text)
+        # The header Postfix's checks matched is gone; the envelope stays.
+        self.assertIn("header [MASKED:mail_content]; from=<", text)
+        self.assertNotIn("invoice", text)
+        self.assertNotIn("replaced", text)
+        self.assertIn("relay=mx.example.org[192.0.2.25]:25", text)
+        # The configuration is text like any other, and the manifest never
+        # shows the key.
+        self.assertIn("/etc/postfix/main.cf", sources(records))
+        shown = records[0]["settings"]["mail_key"]
+        self.assertTrue(shown.startswith("id:") and MAIL_KEY not in json.dumps(records))
+
+    def test_exim_lines_lose_their_addresses_and_subjects(self):
+        self.write("etc/exim4/update-exim4.conf.conf", b"dc_eximconfig_configtype='internet'\n")
+        self.write("var/log/exim4/mainlog", EXIM_LOG)
+        text = sources(collect(self.root, ["mail"], mail_key=MAIL_KEY))["/var/log/exim4/mainlog"]
+        text = text[1].decode()
+        self.assertIn(f"<= {self.fp(b'www-data')}@web01 U=www-data P=local", text)
+        self.assertIn("T=[MASKED:mail_subject]", text)
+        self.assertNotIn("Hello", text)
+        self.assertIn(f"=> {self.fp(b'carol')}@example.com R=dnslookup T=remote_smtp", text)
+        self.assertIn(f"=> {self.fp(b'root')} <{self.fp(b'root')}@web01>", text)
+        self.assertIn(f"== {self.fp(b'dave')}@example.net", text)
+
+    def test_the_journal_s_mail_messages_are_fingerprinted(self):
+        self.write("usr/bin/journalctl", MAIL_JOURNALCTL).chmod(0o755)
+        records = collect(self.root, ["mail"], days=1, mail_key=MAIL_KEY)
+        ((start, content, _),) = [v for k, v in sources(records).items() if "journalctl" in k]
+        self.assertEqual(start["meta"]["argv"][-1], "SYSLOG_FACILITY=2")
+        entry = json.loads(content.splitlines()[-1])
+        self.assertEqual(entry["MESSAGE"], f"1A: to=<{self.fp(b'eve')}@example.com>, status=sent")
+        self.assertEqual(entry["SYSLOG_IDENTIFIER"], "postfix/smtp")
+
+    def test_without_a_key_no_mail_log_is_sent(self):
+        self.write("var/log/mail.log", POSTFIX_LOG)
+        self.write("usr/bin/journalctl", MAIL_JOURNALCTL).chmod(0o755)
+        records = collect(self.root, ["mail"])
+        self.assertEqual(sources(records), {})
+        self.assertTrue(named(records, "mail_logs_withheld"))
+
+    def test_the_controller_s_reason_for_no_key_is_recorded(self):
+        records = collect_with(self.root, ["mail"], mail_key_withheld="sudo logs its input")
+        [withheld] = named(records, "mail_logs_withheld")
+        self.assertEqual(withheld["data"]["reason"], "sudo logs its input")
+
+    def test_sudoers_says_whether_sudo_logs_its_input(self):
+        self.write("etc/sudoers", b"root ALL=(ALL) ALL\n#includedir /etc/sudoers.d\n")
+        self.write("etc/sudoers.d/ops", b"Defaults:ops !log_input\n")
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "off")
+        self.write("etc/sudoers.d/audit", b"Defaults log_input\n")
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "on")
+        Path(self.root, "etc/sudoers.d/audit").unlink()
+        self.write("etc/sudoers.d/big", b"# x\n" * 300000)  # over 1 MiB: not read whole
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "unknown")
+        Path(self.root, "etc/sudoers.d/big").unlink()
+        Path(self.root, "etc/sudoers").unlink()  # sudo reads its rules elsewhere
+        [found] = named(collect(self.root, ["sudoers"]), "sudo_input_logging")
+        self.assertEqual(found["data"]["state"], "unknown")
+
+    def test_device_nodes_say_which_device(self):
+        collector = load_collector(self.root)
+        info = os.stat("/dev/null")
+        walk = collector.Walk(collector.Run(None, json.loads(settings([])), 1e12), "/", max_depth=0)
+        entry = walk._entry("/x", info)
+        self.assertEqual(entry["device"], [1, 3])
+
+    def test_a_bad_key_is_refused(self):
+        records = collect(self.root, ["mail"], mail_key="NOT-HEX")
+        self.assertEqual(records[-1]["status"], "refused")
+        self.assertNotIn("NOT-HEX", json.dumps(records[0]["settings"]))
+
+    def test_only_mail_configuration_is_read_never_lookup_tables(self):
+        self.write("etc/postfix/main.cf", b"smtp_sasl_password_maps = hash:/etc/postfix/sasl\n")
+        self.write("etc/postfix/sasl_passwd", b"[smtp.example.net] user:pw\n")
+        self.write("etc/exim4/passwd.client", b"*:user:pw\n")
+        self.write("etc/exim4/conf.d/router/200_smarthost", b"route_list = * relay.example\n")
+        sent = sources(collect(self.root, ["mail"], mail_key=MAIL_KEY))
+        self.assertIn("/etc/postfix/main.cf", sent)
+        self.assertIn("/etc/exim4/conf.d/router/200_smarthost", sent)
+        self.assertFalse([name for name in sent if "passw" in name])
+
+    def test_queues_are_counted_from_the_spool_never_read(self):
+        self.write("etc/postfix/main.cf", b"queue_directory = /var/spool/pf\n")
+        for name in ("deferred/A/A1", "deferred/B/B2", "deferred/B/B3", "active/C4"):
+            self.write("var/spool/pf/" + name, b"secret message body")
+        self.write("etc/exim4/update-exim4.conf.conf", b"")
+        self.write("var/spool/exim4/input/1tA-H", b"")
+        self.write("var/spool/exim4/input/1tA-D", b"body")
+        records = collect(self.root, ["mail"], mail_key=MAIL_KEY)
+        queues = {r["data"]["server"]: r["data"] for r in named(records, "mail_queue")}
+        self.assertEqual(queues["postfix"]["directory"], "/var/spool/pf")
+        self.assertEqual(queues["postfix"]["queues"], {"active": 1, "deferred": 3})
+        self.assertEqual(queues["exim"]["queues"], {"input": 1})
+        self.assertNotIn(b"secret message body", json.dumps(records).encode())
+
+    def test_review_cases_leave_no_local_part(self):
+        cases = {
+            # VERP: everything before the @ is the local part.
+            b"from=<list-bounces+alice=example.com@lists.org>": [b"alice"],
+            b"to=<=?utf-8?q?alice?=@x.org>": [b"alice"],
+            b'to=<"a\\"b"@x.org>': [b"a\\"],
+            b"to=<a(comment)lice@x.org>": [b"comment", b"lice"],
+            b"to=<alice@>": [b"alice"],
+            # Exim through syslog: the subject and a bare local delivery.
+            b'web01 exim[1]: 1tA2b3-000ABC-DE <= h@x U=www-data P=local T="Secret merger plans"': [
+                b"Secret",
+                b"merger",
+            ],
+            b"web01 exim[1]: 1tA2b3-000ABC-DF => bob R=local_user T=mail_spool": [b"bob"],
+            b"postfix/smtpd[1]: client=h[192.0.2.1], sasl_method=PLAIN, sasl_username=alice": [
+                b"alice"
+            ],
+            b"1tA2b3-000ABC-DE <= x@y A=plain:alice P=esmtpa": [b"alice"],
+            b"user=<alice>, rip=192.0.2.1": [b"alice"],
+            b'status=bounced (unknown user: "alice")': [b"alice"],
+            b"status=bounced (host mx[192.0.2.2] said: 550 5.1.1 alice... User unknown"
+            b" (in reply to RCPT TO command))": [b"alice"],
+            # Text in a matched header can't pass for the envelope.
+            b"4F1A: warning: header Subject: x from local; from=<top secret> to=<y>"
+            b" from local; from=<a@b.org> to=<c@d.org>": [b"top", b"y>"],
+            b"4F1A: warning: header Subject: hi; from=<top secret merger plan>"
+            b" proto=Board-only from local; from=<a@b.org> to=<c@d.org>": [
+                b"secret",
+                b"Board",
+            ],
+        }
+        for line, secrets in cases.items():
+            masked, _ = self.mask(line)
+            for secret in secrets:
+                self.assertNotIn(secret.decode(), masked, line)
+        masked, _ = self.mask(b"to=<list-bounces+alice=example.com@lists.org>")
+        self.assertEqual(masked, f"to=<{self.fp(b'list-bounces+alice=example.com')}@lists.org>")
+        masked, _ = self.mask(b"sasl_username=jo@example.org")
+        self.assertEqual(masked, f"sasl_username={self.fp(b'jo')}@example.org")
+
+    def test_addresses_are_fingerprinted_before_secrets_are_masked(self):
+        self.write(
+            "var/log/mail.log",
+            b"Oct 28 10:00:01 web01 postfix/smtp[1]: 4F: to=<bob-apikey=1@example.com>\n",
+        )
+        text = sources(collect(self.root, ["mail"], mail_key=MAIL_KEY))["/var/log/mail.log"][1]
+        self.assertNotIn(b"bob", text)
+        self.assertIn(self.fp(b"bob-apikey=1").encode() + b"@example.com", text)
+
+    def test_other_programs_lines_are_not_sent(self):
+        self.write(
+            "var/log/mail.log",
+            b"Oct 28 10:00:01 web01 dovecot: imap-login: Login: user=<alice>, subject=Secret\n"
+            b"Oct 28 10:00:02 web01 postfix/qmgr[2]: 4F: removed\n",
+        )
+        self.write("usr/bin/journalctl", OTHER_JOURNALCTL).chmod(0o755)
+        sent = sources(collect(self.root, ["mail"], days=1, mail_key=MAIL_KEY))
+        text = b"".join(content for _, content, _ in sent.values())
+        self.assertNotIn(b"Secret", text)
+        self.assertNotIn(b"dovecot", text)
+        self.assertIn(b"postfix/qmgr[2]: 4F: removed", text)
+
+    def test_mail_configuration_addresses_are_fingerprinted_or_marked(self):
+        self.write("etc/postfix/main.cf", b"always_bcc = ceo@example.com\n")
+        text = sources(collect(self.root, ["mail"], mail_key=MAIL_KEY))["/etc/postfix/main.cf"][1]
+        self.assertEqual(text, f"always_bcc = {self.fp(b'ceo')}@example.com\n".encode())
+        text = sources(collect(self.root, ["mail"]))["/etc/postfix/main.cf"][1]
+        self.assertEqual(text, b"always_bcc = [MASKED:mail_address]@example.com\n")
+
+    def test_a_long_line_is_masked_in_linear_time(self):
+        began = time.monotonic()
+        masked, _ = self.mask(b"a" * 500000 + b"@x.org " + b"b" * 500000)
+        self.assertLess(time.monotonic() - began, 2)
+        self.assertNotIn("aaaa", masked)
+        began = time.monotonic()
+        self.mask(b'"' * 200000 + b"@" * 1000)
+        self.assertLess(time.monotonic() - began, 2)
+
+    def test_masking_cases(self):
+        cases = {
+            b"to=<o'brien@x.org>": f"to=<{self.fp(b'o' + bytes([39]) + b'brien')}@x.org>",
+            b"see 'amy@x.org'.": f"see '{self.fp(b'amy')}@x.org'.",
+            b"to=<a@[192.0.2.1]>": f"to=<{self.fp(b'a')}@[192.0.2.1]>",
+            b"from=<>": "from=<>",
+            b"helo=<web01>": "helo=<web01>",
+            b"x: to=<bob@Mail.Example.COM.>,": f"x: to=<{self.fp(b'bob')}@mail.example.com.>,",
+        }
+        for line, expected in cases.items():
+            self.assertEqual(self.mask(line)[0], expected, line)
+        # The same address, whatever its case, gives the same fingerprint.
+        self.assertEqual(self.fp(b"Bob"), self.fp(b"bob"))
+
+
+OTHER_JOURNALCTL = b"""#!/bin/sh
+printf '{"MESSAGE":"Login: user=<alice>, subject=Secret","SYSLOG_IDENTIFIER":"dovecot"}\\n'
+printf '{"MESSAGE":"4F: removed","SYSLOG_IDENTIFIER":"postfix/qmgr"}\\n'
+exit 0
+"""
+MAIL_JOURNALCTL = b"""#!/bin/sh
+printf '{"MESSAGE":"args %s"}\\n' "$*"
+printf '{"MESSAGE":"1A: to=<eve@example.com>, status=sent","SYSLOG_IDENTIFIER":"postfix/smtp"}\\n'
+exit 0
+"""
 
 
 if __name__ == "__main__":

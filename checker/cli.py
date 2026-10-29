@@ -30,6 +30,9 @@ from checker.evidence import (
     judge,
     load_config,
     load_identity,
+    mail_fingerprint,
+    mail_key,
+    mail_key_file,
     open_bundle,
     open_text,
 )
@@ -168,8 +171,29 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(
         f"Text of start-up files and user units in home directories: {HOME_TEXT[config.home_text]}"
     )
+    print(f"Mail logs' addresses are fingerprinted with the mail key in {mail_key_file(base)};")
+    print("keep it as private as the evidence key.")
     print("Next: `checker hosts add`, then `checker trust`, then `checker collect`.")
     return 0
+
+
+def cmd_mail_hash(args: argparse.Namespace) -> int:
+    """How known addresses appear in collected mail logs (policy §7)."""
+    base = home()
+    try:
+        load_config(base)
+        key = mail_key(base)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    status = 0
+    for address in args.addresses:
+        try:
+            print(f"{address}\t{mail_fingerprint(key, address)}")
+        except ValueError as exc:
+            print(f"checker: {exc}", file=sys.stderr)
+            status = 2
+    return status
 
 
 def _select_hosts(args: argparse.Namespace) -> list[Host]:
@@ -586,6 +610,12 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--days", type=int, default=30, help="look-back window (default 30)")
     collect.add_argument("--parallel", type=int, default=5, help="hosts at a time (default 5)")
     collect.set_defaults(handler=cmd_collect)
+
+    hashing = commands.add_parser(
+        "mail-hash", help="show how known email addresses appear in collected mail logs"
+    )
+    hashing.add_argument("addresses", nargs="+", help="email addresses (or bare local names)")
+    hashing.set_defaults(handler=cmd_mail_hash)
 
     bundle = commands.add_parser("bundle", help="list, show and verify stored evidence")
     bundle_commands = bundle.add_subparsers(dest="bundle_command", metavar="ACTION", required=True)

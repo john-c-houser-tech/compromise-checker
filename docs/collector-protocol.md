@@ -71,6 +71,14 @@ stores it with the evidence; the manifest carries the version string only.
   or `null` means the defaults (`/var/www`, `/srv/www`, `/srv/http`,
   `/usr/share/nginx/html`). Set per host with `checker hosts add
   --web-root`.
+- `mail_key` — optional: the organization's mail key, 64 lowercase hex
+  digits; mail log addresses are fingerprinted with it on the server
+  (collector-modules.md, `mail`). Omitted or `null`: no mail log is sent.
+  The manifest repeats the settings with this replaced by `id:` and an
+  identifier of the key, never the key.
+- `mail_key_withheld` — optional: why the controller sent no mail key to
+  this host (at most 300 characters); the collector records it with
+  `mail_logs_withheld`.
 
 ## 3. Result stream
 

@@ -6,7 +6,7 @@
   },
   {
    "check": "account.log_changes",
-   "findings": 4,
+   "findings": 8,
    "status": "ran"
   },
   {
@@ -113,6 +113,24 @@
   },
   {
    "check": "mac.disabled",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.domains",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "mail.relay",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.volume",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "mail.web_user",
    "findings": 0,
    "status": "ran"
   },
@@ -269,11 +287,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 158
+     "event": 156
     }
    ],
-   "first_seen": "2026-10-29T01:17:39.277400+00:00",
-   "last_seen": "2026-10-29T01:17:39.277400+00:00",
+   "first_seen": "2026-10-29T03:04:51.328149+00:00",
+   "last_seen": "2026-10-29T03:04:51.328149+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: dnsmasq UID 999",
@@ -292,6 +310,29 @@
    "band": "medium",
    "category": "compromise indicator",
    "check": "account.log_changes",
+   "contribution": 1.3863,
+   "entities": [
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 174
+    }
+   ],
+   "first_seen": "2026-10-29T03:05:11.008220+00:00",
+   "last_seen": "2026-10-29T03:05:11.008220+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "created: postfix UID 110",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
    "contribution": 0.0,
    "entities": [
     "account:proofuser"
@@ -302,8 +343,8 @@
      "event": 171
     }
    ],
-   "first_seen": "2026-10-29T01:17:55.607207+00:00",
-   "last_seen": "2026-10-29T01:17:55.607207+00:00",
+   "first_seen": "2026-10-29T03:05:06.701585+00:00",
+   "last_seen": "2026-10-29T03:05:06.701585+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -329,11 +370,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 168
+     "event": 166
     }
    ],
-   "first_seen": "2026-10-29T01:17:49.193850+00:00",
-   "last_seen": "2026-10-29T01:17:49.193850+00:00",
+   "first_seen": "2026-10-29T03:05:00.223983+00:00",
+   "last_seen": "2026-10-29T03:05:00.223983+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -354,14 +395,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/cron/atjobs/a0000101c80ba5"
+    "path:/var/spool/cron/atjobs/a0000101c80c11"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/cron/atjobs/a0000101c80ba5"
+      "/var/spool/cron/atjobs/a0000101c80c11"
      ]
     }
    ],
@@ -369,7 +410,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/cron/atjobs/a0000101c80ba5 (owner UID 0)",
+   "summary": "/var/spool/cron/atjobs/a0000101c80c11 (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -388,7 +429,7 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.10"
+    "address:203.0.113.6"
    ],
    "entities_complete": true,
    "evidence": [
@@ -396,11 +437,11 @@
      "event": 127
     }
    ],
-   "first_seen": "2026-10-29T01:17:00.918297+00:00",
-   "last_seen": "2026-10-29T01:17:00.918297+00:00",
+   "first_seen": "2026-10-29T03:04:18.122936+00:00",
+   "last_seen": "2026-10-29T03:04:18.122936+00:00",
    "new": true,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.10 (publickey)",
+   "summary": "root from 203.0.113.6 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host ubuntu24.04",
@@ -423,11 +464,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 163
+     "event": 161
     }
    ],
-   "first_seen": "2026-10-29T01:17:41.132873+00:00",
-   "last_seen": "2026-10-29T01:17:41.132873+00:00",
+   "first_seen": "2026-10-29T03:04:52.971353+00:00",
+   "last_seen": "2026-10-29T03:04:52.971353+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group docker",
@@ -444,12 +485,81 @@
   },
   {
    "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.231,
+   "entities": [
+    "group:postdrop"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 175
+    }
+   ],
+   "first_seen": "2026-10-29T03:05:11.136692+00:00",
+   "last_seen": "2026-10-29T03:05:11.136692+00:00",
+   "new": true,
+   "ratio": 1.5,
+   "summary": "created: group postdrop",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.231,
+   "entities": [
+    "group:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 173
+    }
+   ],
+   "first_seen": "2026-10-29T03:05:10.933541+00:00",
+   "last_seen": "2026-10-29T03:05:10.933541+00:00",
+   "new": true,
+   "ratio": 1.5,
+   "summary": "created: group postfix",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.231,
+   "entities": [
+    "group:ssl-cert"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 172
+    }
+   ],
+   "first_seen": "2026-10-29T03:05:08.590588+00:00",
+   "last_seen": "2026-10-29T03:05:08.590588+00:00",
+   "new": true,
+   "ratio": 1.5,
+   "summary": "created: group ssl-cert",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
    "category": "hygiene",
    "check": "process.injected",
    "contribution": 0.0,
    "entities": [
     "program:(sd-pam)",
-    "pid:839",
+    "pid:838",
     "exe:/usr/lib/systemd/systemd-executor"
    ],
    "entities_complete": true,
@@ -457,15 +567,15 @@
     {
      "live": [
       "processes",
-      839
+      838
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:17:02.410000+00:00",
-   "last_seen": "2026-10-29T01:17:02.410000+00:00",
+   "first_seen": "2026-10-29T03:04:18.550000+00:00",
+   "last_seen": "2026-10-29T03:04:18.550000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "(sd-pam) (pid 839): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "(sd-pam) (pid 838): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -477,7 +587,7 @@
    "contribution": 0.0,
    "entities": [
     "program:dbus-daemon",
-    "pid:664",
+    "pid:665",
     "exe:/usr/bin/dbus-daemon"
    ],
    "entities_complete": true,
@@ -485,15 +595,15 @@
     {
      "live": [
       "processes",
-      664
+      665
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:16:57.230000+00:00",
-   "last_seen": "2026-10-29T01:16:57.230000+00:00",
+   "first_seen": "2026-10-29T03:04:13.330000+00:00",
+   "last_seen": "2026-10-29T03:04:13.330000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "dbus-daemon (pid 664): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "dbus-daemon (pid 665): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -505,7 +615,7 @@
    "contribution": 0.0,
    "entities": [
     "program:sshd",
-    "pid:833",
+    "pid:832",
     "exe:/usr/sbin/sshd"
    ],
    "entities_complete": true,
@@ -513,15 +623,15 @@
     {
      "live": [
       "processes",
-      833
+      832
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:17:02.090000+00:00",
-   "last_seen": "2026-10-29T01:17:02.090000+00:00",
+   "first_seen": "2026-10-29T03:04:18.230000+00:00",
+   "last_seen": "2026-10-29T03:04:18.230000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "sshd (pid 833): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "sshd (pid 832): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -533,7 +643,7 @@
    "contribution": 0.0,
    "entities": [
     "program:systemd",
-    "pid:838",
+    "pid:837",
     "exe:/usr/lib/systemd/systemd"
    ],
    "entities_complete": true,
@@ -541,15 +651,15 @@
     {
      "live": [
       "processes",
-      838
+      837
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:17:02.390000+00:00",
-   "last_seen": "2026-10-29T01:17:02.390000+00:00",
+   "first_seen": "2026-10-29T03:04:18.530000+00:00",
+   "last_seen": "2026-10-29T03:04:18.530000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "systemd (pid 838): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "systemd (pid 837): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -561,7 +671,7 @@
    "contribution": 0.0,
    "entities": [
     "program:systemd-logind",
-    "pid:673",
+    "pid:674",
     "exe:/usr/lib/systemd/systemd-logind"
    ],
    "entities_complete": true,
@@ -569,15 +679,15 @@
     {
      "live": [
       "processes",
-      673
+      674
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:16:57.500000+00:00",
-   "last_seen": "2026-10-29T01:16:57.500000+00:00",
+   "first_seen": "2026-10-29T03:04:13.620000+00:00",
+   "last_seen": "2026-10-29T03:04:13.620000+00:00",
    "new": false,
    "ratio": 1.5,
-   "summary": "systemd-logind (pid 673): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "summary": "systemd-logind (pid 674): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
    "title": "A process still uses replaced system libraries (restart it after the update)",
    "uncertain": null,
    "variant": null
@@ -744,9 +854,46 @@
   }
  ],
  "score": {
-  "band": "Low",
+  "band": "Elevated",
   "chains": [],
-  "contributors": [],
+  "contributors": [
+   {
+    "capped": null,
+    "check": "account.log_changes",
+    "contribution": 1.3863,
+    "finding": 1,
+    "ratio": 4.0,
+    "share": 0.6667,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.231,
+    "finding": 7,
+    "ratio": 1.5,
+    "share": 0.1111,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.231,
+    "finding": 8,
+    "ratio": 1.5,
+    "share": 0.1111,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.231,
+    "finding": 9,
+    "ratio": 1.5,
+    "share": 0.1111,
+    "title": "An account or group was changed (from the logs)"
+   }
+  ],
   "hygiene_and_exposure": {
    "band": "low",
    "counts": {
@@ -756,10 +903,10 @@
     }
    }
   },
-  "log_odds": -3.8918,
+  "log_odds": -1.8124,
   "prior": 0.02,
   "prior_source": "golden",
-  "probability": 0.02,
+  "probability": 0.1404,
   "version": 2
  },
  "whitelist": {

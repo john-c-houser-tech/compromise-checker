@@ -188,6 +188,11 @@ gets an `include_dir` record listing its files and whether sudo reads each
 one (sudo skips names ending in `~` or containing a `.`); every file is sent
 either way, since a skipped one is still evidence.
 
+Also a `sudo_input_logging` record: whether sudo writes its input to disk,
+judged from that text, `/etc/sudo.conf`'s plugins and `nsswitch.conf`'s
+`sudoers:` line (read, not sent). The controller sends the mail key only
+where it is `off` (see `mail`).
+
 ## `ssh`
 
 **Why:** `sshd_config` changes (root login, ports, key file locations,
@@ -804,6 +809,92 @@ packages installed system-wide by hand.
 Each of the three parts (packages, repositories and keys, global
 packages) fails alone: a `not_examined` record for its own section, the
 others still collected.
+
+## `mail`
+
+**Why:** check 8.9 (outgoing mail): mail sent by web-server accounts,
+relays and open-relay settings, volume and queue growth, new recipient
+domains.
+
+**Reads:**
+- Postfix's and Exim's configuration as masked text:
+  `/etc/postfix/main.cf` and `master.cf`, `/etc/exim4/update-exim4.conf.conf`,
+  `exim4.conf.template`, `exim4.conf` and `conf.d`, `/etc/exim/exim.conf`.
+  Never Postfix's lookup tables (`sasl_passwd` and the rest) or Exim's
+  `passwd.client`: they hold passwords and addresses;
+- the queue sizes, counted from the spool directories, never by running
+  `mailq` and never opening a message: Postfix's `maildrop`, `incoming`,
+  `active`, `deferred`, `hold` and `corrupt` under its `queue_directory`
+  (from `main.cf`, if it names one plainly, else `/var/spool/postfix`),
+  and Exim's messages (`-H` files) in `/var/spool/exim4/input` or
+  `/var/spool/exim/input`, at most 200,000 counted each;
+- the mail logs within the window: syslog's (`/var/log/mail.log`,
+  `/var/log/maillog`) and Postfix's own (`/var/log/postfix.log`), Exim's
+  main logs (`/var/log/exim4/mainlog`, `/var/log/exim/main.log`), with
+  their rotated copies, last written within the window; and the journal's
+  mail facility (`SYSLOG_FACILITY=2`), with the same fields as
+  `auth_journal`.
+
+**Addresses (policy §7):** only Postfix's lines (`postfix/…`) and Exim's
+are sent, from the syslog files and the journal alike: the mail logs'
+other writers (Dovecot, spam filters) log user names and subjects in their
+own ways, so their lines are left out (counted as `mail_other_line`).
+Before a line is sent, and before secret masking (so that no secret rule
+can take an address's `@` and leave its local part), every address in it
+is changed: the local part is replaced by `h:` and the first 12 hex digits
+of its HMAC-SHA256, keyed with the organization's mail key and computed
+over the local part lowercased; the domain is kept, lowercased
+(`alice@example.org` becomes `h:3f9a1c2e5b7d@example.org`). The local part
+is everything before the `@` back to a space, `<`, `,`, `;`, `:` or `"`
+(VERP and SRS addresses, `list-bounces+alice=example.com@…`, are hashed
+whole), except a known field name (`sasl_username=`, `from=`…); a quoted
+local part is hashed with its quotes. Names without a domain are
+fingerprinted too: Postfix's `from=<www-data>`, `to=<…>`, `orig_to=<…>`,
+`user=<…>`, `sasl_username=`, Exim's authenticated id (`A=plain:…`) and
+local deliveries, and local's `unknown user: "…"`. What a remote server
+answered (after `said:`, or Exim's `SMTP error from remote mail server`)
+is masked after its status codes (`[MASKED:remote_reply]`). The header or
+body line Postfix's `header_checks` and `body_checks` log is replaced by
+`[MASKED:mail_content]`, keeping only the envelope after the last
+`from <client>;` (`from=<…> to=<…> proto=… helo=<…>`), and Exim's subject
+(`T="…"` on arrival lines, with `log_selector = +subject`) by
+`[MASKED:mail_subject]`. Mail configuration text gets the same address
+treatment (`always_bcc`, notice recipients); without a key its local
+parts become `[MASKED:mail_address]`. Masking reads each line once, left
+to right, so a long line costs no more than its length.
+
+The key (`keys/mail-key.txt` in the tool's directory, made by `checker
+init`, or on first use for a directory set up before) travels in the
+settings, so it is in the collector's memory on the server for the run; the
+manifest shows only an identifier of it. The program, settings included,
+reaches the collector on sudo's input, and sudo writes its input to disk
+where input logging is on; the collector can't tell before sudo has logged
+it. So `sudoers` reports `sudo_input_logging`: `on` (an un-negated
+`log_input` or `log_stdin`, a `LOG_INPUT:` tag, or a `sudo.conf` plugin
+other than sudoers' own), `off` (every sudoers file read whole, none of
+those, and rules only from files in `nsswitch.conf`), or `unknown` (also when `/etc/sudoers` is missing, `sudo.conf` or
+`nsswitch.conf` can't be read whole through their links, or a `sudo.conf`
+plugin line has arguments, which can point sudo at other rules). Sudo's
+lexer is followed: `!!log_input` sets it, blanks may precede a tag's
+colon, and `#1000` starts a rule, not a comment. The
+controller reads it as the stream arrives and keeps, per host, an HMAC tag
+of it, its host's address and a fresh random nonce, keyed with the mail key
+(`keys/mail-gate.json`: without the key it shows neither the state nor
+whether it changed), and sends the key only to a host whose latest
+collection, at the same address, said `off`. Deciding closes the host's
+gate until the run's own answer is recorded (after its bundle), so a run
+whose answer is lost leaves it closed; a damaged gate file counts as
+closed for every host. A host's first collection, a host whose sudo
+logs its input or takes rules from a directory (LDAP, SSSD), and a host
+whose last collection couldn't tell get no key: no mail log is sent
+(`mail_logs_withheld`, with the controller's reason), and the coverage
+says so. A run that leaves out `sudoers` keeps the host's last answer.
+
+An intruder with root on the server during a collection could read the key
+from the collector's memory, and then test guesses of addresses against
+that organization's fingerprints. Keeping one key per organization limits
+that; if a server is known to have been compromised, replacing the key
+(and so starting the fingerprints afresh) is a planned follow-up.
 
 ## Protected files
 

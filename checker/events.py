@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-PARSER_VERSION = 4  # 3: system.clock_changed; 4: unit.starting, unit.finished
+PARSER_VERSION = 5  # 3: system.clock_changed; 4: unit.starting, unit.finished; 5: mail
 MAX_EVENT_LINE = 2048  # characters of the source line kept on each event
 
 _MONTHS = {m: i for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)}
@@ -265,6 +265,92 @@ def classify(program: str | None, message: str) -> tuple[str, dict[str, Any]] | 
     return None
 
 
+# --- Mail (DESIGN.md §8.9) ---------------------------------------------------------------
+
+# Postfix's daemons log as postfix/<daemon> (postfix-<instance>/<daemon>
+# for a second instance). Every address arrives fingerprinted (h:…@domain).
+_POSTFIX = re.compile(r"^postfix[\w.-]*/(?P<daemon>[\w-]+)$")
+_POSTFIX_PICKUP = re.compile(r"^(?P<queue_id>\w+): uid=(?P<uid>\d+) from=<(?P<sender>[^>]*)>")
+_POSTFIX_DELIVERY = re.compile(
+    r"^(?P<queue_id>\w+): to=<(?P<recipient>[^>]*)>,(?: orig_to=<[^>]*>,)? "
+    r"relay=(?P<relay>[^,\s]+),.*? status=(?P<status>sent|deferred|bounced|expired)\b"
+)
+# Postfix's agents that deliver into mailboxes on the host itself, and the
+# relays that say so (Dovecot's LMTP socket, private/…).
+_LOCAL_AGENTS = {"local", "virtual", "lmtp"}
+_LOCAL_RELAYS = ("local", "virtual", "private/", "dovecot")
+_DELIVERY_STATUS = {
+    "sent": "mail.sent",
+    "deferred": "mail.deferred",
+    "bounced": "mail.bounced",
+    "expired": "mail.bounced",
+}
+_EXIM = re.compile(
+    r"^(?P<date>\d{4}-\d\d-\d\d) (?P<clock>\d\d:\d\d:\d\d)(?:\.\d+)?(?: (?P<zone>[+-]\d{4}))?"
+    r"(?: \[(?P<pid>\d+)\])? (?P<queue_id>\S+) (?P<flag><=|=>|->|\*\*|==) (?P<address>\S+)"
+    r"(?P<rest>.*)$"
+)
+_EXIM_FLAGS = {"=>": "mail.sent", "->": "mail.sent", "==": "mail.deferred", "**": "mail.bounced"}
+_EXIM_HOST = re.compile(r" H=(\S+(?: \[[^\]]+\])?)")
+_EXIM_FIELD = re.compile(r" (U|P|R|T)=(\S+)")
+
+
+def _domain(address: str) -> str:
+    return address.rpartition("@")[2].lower() if "@" in address else ""
+
+
+def classify_mail(program: str | None, message: str) -> tuple[str, dict[str, Any]] | None:
+    """(event type, fields) for a Postfix log message about outgoing mail:
+    a local submission (pickup, with the submitting UID), and each
+    delivery attempt sent, deferred or bounced."""
+    daemon = _POSTFIX.match(program or "")
+    if daemon is None:
+        return None
+    if daemon["daemon"] == "pickup":
+        found = _POSTFIX_PICKUP.search(message)
+        if found:
+            fields = found.groupdict()
+            fields["uid"] = int(fields["uid"])
+            return "mail.submitted", fields
+        return None
+    found = _POSTFIX_DELIVERY.search(message)
+    if found is None:
+        return None
+    fields = found.groupdict()
+    status = fields.pop("status")
+    fields["domain"] = _domain(fields["recipient"])
+    if daemon["daemon"] in _LOCAL_AGENTS or fields["relay"].startswith(_LOCAL_RELAYS):
+        fields["local"] = True  # delivered into a mailbox here: not outgoing
+    return _DELIVERY_STATUS[status], fields
+
+
+def classify_exim(line: str) -> tuple[str, dict[str, Any], dict[str, str]] | None:
+    """(event type, fields, the line's date parts) for an Exim main log line
+    about outgoing mail: a local submission (P=local, with the submitting
+    user) and each delivery sent, deferred or bounced."""
+    found = _EXIM.match(line)
+    if found is None:
+        return None
+    rest = found["rest"]
+    named = dict(_EXIM_FIELD.findall(rest))
+    when = {k: found[k] for k in ("date", "clock", "zone") if found[k]}
+    if found["flag"] == "<=":
+        if not named.get("P", "").startswith("local") or "U" not in named:
+            return None  # mail received from elsewhere, not submitted here
+        fields = {"queue_id": found["queue_id"], "user": named["U"], "sender": found["address"]}
+        return "mail.submitted", fields, when
+    host = _EXIM_HOST.search(rest)
+    fields = {
+        "queue_id": found["queue_id"],
+        "recipient": found["address"],
+        "relay": host.group(1) if host else named.get("T", "local"),
+        "domain": _domain(found["address"]),
+    }
+    if host is None and found["flag"] in ("=>", "->"):
+        fields["local"] = True  # no remote host: a local delivery
+    return _EXIM_FLAGS[found["flag"]], fields, when
+
+
 # --- Times ---------------------------------------------------------------------------
 
 
@@ -363,24 +449,29 @@ class EventBuilder:
             self._login_record(record.data)
 
     def source_start(self, start: SourceStart) -> None:
-        if start.module == "auth_log":
+        if _log_kind(start) is not None:
             self._syslog[start.source_id] = []
 
     def line(self, start: SourceStart, line: bytes) -> None:
         text = line.decode("utf-8", "replace")
-        if start.module == "auth_log":
+        kind = _log_kind(start)
+        if kind == "exim":
+            self._exim_line(start, text)
+        elif kind is not None:
             self._log_line(start, text)
         elif start.module in ("auth_journal", "system_journal"):
             self._journal_line(start, text)
+        elif start.module == "mail" and start.kind == "command":
+            self._journal_line(start, text, "mail_journal", classify_mail)
         elif start.module == "boots":
             self._boot_line(start, text)
 
     def source_end(self, start: SourceStart, end: SourceEnd) -> None:
-        if start.module == "auth_log":
+        if start.source_id in self._syslog:
             self._flush_syslog(start)
 
     def source_cut(self, start: SourceStart) -> None:
-        if start.module == "auth_log":
+        if start.source_id in self._syslog:
             self._flush_syslog(start, cut=True)
 
     def error(self, error: Error) -> None:
@@ -406,19 +497,21 @@ class EventBuilder:
         )
 
     def _log_line(self, start: SourceStart, text: str) -> None:
-        source = f"auth_log:{start.name}"
+        source, rules = _log_source(start)
         match = _RFC3339.match(text)
         if match:
             try:
                 moment = datetime.fromisoformat(match["ts"].replace("Z", "+00:00"))
             except ValueError:
                 moment = None
-            self._message(moment, source, match["prog"], match["msg"], match["pid"], text)
+            self._message(
+                moment, source, match["prog"], match["msg"], match["pid"], text, rules=rules
+            )
             return
         match = _SYSLOG.match(text)
         if match and match["mon"] in _MONTHS:
             # Classified now, so only lines that are events wait for their year.
-            found = classify(match["prog"], match["msg"])
+            found = rules(match["prog"], match["msg"])
             if found is None:
                 return
             key = (_MONTHS[match["mon"]], int(match["day"]), match["time"])
@@ -441,7 +534,7 @@ class EventBuilder:
         if newest is None:
             newest = datetime.now(UTC)
         years = resolve_syslog_years([key for key, _ in pending], newest, self.zone)
-        source = f"auth_log:{start.name}"
+        source, _ = _log_source(start)
         for (moment, uncertain), (_, (program, pid, found, text)) in zip(
             years, pending, strict=True
         ):
@@ -452,8 +545,25 @@ class EventBuilder:
                 extra["source_cut"] = True
             self._emit(moment, source, program, found, pid, text, extra)
 
-    def _message(self, moment, source, program, message, pid, text, extra=None):
-        found = classify(program, message)
+    def _exim_line(self, start: SourceStart, text: str) -> None:
+        found = classify_exim(text.rstrip("\n"))
+        if found is None:
+            return
+        kind, fields, when = found
+        try:
+            moment = datetime.fromisoformat(f"{when['date']}T{when['clock']}")
+            if "zone" in when:
+                moment = datetime.fromisoformat(
+                    f"{when['date']}T{when['clock']}{when['zone'][:3]}:{when['zone'][3:]}"
+                )
+            else:  # Exim logs local time unless told otherwise
+                moment = moment.replace(tzinfo=self.zone)
+        except ValueError:
+            moment = None
+        self._add(moment, f"mail_log:{start.name}", kind, fields, "exim", text)
+
+    def _message(self, moment, source, program, message, pid, text, extra=None, rules=None):
+        found = (rules or classify)(program, message)
         if found is not None:
             self._emit(moment, source, program, found, pid, text, extra)
 
@@ -465,7 +575,7 @@ class EventBuilder:
             fields.update(extra)
         self._add(moment, source, kind, fields, program, text)
 
-    def _journal_line(self, start: SourceStart, text: str) -> None:
+    def _journal_line(self, start: SourceStart, text: str, source=None, rules=None) -> None:
         try:
             entry = json.loads(text)
         except ValueError:
@@ -505,7 +615,7 @@ class EventBuilder:
                 extra[name] = entry[key]
         pid = entry.get("SYSLOG_PID") or entry.get("_PID")
         pid = pid if isinstance(pid, str) and pid.isdigit() else None
-        self._message(moment, start.module, program, message, pid, message, extra)
+        self._message(moment, source or start.module, program, message, pid, message, extra, rules)
 
     _BOOT = re.compile(
         r"^\s*(?P<index>-?\d+)\s+(?P<boot_id>[0-9a-f]{32})\s+(?:\w{3}\s+)?"
@@ -553,6 +663,24 @@ class EventBuilder:
         self._add(moment, f"login_records:{path}", kind, fields)
 
 
+def _log_kind(start: SourceStart) -> str | None:
+    """Which kind of log file a source is: "syslog" (the authentication
+    logs, and syslog's or Postfix's mail logs), "exim" (Exim's main log),
+    or None (not a log file read for events)."""
+    if start.module == "auth_log":
+        return "syslog"
+    if start.module == "mail" and start.kind == "file" and start.name.startswith("/var/log/"):
+        return "exim" if start.name.startswith("/var/log/exim") else "syslog"
+    return None
+
+
+def _log_source(start: SourceStart):
+    """An event's source name for a log file, and the rules for its lines."""
+    if start.module == "mail":
+        return f"mail_log:{start.name}", classify_mail
+    return f"auth_log:{start.name}", classify
+
+
 # --- One record logged to several places -------------------------------------------------
 
 # Fields only one kind of source carries, or that describe how an event was
@@ -575,7 +703,8 @@ def merge_duplicates(events: list[Event]) -> list[Event]:
     lines in both journal reads. Events alike to the second, in type,
     process and fields are one record: the source that has the most of them
     is kept (the journal, on a tie, for its trusted fields) and the others
-    are named in `also_in`. Counting per source keeps real repeats."""
+    are named in `also_in`. Mail lines reach both syslog's mail log and the
+    journal the same way. Counting per source keeps real repeats."""
     groups: dict[tuple, dict[str, list[Event]]] = {}
     alone: list[Event] = []
     for event in events:
@@ -588,7 +717,12 @@ def merge_duplicates(events: list[Event]) -> list[Event]:
     kept = alone
     for by_source in groups.values():
         best = max(
-            by_source, key=lambda src: (len(by_source[src]), not src.startswith("auth_log:"), src)
+            by_source,
+            key=lambda src: (
+                len(by_source[src]),
+                not src.startswith(("auth_log:", "mail_log:")),
+                src,
+            ),
         )
         others = sorted(src for src in by_source if src != best)
         for event in by_source[best]:

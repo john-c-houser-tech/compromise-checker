@@ -50,6 +50,8 @@ added.
 | `packages` | name and architecture (and version, for packages installed side by side: rpm's imported keys, `gpg-pubkey`, and kernels): the package manager, version and install time | `software` |
 | `software_files` | path: repository files (and the SHA-256 of their masked text) and signing keys (their SHA-256; `record: signing_key`) | `software` |
 | `global_packages` | `python: <name>` or `node: <name>`: version and folder | `software` |
+| `mail_files` | path: Postfix and Exim configuration files, and the SHA-256 of their (masked) text | `mail` |
+| `mail_config` | `postfix: <setting>` (each `main.cf` setting, continuation lines joined), `postfix service: <service> <type>` (each `master.cf` service), `exim: <dc_ setting>` (Debian's `update-exim4.conf.conf`), `exim: <hostlist\|domainlist…> <name>`, `exim: route_list`, `route_data`, `local_interfaces`, `daemon_smtp_ports`: the value and its file. The queue sizes are in the uncompared `live` part | `mail` |
 | `peers` | program, remote network (/24 or /48) and port: outgoing TCP connections open at collection, established or connecting, held by a process (not loopback or link-local; connections accepted on one of the host's listening ports, in the same network namespace, are incoming and left out). How many is in the uncompared `live` part | `processes` |
 | `listeners` | protocol, address and port (for a packet socket: its type, ethertype and interface), network namespace: listening TCP, unconnected UDP, raw and packet sockets, with the owning UIDs, the programs holding them (hidden processes included) and how many sockets share the key | `processes` |
 

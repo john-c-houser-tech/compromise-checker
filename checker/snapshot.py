@@ -18,7 +18,7 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 7  # 5: network; 6: logging, history flags; 7: software
+SNAPSHOT_VERSION = 8  # 5: network; 6: logging, history flags; 7: software; 8: mail
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -75,6 +75,11 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
         " running",
         ("logging_state", "processes"),
     ),
+    "mail_files": ("Postfix and Exim configuration files", ("mail",)),
+    "mail_config": (
+        "mail server settings: relay host, trusted networks, relay restrictions, services",
+        ("mail",),
+    ),
 }
 
 # Every module the sections come from: a bundle that planned them all is a
@@ -103,6 +108,8 @@ _MASKED = {
     "web_files",
     "listeners",
     "shell_history",
+    "mail_files",
+    "mail_config",
 }
 
 # Which section a module's text sources and file records go to.
@@ -118,6 +125,7 @@ _FILE_SECTIONS = {
     "network": "network_files",
     "logging_state": "log_config",
     "software": "software_files",
+    "mail": "mail_files",  # configuration only: mail logs are read for events
 }
 _FILE_RECORDS = {
     "file",
@@ -333,6 +341,8 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
         if name in ("config_dir", "source") or str(path or "").startswith("/etc/"):
             return {"pam_rules", "pam"}
         return {"pam"}
+    if module == "mail" and str(path or "").startswith("/var/log/"):
+        return set()  # a mail log: the coverage reports it, the settings are whole
     if module == "unusual_files":
         return {"unusual_files", "web_files", "privileged_files"}
     if module == "system_files":
@@ -503,6 +513,7 @@ class SnapshotBuilder:
         self._names: dict[str, dict[str, int]] = {}
         self._unread: list[tuple[str, dict[str, Any]]] = []
         self._settings: list[tuple[str, list[str]]] = []  # logging configuration text
+        self._mail_text: list[tuple[str, list[str]]] = []  # mail configuration text
         self._mac: dict[str, Any] | None = None
 
     def section(self, name: str) -> Section:
@@ -545,7 +556,9 @@ class SnapshotBuilder:
         handler = getattr(self, f"_on_{module}", None)
         if handler is not None:
             handler(name, data)
-        if module in _FILE_SECTIONS and name in _FILE_RECORDS and data.get("path"):
+        if module == "mail" and not str(data.get("path") or "").startswith("/etc/"):
+            pass  # mail logs aren't configuration
+        elif module in _FILE_SECTIONS and name in _FILE_RECORDS and data.get("path"):
             item = self.section(_FILE_SECTIONS[module]).items.setdefault(data["path"], {})
             item.update(_meta(data))
             item.setdefault("record", name)
@@ -561,8 +574,12 @@ class SnapshotBuilder:
             self._text[start.source_id] = ((start, hashlib.sha256()), [])
             return
         wanted = start.kind == "file" and start.module in _FILE_SECTIONS
+        if start.module == "mail" and not start.name.startswith("/etc/"):
+            wanted = False  # a mail log, read for events
         lines: list[str] | None = (
-            [] if start.module in ("sudoers", "ssh", "pam", "startup", "logging_state") else None
+            []
+            if start.module in ("sudoers", "ssh", "pam", "startup", "logging_state", "mail")
+            else None
         )
         if wanted:
             self._text[start.source_id] = ((start, hashlib.sha256()), lines)
@@ -619,6 +636,9 @@ class SnapshotBuilder:
             return
         if start.module == "logging_state":
             self._settings.append((start.name, lines))
+            return
+        if start.module == "mail":
+            self._mail_text.append((start.name, lines))
             return
         if start.module == "sudoers":
             rules = self.section("sudo_rules")
@@ -826,6 +846,33 @@ class SnapshotBuilder:
             # changes it.
             section.items[f"{kind}: {name}"] = {"running": True, "exe": ", ".join(sorted(exes))}
 
+    def _on_mail(self, name: str, data: dict[str, Any]) -> None:
+        if name == "mail_queue":
+            self.live.setdefault("mail_queues", []).append(data)
+            if data.get("cut") or data.get("errors"):
+                self.live["mail_queue_incomplete"] = True
+        elif name in ("mail_servers", "mail_log_summary", "mail_logs_withheld"):
+            self.live[name] = data
+
+    def _mail(self) -> None:
+        """Postfix's and Exim's settings, one item each, by program and name."""
+        if "mail" not in self._planned():
+            return
+        section = self.section("mail_config")
+        for path, lines in self._mail_text:
+            if path.endswith("/main.cf"):
+                found = [(f"postfix: {n}", v) for n, v in postfix_settings(lines)]
+            elif path.endswith("/master.cf"):
+                found = [(f"postfix service: {n}", v) for n, v in postfix_services(lines)]
+            elif "/exim" in path:
+                found = [(f"exim: {n}", v) for n, v in exim_settings(path, lines)]
+            else:
+                continue
+            for key, value in found:
+                if key in section.items and section.items[key]["path"] != path:
+                    key = f"{key} ({path})"
+                section.items[key] = {"value": value, "path": path}
+
     def _on_network(self, name: str, data: dict[str, Any]) -> None:
         if name == "interface" and data.get("name"):
             # A container's veth pair is renamed with every restart: seen
@@ -957,6 +1004,7 @@ class SnapshotBuilder:
         self._listeners()
         self._peers()
         self._logging()
+        self._mail()
         planned = self._planned()
         results = self.trailer_data.modules if self.trailer_data else {}
         for section_name, (_, modules) in SECTIONS.items():
@@ -989,6 +1037,72 @@ class SnapshotBuilder:
             "full": FULL <= planned,
         }
         return Snapshot(meta, dict(sorted(self.sections.items())), self.live)
+
+
+# --- Mail server settings (DESIGN.md §8.9) ------------------------------------------------------
+
+
+def postfix_settings(lines: list[str]) -> list[tuple[str, str]]:
+    """main.cf's `name = value` settings, continuation lines (starting with
+    white space) joined; comment lines (starting with #) left out."""
+    found: list[tuple[str, str]] = []
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[:1].isspace() and found:
+            name, value = found[-1]
+            found[-1] = (name, f"{value} {line.strip()}".strip())
+            continue
+        name, sep, value = line.partition("=")
+        if sep and name.strip() and " " not in name.strip():
+            found.append((name.strip(), value.strip()))
+    return found
+
+
+def postfix_services(lines: list[str]) -> list[tuple[str, str]]:
+    """master.cf's services: ("service type", the rest of its definition)."""
+    found: list[tuple[str, list[str]]] = []
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[:1].isspace() and found:
+            found[-1][1].extend(line.split())
+            continue
+        words = line.split()
+        if len(words) >= 2:
+            found.append((f"{words[0]} {words[1]}", words[2:]))
+    return [(name, " ".join(rest)) for name, rest in found]
+
+
+_EXIM_DEBIAN = re.compile(r"^(dc_\w+)=(['\"]?)(.*)\2\s*$")
+_EXIM_LIST = re.compile(r"^\s*((?:host|domain|address|localpart)list)\s+(\w+)\s*=\s*(.*?)\s*$")
+_EXIM_OPTION = re.compile(
+    r"^\s*(route_list|route_data|local_interfaces|daemon_smtp_ports)"
+    r"\s*=\s*(.*?)\s*$"
+)
+
+
+def exim_settings(path: str, lines: list[str]) -> list[tuple[str, str]]:
+    """Debian's update-exim4.conf.conf (dc_ settings), and from Exim's own
+    configuration its named lists and the options naming relays, listening
+    addresses and ports."""
+    found = []
+    for line in lines:
+        if line.lstrip().startswith("#"):
+            continue
+        if path.endswith("update-exim4.conf.conf"):
+            match = _EXIM_DEBIAN.match(line.strip())
+            if match:
+                found.append((match[1], match[3]))
+            continue
+        match = _EXIM_LIST.match(line)
+        if match:
+            found.append((f"{match[1]} {match[2]}", match[3]))
+            continue
+        match = _EXIM_OPTION.match(line)
+        if match:
+            found.append((match[1], match[2]))
+    return found
 
 
 # --- Comparing two ---------------------------------------------------------------------------

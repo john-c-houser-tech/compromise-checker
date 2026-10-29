@@ -7,7 +7,7 @@
   },
   {
    "check": "account.log_changes",
-   "findings": 4,
+   "findings": 9,
    "status": "ran"
   },
   {
@@ -121,6 +121,26 @@
    "status": "ran"
   },
   {
+   "check": "mail.domains",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.relay",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.volume",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.web_user",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
    "check": "net.config",
    "findings": 1,
    "status": "ran"
@@ -132,7 +152,7 @@
   },
   {
    "check": "net.listener",
-   "findings": 3,
+   "findings": 4,
    "status": "ran"
   },
   {
@@ -337,7 +357,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "accounts",
       "cc-toor",
       "added"
@@ -365,7 +385,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "unusual_files",
       "/tmp/.cc-sh",
       "added"
@@ -464,7 +484,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "logging",
       "service: auditd",
       "removed"
@@ -488,11 +508,11 @@
    "entities": [],
    "entities_complete": true,
    "evidence": [],
-   "first_seen": "2026-10-29T01:18:09+00:00",
-   "last_seen": "2026-10-29T01:18:09+00:00",
+   "first_seen": "2026-10-29T03:06:16+00:00",
+   "last_seen": "2026-10-29T03:06:16+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "type=DAEMON_END msg=audit(1793236689.761:8006): op=terminate auid=0 uid=0 ses=1 pid=13081 subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 res=success\u001dAUID=\"root\" UID=\"root\"",
+   "summary": "type=DAEMON_END msg=audit(1793243176.026:6757): op=terminate auid=0 uid=0 ses=1 pid=13828 subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 res=success\u001dAUID=\"root\" UID=\"root\"",
    "title": "The audit daemon stopped, not during a shutdown",
    "uncertain": null,
    "variant": "audit_daemon"
@@ -507,7 +527,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "logging",
       "selinux",
       "changed"
@@ -531,7 +551,7 @@
    "entities": [
     "address:127.0.0.1",
     "account:www-data",
-    "pid:13056",
+    "pid:13803",
     "program:sleep",
     "exe:/usr/bin/sleep"
    ],
@@ -540,15 +560,15 @@
     {
      "live": [
       "processes",
-      13056
+      13803
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:18:07+00:00",
-   "last_seen": "2026-10-29T01:18:07+00:00",
+   "first_seen": "2026-10-29T03:06:13.250000+00:00",
+   "last_seen": "2026-10-29T03:06:13.250000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "sleep (pid 13056, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
+   "summary": "sleep (pid 13803, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
    "title": "A web-server account reached SMB",
    "uncertain": null,
    "variant": "smb_winrm"
@@ -566,7 +586,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "pam_rules",
       "/etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true",
       "added"
@@ -594,7 +614,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "startup",
       "/etc/ld.so.preload",
       "added"
@@ -617,7 +637,7 @@
    "contribution": 2.9957,
    "entities": [
     "program:cc-sleep",
-    "pid:13015",
+    "pid:13762",
     "exe:/root/cc-sleep (deleted)"
    ],
    "entities_complete": true,
@@ -625,15 +645,15 @@
     {
      "live": [
       "processes",
-      13015
+      13762
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:18:03.850000+00:00",
-   "last_seen": "2026-10-29T01:18:03.850000+00:00",
+   "first_seen": "2026-10-29T03:06:10.100000+00:00",
+   "last_seen": "2026-10-29T03:06:10.100000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "cc-sleep (pid 13015): /root/cc-sleep (deleted)",
+   "summary": "cc-sleep (pid 13762): /root/cc-sleep (deleted)",
    "title": "A process whose program was deleted",
    "uncertain": null,
    "variant": null
@@ -645,7 +665,7 @@
    "contribution": 0.6931,
    "entities": [
     "program:cc-sleep",
-    "pid:13015",
+    "pid:13762",
     "exe:/root/cc-sleep (deleted)"
    ],
    "entities_complete": true,
@@ -653,15 +673,15 @@
     {
      "live": [
       "processes",
-      13015
+      13762
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:18:03.850000+00:00",
-   "last_seen": "2026-10-29T01:18:03.850000+00:00",
+   "first_seen": "2026-10-29T03:06:10.100000+00:00",
+   "last_seen": "2026-10-29T03:06:10.100000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "cc-sleep (pid 13015): /root/cc-sleep (deleted)",
+   "summary": "cc-sleep (pid 13762): /root/cc-sleep (deleted)",
    "title": "A process has code mapped from a scratch or home file",
    "uncertain": null,
    "variant": null
@@ -673,7 +693,7 @@
    "contribution": 2.9957,
    "entities": [
     "program:bash",
-    "pid:13027",
+    "pid:13774",
     "exe:/usr/bin/bash"
    ],
    "entities_complete": true,
@@ -681,15 +701,15 @@
     {
      "live": [
       "processes",
-      13027
+      13774
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:18:05.390000+00:00",
-   "last_seen": "2026-10-29T01:18:05.390000+00:00",
+   "first_seen": "2026-10-29T03:06:11.650000+00:00",
+   "last_seen": "2026-10-29T03:06:11.650000+00:00",
    "new": false,
    "ratio": 20.0,
-   "summary": "bash (pid 13027): stdin is tcp to 127.0.0.1:4444",
+   "summary": "bash (pid 13774): stdin is tcp to 127.0.0.1:4444",
    "title": "A shell talking to a network socket (a reverse shell)",
    "uncertain": null,
    "variant": null
@@ -701,15 +721,15 @@
    "contribution": 2.9957,
    "entities": [
     "account:operator",
-    "key:SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0"
+    "key:SHA256:YzRYgScT7fYfBDldGHdn9htmB0mAxRsJqjciUr4eero"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "authorized_keys",
-      "operator SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0 /root/.ssh/authorized_keys",
+      "operator SHA256:YzRYgScT7fYfBDldGHdn9htmB0mAxRsJqjciUr4eero /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -718,7 +738,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "operator: ssh-ed25519 SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0 in /root/.ssh/authorized_keys",
+   "summary": "operator: ssh-ed25519 SHA256:YzRYgScT7fYfBDldGHdn9htmB0mAxRsJqjciUr4eero in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -730,15 +750,15 @@
    "contribution": 0.231,
    "entities": [
     "account:operator",
-    "key:SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw"
+    "key:SHA256:jvPG0LdCRpQuhRw1H8HlGDwUCZ3cjiGokikzUeO6tek"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "authorized_keys",
-      "operator SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw /root/.ssh/authorized_keys",
+      "operator SHA256:jvPG0LdCRpQuhRw1H8HlGDwUCZ3cjiGokikzUeO6tek /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -747,7 +767,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "operator: ssh-ed25519 SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw in /root/.ssh/authorized_keys",
+   "summary": "operator: ssh-ed25519 SHA256:jvPG0LdCRpQuhRw1H8HlGDwUCZ3cjiGokikzUeO6tek in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -759,15 +779,15 @@
    "contribution": 0.231,
    "entities": [
     "account:root",
-    "key:SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0"
+    "key:SHA256:YzRYgScT7fYfBDldGHdn9htmB0mAxRsJqjciUr4eero"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "authorized_keys",
-      "root SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0 /root/.ssh/authorized_keys",
+      "root SHA256:YzRYgScT7fYfBDldGHdn9htmB0mAxRsJqjciUr4eero /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -776,7 +796,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "root: ssh-ed25519 SHA256:E+UrELJcV08gLDF/V7TAaljNroxW9uvwCTmz5CxS8d0 in /root/.ssh/authorized_keys",
+   "summary": "root: ssh-ed25519 SHA256:YzRYgScT7fYfBDldGHdn9htmB0mAxRsJqjciUr4eero in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -788,15 +808,15 @@
    "contribution": 0.231,
    "entities": [
     "account:root",
-    "key:SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw"
+    "key:SHA256:jvPG0LdCRpQuhRw1H8HlGDwUCZ3cjiGokikzUeO6tek"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "authorized_keys",
-      "root SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw /root/.ssh/authorized_keys",
+      "root SHA256:jvPG0LdCRpQuhRw1H8HlGDwUCZ3cjiGokikzUeO6tek /root/.ssh/authorized_keys",
       "added"
      ]
     }
@@ -805,7 +825,7 @@
    "last_seen": null,
    "new": true,
    "ratio": 20.0,
-   "summary": "root: ssh-ed25519 SHA256:wjewCpbb2J56KDwiwZ7kuewbBuxAnopAVZtbTboqiaw in /root/.ssh/authorized_keys",
+   "summary": "root: ssh-ed25519 SHA256:jvPG0LdCRpQuhRw1H8HlGDwUCZ3cjiGokikzUeO6tek in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
    "uncertain": null,
    "variant": "new_key"
@@ -822,7 +842,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "sshd_config",
       "/etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes",
       "added"
@@ -850,7 +870,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "accounts",
       "cc-toor",
       "added"
@@ -878,7 +898,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "accounts",
       "www-data",
       "added"
@@ -905,14 +925,37 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 190
+     "event": 191
     }
    ],
-   "first_seen": "2026-10-29T01:18:04.363796+00:00",
-   "last_seen": "2026-10-29T01:18:04.363796+00:00",
+   "first_seen": "2026-10-29T03:06:10.650969+00:00",
+   "last_seen": "2026-10-29T03:06:10.650969+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: cc-toor UID 0",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.1512,
+   "entities": [
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 161
+    }
+   ],
+   "first_seen": "2026-10-29T03:05:09.349816+00:00",
+   "last_seen": "2026-10-29T03:05:09.349816+00:00",
+   "new": false,
+   "ratio": 4.0,
+   "summary": "created: postfix UID 89",
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "created"
@@ -928,11 +971,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 169
+     "event": 159
     }
    ],
-   "first_seen": "2026-10-29T01:17:07.320272+00:00",
-   "last_seen": "2026-10-29T01:17:07.320272+00:00",
+   "first_seen": "2026-10-29T03:05:05.570969+00:00",
+   "last_seen": "2026-10-29T03:05:05.570969+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -958,11 +1001,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 161
+     "event": 155
     }
    ],
-   "first_seen": "2026-10-29T01:16:47.349691+00:00",
-   "last_seen": "2026-10-29T01:16:47.349691+00:00",
+   "first_seen": "2026-10-29T03:04:47.781878+00:00",
+   "last_seen": "2026-10-29T03:04:47.781878+00:00",
    "new": false,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -981,24 +1024,242 @@
    "band": "medium",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.6931,
+   "contribution": 0.1512,
    "entities": [
     "account:www-data"
    ],
    "entities_complete": true,
    "evidence": [
     {
-     "event": 191
+     "event": 192
     }
    ],
-   "first_seen": "2026-10-29T01:18:06.997660+00:00",
-   "last_seen": "2026-10-29T01:18:06.997660+00:00",
+   "first_seen": "2026-10-29T03:06:13.287258+00:00",
+   "last_seen": "2026-10-29T03:06:13.287258+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: www-data UID 995",
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.1512,
+   "entities": [
+    "account:postfix",
+    "group:mail"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 163
+    }
+   ],
+   "first_seen": "2026-10-29T03:05:09.485972+00:00",
+   "last_seen": "2026-10-29T03:05:09.485972+00:00",
+   "new": false,
+   "ratio": 4.0,
+   "summary": "member added: postfix group mail",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_member_added"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.1512,
+   "entities": [
+    "account:postfix",
+    "group:mail"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 164
+    }
+   ],
+   "first_seen": "2026-10-29T03:05:09.486312+00:00",
+   "last_seen": "2026-10-29T03:05:09.486312+00:00",
+   "new": false,
+   "ratio": 4.0,
+   "summary": "member added: postfix group mail",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_member_added"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "mail.web_user",
+   "contribution": 1.3863,
+   "entities": [
+    "account:www-data"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 203
+    },
+    {
+     "event": 208
+    },
+    {
+     "event": 211
+    },
+    {
+     "event": 216
+    },
+    {
+     "event": 223
+    },
+    {
+     "event": 228
+    },
+    {
+     "event": 233
+    },
+    {
+     "event": 236
+    },
+    {
+     "event": 241
+    },
+    {
+     "event": 246
+    },
+    {
+     "event": 254
+    },
+    {
+     "event": 257
+    },
+    {
+     "event": 262
+    },
+    {
+     "event": 265
+    },
+    {
+     "event": 268
+    },
+    {
+     "event": 279
+    },
+    {
+     "event": 285
+    },
+    {
+     "event": 288
+    },
+    {
+     "event": 293
+    },
+    {
+     "event": 298
+    },
+    {
+     "event": 305
+    },
+    {
+     "event": 308
+    },
+    {
+     "event": 313
+    },
+    {
+     "event": 316
+    },
+    {
+     "event": 325
+    },
+    {
+     "event": 330
+    },
+    {
+     "event": 333
+    },
+    {
+     "event": 338
+    },
+    {
+     "event": 341
+    },
+    {
+     "event": 348
+    },
+    {
+     "event": 353
+    },
+    {
+     "event": 356
+    },
+    {
+     "event": 361
+    },
+    {
+     "event": 372
+    },
+    {
+     "event": 375
+    },
+    {
+     "event": 378
+    },
+    {
+     "event": 383
+    },
+    {
+     "event": 390
+    },
+    {
+     "event": 395
+    },
+    {
+     "event": 398
+    },
+    {
+     "event": 405
+    },
+    {
+     "event": 410
+    },
+    {
+     "event": 415
+    },
+    {
+     "event": 422
+    },
+    {
+     "event": 425
+    },
+    {
+     "event": 434
+    },
+    {
+     "event": 437
+    },
+    {
+     "event": 440
+    },
+    {
+     "event": 448
+    },
+    {
+     "event": 451
+    }
+   ],
+   "first_seen": "2026-10-29T03:06:19.196112+00:00",
+   "last_seen": "2026-10-29T03:06:24.485156+00:00",
+   "new": true,
+   "ratio": 4.0,
+   "summary": "www-data: 150 messages",
+   "title": "Mail submitted by a web-server account",
+   "uncertain": null,
+   "variant": null
   },
   {
    "band": "medium",
@@ -1012,7 +1273,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "network_files",
       "/etc/hosts",
       "changed"
@@ -1036,7 +1297,7 @@
    "entities": [
     "address:169.254.169.254",
     "account:root",
-    "pid:13038",
+    "pid:13785",
     "program:sleep",
     "exe:/usr/bin/sleep"
    ],
@@ -1045,15 +1306,15 @@
     {
      "live": [
       "processes",
-      13038
+      13785
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:18:06.420000+00:00",
-   "last_seen": "2026-10-29T01:18:06.420000+00:00",
+   "first_seen": "2026-10-29T03:06:12.680000+00:00",
+   "last_seen": "2026-10-29T03:06:12.680000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "sleep (pid 13038, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
+   "summary": "sleep (pid 13785, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
    "title": "A program other than the cloud agent reached the metadata address",
    "uncertain": null,
    "variant": null
@@ -1064,7 +1325,7 @@
    "check": "net.tunnel",
    "contribution": 1.3863,
    "entities": [
-    "pid:13064",
+    "pid:13811",
     "program:ssh",
     "account:root",
     "exe:/usr/bin/ssh"
@@ -1074,15 +1335,15 @@
     {
      "live": [
       "processes",
-      13064
+      13811
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:18:07.160000+00:00",
-   "last_seen": "2026-10-29T01:18:07.160000+00:00",
+   "first_seen": "2026-10-29T03:06:13.400000+00:00",
+   "last_seen": "2026-10-29T03:06:13.400000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "ssh (pid 13064, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
+   "summary": "ssh (pid 13811, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
    "title": "An SSH client forwarding ports (a tunnel)",
    "uncertain": null,
    "variant": null
@@ -1093,7 +1354,7 @@
    "check": "net.tunnel",
    "contribution": 0.6931,
    "entities": [
-    "pid:13067",
+    "pid:13814",
     "program:sshd"
    ],
    "entities_complete": true,
@@ -1101,15 +1362,15 @@
     {
      "live": [
       "processes",
-      13067
+      13814
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:18:07.190000+00:00",
-   "last_seen": "2026-10-29T01:18:07.190000+00:00",
+   "first_seen": "2026-10-29T03:06:13.430000+00:00",
+   "last_seen": "2026-10-29T03:06:13.430000+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "sshd session (pid 13067) listening on 127.0.0.1 port 2222",
+   "summary": "sshd session (pid 13814) listening on 127.0.0.1 port 2222",
    "title": "An SSH session listening on a port (a remote forward)",
    "uncertain": null,
    "variant": null
@@ -1120,14 +1381,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/at/a0000101c80ba5"
+    "path:/var/spool/at/a0000101c80c11"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/at/a0000101c80ba5"
+      "/var/spool/at/a0000101c80c11"
      ]
     }
    ],
@@ -1135,7 +1396,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/at/a0000101c80ba5 (owner UID 0)",
+   "summary": "/var/spool/at/a0000101c80c11 (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -1159,7 +1420,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "cron",
       "/etc/cron.d/cc-proof",
       "added"
@@ -1187,7 +1448,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "systemd",
       "/etc/systemd/system/cc-proof.service",
       "added"
@@ -1215,7 +1476,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "systemd",
       "/etc/systemd/system/cc-proof.timer",
       "added"
@@ -1243,7 +1504,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "software_files",
       "/etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof",
       "added"
@@ -1271,7 +1532,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "software_files",
       "/etc/yum.repos.d/cc-proof.repo",
       "added"
@@ -1299,15 +1560,15 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "packages",
       "nmap x86_64",
       "added"
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:18:12+00:00",
-   "last_seen": "2026-10-29T01:18:12+00:00",
+   "first_seen": "2026-10-29T03:06:18+00:00",
+   "last_seen": "2026-10-29T03:06:18+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "nmap 3:7.92-5.el9",
@@ -1327,15 +1588,15 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "packages",
       "nmap-ncat x86_64",
       "added"
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:18:12+00:00",
-   "last_seen": "2026-10-29T01:18:12+00:00",
+   "first_seen": "2026-10-29T03:06:18+00:00",
+   "last_seen": "2026-10-29T03:06:18+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "nmap-ncat 3:7.92-5.el9",
@@ -1355,11 +1616,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 195
+     "event": 196
     }
    ],
-   "first_seen": "2026-10-29T01:18:07.720858+00:00",
-   "last_seen": "2026-10-29T01:18:07.720858+00:00",
+   "first_seen": "2026-10-29T03:06:13.995677+00:00",
+   "last_seen": "2026-10-29T03:06:13.995677+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "127.0.0.1: 1 login(s) as root",
@@ -1379,11 +1640,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 195
+     "event": 196
     }
    ],
-   "first_seen": "2026-10-29T01:18:07.720858+00:00",
-   "last_seen": "2026-10-29T01:18:07.720858+00:00",
+   "first_seen": "2026-10-29T03:06:13.995677+00:00",
+   "last_seen": "2026-10-29T03:06:13.995677+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "root from 127.0.0.1 (publickey)",
@@ -1405,19 +1666,19 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.8"
+    "address:203.0.113.7"
    ],
    "entities_complete": true,
    "evidence": [
     {
-     "event": 152
+     "event": 146
     }
    ],
-   "first_seen": "2026-10-29T01:16:46.576376+00:00",
-   "last_seen": "2026-10-29T01:16:46.576376+00:00",
+   "first_seen": "2026-10-29T03:04:47.040318+00:00",
+   "last_seen": "2026-10-29T03:04:47.040318+00:00",
    "new": false,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.8 (publickey)",
+   "summary": "root from 203.0.113.7 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -1428,6 +1689,52 @@
    "title": "A direct root login over SSH",
    "uncertain": null,
    "variant": "root_login"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0442,
+   "entities": [
+    "group:postdrop"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 162
+    }
+   ],
+   "first_seen": "2026-10-29T03:05:09.432037+00:00",
+   "last_seen": "2026-10-29T03:05:09.432037+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "created: group postdrop",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0442,
+   "entities": [
+    "group:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 160
+    }
+   ],
+   "first_seen": "2026-10-29T03:05:09.302881+00:00",
+   "last_seen": "2026-10-29T03:05:09.302881+00:00",
+   "new": false,
+   "ratio": 1.5,
+   "summary": "created: group postfix",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
   },
   {
    "band": "low",
@@ -1443,7 +1750,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "listeners",
       "tcp 127.0.0.1:2222 netns=net:[4026531840]",
       "added"
@@ -1463,7 +1770,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "net.listener",
-   "contribution": 0.3466,
+   "contribution": 0.231,
    "entities": [
     "program:python3",
     "address:127.0.0.1",
@@ -1473,7 +1780,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "listeners",
       "tcp 127.0.0.1:4444 netns=net:[4026531840]",
       "added"
@@ -1493,7 +1800,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "net.listener",
-   "contribution": 0.3466,
+   "contribution": 0.231,
    "entities": [
     "program:python3",
     "address:127.0.0.1",
@@ -1503,7 +1810,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "listeners",
       "tcp 127.0.0.1:445 netns=net:[4026531840]",
       "added"
@@ -1522,6 +1829,36 @@
   {
    "band": "low",
    "category": "compromise indicator",
+   "check": "net.listener",
+   "contribution": 0.231,
+   "entities": [
+    "program:local",
+    "address:0.0.0.0",
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "rocky9-20261029T030521Z-20a2918a",
+      "listeners",
+      "udp 0.0.0.0:54936 netns=net:[4026531840]",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "new": true,
+   "ratio": 1.5,
+   "summary": "udp 0.0.0.0:54936 netns=net:[4026531840]: local",
+   "title": "A new listening port",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
    "check": "package.changed",
    "contribution": 0.4055,
    "entities": [],
@@ -1529,7 +1866,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "checksum_store",
       "/var/lib/rpm/rpmdb.sqlite",
       "changed"
@@ -1537,7 +1874,7 @@
     },
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "checksum_store",
       "/var/lib/rpm/rpmdb.sqlite-shm",
       "changed"
@@ -1545,7 +1882,7 @@
     },
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "checksum_store",
       "/var/lib/rpm/rpmdb.sqlite-wal",
       "changed"
@@ -1580,8 +1917,8 @@
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:16:35.750000+00:00",
-   "last_seen": "2026-10-29T01:16:35.750000+00:00",
+   "first_seen": "2026-10-29T03:04:35.580000+00:00",
+   "last_seen": "2026-10-29T03:04:35.580000+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "firewalld (pid 635): /memfd:libffi (deleted)",
@@ -1604,7 +1941,7 @@
    "evidence": [
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "packages",
       "libibverbs x86_64",
       "added"
@@ -1612,7 +1949,7 @@
     },
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "packages",
       "libpcap x86_64",
       "added"
@@ -1620,7 +1957,7 @@
     },
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "packages",
       "nmap x86_64",
       "added"
@@ -1628,15 +1965,15 @@
     },
     {
      "change": [
-      "rocky9-20261029T011707Z-a1651965",
+      "rocky9-20261029T030521Z-20a2918a",
       "packages",
       "nmap-ncat x86_64",
       "added"
      ]
     }
    ],
-   "first_seen": "2026-10-29T01:18:12+00:00",
-   "last_seen": "2026-10-29T01:18:12+00:00",
+   "first_seen": "2026-10-29T03:06:17+00:00",
+   "last_seen": "2026-10-29T03:06:18+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "4: libibverbs, libpcap, nmap, nmap-ncat",
@@ -1951,7 +2288,7 @@
     "contribution": 4.6052,
     "finding": 0,
     "ratio": 100.0,
-    "share": 0.0696,
+    "share": 0.0681,
     "title": "An account other than root has UID 0"
    },
    {
@@ -1960,7 +2297,7 @@
     "contribution": 4.6052,
     "finding": 1,
     "ratio": 100.0,
-    "share": 0.0696,
+    "share": 0.0681,
     "title": "/etc/ld.so.preload loads a library into every program"
    },
    {
@@ -1969,7 +2306,7 @@
     "contribution": 2.9957,
     "finding": 2,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "A new account whose primary group is root-equivalent"
    },
    {
@@ -1978,7 +2315,7 @@
     "contribution": 2.9957,
     "finding": 3,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "A new privileged file since the baseline"
    },
    {
@@ -1987,7 +2324,7 @@
     "contribution": 2.9957,
     "finding": 5,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "A shell history file is a link to /dev/null"
    },
    {
@@ -1996,7 +2333,7 @@
     "contribution": 2.9957,
     "finding": 6,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "A log was truncated since the previous collection"
    },
    {
@@ -2005,7 +2342,7 @@
     "contribution": 2.9957,
     "finding": 7,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "A logging service that ran at the baseline isn't running"
    },
    {
@@ -2014,7 +2351,7 @@
     "contribution": 2.9957,
     "finding": 9,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "SELinux was turned down since the baseline"
    },
    {
@@ -2023,7 +2360,7 @@
     "contribution": 2.9957,
     "finding": 10,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "A web-server account reached SMB"
    },
    {
@@ -2032,7 +2369,7 @@
     "contribution": 2.9957,
     "finding": 11,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "A PAM line was added that runs a program (pam_exec)"
    },
    {
@@ -2041,7 +2378,7 @@
     "contribution": 2.9957,
     "finding": 13,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "A process whose program was deleted"
    },
    {
@@ -2050,7 +2387,7 @@
     "contribution": 2.9957,
     "finding": 15,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "A shell talking to a network socket (a reverse shell)"
    },
    {
@@ -2059,7 +2396,7 @@
     "contribution": 2.9957,
     "finding": 16,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "A new authorized SSH key"
    },
    {
@@ -2068,7 +2405,7 @@
     "contribution": 2.9957,
     "finding": 20,
     "ratio": 20.0,
-    "share": 0.0453,
+    "share": 0.0443,
     "title": "An sshd setting was added"
    },
    {
@@ -2077,70 +2414,79 @@
     "contribution": 1.3863,
     "finding": 23,
     "ratio": 4.0,
-    "share": 0.0209,
+    "share": 0.0205,
     "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": null,
+    "check": "mail.web_user",
+    "contribution": 1.3863,
+    "finding": 30,
+    "ratio": 4.0,
+    "share": 0.0205,
+    "title": "Mail submitted by a web-server account"
    },
    {
     "capped": null,
     "check": "net.config",
     "contribution": 1.3863,
-    "finding": 27,
+    "finding": 31,
     "ratio": 4.0,
-    "share": 0.0209,
+    "share": 0.0205,
     "title": "A network configuration file was changed"
    },
    {
     "capped": null,
     "check": "net.metadata",
     "contribution": 1.3863,
-    "finding": 28,
+    "finding": 32,
     "ratio": 4.0,
-    "share": 0.0209,
+    "share": 0.0205,
     "title": "A program other than the cloud agent reached the metadata address"
    },
    {
     "capped": null,
     "check": "net.tunnel",
     "contribution": 1.3863,
-    "finding": 29,
+    "finding": 33,
     "ratio": 4.0,
-    "share": 0.0209,
+    "share": 0.0205,
     "title": "An SSH client forwarding ports (a tunnel)"
    },
    {
     "capped": null,
     "check": "persistence.changes",
     "contribution": 1.3863,
-    "finding": 32,
+    "finding": 36,
     "ratio": 4.0,
-    "share": 0.0209,
+    "share": 0.0205,
     "title": "A new cron file"
    },
    {
     "capped": null,
     "check": "software.repository",
     "contribution": 1.3863,
-    "finding": 35,
+    "finding": 39,
     "ratio": 4.0,
-    "share": 0.0209,
+    "share": 0.0205,
     "title": "A package signing key was added"
    },
    {
     "capped": null,
     "check": "software.tools",
     "contribution": 1.3863,
-    "finding": 37,
+    "finding": 41,
     "ratio": 4.0,
-    "share": 0.0209,
+    "share": 0.0205,
     "title": "An attack or tunnelling tool was installed"
    },
    {
     "capped": null,
     "check": "ssh.login",
     "contribution": 1.3863,
-    "finding": 39,
+    "finding": 43,
     "ratio": 4.0,
-    "share": 0.0209,
+    "share": 0.0205,
     "title": "Logins from an address never seen before"
    },
    {
@@ -2149,7 +2495,7 @@
     "contribution": 0.6931,
     "finding": 4,
     "ratio": 20.0,
-    "share": 0.0105,
+    "share": 0.0103,
     "title": "A program in a scratch directory"
    },
    {
@@ -2158,7 +2504,7 @@
     "contribution": 0.6931,
     "finding": 8,
     "ratio": 20.0,
-    "share": 0.0105,
+    "share": 0.0103,
     "title": "The audit daemon stopped, not during a shutdown"
    },
    {
@@ -2167,7 +2513,7 @@
     "contribution": 0.6931,
     "finding": 12,
     "ratio": 20.0,
-    "share": 0.0105,
+    "share": 0.0103,
     "title": "A new startup file"
    },
    {
@@ -2176,79 +2522,70 @@
     "contribution": 0.6931,
     "finding": 14,
     "ratio": 20.0,
-    "share": 0.0105,
+    "share": 0.0103,
     "title": "A process has code mapped from a scratch or home file"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.6931,
-    "finding": 26,
-    "ratio": 4.0,
-    "share": 0.0105,
-    "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
     "check": "net.tunnel",
     "contribution": 0.6931,
-    "finding": 30,
+    "finding": 34,
     "ratio": 4.0,
-    "share": 0.0105,
+    "share": 0.0103,
     "title": "An SSH session listening on a port (a remote forward)"
    },
    {
     "capped": "family",
     "check": "software.repository",
     "contribution": 0.6931,
-    "finding": 36,
+    "finding": 40,
     "ratio": 4.0,
-    "share": 0.0105,
+    "share": 0.0103,
     "title": "A package repository was added"
    },
    {
     "capped": "family",
     "check": "software.tools",
     "contribution": 0.6931,
-    "finding": 38,
+    "finding": 42,
     "ratio": 4.0,
-    "share": 0.0105,
+    "share": 0.0103,
     "title": "An attack or tunnelling tool was installed"
    },
    {
     "capped": null,
     "check": "net.listener",
     "contribution": 0.4055,
-    "finding": 42,
+    "finding": 48,
     "ratio": 1.5,
-    "share": 0.0061,
+    "share": 0.006,
     "title": "A new listening port"
    },
    {
     "capped": null,
     "check": "package.changed",
     "contribution": 0.4055,
-    "finding": 45,
+    "finding": 52,
     "ratio": 1.5,
-    "share": 0.0061,
+    "share": 0.006,
     "title": "The package managers' checksum lists changed since the baseline"
    },
    {
     "capped": null,
     "check": "process.injected",
     "contribution": 0.4055,
-    "finding": 46,
+    "finding": 53,
     "ratio": 1.5,
-    "share": 0.0061,
+    "share": 0.006,
     "title": "A process has libffi code mapped from memory only"
    },
    {
     "capped": null,
     "check": "software.packages",
     "contribution": 0.4055,
-    "finding": 47,
+    "finding": 54,
     "ratio": 1.5,
-    "share": 0.0061,
+    "share": 0.006,
     "title": "Packages installed since the baseline"
    },
    {
@@ -2257,7 +2594,7 @@
     "contribution": 0.3466,
     "finding": 21,
     "ratio": 4.0,
-    "share": 0.0052,
+    "share": 0.0051,
     "title": "A new account"
    },
    {
@@ -2266,44 +2603,26 @@
     "contribution": 0.3466,
     "finding": 22,
     "ratio": 4.0,
-    "share": 0.0052,
+    "share": 0.0051,
     "title": "A new account"
    },
    {
     "capped": "family",
     "check": "persistence.changes",
     "contribution": 0.3466,
-    "finding": 33,
+    "finding": 37,
     "ratio": 4.0,
-    "share": 0.0052,
+    "share": 0.0051,
     "title": "A new systemd file"
    },
    {
     "capped": "family",
     "check": "persistence.changes",
     "contribution": 0.3466,
-    "finding": 34,
+    "finding": 38,
     "ratio": 4.0,
-    "share": 0.0052,
+    "share": 0.0051,
     "title": "A new systemd file"
-   },
-   {
-    "capped": "family",
-    "check": "net.listener",
-    "contribution": 0.3466,
-    "finding": 43,
-    "ratio": 1.5,
-    "share": 0.0052,
-    "title": "A new listening port"
-   },
-   {
-    "capped": "family",
-    "check": "net.listener",
-    "contribution": 0.3466,
-    "finding": 44,
-    "ratio": 1.5,
-    "share": 0.0052,
-    "title": "A new listening port"
    },
    {
     "capped": "family",
@@ -2311,7 +2630,7 @@
     "contribution": 0.231,
     "finding": 17,
     "ratio": 20.0,
-    "share": 0.0035,
+    "share": 0.0034,
     "title": "A new authorized SSH key"
    },
    {
@@ -2320,7 +2639,7 @@
     "contribution": 0.231,
     "finding": 18,
     "ratio": 20.0,
-    "share": 0.0035,
+    "share": 0.0034,
     "title": "A new authorized SSH key"
    },
    {
@@ -2329,8 +2648,89 @@
     "contribution": 0.231,
     "finding": 19,
     "ratio": 20.0,
-    "share": 0.0035,
+    "share": 0.0034,
     "title": "A new authorized SSH key"
+   },
+   {
+    "capped": "family",
+    "check": "net.listener",
+    "contribution": 0.231,
+    "finding": 49,
+    "ratio": 1.5,
+    "share": 0.0034,
+    "title": "A new listening port"
+   },
+   {
+    "capped": "family",
+    "check": "net.listener",
+    "contribution": 0.231,
+    "finding": 50,
+    "ratio": 1.5,
+    "share": 0.0034,
+    "title": "A new listening port"
+   },
+   {
+    "capped": "family",
+    "check": "net.listener",
+    "contribution": 0.231,
+    "finding": 51,
+    "ratio": 1.5,
+    "share": 0.0034,
+    "title": "A new listening port"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.1512,
+    "finding": 24,
+    "ratio": 4.0,
+    "share": 0.0022,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.1512,
+    "finding": 27,
+    "ratio": 4.0,
+    "share": 0.0022,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.1512,
+    "finding": 28,
+    "ratio": 4.0,
+    "share": 0.0022,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.1512,
+    "finding": 29,
+    "ratio": 4.0,
+    "share": 0.0022,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0442,
+    "finding": 46,
+    "ratio": 1.5,
+    "share": 0.0007,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0442,
+    "finding": 47,
+    "ratio": 1.5,
+    "share": 0.0007,
+    "title": "An account or group was changed (from the logs)"
    }
   ],
   "hygiene_and_exposure": {
@@ -2341,7 +2741,7 @@
     }
    }
   },
-  "log_odds": 62.2973,
+  "log_odds": 63.6836,
   "prior": 0.02,
   "prior_source": "golden",
   "probability": 1.0,

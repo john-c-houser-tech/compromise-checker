@@ -75,7 +75,10 @@ Any login leaves records. The tool's runs leave these:
 - the system's ordinary session setup for the account: a per-login runtime
   area in memory (`/run/user/…`) and, on Ubuntu, its login-message files,
   including one small marker file (`.cache/motd.legal-displayed`) in the
-  scanner account's home directory on its first login.
+  scanner account's home directory on its first login; where Ubuntu's
+  Landscape client is installed, the login message's system summary also
+  refreshes its cache and log file (under `/var/lib/landscape` and
+  `/var/log/landscape`).
 
 **The tool never removes, edits or suppresses any of these.** On a server
 that may be compromised, changing logs destroys evidence, and it is exactly
@@ -105,13 +108,28 @@ findings.
 ## 7. What is collected
 
 Evidence from a server contains personal and sensitive information:
-usernames, IP addresses, email addresses in mail logs, web addresses that may
-include access tokens, and sometimes secrets typed into commands.
+usernames, IP addresses, the domains of email addresses in mail logs (the
+rest of each address is replaced by a fingerprint, see below), web addresses
+that may include access tokens, and sometimes secrets typed into commands.
 
 - **Only what the checks need.** Each part of the collector documents what it
   reads and why. The time window collected is limited (30 days by default).
 - **Optional sources.** Full web server access logs are collected only if
   your organization chooses.
+- **Mail logs.** Outgoing mail logs (Postfix, Exim) are collected, because
+  mail sent from a compromised server is a common sign of misuse. Before they
+  leave the server, every email address in them is changed: the part before
+  the @ is replaced by a keyed fingerprint, made with a key your organization
+  holds (created at setup), and the domain is kept. The same address always
+  gives the same fingerprint, so volumes and new recipients can be counted
+  without any address being shown. Someone who holds the key can check
+  whether a given address appears (`checker mail-hash`); without it, the
+  fingerprints can't be turned back into addresses. The key is sent to a
+  server only for a collection, held in memory and never written there: it
+  isn't sent before a first collection has shown that the server's `sudo`
+  doesn't record its input, nor to a server whose `sudo` did so at its last
+  collection; such a server's mail logs aren't collected.
+  Message subjects and contents aren't in these logs and are never collected.
 - **Shell history.** Information *about* history files (whether they exist,
   their size and dates, and whether history has been switched off) is always
   collected, because switching history off is a common way of covering

@@ -583,6 +583,41 @@ re-exported from that run. Phase 2 spend so far: about 23 cents.
 - **Detection behaviour:** a burst of local mail submitted as `www-data`
   (`apache` on Rocky) to documentation domains, which Postfix defers.
 
+*As built (PR 2.7):* fingerprints are `h:` and 12 hex digits (not 8, to
+keep collisions rare). Policy §7's mail bullet, its opening sentence and
+§5's Landscape line were worded with John (2026-10-28). Only Postfix's and
+Exim's lines are sent; masking runs before secret masking, reads each line
+once, takes whole local parts (VERP, SRS, quoted), fingerprints account
+names without a domain and masks remote replies, matched header text and
+Exim subjects; mail configuration gets the same treatment. The key goes
+only to a host whose latest collection, at the same address, showed sudo
+not logging its input (`sudo_input_logging` from the sudoers module, read
+by the controller as the stream arrives; an HMAC-tagged gate per host in
+`keys/mail-gate.json`, readable only with the mail key): a first
+collection, a host whose sudo logs input or takes rules from a directory,
+and a damaged gate send no key. Open relay: trusted networks wider than a
+/8, or public ones wider than a /24 (the collector doesn't send the host's
+own addresses), and Postfix restrictions that never refuse other domains,
+only while listening beyond loopback. "New relays" means relay settings;
+observed delivery relays change with every domain. Deliveries into
+mailboxes on the host aren't outgoing. Two independent reviews (14 and 9
+findings) fixed before the proofs. Installing Postfix showed its chroot's
+`/dev/random` and `/dev/urandom` copies reported high: the collector now
+records device numbers and harmless copies aren't privileged files.
+Follow-ups: `sudo -ll -U <scanner>` to read directory-sourced sudo rules
+(decision for John); accounts a package creates at install (`postfix`)
+still score medium from the logs, so fresh servers with a mail server
+installed score Elevated (14% Ubuntu, 20% Rocky): 2.10 calibration.
+
+*2.7 proofs (2026-10-28/29, approved by John; 12 Nanodes, about 9 cents,
+every server deleted):* read-only PASS on all seven images, each collected
+twice (the second with the mail key; no key or mailed local part anywhere
+in the bundle); Ubuntu 26.04 after one rerun, once Landscape's login
+summary writes were disclosed in §5. Detection PASS on Ubuntu 24.04 and
+Rocky 9, all twenty-five behaviours (mail from `www-data`, a volume jump,
+60 new domains). Golden cases re-exported. Phase 2 spend so far: about
+32 cents.
+
 ### 2.8 — Web applications (8.12) (decision 3: decided)
 
 - **Collector, new module `web_logs`:** web server configuration (nginx,

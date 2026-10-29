@@ -111,7 +111,10 @@ first.
   area in memory (`/run/user/…`, control groups) and, on Ubuntu, its
   login-message files, including one small marker file
   (`.cache/motd.legal-displayed`) in the scanner account's home on its first
-  login. Measured by the read-only proof (PR 0.7) on Ubuntu 24.04 and Rocky 9.
+  login; where Ubuntu's Landscape client is installed, the login message's
+  system summary refreshes its cache and log (`/var/lib/landscape`,
+  `/var/log/landscape`). Measured by the read-only proof (PR 0.7) on Ubuntu
+  24.04 and Rocky 9, the Landscape writes on Ubuntu 26.04 (PR 2.7).
 
 **Never done:** removing, editing, or suppressing any of those traces.
 Changing logs on a system that may be compromised destroys evidence, and it
@@ -141,7 +144,8 @@ them by), never to the account or the time alone (docs/events.md).
 ### 3.4 What is collected, and how it is treated
 
 Evidence from a server contains personal and sensitive data: usernames, IP
-addresses, email addresses in mail logs, URLs that may carry tokens, and
+addresses, the domains of email addresses in mail logs (their local parts
+are fingerprinted on the server, policy §7), URLs that may carry tokens, and
 sometimes secrets typed into shell commands.
 
 - **Minimum necessary.** Each collector module states what it reads and why.

@@ -19,8 +19,8 @@ from checker.snapshot import Snapshot
 # 2: the critical band, variants; 3: more variants; 4: exe entities and
 # entities_complete; 5: sudo.rules name the account or group; 6: account
 # and key variants; 7: network checks (8.8); 8: anti-forensics (8.10); 9:
-# software changes (8.11).
-CHECKS_VERSION = 9
+# software changes (8.11); 10: outgoing mail (8.9).
+CHECKS_VERSION = 10
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"
@@ -81,6 +81,11 @@ class Context:
     # The previous bundle's snapshot, for what only its live part shows (a
     # log that shrank since then).
     previous_snapshot: Snapshot | None = None
+    # When the baseline was collected (controller clock), and its snapshot:
+    # what logs show after it is judged against what they showed before
+    # (mail volume), and its live part against this one's (queue size).
+    baseline_time: str | None = None
+    baseline_snapshot: Snapshot | None = None
 
     def of(self, *types: str) -> Iterator[tuple[int, Event]]:
         """(index, event) for events of these types (or type prefixes ending
@@ -168,6 +173,7 @@ def load_checks() -> dict[str, Check]:
         files,
         integrity,
         kernel,
+        mail,
         network,
         persistence,
         processes,

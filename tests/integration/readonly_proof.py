@@ -305,6 +305,7 @@ EXPECTED_RECORDS = (
     ("mail", "mail_queue"),  # Postfix, installed by the setup
     ("web_logs", "web_logs_summary"),
     ("web_logs", "exec_record"),  # the web account's program start, by the shipped rules
+    ("containers", "container"),  # Docker's on Ubuntu, Podman's on the RHEL family
 )
 EXPECTED_SOURCES = ("system_journal", "boots", "auth_journal", "mail")
 # The address the setup mails: its local part must never leave the server.
@@ -331,6 +332,13 @@ if command -v ufw >/dev/null 2>&1; then
         && systemctl enable --now docker >/dev/null 2>&1 \
         && docker run -d --name cc-proof-web docker.io/library/nginx:alpine >/dev/null 2>&1) \
         || echo "proof setup: Docker not started" >&2
+fi
+# Containers for the containers module (plan 2.9): Docker's above on Ubuntu;
+# Podman with one running container on the RHEL family.
+if ! command -v ufw >/dev/null 2>&1; then
+    (dnf install -y -q podman >/dev/null \
+        && podman run -d --name cc-proof-pod docker.io/library/alpine:latest sleep 7200 \
+            >/dev/null) || echo "proof setup: Podman container not started" >&2
 fi
 # The scanner account, exactly as docs/scanner-account.md sets it up.
 useradd --create-home --shell /bin/sh --comment "Compromise Checker" scanner

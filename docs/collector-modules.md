@@ -982,6 +982,44 @@ are read before the logs, so long logs can't crowd them out, and the
 summary is written however the module ends. Each pattern reads a line
 once, left to right.
 
+## `containers`
+
+**Why:** check 8.13 (containers): containers that hold the host, new
+containers and images.
+
+**Reads** (decision 4: the runtimes' state files only, never their sockets;
+Podman's is usually socket-activated, so connecting would start
+`podman.service`):
+- Docker: its data roots (`data-root`, or the old `graph`, from
+  `/etc/docker/daemon.json`; else `/var/lib/docker` and the snap's
+  `/var/snap/docker/common/var-lib-docker`) and their userns-remap
+  subdirectories (`<uid>.<gid>`): each container's `config.v2.json` and
+  `hostconfig.json` (at most 4 MiB each, 2,000 containers);
+- Podman (root): its storage root and driver (`graphroot` and `driver`
+  from `storage.conf`'s `[storage]` table; else `/var/lib/containers/storage`):
+  `<driver>-containers/containers.json` (any driver: overlay, vfs, btrfs,
+  zfs), and each container's OCI `userdata/config.json`. Buildah's working
+  containers are skipped; a container created but never started (no
+  runtime spec yet) is counted, not read.
+
+**Sends** a `container` record per container with only: runtime, id, name,
+image, created; Docker's running flag; privileged (Docker's flag; Podman's
+`io.podman.annotations.privileged`, or every capability), capabilities
+(Docker's added ones; Podman's bounding set, which a set-user-ID program
+regains even when the container runs as a user), canonical (`SYS_ADMIN`);
+whether it shares the host's PID, network and IPC namespaces (booleans:
+never network names); devices; security options; and mounts: type, host
+source (bind mounts only: a volume or tmpfs has none; Podman's own mounts
+from its storage are left out), destination, read-write. Names, images and
+paths are masked like any text a user chose. Never the environment (it
+holds secrets), labels, process IDs, or any file's text. A file that can't
+be read or parsed, including a missing `hostconfig.json` (then nothing is
+said of its privileges, rather than "none"), is a `containers_unreadable`
+record; `containers_summary` counts what was inventoried and created but
+not started, and names what is present but not read: Kubernetes
+(`kubelet`), k3s, MicroK8s, containerd namespaces other than Docker's own
+`moby`, LXD, LXC, and rootless Podman or Docker in home directories.
+
 ## Protected files
 
 Some files are collected only as structured records, status or metadata,

@@ -29,6 +29,19 @@
    "status": "ran"
   },
   {
+   "check": "container.host_namespace",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "container.new",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "container.privileged",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "files.backdated",
    "findings": 0,
    "status": "ran"
@@ -311,11 +324,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 186
+     "event": 192
     }
    ],
-   "first_seen": "2026-10-29T06:28:55.928828+00:00",
-   "last_seen": "2026-10-29T06:28:55.928828+00:00",
+   "first_seen": "2026-10-29T07:21:21.598814+00:00",
+   "last_seen": "2026-10-29T07:21:21.598814+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: apache UID 48",
@@ -334,11 +347,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 184
+     "event": 190
     }
    ],
-   "first_seen": "2026-10-29T06:28:55.742054+00:00",
-   "last_seen": "2026-10-29T06:28:55.742054+00:00",
+   "first_seen": "2026-10-29T07:21:21.426169+00:00",
+   "last_seen": "2026-10-29T07:21:21.426169+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: nginx UID 995",
@@ -357,11 +370,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 172
+     "event": 177
     }
    ],
-   "first_seen": "2026-10-29T06:28:44.937724+00:00",
-   "last_seen": "2026-10-29T06:28:44.937724+00:00",
+   "first_seen": "2026-10-29T07:21:09.732413+00:00",
+   "last_seen": "2026-10-29T07:21:09.732413+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: postfix UID 89",
@@ -380,11 +393,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 169
+     "event": 175
     }
    ],
-   "first_seen": "2026-10-29T06:28:08.557553+00:00",
-   "last_seen": "2026-10-29T06:28:08.557553+00:00",
+   "first_seen": "2026-10-29T07:21:06.447585+00:00",
+   "last_seen": "2026-10-29T07:21:06.447585+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
@@ -410,11 +423,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 165
+     "event": 172
     }
    ],
-   "first_seen": "2026-10-29T06:22:30.221891+00:00",
-   "last_seen": "2026-10-29T06:22:30.221891+00:00",
+   "first_seen": "2026-10-29T07:21:02.583043+00:00",
+   "last_seen": "2026-10-29T07:21:02.583043+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
@@ -441,11 +454,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 174
+     "event": 179
     }
    ],
-   "first_seen": "2026-10-29T06:28:45.021071+00:00",
-   "last_seen": "2026-10-29T06:28:45.021071+00:00",
+   "first_seen": "2026-10-29T07:21:09.868641+00:00",
+   "last_seen": "2026-10-29T07:21:09.868641+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "member added: postfix group mail",
@@ -465,11 +478,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 175
+     "event": 180
     }
    ],
-   "first_seen": "2026-10-29T06:28:45.021692+00:00",
-   "last_seen": "2026-10-29T06:28:45.021692+00:00",
+   "first_seen": "2026-10-29T07:21:09.868687+00:00",
+   "last_seen": "2026-10-29T07:21:09.868687+00:00",
    "new": true,
    "ratio": 4.0,
    "summary": "member added: postfix group mail",
@@ -483,14 +496,14 @@
    "check": "persistence.at_jobs",
    "contribution": 0.0,
    "entities": [
-    "path:/var/spool/at/a0000101c80cdc"
+    "path:/var/spool/at/a0000101c80d11"
    ],
    "entities_complete": true,
    "evidence": [
     {
      "item": [
       "cron",
-      "/var/spool/at/a0000101c80cdc"
+      "/var/spool/at/a0000101c80d11"
      ]
     }
    ],
@@ -498,7 +511,7 @@
    "last_seen": null,
    "new": false,
    "ratio": 4.0,
-   "summary": "/var/spool/at/a0000101c80cdc (owner UID 0)",
+   "summary": "/var/spool/at/a0000101c80d11 (owner UID 0)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -517,19 +530,19 @@
    "contribution": 0.0,
    "entities": [
     "account:root",
-    "address:203.0.113.7"
+    "address:203.0.113.9"
    ],
    "entities_complete": true,
    "evidence": [
     {
-     "event": 156
+     "event": 157
     }
    ],
-   "first_seen": "2026-10-29T06:22:29.343867+00:00",
-   "last_seen": "2026-10-29T06:22:29.343867+00:00",
+   "first_seen": "2026-10-29T07:15:10.375358+00:00",
+   "last_seen": "2026-10-29T07:15:10.375358+00:00",
    "new": true,
    "ratio": 4.0,
-   "summary": "root from 203.0.113.7 (publickey)",
+   "summary": "root from 203.0.113.9 (publickey)",
    "suppressed_by": {
     "file": "tests/integration/proof-whitelist.yaml",
     "layer": "host rocky9",
@@ -552,11 +565,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 185
+     "event": 191
     }
    ],
-   "first_seen": "2026-10-29T06:28:55.899190+00:00",
-   "last_seen": "2026-10-29T06:28:55.899190+00:00",
+   "first_seen": "2026-10-29T07:21:21.572349+00:00",
+   "last_seen": "2026-10-29T07:21:21.572349+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group apache",
@@ -575,11 +588,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 183
+     "event": 189
     }
    ],
-   "first_seen": "2026-10-29T06:28:55.717084+00:00",
-   "last_seen": "2026-10-29T06:28:55.717084+00:00",
+   "first_seen": "2026-10-29T07:21:21.402575+00:00",
+   "last_seen": "2026-10-29T07:21:21.402575+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group nginx",
@@ -598,11 +611,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 173
+     "event": 178
     }
    ],
-   "first_seen": "2026-10-29T06:28:44.988516+00:00",
-   "last_seen": "2026-10-29T06:28:44.988516+00:00",
+   "first_seen": "2026-10-29T07:21:09.809195+00:00",
+   "last_seen": "2026-10-29T07:21:09.809195+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group postdrop",
@@ -621,11 +634,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 171
+     "event": 176
     }
    ],
-   "first_seen": "2026-10-29T06:28:44.912051+00:00",
-   "last_seen": "2026-10-29T06:28:44.912051+00:00",
+   "first_seen": "2026-10-29T07:21:09.686061+00:00",
+   "last_seen": "2026-10-29T07:21:09.686061+00:00",
    "new": true,
    "ratio": 1.5,
    "summary": "created: group postfix",
@@ -652,8 +665,8 @@
      ]
     }
    ],
-   "first_seen": "2026-10-29T06:22:16.690000+00:00",
-   "last_seen": "2026-10-29T06:22:16.690000+00:00",
+   "first_seen": "2026-10-29T07:14:58.510000+00:00",
+   "last_seen": "2026-10-29T07:14:58.510000+00:00",
    "new": false,
    "ratio": 1.5,
    "summary": "firewalld (pid 635): /memfd:libffi (deleted)",
@@ -698,11 +711,11 @@
    "entities_complete": true,
    "evidence": [
     {
-     "event": 191
+     "event": 199
     }
    ],
-   "first_seen": "2026-10-29T06:28:57.026653+00:00",
-   "last_seen": "2026-10-29T06:28:57.026653+00:00",
+   "first_seen": "2026-10-29T07:21:23.025491+00:00",
+   "last_seen": "2026-10-29T07:21:23.025491+00:00",
    "new": true,
    "ratio": 1.0,
    "summary": "127.0.0.0/24: 1 request (status 404), e.g. /x?f=[MASKED:exploit:traversal]",

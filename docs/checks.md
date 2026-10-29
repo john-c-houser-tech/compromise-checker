@@ -234,6 +234,22 @@ Observed relays (each recipient domain's mail server, for a host that
 delivers directly) aren't compared: they change with every new recipient
 domain, which `mail.domains` covers.
 
+### 8.13 Containers
+
+From the runtimes' state files (decision 4: never their sockets), compared
+by runtime and name: a redeploy replaces a container's ID, not what it is.
+Running state comes from the processes' cgroups, which name a container's
+ID (`docker-<id>.scope`, `libpod-<id>.scope`…); a running container no
+state file described is a coverage gap (a layout not recognised), as are
+Kubernetes, k3s, MicroK8s, containerd's own namespaces, LXD, LXC and
+rootless Docker or Podman when present.
+
+| Check | What | Band | Baseline |
+|---|---|---|---|
+| `container.privileged` | a container that holds the host: privileged (Docker's flag; Podman's annotation, or every capability in its bounding set), a bind mount of `/` or of, inside, or holding the host's configuration and kernel interfaces (`/etc`, `/root`, `/boot`, `/proc`, `/sys`, `/dev`), the runtimes' state (`/var/lib/docker`, `/var/lib/containers`, `/var/lib/containerd`, `/var/lib/kubelet`) or sockets (`/var/run` holds `docker.sock`); `CAP_SYS_ADMIN`, `SYS_MODULE`, `DAC_READ_SEARCH`, `SYS_RAWIO`, `BPF`, or `SYS_PTRACE` with the host's processes; a device other than the ordinary ones (`/dev/fuse`, `/dev/net/tun`, `/dev/kvm`, GPUs…). Volumes and tmpfs mounts have no host path and don't count. High when it holds the host in a way it didn't at the baseline (a new container, or a danger gained; Podman recreating it with new IDs in its own mounts isn't one) (`new`); otherwise medium hygiene (`standing`: monitoring agents such as cadvisor or node-exporter; whitelist them by container and image together) | high / medium | partly |
+| `container.host_namespace` | sharing the host's process or network namespace, which it didn't at the baseline | medium | yes |
+| `container.new` | a container new since the baseline (`new`), or running an image from another repository under the same name (`image_changed`: another tag or digest of the same image is a deploy; `nginx:1.25`, `docker.io/nginx` and `index.docker.io/library/nginx@sha256:…` are one repository). Deploys make containers; what one can do is judged above | low | yes |
+
 ### 8.12 Web applications
 
 Web accounts are `www-data`, `apache`, `nginx`, `http`, `wwwrun`,

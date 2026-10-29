@@ -43,7 +43,7 @@ from checker.correlate import EVENT_TYPES, MAX_WITHIN, WRITERS, correlated, pars
 PROFILES = Path(__file__).parent / "profiles"
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
 # Entity kinds matched exactly: Finding.entities are "<kind>:<value>".
-EXACT_FIELDS = ("account", "group", "key", "module", "package", "program")
+EXACT_FIELDS = ("account", "group", "key", "module", "package", "program", "container", "image")
 PATTERN_FIELDS = ("path", "exe")  # anchored patterns
 # Fields that make a rule narrow. `program` is a process's own name, which
 # it can set to anything (prctl), so it narrows nothing by itself.
@@ -132,6 +132,11 @@ class Match(BaseModel):
     address: str | None = None  # an address or a network, host bits zero
     path: str | None = None  # an anchored pattern: * within a directory, ** across
     exe: str | None = None  # a process's executable, as a path pattern
+    # A container's name (with its runtime: "docker: cadvisor") and its
+    # image's repository (gcr.io/cadvisor/cadvisor: no tag, so a rule
+    # survives version bumps). They narrow a rule only together.
+    container: str | None = None
+    image: str | None = None
     correlated_with: Correlation | None = None
 
     @field_validator("address")
@@ -185,6 +190,10 @@ class Match(BaseModel):
     def narrow(self) -> bool:
         """Names something that limits it: not only the check, a process's
         own name, every address (/0) or every path (/**)."""
+        # Whoever runs containers chooses both a container's name and its
+        # image: together they narrow a rule, either alone doesn't.
+        if self.container is not None and self.image is not None:
+            return True
         for name in NARROWING:
             value = getattr(self, name)
             if value is None:

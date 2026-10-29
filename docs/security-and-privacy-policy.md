@@ -159,6 +159,12 @@ that may include access tokens, and sometimes secrets typed into commands.
   chooses this during setup, and then only for root, service accounts and
   accounts with administrator rights unless you also enable it for ordinary
   users.
+- **Containers.** Where Docker or Podman runs, what each container is
+  allowed to do is read from the runtimes' own state files, never by
+  connecting to them: its name and image, whether it is privileged, its
+  capabilities and devices, whether it shares the host's processes or
+  network, and which host folders it mounts. A container's environment and
+  labels, which often hold passwords and keys, are never collected.
 - **Scheduled jobs and start-up files.** Crontabs and queued `at` jobs are
   collected as masked text, but each `at` job's stored copy of the
   submitting user's environment is left out; only the variable names are

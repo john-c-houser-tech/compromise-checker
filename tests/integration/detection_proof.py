@@ -188,6 +188,14 @@ for n in $(seq 1 150); do
         | runuser -u www-data -- /usr/sbin/sendmail "r$n@d$((n % 60)).invalid" || fail mail
 done
 sleep 30
+# --- Containers (2.9) ---
+# A privileged container mounting the host's root: Docker on Ubuntu,
+# Podman on Rocky (both set up by the read-only proof's setup).
+runtime=podman
+command -v docker >/dev/null 2>&1 && runtime=docker
+$runtime run -d --privileged -v /:/host --name cc-priv docker.io/library/alpine:latest \
+    sleep 3600 >/dev/null || fail container
+sleep 2
 """
 
 # Before the baseline: nginx set up to run PHP through PHP-FPM. Rocky's
@@ -284,6 +292,8 @@ def expectations(root_fingerprint: str) -> list[Expected]:
         Expected("mail to many new domains", "mail.domains", "new domains", "medium"),
         # uname: only the web shell runs it as the web account.
         Expected("a web shell running programs", "web.worker_child", "ran uname", "high"),
+        Expected("a privileged container mounting /", "container.privileged", "cc-priv", "high"),
+        Expected("a new container", "container.new", "cc-priv", "low"),
         Expected(
             "requests answered by the new web shell", "web.new_script_hit", "cc-shell.php", "high"
         ),

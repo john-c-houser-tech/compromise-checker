@@ -18,7 +18,9 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 9  # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web
+SNAPSHOT_VERSION = (
+    10  # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers
+)
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -77,6 +79,10 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     "mail_files": ("Postfix and Exim configuration files", ("mail",)),
     "web_config": ("nginx, Apache and PHP-FPM configuration files", ("web_logs",)),
+    "containers": (
+        "Docker and Podman containers: image, privilege, capabilities, namespaces, devices, mounts",
+        ("containers",),
+    ),
     "mail_config": (
         "mail server settings: relay host, trusted networks, relay restrictions, services",
         ("mail",),
@@ -112,6 +118,7 @@ _MASKED = {
     "mail_files",
     "mail_config",
     "web_config",
+    "containers",
 }
 
 # Which section a module's text sources and file records go to.
@@ -852,6 +859,47 @@ class SnapshotBuilder:
             # The file it runs: a copy of sleep named auditd in /dev/shm
             # changes it.
             section.items[f"{kind}: {name}"] = {"running": True, "exe": ", ".join(sorted(exes))}
+
+    def _on_containers(self, name: str, data: dict[str, Any]) -> None:
+        if name == "container" and data.get("name"):
+            # By name: a redeploy replaces a container's ID, not what it is.
+            key = f"{data.get('runtime')}: {data['name']}"
+            mounts = data.get("mounts") or []
+            item = {
+                "image": data.get("image"),
+                # A bind mount by host path; a volume (no host path) by where it goes.
+                "mounts": sorted(
+                    f"{m.get('source')} -> {m.get('destination')} ({'rw' if m.get('rw') else 'ro'})"
+                    if m.get("source")
+                    else f"{m.get('type') or 'volume'} -> {m.get('destination')}"
+                    for m in mounts
+                    if isinstance(m, dict)
+                ),
+                # Host paths it mounts, kept apart so a ":" in a destination
+                # can't hide one.
+                "mount_sources": sorted(
+                    {m["source"] for m in mounts if isinstance(m, dict) and m.get("source")}
+                ),
+            }
+            if "privileged" in data:  # its host configuration was read
+                item.update(
+                    {
+                        "privileged": bool(data.get("privileged")),
+                        "capabilities": sorted(set(data.get("capabilities") or [])),
+                        "host_pid": bool(data.get("host_pid")),
+                        "host_network": bool(data.get("host_network")),
+                        "host_ipc": bool(data.get("host_ipc")),
+                        "devices": sorted(d for d in data.get("devices") or [] if d),
+                        "security_opt": sorted(data.get("security_opt") or []),
+                    }
+                )
+            self.section("containers").items[key] = item
+            # Its ID and running state: seen, not compared.
+            self.live.setdefault("containers", []).append(data)
+        elif name == "containers_summary":
+            self.live["containers_summary"] = data
+        elif name in ("containers_unreadable", "containers_cut"):
+            self._module_gap("containers", f"{name}: {data.get('path')}", name, data)
 
     def _on_web_logs(self, name: str, data: dict[str, Any]) -> None:
         if name in (

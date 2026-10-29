@@ -5533,5 +5533,233 @@ class WebTests(FixtureRoot):
             self.assertEqual(records[-1]["status"], "refused", extra)
 
 
+DOCKER_ID = "a" * 64
+PODMAN_ID = "b" * 64
+
+
+def docker_config(name, env="DB_PASSWORD=CanaryContainerEnv"):
+    return json.dumps(
+        {
+            "ID": DOCKER_ID,
+            "Name": "/" + name,
+            "Created": "2026-10-28T10:00:00Z",
+            "Config": {
+                "Image": "docker.io/library/alpine",
+                "Env": [env],
+                "Labels": {"l": "CanaryLabel"},
+            },
+            "State": {"Running": True, "Pid": 4242},
+            "MountPoints": {
+                "/host": {"Type": "bind", "Source": "/", "Destination": "/host", "RW": True},
+                "/data": {
+                    "Type": "bind",
+                    "Source": "/srv/data",
+                    "Destination": "/data",
+                    "RW": False,
+                },
+                # A volume the image declares (postgres's data): no host path.
+                "/var/lib/postgresql/data": {
+                    "Type": "volume",
+                    "Name": "f00",
+                    "Source": "",
+                    "Destination": "/var/lib/postgresql/data",
+                    "RW": True,
+                },
+                "/scratch": {"Type": "tmpfs", "Source": "", "Destination": "/scratch", "RW": True},
+                # A named volume: Docker's own storage, not a host folder chosen.
+                "/cache": {
+                    "Type": "volume",
+                    "Name": "cache",
+                    "Source": "/var/lib/docker/volumes/cache/_data",
+                    "Destination": "/cache",
+                    "RW": True,
+                },
+            },
+        }
+    ).encode()
+
+
+DOCKER_HOST = json.dumps(
+    {
+        "Privileged": True,
+        "CapAdd": ["net_admin", "CAP_SYS_PTRACE"],
+        "PidMode": "host",
+        "NetworkMode": "cc_project_default",
+        "IpcMode": "private",
+        "Devices": [{"PathOnHost": "/dev/kvm"}],
+        "SecurityOpt": ["seccomp=unconfined"],
+    }
+).encode()
+
+
+def podman_layout(root, oci, driver="overlay", metadata=None):
+    listing = [
+        {
+            "id": PODMAN_ID,
+            "names": ["cc-pod"],
+            "image": "c" * 64,
+            "metadata": json.dumps(
+                {"image-name": "docker.io/library/alpine:latest", "name": "cc-pod"}
+                if metadata is None
+                else metadata
+            ),
+        }
+    ]
+    Path(root, f"srv/podman/{driver}-containers").mkdir(parents=True, exist_ok=True)
+    Path(root, f"srv/podman/{driver}-containers/containers.json").write_text(json.dumps(listing))
+    if oci is not None:
+        target = Path(root, f"srv/podman/{driver}-containers/{PODMAN_ID}/userdata/config.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(oci))
+
+
+POD_OCI = {
+    "process": {
+        "env": ["TOKEN=CanaryPodmanEnv"],
+        "capabilities": {"effective": [], "bounding": ["CAP_CHOWN", "CAP_SYS_ADMIN"]},
+    },
+    "annotations": {"io.podman.annotations.privileged": "TRUE"},
+    "linux": {
+        "namespaces": [{"type": "mount"}, {"type": "network"}, {"type": "ipc"}],
+        "devices": [{"path": "/dev/fuse"}],
+    },
+    "mounts": [
+        {"destination": "/host", "type": "bind", "source": "/", "options": ["rbind", "rw"]},
+        {"destination": "/proc", "type": "proc", "source": "proc"},
+        # Podman's own, named by the container's ID: left out.
+        {
+            "destination": "/dev/shm",
+            "type": "bind",
+            "source": f"/srv/podman/overlay-containers/{PODMAN_ID}/userdata/shm",
+        },
+        {
+            "destination": "/etc/hosts",
+            "type": "bind",
+            "source": f"/run/containers/storage/overlay-containers/{PODMAN_ID}/userdata/hosts",
+        },
+    ],
+}
+STORAGE_CONF = (
+    b'[storage]\ndriver = "overlay"  # comment\ngraphroot = "/srv/podman"\n'
+    b'[storage.options]\ngraphroot = "/wrong"\n'
+)
+
+
+class ContainerTests(FixtureRoot):
+    def test_docker_containers_from_their_state_files(self):
+        self.write(
+            f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("cc-priv")
+        )
+        self.write(f"var/lib/docker/containers/{DOCKER_ID}/hostconfig.json", DOCKER_HOST)
+        records = collect(self.root, ["containers"])
+        [container] = [r["data"] for r in named(records, "container")]
+        self.assertEqual(
+            (container["runtime"], container["name"], container["image"], container["privileged"]),
+            ("docker", "cc-priv", "docker.io/library/alpine", True),
+        )
+        self.assertEqual(container["capabilities"], ["NET_ADMIN", "SYS_PTRACE"])
+        self.assertEqual(
+            (container["host_pid"], container["host_network"], container["host_ipc"]),
+            (True, False, False),
+        )
+        self.assertEqual(container["devices"], ["/dev/kvm"])
+        mounts = {m["destination"]: m for m in container["mounts"]}
+        self.assertEqual(mounts["/host"]["source"], "/")
+        self.assertIsNone(mounts["/var/lib/postgresql/data"]["source"])  # a volume
+        self.assertIsNone(mounts["/scratch"]["source"])  # a tmpfs
+        self.assertIsNone(mounts["/cache"]["source"])  # a named volume
+        self.assertEqual(mounts["/cache"]["volume"], "cache")
+        text = json.dumps(records)
+        for never in ("CanaryContainerEnv", "CanaryLabel", "cc_project_default", "4242"):
+            self.assertNotIn(never, text)  # the environment, labels, network names, pids
+        self.assertEqual(sources(records), {})  # no file text at all
+
+    def test_a_missing_hostconfig_is_a_gap_not_unprivileged(self):
+        self.write(f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("web"))
+        records = collect(self.root, ["containers"])
+        [container] = [r["data"] for r in named(records, "container")]
+        self.assertNotIn("privileged", container)
+        [gap] = named(records, "containers_unreadable")
+        self.assertTrue(gap["data"]["path"].endswith("hostconfig.json"))
+
+    def test_docker_s_data_root_snap_and_userns_remap_are_followed(self):
+        self.write("etc/docker/daemon.json", b'{"data-root": "/srv/docker"}')
+        self.write(f"srv/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("one"))
+        self.write(
+            f"srv/docker/100000.100000/containers/{DOCKER_ID}/config.v2.json", docker_config("two")
+        )
+        self.write(
+            f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("not-used")
+        )
+        names = sorted(
+            r["data"]["name"] for r in named(collect(self.root, ["containers"]), "container")
+        )
+        self.assertEqual(names, ["one", "two"])
+        Path(self.root, "etc/docker/daemon.json").unlink()
+        self.write(
+            f"var/snap/docker/common/var-lib-docker/containers/{DOCKER_ID}/config.v2.json",
+            docker_config("snapped"),
+        )
+        names = sorted(
+            r["data"]["name"] for r in named(collect(self.root, ["containers"]), "container")
+        )
+        self.assertEqual(names, ["not-used", "snapped"])
+
+    def test_podman_containers_from_containers_json_and_oci_config(self):
+        self.write("etc/containers/storage.conf", STORAGE_CONF)
+        podman_layout(self.root, POD_OCI)
+        records = collect(self.root, ["containers"])
+        [container] = [r["data"] for r in named(records, "container")]
+        self.assertEqual((container["runtime"], container["name"]), ("podman", "cc-pod"))
+        self.assertEqual(container["image"], "docker.io/library/alpine:latest")
+        self.assertEqual((container["host_pid"], container["host_network"]), (True, False))
+        # --privileged by Podman's own annotation, even run as a user (empty
+        # effective set); the bounding set is what it holds.
+        self.assertTrue(container["privileged"])
+        self.assertIn("SYS_ADMIN", container["capabilities"])
+        self.assertEqual(
+            container["mounts"],
+            [{"type": "bind", "source": "/", "destination": "/host", "rw": True}],
+        )
+        self.assertNotIn("CanaryPodmanEnv", json.dumps(records))
+
+    def test_other_podman_drivers_buildah_and_unstarted_containers(self):
+        self.write(
+            "etc/containers/storage.conf", b'[storage]\ndriver = "vfs"\ngraphroot = "/srv/podman"\n'
+        )
+        podman_layout(self.root, POD_OCI, driver="vfs")
+        names = [r["data"]["name"] for r in named(collect(self.root, ["containers"]), "container")]
+        self.assertEqual(names, ["cc-pod"])
+        shutil.rmtree(Path(self.root, "srv/podman"))
+        podman_layout(self.root, None)  # created, never started: no runtime spec
+        records = collect(self.root, ["containers"])
+        self.assertEqual(named(records, "container"), [])
+        self.assertEqual(named(records, "containers_unreadable"), [])
+        [summary] = named(records, "containers_summary")
+        self.assertEqual(summary["data"]["created_not_started"], 1)
+        shutil.rmtree(Path(self.root, "srv/podman"))
+        podman_layout(self.root, POD_OCI, metadata={})  # a Buildah working container
+        records = collect(self.root, ["containers"])
+        self.assertEqual(named(records, "container"), [])
+
+    def test_unreadable_layouts_and_other_runtimes_are_said(self):
+        self.write(f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", b"{not json")
+        Path(self.root, "var/lib/kubelet/pods").mkdir(parents=True)
+        Path(self.root, "var/lib/containerd").mkdir(parents=True)  # Docker's own containerd
+        Path(self.root, "run/containerd/io.containerd.runtime.v2.task/moby/x").mkdir(parents=True)
+        Path(self.root, "home/alice/.local/share/containers/storage").mkdir(parents=True)
+        records = collect(self.root, ["containers"])
+        [bad] = named(records, "containers_unreadable")
+        self.assertIn("not JSON", bad["data"]["reason"])
+        [summary] = named(records, "containers_summary")
+        self.assertEqual(
+            summary["data"]["not_inventoried"],
+            ["Kubernetes (kubelet)", "rootless Podman in home directories"],
+        )
+        Path(self.root, "run/containerd/io.containerd.runtime.v2.task/k8s.io/y").mkdir(parents=True)
+        [summary] = named(collect(self.root, ["containers"]), "containers_summary")
+        self.assertIn("containerd (k8s.io)", summary["data"]["not_inventoried"])
+
+
 if __name__ == "__main__":
     unittest.main()

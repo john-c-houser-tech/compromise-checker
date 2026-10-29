@@ -504,9 +504,15 @@ def test_an_execute_bit_alone_makes_no_script():
         f"{APP}/public/uploads/photo.jpg": {"sha256": "p1", "mode": "0670"},
         f"{APP}/public/run": {"sha256": "r1", "mode": "0755", "kind": "script"},
         f"{APP}/public/tool": {"sha256": "t1", "mode": "0755", "kind": "elf"},
+        # A program hard-linked (ln up .u): the collector refuses to read
+        # it, so only its execute bit says what it may be.
+        f"{APP}/public/up": {"mode": "0755", "hash_skipped": "refused: a hard link"},
+        # Too big to hash, but its first bytes were read: judged by them.
+        f"{APP}/public/big.dat": {"mode": "0775", "hash_skipped": "larger than 8388608 bytes"},
     }
     assert _served_titles(after, before) == [
         ("high", "A new script in a web root", f"{APP}/public/run"),
+        ("high", "A new script in a web root", f"{APP}/public/up"),
         ("high", "A program in a web root", f"{APP}/public/tool"),
     ]
 

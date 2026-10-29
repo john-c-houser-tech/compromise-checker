@@ -264,6 +264,8 @@ async def collect(
         # A refused login still leaves sshd records: keep what was tried.
         raise _failed(session, client, f"{host.name}: login refused for {host.user}") from exc
     except TimeoutError as exc:
+        if exc.errno is not None:  # the system's own (no answer to the TCP connect)
+            raise _failed(session, client, f"{host.name}: cannot connect: {exc}") from exc
         why = f"{host.name}: cannot connect: timed out after {wait:g} seconds"
         if host.auth == "agent":
             why += " (was the SSH agent waiting for a passphrase?)"

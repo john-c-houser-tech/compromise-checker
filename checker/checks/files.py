@@ -51,6 +51,21 @@ def _leaves(path: str, item: dict) -> bool:
     )
 
 
+def _unread_executable(item: dict) -> bool:
+    """A regular file with an execute bit whose first bytes the collector
+    didn't read (a hard link it refused, an unreadable file): it may be a
+    program or a script, so the execute bit is all there is to go by."""
+    skipped = str(item.get("hash_skipped") or "")
+    if item.get("type") != "-" or item.get("kind") or not skipped:
+        return False
+    if skipped.startswith("larger than"):
+        return False  # the first bytes were read; only the hash was skipped
+    try:
+        return bool(int(str(item.get("mode") or "0"), 8) & 0o111)
+    except ValueError:
+        return False
+
+
 def _group(item: dict, path: str) -> str:
     """The directory a scratch finding is reported under: the entry
     directly in its place (a whole unpacked tree is one finding)."""
@@ -306,7 +321,12 @@ def web(context: Context) -> list[Finding]:
     for path, item in items.items():
         name = path.rsplit("/", 1)[-1]
         double = not SCRIPT.search(name) and HANDLED.search(name) is not None
-        script = double or SCRIPT.search(name) is not None or item.get("kind") == "script"
+        script = (
+            double
+            or SCRIPT.search(name) is not None
+            or item.get("kind") == "script"
+            or _unread_executable(item)
+        )
         if _group(item, path) in judged and not _inside(path, served) and item.get("kind") != "elf":
             # No request reaches it, but the application may run it (its
             # libraries, its compiled cache): a deploy rewrites hundreds.
@@ -316,10 +336,10 @@ def web(context: Context) -> list[Finding]:
                 )
             continue
         reason = None
-        # A script by its name or its #! line, not by an execute bit: PHP
-        # runs a web shell whatever its mode, the kernel runs nothing
-        # without #! or an ELF header, and an ACL's mask shows as the
-        # group's execute bit on every file it covers (logs, uploads).
+        # A script by its name or its #! line, not by an execute bit alone:
+        # PHP runs a web shell whatever its mode, the kernel runs no plain
+        # file without #!, and an ACL's mask shows as the group's execute
+        # bit on every file it covers (logs, uploads).
         if path in added and script:
             reason, band = "A new script in a web root", "high"
         elif path in edited and script:

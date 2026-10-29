@@ -149,6 +149,21 @@ async def test_a_silent_server_times_out_with_a_reason(server, monkeypatch):
         await quiet.wait_closed()
 
 
+async def test_the_systems_own_timeout_is_reported_as_it_is(server, monkeypatch):
+    # No answer to the TCP connect: the kernel gives up (ETIMEDOUT) before
+    # our wait does, and that has nothing to do with an agent.
+    import errno
+
+    async def unanswered(*args, **kwargs):
+        raise TimeoutError(errno.ETIMEDOUT, "Connection timed out")
+
+    monkeypatch.setattr(transport.asyncssh, "connect", unanswered)
+    with pytest.raises(
+        TransportError, match=r"cannot connect: \[Errno 110\] Connection timed out$"
+    ):
+        await run(server, host(server))
+
+
 # --- Host keys ----------------------------------------------------------------------
 
 

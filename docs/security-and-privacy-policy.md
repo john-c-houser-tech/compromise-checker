@@ -121,8 +121,23 @@ that may include access tokens, and sometimes secrets typed into commands.
 
 - **Only what the checks need.** Each part of the collector documents what it
   reads and why. The time window collected is limited (30 days by default).
-- **Optional sources.** Full web server access logs are collected only if
-  your organization chooses.
+- **Web server logs.** Web server *error* logs (nginx, Apache, PHP-FPM) are
+  always collected, because attacks on web applications usually show there
+  first. Full *access* logs, which record every visitor's request, are
+  collected only if your organization chooses this during setup. In both,
+  visitors' IP addresses are kept, since they are what an investigation
+  follows. The values in web addresses' query strings and in referrers are
+  replaced by a marker, with their names kept, except that a value matching
+  a known attack pattern is replaced by a marker naming that pattern. User
+  agents are cut to 256 characters, and secret masking always applies.
+- **Programs started by web server accounts.** Where the server's audit
+  system records program starts, those started by the web server's accounts
+  (`www-data`, `apache`, `nginx`, and any your organization names) are
+  collected, with their arguments masked like other command lines, because a
+  web server starting a shell is one of the clearest signs of a break-in.
+  Your organization can choose during setup to collect program starts for
+  root, service accounts and accounts with administrator rights too, and,
+  only with that, for ordinary users.
 - **Mail logs.** Outgoing mail logs (Postfix, Exim) are collected, because
   mail sent from a compromised server is a common sign of misuse. Before they
   leave the server, every email address in them is changed: the part before

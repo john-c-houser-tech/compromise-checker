@@ -51,17 +51,6 @@ def _leaves(path: str, item: dict) -> bool:
     )
 
 
-def _executable(item: dict) -> bool:
-    try:
-        return bool(int(str(item.get("mode") or "0"), 8) & 0o111)
-    except ValueError:
-        return False
-
-
-def _runnable(item: dict) -> bool:
-    return item.get("type") == "-" and (item.get("kind") in ("elf", "script") or _executable(item))
-
-
 def _group(item: dict, path: str) -> str:
     """The directory a scratch finding is reported under: the entry
     directly in its place (a whole unpacked tree is one finding)."""
@@ -321,15 +310,19 @@ def web(context: Context) -> list[Finding]:
         if _group(item, path) in judged and not _inside(path, served) and item.get("kind") != "elf":
             # No request reaches it, but the application may run it (its
             # libraries, its compiled cache): a deploy rewrites hundreds.
-            if (path in added or path in edited) and (script or _runnable(item)):
+            if (path in added or path in edited) and script:
                 outside.setdefault((_group(item, path), _outside_group(item, path)), []).append(
                     path
                 )
             continue
         reason = None
-        if path in added and (script or _runnable(item)):
+        # A script by its name or its #! line, not by an execute bit: PHP
+        # runs a web shell whatever its mode, the kernel runs nothing
+        # without #! or an ELF header, and an ACL's mask shows as the
+        # group's execute bit on every file it covers (logs, uploads).
+        if path in added and script:
             reason, band = "A new script in a web root", "high"
-        elif path in edited and (script or _runnable(item)):
+        elif path in edited and script:
             # A few lines added to an existing index.php: a web shell too.
             reason, band = "A changed script in a web root", "high"
         elif item.get("kind") == "elf":

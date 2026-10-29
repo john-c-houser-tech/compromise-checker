@@ -492,6 +492,25 @@ def test_a_lone_edit_outside_the_served_folders_is_medium():
     assert {f.band for f in found} == {"low"}
 
 
+def test_an_execute_bit_alone_makes_no_script():
+    # An ACL's mask shows as the group's execute bit: prod's logs are 0670.
+    before = {
+        f"{APP}/public/index.php": {"sha256": "aa"},
+        f"{APP}/var/log/prod.log": {"sha256": "l1", "mode": "0670"},
+    }
+    after = {
+        **before,
+        f"{APP}/var/log/prod.log": {"sha256": "l2", "mode": "0670"},
+        f"{APP}/public/uploads/photo.jpg": {"sha256": "p1", "mode": "0670"},
+        f"{APP}/public/run": {"sha256": "r1", "mode": "0755", "kind": "script"},
+        f"{APP}/public/tool": {"sha256": "t1", "mode": "0755", "kind": "elf"},
+    }
+    assert _served_titles(after, before) == [
+        ("high", "A new script in a web root", f"{APP}/public/run"),
+        ("high", "A program in a web root", f"{APP}/public/tool"),
+    ]
+
+
 def test_web_shells():
     items = {
         "/var/www/html/index.php": {"place": "/var/www", "type": "-"},

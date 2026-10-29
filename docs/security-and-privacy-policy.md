@@ -124,8 +124,8 @@ that may include access tokens, and sometimes secrets typed into commands.
   fingerprints can't be turned back into addresses. The key is sent to a
   server only for a collection, held in memory and never written there: it
   isn't sent before a first collection has shown that the server's `sudo`
-  doesn't record its input, nor to a server whose `sudo` does; such a
-  server's mail logs aren't collected.
+  doesn't record its input, nor to a server whose `sudo` did so at its last
+  collection; such a server's mail logs aren't collected.
   Message subjects and contents aren't in these logs and are never collected.
 - **Shell history.** Information *about* history files (whether they exist,
   their size and dates, and whether history has been switched off) is always

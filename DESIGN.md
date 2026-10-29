@@ -120,7 +120,7 @@ first.
   system summary refreshes its cache and log (`/var/lib/landscape`,
   `/var/log/landscape`). Measured by the read-only proof (PR 0.7) on Ubuntu
   24.04 and Rocky 9, the Landscape writes on Ubuntu 26.04 (PR 2.7). On
-  RHEL 10 and its rebuilds, a session lasting a few minutes has
+  RHEL 9 and later and their rebuilds, a session lasting a few minutes has
   `grub2-set-bootflag` record a successful boot in `/boot/grub2/grubenv`.
 
 **Never done:** removing, editing, or suppressing any of those traces.

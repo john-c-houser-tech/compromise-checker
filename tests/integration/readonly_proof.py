@@ -97,7 +97,7 @@ DISCLOSED = [
     ),
     (
         re.compile(r"^/boot/grub2/grubenv(\.\d+)?$"),
-        "RHEL 10 session: GRUB's boot-success flag (disk)",
+        "RHEL 9+ session: GRUB's boot-success flag (disk)",
     ),
     (
         re.compile(r"^/var/spool/postfix/maildrop/"),

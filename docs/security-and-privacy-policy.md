@@ -83,9 +83,9 @@ Any login leaves records. The tool's runs leave these:
   scanner account's home directory on its first login; where Ubuntu's
   Landscape client is installed, the login message's system summary also
   refreshes its cache and log file (under `/var/lib/landscape` and
-  `/var/log/landscape`); on Red Hat Enterprise Linux 10 and its rebuilds, a
-  login session that lasts a few minutes also has the system record that the
-  last boot succeeded (`/boot/grub2/grubenv`).
+  `/var/log/landscape`); on Red Hat Enterprise Linux 9 and later, and its
+  rebuilds, a login session that lasts a few minutes also has the system
+  record that the last boot succeeded (`/boot/grub2/grubenv`).
 
 **The tool never removes, edits or suppresses any of these.** On a server
 that may be compromised, changing logs destroys evidence, and it is exactly

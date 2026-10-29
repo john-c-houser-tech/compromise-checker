@@ -783,7 +783,8 @@ def mark_own_session(events: list[Event], session: dict[str, Any] | None) -> int
       itself gave that PAM session — never a number read from a message —
       and its session scope's start and stop;
     - its sudo of exactly the collector's command (in that audit session,
-      when the journal says), and that sudo process's PAM session;
+      when the journal says), and that sudo process's PAM session; and the
+      collector's own listing of the account's sudo rules;
     - a systemd user manager for the user starting within seconds of it.
 
     Returns how many were marked."""
@@ -897,6 +898,22 @@ def mark_own_session(events: list[Event], session: dict[str, Any] | None) -> int
             and f.get("service") == "sudo"
             and f.get("pid") in sudo_pids
         ):
+            mark(event)
+
+    # 4b. The collector's own `sudo -ll -U <account>` (plan 2.7b): root
+    # listing the session's account's rules, from that audit session when
+    # the journal says, once the collector itself is known to have run.
+    if sudo_pids:
+        for event in candidates:
+            f = event.fields
+            if event.type != "sudo.command" or f.get("user") != "root":
+                continue
+            if (f.get("command") or "").split() not in (["list"], ["list", user]):
+                continue
+            if f.get("runas", "root") not in ("root", user) or f.get("tty", "unknown") != "unknown":
+                continue
+            if "audit_session" in f and f["audit_session"] not in audit_sessions:
+                continue
             mark(event)
 
     # 5. The user manager systemd starts for a first login.

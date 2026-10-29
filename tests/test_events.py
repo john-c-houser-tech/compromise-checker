@@ -964,3 +964,33 @@ def test_an_own_login_not_found_is_said(stored_bundle, capsys):
     parsed = parse_bundle(row_natted, identity)
     assert parsed.summary["own_login_found"] is False
     assert not any(e.own_session for e in parsed.events)
+
+
+def test_the_collector_s_own_sudo_listing_is_its_own():
+    own = [
+        make("ssh.login.accepted", 0, user="scanner", port=41000, pid=11),
+        make("session.opened", 0, service="sshd", user="scanner", pid=11, audit_session="77"),
+        make(
+            "sudo.command",
+            0,
+            user="scanner",
+            runas="root",
+            command="/usr/bin/python3 -I -B -",
+            pid=12,
+            audit_session="77",
+        ),
+    ]
+    listing = [
+        make("sudo.command", 0, user="root", command="list", audit_session="77"),
+        make("sudo.command", 0, user="root", command="list scanner", runas="scanner"),
+        # Someone else's listing, in another session, or of another account.
+        make("sudo.command", 0, user="root", command="list", audit_session="80"),
+        make("sudo.command", 0, user="root", command="list jch", runas="jch"),
+        make("sudo.command", 0, user="root", command="/bin/sh", audit_session="77"),
+    ]
+    mark_own_session(own + listing, SESSION)
+    assert [e.own_session for e in listing] == [True, True, False, False, False]
+    # Without the collector's own sudo found, no listing is taken for it.
+    alone = [make("sudo.command", 0, user="root", command="list", audit_session="77")]
+    mark_own_session(alone, SESSION)
+    assert not alone[0].own_session

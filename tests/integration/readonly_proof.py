@@ -16,6 +16,7 @@ needs a Linode API token with Linodes: Read/Write only, from $LINODE_TOKEN or
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import os
 import re
@@ -37,6 +38,7 @@ from checker.analysis import parse_bundle
 from checker.assess import analyze
 from checker.bundle import walk_bundle
 from checker.collect import collect_hosts
+from checker.events import classify as classify_message
 from checker.evidence import (
     Store,
     database_file,
@@ -256,6 +258,11 @@ class Result:
     # never leave the server found in the bundle: the mail key, or the
     # mailed address's local part (must stay empty).
     mail_events: int = 0
+    # Plan 2.7b: real `sudo -ll` output read as the collector reads it (off,
+    # then on once the scanner's input is logged), and sudo's log line for
+    # the lookup parsed as the own-session marking expects: problems found
+    # (must stay empty).
+    sudo_listing: list[str] = field(default_factory=list)
     mail_leaks: list[str] = field(default_factory=list)
     error: str | None = None
 
@@ -731,6 +738,8 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                 raise RuntimeError("the audit log holds no events for the scanner's session")
             mounts = await conn.run("cat /proc/self/mountinfo", check=True, timeout=60)
             result.audit = classify(events, memory_devices(mounts.stdout))
+            # After the collections, so nothing here is in their evidence.
+            result.sudo_listing = await check_sudo_listing(conn)
 
         bundle = home / "evidence" / distro / f"{outcome.bundle_id}.age"
         if bundle.exists():
@@ -769,6 +778,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             and not result.checks_failed
             and not result.modules_changed
             and result.mail_events > 0
+            and not result.sudo_listing
             and not result.mail_leaks
             # On Ubuntu, ufw (and Docker) put the rules through nft_compat:
             # that path must really have been exercised.
@@ -818,6 +828,52 @@ def proof_whitelist(home: Path, host: str):
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(PROOF_WHITELIST.read_text(encoding="utf-8"), encoding="utf-8")
     return whitelist_load(home, host, None)
+
+
+COLLECTOR_FILE = Path(__file__).resolve().parents[2] / "checker" / "collector" / "collector.py"
+SUDO_LISTING = r"""
+set -u
+sudo -n -ll -U scanner > /root/cc-list-off 2>&1; echo "off status $?"
+echo 'Defaults:scanner log_input' > /etc/sudoers.d/zz-cc-proof-input
+chmod 440 /etc/sudoers.d/zz-cc-proof-input
+sudo -n -ll -U scanner > /root/cc-list-on 2>&1; echo "on status $?"
+rm -f /etc/sudoers.d/zz-cc-proof-input
+sleep 2
+"""
+
+
+def _collector_module():
+    spec = importlib.util.spec_from_file_location("collector_for_proof", COLLECTOR_FILE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def check_sudo_listing(conn) -> list[str]:
+    """The collector's reading of real `sudo -ll` output, and sudo's log
+    line for such a lookup, on this distribution."""
+    problems = []
+    statuses = (await conn.run(SUDO_LISTING, check=True, timeout=120)).stdout
+    if "off status 0" not in statuses or "on status 0" not in statuses:
+        problems.append(f"sudo -ll failed: {statuses.strip()}")
+    collector = _collector_module()
+    for name, expected in (("off", "off"), ("on", "on")):
+        listing = (await conn.run(f"cat /root/cc-list-{name}", check=True, timeout=60)).stdout
+        found = collector.sudo_list_logs_input(listing)
+        if found != expected:
+            problems.append(f"listing read as {found!r}, expected {expected!r}: {listing[:300]!r}")
+    logged = await conn.run(
+        "journalctl -q --no-pager -o cat _COMM=sudo | grep 'COMMAND=list' | tail -1", timeout=60
+    )
+    line = logged.stdout.strip()
+    kind = classify_message("sudo", line)
+    if not line:
+        problems.append("sudo logged no line for the lookup")
+    elif kind is None or kind[0] != "sudo.command" or kind[1].get("user") != "root":
+        problems.append(f"sudo's lookup line isn't parsed as root's sudo.command: {line!r}")
+    elif (kind[1].get("command") or "").split() not in (["list"], ["list", "scanner"]):
+        problems.append(f"sudo's lookup line names an unexpected command: {line!r}")
+    return problems
 
 
 class MailLeaks:
@@ -949,6 +1005,8 @@ def report(results: list[Result]) -> bool:
             print(f"  mail events parsed: {r.mail_events}")
             if not r.mail_events:
                 print("  FAIL: no mail event parsed, so the mail log reads went unproven")
+            for problem in r.sudo_listing:
+                print(f"  FAIL: sudo listing: {problem}")
             for leak in r.mail_leaks:
                 print(f"  FAIL: left the server unmasked: {leak}")
             print(

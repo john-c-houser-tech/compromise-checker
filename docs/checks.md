@@ -298,6 +298,24 @@ which the collector doesn't read (plan 2.5).
 | `software.tools` | an attack or tunnelling tool installed as a package (nmap, masscan, ncat, proxychains, chisel, hydra, sqlmap, impacket…: `attack_tool`, medium); a compiler (gcc, clang, Go, Rust: `compiler`, low). A tool unpacked from an archive or installed with pip isn't a package and isn't seen here (`files.unowned`, `software.global` may) | | yes |
 | `software.global` | Python packages installed system-wide by hand (in `/usr/local/lib*/python3*`) or Node packages installed with `npm -g` (not the `npm` and `corepack` Node.js ships) | low | yes |
 
+### Threat packs (plan 4.3–4.5)
+
+Checks over the threat packs in force (`checker packs`): each pack's
+exposure is judged once per analysis (`checker/packs/exposure.py`).
+
+| Check | Finds | Band | Baseline |
+|---|---|---|---|
+| `pack.exposure` | exposure, not compromise: a package before the pack's fix (`vulnerable`, high), one whose version can't be judged against it (`cant_judge`, medium; counted as exposed), the host exposed for part of the window and fixed since (`was_exposed`, low), a service still running code from before the fix (`stale_code`), a pack's mitigation not in place (`mitigation_missing`: high while vulnerable, medium once fixed). Exposure raises the prior instead ([scoring](scoring.md)) | | no |
+| `pack.detection` | a pack's own rule, only while the host was exposed (from when it became exposed in the window to the fix, or the collection): events matching the rule (at least so many within a span, apart for each value of a field such as the source network), or snapshot items present, absent, or added, changed or removed since the baseline. Its band follows the pack's ratio (at most 20: high); the variant is `pack-id/detection-id` | from the ratio | for changes |
+
+A pack can also name a check built into the tool: that check's
+compromise findings in the time the host was exposed weigh as the pack
+says (at most 100), never less than they would, and say which pack raised
+them (`raised_by`). A detection whose data the collection lacks (web
+access logs not chosen, no audit log, requests' content types, which no
+log format the tool reads has), whose check didn't run, or that needs a
+baseline there isn't, is a coverage gap.
+
 ## Coverage
 
 Beside the findings, each assessment says what the collection couldn't see

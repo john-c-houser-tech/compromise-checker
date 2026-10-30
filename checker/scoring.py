@@ -18,7 +18,7 @@ import math
 from collections import defaultdict
 from typing import Any
 
-SCORING_VERSION = 2  # 2: chains
+SCORING_VERSION = 3  # 2: chains; 3: threat packs' ratios (plan 4.5)
 
 DEFAULT_PRIOR = 0.02  # DESIGN.md §11.2
 
@@ -62,6 +62,10 @@ def ratio(finding: dict[str, Any]) -> float:
         # Planned work lowered its band: the band's ratio, whatever the
         # check's override says.
         return BAND_RATIOS[finding["band"]]
+    if finding.get("likelihood_ratio"):
+        # A threat pack's, for its own detection or a core finding it
+        # raised while the host was exposed (checker/packs/detect.py).
+        return float(finding["likelihood_ratio"])
     for key in ((finding["check"], finding.get("variant")), (finding["check"], None)):
         if key in OVERRIDES:
             return OVERRIDES[key]

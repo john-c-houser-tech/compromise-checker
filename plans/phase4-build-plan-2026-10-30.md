@@ -427,6 +427,45 @@ is John's to approve before it is committed. Also:
   logs off, a log format without request sizes) are listed as coverage
   gaps, not silently skipped.
 
+### 4.5 — Detections (as built)
+
+- **The language** (`checker/packs/format.py`): a detection is one of
+  - `check` (+ optional `variant`): a core check, its compromise findings
+    raised to the pack's ratio (at most 100, the critical band's) while
+    the host was exposed, never lowered, marked `raised_by`;
+  - `events`: up to five matchers (an event type, exact or a prefix
+    ending in "."; up to eight fields), `count: {at_least, within}` (a
+    span up to 7 days, or the whole time exposed), optional `by` (a
+    field counted apart per value);
+  - `snapshot`: a section, optional `key` and field matchers, `state`
+    present / absent / added / changed / removed.
+  Values are matched as text: `equals`, `prefix`, or `glob` (`*`, `?`,
+  at most ten stars; a linear matcher, no regular expressions). A list
+  value matches if any element does. A pack's own detection needs a
+  title and weighs at most 20 (the high band's ratio): a pack can't
+  outweigh the core checks. `needs` names data from a fixed list
+  (`web_access_log`, `web_error_log`, `process_starts`,
+  `request_content_type`), judged from the collection.
+- **When they count** (`checker/packs/detect.py`): only while the host
+  was exposed — from `exposed_from` to `exposed_until` (or still), as
+  4.3/4.4b judge it. A host the pack doesn't affect, or fixed before the
+  window, gets nothing from its detections. A raised core finding with
+  no time of its own (what the host shows now) counts while the host is
+  still exposed.
+- **Findings**: `pack.detection`, variant `pack-id/detection-id`, band
+  from the ratio, the ratio on the finding (`likelihood_ratio`), which
+  scoring uses before the band's. One check, so the family cap holds all
+  the packs' own detections to a doubling beyond the strongest.
+  CHECKS_VERSION 14, SCORING_VERSION 3 (no golden score moved).
+- **Gaps, not silence**: a need the collection lacks, a referenced check
+  that didn't run, a section not collected, an absence in a section not
+  collected whole, a change with no baseline. `request_content_type` is
+  in no log format the tool reads: DESIGN.md §10.2's multipart-POST
+  detection is always a gap until a log format carries it.
+- **Ratio caps** (100 for a core check's findings, 20 for a pack's own
+  rule) are this PR's choice, within D1's "capped so a pack can't
+  outweigh the core checks"; for John to confirm.
+
 ### 4.6 — Applying packs to stored evidence
 
 - `checker analyze` applies every active pack; an analysis records which

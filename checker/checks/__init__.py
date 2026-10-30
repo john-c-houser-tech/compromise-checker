@@ -20,8 +20,9 @@ from checker.snapshot import Snapshot
 # entities_complete; 5: sudo.rules name the account or group; 6: account
 # and key variants; 7: network checks (8.8); 8: anti-forensics (8.10); 9:
 # software changes (8.11); 10: outgoing mail (8.9); 11: web applications (8.12);
-# 12: containers (8.13); 13: logins at unusual hours (Phase 3, decision 4).
-CHECKS_VERSION = 13
+# 12: containers (8.13); 13: logins at unusual hours (Phase 3, decision 4);
+# 14: threat packs' detections (plan 4.5).
+CHECKS_VERSION = 14
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"
@@ -55,6 +56,11 @@ class Finding:
     # group of many files): a whitelist rule naming an entity can't vouch
     # for the ones not listed, so it doesn't match.
     entities_complete: bool = True
+    # A threat pack's weight for it (checker/packs/detect.py): its own
+    # detection's ratio, or a core finding's raised while the host was
+    # exposed, with the pack that raised it.
+    likelihood_ratio: float | None = None
+    raised_by: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

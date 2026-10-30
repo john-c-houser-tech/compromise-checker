@@ -23,6 +23,16 @@ def _days(start: str, until: str | None, now: str | None) -> str:
     return f"{seconds / 86400:.1f} days"
 
 
+@check("pack.detection", "A threat pack's own detection, while the host was exposed")
+def detection(context: Context) -> list[Finding]:
+    """The packs' own rules over events and the snapshot
+    (checker/packs/detect.py); their references to core checks are applied
+    after every check has run (checker/assess.py)."""
+    from checker.packs.detect import own_detections
+
+    return own_detections(context)
+
+
 @check(
     "pack.exposure",
     "Exposure to a threat a pack describes",

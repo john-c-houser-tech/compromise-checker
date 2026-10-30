@@ -41,9 +41,27 @@ validates its drafts exactly as the tool reads them.
         covers: [CVE-2026-115560]
         text: Turn off upload progress tracking until PHP is fixed.
     detections:
-      - id: worker-child
+      - id: worker-child                   # a check built into the tool
         check: web.worker_child
         likelihood_ratio: 10
+      - id: fpm-crash                      # the pack's own rule over events
+        title: PHP-FPM workers crashing
+        needs: [web_error_log]
+        events:
+          any_of:
+            - type: web.error
+              fields: {message: {glob: "*child * exited on signal 11*"}}
+            - type: kernel.segfault
+              fields: {comm: {prefix: php-fpm}}
+          count: {at_least: 3, within: 10m}
+        likelihood_ratio: 8
+      - id: ini-in-web-root                # the pack's own rule over the snapshot
+        title: A .user.ini added to a web root
+        snapshot:
+          section: web_files
+          key: {glob: "*/.user.ini"}
+          state: added
+        likelihood_ratio: 4
     remediation:
       - Upgrade PHP to a fixed package and restart every PHP worker.
     references:
@@ -61,9 +79,18 @@ A fixed version carries the vendor's revision (dpkg) or release (rpm):
 "8.3.6" alone would count every distribution build of 8.3.6 as fixed,
 backported fix or not.
 
-Detections name a check built into the tool; the bounded matching
-language a pack can use for its own detections (decision D1) comes with
-plan 4.5 and widens this schema before the format is first published.
+Detections (decision D1, plan 4.5) count only while the host was exposed
+(checker/packs/detect.py). One names a check built into the tool, whose
+findings then weigh as the pack says (up to the core's critical ratio,
+100); or it is the pack's own rule (up to the high band's, 20, so a pack
+can't outweigh the core checks), over events (one of up to five
+matchers, each an event type, exact or a prefix ending in ".", and its
+fields; at least so many within a span, by a field such as the source
+network) or over the snapshot (items of a section present, absent, or
+added, changed or removed since the baseline). Values are matched as
+text: exactly, by prefix, or by a glob with `*` and `?`, never by a
+regular expression. `needs` names data a detection can't work without;
+a host whose collection lacks it gets a coverage gap, not silence.
 
 YAML is read as YAML 1.2 reads it: `off`, `no` and `yes` stay text, a
 leading zero doesn't make a number octal, and `1:30` isn't sixty-based.
@@ -336,20 +363,158 @@ class Mitigation(_Strict):
         return self
 
 
+# Detections (decision D1): data the engine matches, never code.
+MAX_CHECK_LR = 100.0  # the core's critical band: a check's findings weigh no more
+MAX_OWN_LR = 20.0  # the high band: a pack's own rule weighs no more
+MAX_GLOB_STARS = 10
+MAX_SPAN_SECONDS = 7 * 86400
+_FIELD = re.compile(r"[a-z][a-z0-9_]{0,39}")
+_EVENT_TYPE = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*\.?")
+_SECTION = re.compile(r"[a-z][a-z0-9_]{0,39}")
+_VARIANT = re.compile(r"[a-z][a-z0-9_]{0,39}")
+_DURATION = re.compile(r"([1-9][0-9]{0,6})([smhd])")
+_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+# What a detection can say it needs, each judged from the collection:
+# request_content_type is in no log format the tool reads, so a detection
+# needing it is always a coverage gap (DESIGN.md §10.2's multipart POSTs).
+NEEDS = ("web_access_log", "web_error_log", "process_starts", "request_content_type")
+MatchText = Annotated[str, Field(min_length=1, max_length=200), AfterValidator(_plain)]
+
+
+class Match(_Strict):
+    """A value matched as text: exactly, by its start, or by a glob (`*`
+    any run of characters, `?` one; nothing else is special)."""
+
+    equals: MatchText | None = None
+    prefix: MatchText | None = None
+    glob: MatchText | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> Match:
+        given = [v for v in (self.equals, self.prefix, self.glob) if v is not None]
+        if len(given) != 1:
+            raise ValueError("give one of equals, prefix or glob")
+        if self.glob is not None and self.glob.count("*") > MAX_GLOB_STARS:
+            raise ValueError(f"a glob has at most {MAX_GLOB_STARS} '*'")
+        return self
+
+
+def _fields(value: dict[str, Match]) -> dict[str, Match]:
+    for name in value:
+        if not _FIELD.fullmatch(name):
+            raise ValueError(f"not a field name: {name!r}")
+    return value
+
+
+Fields = Annotated[dict[str, Match], Field(max_length=8), AfterValidator(_fields)]
+
+
+class EventMatch(_Strict):
+    type: str  # exact, or a prefix ending in "." ("web.")
+    fields: Fields = {}
+
+    @field_validator("type")
+    @classmethod
+    def _type(cls, value: str) -> str:
+        if len(value) > 60 or not _EVENT_TYPE.fullmatch(value):
+            raise ValueError(f"not an event type: {value!r}")
+        return value
+
+
+class Count(_Strict):
+    at_least: int = Field(ge=1, le=10_000)
+    within: str | None = None  # "30s", "10m", "2h", "1d"; none: the whole time exposed
+
+    @field_validator("within")
+    @classmethod
+    def _within(cls, value: str | None) -> str | None:
+        if value is not None and span_seconds(value) is None:
+            raise ValueError(f"not a span of at most 7 days, like 10m or 2h: {value!r}")
+        return value
+
+
+def span_seconds(text: str) -> int | None:
+    found = _DURATION.fullmatch(text)
+    if not found:
+        return None
+    seconds = int(found[1]) * _UNIT_SECONDS[found[2]]
+    return seconds if seconds <= MAX_SPAN_SECONDS else None
+
+
+class EventRule(_Strict):
+    any_of: list[EventMatch] = Field(min_length=1, max_length=5)
+    count: Count = Count(at_least=1)
+    by: str | None = None  # a field: counted apart for each of its values
+
+    @field_validator("by")
+    @classmethod
+    def _by(cls, value: str | None) -> str | None:
+        if value is not None and not _FIELD.fullmatch(value):
+            raise ValueError(f"not a field name: {value!r}")
+        return value
+
+
+class SnapshotRule(_Strict):
+    section: str
+    key: Match | None = None
+    fields: Fields = {}
+    # present, absent: in the snapshot now; added, changed, removed: since
+    # the baseline.
+    state: Literal["present", "absent", "added", "changed", "removed"]
+
+    @field_validator("section")
+    @classmethod
+    def _section(cls, value: str) -> str:
+        if not _SECTION.fullmatch(value):
+            raise ValueError(f"not a snapshot section: {value!r}")
+        return value
+
+
 class Detection(_Strict):
-    """A check built into the tool, weighted as the pack says inside the
-    exposure window (and as usual outside it)."""
+    """A check built into the tool (`check`, optionally one `variant`),
+    whose findings weigh as the pack says while the host was exposed; or
+    the pack's own rule (`events` or `snapshot`, with a `title`)."""
 
     id: str = Field(pattern=rf"^{_ID}$")
-    check: str
-    likelihood_ratio: float = Field(gt=1, le=200)  # the core checks' own ceiling
+    check: str | None = None
+    variant: str | None = None
+    title: Annotated[str, Field(min_length=1, max_length=200), AfterValidator(_plain)] | None = None
+    events: EventRule | None = None
+    snapshot: SnapshotRule | None = None
+    needs: list[Literal[NEEDS]] = Field(default=[], max_length=len(NEEDS))  # type: ignore[valid-type]
+    likelihood_ratio: float = Field(gt=1, le=MAX_CHECK_LR)
 
     @field_validator("check")
     @classmethod
-    def _check(cls, value: str) -> str:
-        if not _CHECK.fullmatch(value):
+    def _check(cls, value: str | None) -> str | None:
+        if value is not None and not _CHECK.fullmatch(value):
             raise ValueError(f"not a check id: {value!r}")
         return value
+
+    @field_validator("variant")
+    @classmethod
+    def _variant(cls, value: str | None) -> str | None:
+        if value is not None and not _VARIANT.fullmatch(value):
+            raise ValueError(f"not a variant: {value!r}")
+        return value
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> Detection:
+        kinds = [k for k in ("check", "events", "snapshot") if getattr(self, k) is not None]
+        if len(kinds) != 1:
+            raise ValueError("a detection is one of: check, events, snapshot")
+        if self.variant is not None and self.check is None:
+            raise ValueError("variant goes with check")
+        if self.check is None:
+            if self.title is None:
+                raise ValueError("a pack's own detection has a title")
+            if self.likelihood_ratio > MAX_OWN_LR:
+                raise ValueError(
+                    f"a pack's own detection's likelihood_ratio is at most {MAX_OWN_LR:g}"
+                )
+        if len(set(self.needs)) != len(self.needs):
+            raise ValueError("a need is listed twice")
+        return self
 
 
 class Pack(_Strict):

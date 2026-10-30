@@ -96,7 +96,7 @@ def test_a_good_pack_reads_whole():
         ("kind: php_ini", "kind: registry", "setting.kind"),
         ("covers: [CVE-2026-115560]", "covers: [CVE-26-1]", "not a CVE id"),
         ("check: web.worker_child", "check: 'web; rm'", "not a check id"),
-        ("likelihood_ratio: 20", "likelihood_ratio: 500", "less than or equal to 200"),
+        ("likelihood_ratio: 20", "likelihood_ratio: 500", "less than or equal to 100"),
         ("  - Upgrade PHP", "  - ''\n  - Upgrade PHP", "at least 1 character"),
         ("title:", "colour: red\ntitle:", "Extra inputs are not permitted"),
     ],

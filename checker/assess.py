@@ -23,6 +23,7 @@ from checker.correlate import find_chains
 from checker.events import PARSER_VERSION, Event
 from checker.evidence import Config, EvidenceError, Store, open_text, seal_text
 from checker.inventory import Inventory
+from checker.packs.detect import raise_referenced
 from checker.scoring import DEFAULT_PRIOR, SCORING_VERSION, score
 from checker.snapshot import FULL, SNAPSHOT_VERSION, Snapshot
 from checker.whitelist import Whitelist
@@ -180,6 +181,8 @@ def evaluate(
     raised, raised_by = _exposures(context)
     findings, ran = run_checks(context)
     found = [f.as_dict() for f in findings]
+    # Core findings a pack names weigh as it says while the host was exposed.
+    raise_referenced(context, found, ran)
     applied = whitelist.apply(found, today, context.events) if whitelist is not None else None
     chains = find_chains(found, context.events, context.previous_time)
     scored = score(found, prior[0], chains, raised, raised_by) | {

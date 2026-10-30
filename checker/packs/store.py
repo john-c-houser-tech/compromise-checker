@@ -169,7 +169,7 @@ def add(
         pack = read(data)
     except PackError as exc:
         raise StoreError(f"its content:\n{exc}") from None
-    unknown = sorted({d.check for d in pack.detections} - known_checks)
+    unknown = sorted({d.check for d in pack.detections if d.check} - known_checks)
     if unknown:
         raise StoreError(
             "its detections name checks this version doesn't have: " + ", ".join(unknown)

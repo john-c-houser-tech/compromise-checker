@@ -1923,7 +1923,7 @@ def cmd_packs_check(args: argparse.Namespace) -> int:
             print(f"  {visible(line, 1000)}", file=sys.stderr)
         return 1
     known = load_checks()
-    unknown = [d.check for d in pack.detections if d.check not in known]
+    unknown = [d.check for d in pack.detections if d.check and d.check not in known]
     if unknown:
         print(
             f"checker: {args.file}: detections name checks this version doesn't have: "
@@ -2042,7 +2042,9 @@ def cmd_packs_show(args: argparse.Namespace) -> int:
         print(f"  Mitigation {mitigation.id}: {mitigation.setting.name} = {expect}")
     for detection in pack.detections:
         ratio = f"{detection.likelihood_ratio:g}"
-        print(f"  Detection {detection.id}: {detection.check} (LR {ratio} in the window)")
+        what = detection.check or visible(detection.title or "", 200)
+        kind = "" if detection.check else (" (events)" if detection.events else " (snapshot)")
+        print(f"  Detection {detection.id}: {what}{kind} (LR {ratio} while exposed)")
     return 0
 
 

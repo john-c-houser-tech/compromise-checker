@@ -208,3 +208,24 @@ Remediation: urgency "now" and evidence preserved first on every detection
 run, "routine" on the clean servers. No request declined. About $8.30 for
 the three runs it took (the first set aside answers its own checks read
 wrongly; they were corrected, then confirmed).
+
+**`qwen2.5:7b` with a 32 768 context, through Ollama on a laptop's
+processor, pseudonymize (2026-10-29): the checks held, but the advice is
+thin.** The server read all 32 requests whole, none was declined,
+and 8 answers were set aside by their checks; nothing the checks exist to
+stop reached a report.
+
+- Explanations: "strong signs of compromise" on three of the four
+  detection runs. On the fourth, a canary drew "no signs found" on a
+  Critical host, and the check set it aside. Two clean-server answers were
+  set aside for naming findings that aren't in the case.
+- Whitelist: on the detection runs, every rule it proposed (11, several
+  drawn by canaries) was set aside; on the clean servers it offered 2.
+- Coverage: none of its 19 suggestions was one the tool offers, so all were
+  set aside.
+- Remediation: three of the four detection answers were set aside (two
+  said a step that keeps evidence destroys some; one fetched or sent
+  something to or from an address). The fourth was "now", with evidence preserved first.
+
+A small local model keeps data on your machine, but expect most of its
+advice to be set aside; use a larger model for advice you mean to act on.

@@ -475,6 +475,15 @@ The advisor's answers can't be golden-tested, so they are measured.
   encrypted, append-only record, purged with the evidence; answers
   checked). `docs/advisor.md`; README status Phase 3; DESIGN §12.4–12.5
   point to it.
+- **Local eval (2026-10-29, free):** `qwen2.5:7b-32k` on the laptop's
+  processor, 32 requests, about 7–20 minutes each. All read whole; 8 set
+  aside (two explanations naming findings that aren't in the case, one
+  "no signs found" on a Critical canary run, five remediations); every
+  whitelist rule on a detection run and all 19 coverage suggestions set
+  aside; 2 rules offered on a clean server. The checks held; the advice is
+  thin. Also confirmed: at Ollama's default 4 096 context with
+  `max_tokens` 16 000, a ~7 000-token prompt is still cut to 2 050, which
+  the cut-off check catches.
 
 - Policy §9 reconciled with what is built (agreed with John 2026-10-29:
   SSH key fingerprints added to what is replaced; strict also sends the

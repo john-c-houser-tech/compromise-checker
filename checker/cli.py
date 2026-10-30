@@ -289,7 +289,7 @@ def cmd_config_check_key(args: argparse.Namespace) -> int:
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 2
-    sources = [("", advisor.api_key_source, advisor.api, key_places(advisor.api))]
+    sources = [("", advisor.api_key_source, advisor.api, key_places(advisor.api, advisor.base_url))]
     if advisor.fallback == "model":
         fallback = advisor.fallback_model
         sources.append(
@@ -1720,8 +1720,9 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
         if chosen.bundles:
             print(f"To purge: {len(chosen.bundles)} bundle(s), with their events, snapshots,")
             print(
-                f"assessments and custody records; {len(chosen.files)} file(s) and"
-                f" {len(chosen.reports)} report(s)."
+                f"assessments and custody records; {len(chosen.files)} file(s),"
+                f" {len(chosen.reports)} report(s) and {len(chosen.proposals)} whitelist"
+                " proposal file(s)."
             )
         for row in chosen.bundles:
             print(f"  {row['started_at']}  {row['host']:20} {row['id']}")
@@ -1748,6 +1749,12 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
     for path, reason in outcome.failed:
         print(
             f"checker: couldn't delete {path} ({reason}); the next purge tries again",
+            file=sys.stderr,
+        )
+    for path in outcome.changed:
+        print(
+            f"checker: {path} changed after the purge was planned, so it was left as it is;"
+            " delete it yourself if it shows the purged evidence",
             file=sys.stderr,
         )
     return 1 if outcome.failed else 0

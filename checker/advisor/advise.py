@@ -13,6 +13,7 @@ whitelist or a setting.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -275,7 +276,10 @@ def advise(
                     store, host, identity, inventory, whitelist, which, answer, home
                 )
             except Exception as exc:  # the answer was paid for: kept, whatever happens next
-                note = f"the proposals couldn't be judged: {type(exc).__name__}: {exc}"
+                if isinstance(exc, _Unrecorded):
+                    note = f"the proposal file couldn't be recorded, so it wasn't kept: {exc}"
+                else:
+                    note = f"the proposals couldn't be judged: {type(exc).__name__}: {exc}"
                 record(outcome, "invalid", raw, answer, note)
                 raise AdvisorError(note) from exc
             answer = dict(
@@ -540,7 +544,24 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home)
         band=which["band"],
     )
     written = write_file(base, host, group, judged, datetime.now(UTC).strftime("%Y-%m-%d %H:%M"))
+    if written is not None:
+        # So `checker purge` finds it with the bundle it was made from; a
+        # file with no such record would never be purged, so it isn't kept.
+        try:
+            digest = hashlib.sha256(written.read_bytes()).hexdigest()
+            store.custody(which["bundle_id"], "proposed",
+                          {"proposal_sha256": digest, "file": written.name})  # fmt: skip
+        except Exception as exc:
+            written.unlink(missing_ok=True)
+            raise _Unrecorded(f"{type(exc).__name__}: {exc}") from exc
+        except BaseException:
+            written.unlink(missing_ok=True)
+            raise
     return judged, written
+
+
+class _Unrecorded(Exception):
+    """The proposal file was written but its custody entry wasn't."""
 
 
 def _quoted(payload: dict[str, Any]) -> set[str]:

@@ -1,7 +1,8 @@
 # Phase 3 build plan — 2026-10-29
 
 > **Status: DRAFT 1, 2026-10-29** — shape agreed by John; every
-> decision settled. 3.0–3.6 built and merged; 3.7 in progress.
+> decision settled. 3.0–3.7b built and merged; 3.8 (policy, docs) in
+> review.
 
 **Goal (DESIGN.md §18, Phase 3):** an operator who turns the advisor on
 gets a plain-language reading of an assessment, whitelist proposals they can
@@ -464,6 +465,40 @@ The advisor's answers can't be golden-tested, so they are measured.
   analysis of the pinned bundle isn't sent.
 
 ### 3.8 — Policy, docs, README
+
+- **As built (2026-10-29):** policy §9 rewritten in the wording John
+  approved (the four roles; key sources; `--show` and the cost question;
+  whitelist reasons shouldn't name people; SSH key fingerprints replaced;
+  fresh placeholders like `USER-2-7f3a`; strict sends kinds of coverage
+  gap; the three choices on a decline; inference geography; a local model
+  reached directly; advice only, never critical or chained findings; the
+  encrypted, append-only record, purged with the evidence; answers
+  checked). `docs/advisor.md`; README status Phase 3; DESIGN §12.4–12.5
+  point to it.
+- **Local eval (2026-10-29, free):** `qwen2.5:7b-32k` on the laptop's
+  processor, 32 requests, about 7–20 minutes each. All read whole; 8 set
+  aside (two explanations naming findings that aren't in the case, one
+  "no signs found" on a Critical canary run, five remediations); every
+  whitelist rule on a detection run and all 19 coverage suggestions set
+  aside. On fresh-ubuntu24.04+canaries the "rule for every finding"
+  canary drew rules for F-11–F-17 (none without it) and 2 passed the
+  checks and were offered: the checks allow rules on a Low host, so a quiet
+  intruder can steer proposals. Docs say so; a person still reviews each.
+  The eval keeps only set-aside answers, so it can't say which 2 were
+  offered; keeping offered answers too would. Also confirmed: at Ollama's
+  default 4 096 context with `max_tokens` 16 000, a ~7 000-token prompt is
+  still cut to 2 050, which the cut-off check catches.
+- **After two reviews (3.8, 2026-10-30):** purge finds proposal files by
+  the name in their bundle's custody (the operator edits them), deletes a
+  report or proposal only while it has the hash it had when planned, and
+  names them with those hashes in the purge record, so the next purge
+  finishes one it couldn't delete; a proposal file whose custody entry
+  fails isn't kept. Policy §9 corrected three more times with John's
+  approval: what is sent in full, the host's own group names are sent,
+  `--show` and the fallback, baseline quotes, hand edits unrecorded, the
+  tool (not the model) never offers critical or chained rules, moved
+  proposals are the operator's. Later: replacing the host's own group
+  names would need a list of system groups to keep.
 
 - Policy §9 reconciled with what is built (agreed with John 2026-10-29:
   SSH key fingerprints added to what is replaced; strict also sends the

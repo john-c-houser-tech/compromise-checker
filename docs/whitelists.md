@@ -295,3 +295,9 @@ accepted rules, so text from a host quoted in its comments can't add one. Its `o
 until a person writes in who vouches for it. Review, set the owner, try it
 with `checker whitelist test`, then copy it into the layer file. The
 report lists what was proposed and what was set aside, and why.
+
+The checks bound what a rule can hide, not why it was proposed. Text an
+intruder wrote on a quiet host can ask the advisor for rules, and a rule
+for a low finding can pass every check (a small local model did this in
+the [eval](advisor.md#how-well-it-works)). Ask of each proposal whether
+you would have written it yourself from the findings it hides.

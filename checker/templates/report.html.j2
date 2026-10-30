@@ -96,6 +96,7 @@ policy §9).</p>
 
 {% macro advice_meta(x, full=False) %}<p class="meta">Asked {{ x.model_asked|visible(80) }}{% if x.declined_by %}; declined by {{ x.declined_by|join(", ")|visible(200) }}{% endif %}{% if x.model_answered %}; answered by {{ x.model_answered|visible(80) }}{% if x.endpoint %} at {{ x.endpoint|visible(200) }}{% endif %}{% endif %} · redaction {{ x.redaction }} · {{ x.at[:16] }} UTC{% if full %} · about the assessment of {{ x.assessed_at[:16] }}{% endif %}{% if x.stale %} · <strong>stale{% if full %}: it read another collection or assessment of this host than this report shows{% endif %}</strong>{% endif %}</p>
 {% if x.local and x.model_answered %}<p class="muted">Answered by a local model, on the machine that ran <span class="mono">checker advise</span>: expect lower quality than from a large hosted model, and read it with more care.</p>{% endif %}{% endmacro %}
+{% macro came_to_nothing(title, entry) %}{% set x = entry.get("later") %}{% if x %}<p class="muted">AI advisor, {{ title }}: {% if entry.get("answered") %}a later request{% else %}a request{% endif %} ({{ x.model_asked|visible(80) }}, {{ x.at[:16] }} UTC) came to nothing: {{ x.note|visible(400) }}.</p>{% endif %}{% endmacro %}
 {% macro finding_card(f) %}
 <div class="finding">
 <div><span class="band {{ f.band }}">{{ f.band|upper }}</span>
@@ -206,6 +207,7 @@ uncertain findings count half. Suppressed and informational findings don't count
 <p class="muted">Written by an AI model for a person to weigh against what they know of the host. Commands are shown as text; the tool runs nothing. Preserve evidence before any step marked as destroying state.</p>
 </div>
 {% endif %}
+{{ came_to_nothing("remediation", r.advice.get("remediation") or {}) }}
 {% set c = (r.advice.get("coverage") or {}).get("answered") %}
 {% if c and c.answer %}
 {% set offered = c.answer.judged|selectattr("accepted")|list %}
@@ -219,6 +221,7 @@ uncertain findings count half. Suppressed and informational findings don't count
 {% if aside %}<p class="muted">{{ aside|length }} set aside: {% for j in aside %}{{ j.reason|visible(200) }}{% if not loop.last %}; {% endif %}{% endfor %}.</p>{% endif %}
 </div>
 {% endif %}
+{{ came_to_nothing("coverage suggestions", r.advice.get("coverage") or {}) }}
 {% set w = (r.advice.get("whitelist") or {}).get("answered") %}
 {% if w and w.answer %}
 {% set offered = w.answer.judged|selectattr("accepted")|list %}
@@ -230,6 +233,7 @@ uncertain findings count half. Suppressed and informational findings don't count
 <p class="muted">A proposal is only offered when it hides exactly the findings it names, none of them critical or part of a chain. Nothing changes until a person copies a rule into the whitelist.</p>
 </div>
 {% endif %}
+{{ came_to_nothing("whitelist proposals", r.advice.get("whitelist") or {}) }}
 {% endfor %}
 
 <h2>Appendix</h2>

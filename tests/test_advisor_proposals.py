@@ -537,3 +537,147 @@ def test_a_linked_proposals_directory_is_refused(tmp_path):
     (tmp_path / "proposals").symlink_to(tmp_path / "elsewhere")
     with pytest.raises(ProposalFileError, match="is a link"):
         write_file(tmp_path, "web01", None, judged(proposal()), "now")
+
+
+def test_a_proposal_file_is_purged_with_its_bundle(sudo_host, capsys):
+    base, store, _, _ = sudo_host
+    advice = run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
+    assert advice.file.exists()
+    by_hand = base / "proposals" / "web01-notes.yaml"  # not made from a bundle: kept
+    by_hand.write_text("rules: []\n")
+    from datetime import UTC, datetime
+
+    from checker.purge import execute, plan
+
+    chosen = plan(store, base, set(), 90, before=datetime(2100, 1, 1, tzinfo=UTC))
+    assert chosen.proposals == [advice.file]
+    outcome = execute(store, base, chosen)
+    assert outcome.counts["proposals"] == 1
+    assert not advice.file.exists() and by_hand.exists()
+
+
+def test_an_edited_proposal_file_is_still_purged(sudo_host):
+    """The file tells the operator to set each rule's owner, which changes its
+    hash: it is found by the name in its bundle's custody."""
+    from datetime import UTC, datetime
+
+    from checker.purge import execute, plan
+
+    base, store, _, _ = sudo_host
+    advice = run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
+    advice.file.write_text(advice.file.read_text().replace("owner:", "owner: ops #"))
+    chosen = plan(store, base, set(), 90, before=datetime(2100, 1, 1, tzinfo=UTC))
+    assert chosen.proposals == [advice.file]
+    execute(store, base, chosen)
+    assert not advice.file.exists()
+
+
+def test_a_custody_name_outside_the_proposals_folder_is_ignored(sudo_host):
+    from datetime import UTC, datetime
+
+    from checker.purge import plan
+
+    base, store, _, _ = sudo_host
+    victim = base / "whitelist.yaml"
+    victim.write_text("rules: []\n")
+    (base / "proposals").mkdir(exist_ok=True)
+    for name in ("../whitelist.yaml", "/etc/passwd", "x.txt", "..", ""):
+        store.custody("b2", "proposed", {"proposal_sha256": "0", "file": name})
+    chosen = plan(store, base, set(), 90, before=datetime(2100, 1, 1, tzinfo=UTC))
+    assert chosen.proposals == []
+
+
+def test_a_proposal_a_purge_couldnt_delete_goes_at_the_next(sudo_host, monkeypatch):
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from checker.purge import execute, leftovers, plan
+
+    base, store, _, _ = sudo_host
+    advice = run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
+    real = Path.unlink
+
+    def stuck(self, *args, **kwargs):
+        if self == advice.file:
+            raise PermissionError(13, "Permission denied")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", stuck)
+    chosen = plan(store, base, set(), 90, before=datetime(2100, 1, 1, tzinfo=UTC))
+    outcome = execute(store, base, chosen)
+    assert [p for p, _ in outcome.failed] == [advice.file]
+    scope = json.loads(store.purges()[-1]["scope"])
+    assert scope["proposals"] == 1 and scope["reports"] == 0
+    monkeypatch.setattr(Path, "unlink", real)
+    assert leftovers(store, base) == [advice.file]
+    execute(store, base, plan(store, base, set(), 90, host="nothing-here"))
+    assert not advice.file.exists() and leftovers(store, base) == []
+
+
+def test_a_file_that_changes_after_planning_is_left_and_not_retried(sudo_host):
+    """Another report or proposal written at a planned name before the purge
+    runs isn't deleted, now or by a later purge."""
+    from datetime import UTC, datetime
+
+    from checker.purge import execute, leftovers, plan
+
+    base, store, _, _ = sudo_host
+    advice = run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
+    chosen = plan(store, base, set(), 90, before=datetime(2100, 1, 1, tzinfo=UTC))
+    assert chosen.proposals == [advice.file]
+    advice.file.write_text("rules: []  # someone else's\n")
+    outcome = execute(store, base, chosen)
+    assert outcome.changed == [advice.file] and outcome.counts["proposals"] == 0
+    assert advice.file.exists() and leftovers(store, base) == []
+
+
+def test_odd_purge_records_dont_break_later_purges(sudo_host):
+    from checker.purge import leftovers
+
+    base, store, _, _ = sudo_host
+    (base / "proposals").mkdir(exist_ok=True)
+    (base / "proposals" / "a.yaml").write_text("rules: []\n")  # an operator's, kept
+    for derived in (5, "x", [5], [["proposals/a.yaml"]], [["proposals/a.yaml", None]],
+                    [["proposals/a.yaml", "0"]], [["../a.yaml", "0"]], [[1, 2]]):  # fmt: skip
+        store._db.execute(
+            "INSERT INTO purges (at, operator, controller, scope, bundles, counts, baselines)"
+            " VALUES ('t', 'o', 'c', ?, '[]', '{}', '{}')",
+            (json.dumps({"derived": derived}),),
+        )
+    assert leftovers(store, base) == []
+
+
+def test_a_proposal_file_with_no_custody_record_isnt_kept(sudo_host, monkeypatch):
+    base, store, _, _ = sudo_host
+    real = store.__class__.custody
+
+    def broken(self, bundle_id, action, *args, **kwargs):
+        if action == "proposed":
+            raise OSError("disk full")
+        return real(self, bundle_id, action, *args, **kwargs)
+
+    monkeypatch.setattr(store.__class__, "custody", broken)
+    from checker.advisor.client import AdvisorError
+
+    with pytest.raises(
+        AdvisorError, match="couldn't be recorded, so it wasn't kept: OSError: disk full"
+    ):
+        run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
+    assert (base / "proposals").is_dir()
+    assert list((base / "proposals").glob("*.yaml")) == []
+
+
+def test_a_request_that_came_to_nothing_shows_for_every_role(sudo_host):
+    from checker.report import write_report
+
+    base, store, identity, config = sudo_host
+    declined = {"id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+                "content": [], "stop_reason": "refusal", "stop_sequence": None,
+                "stop_details": {"type": "refusal", "category": "cyber"},
+                "usage": {"input_tokens": 10, "output_tokens": 0}}  # fmt: skip
+    for role in ("whitelist", "coverage", "remediation"):
+        run(sudo_host, Provider(lambda body: declined), role=role)
+    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    for title in ("whitelist proposals", "coverage suggestions", "remediation"):
+        assert f"AI advisor, {title}: a request (claude-opus-5-5," in html
+    assert html.count("declined by the model&#39;s safety checks (cyber)") >= 3

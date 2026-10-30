@@ -807,3 +807,13 @@ def test_a_fallback_answer_that_breaks_the_reader_is_recorded_as_failed(enabled,
 def test_an_sdk_redirect_is_named(enabled):
     with pytest.raises(AdvisorError, match="redirected the request \\(307\\)"):
         run(enabled, Provider(status=307))
+
+
+def test_check_key_reads_the_key_advise_will(base_with_config, capsys, monkeypatch):
+    base = base_with_config
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    monkeypatch.delenv("CHECKER_ADVISOR_API_KEY", raising=False)
+    change(base, "advisor.base_url", "https://gateway.example.org")
+    assert cli.main(["config", "check-key"]) == 1
+    captured = capsys.readouterr()
+    assert "Reading the key from the CHECKER_ADVISOR_API_KEY" in captured.out

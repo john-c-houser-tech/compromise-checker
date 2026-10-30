@@ -250,6 +250,15 @@ def test_preservation_wording_isnt_thrown_away(text):
     check(answer(preserve=[step(text)]))
 
 
+@pytest.mark.parametrize(
+    "text",
+    ["chmod 0000 /etc/shadow after noting its mode", "Reset the sshd configuration to the"
+     " package's", "Regenerate the host keys", "systemctl disable nginx"],
+)  # fmt: skip
+def test_tightening_a_host_isnt_destroying_evidence(text):
+    check(lone(text, band="Low", urgency="routine"), band="Low")
+
+
 def test_changing_credentials_isnt_destroying_evidence():
     check(lone("Rotate the deploy account's password", band="Low", urgency="routine"),
           band="Low")  # fmt: skip
@@ -283,3 +292,26 @@ def test_the_stored_raw_answer_stays_the_models(enabled):
     saved = json.loads(open_text(row["answer"], identity))
     assert saved["raw"]["contain"][0]["destructive"] is False  # the model's own flag
     assert saved["restored"]["contain"][0]["destructive"] is True  # the tool's reading
+
+
+# --- False positives the first eval run found (2026-10-29) ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Find how the web shell got in: written at 15:50:56; look for an upload flaw",
+        "Explain the root login from 203.0.113.9 at 15:48 and the proof-* rules",
+        "Confirm whether the 15:50-15:51 activity on 2026-10-29 was their planned test",
+        "Rotate every secret; check the mail settings; the root login came from 203.0.113.11",
+    ],
+)
+def test_times_dates_and_descriptions_arent_destinations(text):
+    tell = [{"role": "the change owner", "what": text, "when": "today"}]
+    check(answer(tell=tell, recover=[step(text)]))
+
+
+def test_describing_the_attackers_traffic_isnt_sending_there():
+    reason = "Cuts off the outbound mail and the 127.0.0.1 relays the tunnel exposes"
+    why = {**step("Isolate the host at the switch"), "why": reason}
+    check(answer(contain=[why]))

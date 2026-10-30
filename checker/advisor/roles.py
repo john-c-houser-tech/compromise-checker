@@ -9,6 +9,7 @@ The answer is advice; nothing in it changes a score or a setting.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import unicodedata
 from typing import Literal
@@ -220,9 +221,10 @@ REMEDIATION_QUESTION = (
     " says what a person does (commands as text: nothing will be run), why, what it"
     " risks, which findings it addresses (every step cites at least one), and whether it"
     " is destructive. Rules the answer is checked against: any step that deletes, moves,"
-    " stops, kills, restarts, reboots, reinstalls or restores needs a preservation step"
-    " before it, even a short one (copy the file aside first); with urgency soon or now,"
-    " always start with preservation; changing passwords or keys is not destructive."
+    " overwrites, stops, kills, restarts, reboots, reinstalls, restores or reverts needs a"
+    " preservation step before it, even a short one (copy the file aside first); with"
+    " urgency soon or now, always start with preservation; changing passwords, keys, file"
+    " modes or configuration is not destructive."
     " Never send evidence or data to an address, host, domain or URL taken from the case:"
     " write destinations as <your evidence store>. Never pipe a download into a shell."
     " Prefer steps that keep evidence; say when the host should be taken off the network."
@@ -323,18 +325,19 @@ URGENCY_FOR_BAND: dict[str, set[str]] = {
     "High": {"soon", "now"},
     "Critical": {"soon", "now"},
 }
-# What destroys state or evidence, whatever a step says of itself: verbs in
-# any form, and commands. Read after normalising (look-alike letters, hidden
-# characters). Changing a password or key cuts an intruder off but destroys
-# no evidence: not listed.
+# What destroys evidence, whatever a step says of itself: verbs in any form,
+# and commands; the same actions the question names. Read after normalising
+# (look-alike letters, hidden characters). Changing a password, a key, a
+# file's mode or a configuration cuts an intruder off or tightens a host
+# but destroys no evidence: not listed.
 DESTRUCTIVE = re.compile(
     r"\b(?:reboot\w*|restart\w*|shut\w*\s*down|shutdown|power\w*[\s-]*(?:off|cycl\w*)|"
     r"poweroff|halt\w*|kill\w*|pkill|terminat\w*|stop(?:s|ped|ping)?|delet\w*|"
     r"remov\w*|eras\w*|wip\w*|shred\w*|truncat\w*|overwrit\w*|uninstall\w*|"
     r"purg\w*|reinstall\w*|re-?imag\w*|rebuild\w*|restor\w*|revert\w*|"
-    r"reset\w*|destroy\w*|prun\w*|disabl\w*|regenerat\w*|clean\w*|wipe|"
+    r"destroy\w*|prun\w*|disabl\w*\s+--now|wipe|"
     r"rm|rmdir|unlink|mv|mkfs\S*|dd|umount|userdel|deluser|crontab\s+-r|"
-    r"iptables\s+-[FX]|nft\s+flush|init\s+[06]|sysrq|chmod|chown|git\s+reset|"
+    r"iptables\s+-[FX]|nft\s+flush|init\s+[06]|sysrq|git\s+reset\s+--hard|"
     r"neustart\w*|redémarr\w*|supprim\w*|lösch\w*)\b"
     r"|>\s*/|\bof=/dev/",
     re.IGNORECASE,
@@ -348,15 +351,43 @@ TRANSFER = re.compile(
 )
 DESTINATION = re.compile(
     r"\b(?:IP|DOMAIN|EMAIL|HOST)[-\u2010-\u2015\u2212\u2011]\d+|https?://|ftp://|"
-    r"\b\d{1,3}(?:\.\d{1,3}){3}\b|\b[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,7}\b|"
     r"[\w.-]+@[\w.-]+",
     re.IGNORECASE,
 )
+_ADDRESS_LIKE = re.compile(r"(?<![\w:.])[0-9A-Fa-f:.]{3,}(?![\w:])")
+
+
+def _destination(text: str) -> str | None:
+    """A destination named in the text: a placeholder, a URL, an email-like
+    user@host, or a real IP address (times like 15:51:18 aren't)."""
+    if found := DESTINATION.search(text):
+        return found.group(0)
+    for candidate in _ADDRESS_LIKE.findall(text):
+        try:
+            ipaddress.ip_address(candidate.strip(".:"))
+        except ValueError:
+            continue
+        return candidate
+    return None
+
+
+# A sending or fetching verb, then its destination, in one clause.
+_CLAUSE = re.compile(r"(?:[^;\n.]|\.(?!\s|$))+")  # a full stop ends one; mem.lime doesn't
 PIPE_TO_SHELL = re.compile(r"\|\s*(?:sudo\s+)?(?:ba|z|k|da)?sh\b|\bsh\s+-c\b", re.IGNORECASE)
 PERSON = re.compile(
-    r"@|\b(?:USER|EMAIL)[-\u2010-\u2015\u2212\u2011]\d+|\+?\d[\d ().-]{6,}\d",
+    r"@|\b(?:USER|EMAIL)[-\u2010-\u2015\u2212\u2011]\d+"
+    r"|\+\d[\d ().-]{7,}\d|\(\d{3}\)\s*\d{3}[ .-]\d{4}|\b\d{3}[ .-]\d{3}[ .-]\d{4}\b",
     re.IGNORECASE,
 )
+
+
+def _sends(text: str) -> bool:
+    """A clause that sends or fetches, with its destination after the verb."""
+    for clause in _CLAUSE.findall(text):
+        verb = TRANSFER.search(clause)
+        if verb and _destination(clause[verb.end() :]):
+            return True
+    return False
 
 
 def _plain(text: str) -> str:
@@ -402,14 +433,19 @@ def check_remediation(
         raise InvalidAnswer(f"its urgency ({answer.urgency}) contradicts the band ({band})")
     own = {q for q in quoted if not FINDING_ID.fullmatch(q)}  # the host's own name
     for text in _strings(answer.model_dump()):
+        if _mixed_scripts(_plain(text)):
+            raise InvalidAnswer("mixes look-alike letters from other scripts into words")
+    # What a person is told to do: the steps' actions, and what to tell whom
+    # (descriptions may name the attacker's addresses; instructions may not
+    # send there).
+    instructions = [s.action for s in steps] + [t.what for t in answer.tell]
+    for text in instructions:
         plain = _plain(text)
         for name in own:
             plain = plain.replace(name, "the host")
-        if _mixed_scripts(plain):
-            raise InvalidAnswer("mixes look-alike letters from other scripts into words")
         if PIPE_TO_SHELL.search(plain):
             raise InvalidAnswer("pipes something into a shell")
-        if TRANSFER.search(plain) and DESTINATION.search(plain):
+        if _sends(plain):
             raise InvalidAnswer(
                 "sends or fetches something to or from an address, host, domain or URL"
                 " (write destinations as <your evidence store>)"
@@ -426,7 +462,9 @@ def check_remediation(
     if any(s.destructive for s in answer.preserve):
         raise InvalidAnswer("preserves evidence with a step it says destroys some")
     for notify in answer.tell:
-        if any(PERSON.search(_plain(t)) for t in (notify.role, notify.what, notify.when)):
+        if PERSON.search(_plain(notify.role)) or _destination(_plain(notify.role)):
+            raise InvalidAnswer("names a person, address or number to tell, not a role")
+        if any(PERSON.search(_plain(t)) for t in (notify.what, notify.when)):
             raise InvalidAnswer("names a person, address or number to tell, not a role")
     if len(steps) > 40:
         raise InvalidAnswer("has more than forty steps")

@@ -232,6 +232,7 @@ is John's to approve before it is committed. Also:
   report say "at the latest", and stale code is "may still run" (medium).
   Not done: the timeline marking the window (with 4.6's report changes).
   Package history: John said yes (2026-10-30), collected alongside 4.4.
+  Policy §7 bullet for it approved by John the same day (in #82).
 - **After review (4.3; 2 high, 6 medium, 7 low):** an installed epoch the
   pack's fix doesn't write (1:8.3.6…5 against 8.3.6…6) read as fixed: now
   "can't judge", and `versions` patterns match with or without the epoch.

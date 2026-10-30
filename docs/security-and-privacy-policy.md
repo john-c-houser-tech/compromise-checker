@@ -138,6 +138,12 @@ that may include access tokens, and sometimes secrets typed into commands.
   Your organization can choose during setup to collect program starts for
   root, service accounts and accounts with administrator rights too, and,
   only with that, for ordinary users.
+- **Package history and PHP settings.** The record of package installs,
+  upgrades and removals (from dpkg's log or dnf's history, up to about a
+  year back; package names, versions and times only) and the settings in
+  PHP's configuration files (setting names and values, masked; comments
+  left out), so a threat pack can tell when a fix arrived and whether a
+  recommended setting is in place.
 - **Mail logs.** Outgoing mail logs (Postfix, Exim) are collected, because
   mail sent from a compromised server is a common sign of misuse. Before they
   leave the server, every email address in them is changed: the part before

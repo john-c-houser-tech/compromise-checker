@@ -28,6 +28,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from checker.advisor.roles import ROLES, SYSTEM_PROMPT
+from checker.advisor.roles import question as role_question
 from checker.evidence import Advisor
 
 MAX_TOKENS = 16_000
@@ -82,7 +83,7 @@ def build_request(payload: dict[str, Any], role: str, advisor: Advisor) -> Reque
     """The request, as `--show` prints it and `send` sends it: the system
     prompt and the case first, both marked for caching, then the role's
     question; the answer's schema in output_config."""
-    _, question = ROLES[role]
+    question = role_question(role)
     body: dict[str, Any] = {
         "model": advisor.model,
         "max_tokens": MAX_TOKENS,

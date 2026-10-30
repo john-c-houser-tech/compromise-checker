@@ -33,8 +33,14 @@ What works today:
   band), its placeholders turned back into names, and it is stored
   encrypted with exactly what was sent; the report shows it, labelled
   with the models and redaction, separately from the findings.
-  `--show [--redaction MODE]` prints exactly what would be sent, after
-  redaction, and sends nothing. Under *pseudonymize* (the default) people's
+  `--role whitelist` asks instead for whitelist rules for findings that
+  are routine on the host: each is checked against the real findings (it
+  must hide exactly the findings it names, none critical or part of a
+  chain, on the host's stored analyses and, for a group rule, the
+  group's) and the accepted ones written to `proposals/` with
+  the owner left empty, for a person to review and copy in; nothing is
+  applied. `--show [--redaction MODE]` prints exactly what would be sent,
+  after redaction, and sends nothing. Under *pseudonymize* (the default) people's
   account names, host names, email addresses, IP addresses and SSH key
   fingerprints become placeholders (USER-2-7f3a) made fresh for each run;
   *strict* sends only the kinds of finding, counts, scores and kinds of

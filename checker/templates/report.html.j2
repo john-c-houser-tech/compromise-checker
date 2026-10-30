@@ -191,6 +191,17 @@ uncertain findings count half. Suppressed and informational findings don't count
 <p class="muted">Written by an AI model from the findings above; the probability and band are the tool's own and unchanged. Finding numbers (F-n) count the analysis's findings in order.</p>
 </div>
 {% endif %}
+{% set w = (r.advice.get("whitelist") or {}).get("answered") %}
+{% if w and w.answer %}
+{% set offered = w.answer.judged|selectattr("accepted")|list %}
+<h3>AI advisor: whitelist proposals (not in effect)</h3>
+<div class="notice">
+<p class="meta">Asked {{ w.model_asked|visible(80) }}{% if w.declined_by %}; declined by {{ w.declined_by|join(", ")|visible(200) }}{% endif %}{% if w.model_answered %}; answered by {{ w.model_answered|visible(80) }}{% endif %} · redaction {{ w.redaction }} · {{ w.at[:16] }} UTC{% if w.stale %} · <strong>stale</strong>{% endif %}</p>
+<p>{{ offered|length }} proposed{% if w.answer.file %}, written to <span class="mono">{{ w.answer.file|visible(300) }}</span> for a person to review{% endif %}; {{ w.answer.judged|length - offered|length }} set aside.</p>
+{% if w.answer.judged %}<ul>{% for j in w.answer.judged %}<li><span class="mono">{{ j.id|visible(80) }}</span>: {% if j.accepted %}hides {{ j.hides|join("; ")|visible(600) }}{% else %}set aside: {{ j.reason|visible(300) }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+<p class="muted">A proposal is only offered when it hides exactly the findings it names, none of them critical or part of a chain. Nothing changes until a person copies a rule into the whitelist.</p>
+</div>
+{% endif %}
 {% endfor %}
 
 <h2>Appendix</h2>

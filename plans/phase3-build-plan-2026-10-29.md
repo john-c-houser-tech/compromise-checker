@@ -1,7 +1,7 @@
 # Phase 3 build plan — 2026-10-29
 
 > **Status: DRAFT 1, 2026-10-29** — shape agreed by John; decisions 1,
-> 2, 3, 4 and 6 settled; 5, 7 and 8 open. Nothing built yet.
+> 2, 3, 4, 6 and 7 settled; 5 and 8 open. Nothing built yet.
 
 **Goal (DESIGN.md §18, Phase 3):** an operator who turns the advisor on
 gets a plain-language reading of an assessment, whitelist proposals they can
@@ -240,14 +240,25 @@ assessment, its events, snapshot and whitelist, by one module
   group rule over the group's hosts: anything else it would hide is listed,
   and a proposal that would hide a finding it didn't name is rejected);
   it doesn't match a protected check (decision 7).
-- **Output:** a proposal file under `whitelist/proposals/HOST-DATE.yaml`
-  (restored from tokens), with a comment per rule naming the findings it
-  hides and the advice record it came from, and the `whitelist test`
-  summary printed. Applying it is copying rules into the real layer by
-  hand; `checker whitelist check` then validates as today.
+- **Output:** a proposal file under `proposals/HOST-TIME.yaml` (beside `whitelist/`)
+  (restored from tokens, owner-only), with a comment per rule naming the
+  layer file it belongs in and the findings it hides; the owner left empty
+  so `checker whitelist check` refuses a rule nobody vouched for; the file
+  is itself a valid layer once owners are set. Applying it is copying rules
+  into the real layer by hand. Built 2026-10-29; decision 7: never for
+  critical or chained findings.
 - **Tests:** proposals that are too broad, name unknown findings, use a
   field the rule model doesn't have, or touch a protected check are all
   rejected; a correct proposal hides exactly its findings.
+- **As built after two adversarial reviews (2026-10-29):** no proposals
+  while the host is assessed High or Critical or has a chain; hand-only
+  checks (those that can raise critical findings, every chain step,
+  web.exploit); the rule names every entity kind its findings carry and
+  their variant; patterns only for several findings in one directory, last
+  part only, no `**`; networks no wider than /24 (/64); interpreter exes
+  only with an account; twins elsewhere compared by check, variant, title
+  and entities; the file's comments escaped and the file read back as
+  exactly the accepted rules before it is kept; files in `proposals/`.
 
 ### 3.4 — Role 3: further collection and coverage
 
@@ -388,11 +399,10 @@ The advisor's answers can't be golden-tested, so they are measured.
 6. ~~Before 3.0 — role 5 (threat-pack drafting).~~ **Decided 2026-10-29:**
    moved to Phase 4, built with the pack format. Phase 3 delivers roles
    1–4; DESIGN.md §12.1 and §18 say so.
-7. **Before 3.3 — protected checks.** Whether the advisor may propose
-   whitelist rules for findings in the critical band (`ld.so.preload`,
-   hidden processes, a second UID 0 account…) and for any finding that is
-   part of a chain. Recommendation: never; those can only be whitelisted
-   by hand, and a proposal touching them is rejected.
+7. ~~Before 3.3 — protected checks.~~ **Decided 2026-10-29:** never. A
+   proposal that would hide a critical finding or any finding that is part
+   of a chain is set aside before the operator sees it; those findings are
+   whitelisted only by hand.
 8. **Before 3.6 — eval budget and key.** Which API key the eval runs with
    and a cap for Phase 3's API spend. Estimate: a case file of 15–40 k
    tokens, four roles, about 30 cases per run → roughly $3–6 per full run

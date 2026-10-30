@@ -977,5 +977,7 @@ def case_for_host(
         "bundle_id": report.row["id"],
         "assessed_at": report.assessment.get("analysed_at"),
         "band": (report.assessment.get("score") or {}).get("band"),
+        "group": entry.group if entry else None,
+        "report": report,  # the real findings, events and chains, for proposals
     }
     return built, known, which

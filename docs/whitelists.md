@@ -251,3 +251,47 @@ SHA-256, and the day it judged expiry on. When the whitelist changes, or a
 rule has expired since, the next report applies the current one to the
 stored findings and scores them again (the checks don't run again), as a
 new assessment; the earlier one is kept.
+
+A path or exe pattern made of wildcards alone (`/**`, `/*/**`, `/**/*`)
+matches every path: a rule with one needs `broad: true`, as one naming
+nothing does.
+
+## Proposals from the AI advisor
+
+`checker advise HOST --role whitelist` asks the optional advisor
+(security and privacy policy §9) for rules for findings that are routine on
+the host. Its answer is advice: nothing is applied. Each proposed rule is
+checked against the host's real findings, after its placeholders are
+turned back into names, and offered only when:
+
+- it is a valid rule (the same model as these files) that narrows its
+  check, expires within 90 days, and has an id no whitelist it could join
+  uses;
+- the host isn't assessed High or Critical and has no chain: tidying
+  noise is for a host that looks clean;
+- its check is not written only by hand: the checks that can raise a
+  critical finding (`account.uid0`, `kernel.taint`, `package.changed`,
+  `persistence.ld_preload`, `process.hidden`), every check a chain is made
+  of (a suppressed finding takes no part in a chain, so a rule could stop
+  one forming), and `web.exploit` (what an attack was isn't one of its
+  entities);
+- it hides every finding it names, none already suppressed, critical or
+  part of a chain (Phase 3 decision 7), all of one variant, which the rule
+  names;
+- it names every kind of entity its findings carry (account, address,
+  path, exe…), with the findings' exact values; a pattern only when several
+  named findings in one directory need it, `*` or `?` in its last part
+  only, never `**` and never a last part of wildcards alone; a network only
+  when several named addresses need it, no wider than /24 (/64); an
+  interpreter (`python3`, `bash`, `node`…) as exe only with an account;
+- it hides nothing else in any stored analysis of the host, and, for a
+  group rule, of any host in the group, and nothing critical or chained
+  there either.
+
+The accepted rules are written to `proposals/HOST-TIME.yaml` (beside `whitelist/`, not in it)
+(owner-only), each with the layer file it belongs in and the findings it
+hides. The file is read back before it is kept and must hold exactly the
+accepted rules, so text from a host quoted in its comments can't add one. Its `owner` is left empty, so `checker whitelist check` refuses it
+until a person writes in who vouches for it. Review, set the owner, try it
+with `checker whitelist test`, then copy it into the layer file. The
+report lists what was proposed and what was set aside, and why.

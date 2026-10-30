@@ -16,6 +16,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from checker.advisor.case import case_for_host, redact
@@ -39,6 +40,8 @@ class Advice:
     outcome: Outcome | None
     answer: dict[str, Any] | None  # restored, for the operator
     note: str = ""
+    judged: list | None = None  # whitelist proposals, each accepted or why not
+    file: Path | None = None  # where the accepted ones were written
 
 
 def _restore(value: Any, restore: Callable[[str], str]) -> Any:
@@ -65,6 +68,7 @@ def advise(
     client=None,
     confirm: Callable[[str], bool] | None = None,
     say: Callable[[str], None] = print,
+    home: Path | None = None,
 ) -> Advice:
     """Ask the advisor about a host's current assessment. `confirm` is
     asked (with the estimate) when a run would cost more than the limit or
@@ -162,6 +166,25 @@ def advise(
             status, note = "invalid", f"the answer was set aside: it {exc}"
         else:
             answer = _restore(raw, pseudonyms.restore) if pseudonyms is not None else raw
+    judged, written = None, None
+    if status == "answered" and role == "whitelist":
+        try:
+            judged, written = _proposals(
+                store, host, identity, inventory, whitelist, which, answer, home
+            )
+        except Exception as exc:  # the answer was paid for: kept, whatever happens next
+            note = f"the proposals couldn't be judged: {type(exc).__name__}: {exc}"
+            record(outcome, "invalid", raw, answer, note)
+            raise AdvisorError(note) from exc
+        answer = dict(
+            answer,
+            judged=[
+                {"id": j.proposal.get("id"), "accepted": j.accepted, "reason": j.reason,
+                 "hides": j.hides}
+                for j in judged
+            ],
+            file=str(written) if written else None,
+        )  # fmt: skip
     elif outcome.status == "declined":
         note = (
             "the request was declined by the model's safety checks"
@@ -173,7 +196,64 @@ def advise(
     elif outcome.status == "unreadable":
         note = "the answer didn't fit the requested form"
     record(outcome, status, raw, answer, note)
-    return Advice(status, outcome, answer, note)
+    return Advice(status, outcome, answer, note, judged, written)
+
+
+def _proposals(store, host, identity, inventory, whitelist, which, answer, home):
+    """Role 2's rules judged against the real findings (checker.advisor.
+    proposals), and the file the accepted ones go to."""
+    from checker.advisor.proposals import judge, write_file
+    from checker.assess import load_assessment
+    from checker.baseline import usable_bundles
+    from checker.inventory import home as default_home
+    from checker.whitelist import WhitelistError
+    from checker.whitelist import for_host as whitelist_for_host
+
+    base = home or default_home()
+    report = which["report"]
+    group = which["group"]
+
+    def assessments(name: str, skip: str | None = None) -> list[dict]:
+        found = []
+        for row in usable_bundles(store, name):
+            if row["id"] != skip and (assessment := load_assessment(store, row["id"], identity)):
+                found.append(assessment)
+        return found
+
+    others = assessments(host, skip=which["bundle_id"])
+    group_others: list[dict] = []
+
+    def ids(whitelist) -> set[str]:
+        """Every id a rule could clash with when copied in: rules, windows,
+        and the ones a layer disables."""
+        if whitelist is None:
+            return set()
+        found = {placed.rule.id for placed in [*whitelist.rules, *whitelist.windows]}
+        return found | {str(d.get("id")) for d in whitelist.disabled}
+
+    rule_ids = ids(whitelist)
+    if group:
+        for entry in inventory.hosts:
+            if entry.group == group and entry.name != host:
+                group_others += assessments(entry.name)
+                try:
+                    theirs = whitelist_for_host(base, entry.name, inventory)
+                except WhitelistError:
+                    theirs = None
+                rule_ids |= ids(theirs)
+    judged = judge(
+        answer.get("proposals") or [],
+        report.assessment["findings"],
+        (report.assessment.get("score") or {}).get("chains") or [],
+        report.events,
+        others,
+        group_others,
+        rule_ids,
+        group=group,
+        band=which["band"],
+    )
+    written = write_file(base, host, group, judged, datetime.now(UTC).strftime("%Y-%m-%d %H:%M"))
+    return judged, written
 
 
 def _quoted(payload: dict[str, Any]) -> set[str]:

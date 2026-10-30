@@ -141,9 +141,10 @@ def describe(config: Config) -> list[str]:
     advisor = config.advisor
     if not advisor.enabled:
         lines.append(
-            "AI advisor: off. Nothing is sent anywhere but the SSH sessions to your servers."
+            "AI advisor: off. Nothing is sent anywhere but the SSH sessions to your servers"
+            + (" and what your notify command sends." if config.notify_command else ".")
         )
-        return lines
+        return lines + [_notifications(config)]
     to = recipient(advisor.api, advisor.base_url)
     main_places = key_places(advisor.api, advisor.base_url)
     lines += [
@@ -190,7 +191,17 @@ def describe(config: Config) -> list[str]:
                 else "."
             )
         )
-    return lines
+    return lines + [_notifications(config)]
+
+
+def _notifications(config: Config) -> str:
+    if not config.notify_command:
+        return "Notifications: none (`checker run` prints which hosts need a look)."
+    return (
+        f"Notifications: when `checker run` finds a host that needs a look, a short summary"
+        f" (host names, bands, new findings' titles, the report's path) is given to"
+        f" `{config.notify_command}`; what it sends, and where, is up to it."
+    )
 
 
 def _triage_doubt(advisor) -> str:
@@ -251,6 +262,11 @@ SETTABLE: dict[str, Setting] = {
         Setting(("exec_records",), str, "web, privileged or all"),
         Setting(("retention_days",), int, "days evidence is kept (default 90)"),
         Setting(("prior",), float, "prior probability of compromise (default 0.02)"),
+        Setting(
+            ("notify_command",),
+            _optional,
+            "a command given a short summary when a scheduled run finds a host worse, or none",
+        ),
         Setting(("advisor", "enabled"), _bool, "on or off"),
         Setting(("advisor", "model"), str, "the model's name (default claude-opus-5-5)"),
         Setting(

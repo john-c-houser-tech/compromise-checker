@@ -138,6 +138,14 @@ What works today:
   a finding an operator has explained, with a reason, an owner and an
   expiry; suppressed findings are kept and listed in the report's appendix,
   and count for nothing in the score ([whitelists](docs/whitelists.md)).
+- `checker run --all [--unattended]` — collects, analyses, writes the
+  report and purges what has expired, in one pass, and says which hosts
+  need a look (band risen, a new high or critical finding, not collected);
+  `notify_command` hands that short summary to a command of yours (mail,
+  a webhook). `--unattended` asks nothing and refuses hosts that would need
+  a prompt. `checker schedule install --at HH:MM` runs it every day (a
+  systemd user timer, or a launchd agent on macOS)
+  ([scheduling](docs/scheduling.md)).
 - `checker purge HOST | --before DATE | --expired` — deletes stored evidence,
   reports included, and records what went by identifiers and counts only.
   `--expired` keeps each host's current baseline until a newer one is

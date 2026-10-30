@@ -631,11 +631,22 @@ The advisor's answers can't be golden-tested, so they are measured.
   three cases, none offered.
 
 - Threat packs and pack drafting (Phase 4).
-- **Scheduled checks** of production servers, run from a permanent
-  controller (the Mac mini or a small Linode), not the laptop. To discuss
-  with John later: unattended runs need a key source that doesn't prompt
-  (an environment file, or a 1Password service account for the command
-  source) and an SSH key that doesn't need an agent prompt.
+- **3.11 — Scheduled checks (2026-10-30, John: "build it that way").**
+  `checker run` does collect, analyze, report and `purge --expired` in one
+  pass under a lock, and lists what needs a look: a band risen since the
+  host's last analysis, a high or critical finding newly in effect, a host
+  not collected or analysed. `notify_command` (a setting; split into
+  words, no shell) gets a short summary on its input: host names, bands,
+  the tool's own finding titles and the report's path, no evidence. The
+  exit status is the worst band (10/11/12), else 1 for a failed step, 2
+  for setup, 3 when another run holds the lock. `--unattended` refuses,
+  before collecting, hosts that would need a prompt (a typed password, a
+  key with a passphrase, no agent). The advisor is never asked, so no key
+  is needed. `checker schedule install|show|remove` writes a systemd user
+  timer (Linux; `SuccessExitStatus=10 11 12`, `Persistent=true`, a
+  lingering hint) or a launchd agent (macOS), running this Python with
+  `CHECKER_HOME` set. Where the permanent controller runs (the Mac mini
+  or a small Linode) is still to choose.
 - Carried over: RHEL proof only if there is interest; package verification
   against vendor packages; report encryption at rest (John's decision
   2026-10-27: revisit after the currently planned phases); outbound

@@ -267,6 +267,22 @@ class Config(BaseModel):
         default=[], max_length=MAX_WEB_USERS
     )
     advisor: Advisor = Field(default_factory=Advisor)
+    # Given a short summary on its input when a scheduled run finds a host
+    # worse (checker.schedule); split into words, never run by a shell.
+    notify_command: str | None = None
+
+    @field_validator("notify_command")
+    @classmethod
+    def _notify_command(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            words = shlex.split(value)
+        except ValueError as exc:
+            raise ValueError(f"can't be split into words: {exc}") from None
+        if not words:
+            raise ValueError("is empty: give a command, or none")
+        return value
 
 
 def config_file(home: Path) -> Path:

@@ -5550,7 +5550,7 @@ def docker_config(name, env="DB_PASSWORD=CanaryContainerEnv"):
                 "Env": [env],
                 "Labels": {"l": "CanaryLabel"},
             },
-            "State": {"Running": True, "Pid": 4242},
+            "State": {"Running": True, "Pid": 3141592},
             "MountPoints": {
                 "/host": {"Type": "bind", "Source": "/", "Destination": "/host", "RW": True},
                 "/data": {
@@ -5672,7 +5672,9 @@ class ContainerTests(FixtureRoot):
         self.assertIsNone(mounts["/cache"]["source"])  # a named volume
         self.assertEqual(mounts["/cache"]["volume"], "cache")
         text = json.dumps(records)
-        for never in ("CanaryContainerEnv", "CanaryLabel", "cc_project_default", "4242"):
+        # A pid no clock or count turns up by chance (4242 did, in a timestamp's
+        # microseconds).
+        for never in ("CanaryContainerEnv", "CanaryLabel", "cc_project_default", "3141592"):
             self.assertNotIn(never, text)  # the environment, labels, network names, pids
         self.assertEqual(sources(records), {})  # no file text at all
 

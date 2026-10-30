@@ -462,9 +462,9 @@ is John's to approve before it is committed. Also:
   collected whole, a change with no baseline. `request_content_type` is
   in no log format the tool reads: DESIGN.md §10.2's multipart-POST
   detection is always a gap until a log format carries it.
-- **Ratio caps** (100 for a core check's findings, 20 for a pack's own
-  rule) are this PR's choice, within D1's "capped so a pack can't
-  outweigh the core checks"; for John to confirm.
+- **Ratio caps: 100 for a core check's findings, 20 for a pack's own
+  rule.** John confirmed them (2026-10-30), within D1's "capped so a pack
+  can't outweigh the core checks".
 
 ### 4.6 — Applying packs to stored evidence
 

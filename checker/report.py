@@ -125,9 +125,15 @@ class HostReport:
     suppressed: list[dict] = field(default_factory=list)  # whitelisted, for the appendix
     timeline: list[dict] = field(default_factory=list)
     counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    # The advisor's latest record per role for this bundle (policy §9).
+    advice: dict[str, dict] = field(default_factory=dict)
+    # What the findings' evidence points into, for the advisor's case file.
+    events: list = field(default_factory=list)
+    snapshot: Snapshot | None = None
+    baselines: dict[str, Snapshot | None] = field(default_factory=dict)
 
 
-def _excerpts(
+def excerpts(
     finding: dict, events, snapshot: Snapshot, baselines: dict[str, Snapshot]
 ) -> list[dict]:
     """What each piece of a finding's evidence says, briefly."""
@@ -291,10 +297,18 @@ def host_report(
         assessment=assessment,
         manifest=summary.get("manifest") or {},
         custody=store.custody_of(row["id"]),
+        events=events,
+        snapshot=snapshot,
+        baselines=baselines,
     )
+    from checker.advisor.advise import latest_advice
+
+    report.advice = latest_advice(store, host, identity, row["id"], assessment.get("analysed_at"))
     timeline = {}
-    for finding in assessment["findings"]:
-        finding = dict(finding, excerpts=_excerpts(finding, events, snapshot, baselines))
+    for number, finding in enumerate(assessment["findings"], 1):
+        finding = dict(
+            finding, number=number, excerpts=excerpts(finding, events, snapshot, baselines)
+        )
         if finding.get("suppressed_by"):
             report.suppressed.append(finding)
             continue  # in the appendix, with its rule; not in the timeline
@@ -335,7 +349,9 @@ def host_report(
     return report
 
 
-def render(reports: list[HostReport], generated_by: tuple[str, str]) -> str:
+def render(
+    reports: list[HostReport], generated_by: tuple[str, str], advisor_enabled: bool = False
+) -> str:
     environment = Environment(
         loader=PackageLoader("checker", "templates"),
         autoescape=select_autoescape(["html", "j2"], default=True),
@@ -355,6 +371,7 @@ def render(reports: list[HostReport], generated_by: tuple[str, str]) -> str:
         controller=generated_by[1],
         version=__version__,
         checks_version=CHECKS_VERSION,
+        advisor_enabled=advisor_enabled,
     )
 
 
@@ -368,6 +385,7 @@ def write_report(
     output: Path | None = None,
     priors: Callable[[str], tuple[float, str]] | None = None,
     whitelists: Callable[[str], Whitelist | None] | None = None,
+    advisor_enabled: bool = False,
 ) -> Path:
     """Write the report (owner-only, like the evidence) and add a
     `reported` entry, with the report's hash, to each bundle's custody."""
@@ -377,7 +395,7 @@ def write_report(
         host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h))
         for h in hosts
     ]
-    html = render(reports, who_and_where())
+    html = render(reports, who_and_where(), advisor_enabled)
     if output is None:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         directory.chmod(0o700)  # also when it was already there

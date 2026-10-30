@@ -190,12 +190,14 @@ sometimes secrets typed into shell commands.
 ### 3.5 The AI advisor
 
 - **An explicit choice at setup.** `checker init` asks whether to enable it,
-  explaining in a few lines what would be sent and to whom. A yes asks for
-  the API key and sets redaction to *pseudonymize*; a no leaves everything
+  explaining in a few lines what would be sent and to whom. A yes records
+  where the API key will come from (an environment variable by default,
+  the OS keyring, or a command that prints it; never the key itself) and
+  sets redaction to *pseudonymize*; a no leaves everything
   else working, and reports carry a one-line note that the advisor exists.
   Unattended installs leave it off unless the configuration file turns it on.
   The tool works fully without it.
-- **The organization's own API key** (or a local model; see section 11.5).
+- **The organization's own API key** (or a local model; see section 12.5).
   NouriLoop LLC does not proxy, see, or store any of the data.
 - **What is sent:** findings, their scores, short evidence excerpts, the
   relevant whitelist rules, and coverage information. Not whole log files,
@@ -203,8 +205,10 @@ sometimes secrets typed into shell commands.
 - **Redaction modes**, chosen per organization:
   - *none* — excerpts are sent as collected (after secret scrubbing);
   - *pseudonymize* (default) — hostnames, IP addresses, usernames and email
-    addresses are replaced with consistent tokens (`HOST-3`, `IP-17`,
-    `USER-2`) and restored locally when the answer comes back;
+    addresses (and SSH key fingerprints) are replaced with tokens that are
+    consistent within a run and tagged randomly per run (`HOST-3-7f3a`,
+    `IP-17-7f3a`, `USER-2-7f3a`) and restored locally when the answer comes
+    back;
   - *strict* — only finding types, counts and scores are sent.
 - **Log text is untrusted.** Usernames, URLs, user agents and email subjects
   are controlled by whoever produced them, including an attacker. They are
@@ -781,7 +785,8 @@ each release.
    preservation, eradication, recovery, and what to tell whom, scaled to the
    finding.
 5. **Threat-pack drafting** — from advisories supplied by the operator, a
-   draft pack for human review.
+   draft pack for human review. Built in Phase 4 with the pack format
+   (decided 2026-10-29).
 
 ### 12.2 Interface
 
@@ -801,13 +806,15 @@ whitelist rules are rejected before the operator sees them).
 
 Configurable. The default is the most capable current Claude model for
 analysis and remediation, with a faster model available for routine triage
-of quiet hosts.
+of quiet hosts (`advisor.triage_model`, empty unless an organization sets
+one; [advisor](docs/advisor.md#triage-model)).
 
 ### 12.5 Air-gapped use
 
-A local model (for example through Ollama) can replace the API for
-organizations that cannot send anything out. The report notes the lower
-expected quality.
+A local model (for example through Ollama, over its OpenAI-compatible
+API) can replace the API for organizations that cannot send anything out.
+The report notes the lower expected quality
+([advisor](docs/advisor.md#local-and-other-models)).
 
 ---
 
@@ -928,8 +935,8 @@ Lessons that changed this design:
 | 0 | Repository, policy text, collector skeleton, transport, evidence bundles, read-only test |
 | 1 | Parsers for both families, snapshots and baselines, core checks 8.1–8.7, HTML report |
 | 2 | Whitelist layers and tooling, scoring and calibration harness, checks 8.8–8.13 |
-| 3 | AI advisor (all roles), redaction modes |
-| 4 | Threat packs: format, signing, PHP2Shell pack, pack drafting |
+| 3 | AI advisor (roles 1–4), redaction modes |
+| 4 | Threat packs: format, signing, PHP2Shell pack, pack drafting (advisor role 5) |
 | 5 | Fleet view, PDF/JSON, PostgreSQL, web interface |
 
 ---

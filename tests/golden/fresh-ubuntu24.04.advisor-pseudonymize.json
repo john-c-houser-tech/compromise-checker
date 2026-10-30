@@ -1,0 +1,755 @@
+{
+ "case_format": 1,
+ "redaction": "pseudonymize",
+ "host": {
+  "name": "HOST-1-0000",
+  "group": null,
+  "os": "ubuntu 24.04",
+  "kernel": "6.8.0-134-generic"
+ },
+ "assessment": {
+  "probability": 0.0577,
+  "band": "Low",
+  "prior": 0.02,
+  "prior_source": "golden",
+  "hygiene_and_exposure": {
+   "band": "low",
+   "counts": {
+    "hygiene": {
+     "low": 5,
+     "info": 5
+    }
+   }
+  },
+  "top_contributors": [
+   "F-7",
+   "F-8",
+   "F-9",
+   "F-10"
+  ]
+ },
+ "findings": [
+  {
+   "id": "F-7",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.4055,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group postdrop",
+    "entities": [
+     "group:postdrop"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:58",
+      "where": "auth_journal",
+      "text": "new group: name=postdrop, GID=113"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:58.562737+00:00",
+    "last_seen": "2026-10-29T15:48:58.562737+00:00"
+   }
+  },
+  {
+   "id": "F-8",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group postfix",
+    "entities": [
+     "group:postfix"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:58",
+      "where": "auth_journal",
+      "text": "new group: name=postfix, GID=112"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:58.361825+00:00",
+    "last_seen": "2026-10-29T15:48:58.361825+00:00"
+   }
+  },
+  {
+   "id": "F-9",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group ssl-cert",
+    "entities": [
+     "group:ssl-cert"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:56",
+      "where": "auth_journal",
+      "text": "new group: name=ssl-cert, GID=111"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:56.080951+00:00",
+    "last_seen": "2026-10-29T15:48:56.080951+00:00"
+   }
+  },
+  {
+   "id": "F-10",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: postfix UID 110",
+    "entities": [
+     "account:postfix"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:58",
+      "where": "auth_journal",
+      "text": "new user: name=postfix, UID=110, GID=112, home=/var/spool/postfix, shell=/usr/sbin/nologin, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:58.433011+00:00",
+    "last_seen": "2026-10-29T15:48:58.433011+00:00"
+   }
+  },
+  {
+   "id": "F-11",
+   "check": "process.injected",
+   "variant": "replaced",
+   "band": "low",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "from_host": {
+    "summary": "(sd-pam) (pid 814): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+    "entities": [
+     "program:(sd-pam)",
+     "pid:814",
+     "exe:/usr/lib/systemd/systemd-executor"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=814 ppid=813 comm=(sd-pam) exe=/usr/lib/systemd/systemd-executor cmdline=(sd-pam) uids=[0, 0, 0, 0] start_time=2026-10-29T15:48:00.520000+00:00 cwd=/"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:00.520000+00:00",
+    "last_seen": "2026-10-29T15:48:00.520000+00:00"
+   }
+  },
+  {
+   "id": "F-12",
+   "check": "process.injected",
+   "variant": "replaced",
+   "band": "low",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "from_host": {
+    "summary": "dbus-daemon (pid 664): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+    "entities": [
+     "program:dbus-daemon",
+     "pid:664",
+     "exe:/usr/bin/dbus-daemon"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=664 ppid=1 comm=dbus-daemon exe=/usr/bin/dbus-daemon cmdline=@dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only uids=[101, 101, 101, 101] start_time=2026-10-29T15:47:58.160000+00:00 cwd=/"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:47:58.160000+00:00",
+    "last_seen": "2026-10-29T15:47:58.160000+00:00"
+   }
+  },
+  {
+   "id": "F-13",
+   "check": "process.injected",
+   "variant": "replaced",
+   "band": "low",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "from_host": {
+    "summary": "sshd (pid 790): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+    "entities": [
+     "program:sshd",
+     "pid:790",
+     "exe:/usr/sbin/sshd"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=790 ppid=1 comm=sshd exe=/usr/sbin/sshd cmdline=sshd: root@notty uids=[0, 0, 0, 0] start_time=2026-10-29T15:48:00.120000+00:00 cwd=/"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:00.120000+00:00",
+    "last_seen": "2026-10-29T15:48:00.120000+00:00"
+   }
+  },
+  {
+   "id": "F-14",
+   "check": "process.injected",
+   "variant": "replaced",
+   "band": "low",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "from_host": {
+    "summary": "systemd (pid 813): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+    "entities": [
+     "program:systemd",
+     "pid:813",
+     "exe:/usr/lib/systemd/systemd"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=813 ppid=1 comm=systemd exe=/usr/lib/systemd/systemd cmdline=/usr/lib/systemd/systemd --user uids=[0, 0, 0, 0] start_time=2026-10-29T15:48:00.490000+00:00 cwd=/"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:00.490000+00:00",
+    "last_seen": "2026-10-29T15:48:00.490000+00:00"
+   }
+  },
+  {
+   "id": "F-15",
+   "check": "process.injected",
+   "variant": "replaced",
+   "band": "low",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "from_host": {
+    "summary": "systemd-logind (pid 673): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+    "entities": [
+     "program:systemd-logind",
+     "pid:673",
+     "exe:/usr/lib/systemd/systemd-logind"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=673 ppid=1 comm=systemd-logind exe=/usr/lib/systemd/systemd-logind cmdline=/usr/lib/systemd/systemd-logind uids=[0, 0, 0, 0] start_time=2026-10-29T15:47:58.460000+00:00 cwd=/"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:47:58.460000+00:00",
+    "last_seen": "2026-10-29T15:47:58.460000+00:00"
+   }
+  },
+  {
+   "id": "F-16",
+   "check": "files.unowned",
+   "variant": null,
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "An executable no package installed (made by a package after install)",
+   "from_host": {
+    "summary": "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache (SHA-256 c22c46421f20ce55…)",
+    "entities": [
+     "path:/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "unowned_executables",
+      "text": "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache: ctime=2026-07-14T08:55:05.964187+00:00 gid=0 inode=45300 local=False mode=0755 mtime=2026-07-14T08:49:27.964187+00:00 nlink=1 setgid=False setuid=False sha256=c22c46421f20ce5560bca9e806c6e86e3bcb160853c6e57452743a044a474e37 size=5625 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-17",
+   "check": "persistence.homes",
+   "variant": null,
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A user's own systemd unit",
+   "from_host": {
+    "summary": "/home/USER-1-0000/.config/systemd/user/proof.service",
+    "entities": [
+     "path:/home/USER-1-0000/.config/systemd/user/proof.service"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "systemd",
+      "text": "/home/USER-1-0000/.config/systemd/user/proof.service: accounts=['USER-1-0000'] ctime=2026-10-29T15:48:54.050623+00:00 gid=0 home=/home/USER-1-0000 inode=262294 mode=0644 mtime=2026-10-29T15:48:54.050623+00:00 nlink=1 record=file sha256=e60d856a4702104ded06244a7ff06f71e2cc2aacc378e7fbba20762a507d56fd size=34 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-18",
+   "check": "web.exploit",
+   "variant": "refused",
+   "band": "info",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A traversal attack refused",
+   "from_host": {
+    "summary": "127.0.0.0/24: 1 request (status 404), e.g. /x?f=[MASKED:exploit:traversal]",
+    "entities": [
+     "address:127.0.0.0/24"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:49:38",
+      "where": "web_logs:/var/log/nginx/access.log",
+      "text": "127.0.0.1 - - [29/Oct/2026:15:49:38 +0000] \"GET /x?f=[MASKED:exploit:traversal] HTTP/1.1\" 404 162 \"https://ref.example/[MASKED:referrer]\" \"curl/8.5.0\""
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:49:38.038178+00:00",
+    "last_seen": "2026-10-29T15:49:38.038178+00:00"
+   }
+  },
+  {
+   "id": "F-19",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf (modemmanager): missing",
+    "entities": [
+     "path:/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf",
+     "package:modemmanager"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf: configuration=True package=modemmanager results=['missing']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-20",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf (packagekit): missing",
+    "entities": [
+     "path:/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf",
+     "package:packagekit"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf: configuration=True package=packagekit results=['missing']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-21",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/init/thermald.conf (thermald): missing",
+    "entities": [
+     "path:/etc/init/thermald.conf",
+     "package:thermald"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/init/thermald.conf: configuration=True package=thermald results=['missing']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-22",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/nginx/sites-available/default (nginx-common): changed",
+    "entities": [
+     "path:/etc/nginx/sites-available/default",
+     "package:nginx-common"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/nginx/sites-available/default: configuration=True package=nginx-common results=['changed']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-23",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/thermald/thermal-cpu-cdev-order.xml (thermald): changed",
+    "entities": [
+     "path:/etc/thermald/thermal-cpu-cdev-order.xml",
+     "package:thermald"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/thermald/thermal-cpu-cdev-order.xml: configuration=True package=thermald results=['changed']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-1",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed_by": "proof-USER-1-0000-account",
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: USER-1-0000 UID 1001",
+    "entities": [
+     "account:USER-1-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:54",
+      "where": "auth_journal",
+      "text": "new user: name=USER-1-0000, UID=1001, GID=1001, home=/home/USER-1-0000, shell=/bin/bash, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:54.063157+00:00",
+    "last_seen": "2026-10-29T15:48:54.063157+00:00"
+   }
+  },
+  {
+   "id": "F-2",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed_by": "proof-USER-2-0000-account",
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: USER-2-0000 UID 1000",
+    "entities": [
+     "account:USER-2-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:47",
+      "where": "auth_journal",
+      "text": "new user: name=USER-2-0000, UID=1000, GID=1000, home=/home/USER-2-0000, shell=/bin/sh, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:47.413328+00:00",
+    "last_seen": "2026-10-29T15:48:47.413328+00:00"
+   }
+  },
+  {
+   "id": "F-3",
+   "check": "persistence.at_jobs",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": "proof-at-job-debian",
+   "title": "A queued at job",
+   "from_host": {
+    "summary": "/var/spool/cron/atjobs/a0000101c80f0c (owner UID 0)",
+    "entities": [
+     "path:/var/spool/cron/atjobs/a0000101c80f0c"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "cron",
+      "text": "/var/spool/cron/atjobs/a0000101c80f0c: content_sha256=bd99c681fd5854f54103fc23667a74f52ae48f56e3a790948d9350454740ddc9 ctime=2026-10-29T15:48:54.048623+00:00 gid=1 inode=262290 mode=0700 mtime=2026-10-29T15:48:54.047623+00:00 nlink=1 record=file sha256=8f84fd6eb438b37a6f69af69e4f8927d0f03ce53cc7444ded92a8646b7f328d2 size=941 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-4",
+   "check": "ssh.login",
+   "variant": "root_login",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed_by": "proof-root-login",
+   "title": "A direct root login over SSH",
+   "from_host": {
+    "summary": "root from IP-1-0000 (publickey)",
+    "entities": [
+     "account:root",
+     "address:IP-1-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:00",
+      "where": "auth_journal",
+      "text": "Accepted publickey for root from IP-1-0000 port 42278 ssh2: ED25519 KEY-1-0000"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:00.031112+00:00",
+    "last_seen": "2026-10-29T15:48:00.031112+00:00"
+   }
+  },
+  {
+   "id": "F-5",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed_by": "proof-docker-dnsmasq-account",
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: dnsmasq UID 999",
+    "entities": [
+     "account:dnsmasq"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:38",
+      "where": "auth_journal",
+      "text": "new user: name=dnsmasq, UID=999, GID=65534, home=/var/lib/misc, shell=/usr/sbin/nologin, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:38.234342+00:00",
+    "last_seen": "2026-10-29T15:48:38.234342+00:00"
+   }
+  },
+  {
+   "id": "F-6",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed_by": "proof-docker-group",
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group docker",
+    "entities": [
+     "group:docker"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:40",
+      "where": "auth_journal",
+      "text": "new group: name=docker, GID=110"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:40.003550+00:00",
+    "last_seen": "2026-10-29T15:48:40.003550+00:00"
+   }
+  }
+ ],
+ "omitted": null,
+ "chains": [],
+ "whitelist_rules": [
+  {
+   "id": "proof-docker-group",
+   "layer": "host HOST-1-0000",
+   "match": {
+    "check": "account.log_changes",
+    "variant": "group_created",
+    "group": "docker"
+   },
+   "reason": "The proof installs Docker on Ubuntu, which creates the docker group.",
+   "expires": "never"
+  },
+  {
+   "id": "proof-docker-dnsmasq-account",
+   "layer": "host HOST-1-0000",
+   "match": {
+    "check": "account.log_changes",
+    "variant": "created",
+    "account": "dnsmasq"
+   },
+   "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account).",
+   "expires": "never"
+  },
+  {
+   "id": "proof-at-job-debian",
+   "layer": "host HOST-1-0000",
+   "match": {
+    "check": "persistence.at_jobs",
+    "path": "/var/spool/cron/atjobs/*"
+   },
+   "reason": "The proof queues an at job for the persistence modules to find.",
+   "expires": "never"
+  },
+  {
+   "id": "proof-root-login",
+   "layer": "host HOST-1-0000",
+   "match": {
+    "check": "ssh.login",
+    "variant": "root_login",
+    "account": "root"
+   },
+   "reason": "The proof logs in as root to set the server up.",
+   "expires": "never"
+  },
+  {
+   "id": "proof-USER-1-0000-account",
+   "layer": "host HOST-1-0000",
+   "match": {
+    "check": "account.log_changes",
+    "account": "USER-1-0000"
+   },
+   "reason": "The proof creates USER-1-0000 to give the persistence modules something to find.",
+   "expires": "never"
+  },
+  {
+   "id": "proof-USER-2-0000-account",
+   "layer": "host HOST-1-0000",
+   "match": {
+    "check": "account.log_changes",
+    "account": "USER-2-0000"
+   },
+   "reason": "The proof creates the USER-2-0000 account, as docs/USER-2-0000-account.md sets it up.",
+   "expires": "never"
+  }
+ ],
+ "from_host": {
+  "coverage_gaps": [],
+  "log_reach_days": {},
+  "notes": []
+ },
+ "address_kinds": {
+  "IP-1-0000": "private or reserved"
+ }
+}

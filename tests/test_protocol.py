@@ -63,7 +63,7 @@ def test_collector_output_matches_the_models():
 
 
 def test_settings_cannot_break_out_of_the_call():
-    hostile = 'x")\nimport os; os.system("touch /tmp/pwned")  #   \\ "'
+    hostile = 'x")\nimport os; os.system("touch /tmp/pwned")  # \u2028 \\ "'
     records = read_stream(run_program(build_program(make_settings(run_id=hostile))))
     assert records[0].run_id == hostile
     assert records[-1].status == "complete"

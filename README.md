@@ -8,10 +8,12 @@ It logs in over SSH, streams a small collector to the server's own Python,
 brings the evidence back, and analyses it on the operator's machine. Nothing
 is written to the server.
 
-**Status: Phase 2 complete (2026-10-29).** The tool collects evidence,
+**Status: Phase 3 complete (2026-10-29).** The tool collects evidence,
 compares each host with its baseline, runs the checks, scores the host and
-writes the report. The AI advisor comes in Phase 3 and threat packs in
-Phase 4 (see [DESIGN.md §18](DESIGN.md)).
+writes the report; the optional AI advisor explains an analysis, proposes
+whitelist rules, suggests better coverage and advises on remediation
+([advisor](docs/advisor.md)). Threat packs come in Phase 4 (see
+[DESIGN.md §18](DESIGN.md)).
 
 What works today:
 
@@ -20,7 +22,80 @@ What works today:
   start-up files and user units in home directories (policy §7);
   `--web-access-logs` opts in to web servers' access logs, masked;
   `--exec-records` chooses whose program starts are read from the audit
-  log (the web server's accounts by default).
+  log (the web server's accounts by default). It also asks whether to turn
+  on the optional AI advisor (`--advisor on|off` for unattended setups,
+  which leave it off), and where its API key comes from
+  (`--advisor-key-source env|keyring|command:<command>`; never stored in
+  the configuration).
+- `checker advise HOST [--yes]` — asks the optional AI advisor to explain a
+  host's latest analysis (verdict, what matters most, innocent
+  explanations, what would settle it), after showing the likely cost and
+  the most it can cost, and asking when the likely cost is above
+  `advisor.max_cost_per_run`. The answer is checked
+  against the case (it must name only real findings and agree with the
+  band), its placeholders turned back into names, and it is stored
+  encrypted with exactly what was sent; the report shows it, labelled
+  with the models and redaction, separately from the findings.
+  `--role whitelist` asks instead for whitelist rules for findings that
+  are routine on the host: each is checked against the real findings (it
+  must hide exactly the findings it names, none critical or part of a
+  chain, on the host's stored analyses and, for a group rule, the
+  group's) and the accepted ones written to `proposals/` with
+  the owner left empty, for a person to review and copy in; nothing is
+  applied. `--role coverage` asks what would let the next collection see
+  more, picked only from the tool's collection settings (printed as the
+  `checker config set` line to run) and a fixed catalogue of host
+  configuration (auditd for web accounts, running the audit daemon, a
+  persistent journal, sshd `LogLevel VERBOSE`, a readable web log format,
+  log retention), each
+  citing the coverage gap or finding it helps with; nothing is changed.
+  `--role remediation` asks what to do, scaled to the band: evidence to
+  preserve first, then containment, eradication, recovery, and who to tell
+  (by role); it must agree with the band (no "now" for a Low host), keep
+  evidence before any step that destroys state (judged by what a step does,
+  not only by what it says), and cite only real findings. Commands are
+  shown as text; nothing runs. The model's safety checks may decline
+  security content now and then (the report says so, and a fallback model
+  answers when `advisor.fallback` is `anthropic`); organizations doing this
+  work regularly can apply to Anthropic's Cyber Verification Program, or
+  set `advisor.fallback` to `model` to send declined requests to a model
+  of their choosing (`advisor.fallback_model`). `advisor.api openai` with
+  `advisor.base_url` asks a local model (Ollama, llama.cpp, vLLM) or
+  another OpenAI-compatible server instead of Anthropic. A model on the
+  same machine (loopback) costs nothing and is reached directly, never
+  through a proxy, but its answers are weaker (the report says so), and
+  its context must hold the whole case (for Ollama, a model with
+  `num_ctx` of 32768 or more). A request the server read only in part is
+  reported as cut off, not answered (Ollama keeps about half its context
+  when it cuts); give the model more context than the case needs. With
+  `api_key_source env`, the key comes from `ANTHROPIC_API_KEY` for
+  Anthropic's own API, `OPENAI_API_KEY` for OpenAI's, and otherwise
+  `CHECKER_ADVISOR_API_KEY` (`CHECKER_FALLBACK_API_KEY` for the fallback
+  model), so one vendor's key never goes to another; `none` sends no key.
+  `checker advise --all [--role ROLE]` asks about every host with a
+  usable bundle: each host's estimate first, then one question for the
+  whole run. When `advisor.triage_model` is set (it ships empty; for
+  example `claude-haiku-5-5`), explanations of quiet hosts (Low, with no
+  chain and no finding at medium or worse in effect) go to that model,
+  through the same API and key, and everything else to `advisor.model`;
+  the output and the report name the model per host. Each host is sent
+  the bundle it was estimated on, and a host whose analysis, model or
+  estimate changed in between isn't sent. Haiku models have no
+  server-side fallback, so with `advisor.fallback anthropic` a declined
+  request to one isn't re-run (with `model`, it goes to the fallback
+  model as usual).
+  `--show [--redaction MODE]` prints exactly what would be sent,
+  after redaction, and sends nothing. Under *pseudonymize* (the default) people's
+  account names, host names, email addresses, IP addresses and SSH key
+  fingerprints become placeholders (USER-2-7f3a) made fresh for each run;
+  *strict* sends only the kinds of finding, counts, scores and kinds of
+  coverage gap.
+- `checker config show|set|history|check-key` — the settings in words;
+  change one after `init` (validated, and recorded with who, when, old and
+  new value; the file is written back whole, so hand-added comments go);
+  every change so far; read the advisor's API key from its source to check
+  it works, without sending anything. A key pasted into a `command:`
+  source is refused.
 - `checker hosts add|list|remove` and `checker trust` — the inventory
   (`--web-root DIR`, repeatable, sets a host's own web roots), and
   verified SSH host keys (no way to switch verification off).
@@ -101,6 +176,8 @@ Set up a server for it with [docs/scanner-account.md](docs/scanner-account.md).
 - [DESIGN.md](DESIGN.md) — architecture, security and privacy policy, checks,
   scoring, and the decisions made so far.
 - [plans/](plans/) — build plans for each phase.
+- [The AI advisor](docs/advisor.md) — setup, redaction, roles, cost,
+  declines, local models, and how well it works.
 - [Security and privacy policy](docs/security-and-privacy-policy.md) — what the
   tool does on your servers and with your data. [SECURITY.md](SECURITY.md) —
   reporting a vulnerability.

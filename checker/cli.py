@@ -14,6 +14,12 @@ import pyrage
 from pydantic import ValidationError
 
 from checker import __version__
+from checker.advisor.keys import (
+    KeySourceError,
+    key_places,
+    looks_like_anthropic_key,
+    read_api_key,
+)
 from checker.analysis import load_events, parse_bundle, store_parsed
 from checker.assess import analyze, prior_for
 from checker.baseline import accept, changes, usable_bundles
@@ -21,9 +27,11 @@ from checker.checks import BANDS, CATEGORIES
 from checker.collect import collect_hosts
 from checker.credentials import password_for
 from checker.evidence import (
+    Advisor,
     EvidenceError,
     Store,
     check_sidecar,
+    config_file,
     database_file,
     file_sha256,
     initialise,
@@ -41,6 +49,19 @@ from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
 from checker.report import write_report
 from checker.scoring import percent
+from checker.settings import (
+    EXEC_RECORDS,
+    HOME_TEXT,
+    SETTABLE,
+    advisor_question,
+    describe,
+    key_source_words,
+    recipient,
+    recipients,
+    value_of,
+)
+from checker.settings import change as change_setting
+from checker.settings import message as setting_message
 from checker.transport import TransportError, fetch_host_key, trust_host_key
 from checker.whitelist import WhitelistError, check_all
 from checker.whitelist import for_host as whitelist_for_host
@@ -48,18 +69,6 @@ from checker.whitelist import load_with as whitelist_load_with
 from checker.whitelist import other_sets as whitelist_other_sets
 from checker.whitelist_review import compare as whitelist_compare
 from checker.whitelist_review import stale as whitelist_stale
-
-# What `checker init --home-text` means, as `init` reports it.
-EXEC_RECORDS = {
-    "web": "the web server's accounts",
-    "privileged": "the web server's, root, service and administrator accounts",
-    "all": "every account",
-}
-HOME_TEXT = {
-    "off": "not collected (hashes only)",
-    "privileged": "collected, masked, for root, service and administrator accounts",
-    "all": "collected, masked, for every account",
-}
 
 
 def cmd_hosts_add(args: argparse.Namespace) -> int:
@@ -158,11 +167,43 @@ def cmd_trust(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
     return 0
 
 
-def cmd_init(args: argparse.Namespace) -> int:
+def _advisor_choice(args: argparse.Namespace, ask: Callable[[str], str] | None) -> bool:
+    """The advisor is an explicit choice (DESIGN.md §3.5): --advisor on|off,
+    else asked when someone is there to answer, else off."""
+    if args.advisor is not None:
+        return args.advisor == "on"
+    if ask is None:
+        if not sys.stdin.isatty():
+            return False
+        ask = input
+    print(advisor_question(args.advisor_redaction))
+    try:
+        answer = ask("Turn the AI advisor on? [y/N] ")
+    except EOFError:
+        print()
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def cmd_init(args: argparse.Namespace, ask: Callable[[str], str] | None = None) -> int:
     base = home()
+    if config_file(base).exists():  # before asking anything
+        print(f"checker: already set up ({config_file(base)}); nothing changed", file=sys.stderr)
+        return 1
+    try:
+        advisor = Advisor(api_key_source=args.advisor_key_source, redaction=args.advisor_redaction)
+    except ValidationError as exc:
+        print(f"checker: {setting_message(exc, '--advisor-key-source')}", file=sys.stderr)
+        return 2
+    advisor.enabled = _advisor_choice(args, ask)
     try:
         config, identity_path = initialise(
-            base, args.recipient, args.home_text, args.web_access_logs, args.exec_records
+            base,
+            args.recipient,
+            args.home_text,
+            args.web_access_logs,
+            args.exec_records,
+            advisor,
         )
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -175,17 +216,102 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("cannot be read, by you or anyone else.")
     else:
         print("Its private key is not on this machine; use --identity to read bundles.")
-    print(
-        f"Text of start-up files and user units in home directories: {HOME_TEXT[config.home_text]}"
-    )
-    print(
-        "Web access logs: "
-        + ("collected, masked" if config.web_access_logs else "not collected (error logs only)")
-    )
-    print(f"Program starts from the audit log, for: {EXEC_RECORDS[config.exec_records]}")
+    for line in describe(config):
+        print(line)
     print(f"Mail logs' addresses are fingerprinted with the mail key in {mail_key_file(base)};")
     print("keep it as private as the evidence key.")
+    print("Change any of these later with `checker config set`.")
     print("Next: `checker hosts add`, then `checker trust`, then `checker collect`.")
+    return 0
+
+
+def cmd_config_show(args: argparse.Namespace) -> int:
+    try:
+        config = load_config(home())
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    for line in describe(config):
+        print(line)
+    print(f"Retention: {config.retention_days} days. Prior: {percent(config.prior)}.")
+    print("Settable with `checker config set KEY VALUE`:")
+    for key, setting in SETTABLE.items():
+        print(f"  {key} = {json.dumps(value_of(config, key))}    ({setting.help})")
+    return 0
+
+
+def cmd_config_set(args: argparse.Namespace) -> int:
+    try:
+        old, new, config = change_setting(home(), args.key, args.value)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    except (OSError, sqlite3.Error) as exc:
+        print(f"checker: {args.key} not changed: {exc}", file=sys.stderr)
+        return 1
+    if old == new:
+        print(f"{args.key} is already {json.dumps(new)}. Nothing changed.")
+        return 0
+    print(f"{args.key}: {json.dumps(old)} -> {json.dumps(new)} (recorded).")
+    if args.key == "advisor.enabled" and new:
+        advisor = config.advisor
+        print(advisor_question(advisor.redaction, recipients(advisor)))
+    for line in describe(config):
+        print(line)
+    return 0
+
+
+def cmd_config_history(args: argparse.Namespace) -> int:
+    base = home()
+    if not database_file(base).exists():
+        print("checker: not set up yet: run `checker init`", file=sys.stderr)
+        return 2
+    store = Store(database_file(base))
+    try:
+        rows = store.config_changes()
+    finally:
+        store.close()
+    if not rows:
+        print("No settings changed since `checker init`.")
+    for row in rows:
+        print(
+            f"{row['at']}  {row['operator']}@{row['controller']}  {row['setting']}:"
+            f" {row['old']} -> {row['new']}"
+        )
+    return 0
+
+
+def cmd_config_check_key(args: argparse.Namespace) -> int:
+    """Read the advisor's API key from its source, as `checker advise` will,
+    and say whether that worked. Sends nothing; never shows the key."""
+    try:
+        advisor = load_config(home()).advisor
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    sources = [("", advisor.api_key_source, advisor.api, key_places(advisor.api, advisor.base_url))]
+    if advisor.fallback == "model":
+        fallback = advisor.fallback_model
+        sources.append(
+            ("The fallback model's key: ", fallback.api_key_source, fallback.api,
+             key_places(fallback.api, fallback.base_url, fallback=True))
+        )  # fmt: skip
+    for label, source, api, places in sources:
+        if source == "none":
+            print(f"{label}No key is used (api_key_source none). Nothing was sent.")
+            continue
+        print(f"{label}Reading the key from {key_source_words(source, places)}…")
+        try:
+            key = read_api_key(source, places)
+        except KeySourceError as exc:
+            print(f"checker: {exc}", file=sys.stderr)
+            return 1
+        print(f"A key was read ({len(key or '')} characters). Nothing was sent.")
+        if api == "anthropic" and not label and not advisor.base_url:
+            if not looks_like_anthropic_key(key or ""):
+                print("It doesn't look like an Anthropic API key (they start with sk-ant-).")
+    if not advisor.enabled:
+        print("The advisor is off: `checker config set advisor.enabled on` to use it.")
     return 0
 
 
@@ -630,7 +756,56 @@ def build_parser() -> argparse.ArgumentParser:
             " accounts) or all"
         ),
     )
+    init.add_argument(
+        "--advisor",
+        choices=["on", "off"],
+        help=(
+            "turn the optional AI advisor on or off (policy §9); without it, `init` asks"
+            " when run in a terminal, and leaves it off otherwise"
+        ),
+    )
+    init.add_argument(
+        "--advisor-key-source",
+        default="env",
+        metavar="SOURCE",
+        help=(
+            "where the advisor's API key comes from: env (ANTHROPIC_API_KEY, the default),"
+            " keyring, or command:<command> that prints it"
+        ),
+    )
+    init.add_argument(
+        "--advisor-redaction",
+        choices=["pseudonymize", "strict", "none"],
+        default="pseudonymize",
+        help="what the advisor's requests may contain (default pseudonymize)",
+    )
     init.set_defaults(handler=cmd_init)
+
+    configuring = commands.add_parser("config", help="show or change settings after init")
+    config_commands = configuring.add_subparsers(
+        dest="config_command", metavar="ACTION", required=True
+    )
+    config_commands.add_parser("show", help="the settings, in words").set_defaults(
+        handler=cmd_config_show
+    )
+    setting = config_commands.add_parser(
+        "set",
+        help="change a setting (recorded)",
+        description=(
+            "Change one setting, validated and recorded. config.yaml is written back"
+            " whole, so comments added to it by hand are lost. A value starting with"
+            " '-' goes after '--': checker config set KEY -- VALUE."
+        ),
+    )
+    setting.add_argument("key", choices=list(SETTABLE), metavar="KEY", help=", ".join(SETTABLE))
+    setting.add_argument("value")
+    setting.set_defaults(handler=cmd_config_set)
+    config_commands.add_parser(
+        "history", help="every setting changed since init: who, when, old and new"
+    ).set_defaults(handler=cmd_config_history)
+    config_commands.add_parser(
+        "check-key", help="read the advisor's API key from its source (sends nothing)"
+    ).set_defaults(handler=cmd_config_check_key)
 
     collect = commands.add_parser("collect", help="collect evidence from hosts")
     which = collect.add_mutually_exclusive_group(required=True)
@@ -745,6 +920,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     staling.add_argument("--identity", help="the evidence private key file")
     staling.set_defaults(handler=cmd_whitelist_stale)
+    advising = commands.add_parser(
+        "advise", help="ask the optional AI advisor about a host's latest analysis"
+    )
+    advising.add_argument("host", nargs="?")
+    advising.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "every host with a usable bundle, asking once for the whole run; explanations"
+            " of quiet hosts use advisor.triage_model when it is set"
+        ),
+    )
+    advising.add_argument(
+        "--show",
+        action="store_true",
+        help="print the request exactly as it would be sent; send nothing",
+    )
+    advising.add_argument(
+        "--role",
+        choices=["explain", "whitelist", "coverage", "remediation"],
+        default="explain",
+        help=(
+            "explain the analysis (default), propose whitelist rules for a person to review,"
+            " suggest settings and host configuration for better coverage, or advise on"
+            " remediation"
+        ),
+    )
+    advising.add_argument(
+        "--yes",
+        action="store_true",
+        help="send even above advisor.max_cost_per_run, without asking",
+    )
+    advising.add_argument(
+        "--redaction",
+        choices=["pseudonymize", "strict", "none"],
+        help="preview another redaction mode than the configured one",
+    )
+    advising.add_argument("--bundle", help="a given bundle instead of the latest")
+    advising.add_argument("--identity", help="the evidence private key file")
+    advising.set_defaults(handler=cmd_advise)
     purging = commands.add_parser(
         "purge", help="delete stored evidence for a host, before a date, or past retention"
     )
@@ -766,6 +981,326 @@ def build_parser() -> argparse.ArgumentParser:
 SHOWN = 20  # items listed per kind and section without --all
 
 
+def _advise_all(args, base, store, config, inventory, identity) -> int:
+    """`checker advise --all`: every host's estimate first, one question for
+    the whole run (against advisor.max_cost_per_run, as one run), then each
+    request in turn. A host that can't be asked is said and skipped."""
+    from checker.advisor.advise import _client, advise, plan
+    from checker.advisor.client import AdvisorError
+
+    advisor = config.advisor
+    if not advisor.enabled:
+        raise AdvisorError(
+            "the advisor is off: `checker config set advisor.enabled on` turns it on"
+        )
+    hosts = [h for h in store.hosts() if usable_bundles(store, h)]
+    if not hosts:
+        raise EvidenceError("no host has a usable bundle yet: collect first")
+    status, planned = 0, []
+    for host in hosts:
+        try:
+            planned.append(
+                plan(store, host, identity, config, inventory, prior_for(host, config, inventory),
+                     _whitelist_for(base, host, inventory), args.role)
+            )  # fmt: skip
+        except KeyboardInterrupt:
+            print("checker: interrupted while estimating; nothing was sent", file=sys.stderr)
+            return 130
+        except (EvidenceError, OSError, AdvisorError) as exc:
+            print(f"checker: {host}: {exc}; skipped", file=sys.stderr)
+            status = 1
+        except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'
+            print(f"checker: {host}: {type(exc).__name__}: {exc}; skipped", file=sys.stderr)
+            status = 1
+    for item in planned:
+        print(
+            f"{item.host}: {item.line}"
+            + (" (the triage model: a quiet host)" if item.triaged else "")
+        )
+    if not planned:
+        return 1
+    known = [item.priced for item in planned if item.priced is not None]
+    likely, most = sum(p.likely for p in known), sum(p.most for p in known)
+    unknown = len(known) < len(planned)
+    total = (
+        f"{len(planned)} requests: likely about ${likely:.2f} in all, at most about ${most:.2f}"
+        + (", and some at a cost not known here" if unknown else "")
+        + "."
+    )
+    print(total)
+    if unknown or likely > advisor.max_cost_per_run:
+        if not args.yes:
+            if not sys.stdin.isatty():
+                print("checker: not sent: confirm with --yes, or raise advisor.max_cost_per_run",
+                      file=sys.stderr)  # fmt: skip
+                return 1
+            try:
+                answer = input("Send them? [y/N] ")
+            except KeyboardInterrupt:
+                print("\nNothing was sent.")
+                return 130
+            except EOFError:
+                print("\nNothing was sent.")
+                return 1
+            if answer.strip().lower() not in ("y", "yes"):
+                print("Nothing was sent.")
+                return 1
+    # The key is read once, after the yes: one password manager prompt.
+    try:
+        client = _client(advisor.api_key_source, advisor.api, advisor.base_url)
+    except KeyboardInterrupt:
+        print("checker: interrupted reading the key; nothing was sent", file=sys.stderr)
+        return 130
+    clients: dict = {}  # the fallback model's, read once too if a host needs it
+    for done, item in enumerate(planned):
+        before = len(store.advice(item.bundle_id))
+        try:
+            print(f"\n== {item.host} ==")
+            advice = advise(
+                store, item.host, identity, config, inventory, item.prior, item.whitelist,
+                role=args.role, client=client, say=lambda line: None, home=base,
+                planned=item, clients=clients,
+            )  # fmt: skip
+            _print_advice(advice, args.role)
+        except KeyboardInterrupt:
+            left = len(store.advice(item.bundle_id)) > before
+            print(
+                f"checker: interrupted at {item.host} ({done} host(s) before it):"
+                + (" its request may have been sent, and is recorded;" if left
+                   else " its request was not sent;")
+                + f" {len(planned) - done - 1} after it not sent",
+                file=sys.stderr,
+            )  # fmt: skip
+            return 130
+        except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'
+            print(f"checker: {item.host}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            status = 1
+            continue
+        if advice.status != "answered":
+            status = 1
+    return status
+
+
+def _print_advice(advice, role: str) -> None:
+    from checker.report import visible
+
+    def shown(text) -> str:  # the provider's and the model's words, safe for a terminal
+        return str(visible(text, 4000))
+
+    outcome = advice.outcome
+    if outcome is not None:
+        line = f"Asked {shown(outcome.model_asked)}"
+        if outcome.declined_by:
+            line += f"; declined by {shown(', '.join(outcome.declined_by))}"
+        if outcome.model_answered:
+            line += f"; answered by {shown(outcome.model_answered)}"
+        print(line + ".")
+    if advice.note:
+        print(shown(advice.note[0].upper() + advice.note[1:]) + ".")
+    answer = advice.answer
+    if not answer:
+        return
+    if role == "whitelist":
+        _print_proposals(advice, shown)
+        return
+    if role == "coverage":
+        _print_coverage(advice, shown)
+        return
+    if role == "remediation":
+        _print_remediation(answer, shown)
+        return
+
+    print()
+    print(f"Verdict: {shown(answer['verdict'])}")
+    print(shown(answer["summary"]))
+    if answer["most_important"]:
+        print("\nMost important:")
+        for point in answer["most_important"]:
+            print(f"  {shown(point['finding'])}: {shown(point['why'])}")
+    if answer["innocent_explanations"]:
+        print("\nPossible innocent explanations:")
+        for item in answer["innocent_explanations"]:
+            print(f"  {shown(item['finding'])}: {shown(item['explanation'])}")
+    if answer["what_would_settle_it"]:
+        print("\nWhat would settle it:")
+        for question in answer["what_would_settle_it"]:
+            print(f"  - {shown(question)}")
+    print("\n(AI advice: the score is the tool's own and is unchanged. Stored, encrypted.)")
+
+
+def _print_remediation(answer, shown) -> None:
+    print()
+    print(f"Urgency: {shown(answer['urgency'])}")
+    print(shown(answer["summary"]))
+    for title, key in (
+        ("Preserve evidence first", "preserve"),
+        ("Contain", "contain"),
+        ("Eradicate", "eradicate"),
+        ("Recover", "recover"),
+    ):
+        if answer.get(key):
+            print(f"\n{title}:")
+            for n, step in enumerate(answer[key], 1):
+                mark = " [destroys state]" if step.get("destructive") else ""
+                cites = ", ".join(step.get("findings") or [])
+                print(
+                    f"  {n}. {shown(step['action'])}{mark}"
+                    + (f" ({shown(cites)})" if cites else "")
+                )
+                print(f"     Why: {shown(step['why'])}  Risk: {shown(step['risk'])}")
+    if answer.get("tell"):
+        print("\nTell:")
+        for notify in answer["tell"]:
+            print(f"  {shown(notify['role'])}: {shown(notify['what'])} ({shown(notify['when'])})")
+    print("\n(AI advice for a person to weigh: nothing was run. Commands are text.)")
+
+
+def _print_coverage(advice, shown) -> None:
+    judged = advice.judged or []
+    print()
+    if not judged:
+        print("No suggestions: coverage looks good to the advisor.")
+    for item in judged:
+        s = item.suggestion
+        what = s.get("setting") if s.get("kind") == "setting" else s.get("item")
+        if item.accepted:
+            print(f"Suggested: {shown(s.get('why'))}")
+            for cited in item.cited:
+                print(f"  For {shown(cited)}")
+            print(f"  Cost, as the advisor sees it: {shown(s.get('trade_off'))}")
+            if item.note:
+                print(f"  {item.note}")
+            print(f"  {item.action}")  # the tool's own text, printed as it is
+        else:
+            print(f"Set aside: {shown(what)}: {shown(item.reason)}")
+    if any(j.accepted for j in judged):
+        print("\n(Suggestions only: nothing was changed. Settings take effect at the next")
+        print("collection; host configuration is for an administrator to apply.)")
+
+
+def _print_proposals(advice, shown) -> None:
+    judged = advice.judged or []
+    accepted = [j for j in judged if j.accepted]
+    print()
+    if not judged:
+        print("No whitelist rules proposed.")
+    for item in judged:
+        name = shown(item.proposal.get("id"))
+        if item.accepted:
+            print(
+                f"Proposed: {name}: hides {shown(', '.join(h.split(':')[0] for h in item.hides))}"
+            )
+        else:
+            print(f"Set aside: {name}: {shown(item.reason)}")
+    for point in advice.answer.get("left_alone") or []:
+        print(f"Left alone: {shown(point['finding'])}: {shown(point['why'])}")
+    if advice.file:
+        print(f"\n{len(accepted)} rule(s) written to {advice.file}: nothing is in effect until")
+        print("a person reviews them, sets each owner and copies them into the whitelist.")
+
+
+def cmd_advise(args: argparse.Namespace) -> int:
+    """The advisor's answer about a host's latest assessment (sent), or the
+    request exactly as it would be sent (--show, sends nothing)."""
+    from checker.advisor.advise import advise
+    from checker.advisor.case import case_for_host, redact
+    from checker.advisor.client import AdvisorError, build_request
+    from checker.advisor.prices import tokens_in
+
+    if args.all == bool(args.host):
+        print("checker: name a host, or --all", file=sys.stderr)
+        return 2
+    if args.all and (args.show or args.bundle or args.redaction):
+        print("checker: --show, --bundle and --redaction are for one host", file=sys.stderr)
+        return 2
+    base = home()
+    store = Store(database_file(base))
+
+    def requests_recorded() -> int:
+        return sum(len(store.advice_for_host(h)) for h in store.hosts())
+
+    recorded_before = requests_recorded()
+    try:
+        config = load_config(base)
+        inventory = _inventory_for_priors()
+        if args.all:
+            prior = whitelist = None
+        else:
+            prior = prior_for(args.host, config, inventory)
+            whitelist = _whitelist_for(base, args.host, inventory)
+        identity = _identity(args, base)
+        if args.all:
+            return _advise_all(args, base, store, config, inventory, identity)
+        if args.show:
+            built, known, _ = case_for_host(
+                store, args.host, identity, config.recipients, inventory, prior, whitelist,
+                args.bundle,
+            )  # fmt: skip
+            mode = args.redaction or config.advisor.redaction
+            payload, pseudonyms = redact(built, mode, known)
+            request = build_request(payload, args.role, config.advisor)
+            text = json.dumps(request.shown(), indent=1, ensure_ascii=False)
+            print(text)
+            placeholders = len(pseudonyms.originals) if pseudonyms else 0
+            print(
+                f"[{len(text)} characters, at most about {tokens_in(text)} tokens;"
+                f" redaction {mode};"
+                f" {placeholders} placeholders, kept only for this run. Nothing was sent.]",
+                file=sys.stderr,
+            )
+            if mode != config.advisor.redaction:
+                print(
+                    f"[The configured redaction is {config.advisor.redaction};"
+                    f" this preview used {mode}.]",
+                    file=sys.stderr,
+                )
+            if config.advisor.fallback == "model":
+                fallback = config.advisor.fallback_model
+                print(
+                    f"[If the model declines, the same case goes to {fallback.model},"
+                    f" {recipient(fallback.api, fallback.base_url)}.]",
+                    file=sys.stderr,
+                )
+            if not config.advisor.enabled:
+                print("[The advisor is off; this is what it would send.]", file=sys.stderr)
+            return 0
+        if args.redaction:
+            raise EvidenceError("--redaction only previews (with --show); set advisor.redaction")
+
+        def confirm(question: str) -> bool:
+            if args.yes:
+                return True
+            if not sys.stdin.isatty():
+                print("checker: not sent: confirm with --yes, or raise advisor.max_cost_per_run",
+                      file=sys.stderr)  # fmt: skip
+                return False
+            try:
+                return input(question).strip().lower() in ("y", "yes")
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return False
+
+        advice = advise(
+            store, args.host, identity, config, inventory, prior, whitelist,
+            role=args.role, bundle_id=args.bundle, confirm=confirm, home=base,
+        )  # fmt: skip
+    except (EvidenceError, OSError, AdvisorError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        sent = requests_recorded() > recorded_before
+        print(
+            "checker: interrupted; "
+            + ("the request may have been sent, and is recorded" if sent else "nothing was sent"),
+            file=sys.stderr,
+        )
+        return 130
+    finally:
+        store.close()
+    _print_advice(advice, args.role)
+    return 0 if advice.status == "answered" else 1
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """Write the HTML report: owner-only, confidential (policy §8)."""
     base = home()
@@ -781,16 +1316,18 @@ def cmd_report(args: argparse.Namespace) -> int:
             hosts = [args.host]
         inventory = _inventory_for_priors()
         whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
+        config = load_config(base)
         path = write_report(
             store,
             hosts,
             _identity(args, base),
-            load_config(base).recipients,
+            config.recipients,
             base / "reports",
             args.bundle,
             Path(args.output) if args.output else None,
-            partial(prior_for, config=load_config(base), inventory=inventory),
+            partial(prior_for, config=config, inventory=inventory),
             whitelists.get,
+            config.advisor.enabled,
         )
     except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -1183,8 +1720,9 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
         if chosen.bundles:
             print(f"To purge: {len(chosen.bundles)} bundle(s), with their events, snapshots,")
             print(
-                f"assessments and custody records; {len(chosen.files)} file(s) and"
-                f" {len(chosen.reports)} report(s)."
+                f"assessments and custody records; {len(chosen.files)} file(s),"
+                f" {len(chosen.reports)} report(s) and {len(chosen.proposals)} whitelist"
+                " proposal file(s)."
             )
         for row in chosen.bundles:
             print(f"  {row['started_at']}  {row['host']:20} {row['id']}")
@@ -1211,6 +1749,12 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
     for path, reason in outcome.failed:
         print(
             f"checker: couldn't delete {path} ({reason}); the next purge tries again",
+            file=sys.stderr,
+        )
+    for path in outcome.changed:
+        print(
+            f"checker: {path} changed after the purge was planned, so it was left as it is;"
+            " delete it yourself if it shows the purged evidence",
             file=sys.stderr,
         )
     return 1 if outcome.failed else 0

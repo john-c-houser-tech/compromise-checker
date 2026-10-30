@@ -12,7 +12,12 @@ SKIP = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_
 
 
 def hidden(char: str) -> bool:
-    return char not in "\n\t" and unicodedata.category(char) in ("Cc", "Cf", "Co", "Cs", "Zl", "Zp")
+    if char == "\x85":  # NEL: a line break to YAML and to splitlines()
+        return True
+    return char not in "\n\t\r" and unicodedata.category(char) in HIDDEN
+
+
+HIDDEN = ("Cc", "Cf", "Co", "Cs", "Zl", "Zp")
 
 
 def test_no_invisible_characters_in_the_repository():
@@ -20,7 +25,9 @@ def test_no_invisible_characters_in_the_repository():
     for path in ROOT.rglob("*"):
         if path.suffix not in SUFFIXES or SKIP & set(path.relative_to(ROOT).parts):
             continue
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        # Split on \n only: splitlines() also splits on U+2028, U+2029 and
+        # U+0085, and would hide them.
+        for number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
             for char in line:
                 if hidden(char):
                     found.append(f"{path.relative_to(ROOT)}:{number}: U+{ord(char):04X}")

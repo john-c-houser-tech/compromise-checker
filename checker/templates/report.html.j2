@@ -67,6 +67,11 @@ evidence, logs may be missing, and no set of checks covers every technique. Chec
 section for each host. A high band is a reason to investigate, not proof of an intrusion.</p>
 <p><strong>Confidential.</strong> This report describes weaknesses an attacker could use. Keep it
 with the evidence and share it only with people who need it.</p>
+{% if not advisor_enabled %}
+<p><strong>AI advisor: off.</strong> The tool can ask an AI model to explain these findings and
+suggest next steps; it stays off unless your organization turns it on (security and privacy
+policy §9).</p>
+{% endif %}
 </div>
 
 <h2>Summary</h2>
@@ -89,9 +94,13 @@ with the evidence and share it only with people who need it.</p>
 {% endfor %}
 </table></div>
 
+{% macro advice_meta(x, full=False) %}<p class="meta">Asked {{ x.model_asked|visible(80) }}{% if x.declined_by %}; declined by {{ x.declined_by|join(", ")|visible(200) }}{% endif %}{% if x.model_answered %}; answered by {{ x.model_answered|visible(80) }}{% if x.endpoint %} at {{ x.endpoint|visible(200) }}{% endif %}{% endif %} · redaction {{ x.redaction }} · {{ x.at[:16] }} UTC{% if full %} · about the assessment of {{ x.assessed_at[:16] }}{% endif %}{% if x.stale %} · <strong>stale{% if full %}: it read another collection or assessment of this host than this report shows{% endif %}</strong>{% endif %}</p>
+{% if x.local and x.model_answered %}<p class="muted">Answered by a local model, on the machine that ran <span class="mono">checker advise</span>: expect lower quality than from a large hosted model, and read it with more care.</p>{% endif %}{% endmacro %}
+{% macro came_to_nothing(title, entry) %}{% set x = entry.get("later") %}{% if x %}<p class="muted">AI advisor, {{ title }}: {% if entry.get("answered") %}a later request{% else %}a request{% endif %} ({{ x.model_asked|visible(80) }}, {{ x.at[:16] }} UTC) came to nothing: {{ x.note|visible(400) }}.</p>{% endif %}{% endmacro %}
 {% macro finding_card(f) %}
 <div class="finding">
 <div><span class="band {{ f.band }}">{{ f.band|upper }}</span>
+<span class="mono muted">F-{{ f.number }}</span>
 <span class="title">{{ f.title|visible(200) }}</span>
 {% if f.new %}<span class="tag">new</span>{% endif %}
 <span class="tag mono">{{ f.check }}</span></div>
@@ -168,6 +177,63 @@ uncertain findings count half. Suppressed and informational findings don't count
 {% else %}<p class="muted">No gaps recorded.</p>{% endif %}
 {% set waiting = r.assessment.checks|rejectattr("status", "equalto", "ran")|list %}
 {% if waiting %}<p>Checks not run: {% for c in waiting %}<span class="mono">{{ c.check }}</span> ({{ c.status|visible(200) }}){% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+{% set entry = r.advice.get("explain") or {} %}
+{% set a = entry.get("answered") or entry.get("later") %}
+{% set later = entry.get("later") if entry.get("answered") else None %}
+{% if a %}
+<h3>AI advisor (advice, not findings)</h3>
+<div class="notice">
+{{ advice_meta(a, True) }}
+{% if a.answer %}
+<p><strong>Verdict: {{ a.answer.verdict|visible(80) }}.</strong> {{ a.answer.summary|visible(2000) }}</p>
+{% if a.answer.most_important %}<p>Most important:</p><ul>{% for p in a.answer.most_important %}<li><span class="mono">{{ p.finding|visible(20) }}</span>: {{ p.why|visible(1000) }}</li>{% endfor %}</ul>{% endif %}
+{% if a.answer.innocent_explanations %}<p>Possible innocent explanations:</p><ul>{% for p in a.answer.innocent_explanations %}<li><span class="mono">{{ p.finding|visible(20) }}</span>: {{ p.explanation|visible(1000) }}</li>{% endfor %}</ul>{% endif %}
+{% if a.answer.what_would_settle_it %}<p>What would settle it:</p><ul>{% for q in a.answer.what_would_settle_it %}<li>{{ q|visible(1000) }}</li>{% endfor %}</ul>{% endif %}
+{% else %}<p>No advice: {{ a.note|visible(400) }}.</p>{% endif %}
+{% if later %}<p class="muted">A later request ({{ later.at[:16] }} UTC) came to nothing: {{ later.note|visible(400) }}.</p>{% endif %}
+<p class="muted">Written by an AI model from the findings above; the probability and band are the tool's own and unchanged. Finding numbers (F-n) count the analysis's findings in order.</p>
+</div>
+{% endif %}
+{% set m = (r.advice.get("remediation") or {}).get("answered") %}
+{% if m and m.answer %}
+<h3>AI advisor: remediation (advice; nothing was run)</h3>
+<div class="notice">
+{{ advice_meta(m) }}
+<p><strong>Urgency: {{ m.answer.urgency|visible(20) }}.</strong> {{ m.answer.summary|visible(2000) }}</p>
+{% for title, key in (("Preserve evidence first", "preserve"), ("Contain", "contain"), ("Eradicate", "eradicate"), ("Recover", "recover")) %}
+{% if m.answer[key] %}<p>{{ title }}:</p><ol>{% for s in m.answer[key] %}<li><span class="mono">{{ s.action|visible(1000) }}</span>{% if s.destructive %} <strong>[destroys state]</strong>{% endif %}{% if s.findings %} ({{ s.findings|join(", ")|visible(100) }}){% endif %}<div class="muted">Why: {{ s.why|visible(600) }} · Risk: {{ s.risk|visible(400) }}</div></li>{% endfor %}</ol>{% endif %}
+{% endfor %}
+{% if m.answer.tell %}<p>Tell:</p><ul>{% for t in m.answer.tell %}<li>{{ t.role|visible(120) }}: {{ t.what|visible(400) }} ({{ t.when|visible(120) }})</li>{% endfor %}</ul>{% endif %}
+<p class="muted">Written by an AI model for a person to weigh against what they know of the host. Commands are shown as text; the tool runs nothing. Preserve evidence before any step marked as destroying state.</p>
+</div>
+{% endif %}
+{{ came_to_nothing("remediation", r.advice.get("remediation") or {}) }}
+{% set c = (r.advice.get("coverage") or {}).get("answered") %}
+{% if c and c.answer %}
+{% set offered = c.answer.judged|selectattr("accepted")|list %}
+<h3>AI advisor: coverage suggestions (nothing changed)</h3>
+<div class="notice">
+{{ advice_meta(c) }}
+<p class="muted">As judged against the settings at {{ c.at[:16] }} UTC; a setting changed since may already be in place.</p>
+{% if offered %}<ul>{% for j in offered %}<li>{{ j.suggestion.why|visible(600) }}{% for g in j.cited %}<div class="muted">For {{ g|visible(400) }}</div>{% endfor %}<div class="muted">Cost, as the advisor sees it: {{ j.suggestion.trade_off|visible(300) }}</div>{% if j.note %}<div><strong>{{ j.note|visible(1000) }}</strong></div>{% endif %}<div class="mono">{{ j.action|visible(1000) }}</div></li>{% endfor %}</ul>
+{% else %}<p>No suggestions offered.</p>{% endif %}
+{% set aside = c.answer.judged|rejectattr("accepted")|list %}
+{% if aside %}<p class="muted">{{ aside|length }} set aside: {% for j in aside %}{{ j.reason|visible(200) }}{% if not loop.last %}; {% endif %}{% endfor %}.</p>{% endif %}
+</div>
+{% endif %}
+{{ came_to_nothing("coverage suggestions", r.advice.get("coverage") or {}) }}
+{% set w = (r.advice.get("whitelist") or {}).get("answered") %}
+{% if w and w.answer %}
+{% set offered = w.answer.judged|selectattr("accepted")|list %}
+<h3>AI advisor: whitelist proposals (not in effect)</h3>
+<div class="notice">
+{{ advice_meta(w) }}
+<p>{{ offered|length }} proposed{% if w.answer.file %}, written to <span class="mono">{{ w.answer.file|visible(300) }}</span> for a person to review{% endif %}; {{ w.answer.judged|length - offered|length }} set aside.</p>
+{% if w.answer.judged %}<ul>{% for j in w.answer.judged %}<li><span class="mono">{{ j.id|visible(80) }}</span>: {% if j.accepted %}hides {{ j.hides|join("; ")|visible(600) }}{% else %}set aside: {{ j.reason|visible(300) }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+<p class="muted">A proposal is only offered when it hides exactly the findings it names, none of them critical or part of a chain. Nothing changes until a person copies a rule into the whitelist.</p>
+</div>
+{% endif %}
+{{ came_to_nothing("whitelist proposals", r.advice.get("whitelist") or {}) }}
 {% endfor %}
 
 <h2>Appendix</h2>
@@ -184,7 +250,7 @@ Suppressed findings are kept, here, and count for nothing in the probability.</p
 <tr><th>Band</th><th>Finding</th><th>Rule</th><th>Reason</th><th>Owner</th></tr>
 {% for f in r.suppressed %}
 <tr><td><span class="band {{ f.band }}">{{ f.band|upper }}</span></td>
-<td>{{ f.title|visible(200) }}<div class="mono muted">{{ f.summary|visible(300) }}</div></td>
+<td><span class="mono muted">F-{{ f.number }}</span> {{ f.title|visible(200) }}<div class="mono muted">{{ f.summary|visible(300) }}</div></td>
 <td class="mono">{{ f.suppressed_by.layer|visible(80) }} / {{ f.suppressed_by.rule|visible(80) }}</td>
 <td>{{ f.suppressed_by.reason|visible(300) }}</td><td>{{ f.suppressed_by.owner|visible(80) }}</td></tr>
 {% endfor %}

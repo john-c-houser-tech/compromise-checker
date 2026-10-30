@@ -275,9 +275,35 @@ def expected_path(case_path: Path) -> Path:
 
 
 def write_expected(case_path: Path) -> dict[str, Any]:
-    result = run_case(load_case(case_path))
+    case = load_case(case_path)
+    result = run_case(case)
     expected_path(case_path).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
+    for mode in ADVISOR_MODES:
+        advisor_path(case_path, mode).write_text(advisor_text(case, result, mode))
     return result
+
+
+# What the advisor would be sent for the case (Phase 3, PR 3.1): any change
+# to the request shows up as a diff, like a change to the findings.
+ADVISOR_MODES = ("pseudonymize", "strict")
+
+
+def advisor_path(case_path: Path, mode: str) -> Path:
+    return case_path.with_name(case_path.name.removesuffix(".json.gz") + f".advisor-{mode}.json")
+
+
+def advisor_text(case: dict[str, Any], result: dict[str, Any], mode: str) -> str:
+    from checker.advisor.case import build_case, known_identifiers, redact
+
+    target = case["target"]
+    snapshots = {k: Snapshot.from_dict(v) for k, v in case["snapshots"].items()}
+    events = [Event(**e) for e in case["events"][target]]
+    built = build_case(case["host"], result, events, snapshots[target], snapshots)
+    known = known_identifiers(
+        case["host"], snapshots[target], result["findings"], events, result["score"]["chains"]
+    )
+    payload, _ = redact(built, mode, known, tag="0000")  # fixed, so the file is stable
+    return json.dumps(payload, indent=1, ensure_ascii=False) + "\n"
 
 
 def cases() -> list[Path]:
@@ -287,4 +313,6 @@ def cases() -> list[Path]:
 def orphans() -> list[Path]:
     """Expectations whose case is gone."""
     have = {expected_path(p) for p in cases()}
-    return [p for p in sorted(CASES.glob("*.expected.json")) if p not in have]
+    have |= {advisor_path(p, mode) for p in cases() for mode in ADVISOR_MODES}
+    stored = [*CASES.glob("*.expected.json"), *CASES.glob("*.advisor-*.json")]
+    return [p for p in sorted(stored) if p not in have]

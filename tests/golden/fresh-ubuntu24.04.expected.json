@@ -275,6 +275,11 @@
    "status": "ran"
   },
   {
+   "check": "ssh.login_hours",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "sshd.config",
    "status": "this bundle is the baseline"
   },

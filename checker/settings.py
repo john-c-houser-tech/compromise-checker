@@ -353,15 +353,17 @@ def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
     return old, new, config
 
 
-def change_trusted_keys(home: Path, keys: list[dict[str, str]]) -> tuple[Any, Any, Config]:
-    """Set the organization's own pack keys (`packs.trusted_keys`), validated
-    against the whole configuration and recorded like any other change."""
+def change_trusted_keys(home: Path, update) -> tuple[Any, Any, Config]:
+    """Change the organization's own pack keys (`packs.trusted_keys`):
+    `update(old list) -> new list`, read and written under the
+    configuration's lock, validated against the whole configuration and
+    recorded like any other change."""
     path = config_file(home)
     with locked(path):
         current = load_config(home)
         data = current.model_dump()
         old = data["packs"]["trusted_keys"]
-        data["packs"]["trusted_keys"] = keys
+        data["packs"]["trusted_keys"] = update([dict(k) for k in old])
         try:
             config = Config.model_validate(data)
         except ValidationError as exc:

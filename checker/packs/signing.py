@@ -72,20 +72,27 @@ class Signed:
 
 def verify(data: bytes, signature: bytes, keys: list[PublicKey]) -> Signed:
     """Check `signature` (a .minisig file's bytes) over `data` against
-    whichever of `keys` has its key id; raises SignatureError otherwise."""
+    whichever of `keys` has its key id; raises SignatureError otherwise.
+    The trusted comment may be any UTF-8 (minisign puts the signed file's
+    name in it); what it signs is its bytes as written."""
     if len(signature) > MAX_SIGNATURE_BYTES:
         raise SignatureError("the signature file is too large")
-    try:
-        lines = signature.decode("ascii").splitlines()
-    except UnicodeDecodeError:
-        raise SignatureError("the signature file isn't minisign's") from None
+    lines = [line.rstrip(b"\r") for line in signature.split(b"\n")]
+    if lines and lines[-1] == b"":
+        lines = lines[:-1]
     if (
         len(lines) != 4
-        or not lines[0].startswith("untrusted comment:")
-        or not lines[2].startswith("trusted comment: ")
+        or not lines[0].startswith(b"untrusted comment:")
+        or not lines[2].startswith(b"trusted comment: ")
     ):
         raise SignatureError("the signature file isn't minisign's (four lines)")
-    blob = _b64(lines[1], "signature")
+    try:
+        sig_line, global_line = lines[1].decode("ascii"), lines[3].decode("ascii")
+        comment = lines[2].removeprefix(b"trusted comment: ")
+        shown = comment.decode("utf-8")
+    except UnicodeDecodeError:
+        raise SignatureError("the signature file isn't minisign's") from None
+    blob = _b64(sig_line, "signature")
     if len(blob) != 74:
         raise SignatureError("the signature isn't minisign's")
     algorithm, key_id, sig = blob[:2], _id(blob[2:10]), blob[10:]
@@ -93,22 +100,24 @@ def verify(data: bytes, signature: bytes, keys: list[PublicKey]) -> Signed:
         raise SignatureError("a legacy signature (not prehashed): sign with a current minisign")
     if algorithm != b"ED":
         raise SignatureError("the signature isn't minisign's")
-    comment = lines[2].removeprefix("trusted comment: ")
     if len(comment) > MAX_COMMENT:
         raise SignatureError("the trusted comment is too long")
-    global_sig = _b64(lines[3], "global signature")
+    global_sig = _b64(global_line, "global signature")
     if len(global_sig) != 64:
         raise SignatureError("the global signature isn't minisign's")
-    key = next((k for k in keys if k.key_id == key_id), None)
-    if key is None:
+    matching = [k for k in keys if k.key_id == key_id]
+    if not matching:
         raise SignatureError(f"signed by key {key_id}, which isn't trusted")
+    if len({k.raw for k in matching}) > 1:
+        raise SignatureError(f"two trusted keys share the key id {key_id}: neither is used")
+    key = matching[0]
     checker = Ed25519PublicKey.from_public_bytes(key.raw)
     try:
         checker.verify(sig, hashlib.blake2b(data, digest_size=64).digest())
     except InvalidSignature:
         raise SignatureError(f"the signature doesn't match the file (key {key_id})") from None
     try:
-        checker.verify(global_sig, sig + comment.encode("ascii"))
+        checker.verify(global_sig, sig + comment)
     except InvalidSignature:
         raise SignatureError("the trusted comment has been changed") from None
-    return Signed(key, comment)
+    return Signed(key, shown)

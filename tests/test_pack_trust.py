@@ -213,9 +213,8 @@ def test_add_list_show_and_retire(ours, home, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "No pack is in force" in out and "retired by hand: not ours" in out
     kept = home[0] / "packs" / "retired"
-    assert (kept / "example-2026-10-v2.yaml").exists() and (
-        kept / "example-2026-10-v2.yaml.minisig"
-    ).exists()
+    (retired_pack,) = kept.glob("example-2026-10-v2-*.yaml")
+    assert retired_pack.with_name(retired_pack.name + ".minisig").exists()
 
 
 def test_a_newer_version_retires_the_older_and_an_older_one_is_refused(
@@ -227,8 +226,8 @@ def test_a_newer_version_retires_the_older_and_an_older_one_is_refused(
     assert "added, replacing version 2" in capsys.readouterr().out
     v1 = pack(tmp_path, ours, GOOD.replace("version: 2", "version: 1"), "v1.yaml")
     assert cli.main(["packs", "add", str(v1)]) == 1
-    assert "version 3, newer, is already in force" in capsys.readouterr().err
-    why = (home[0] / "packs" / "retired" / "example-2026-10-v2.yaml.why").read_text()
+    assert "version 3, newer, was accepted before" in capsys.readouterr().err
+    (why,) = (p.read_text() for p in (home[0] / "packs" / "retired").glob("*-v2-*.yaml.why"))
     assert "replaced by version 3" in why
 
 
@@ -300,7 +299,7 @@ def test_a_revoked_pack_key_retires_its_packs(nouriloop, home, tmp_path, capsys)
     assert "serial 2 is in force (was 1)" in out
     assert "Retired example-2026-10-v2.yaml: its signing key is no longer trusted" in out
     assert not (home[0] / "packs" / "active" / "example-2026-10-v2.yaml").exists()
-    assert (home[0] / "packs" / "retired" / "example-2026-10-v2.yaml").exists()
+    assert list((home[0] / "packs" / "retired").glob("example-2026-10-v2-*.yaml"))
     assert cli.main(["packs", "add", str(pack(tmp_path, leaked))]) == 1  # refused from now on
     assert cli.main(["packs", "keys"]) == 0
     shown = capsys.readouterr().out
@@ -322,4 +321,159 @@ def test_removing_an_organization_key_retires_its_packs_and_is_recorded(
 def test_a_key_is_trusted_once(ours, tmp_path, capsys):
     path = ours.pub_file(tmp_path / "again.pub")
     assert cli.main(["packs", "trust", "add", "same key", str(path)]) == 1
-    assert "given twice" in capsys.readouterr().err
+    assert "is already trusted" in capsys.readouterr().err
+
+
+# --- After review ------------------------------------------------------------------------------
+
+
+def test_no_older_version_and_no_changed_content_even_after_a_retire(ours, tmp_path, capsys):
+    v1 = pack(tmp_path, ours, GOOD.replace("version: 2", "version: 1"), "v1.yaml")
+    v2 = pack(tmp_path, ours)
+    assert cli.main(["packs", "add", str(v1)]) == 0
+    assert cli.main(["packs", "add", str(v2)]) == 0
+    assert cli.main(["packs", "retire", "example-2026-10", "--reason", "done"]) == 0
+    capsys.readouterr()
+    assert cli.main(["packs", "add", str(v1)]) == 1
+    assert "an older version can't come back" in capsys.readouterr().err
+    changed = pack(tmp_path, ours, GOOD.replace("Turn off", "Switch off"), "c.yaml")
+    assert cli.main(["packs", "add", str(changed)]) == 1
+    assert "accepted before with different content" in capsys.readouterr().err
+    assert cli.main(["packs", "add", str(v2)]) == 0  # the same one, back in force
+    assert "back in force" in capsys.readouterr().out
+
+
+def test_retiring_the_same_pack_twice_keeps_both_notes(ours, home, tmp_path):
+    path = pack(tmp_path, ours)
+    for why in ("first", "second"):
+        assert cli.main(["packs", "add", str(path)]) == 0
+        assert cli.main(["packs", "retire", "example-2026-10", "--reason", why]) == 0
+    (notes,) = (home[0] / "packs" / "retired").glob("*.why")
+    text = notes.read_text()
+    assert "retired by hand: first" in text and "retired by hand: second" in text
+
+
+def test_a_pack_id_stays_with_the_domain_that_signs_it(nouriloop, home, tmp_path, capsys):
+    pack_key, ours_key = Key(), Key()
+    keys = tmp_path / "keys.yaml"
+    data, sig = key_list(nouriloop, 1, [pack_key])
+    keys.write_bytes(data)
+    (tmp_path / "keys.yaml.minisig").write_bytes(sig)
+    assert cli.main(["packs", "keys", "add", str(keys)]) == 0
+    assert (
+        cli.main(["packs", "trust", "add", "ours", str(ours_key.pub_file(tmp_path / "o.pub"))]) == 0
+    )
+    assert cli.main(["packs", "add", str(pack(tmp_path, pack_key))]) == 0
+    capsys.readouterr()
+    takeover = pack(tmp_path, ours_key, GOOD.replace("version: 2", "version: 10000"), "t.yaml")
+    assert cli.main(["packs", "add", str(takeover)]) == 1
+    assert "signed by NouriLoop's keys" in capsys.readouterr().err
+
+
+def test_a_revoked_key_is_no_organization_key_either(nouriloop, home, tmp_path, capsys):
+    from checker.settings import change_trusted_keys
+
+    leaked = Key()
+    keys = tmp_path / "keys.yaml"
+    data, sig = key_list(nouriloop, 1, [Key()], revoked=[leaked])
+    keys.write_bytes(data)
+    (tmp_path / "keys.yaml.minisig").write_bytes(sig)
+    assert cli.main(["packs", "keys", "add", str(keys)]) == 0
+    assert cli.main(["packs", "trust", "add", "x", str(leaked.pub_file(tmp_path / "l.pub"))]) == 1
+    assert "is revoked" in capsys.readouterr().err
+    # Put in by hand all the same: still not trusted.
+    change_trusted_keys(home[0], lambda old: [*old, {"name": "x", "public_key": leaked.line}])
+    assert cli.main(["packs", "add", str(pack(tmp_path, leaked))]) == 1
+    assert "isn't trusted" in capsys.readouterr().err
+
+
+def test_a_root_key_signs_no_pack(nouriloop, home, tmp_path, capsys):
+    with pytest.raises(trust.TrustError, match="a root key can't be a pack key"):
+        trust.accept_key_list(home[0], *key_list(nouriloop, 1, [nouriloop]))
+    assert (
+        cli.main(["packs", "trust", "add", "r", str(nouriloop.pub_file(tmp_path / "r.pub"))]) == 1
+    )
+    assert "root key" in capsys.readouterr().err
+
+
+def test_a_damaged_kept_key_list_trusts_nothing_rather_than_an_older_one(
+    nouriloop, home, tmp_path, capsys
+):
+    base = home[0]
+    leaked, fresh = Key(), Key()
+    trust.SHIPPED.mkdir()
+    data, sig = key_list(nouriloop, 1, [leaked])
+    (trust.SHIPPED / "keys.yaml").write_bytes(data)
+    (trust.SHIPPED / "keys.yaml.minisig").write_bytes(sig)
+    trust.accept_key_list(base, *key_list(nouriloop, 2, [fresh], revoked=[leaked]))
+    assert cli.main(["packs", "add", str(pack(tmp_path, fresh))]) == 0
+    kept = base / "packs" / "keylists" / "2" / "keys.yaml.minisig"
+    kept.write_bytes(leaked.sign(b"x"))
+    with pytest.raises(trust.TrustError):
+        trust.key_list(base)
+    keys, problem = trust.trusted_keys(base, [])
+    assert keys == [] and problem
+    from checker.packs.store import sweep
+
+    assert sweep(base, []) == []  # a damaged list isn't a revocation
+    capsys.readouterr()
+    assert cli.main(["packs", "add", str(pack(tmp_path, leaked, name="l.yaml"))]) == 1
+    # Removed altogether: the recorded serial still stands.
+    import shutil
+
+    shutil.rmtree(base / "packs" / "keylists" / "2")
+    with pytest.raises(trust.TrustError, match="accepted here but isn't kept"):
+        trust.key_list(base)
+
+
+def test_two_trusted_keys_sharing_an_id_are_both_refused():
+    first, second = Key(), Key()
+    second.id = first.id  # an id chosen to collide
+    data = b"pack"
+    keys = [public_key(first.line), public_key(Key().line)]
+    keys.append(
+        public_key(
+            base64.b64encode(
+                b"Ed" + first.id + second.secret.public_key().public_bytes_raw()
+            ).decode()
+        )
+    )
+    with pytest.raises(SignatureError, match="share the key id"):
+        verify(data, first.sign(data), keys)
+
+
+def test_only_the_newest_version_of_a_pack_is_in_force(ours, home, tmp_path):
+    from checker.evidence import load_config
+    from checker.packs.store import active
+
+    active_dir = home[0] / "packs" / "active"
+    for version in (9, 10):
+        text = GOOD.replace("version: 2", f"version: {version}")
+        path = pack(tmp_path, ours, text, f"v{version}.yaml")
+        active_dir.mkdir(parents=True, exist_ok=True)
+        (active_dir / f"example-2026-10-v{version}.yaml").write_text(text)
+        (active_dir / f"example-2026-10-v{version}.yaml.minisig").write_bytes(
+            path.with_name(path.name + ".minisig").read_bytes()
+        )
+    usable, problems = active(home[0], load_config(home[0]).packs.trusted_keys)
+    assert [s.pack.version for s in usable] == [10]
+    assert "version 9 is also in force; only 10 is used" in problems[0]
+
+
+def test_a_trusted_comment_may_be_any_utf8():
+    key = Key()
+    signed = verify(
+        b"x", key.sign(b"x", comment="timestamp:1 file:paquet-été.yaml"), [public_key(key.line)]
+    )
+    assert signed.trusted_comment.endswith("été.yaml")
+
+
+def test_an_oversized_kept_pack_isnt_read(ours, home, tmp_path):
+    from checker.evidence import load_config
+    from checker.packs.format import MAX_BYTES
+    from checker.packs.store import active
+
+    assert cli.main(["packs", "add", str(pack(tmp_path, ours))]) == 0
+    (home[0] / "packs" / "active" / "example-2026-10-v2.yaml").write_bytes(b"#" * (MAX_BYTES + 10))
+    usable, problems = active(home[0], load_config(home[0]).packs.trusted_keys)
+    assert usable == [] and "larger than a pack may be" in problems[0]

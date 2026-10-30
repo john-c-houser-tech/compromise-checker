@@ -6,9 +6,12 @@ nouriloop.com). The pack key signs pack releases, and is trusted only
 because the key list in force names it. A pack key that leaks or is lost
 is revoked by a new key list, without a release of the tool.
 
-The key list carries a serial that only goes up: the tool keeps the
-highest it has accepted (in `packs/keys.yaml`) and refuses a lower or
-equal one, so an old list can't be replayed to bring a revoked key back.
+The key list carries a serial that only goes up: the tool records the
+highest it has accepted (in `packs/state.json`), keeps each accepted list
+whole in `packs/keylists/<serial>/`, and refuses a lower or equal one, so
+an old list can't be replayed to bring a revoked key back. A kept list
+that is damaged or missing makes no NouriLoop key trusted, rather than
+falling back to an older one.
 A copy of the current list ships in the tool; a newer one comes from
 `checker packs pull`, or `checker packs keys add` for air-gapped sites.
 
@@ -27,6 +30,7 @@ packs; the key list doesn't touch them.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from datetime import date
@@ -84,6 +88,9 @@ class KeyList(_Strict):
 
     @model_validator(mode="after")
     def _consistent(self) -> KeyList:
+        roots = {k.raw for k in root_keys()}
+        if any(public_key(k.public_key).raw in roots for k in self.pack_keys):
+            raise ValueError("a root key can't be a pack key")
         ids = [public_key(k.public_key).key_id for k in self.pack_keys]
         if len(set(ids)) != len(ids):
             raise ValueError("a pack key is listed twice")
@@ -117,40 +124,92 @@ def read_key_list(data: bytes, signature: bytes) -> KeyList:
         raise TrustError(f"the key list: {problems(exc)}") from None
 
 
-def _stored(directory: Path) -> tuple[bytes, bytes] | None:
+def _pair(directory: Path) -> tuple[bytes, bytes] | None:
     data, sig = directory / KEY_LIST, directory / f"{KEY_LIST}.minisig"
-    if not data.is_file() or not sig.is_file():
+    if not data.is_file() and not sig.is_file():
         return None
-    return data.read_bytes(), sig.read_bytes()
+    if not (data.is_file() and sig.is_file()):
+        raise TrustError(f"{directory}: a key list without its signature, or the reverse")
+    return data.read_bytes()[:65537], sig.read_bytes()[:4097]
+
+
+def _kept(home: Path) -> tuple[int, Path] | None:
+    """The highest-serial key list kept here, by its folder."""
+    folder = home / "packs" / "keylists"
+    serials = (
+        [
+            int(p.name)
+            for p in folder.glob("*")
+            if p.is_dir() and re.fullmatch(r"[1-9][0-9]{0,9}", p.name)
+        ]
+        if folder.is_dir()
+        else []
+    )
+    return (max(serials), folder / str(max(serials))) if serials else None
 
 
 def key_list(home: Path) -> KeyList | None:
-    """The key list in force: the stored one or the shipped one, whichever
-    has the higher serial (each checked against the root keys)."""
-    found = []
-    for directory in (home / "packs", SHIPPED):
-        pair = _stored(directory)
-        if pair is not None:
-            try:
-                found.append(read_key_list(*pair))
-            except TrustError:
-                continue  # a damaged copy doesn't stop the other
-    return max(found, key=lambda k: k.serial) if found else None
+    """The key list in force: the kept one or the shipped one, whichever
+    has the higher serial. A kept list that fails its checks, or one that
+    is missing below the serial recorded as accepted, is an error: no
+    NouriLoop key is trusted then, rather than an older list."""
+    from checker.packs.state import read_state
+
+    recorded = read_state(home)["key_list_serial"]
+    kept = None
+    found = _kept(home)
+    if found is not None:
+        serial, directory = found
+        pair = _pair(directory)
+        if pair is None:
+            raise TrustError(f"the kept key list {serial} is empty")
+        kept = read_key_list(*pair)
+        if kept.serial != serial:
+            raise TrustError(f"the kept key list in folder {serial} says serial {kept.serial}")
+    if recorded and (kept is None or kept.serial < recorded):
+        raise TrustError(
+            f"key list {recorded} was accepted here but isn't kept any more: add it again"
+            " (`checker packs keys add`)"
+        )
+    shipped = None
+    pair = _pair(SHIPPED) if SHIPPED.is_dir() else None
+    if pair is not None:
+        shipped = read_key_list(*pair)
+    candidates = [k for k in (kept, shipped) if k is not None]
+    return max(candidates, key=lambda k: k.serial) if candidates else None
 
 
 def accept_key_list(home: Path, data: bytes, signature: bytes) -> tuple[KeyList, KeyList | None]:
-    """Make a newer key list the one in force: (new, old)."""
+    """Make a newer key list the one in force: (new, old). The caller holds
+    the packs lock."""
+    from checker.packs.state import read_state, write_state
+
     new = read_key_list(data, signature)
-    old = key_list(home)
-    if old is not None and new.serial <= old.serial:
+    state = read_state(home)
+    try:
+        old = key_list(home)
+    except TrustError:
+        old = None  # a damaged one is replaced by a newer list
+    floor = max(state["key_list_serial"], old.serial if old else 0)
+    if new.serial <= floor:
         raise TrustError(
-            f"the key list's serial {new.serial} isn't newer than the one in force"
-            f" ({old.serial}): an older list can't bring a revoked key back"
+            f"the key list's serial {new.serial} isn't newer than the one accepted ({floor}):"
+            " an older list can't bring a revoked key back"
         )
-    folder = home / "packs"
+    folder = home / "packs" / "keylists"
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _write(folder / f"{KEY_LIST}.minisig", signature)
-    _write(folder / KEY_LIST, data)
+    staging = Path(tempfile.mkdtemp(dir=folder, prefix=".new-"))
+    try:
+        _write(staging / f"{KEY_LIST}.minisig", signature)
+        _write(staging / KEY_LIST, data)
+        os.replace(staging, folder / str(new.serial))  # both files appear at once
+    except BaseException:
+        for leftover in staging.glob("*") if staging.exists() else []:
+            leftover.unlink(missing_ok=True)
+        staging.rmdir() if staging.exists() else None
+        raise
+    state["key_list_serial"] = new.serial
+    write_state(home, state)
     return new, old
 
 
@@ -167,20 +226,55 @@ def _write(path: Path, data: bytes) -> None:
         raise
 
 
+NOURILOOP = "NouriLoop"
+ORGANIZATION = "your organization"
+
+
 @dataclass(frozen=True)
 class Trusted:
     key: PublicKey
     who: str  # "NouriLoop pack key <name>" or "organization key <name>"
+    domain: str  # NOURILOOP or ORGANIZATION: a pack id stays with one
 
 
-def trusted_keys(home: Path, organization: list[Any]) -> list[Trusted]:
-    """Every key a pack may be signed with now: the key list's pack keys,
-    and the organization's own (`packs.trusted_keys`)."""
-    found = []
-    listed = key_list(home)
+def trusted_keys(home: Path, organization: list[Any]) -> tuple[list[Trusted], str | None]:
+    """Every key a pack may be signed with now, and why NouriLoop's keys
+    aren't among them if they aren't: the key list's pack keys, and the
+    organization's own (`packs.trusted_keys`) unless the key list revokes
+    one, or it is a root key."""
+    found, problem = [], None
+    try:
+        listed = key_list(home)
+    except TrustError as exc:
+        listed, problem = None, str(exc)
+    revoked = {r.key_id for r in listed.revoked} if listed else set()
     if listed is not None:
         for entry in listed.pack_keys:
-            found.append(Trusted(public_key(entry.public_key), f"NouriLoop pack key {entry.name}"))
+            found.append(
+                Trusted(public_key(entry.public_key), f"NouriLoop pack key {entry.name}", NOURILOOP)
+            )
+    roots = {k.raw for k in root_keys()}
     for entry in organization:
-        found.append(Trusted(public_key(entry.public_key), f"organization key {entry.name}"))
-    return found
+        key = public_key(entry.public_key)
+        if key.key_id in revoked or key.raw in roots:
+            continue
+        found.append(Trusted(key, f"organization key {entry.name}", ORGANIZATION))
+    return found, problem
+
+
+def check_organization_key(home: Path, key: PublicKey, others: list[Any]) -> None:
+    """Refuse an organization key that is revoked, a root key, or shares a
+    key id with a key already trusted."""
+    if key.raw in {k.raw for k in root_keys()}:
+        raise TrustError("that is NouriLoop's root key, which signs only key lists")
+    try:
+        listed = key_list(home)
+    except TrustError:
+        listed = None
+    if listed is not None and key.key_id in {r.key_id for r in listed.revoked}:
+        raise TrustError(f"key {key.key_id} is revoked by NouriLoop's key list")
+    ids = [public_key(o.public_key).key_id for o in others]
+    if listed is not None:
+        ids += [k.key_id for k in listed.trusted()]
+    if key.key_id in ids:
+        raise TrustError(f"a key with the id {key.key_id} is already trusted")

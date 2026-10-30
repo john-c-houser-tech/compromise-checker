@@ -37,6 +37,7 @@ validates its drafts exactly as the tool reads them.
       - id: upload-progress-off
         setting: {kind: php_ini, name: session.upload_progress.enabled}
         expect: "off"
+        default: "on"                      # PHP's own, when no file sets it
         covers: [CVE-2026-115560]
         text: Turn off upload progress tracking until PHP is fixed.
     detections:
@@ -310,6 +311,10 @@ class Mitigation(_Strict):
     # Compared without regard to case; on/off, yes/no, true/false and 1/0
     # are each the same.
     expect: Annotated[str, Field(min_length=1, max_length=100), AfterValidator(_plain)]
+    # What the setting is when no file sets it (PHP's built-in default;
+    # session.upload_progress.enabled's is On). Without it, a setting set
+    # nowhere can't be judged.
+    default: Annotated[str, Field(max_length=100), AfterValidator(_plain)] | None = None
     covers: list[str] = Field(default=[], max_length=20)  # CVEs it also covers
     text: Text
 
@@ -320,6 +325,15 @@ class Mitigation(_Strict):
         if len(set(value)) != len(value):
             raise ValueError("a CVE is listed twice")
         return value
+
+    @model_validator(mode="after")
+    def _says_the_default(self) -> Mitigation:
+        # A setting set nowhere is the default; without it, the commonest
+        # case (Ubuntu's php.ini leaves most settings commented out) can't
+        # be judged.
+        if self.setting.kind == "php_ini" and self.default is None:
+            raise ValueError("a php_ini mitigation says the setting's default (PHP's own)")
+        return self
 
 
 class Detection(_Strict):

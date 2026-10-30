@@ -301,6 +301,61 @@ is John's to approve before it is committed. Also:
   collection each; both servers deleted. Spend: about $0.01 (Phase 4 so
   far: about $0.01 of the $10 cap).
 
+### 4.4b — Mitigations and dated fixes (as built)
+
+- The pack format's mitigation gains `default` (PHP's built-in value
+  when no file sets it). `checker/packs/mitigation.py` judges each PHP
+  set-up as PHP loads it (php.ini, then conf.d in name order through its
+  links; the last occurrence outside [PATH=]/[HOST=] wins; set nowhere =
+  the default) and each PHP-FPM pool's override: in place only if every
+  set-up and pool has the expected value; "not seen" when PHP's settings
+  weren't collected whole, no set-up was found, or the pack gives no
+  default for a setting set nowhere. A missing mitigation is a
+  `pack.exposure` finding (`mitigation_missing`): high while the host is
+  vulnerable or can't be judged, medium once fixed. Mitigations don't move
+  the prior (D3 didn't say they should).
+- **What an in-place mitigation can't see** (a side note John relayed,
+  2026-10-30): a site's `.user.ini` (PHP-FPM) or `.htaccess` (Apache's
+  PHP) can set `session.upload_progress.enabled` again for that site; the
+  collector reads neither, and the coverage section says so whenever a
+  mitigation reads as in place. Reading them is a collection change:
+  **John said yes (2026-10-30): read them after 4.4b, as 4.4c** (the web
+  roots the tool already walks; PHP settings lines only, masked; policy
+  §7 wording to John; the read-only proof again).
+- Fix times from the package history: the change into a fixed version
+  after which the package stayed fixed dates the fix exactly (a later
+  routine update no longer stretches the exposure); a first install of an
+  already-fixed version extends no exposure; a downgrade back restarts
+  the clock; without history, an earlier collection that already had the
+  fix bounds it; a vulnerable package removed during the window was
+  exposed until its removal. Findings say "at" for an exact time and "by
+  … at the latest" otherwise.
+- **After review (4.4b; 3 high, 7 medium, 6 low):** the worst two
+  outcomes both happened. An exposure cut to nothing: a vulnerable
+  version purged and reinstalled fixed, or removed while another affected
+  package stayed, counted as no exposure; now a removal always counts,
+  and a first install counts as fresh only with the history whole and
+  nothing vulnerable still installed just before it (any name). "Exact"
+  on partial history: now exact only if the last change found is to the
+  version installed and its time is certain; a retried upgrade dates from
+  the retry; dnf's pending write-ahead log leaves the history incomplete;
+  an earlier collection bounds the time only for the very same version.
+  "In place" with PHP on: a pool's php_admin_* line was overwritten by a
+  later php_flag in the snapshot; now every override is kept with its
+  kind and order, and a pool's admin values come first. Also now places
+  of their own: [PATH=]/[HOST=] sections, a set-up with no php.ini (its
+  defaults), pools in php-fpm.conf and pool subfolders, the web server's
+  own php_value / php_admin_* / FastCGI PHP_VALUE. "Not seen" when a
+  conf.d link points to a file not read, a pool file is included from
+  elsewhere, or PHP_INI_SCAN_DIR adds folders; but a value definitely
+  wrong anywhere is "missing" first. Any non-zero integer is on. A
+  php_ini mitigation must say its default. Clearer wording for an exact
+  fix after the window closed, a removal, and stale code.
+- Running kernels: no kernel pack exists yet; when one does, the running
+  kernel (uname, in the host facts) is what to judge, since an installed
+  but unbooted fix protects nothing. A design note for that pack, not
+  built.
+
 ### 4.5 — Detections
 
 - The detection language (D1): over events (type, fields matched by

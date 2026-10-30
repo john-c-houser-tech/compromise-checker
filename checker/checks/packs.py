@@ -9,6 +9,7 @@ from datetime import datetime
 
 from checker.checks import EXPOSURE, Context, Finding, check
 from checker.packs.exposure import CANT_JUDGE, FIXED, NOT_COVERED, UNKNOWN_RELEASE, VULNERABLE
+from checker.packs.mitigation import IN_PLACE, MISSING, NOT_SEEN, normal
 
 MAX_PIDS = 10  # processes named in one stale-code finding
 
@@ -25,7 +26,7 @@ def _days(start: str, until: str | None, now: str | None) -> str:
 @check(
     "pack.exposure",
     "Exposure to a threat a pack describes",
-    variants=("vulnerable", "cant_judge", "was_exposed", "stale_code"),
+    variants=("vulnerable", "cant_judge", "was_exposed", "stale_code", "mitigation_missing"),
 )
 def exposure(context: Context) -> list[Finding]:
     found = []
@@ -88,6 +89,51 @@ def exposure(context: Context) -> list[Finding]:
             found.append(_was_exposed(item, named, pack, context.collected_at))
         if item.stale:
             found.append(_stale(item, named, pack))
+        found += _mitigations(item, named, pack, context)
+    return found
+
+
+def _mitigations(item, named: str, pack: str, context: Context) -> list[Finding]:
+    """A pack's mitigation not in place: high while the host is vulnerable
+    or can't be judged (the fix isn't known to be there), medium once
+    fixed (a mitigation can also cover a flaw not yet fixed)."""
+    found = []
+    for mitigation in item.mitigations:
+        if mitigation.status == NOT_SEEN:
+            context.gaps.append(
+                f"pack {named}: mitigation {mitigation.id} not seen ({mitigation.why})"
+            )
+            continue
+        if mitigation.status == IN_PLACE:
+            # A site can set it again for itself (PHP_INI_PERDIR settings):
+            # in .user.ini under PHP-FPM, or .htaccess under Apache's PHP.
+            context.gaps.append(
+                f"pack {named}: mitigation {mitigation.id} is in place in the settings read;"
+                " a site's .user.ini or .htaccess, or an application changing it as it runs"
+                " (ini_set), could set it back, and those aren't seen"
+            )
+            continue
+        if mitigation.status != MISSING:
+            continue
+        wrong = [p for p in mitigation.places if normal(p.value) != normal(mitigation.expect)]
+        shown = "; ".join(
+            f"{p.where}: {p.value}"
+            + (" (PHP's default: set in no file)" if p.source == "PHP's default" else "")
+            for p in wrong[:5]
+        )
+        found.append(
+            Finding(
+                "pack.exposure",
+                "A threat pack's mitigation isn't in place",
+                EXPOSURE,
+                "high" if item.status in (VULNERABLE, CANT_JUDGE) else "medium",
+                f"{mitigation.setting} should be {mitigation.expect} ({mitigation.id}, {named}):"
+                f" {shown}",
+                [f"setting:{mitigation.setting}", pack],
+                [],
+                variant="mitigation_missing",
+            )
+        )
     return found
 
 
@@ -99,6 +145,27 @@ def _was_exposed(item, named: str, pack: str, collected_at: str | None) -> Findi
             else "when the fix was installed isn't known"
         )
         summary = f"exposed from {item.exposed_from[:16]}, and still taken to be: {why} ({named})"
+    elif item.fix_time_exact:
+        what = (
+            f"the vulnerable package was removed at {item.removed_at[:16]}"
+            if item.removed_at
+            else f"the fix was installed at {(item.fixed_at or '')[:16]}"
+        )
+        closed = (
+            item.window_end
+            and item.exposed_until
+            and item.exposed_until < (item.removed_at or item.fixed_at or "")
+        )
+        until = (
+            f"until the window closed at {item.exposed_until[:16]} ({what}, after it)"
+            if closed
+            else f"until {what}"
+        )
+        summary = (
+            f"exposed from {item.exposed_from[:16]} {until} (the package history):"
+            f" {_days(item.exposed_from, item.exposed_until, collected_at)},"
+            f" {round(item.share * 100)}% of the window so far ({named})"
+        )
     else:
         closed = bool(item.window_end and item.fixed_at and item.fixed_at > item.window_end)
         ending = (
@@ -137,9 +204,8 @@ def _stale(item, named: str, pack: str) -> Finding:
     how = (
         ": its program file was replaced under it"
         if replaced
-        else f" started before its package was last installed or updated"
-        f" ({(item.fixed_at or '')[:16]}): it runs older code than installed, from before the"
-        " fix unless the fix came earlier"
+        else " started before its package's current version was installed: it runs older code"
+        " than installed, from before the fix unless the fix came earlier"
     )
     return Finding(
         "pack.exposure",

@@ -76,9 +76,11 @@ What works today:
   chain and no finding at medium or worse in effect) go to that model,
   through the same API and key, and everything else to `advisor.model`;
   the output and the report name the model per host. Each host is sent
-  the bundle it was estimated on, and a host whose analysis or estimate
-  changed in between isn't sent. Haiku models have no server-side
-  fallback, so a declined request to one stays declined.
+  the bundle it was estimated on, and a host whose analysis, model or
+  estimate changed in between isn't sent. Haiku models have no
+  server-side fallback, so with `advisor.fallback anthropic` a declined
+  request to one isn't re-run (with `model`, it goes to the fallback
+  model as usual).
   `--show [--redaction MODE]` prints exactly what would be sent,
   after redaction, and sends nothing. Under *pseudonymize* (the default) people's
   account names, host names, email addresses, IP addresses and SSH key

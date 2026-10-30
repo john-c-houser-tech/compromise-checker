@@ -78,7 +78,10 @@ def describe_for(advisor):
 @pytest.mark.parametrize(
     ("settings", "words"),
     [
-        ({"triage_model": "claude-haiku-5-5"}, "the triage model, claude-haiku-5-5."),
+        ({"triage_model": "claude-haiku-5-5", "fallback": "off"},
+         "the triage model, claude-haiku-5-5."),
+        ({"triage_model": "claude-haiku-5-5"},
+         "claude-haiku-5-5; it has no server-side fallback, so its declines aren't re-run."),
         ({"triage_model": "qwen3:8b"}, "no price is known for it"),
         ({"triage_model": "claude-haiku-5-5", "api": "openai", "base_url": "http://localhost:1/v1",
           "fallback": "off", "api_key_source": "none"}, "a Claude name, sent to"),
@@ -297,7 +300,7 @@ def test_stopping_at_the_question_sends_nothing(two_hosts, monkeypatch, capsys, 
         raise stop
 
     monkeypatch.setattr("builtins.input", interrupted)
-    assert cli.main(["advise", "--all"]) == 130
+    assert cli.main(["advise", "--all"]) == (130 if stop is KeyboardInterrupt else 1)
     captured = capsys.readouterr()
     assert "Nothing was sent." in captured.out and "had been sent" not in captured.err
     assert provider.sent() == []
@@ -330,8 +333,8 @@ def test_an_interrupt_partway_says_where(two_hosts, monkeypatch, capsys):
     provider = Provider(reply)
     assert run_all(monkeypatch, provider) == 130
     err = capsys.readouterr().err
-    assert "interrupted at web02: 1 host(s) asked before it;" in err
-    assert "its request may have been sent, and is recorded; 0 not sent" in err
+    assert "interrupted at web02 (1 host(s) before it):" in err
+    assert "its request may have been sent, and is recorded; 0 after it not sent" in err
     assert two_hosts[1].advice("b2")[0]["status"] == "interrupted"
 
 
@@ -361,9 +364,11 @@ def test_a_send_failure_on_one_host_doesnt_stop_the_others(two_hosts, monkeypatc
     monkeypatch.setitem(advise_module.CHECKS, "explain", check)
     provider = Provider(verdict_for)
     assert run_all(monkeypatch, provider) == 1
-    assert "web01: something unexpected" in capsys.readouterr().err
+    assert "web01: ValueError: something unexpected" in capsys.readouterr().err
     assert len(provider.sent()) == 2
     assert two_hosts[1].advice("b2")[0]["status"] == "answered"
+    (row,) = two_hosts[1].advice("b1")  # sent and paid for: recorded all the same
+    assert row["status"] == "failed"
 
 
 def test_yes_sends_a_run_over_the_limit_without_asking(two_hosts, monkeypatch):
@@ -381,3 +386,105 @@ def test_an_unpriced_triage_model_makes_the_run_ask(two_hosts, monkeypatch, caps
     monkeypatch.setattr("builtins.input", lambda q: "n")
     assert cli.main(["advise", "--all"]) == 1
     assert "some at a cost not known here" in capsys.readouterr().out and provider.sent() == []
+
+
+# --- What the second review of 3.7b found -----------------------------------------------------
+
+
+def test_an_answer_that_breaks_its_check_is_still_recorded(enabled_one, monkeypatch):
+    from checker.advisor.advise import advise
+    from checker.evidence import open_text
+    from checker.inventory import Inventory
+
+    base, store, identity, _ = enabled_one
+    for exc, status in ((ValueError("odd"), "failed"), (KeyboardInterrupt(), "interrupted")):
+
+        def check(*args, exc=exc):
+            raise exc
+
+        monkeypatch.setitem(advise_module.CHECKS, "explain", check)
+        with pytest.raises(type(exc)):
+            advise(store, "web01", identity, load_config(base), Inventory(), (0.02, "default"),
+                   None, client=Provider().client(), confirm=lambda q: True,
+                   say=lambda line: None)  # fmt: skip
+        row = store.advice("b1")[-1]
+        assert row["status"] == status
+        saved = json.loads(open_text(row["answer"], identity))
+        assert saved["raw"] is not None  # what came back is kept
+
+
+@pytest.fixture
+def enabled_one(home, monkeypatch):
+    change(home[0], "advisor.enabled", "on")
+    add_bundle(home, "b1", 0, host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    return home
+
+
+def test_an_interrupt_reading_the_key_says_nothing_was_sent(two_hosts, monkeypatch, capsys):
+    def interrupted(*args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(advise_module, "read_api_key", interrupted)
+    assert cli.main(["advise", "--all", "--yes"]) == 130
+    assert "interrupted reading the key; nothing was sent" in capsys.readouterr().err
+
+
+def test_one_host_interrupted_before_sending_says_nothing_was_sent(enabled_one, monkeypatch,
+                                                                  capsys):  # fmt: skip
+    def interrupted(*args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(advise_module, "read_api_key", interrupted)
+    assert cli.main(["advise", "web01", "--yes"]) == 130
+    assert "interrupted; nothing was sent" in capsys.readouterr().err
+
+
+def test_one_host_interrupted_after_sending_says_so(enabled_one, monkeypatch, capsys):
+    def reply(body):
+        raise KeyboardInterrupt
+
+    provider = Provider(reply)
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
+    assert cli.main(["advise", "web01", "--yes"]) == 130
+    assert "the request may have been sent, and is recorded" in capsys.readouterr().err
+
+
+def test_the_fallback_models_key_is_read_once_per_run(two_hosts, monkeypatch):
+    base = two_hosts[0]
+    change(base, "advisor.fallback_model.model", "claude-opus-4-8")
+    change(base, "advisor.fallback", "model")
+    reads = []
+
+    def declined(body):
+        if body["model"] == "claude-opus-5-5":
+            return {"id": "m", "type": "message", "role": "assistant", "model": body["model"],
+                    "content": [], "stop_reason": "refusal", "stop_sequence": None,
+                    "stop_details": {"type": "refusal", "category": "cyber"},
+                    "usage": {"input_tokens": 100, "output_tokens": 0}}  # fmt: skip
+        return verdict_for(body)
+
+    provider = Provider(declined)
+
+    def counted(key, *where):
+        reads.append(where)
+        return provider.client()
+
+    monkeypatch.setattr(advise_module, "make_client", counted)
+    assert cli.main(["advise", "--all", "--yes"]) == 0
+    assert len(reads) == 2  # the main key once, the fallback's once, for two declined hosts
+
+
+def test_a_newer_analysis_of_the_same_bundle_isnt_sent(two_hosts):
+    from dataclasses import replace
+
+    from checker.advisor.advise import advise, plan
+    from checker.inventory import Inventory
+
+    base, store, identity, _ = two_hosts
+    args = (store, "web02", identity, load_config(base), Inventory(), (0.02, "default"), None)
+    planned = replace(plan(*args, "explain"), assessed_at="2000-01-01T00:00:00+00:00")
+    provider = Provider(verdict_for)
+    advice = advise(*args, client=provider.client(), planned=planned, say=lambda line: None)
+    assert advice.status == "not sent" and "analysis changed" in advice.note
+    assert provider.sent() == []

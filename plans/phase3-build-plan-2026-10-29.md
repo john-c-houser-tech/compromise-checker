@@ -456,6 +456,12 @@ The advisor's answers can't be golden-tested, so they are measured.
   they are asked without it and the estimate leaves the re-run out.
   `config show` names the triage model and any doubt about it (no known
   price; a Claude name sent to an OpenAI-compatible server).
+- **After the second review (3.7b; 2 medium):** an answer that came back
+  is recorded whatever happens while it is checked (it had been lost on an
+  unexpected error or Ctrl-C there); Ctrl-C says whether anything was sent
+  by counting the recorded requests, so a Ctrl-C at the key prompt says
+  nothing was; the fallback model's key is read once per run too; a newer
+  analysis of the pinned bundle isn't sent.
 
 ### 3.8 — Policy, docs, README
 

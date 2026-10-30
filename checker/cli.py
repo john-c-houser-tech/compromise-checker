@@ -1006,8 +1006,11 @@ def _advise_all(args, base, store, config, inventory, identity) -> int:
         except KeyboardInterrupt:
             print("checker: interrupted while estimating; nothing was sent", file=sys.stderr)
             return 130
-        except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'
+        except (EvidenceError, OSError, AdvisorError) as exc:
             print(f"checker: {host}: {exc}; skipped", file=sys.stderr)
+            status = 1
+        except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'
+            print(f"checker: {host}: {type(exc).__name__}: {exc}; skipped", file=sys.stderr)
             status = 1
     for item in planned:
         print(
@@ -1033,38 +1036,46 @@ def _advise_all(args, base, store, config, inventory, identity) -> int:
                 return 1
             try:
                 answer = input("Send them? [y/N] ")
-            except (KeyboardInterrupt, EOFError):
+            except KeyboardInterrupt:
                 print("\nNothing was sent.")
                 return 130
+            except EOFError:
+                print("\nNothing was sent.")
+                return 1
             if answer.strip().lower() not in ("y", "yes"):
                 print("Nothing was sent.")
                 return 1
     # The key is read once, after the yes: one password manager prompt.
-    client = _client(advisor.api_key_source, advisor.api, advisor.base_url)
+    try:
+        client = _client(advisor.api_key_source, advisor.api, advisor.base_url)
+    except KeyboardInterrupt:
+        print("checker: interrupted reading the key; nothing was sent", file=sys.stderr)
+        return 130
+    clients: dict = {}  # the fallback model's, read once too if a host needs it
     for done, item in enumerate(planned):
-        print(f"\n== {item.host} ==")
         before = len(store.advice(item.bundle_id))
         try:
+            print(f"\n== {item.host} ==")
             advice = advise(
                 store, item.host, identity, config, inventory, item.prior, item.whitelist,
                 role=args.role, client=client, say=lambda line: None, home=base,
-                planned=item,
+                planned=item, clients=clients,
             )  # fmt: skip
+            _print_advice(advice, args.role)
         except KeyboardInterrupt:
             left = len(store.advice(item.bundle_id)) > before
             print(
-                f"checker: interrupted at {item.host}: {done} host(s) asked before it;"
+                f"checker: interrupted at {item.host} ({done} host(s) before it):"
                 + (" its request may have been sent, and is recorded;" if left
                    else " its request was not sent;")
-                + f" {len(planned) - done - 1} not sent",
+                + f" {len(planned) - done - 1} after it not sent",
                 file=sys.stderr,
             )  # fmt: skip
             return 130
         except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'
-            print(f"checker: {item.host}: {exc}", file=sys.stderr)
+            print(f"checker: {item.host}: {type(exc).__name__}: {exc}", file=sys.stderr)
             status = 1
             continue
-        _print_advice(advice, args.role)
         if advice.status != "answered":
             status = 1
     return status
@@ -1204,6 +1215,11 @@ def cmd_advise(args: argparse.Namespace) -> int:
         return 2
     base = home()
     store = Store(database_file(base))
+
+    def requests_recorded() -> int:
+        return sum(len(store.advice_for_host(h)) for h in store.hosts())
+
+    recorded_before = requests_recorded()
     try:
         config = load_config(base)
         inventory = _inventory_for_priors()
@@ -1272,7 +1288,12 @@ def cmd_advise(args: argparse.Namespace) -> int:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("checker: interrupted; the request had been sent and is recorded", file=sys.stderr)
+        sent = requests_recorded() > recorded_before
+        print(
+            "checker: interrupted; "
+            + ("the request may have been sent, and is recorded" if sent else "nothing was sent"),
+            file=sys.stderr,
+        )
         return 130
     finally:
         store.close()

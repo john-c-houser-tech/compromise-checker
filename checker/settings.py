@@ -162,6 +162,11 @@ def describe(config: Config) -> list[str]:
                 f"  Explaining quiet hosts (Low, no chain, nothing medium or worse) in"
                 f" `checker advise --all`: the triage model, {advisor.triage_model}"
                 + _triage_doubt(advisor)
+                + (
+                    "; it has no server-side fallback, so its declines aren't re-run"
+                    if advisor.fallback == "anthropic" and not server_fallback(advisor.triage_model)
+                    else ""
+                )
                 + "."
             ]
             if advisor.triage_model

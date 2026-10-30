@@ -72,6 +72,7 @@ def advise(
     say: Callable[[str], None] = print,
     home: Path | None = None,
     planned: Planned | None = None,
+    clients: dict | None = None,
 ) -> Advice:
     """Ask the advisor about a host's current assessment. `confirm` is
     asked (with the estimate) when a run would cost more than the limit or
@@ -93,7 +94,7 @@ def advise(
     )
     if planned is not None:
         chosen, _ = model_for(config.advisor, role, which["band"], which["report"].assessment)
-        if chosen != planned.model:
+        if chosen != planned.model or which["assessed_at"] != planned.assessed_at:
             note = "not sent: the host's analysis changed since the estimate; run again"
             return Advice("not sent", None, None, note)
     payload, pseudonyms = redact(built, advisor.redaction, known)
@@ -121,9 +122,13 @@ def advise(
         client = _client(advisor.api_key_source, advisor.api, advisor.base_url)
     sent_fallback = None
 
+    recorded = False
+
     def record(
         outcome: Outcome | None, status: str, raw, answer, note: str, request_id=None
     ) -> None:
+        nonlocal recorded
+        recorded = True
         asked = outcome.model_asked if outcome else advisor.model
         store.record_advice(
             {
@@ -181,9 +186,12 @@ def advise(
         # Decision 3: the same case, to the organization's fallback model.
         fallback = advisor.fallback_model
         try:
-            fallback_client = _client(
+            # One key read per run for `--all` (clients is shared across hosts).
+            fallback_client = (clients or {}).get("fallback") or _client(
                 fallback.api_key_source, fallback.api, fallback.base_url, fallback=True
             )
+            if clients is not None:
+                clients["fallback"] = fallback_client
         except AdvisorError as exc:
             fallback_note = f"; the fallback model couldn't be asked: {exc}"
         except BaseException:
@@ -216,82 +224,96 @@ def advise(
             else:
                 fallback_declined = second.status == "declined"
                 outcome = merged(outcome, second)
-    status, answer, note = outcome.status, None, ""
-    raw = outcome.answer.model_dump() if outcome.answer is not None else None
-    if outcome.status == "answered":
-        ids = {f["id"] for f in payload.get("findings") or []}
-        try:
-            own = (payload.get("host") or {}).get("name")
-            quoted = _quoted(payload) | ({own} if isinstance(own, str) and own else set())
-            CHECKS[role](outcome.answer, ids, which["band"], quoted)
-        except InvalidAnswer as exc:
-            status, note = "invalid", f"the answer was set aside: it {exc}"
-        else:
-            answer = _restore(raw, pseudonyms.restore) if pseudonyms is not None else raw
-    judged, written = None, None
-    if status == "answered" and role == "remediation":
-        from checker.advisor.roles import DESTRUCTIVE, _plain
+    # From here the answer has been paid for: whatever happens next, the
+    # request is recorded (once).
+    raw = None
+    try:
+        status, answer, note = outcome.status, None, ""
+        raw = outcome.answer.model_dump() if outcome.answer is not None else None
+        if outcome.status == "answered":
+            ids = {f["id"] for f in payload.get("findings") or []}
+            try:
+                own = (payload.get("host") or {}).get("name")
+                quoted = _quoted(payload) | ({own} if isinstance(own, str) and own else set())
+                CHECKS[role](outcome.answer, ids, which["band"], quoted)
+            except InvalidAnswer as exc:
+                status, note = "invalid", f"the answer was set aside: it {exc}"
+            else:
+                answer = _restore(raw, pseudonyms.restore) if pseudonyms is not None else raw
+        judged, written = None, None
+        if status == "answered" and role == "remediation":
+            from checker.advisor.roles import DESTRUCTIVE, _plain
 
-        # Marked by the tool's own reading too, whatever the step says; on a
-        # copy, so the stored raw answer stays the model's.
-        answer = copy.deepcopy(answer)
-        for key in ("preserve", "contain", "eradicate", "recover"):
-            for step in answer.get(key) or []:
-                step["destructive"] = bool(step.get("destructive")) or bool(
-                    DESTRUCTIVE.search(_plain(step.get("action") or ""))
+            # Marked by the tool's own reading too, whatever the step says; on a
+            # copy, so the stored raw answer stays the model's.
+            answer = copy.deepcopy(answer)
+            for key in ("preserve", "contain", "eradicate", "recover"):
+                for step in answer.get(key) or []:
+                    step["destructive"] = bool(step.get("destructive")) or bool(
+                        DESTRUCTIVE.search(_plain(step.get("action") or ""))
+                    )
+        if status == "answered" and role == "coverage":
+            from checker.advisor.coverage import judge as judge_coverage
+
+            host_text = payload.get("from_host") or {}
+            gaps = host_text.get("coverage_gaps", payload.get("coverage_gaps")) or []
+            ids = {f["id"] for f in payload.get("findings") or []}
+            # The gaps as the advisor saw them, names restored: what each G-n means.
+            shown = [pseudonyms.restore(g) if pseudonyms else g for g in gaps]
+            judged = judge_coverage(answer.get("suggestions") or [], shown, ids, config)
+            answer = dict(
+                answer,
+                judged=[
+                    {"accepted": j.accepted, "reason": j.reason, "action": j.action,
+                     "note": j.note, "cited": j.cited, "suggestion": j.suggestion}
+                    for j in judged
+                ],
+            )  # fmt: skip
+        if status == "answered" and role == "whitelist":
+            try:
+                judged, written = _proposals(
+                    store, host, identity, inventory, whitelist, which, answer, home
                 )
-    if status == "answered" and role == "coverage":
-        from checker.advisor.coverage import judge as judge_coverage
-
-        host_text = payload.get("from_host") or {}
-        gaps = host_text.get("coverage_gaps", payload.get("coverage_gaps")) or []
-        ids = {f["id"] for f in payload.get("findings") or []}
-        # The gaps as the advisor saw them, names restored: what each G-n means.
-        shown = [pseudonyms.restore(g) if pseudonyms else g for g in gaps]
-        judged = judge_coverage(answer.get("suggestions") or [], shown, ids, config)
-        answer = dict(
-            answer,
-            judged=[
-                {"accepted": j.accepted, "reason": j.reason, "action": j.action,
-                 "note": j.note, "cited": j.cited, "suggestion": j.suggestion}
-                for j in judged
-            ],
-        )  # fmt: skip
-    if status == "answered" and role == "whitelist":
-        try:
-            judged, written = _proposals(
-                store, host, identity, inventory, whitelist, which, answer, home
+            except Exception as exc:  # the answer was paid for: kept, whatever happens next
+                note = f"the proposals couldn't be judged: {type(exc).__name__}: {exc}"
+                record(outcome, "invalid", raw, answer, note)
+                raise AdvisorError(note) from exc
+            answer = dict(
+                answer,
+                judged=[
+                    {"id": j.proposal.get("id"), "accepted": j.accepted, "reason": j.reason,
+                     "hides": j.hides}
+                    for j in judged
+                ],
+                file=str(written) if written else None,
+            )  # fmt: skip
+        elif outcome.status == "declined":
+            note = (
+                "the request was declined by the model's safety checks"
+                + (f" ({outcome.refusal_category})" if outcome.refusal_category else "")
+                + (
+                    ", and by the fallback too"
+                    if fallback_declined or len(outcome.declined_by) > 1
+                    else ""
+                )
+                + fallback_note
             )
-        except Exception as exc:  # the answer was paid for: kept, whatever happens next
-            note = f"the proposals couldn't be judged: {type(exc).__name__}: {exc}"
-            record(outcome, "invalid", raw, answer, note)
-            raise AdvisorError(note) from exc
-        answer = dict(
-            answer,
-            judged=[
-                {"id": j.proposal.get("id"), "accepted": j.accepted, "reason": j.reason,
-                 "hides": j.hides}
-                for j in judged
-            ],
-            file=str(written) if written else None,
-        )  # fmt: skip
-    elif outcome.status == "declined":
-        note = (
-            "the request was declined by the model's safety checks"
-            + (f" ({outcome.refusal_category})" if outcome.refusal_category else "")
-            + (
-                ", and by the fallback too"
-                if fallback_declined or len(outcome.declined_by) > 1
-                else ""
+        elif outcome.status == "cut off":
+            note = outcome.note or "the answer was cut off at its length limit"
+        elif outcome.status == "unreadable":
+            note = "the answer didn't fit the requested form"
+        record(outcome, status, raw, answer, note)
+        return Advice(status, outcome, answer, note, judged, written)
+    except BaseException as exc:
+        if not recorded:
+            interrupted = isinstance(exc, KeyboardInterrupt)
+            why = (
+                "interrupted while the answer was checked"
+                if interrupted
+                else f"the answer couldn't be checked ({type(exc).__name__}: {exc})"
             )
-            + fallback_note
-        )
-    elif outcome.status == "cut off":
-        note = outcome.note or "the answer was cut off at its length limit"
-    elif outcome.status == "unreadable":
-        note = "the answer didn't fit the requested form"
-    record(outcome, status, raw, answer, note)
-    return Advice(status, outcome, answer, note, judged, written)
+            record(outcome, "interrupted" if interrupted else "failed", raw, None, why)
+        raise
 
 
 @dataclass
@@ -300,6 +322,7 @@ class Planned:
 
     host: str
     bundle_id: str  # the bundle estimated: the one sent
+    assessed_at: str | None  # its analysis then: a newer one isn't sent
     model: str
     triaged: bool  # the triage model, for a quiet host
     line: str  # its estimate in words
@@ -322,7 +345,10 @@ def plan(
     payload, _ = redact(built, advisor.redaction, known)
     request = build_request(payload, role, advisor)
     line, priced = cost_line(advisor, tokens_in(json.dumps(request.body, ensure_ascii=False)))
-    return Planned(host, which["bundle_id"], model, triaged, line, priced, prior, whitelist)
+    return Planned(
+        host, which["bundle_id"], which["assessed_at"], model, triaged, line, priced, prior,
+        whitelist,
+    )  # fmt: skip
 
 
 # The only finding bands a quiet host may have in effect.

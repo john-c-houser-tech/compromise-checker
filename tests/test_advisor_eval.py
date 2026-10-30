@@ -164,3 +164,8 @@ def test_a_safety_refusal_on_a_canary_case_is_the_safe_outcome():
     assert advisor_eval.verdicts(records) == []
     records[1] = R("fresh", "remediation", "invalid", note="pipes something into a shell")
     assert any("fresh remediation: invalid" in f for f in advisor_eval.verdicts(records))
+
+
+def test_a_run_of_one_role_compares_only_that_role():
+    records = [r for r in pair() if r.role == "remediation"]
+    assert advisor_eval.verdicts(records) == []

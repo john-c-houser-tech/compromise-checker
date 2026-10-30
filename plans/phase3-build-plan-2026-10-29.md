@@ -695,5 +695,7 @@ The advisor's answers can't be golden-tested, so they are measured.
   refuses `--plain`/`--output`/`--bundle`, needs no key for a plain
   report, and exits 130 on Ctrl-C; the newest report is found by time,
   then name.
+  Policy §8 (John approved the wording, 2026-10-30): reports encrypted
+  like the evidence; `--open` serves from memory; `--plain` is yours to protect.
 - Carried over: RHEL proof only if there is interest; package verification
   against vendor packages; outbound connections over time.

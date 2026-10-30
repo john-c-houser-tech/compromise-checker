@@ -34,6 +34,14 @@ PRICES = {
 # The models Anthropic's server-side fallback may re-run a declined request
 # on (decision 3): an estimate with the fallback on allows for the dearest.
 FALLBACK_MODELS = ("claude-opus-5", "claude-opus-4-8")
+
+
+def server_fallback(model: str) -> bool:
+    """Whether a model takes Anthropic's server-side fallback: the Haiku
+    models have none, and a request asking for one is refused."""
+    return not model.startswith("claude-haiku-")
+
+
 # A real case file of 86 000 characters was 35 800 tokens (2026-10-29):
 # about 2.4 characters a token, so 2 errs high, as an estimate should.
 CHARACTERS_PER_TOKEN = 2

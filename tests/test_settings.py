@@ -179,6 +179,7 @@ def test_older_configuration_files_get_the_advisor_off(base):
         ("prior", "0.05", 0.05),
         ("advisor.enabled", "on", True),
         ("advisor.model", "claude-sonnet-5-5", "claude-sonnet-5-5"),
+        ("advisor.triage_model", "claude-haiku-5-5", "claude-haiku-5-5"),
         ("advisor.effort", "max", "max"),
         ("advisor.redaction", "none", "none"),
         ("advisor.api_key_source", "keyring", "keyring"),
@@ -211,7 +212,7 @@ def test_every_setting_round_trips(base, key, text, value):
 
 def test_the_table_lists_every_setting_tested():
     # advisor.api is tested with base_url, which it needs (test_advisor_endpoints).
-    assert len(SETTABLE) == 19
+    assert len(SETTABLE) == 20
 
 
 @pytest.mark.parametrize(

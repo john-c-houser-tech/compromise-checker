@@ -69,6 +69,18 @@ What works today:
   Anthropic's own API, `OPENAI_API_KEY` for OpenAI's, and otherwise
   `CHECKER_ADVISOR_API_KEY` (`CHECKER_FALLBACK_API_KEY` for the fallback
   model), so one vendor's key never goes to another; `none` sends no key.
+  `checker advise --all [--role ROLE]` asks about every host with a
+  usable bundle: each host's estimate first, then one question for the
+  whole run. When `advisor.triage_model` is set (it ships empty; for
+  example `claude-haiku-5-5`), explanations of quiet hosts (Low, with no
+  chain and no finding at medium or worse in effect) go to that model,
+  through the same API and key, and everything else to `advisor.model`;
+  the output and the report name the model per host. Each host is sent
+  the bundle it was estimated on, and a host whose analysis, model or
+  estimate changed in between isn't sent. Haiku models have no
+  server-side fallback, so with `advisor.fallback anthropic` a declined
+  request to one isn't re-run (with `model`, it goes to the fallback
+  model as usual).
   `--show [--redaction MODE]` prints exactly what would be sent,
   after redaction, and sends nothing. Under *pseudonymize* (the default) people's
   account names, host names, email addresses, IP addresses and SSH key

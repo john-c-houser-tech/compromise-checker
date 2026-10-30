@@ -17,6 +17,7 @@ import yaml
 from pydantic import ValidationError
 
 from checker.advisor.keys import ENVIRONMENT_VARIABLE, KEYRING_USERNAME, key_places
+from checker.advisor.prices import PRICES, server_fallback
 from checker.evidence import (
     Config,
     EvidenceError,
@@ -156,6 +157,21 @@ def describe(config: Config) -> list[str]:
         f"  Sent only when you run `checker advise`: {SENT[advisor.redaction]},"
         + (" to Anthropic with your own account." if to == ANTHROPIC else f" {to}."),
         f"  Redaction: {advisor.redaction}: {REDACTION[advisor.redaction]}.",
+        *(
+            [
+                f"  Explaining quiet hosts (Low, no chain, nothing medium or worse) in"
+                f" `checker advise --all`: the triage model, {advisor.triage_model}"
+                + _triage_doubt(advisor)
+                + (
+                    "; it has no server-side fallback, so its declines aren't re-run"
+                    if advisor.fallback == "anthropic" and not server_fallback(advisor.triage_model)
+                    else ""
+                )
+                + "."
+            ]
+            if advisor.triage_model
+            else []
+        ),
         "  `checker config check-key` checks the key can be read, without sending anything.",
         f"  Asks before a run whose likely cost is above ${advisor.max_cost_per_run:.2f}"
         " (the most it can cost is shown too), or whose cost isn't known.",
@@ -177,7 +193,19 @@ def describe(config: Config) -> list[str]:
     return lines
 
 
+def _triage_doubt(advisor) -> str:
+    """A triage model that may not be served where it would be sent."""
+    model = advisor.triage_model or ""
+    if advisor.api == "openai" and model.startswith("claude-"):
+        return f" (a Claude name, sent to {advisor.base_url}: check that server has it)"
+    if advisor.api == "anthropic" and not advisor.base_url and model not in PRICES:
+        return " (no price is known for it: runs will ask, and Anthropic may not know it)"
+    return ""
+
+
 def _on_decline(advisor) -> str:
+    if advisor.fallback == "anthropic" and not server_fallback(advisor.model):
+        return f"nothing more is sent: {advisor.model} has no server-side fallback."
     if advisor.fallback == "anthropic":
         return (
             "it is re-run on the model Anthropic recommends for that kind of decline"
@@ -225,6 +253,11 @@ SETTABLE: dict[str, Setting] = {
         Setting(("prior",), float, "prior probability of compromise (default 0.02)"),
         Setting(("advisor", "enabled"), _bool, "on or off"),
         Setting(("advisor", "model"), str, "the model's name (default claude-opus-5-5)"),
+        Setting(
+            ("advisor", "triage_model"),
+            _optional,
+            "for quiet hosts in `advise --all`, e.g. claude-haiku-5-5; none: the model",
+        ),
         Setting(("advisor", "effort"), str, "low, medium, high, xhigh or max"),
         Setting(("advisor", "redaction"), str, "pseudonymize, strict or none"),
         Setting(("advisor", "api_key_source"), str, "env, keyring, none or command:<command>"),

@@ -436,6 +436,33 @@ The advisor's answers can't be golden-tested, so they are measured.
   log: about half the context), and read a 30 742-token one at 32 768
   whole; prefix-cached requests still report the full prompt.
 
+- **As built (3.7b, 2026-10-29):** `advisor.triage_model` (empty;
+  `config show` names it when set), used by `checker advise --all` for
+  role explain on hosts at Low with no medium-or-worse finding in effect
+  (whitelisted ones don't count), through the same API, address and key
+  as the main model. `--all` estimates every host first (nothing sent),
+  prints each estimate and the total, and asks once for the whole run
+  against `advisor.max_cost_per_run` (or when any cost is unknown;
+  `--yes` for scripts); a host that can't be read is said and skipped.
+  `--show`, `--bundle` and `--redaction` stay one-host options.
+- **After review (3.7b, 2026-10-29; 3 medium):** each host is sent the
+  bundle it was estimated on, and isn't sent if its analysis would now
+  pick another model or its estimate grew; the key is read once, after the
+  yes; Ctrl-C or end of input at a question sends nothing and says so, and
+  Ctrl-C partway names the host and what was and wasn't sent; any one
+  host's failure is said and the others go on. Quiet also needs no chain,
+  and only low or info findings in effect (an allow-list). Haiku models
+  have no server-side fallback (a request asking for one is refused), so
+  they are asked without it and the estimate leaves the re-run out.
+  `config show` names the triage model and any doubt about it (no known
+  price; a Claude name sent to an OpenAI-compatible server).
+- **After the second review (3.7b; 2 medium):** an answer that came back
+  is recorded whatever happens while it is checked (it had been lost on an
+  unexpected error or Ctrl-C there); Ctrl-C says whether anything was sent
+  by counting the recorded requests, so a Ctrl-C at the key prompt says
+  nothing was; the fallback model's key is read once per run too; a newer
+  analysis of the pinned bundle isn't sent.
+
 ### 3.8 — Policy, docs, README
 
 - Policy §9 reconciled with what is built (agreed with John 2026-10-29:

@@ -1,6 +1,7 @@
 """The advisor's API key, read from where the organization keeps it
 (decision 1, 2026-10-29): an environment variable, the OS keyring, or a
-command that prints it. The key is read only when a request is about to be
+command that prints it; or none, for a server that takes no key (a local
+model). The key is read only when a request is about to be
 sent, kept in memory for that run, and never written, logged or shown.
 """
 
@@ -12,6 +13,8 @@ from checker.credentials import KEYRING_SERVICE
 from checker.evidence import looks_like_a_key
 
 ENVIRONMENT_VARIABLE = "ANTHROPIC_API_KEY"
+# The variable `env` reads, by the API the model is asked through.
+ENVIRONMENT_VARIABLES = {"anthropic": ENVIRONMENT_VARIABLE, "openai": "OPENAI_API_KEY"}
 KEYRING_USERNAME = "advisor-api-key"
 # Long enough to answer a password manager's prompt; a missed prompt then
 # fails with a message instead of waiting for ever.
@@ -32,12 +35,16 @@ def _usable(text: str, where: str) -> str:
     return key
 
 
-def read_api_key(source: str) -> str:
+def read_api_key(source: str, api: str = "anthropic") -> str | None:
+    """The key, or None when the source is none."""
+    if source == "none":
+        return None
     if source == "env":
-        value = os.environ.get(ENVIRONMENT_VARIABLE)
+        variable = ENVIRONMENT_VARIABLES[api]
+        value = os.environ.get(variable)
         if value is None:
-            raise KeySourceError(f"{ENVIRONMENT_VARIABLE} is not set")
-        return _usable(value, ENVIRONMENT_VARIABLE)
+            raise KeySourceError(f"{variable} is not set")
+        return _usable(value, variable)
     if source == "keyring":
         try:
             import keyring

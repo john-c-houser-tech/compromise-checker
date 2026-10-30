@@ -241,7 +241,7 @@ def test_a_proposal_to_hide_a_critical_finding_is_never_offered(compromised_host
 
 def test_checker_advise_role_whitelist(sudo_host, capsys, monkeypatch):
     provider = Provider(whitelist_reply(lambda c: sudo_rule(c) + sudo_rule(c)))
-    monkeypatch.setattr(advise_module, "make_client", lambda key: provider.client())
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x" + "y" * 30)
     assert cli.main(["advise", "web01", "--role", "whitelist", "--yes"]) == 0
     out = capsys.readouterr().out

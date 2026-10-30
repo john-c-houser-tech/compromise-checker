@@ -43,11 +43,11 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import golden  # noqa: E402
 
-from checker.advisor.advise import _restore  # noqa: E402
+from checker.advisor.advise import _restore, cost_line, spent  # noqa: E402
 from checker.advisor.case import build_case, known_identifiers, redact  # noqa: E402
-from checker.advisor.client import MAX_TOKENS, AdvisorError, build_request, send  # noqa: E402
+from checker.advisor.client import AdvisorError, build_request, send  # noqa: E402
 from checker.advisor.coverage import judge as judge_coverage  # noqa: E402
-from checker.advisor.prices import cost, estimate, tokens_in  # noqa: E402
+from checker.advisor.prices import tokens_in  # noqa: E402
 from checker.advisor.proposals import judge as judge_proposals  # noqa: E402
 from checker.advisor.roles import CHECKS, FINDING_ID, InvalidAnswer  # noqa: E402
 from checker.events import Event  # noqa: E402
@@ -155,7 +155,7 @@ def likely_cost(planned, advisor: Advisor) -> float:
     total = 0.0
     for _, _, request, _ in planned:
         tokens = tokens_in(json.dumps(request.body, ensure_ascii=False))
-        priced = estimate(advisor.model, tokens, MAX_TOKENS)
+        _, priced = cost_line(advisor.model_copy(update={"fallback": "off"}), tokens)
         if priced is None:
             return float("nan")
         total += priced.likely
@@ -195,7 +195,8 @@ def ask(client, case: Case, role: str, request, sent) -> Record:
         model=outcome.model_answered or outcome.model_asked,
         declined_by=list(outcome.declined_by),
         usage=outcome.usage,
-        cost=cost(outcome.model_answered or outcome.model_asked, outcome.usage, outcome.iterations),
+        cost=spent(outcome),
+        note=outcome.note,
     )
     if outcome.status == "declined":
         record.note = f"declined ({outcome.refusal_category})"
@@ -335,8 +336,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--key-source", default=KEY_COMMAND)
     parser.add_argument("--case", action="append", help="only this case (repeatable)")
     parser.add_argument("--role", action="append", choices=ROLES, help="only this role")
+    parser.add_argument(
+        "--base-url", help="an OpenAI-compatible server instead (e.g. a local model; no key)"
+    )
     args = parser.parse_args(argv)
-    advisor = Advisor(enabled=True, model=args.model, api_key_source=args.key_source)
+    if args.base_url:
+        advisor = Advisor(
+            enabled=True, model=args.model, api="openai", base_url=args.base_url, fallback="off",
+            api_key_source="none" if args.key_source == KEY_COMMAND else args.key_source,
+        )  # fmt: skip
+    else:
+        advisor = Advisor(enabled=True, model=args.model, api_key_source=args.key_source)
     selected = [
         c for c in cases(hostile=not args.no_hostile) if not args.case or c.name in args.case
     ]
@@ -354,7 +364,9 @@ def main(argv: list[str] | None = None) -> int:
     from checker.advisor.client import make_client
     from checker.advisor.keys import read_api_key
 
-    client = make_client(read_api_key(advisor.api_key_source))
+    client = make_client(
+        read_api_key(advisor.api_key_source, advisor.api), advisor.api, advisor.base_url
+    )
     records: list[Record] = []
     spent = 0.0
     for case, role, request, sent in planned:

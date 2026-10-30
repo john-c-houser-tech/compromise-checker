@@ -94,6 +94,8 @@ policy §9).</p>
 {% endfor %}
 </table></div>
 
+{% macro advice_meta(x, full=False) %}<p class="meta">Asked {{ x.model_asked|visible(80) }}{% if x.declined_by %}; declined by {{ x.declined_by|join(", ")|visible(200) }}{% endif %}{% if x.model_answered %}; answered by {{ x.model_answered|visible(80) }}{% if x.endpoint %} at {{ x.endpoint|visible(200) }}{% endif %}{% endif %} · redaction {{ x.redaction }} · {{ x.at[:16] }} UTC{% if full %} · about the assessment of {{ x.assessed_at[:16] }}{% endif %}{% if x.stale %} · <strong>stale{% if full %}: it read another collection or assessment of this host than this report shows{% endif %}</strong>{% endif %}</p>
+{% if x.local and x.model_answered %}<p class="muted">Answered by a model running on this machine: expect lower quality than from a large hosted model, and read it with more care.</p>{% endif %}{% endmacro %}
 {% macro finding_card(f) %}
 <div class="finding">
 <div><span class="band {{ f.band }}">{{ f.band|upper }}</span>
@@ -180,7 +182,7 @@ uncertain findings count half. Suppressed and informational findings don't count
 {% if a %}
 <h3>AI advisor (advice, not findings)</h3>
 <div class="notice">
-<p class="meta">Asked {{ a.model_asked|visible(80) }}{% if a.declined_by %}; declined by {{ a.declined_by|join(", ")|visible(200) }}{% endif %}{% if a.model_answered %}; answered by {{ a.model_answered|visible(80) }}{% endif %} · redaction {{ a.redaction }} · {{ a.at[:16] }} UTC · about the assessment of {{ a.assessed_at[:16] }}{% if a.stale %} · <strong>stale: it read another collection or assessment of this host than this report shows</strong>{% endif %}</p>
+{{ advice_meta(a, True) }}
 {% if a.answer %}
 <p><strong>Verdict: {{ a.answer.verdict|visible(80) }}.</strong> {{ a.answer.summary|visible(2000) }}</p>
 {% if a.answer.most_important %}<p>Most important:</p><ul>{% for p in a.answer.most_important %}<li><span class="mono">{{ p.finding|visible(20) }}</span>: {{ p.why|visible(1000) }}</li>{% endfor %}</ul>{% endif %}
@@ -195,7 +197,7 @@ uncertain findings count half. Suppressed and informational findings don't count
 {% if m and m.answer %}
 <h3>AI advisor: remediation (advice; nothing was run)</h3>
 <div class="notice">
-<p class="meta">Asked {{ m.model_asked|visible(80) }}{% if m.declined_by %}; declined by {{ m.declined_by|join(", ")|visible(200) }}{% endif %}{% if m.model_answered %}; answered by {{ m.model_answered|visible(80) }}{% endif %} · redaction {{ m.redaction }} · {{ m.at[:16] }} UTC{% if m.stale %} · <strong>stale</strong>{% endif %}</p>
+{{ advice_meta(m) }}
 <p><strong>Urgency: {{ m.answer.urgency|visible(20) }}.</strong> {{ m.answer.summary|visible(2000) }}</p>
 {% for title, key in (("Preserve evidence first", "preserve"), ("Contain", "contain"), ("Eradicate", "eradicate"), ("Recover", "recover")) %}
 {% if m.answer[key] %}<p>{{ title }}:</p><ol>{% for s in m.answer[key] %}<li><span class="mono">{{ s.action|visible(1000) }}</span>{% if s.destructive %} <strong>[destroys state]</strong>{% endif %}{% if s.findings %} ({{ s.findings|join(", ")|visible(100) }}){% endif %}<div class="muted">Why: {{ s.why|visible(600) }} · Risk: {{ s.risk|visible(400) }}</div></li>{% endfor %}</ol>{% endif %}
@@ -209,7 +211,7 @@ uncertain findings count half. Suppressed and informational findings don't count
 {% set offered = c.answer.judged|selectattr("accepted")|list %}
 <h3>AI advisor: coverage suggestions (nothing changed)</h3>
 <div class="notice">
-<p class="meta">Asked {{ c.model_asked|visible(80) }}{% if c.declined_by %}; declined by {{ c.declined_by|join(", ")|visible(200) }}{% endif %}{% if c.model_answered %}; answered by {{ c.model_answered|visible(80) }}{% endif %} · redaction {{ c.redaction }} · {{ c.at[:16] }} UTC{% if c.stale %} · <strong>stale</strong>{% endif %}</p>
+{{ advice_meta(c) }}
 <p class="muted">As judged against the settings at {{ c.at[:16] }} UTC; a setting changed since may already be in place.</p>
 {% if offered %}<ul>{% for j in offered %}<li>{{ j.suggestion.why|visible(600) }}{% for g in j.cited %}<div class="muted">For {{ g|visible(400) }}</div>{% endfor %}<div class="muted">Cost, as the advisor sees it: {{ j.suggestion.trade_off|visible(300) }}</div>{% if j.note %}<div><strong>{{ j.note|visible(1000) }}</strong></div>{% endif %}<div class="mono">{{ j.action|visible(1000) }}</div></li>{% endfor %}</ul>
 {% else %}<p>No suggestions offered.</p>{% endif %}
@@ -222,7 +224,7 @@ uncertain findings count half. Suppressed and informational findings don't count
 {% set offered = w.answer.judged|selectattr("accepted")|list %}
 <h3>AI advisor: whitelist proposals (not in effect)</h3>
 <div class="notice">
-<p class="meta">Asked {{ w.model_asked|visible(80) }}{% if w.declined_by %}; declined by {{ w.declined_by|join(", ")|visible(200) }}{% endif %}{% if w.model_answered %}; answered by {{ w.model_answered|visible(80) }}{% endif %} · redaction {{ w.redaction }} · {{ w.at[:16] }} UTC{% if w.stale %} · <strong>stale</strong>{% endif %}</p>
+{{ advice_meta(w) }}
 <p>{{ offered|length }} proposed{% if w.answer.file %}, written to <span class="mono">{{ w.answer.file|visible(300) }}</span> for a person to review{% endif %}; {{ w.answer.judged|length - offered|length }} set aside.</p>
 {% if w.answer.judged %}<ul>{% for j in w.answer.judged %}<li><span class="mono">{{ j.id|visible(80) }}</span>: {% if j.accepted %}hides {{ j.hides|join("; ")|visible(600) }}{% else %}set aside: {{ j.reason|visible(300) }}{% endif %}</li>{% endfor %}</ul>{% endif %}
 <p class="muted">A proposal is only offered when it hides exactly the findings it names, none of them critical or part of a chain. Nothing changes until a person copies a rule into the whitelist.</p>

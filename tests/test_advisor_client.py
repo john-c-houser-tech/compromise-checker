@@ -247,7 +247,7 @@ def test_strict_redaction_sends_no_excerpts(enabled):
 
 def test_checker_advise_prints_the_advice(enabled, capsys, monkeypatch):
     provider = Provider()
-    monkeypatch.setattr(advise_module, "make_client", lambda key: provider.client())
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
     monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
     assert cli.main(["advise", "web01", "--yes"]) == 0
     out = capsys.readouterr().out
@@ -473,7 +473,7 @@ def test_the_terminal_gets_the_models_words_escaped(enabled, capsys, monkeypatch
         return reply
 
     provider = Provider(ansi)
-    monkeypatch.setattr(advise_module, "make_client", lambda key: provider.client())
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
     monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
     assert cli.main(["advise", "web01", "--yes"]) == 0
     out = capsys.readouterr().out

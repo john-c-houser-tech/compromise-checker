@@ -1,7 +1,7 @@
 # Phase 3 build plan — 2026-10-29
 
-> **Status: DRAFT 1, 2026-10-29** — shape agreed by John; decisions 1,
-> 2, 3, 4, 6 and 7 settled; 5 and 8 open. Nothing built yet.
+> **Status: DRAFT 1, 2026-10-29** — shape agreed by John; every
+> decision settled. 3.0–3.6 built and merged; 3.7 in progress.
 
 **Goal (DESIGN.md §18, Phase 3):** an operator who turns the advisor on
 gets a plain-language reading of an assessment, whitelist proposals they can
@@ -382,6 +382,27 @@ The advisor's answers can't be golden-tested, so they are measured.
   applies (an organization may run the model on another machine).
 - The eval runs once against a local model and its results are recorded
   as they are, to tell operators what to expect.
+- **Split in two (2026-10-29):** 3.7 local and OpenAI-compatible models
+  with the fallback model; 3.7b the triage model and `checker advise --all`.
+- **As built (3.7, 2026-10-29):** Ollama 0.40.7's Anthropic-style
+  `/v1/messages` ignores `output_config.format` (asked for `n`, got
+  `number`); its OpenAI-style `/v1/chat/completions` enforces
+  `response_format` json_schema. So local models go through
+  `advisor.api: openai` (any OpenAI-compatible server) with
+  `advisor.base_url`, the same code as decision 3's `model` fallback
+  (`advisor.fallback_model`: api, base_url, model, api_key_source).
+  `api_key_source: none` for a server that takes no key; `env` reads
+  `OPENAI_API_KEY` for that API. No effort, caching, fallbacks or
+  inference_geo there (they are Anthropic's; inference_geo is refused).
+  Ollama also cuts a request longer than its context without saying so
+  (a 28 933-token prompt became 2 050 at the default context, and the
+  model still answered): a request the server says it read less than
+  0.45 of the estimate of is reported as cut off. A model on this machine
+  (loopback or `.localhost`) costs nothing and asks nothing; another
+  server has no price, so the run asks. The advice table gains `endpoint`
+  (the server that answered; empty: Anthropic's), the report names it and,
+  for a local model, says to expect lower quality. `--show` and the stored
+  request name the endpoint, and the fallback request when one was sent.
 
 ### 3.8 — Policy, docs, README
 
@@ -441,12 +462,12 @@ The advisor's answers can't be golden-tested, so they are measured.
    per account, learned from its own stored history; a login well outside
    them is a finding with a ratio like any other; until there are a few
    weeks of history, coverage says so. A small PR after 3.2 (3.2b).
-5. **Before 3.7 — triage model.** Whether to ship a suggested value for
-   `advisor.triage_model` (a faster, cheaper model such as
-   `claude-sonnet-5-5` or `claude-haiku-5-5` for quiet hosts) or leave it
-   empty so every request uses the main model unless an organization
-   chooses otherwise. This is a cost-versus-quality choice that belongs to
-   John and each organization; the eval can measure both before deciding.
+5. ~~Before 3.7 — triage model.~~ **Decided 2026-10-29:** ship it empty.
+   Every request uses the main model unless an organization sets
+   `advisor.triage_model`; the docs name `claude-haiku-5-5` and
+   `claude-sonnet-5-5` as choices. A quiet host's explanation is the
+   cheapest request there is, and the one error a cheaper model could make
+   there (calling a host quiet that isn't) is the costly one.
 6. ~~Before 3.0 — role 5 (threat-pack drafting).~~ **Decided 2026-10-29:**
    moved to Phase 4, built with the pack format. Phase 3 delivers roles
    1–4; DESIGN.md §12.1 and §18 say so.
@@ -454,11 +475,9 @@ The advisor's answers can't be golden-tested, so they are measured.
    proposal that would hide a critical finding or any finding that is part
    of a chain is set aside before the operator sees it; those findings are
    whitelisted only by hand.
-8. **Before 3.6 — eval budget and key.** Which API key the eval runs with
-   and a cap for Phase 3's API spend. Estimate: a case file of 15–40 k
-   tokens, four roles, about 30 cases per run → roughly $3–6 per full run
-   on `claude-opus-5-5` with caching; suggested cap $25, stop and tell John
-   at $12, one approval per run.
+8. ~~Before 3.6 — eval budget and key.~~ **Decided 2026-10-29:** the
+   Anthropic key in John's 1Password; Phase 3's API spend capped at $25,
+   stop and tell John at $12; one approval per run.
 
 ## After Phase 3
 

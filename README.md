@@ -54,7 +54,15 @@ What works today:
   shown as text; nothing runs. The model's safety checks may decline
   security content now and then (the report says so, and a fallback model
   answers when `advisor.fallback` is `anthropic`); organizations doing this
-  work regularly can apply to Anthropic's Cyber Verification Program.
+  work regularly can apply to Anthropic's Cyber Verification Program, or
+  set `advisor.fallback` to `model` to send declined requests to a model
+  of their choosing (`advisor.fallback_model`). `advisor.api openai` with
+  `advisor.base_url` asks a local model (Ollama, llama.cpp, vLLM) or
+  another OpenAI-compatible server instead of Anthropic: a model on the
+  same machine costs nothing and nothing leaves it, but its answers are
+  weaker (the report says so), and its context must hold the whole case
+  (for Ollama, a model with `num_ctx` of 32768 or more); a request the
+  server read only in part is reported as cut off, not answered.
   `--show [--redaction MODE]` prints exactly what would be sent,
   after redaction, and sends nothing. Under *pseudonymize* (the default) people's
   account names, host names, email addresses, IP addresses and SSH key

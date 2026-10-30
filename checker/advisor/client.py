@@ -16,7 +16,17 @@ model's safety checks decline is re-run, server side, on the model
 Anthropic recommends for that kind of decline; the outcome names the
 model that declined and the one that answered, from the response. With
 `off`, a decline is recorded and nothing more happens. Only a decline
-triggers a fallback, never an outage or an error.
+triggers a fallback, never an outage or an error. With `model`, the
+caller re-runs the request on `advisor.fallback_model` (`fallback_request`).
+
+The OpenAI-compatible API (PR 3.7) is for local servers (Ollama, llama.cpp,
+vLLM) and other vendors: the same system prompt, case and question, with
+the answer's schema as `response_format`, which those servers enforce
+(Ollama's Anthropic-style endpoint ignores it, checked 2026-10-29). Ollama
+also cuts a request longer than the model's context without saying so,
+keeping the end: the answer would then read only part of the case. So the
+tokens the server says it read are compared with the request's length,
+and a request read only in part is reported as cut off, not answered.
 """
 
 from __future__ import annotations
@@ -27,12 +37,21 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from checker.advisor.prices import tokens_in
 from checker.advisor.roles import ROLES, SYSTEM_PROMPT
 from checker.advisor.roles import question as role_question
-from checker.evidence import Advisor
+from checker.evidence import Advisor, FallbackModel
 
 MAX_TOKENS = 16_000
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# A local model on a laptop's processor reads a large case in minutes and
+# writes its answer more slowly still.
+OPENAI_TIMEOUT = 3600
+# The request's length estimated here errs high (two characters a token);
+# real cases run about 2.4 to 2.8, and English prose about 4. A server that
+# says it read fewer than this share of the estimate cut the request short
+# (Ollama keeps about half its context when it cuts).
+READ_AT_LEAST = 0.45
 
 
 class AdvisorError(Exception):
@@ -58,6 +77,8 @@ class Outcome:
     usage: dict[str, Any] = field(default_factory=dict)
     # Usage per model that ran (the asked model, then any fallback), for cost.
     iterations: list[dict[str, Any]] = field(default_factory=list)
+    note: str = ""  # why it was cut off, when the reason is more than its length
+    endpoint: str | None = None  # the server that answered; None: Anthropic's own
 
 
 def output_format(role: str) -> dict[str, Any]:
@@ -73,16 +94,26 @@ def output_format(role: str) -> dict[str, Any]:
 class Request:
     body: dict[str, Any]
     betas: list[str]
+    api: str = "anthropic"
+    base_url: str | None = None  # None: Anthropic's own
 
     def shown(self) -> dict[str, Any]:
-        """As `--show` prints it: the beta header and the body, exactly."""
-        return {"anthropic-beta": self.betas, "body": self.body}
+        """As `--show` prints it: where it goes (unless Anthropic's own),
+        the beta header and the body, exactly."""
+        if self.api == "openai":
+            return {"endpoint": f"{self.base_url}/chat/completions", "body": self.body}
+        shown: dict[str, Any] = {"anthropic-beta": self.betas, "body": self.body}
+        if self.base_url:
+            shown = {"endpoint": f"{self.base_url}/v1/messages", **shown}
+        return shown
 
 
 def build_request(payload: dict[str, Any], role: str, advisor: Advisor) -> Request:
     """The request, as `--show` prints it and `send` sends it: the system
     prompt and the case first, both marked for caching, then the role's
     question; the answer's schema in output_config."""
+    if advisor.api == "openai":
+        return _openai_request(payload, role, advisor.model, advisor.base_url)
     question = role_question(role)
     body: dict[str, Any] = {
         "model": advisor.model,
@@ -110,20 +141,71 @@ def build_request(payload: dict[str, Any], role: str, advisor: Advisor) -> Reque
     if advisor.fallback == "anthropic":
         body["fallbacks"] = "default"
         betas.append(FALLBACK_BETA)
-    return Request(body, betas)
+    return Request(body, betas, base_url=advisor.base_url)
 
 
-def make_client(api_key: str):
+def fallback_request(payload: dict[str, Any], role: str, advisor: Advisor) -> Request:
+    """The same case and question for `advisor.fallback_model` (decision 3:
+    the same redaction and placeholders), in its own API's form."""
+    fallback: FallbackModel = advisor.fallback_model
+    if fallback.api == "openai":
+        return _openai_request(payload, role, fallback.model, fallback.base_url)
+    settings = advisor.model_copy(
+        update={"model": fallback.model, "base_url": fallback.base_url, "fallback": "off",
+                "inference_geo": None}
+    )  # fmt: skip
+    return build_request(payload, role, settings)
+
+
+def _openai_request(payload: dict[str, Any], role: str, model, base_url) -> Request:
+    """The OpenAI-compatible form: the same system prompt, case and
+    question, the schema as response_format. No effort, caching or
+    fallback: those are Anthropic's."""
+    schema = output_format(role)["schema"]
+    body: dict[str, Any] = {
+        "model": model,
+        "max_tokens": MAX_TOKENS,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": "The case file:\n"
+                + json.dumps(payload, indent=1, ensure_ascii=False)
+                + "\n\n"
+                + role_question(role),
+            },
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": role, "strict": True, "schema": schema},
+        },
+    }
+    return Request(body, [], api="openai", base_url=base_url)
+
+
+def make_client(api_key: str | None, api: str = "anthropic", base_url: str | None = None):
     try:
         import anthropic
     except ImportError as exc:
         raise AdvisorError(
             "the advisor needs the Anthropic SDK: pip install 'checker[advisor]'"
         ) from exc
+    if api == "openai":
+        import httpx2  # the SDK's own HTTP client
+
+        headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
+        return httpx2.Client(
+            base_url=base_url,
+            headers=headers,
+            timeout=httpx2.Timeout(OPENAI_TIMEOUT, connect=10),
+            follow_redirects=False,
+        )
     # No automatic retries: a request that timed out may still be answered
     # and billed, and a retry would bill it again past the confirmed
     # estimate. A rate-limited run is simply run again.
-    return anthropic.Anthropic(api_key=api_key, max_retries=0)
+    return anthropic.Anthropic(
+        api_key=api_key, max_retries=0, **({"base_url": base_url} if base_url else {})
+    )
 
 
 def _model(part) -> str | None:
@@ -131,6 +213,8 @@ def _model(part) -> str | None:
 
 
 def send(client, request: Request, role: str) -> Outcome:
+    if request.api == "openai":
+        return _send_openai(client, request, role)
     schema, _ = ROLES[role]
     try:
         kwargs = dict(request.body)
@@ -144,6 +228,7 @@ def send(client, request: Request, role: str) -> Outcome:
     outcome = Outcome(
         status="answered",
         model_asked=request.body["model"],
+        endpoint=request.base_url,
         model_answered=getattr(response, "model", None),
         request_id=getattr(response, "_request_id", None) or getattr(response, "id", None),
         usage=_usage(getattr(response, "usage", None)),
@@ -199,6 +284,103 @@ def send(client, request: Request, role: str) -> Outcome:
     except ValidationError:
         outcome.status = "unreadable"
     return outcome
+
+
+def _send_openai(client, request: Request, role: str) -> Outcome:
+    """An OpenAI-compatible server's answer, read in the same order:
+    declined, then cut off (by length, or by the server reading only part
+    of the request), then the answer."""
+    import httpx2
+
+    schema, _ = ROLES[role]
+    where = request.base_url
+    try:
+        response = client.post("/chat/completions", json=request.body)
+    except httpx2.ConnectError:
+        raise AdvisorError(f"could not reach {where} (is the server running?)") from None
+    except httpx2.TimeoutException:
+        raise AdvisorError(f"{where} didn't answer within {OPENAI_TIMEOUT} s", sent=True) from None
+    except httpx2.HTTPError as exc:
+        raise AdvisorError(f"the request to {where} failed ({type(exc).__name__})", True) from None
+    request_id = response.headers.get("x-request-id")
+    if response.status_code != 200:
+        raise AdvisorError(_explain_status(response, where), True, request_id)
+    try:
+        data = response.json()
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        usage = data.get("usage") or {}
+        if not all(isinstance(part, dict) for part in (choice, message, usage)):
+            raise TypeError
+    except (ValueError, AttributeError, TypeError, IndexError, KeyError):
+        raise AdvisorError(
+            f"{where} answered with something that isn't a chat answer", True, request_id
+        ) from None
+    model = data.get("model") or request.body["model"]
+    outcome = Outcome(
+        status="answered",
+        model_asked=request.body["model"],
+        model_answered=model if isinstance(model, str) else request.body["model"],
+        request_id=request_id or (data.get("id") if isinstance(data.get("id"), str) else None),
+        usage={
+            mine: usage[theirs]
+            for mine, theirs in (
+                ("input_tokens", "prompt_tokens"),
+                ("output_tokens", "completion_tokens"),
+            )
+            if isinstance(usage.get(theirs), int)
+        },  # fmt: skip
+        endpoint=where,
+    )
+    if message.get("refusal") or choice.get("finish_reason") == "content_filter":
+        outcome.status = "declined"
+        outcome.refusal_category = "content_filter" if not message.get("refusal") else None
+        outcome.declined_by = [outcome.model_answered]
+        outcome.model_answered = None
+        return outcome
+    expected = tokens_in(json.dumps(request.body, ensure_ascii=False))
+    read = outcome.usage.get("input_tokens")
+    if read is not None and read < expected * READ_AT_LEAST:
+        outcome.status = "cut off"
+        outcome.note = (
+            f"the server read only {read} tokens of a request of about {expected}: the"
+            " model's context is too small for this case, and the server cut it short"
+            " (Ollama: give the model a larger num_ctx)"
+        )
+        return outcome
+    if choice.get("finish_reason") == "length":
+        outcome.status = "cut off"
+        return outcome
+    text = message.get("content")
+    if not isinstance(text, str) or not text.strip():
+        outcome.status = "unreadable"
+        return outcome
+    try:
+        outcome.answer = schema.model_validate_json(text)
+    except ValidationError:
+        outcome.status = "unreadable"
+    return outcome
+
+
+def _explain_status(response, where: str) -> str:
+    code = response.status_code
+    if code == 401:
+        return f"{where} refused the API key (authentication failed)"
+    if code == 403:
+        return f"{where} doesn't allow this key to use this model"
+    if code == 404:
+        return f"{where} doesn't know the model, or the address is wrong (check model and base_url)"
+    if code == 429:
+        return f"rate limited by {where}; try again later"
+    if 400 <= code < 500:
+        try:
+            error = response.json().get("error")
+            said = error.get("message") if isinstance(error, dict) else error
+        except (ValueError, AttributeError):
+            said = None
+        detail = f": {str(said)[:300]}" if said else ""
+        return f"{where} refused the request ({code}){detail}"
+    return f"{where} answered with an error ({code}); try again later"
 
 
 def _usage(usage) -> dict[str, Any]:

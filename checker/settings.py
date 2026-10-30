@@ -22,6 +22,7 @@ from checker.evidence import (
     Store,
     config_file,
     database_file,
+    is_local,
     load_config,
 )
 from checker.files import atomic_write, locked
@@ -72,25 +73,43 @@ SENT_DETAIL = {
 }
 
 
-def advisor_question(redaction: str) -> str:
+ANTHROPIC = "to Anthropic, with your organization's own API key"
+
+
+def recipient(api: str, base_url: str | None) -> str:
+    """Who receives a request, in words: Anthropic, this machine, or
+    another server (and whether the way there is encrypted)."""
+    if not base_url:
+        return ANTHROPIC if api == "anthropic" else "to the OpenAI-compatible API"
+    if is_local(base_url):
+        return f"to the model running on this machine, at {base_url}; nothing leaves it"
+    kind = "Anthropic-compatible" if api == "anthropic" else "OpenAI-compatible"
+    plain = ", not encrypted on the way (http)" if base_url.startswith("http:") else ""
+    return f"to the server at {base_url} ({kind} API{plain})"
+
+
+def advisor_question(redaction: str, to: str = ANTHROPIC) -> str:
     """What `init` says before asking, and `config set advisor.enabled on`
-    after turning it on: what would leave, under this redaction mode."""
+    after turning it on: what would leave, under this redaction mode, and
+    to whom."""
     text = (
         "The optional AI advisor can explain findings, propose whitelist rules for you"
         " to review, suggest better coverage and advise on remediation. When you run"
-        f" `checker advise`, it sends {SENT[redaction]} to Anthropic, with your"
-        f" organization's own API key. {SENT_DETAIL[redaction]} It never connects to a"
-        " server and never changes a score or a setting. Everything else in the tool"
-        " works without it (security and privacy policy §9)."
+        f" `checker advise`, it sends {SENT[redaction]} {to}. {SENT_DETAIL[redaction]}"
+        " It never connects to a server and never changes a score or a setting."
+        " Everything else in the tool works without it (security and privacy policy §9)."
     )
     return textwrap.fill(text, 78)
 
 
-def key_source_words(source: str) -> str:
+def key_source_words(source: str, api: str = "anthropic") -> str:
     if source == "env":
-        return "the ANTHROPIC_API_KEY environment variable"
+        variable = "OPENAI_API_KEY" if api == "openai" else "ANTHROPIC_API_KEY"
+        return f"the {variable} environment variable"
     if source == "keyring":
         return "the OS keyring (service compromise-checker, username advisor-api-key)"
+    if source == "none":
+        return "nowhere (the server takes no key)"
     return f"the output of `{source.removeprefix('command:')}`"
 
 
@@ -108,26 +127,38 @@ def describe(config: Config) -> list[str]:
             "AI advisor: off. Nothing is sent anywhere but the SSH sessions to your servers."
         )
         return lines
+    to = recipient(advisor.api, advisor.base_url)
     lines += [
-        f"AI advisor: on, model {advisor.model}, effort {advisor.effort}, API key from"
-        f" {key_source_words(advisor.api_key_source)}.",
-        f"  Sent only when you run `checker advise`: {SENT[advisor.redaction]}, to"
-        " Anthropic with your own account.",
+        f"AI advisor: on, model {advisor.model}"
+        + (f", effort {advisor.effort}" if advisor.api == "anthropic" else "")
+        + f", API key from {key_source_words(advisor.api_key_source, advisor.api)}.",
+        f"  Sent only when you run `checker advise`: {SENT[advisor.redaction]},"
+        + (" to Anthropic with your own account." if to == ANTHROPIC else f" {to}."),
         f"  Redaction: {advisor.redaction}: {REDACTION[advisor.redaction]}.",
         "  `checker config check-key` checks the key can be read, without sending anything.",
         f"  Asks before a run whose likely cost is above ${advisor.max_cost_per_run:.2f}"
-        " (the most it can cost is shown too).",
-        "  If the model's safety checks decline a request: "
-        + (
-            "it is re-run on the model Anthropic recommends for that kind of decline"
-            " (same provider and account), and the report names both."
-            if advisor.fallback == "anthropic"
-            else "nothing more is sent; the report says it was declined."
-        ),
+        " (the most it can cost is shown too), or whose cost isn't known.",
+        "  If the model's safety checks decline a request: " + _on_decline(advisor),
     ]
     if advisor.inference_geo:
         lines.append(f"  Inference geography: {advisor.inference_geo}.")
     return lines
+
+
+def _on_decline(advisor) -> str:
+    if advisor.fallback == "anthropic":
+        return (
+            "it is re-run on the model Anthropic recommends for that kind of decline"
+            " (same provider and account), and the report names both."
+        )
+    if advisor.fallback == "model":
+        fallback = advisor.fallback_model
+        return (
+            f"the same request, with the same redaction, is re-run on {fallback.model},"
+            f" sent {recipient(fallback.api, fallback.base_url)}, with its key from"
+            f" {key_source_words(fallback.api_key_source, fallback.api)}; the report names both."
+        )
+    return "nothing more is sent; the report says it was declined."
 
 
 # --- Changing a setting ----------------------------------------------------------
@@ -163,14 +194,24 @@ SETTABLE: dict[str, Setting] = {
         Setting(("advisor", "model"), str, "the model's name (default claude-opus-5-5)"),
         Setting(("advisor", "effort"), str, "low, medium, high, xhigh or max"),
         Setting(("advisor", "redaction"), str, "pseudonymize, strict or none"),
-        Setting(("advisor", "api_key_source"), str, "env, keyring or command:<command>"),
+        Setting(("advisor", "api_key_source"), str, "env, keyring, none or command:<command>"),
         Setting(("advisor", "inference_geo"), _optional, "e.g. us, or none"),
         Setting(
             ("advisor", "max_cost_per_run"),
             float,
             "US dollars, checked against the likely cost (default 1.00)",
         ),
-        Setting(("advisor", "fallback"), str, "on a decline: anthropic (default) or off"),
+        Setting(("advisor", "api"), str, "anthropic (default) or openai (OpenAI-compatible)"),
+        Setting(("advisor", "base_url"), _optional, "the server's address, or none: Anthropic's"),
+        Setting(("advisor", "fallback"), str, "on a decline: anthropic (default), model or off"),
+        Setting(("advisor", "fallback_model", "model"), _optional, "the fallback model's name"),
+        Setting(("advisor", "fallback_model", "api"), str, "anthropic or openai"),
+        Setting(("advisor", "fallback_model", "base_url"), _optional, "its server, or none"),
+        Setting(
+            ("advisor", "fallback_model", "api_key_source"),
+            str,
+            "env, keyring, none or command:<command>",
+        ),
     )
 }
 

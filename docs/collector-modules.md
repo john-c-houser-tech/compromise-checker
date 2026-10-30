@@ -814,6 +814,16 @@ packages installed system-wide by hand.
   architecture and install time; and from dpkg's status file, where there
   is one too, name, version and architecture, with the modification time
   of the package's file list in `/var/lib/dpkg/info` as its install time;
+- the package history, for threat packs (plan 4.4: when a fix arrived,
+  not only when a package was last updated): dpkg's log
+  (`/var/log/dpkg.log` and its rotated copies, `.gz` read here) or dnf's
+  history database (`/var/lib/dnf/history.sqlite`, opened immutable like
+  rpm's), going back 400 days, at most 20,000 changes: each install,
+  upgrade, downgrade, reinstall or removal with its time, package name,
+  architecture and versions, as `package_change` records. The log's lines
+  are parsed on the server and nothing else of them is sent; dpkg's times
+  are the host's local time (read in its zone), dnf's are UTC.
+  `package_history_absent` says there was none to read;
 - repositories as masked text (a password in a repository's URL is
   masked): `/etc/apt/sources.list`, `sources.list.d`, `/etc/yum.repos.d`,
   `/etc/dnf/dnf.conf`, `/etc/yum.conf`, `/etc/dnf/vars`, `/etc/yum/vars`
@@ -930,7 +940,15 @@ exploit attempts that got an answer, error bursts.
   `/etc/nginx/nginx.conf`, `conf.d`, `sites-enabled`;
   `/etc/apache2/apache2.conf`, `envvars`, `sites-enabled`, `conf-enabled`;
   `/etc/httpd/conf/httpd.conf`, `conf.d`; `/etc/php-fpm.conf`,
-  `/etc/php-fpm.d`, `/etc/php/*/fpm/php-fpm.conf` and `pool.d`;
+  `/etc/php-fpm.d`, `/etc/php/*/fpm/php-fpm.conf` and `pool.d`, and
+  Remi's `/etc/opt/remi/php*/php-fpm.conf` and `php-fpm.d`;
+- PHP's own settings, for threat packs' mitigations (decision D4): each
+  web-facing PHP's `php.ini` and `conf.d/*.ini` (`/etc/php/*/{fpm,apache2,cgi}`,
+  not the CLI's; `/etc/php.ini` and `/etc/php.d`; Remi's
+  `/etc/opt/remi/php*/php.ini` and `php.d`), by file, never by running
+  `php`. Only directive and `[section]` lines are sent, masked; comments and
+  blank lines are left out. A `conf.d` link into `mods-available` is
+  followed and sent under its target's name, with a `config_link` record;
 - the log files that configuration names (`access_log`, `error_log`,
   `CustomLog`, `TransferLog`, `ErrorLog`, PHP-FPM's `error_log`, `slowlog`
   and `access.log`; `${APACHE_LOG_DIR}` and RHEL's relative `logs/`

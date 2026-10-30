@@ -302,6 +302,14 @@ is John's to approve before it is committed. Also:
   Ubuntu 22.04, 24.04 and 26.04, RHEL (and its rebuilds) 9 and 10, and the
   Sury PPA, with the fixed version for each release and its source. Every
   version and date checked against the vendor's own page before signing.
+- **A Sury entry for each release** (a side note John relayed,
+  2026-10-30): an Ubuntu entry with no `versions` pattern vouches only
+  for Ubuntu's own builds (4.3's review), so a Sury build is "can't
+  judge", exposed for the whole window. nouriloop-prod runs PHP 8.4 on
+  Ubuntu 24.04, whose own PHP is 8.3, so most likely from Sury: the pack
+  needs `versions: "*+deb.sury.org*"` entries with Sury's own fixed
+  versions, checked against the PPA's changelog, or prod looks exposed
+  after it is fixed.
 - Mitigation: `session.upload_progress.enabled` off (it also covers
   CVE-2026-115560, unpatched when the pack was first published).
 - Detections from DESIGN.md §10.2: web worker child processes, memory-limit

@@ -6805,6 +6805,149 @@ def rpm_packages(run, module, database):
         connection.close()
 
 
+# Package history (DESIGN.md §5.5): what was installed, upgraded or removed,
+# and when, so a threat pack's fix is dated by when it arrived, not by a
+# package's last update. dpkg's log on Debian and Ubuntu (rotated monthly,
+# a year kept), dnf's history database on the RHEL family. Package names
+# and versions only; the log's lines are parsed here and nothing else of
+# them is sent.
+PACKAGE_HISTORY_DAYS = 400
+MAX_PACKAGE_CHANGES = 20000
+DNF_HISTORY = "/var/lib/dnf/history.sqlite"
+_DPKG_LOG = re.compile(r"^dpkg\.log(?:\.\d+)?(?:\.gz)?$")
+_DPKG_LOG_LINE = re.compile(
+    rb"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (install|upgrade|remove|purge)"
+    rb" ([a-z0-9][a-z0-9+.-]*)(?::([a-z0-9-]+))? (\S+) (\S+)\s*$"
+)
+# dnf's (libdnf's) TransactionItemAction values: the ones that leave a
+# version installed, and removal.
+_DNF_ACTIONS = {1: "install", 2: "downgrade", 6: "upgrade", 9: "reinstall", 8: "remove"}
+
+
+def package_history(run, module):
+    """Package changes from dpkg's log and dnf's history, within
+    PACKAGE_HISTORY_DAYS (longer than the look-back window: a threat's
+    window may have opened months ago)."""
+    since = time.time() - PACKAGE_HISTORY_DAYS * 86400
+    sent = [0]
+
+    def change(data):
+        if sent[0] >= MAX_PACKAGE_CHANGES:
+            return False
+        run.stream.record(module, "package_change", data)
+        sent[0] += 1
+        return True
+
+    found = False
+    try:
+        names = os.listdir(path("/var/log"))
+    except OSError:
+        names = []
+    logs = []
+    for name in names:
+        if _DPKG_LOG.match(name):
+            absolute = "/var/log/" + name
+            try:
+                info = os.lstat(path(absolute))
+            except OSError:
+                continue
+            if stat.S_ISREG(info.st_mode) and info.st_mtime >= since:
+                logs.append((info.st_mtime, absolute))
+    for _, absolute in sorted(logs):  # oldest first
+        found = True
+        if not _dpkg_log(run, module, absolute, change):
+            break
+    if os.path.isfile(path(DNF_HISTORY)):
+        found = True
+        _dnf_history(run, module, since, change)
+    if sent[0] >= MAX_PACKAGE_CHANGES:
+        run.stream.record(module, "listing_truncated", {"path": "package history"})
+    if not found:
+        run.stream.record(module, "package_history_absent", {})
+
+
+def _dpkg_log(run, module, absolute, change):
+    """One dpkg log's install, upgrade and remove lines (local time, as
+    dpkg writes it). Returns False once the cap is reached."""
+    try:
+        raw, _ = open_regular_file(absolute)
+    except (OSError, ValueError) as exc:
+        run.stream.record(module, "not_examined", {"path": absolute, "reason": str(exc)})
+        return True
+    opened = _OPENERS[".gz"][1](raw) if absolute.endswith(".gz") else raw
+    try:
+        with opened:
+            while True:
+                run.check_time()
+                line = opened.readline(1024)
+                if not line:
+                    return True
+                found = _DPKG_LOG_LINE.match(line)
+                if not found:
+                    continue
+                when, action, name, arch, before, after = (
+                    g.decode("ascii", "replace") if g is not None else None for g in found.groups()
+                )
+                if not change(
+                    {
+                        "manager": "dpkg",
+                        "local_time": when,
+                        "action": action,
+                        "name": name,
+                        "arch": arch,
+                        "previous": None if before == "<none>" else before,
+                        "version": None if after == "<none>" else after,
+                        "source": absolute,
+                    }
+                ):
+                    return False
+    except _DECOMPRESS_ERRORS as exc:
+        run.stream.record(module, "not_examined", {"path": absolute, "reason": str(exc)})
+        return True
+
+
+def _dnf_history(run, module, since, change):
+    """dnf's history database, opened immutable like rpm's: each package
+    change, newest transactions within `since`, as it completed."""
+    import sqlite3
+    from urllib.parse import quote
+
+    uri = "file:" + quote(path(DNF_HISTORY)) + "?immutable=1&mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    try:
+        rows = connection.execute(
+            "SELECT t.dt_begin, ti.action, r.name, r.epoch, r.version, r.release, r.arch"
+            " FROM trans_item ti JOIN trans t ON t.id = ti.trans_id"
+            " JOIN rpm r ON r.item_id = ti.item_id"
+            " WHERE t.dt_begin >= ? AND ti.state = 1 ORDER BY t.dt_begin, ti.id",
+            (int(since),),
+        )
+        for began, action, name, epoch, version, release, arch in rows:
+            run.check_time()
+            kind = _DNF_ACTIONS.get(action)
+            if kind is None or not name:
+                continue
+            evr = f"{version}-{release}"
+            evr = f"{epoch}:{evr}" if epoch else evr
+            if not change(
+                {
+                    "manager": "rpm",
+                    "time": iso_from_timestamp(began),
+                    "action": kind,
+                    "name": name,
+                    "arch": arch,
+                    "previous": evr if kind == "remove" else None,
+                    "version": None if kind == "remove" else evr,
+                    "source": DNF_HISTORY,
+                }
+            ):
+                return
+    except sqlite3.Error as exc:
+        run.stream.record(module, "not_examined", {"path": DNF_HISTORY, "reason": str(exc)})
+    finally:
+        connection.close()
+
+
 def dpkg_packages(run, module):
     """Installed packages from dpkg's status file: name, version,
     architecture, and as install time the modification time of the
@@ -6973,6 +7116,7 @@ def module_software(run):
         _key_files(run, module)
 
     part("packages", packages)
+    part("package_history", package_history, run, module)
     part("software_files", repositories)
     part("global_packages", _global_packages, run, module)
 
@@ -7380,7 +7524,39 @@ WEB_CONFIG_DIRS = (
     "/etc/httpd/conf.d",
     "/etc/php-fpm.d",
 )
-WEB_CONFIG_GLOBS = ("/etc/php/*/fpm/php-fpm.conf", "/etc/php/*/fpm/pool.d")
+WEB_CONFIG_GLOBS = (
+    "/etc/php/*/fpm/php-fpm.conf",
+    "/etc/php/*/fpm/pool.d",
+    "/etc/opt/remi/php*/php-fpm.conf",
+    "/etc/opt/remi/php*/php-fpm.d",
+)
+# PHP's own settings, for the threat packs' mitigations (decision D4): each
+# installed PHP's php.ini and conf.d, by file, never by running php. Only
+# directive and section lines are sent (PHP_INI_LINE): php.ini is mostly
+# comments. The web-facing ones: FPM, Apache's module, CGI (not the CLI).
+PHP_INI_FILES = ("/etc/php.ini",)
+PHP_INI_DIRS = ("/etc/php.d",)
+PHP_INI_GLOBS = (
+    "/etc/php/*/fpm/php.ini",
+    "/etc/php/*/apache2/php.ini",
+    "/etc/php/*/cgi/php.ini",
+    "/etc/php/*/fpm/conf.d",
+    "/etc/php/*/apache2/conf.d",
+    "/etc/php/*/cgi/conf.d",
+    "/etc/opt/remi/php*/php.ini",
+    "/etc/opt/remi/php*/php.d",
+)
+_PHP_INI_LINE = re.compile(rb"^\s*(?:\[[^\]]*\]|[A-Za-z0-9_.-]+\s*=)")
+
+
+def php_ini_line(line, masker):
+    """A php.ini line as sent: a directive or a section, masked; comments
+    and blank lines are left out."""
+    if not _PHP_INI_LINE.match(line):
+        return b""
+    return masker.line(line)
+
+
 # Where web servers log when their configuration doesn't say otherwise.
 WEB_LOG_DIRS = ("/var/log/nginx", "/var/log/apache2", "/var/log/httpd", "/var/log/php-fpm")
 _PHP_FPM_LOG = re.compile(r"^php[\d.]*-fpm\.log(?:[-.][\w.-]+)?$")
@@ -7881,12 +8057,34 @@ def module_web_logs(run):
                 collect_tree(run, module, found, seen, max_depth=1)
             else:
                 send_config_files(run, module, (found,), seen)
+    _php_ini(run, module, seen)
     texts = [
         (absolute, read_config_text(run, module, absolute))
         for absolute in sorted(p for p in seen if isinstance(p, str))
     ]
     with time_share(run, module, "logs", 1.0):
         _web_logs(run, module, texts)
+
+
+def _php_ini(run, module, seen):
+    """Each installed PHP's ini files (PHP_INI_*): a conf.d folder holds
+    links into mods-available on Debian and Ubuntu, followed as PHP
+    follows them."""
+    send_config_files(run, module, PHP_INI_FILES, seen, transform=php_ini_line)
+    folders = list(PHP_INI_DIRS)
+    for pattern in PHP_INI_GLOBS:
+        for found in glob_absolute(pattern, run=run):
+            if os.path.isdir(path(found)):
+                folders.append(found)
+            else:
+                send_config_files(run, module, (found,), seen, transform=php_ini_line)
+    for folder in folders:
+        try:
+            names, _ = list_directory(folder, MAX_DIR_FILES, run)
+        except OSError:
+            continue
+        inis = [_join(folder, n) for n in names if n.endswith(".ini")]
+        send_config_files(run, module, inis, seen, transform=php_ini_line)
 
 
 # --- Containers (DESIGN.md §8.13) -------------------------------------------------------

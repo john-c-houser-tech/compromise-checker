@@ -5767,3 +5767,127 @@ class ContainerTests(FixtureRoot):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PackageHistoryTests(FixtureRoot):
+    """Package changes from dpkg's log and dnf's history (plan 4.4)."""
+
+    DPKG_LOG = (
+        b"2026-10-23 18:20:01 startup archives unpack\n"
+        b"2026-10-23 18:20:02 upgrade php8.3-fpm:amd64"
+        b" 8.3.6-0ubuntu0.24.04.5 8.3.6-0ubuntu0.24.04.6\n"
+        b"2026-10-23 18:20:02 status half-configured php8.3-fpm:amd64 8.3.6-0ubuntu0.24.04.6\n"
+        b"2026-10-24 09:00:00 install nginx:amd64 <none> 1.24.0-2ubuntu7\n"
+        b"2026-10-25 10:00:00 remove telnet:amd64 0.17-44build1 <none>\n"
+        b"garbage line\n"
+    )
+
+    def test_dpkg_log_and_its_rotated_copies(self):
+        self.write("var/log/dpkg.log", self.DPKG_LOG)
+        older = b"2026-09-01 08:00:00 install php8.3-fpm:amd64 <none> 8.3.6-0ubuntu0.24.04.4\n"
+        self.write("var/log/dpkg.log.2.gz", gzip.compress(older), age_days=40)
+        self.write("var/log/dpkg.log.13.gz", gzip.compress(older), age_days=500)  # too old
+        records = collect(self.root, ["software"])
+        changes = [r["data"] for r in named(records, "package_change")]
+        self.assertEqual(
+            [(c["action"], c["name"], c["previous"], c["version"]) for c in changes],
+            [
+                ("install", "php8.3-fpm", None, "8.3.6-0ubuntu0.24.04.4"),
+                ("upgrade", "php8.3-fpm", "8.3.6-0ubuntu0.24.04.5", "8.3.6-0ubuntu0.24.04.6"),
+                ("install", "nginx", None, "1.24.0-2ubuntu7"),
+                ("remove", "telnet", "0.17-44build1", None),
+            ],
+        )
+        self.assertEqual(changes[1]["local_time"], "2026-10-23 18:20:02")
+        self.assertEqual(changes[1]["arch"], "amd64")
+        self.assertEqual(sources(records), {})  # parsed here; no line of the log is sent
+
+    def test_dnf_history_read_without_writing(self):
+        import sqlite3
+
+        db = Path(self.root, "var/lib/dnf/history.sqlite")
+        db.parent.mkdir(parents=True)
+        connection = sqlite3.connect(db)
+        connection.executescript(
+            "CREATE TABLE trans (id INTEGER PRIMARY KEY, dt_begin INTEGER);"
+            "CREATE TABLE trans_item (id INTEGER PRIMARY KEY, trans_id INTEGER, item_id INTEGER,"
+            " action INTEGER, state INTEGER);"
+            "CREATE TABLE rpm (item_id INTEGER PRIMARY KEY, name TEXT, epoch INTEGER,"
+            " version TEXT, release TEXT, arch TEXT);"
+        )
+        began = int(NOW - 5 * DAY)
+        connection.execute("INSERT INTO trans VALUES (1, ?)", (began,))
+        connection.execute("INSERT INTO trans VALUES (2, ?)", (int(NOW - 900 * DAY),))
+        rows = [
+            (1, 1, 1, 6, 1, "php-fpm", 0, "8.3.15", "1.el9_6", "x86_64"),  # upgrade, done
+            (2, 1, 2, 7, 1, "php-fpm", 0, "8.3.14", "1.el9", "x86_64"),  # upgraded: skipped
+            (3, 1, 3, 1, 2, "nmap", 3, "7.92", "1.el9", "x86_64"),  # failed: skipped
+            (4, 1, 4, 1, 1, "bind", 32, "9.16", "2.el9", "x86_64"),  # install, epoch
+            (5, 2, 5, 1, 1, "old", 0, "1", "1", "noarch"),  # too old
+        ]
+        for item, trans, rpm_id, action, state, name, epoch, version, release, arch in rows:
+            connection.execute("INSERT INTO trans_item VALUES (?, ?, ?, ?, ?)",
+                               (item, trans, rpm_id, action, state))  # fmt: skip
+            connection.execute("INSERT INTO rpm VALUES (?, ?, ?, ?, ?, ?)",
+                               (rpm_id, name, epoch, version, release, arch))  # fmt: skip
+        connection.commit()
+        connection.close()
+        before = sorted(os.listdir(db.parent))
+        records = collect(self.root, ["software"])
+        changes = [r["data"] for r in named(records, "package_change")]
+        self.assertEqual(
+            [(c["action"], c["name"], c["version"]) for c in changes],
+            [("upgrade", "php-fpm", "8.3.15-1.el9_6"), ("install", "bind", "32:9.16-2.el9")],
+        )
+        self.assertTrue(
+            changes[0]["time"].startswith(
+                datetime.datetime.fromtimestamp(began, datetime.timezone.utc).strftime("%Y-%m-%d")
+            )
+        )
+        self.assertEqual(sorted(os.listdir(db.parent)), before)  # no -wal, -shm or journal
+
+    def test_no_history_is_said(self):
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_absent")), 1)
+
+
+class PhpIniTests(FixtureRoot):
+    """PHP's ini files, directives only (plan 4.4, decision D4)."""
+
+    def test_only_directives_and_sections_are_sent_masked(self):
+        secret = "sk-ant-api03-" + "a" * 60
+        self.write(
+            "etc/php/8.3/fpm/php.ini",
+            (
+                "[PHP]\n; a comment about engine\nengine = On\n\n"
+                "#another comment\n[Session]\nsession.upload_progress.enabled = On\n"
+                f"mail.api_key = {secret}\n"
+            ).encode(),
+        )
+        self.write(
+            "etc/php/8.3/mods-available/opcache.ini", b"; priority=10\nzend_extension=opcache.so\n"
+        )
+        os.makedirs(Path(self.root, "etc/php/8.3/fpm/conf.d"))
+        os.symlink("/etc/php/8.3/mods-available/opcache.ini",
+                   Path(self.root, "etc/php/8.3/fpm/conf.d/10-opcache.ini"))  # fmt: skip
+        self.write("etc/php/8.3/cli/php.ini", b"engine = Off\n")  # the CLI isn't web-facing
+        records = collect(self.root, ["web_logs"])
+        sent = sources(records)
+        ini = sent["/etc/php/8.3/fpm/php.ini"][1].decode()
+        expected = ["[PHP]", "engine = On", "[Session]", "session.upload_progress.enabled = On"]
+        self.assertEqual(ini.splitlines()[:4], expected)
+        self.assertNotIn("comment", ini)
+        self.assertNotIn(secret, ini)
+        # A linked one is sent under its target's name; the link is a record.
+        opcache = sent["/etc/php/8.3/mods-available/opcache.ini"][1]
+        self.assertEqual(opcache, b"zend_extension=opcache.so\n")
+        [link] = named(records, "config_link")
+        self.assertEqual(link["data"]["path"], "/etc/php/8.3/fpm/conf.d/10-opcache.ini")
+        self.assertNotIn("/etc/php/8.3/cli/php.ini", sent)
+
+    def test_rhel_layout(self):
+        self.write("etc/php.ini", b"[PHP]\nexpose_php = Off\n")
+        self.write("etc/php.d/20-session.ini", b"session.upload_progress.enabled = Off\n")
+        sent = sources(collect(self.root, ["web_logs"]))
+        self.assertEqual(sent["/etc/php.ini"][1], b"[PHP]\nexpose_php = Off\n")
+        self.assertIn("/etc/php.d/20-session.ini", sent)

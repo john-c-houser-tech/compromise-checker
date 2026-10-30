@@ -8,6 +8,7 @@ an append-only chain of custody. Bundles are never modified once written.
 """
 
 import asyncio
+import functools
 import getpass
 import hashlib
 import hmac
@@ -84,30 +85,57 @@ def _key_source(value: str) -> str:
     raise ValueError("must be env, keyring, none or command:<command>")
 
 
+# A path part this long, of key characters, may be a token: refused.
+_TOKEN_LIKE = re.compile(r"[A-Za-z0-9_-]{32,}")
+
+
 def _base_url(value: str | None) -> str | None:
-    """A server's address: http or https, a host, nothing secret in it."""
+    """A server's address: http or https, a host, nothing secret in it.
+    Settings are recorded for good (config_changes), so anything that may
+    be a credential is refused rather than kept."""
     if value is None:
         return None
+    if any(c.isspace() or not c.isprintable() for c in value) or "%" in value:
+        raise ValueError("must hold no spaces, control characters or %-escapes")
     parsed = urlsplit(value)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
         raise ValueError("must be an http or https address, e.g. http://localhost:11434/v1")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("must hold no user name, password, query or fragment")
-    if looks_like_a_key(value):
+    if looks_like_a_key(value) or _TOKEN_LIKE.search(parsed.path) or "sk-" in value.lower():
         raise ValueError("that looks like it holds a key: give the server's address only")
-    return value.rstrip("/")
+    scheme, rest = value.split(":", 1)
+    return f"{scheme.lower()}:{rest}".rstrip("/")
 
 
 def is_local(base_url: str | None) -> bool:
-    """Whether a server address is this machine (loopback, or a .localhost
-    name, which resolves to it): nothing sent there leaves it."""
+    """Whether a server address is this machine: a loopback address,
+    localhost, or a .localhost name every address of which is loopback
+    (resolved here: where such names aren't handled locally, a search
+    domain could make one remote)."""
     if not base_url:
         return False
-    host = (urlsplit(base_url).hostname or "").lower()
-    if host == "localhost" or host.endswith(".localhost"):
+    return _loopback((urlsplit(base_url).hostname or "").lower())
+
+
+@functools.lru_cache(maxsize=32)
+def _loopback(host: str) -> bool:
+    if host == "localhost":
         return True
     try:
         return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        pass
+    if not host.endswith(".localhost"):
+        return False
+    try:
+        found = {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except (OSError, UnicodeError):
+        return False
+    try:
+        return bool(found) and all(
+            ipaddress.ip_address(address.split("%")[0]).is_loopback for address in found
+        )
     except ValueError:
         return False
 
@@ -180,6 +208,16 @@ class Advisor(BaseModel):
             raise ValueError(
                 "the anthropic fallback is Anthropic's own: set advisor.fallback to off or model"
             )
+        for where, url, source in (
+            ("advisor.base_url", self.base_url, self.api_key_source),
+            ("the fallback model's base_url", self.fallback_model.base_url,
+             self.fallback_model.api_key_source),
+        ):  # fmt: skip
+            if url and url.startswith("http:") and source != "none" and not is_local(url):
+                raise ValueError(
+                    f"{where} is plain http to another machine: the key would cross the"
+                    " network unencrypted (use https, or a server on this machine)"
+                )
         fallback = self.fallback_model
         if fallback.api == "openai" and fallback.model and not fallback.base_url:
             raise ValueError("the fallback model's OpenAI-compatible API needs its base_url")
@@ -885,8 +923,13 @@ class Store:
         # Added in Phase 3 (PR 3.7), after the table was first made.
         columns = {row["name"] for row in self._db.execute("PRAGMA table_info(advice)")}
         if "endpoint" not in columns:
-            with self._db:
-                self._db.execute("ALTER TABLE advice ADD COLUMN endpoint TEXT")
+            try:
+                with self._db:
+                    self._db.execute("ALTER TABLE advice ADD COLUMN endpoint TEXT")
+            except sqlite3.OperationalError:  # another process added it first
+                columns = {row["name"] for row in self._db.execute("PRAGMA table_info(advice)")}
+                if "endpoint" not in columns:
+                    raise
 
     def close(self) -> None:
         self._db.close()

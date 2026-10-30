@@ -23,7 +23,7 @@ from checker.advisor.client import (
     make_client,
     send,
 )
-from checker.advisor.keys import read_api_key
+from checker.advisor.keys import key_places, read_api_key
 from checker.advisor.prices import tokens_in
 from checker.advisor.roles import SYSTEM_PROMPT
 from checker.evidence import Advisor, EvidenceError, Store, is_local, load_config, open_text
@@ -142,11 +142,11 @@ def test_an_anthropic_compatible_server_is_named_too(enabled):
 
 def test_the_key_goes_as_a_bearer_token(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-" + "x" * 40)
-    key = read_api_key("env", "openai")
+    key = read_api_key("env", key_places("openai"))
     client = make_client(key, "openai", ELSEWHERE)
     assert client.headers["authorization"] == f"Bearer {key}"
     assert str(client.base_url).rstrip("/") == ELSEWHERE
-    assert read_api_key("none", "openai") is None
+    assert read_api_key("none", key_places("openai")) is None
     assert "authorization" not in make_client(None, "openai", LOCAL).headers
 
 
@@ -350,11 +350,13 @@ def test_a_fallback_model_that_cant_be_asked_leaves_the_decline(enabled, monkeyp
     base, store, identity, _ = enabled
     fallback_to_local(base)
     change(base, "advisor.fallback_model.api_key_source", "env")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CHECKER_FALLBACK_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-" + "x" * 40)  # the main model's, not used
     advice = run(enabled, Provider(declined_by_claude))
     assert advice.status == "declined"
-    assert "the fallback model couldn't be asked: no API key: OPENAI_API_KEY is not set" in (
-        advice.note
+    assert (
+        "the fallback model couldn't be asked: no API key: CHECKER_FALLBACK_API_KEY is not set"
+        in advice.note
     )
     row = store.advice("b1")[0]
     assert "fallback" not in json.loads(open_text(row["request"], identity))  # nothing went
@@ -406,17 +408,17 @@ def test_describe_says_who_receives_it(base_with_config):
     change(base, "advisor.enabled", "on")
     local(base)
     lines = "\n".join(describe(load_config(base)))
-    assert "to the model running on this machine, at http://localhost:11434/v1;" in lines
-    assert "nothing leaves it" in lines and "effort" not in lines
+    assert "to a server on this machine (loopback), at http://localhost:11434/v1." in lines
+    assert "effort" not in lines
     assert "API key from nowhere (the server takes no key)" in lines
-    change(base, "advisor.base_url", "http://10.0.0.5:11434/v1")
+    change(base, "advisor.base_url", "http://10.0.0.5:11434/v1")  # no key: http allowed
     lines = "\n".join(describe(load_config(base)))
     assert "to the server at http://10.0.0.5:11434/v1 (OpenAI-compatible API, not encrypted" in (
         lines
     )
     fallback_to_local_from_openai(base)
     lines = "\n".join(describe(load_config(base)))
-    assert "re-run on qwen-fallback, sent to the model running on this machine" in lines
+    assert "re-run on qwen-fallback, sent to a server on this machine (loopback)" in lines
 
 
 def fallback_to_local_from_openai(base):
@@ -453,8 +455,11 @@ def test_check_key_reads_the_fallback_models_key_too(base_with_config, capsys, m
     change(base, "advisor.fallback", "model")
     assert cli.main(["config", "check-key"]) == 1
     captured = capsys.readouterr()
-    assert "The fallback model's key: Reading the key from the OPENAI_API_KEY" in captured.out
-    assert "OPENAI_API_KEY is not set" in captured.err
+    assert (
+        "The fallback model's key: Reading the key from the CHECKER_FALLBACK_API_KEY"
+        in captured.out
+    )
+    assert "CHECKER_FALLBACK_API_KEY is not set" in captured.err
 
 
 @pytest.mark.parametrize(
@@ -503,7 +508,8 @@ def test_the_report_names_the_server_and_the_lower_quality(enabled):
     run(enabled, Server())
     html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
     assert "answered by qwen2.5:7b at http://localhost:11434/v1" in html
-    assert "Answered by a model running on this machine: expect lower quality" in html
+    assert "Answered by a local model, on the machine that ran" in html
+    assert "expect lower quality" in html
 
 
 def test_the_report_is_unchanged_for_anthropic(enabled):
@@ -513,7 +519,7 @@ def test_the_report_is_unchanged_for_anthropic(enabled):
     run(enabled, Provider())
     html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
     assert "answered by claude-opus-5-5 ·" in html
-    assert "running on this machine" not in html
+    assert "Answered by a local model" not in html
 
 
 def test_send_dispatches_by_api():
@@ -527,3 +533,191 @@ def test_send_dispatches_by_api():
     )
     outcome = send(server.client(), openai, "explain")
     assert outcome.status == "answered" and outcome.endpoint == LOCAL
+
+
+# --- What the review of 3.7 found ---------------------------------------------------------------
+
+
+def test_a_local_model_with_an_unpriced_fallback_still_asks(enabled):
+    base = enabled[0]
+    local(base)
+    change(base, "advisor.fallback_model.api", "openai")
+    change(base, "advisor.fallback_model.base_url", ELSEWHERE)
+    change(base, "advisor.fallback_model.model", "hosted")
+    change(base, "advisor.fallback", "model")
+    server = Server()
+    asked = []
+    advice = run(enabled, server, confirm=lambda q: asked.append(q) or False)
+    assert advice.status == "not sent" and server.requests == []
+    assert asked and "at a cost not known here" in asked[0]
+
+
+def test_no_key_never_means_the_environments_key(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token-from-the-environment")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example.org")
+    client = make_client(None, "anthropic", "https://gateway.example.org")
+    assert client.api_key == "" and client.auth_token is None
+    assert str(client.base_url).startswith("https://gateway.example.org")
+    own = make_client("sk-ant-mine", "anthropic", None)  # Anthropic's own, whatever the env says
+    assert str(own.base_url).startswith("https://api.anthropic.com")
+
+
+@pytest.mark.parametrize(("api", "url", "direct"), [("openai", LOCAL, True),
+                         ("anthropic", "http://127.0.0.1:8080", True),
+                         ("openai", ELSEWHERE, False), ("anthropic", None, False)])  # fmt: skip
+def test_a_server_on_this_machine_is_reached_without_a_proxy(api, url, direct):
+    client = make_client("k", api, url)
+    http = client if api == "openai" else client._client
+    assert http._trust_env is not direct
+    assert http.follow_redirects is False
+
+
+@pytest.mark.parametrize(
+    ("api", "url", "fallback", "places"),
+    [
+        ("anthropic", None, False, ("ANTHROPIC_API_KEY", "advisor-api-key")),
+        ("openai", LOCAL, False, ("OPENAI_API_KEY", "advisor-api-key")),
+        ("anthropic", None, True, ("ANTHROPIC_API_KEY", "advisor-fallback-api-key")),
+        ("anthropic", ELSEWHERE, True, ("CHECKER_FALLBACK_API_KEY", "advisor-fallback-api-key")),
+        ("openai", ELSEWHERE, True, ("CHECKER_FALLBACK_API_KEY", "advisor-fallback-api-key")),
+    ],
+)
+def test_the_fallback_models_key_has_places_of_its_own(api, url, fallback, places):
+    assert key_places(api, url, fallback) == places
+
+
+def test_a_local_model_falling_back_to_claude(enabled, monkeypatch):
+    base, store, _, _ = enabled
+    local(base)
+    change(base, "advisor.fallback_model.model", "claude-opus-5-5")
+    change(base, "advisor.fallback_model.api_key_source", "env")
+    change(base, "advisor.fallback", "model")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    provider = Provider()
+    monkeypatch.setattr(
+        advise_module, "make_client",
+        lambda key, api, url: provider.client() if api == "anthropic" else None,
+    )  # fmt: skip
+    server = Server(lambda body: (200, chat(body, explain_answer(), "content_filter")))
+    advice = run(enabled, server)
+    assert advice.status == "answered", advice.note
+    assert advice.outcome.declined_by == ["qwen2.5:7b"]
+    assert advice.outcome.model_answered == "claude-opus-5-5"
+    (body,) = provider.sent()
+    assert "output_config" in body and "fallbacks" not in body
+    row = store.advice("b1")[0]
+    assert row["endpoint"] is None  # Anthropic's own answered
+    assert row["estimated_cost"] == pytest.approx((12_000 * 4.00 + 400 * 20.00) / 1e6)
+
+
+def test_the_fallback_to_anthropic_keeps_the_inference_geography():
+    advisor = Advisor(inference_geo="us", fallback="model",
+                      fallback_model={"model": "claude-opus-4-8"})  # fmt: skip
+    assert fallback_request({"findings": []}, "explain", advisor).body["inference_geo"] == "us"
+    advisor.fallback_model.base_url = "https://gateway.example.org"
+    assert "inference_geo" not in fallback_request({"findings": []}, "explain", advisor).body
+
+
+@pytest.mark.parametrize("role", ["explain", "whitelist", "coverage", "remediation"])
+@pytest.mark.parametrize("characters_per_token", [2.4, 2.8, 4.0])
+def test_a_small_case_read_whole_isnt_called_cut_off(role, characters_per_token):
+    advisor = Advisor(api="openai", base_url=LOCAL, fallback="off", api_key_source="none",
+                      model="m")  # fmt: skip
+    request = build_request({"findings": [], "host": {"band": "Low"}}, role, advisor)
+    text = "".join(m["content"] for m in request.body["messages"])
+    read = int(len(text) / characters_per_token)
+    server = Server(lambda body: (200, chat(body, {"x": 1}, read=read)))
+    assert send(server.client(), request, role).status != "cut off"
+
+
+def test_a_fallback_that_failed_after_sending_is_recorded_as_such(enabled, monkeypatch):
+    base, store, _, _ = enabled
+    fallback_to_local(base)
+    change(base, "advisor.fallback_model.api_key_source", "none")
+    server = Server(lambda body: (503, {}))
+    monkeypatch.setattr(advise_module, "make_client", lambda key, api, url: server.client())
+    advice = run(enabled, Provider(declined_by_claude))
+    assert advice.status == "declined" and "answered with an error (503)" in advice.note
+    row = store.advice("b1")[0]
+    assert row["endpoint"] == LOCAL
+    assert row["estimated_cost"] == pytest.approx(12_000 * 4.00 / 1e6)  # local: free
+    hops = json.loads(row["usage"])["per_model"]
+    assert [h["model"] for h in hops] == ["claude-opus-5-5", "qwen2.5:7b"] and hops[1]["unknown"]
+
+
+def test_a_remote_fallback_that_failed_after_sending_has_an_unknown_cost(enabled, monkeypatch):
+    base, store, _, _ = enabled
+    change(base, "advisor.fallback_model.api", "openai")
+    change(base, "advisor.fallback_model.base_url", ELSEWHERE)
+    change(base, "advisor.fallback_model.model", "hosted")
+    change(base, "advisor.fallback", "model")
+    monkeypatch.setenv("CHECKER_FALLBACK_API_KEY", "fallback-key")
+    server = Server(lambda body: (503, {}), base_url=ELSEWHERE)
+    monkeypatch.setattr(advise_module, "make_client", lambda key, api, url: server.client())
+    advice = run(enabled, Provider(declined_by_claude))
+    assert advice.status == "declined"
+    row = store.advice("b1")[0]
+    assert row["endpoint"] == ELSEWHERE and row["estimated_cost"] is None
+
+
+def test_plain_http_to_another_machine_with_a_key_is_refused(base_with_config):
+    with pytest.raises(EvidenceError, match="plain http to another machine"):
+        change(base_with_config, "advisor.base_url", "http://10.0.0.5:11434/v1")
+    change(base_with_config, "advisor.base_url", "http://localhost:11434/v1")  # this machine
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://local\thost:11434/v1",
+        "https://x.example/%73k-ant",
+        "https://x.example/sk-proj-abcdef",
+        "https://x.example/" + "0123456789abcdef" * 2,
+        "https://x.example/v1\n",
+    ],
+)
+def test_addresses_that_may_hold_a_secret_are_refused(url):
+    with pytest.raises(ValueError):
+        Advisor(base_url=url, api_key_source="none")
+
+
+def test_the_scheme_is_normalised():
+    advisor = Advisor(base_url="HTTPS://Models.example.org/v1/")
+    assert advisor.base_url == "https://Models.example.org/v1"
+
+
+def test_a_redirect_is_named_and_server_text_is_made_safe(enabled):
+    base = enabled[0]
+    local(base)
+    with pytest.raises(AdvisorError, match="redirected the request \\(307\\)"):
+        run(enabled, Server(lambda body: (307, {})))
+    hostile = {"error": {"message": "bad\x1b[31m red \u202e text"}}
+    with pytest.raises(AdvisorError) as raised:
+        run(enabled, Server(lambda body: (400, hostile)))
+    assert "bad?[31m red ? text" in str(raised.value)
+
+
+def test_the_question_names_the_fallback_recipient_too():
+    from checker.settings import advisor_question, recipients
+
+    advisor = Advisor(fallback="model", fallback_model={
+        "model": "hosted", "api": "openai", "base_url": ELSEWHERE})  # fmt: skip
+    text = advisor_question("pseudonymize", recipients(advisor)).replace("\n", " ")
+    assert "to Anthropic, with your organization's own API key, and, when a request is" in text
+    assert f"declined, to the server at {ELSEWHERE} (OpenAI-compatible API) (hosted)" in text
+
+
+def test_a_priced_fallback_that_may_have_run_makes_the_cost_unknown():
+    from checker.advisor.advise import _fallback_failed
+
+    first = Outcome("declined", "claude-opus-5-5", declined_by=["claude-opus-5-5"],
+                    usage={"input_tokens": 10_000}, request_id="req_1")  # fmt: skip
+    request = fallback_request(
+        {"findings": []}, "explain",
+        Advisor(fallback="model", fallback_model={"model": "claude-opus-4-8"}),
+    )  # fmt: skip
+    both = _fallback_failed(first, request, "req_2")
+    assert both.status == "declined" and both.model_answered is None
+    assert [h["request_id"] for h in both.iterations] == ["req_1", "req_2"]
+    assert spent(both) is None  # claude-opus-4-8 has a price, but its usage is unknown

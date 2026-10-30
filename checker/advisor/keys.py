@@ -13,9 +13,12 @@ from checker.credentials import KEYRING_SERVICE
 from checker.evidence import looks_like_a_key
 
 ENVIRONMENT_VARIABLE = "ANTHROPIC_API_KEY"
-# The variable `env` reads, by the API the model is asked through.
-ENVIRONMENT_VARIABLES = {"anthropic": ENVIRONMENT_VARIABLE, "openai": "OPENAI_API_KEY"}
 KEYRING_USERNAME = "advisor-api-key"
+# The fallback model's key has places of its own, so one vendor's key is
+# never sent to another; a fallback on Anthropic's own API may use the
+# Anthropic variable.
+FALLBACK_VARIABLE = "CHECKER_FALLBACK_API_KEY"
+FALLBACK_USERNAME = "advisor-fallback-api-key"
 # Long enough to answer a password manager's prompt; a missed prompt then
 # fails with a message instead of waiting for ever.
 COMMAND_TIMEOUT = 120
@@ -35,12 +38,25 @@ def _usable(text: str, where: str) -> str:
     return key
 
 
-def read_api_key(source: str, api: str = "anthropic") -> str | None:
+def key_places(
+    api: str = "anthropic", base_url: str | None = None, fallback: bool = False
+) -> tuple[str, str]:
+    """Where `env` and `keyring` look: the environment variable and the
+    keyring username, for the main model or the fallback model."""
+    if fallback:
+        own = api == "anthropic" and not base_url
+        return (ENVIRONMENT_VARIABLE if own else FALLBACK_VARIABLE), FALLBACK_USERNAME
+    return ("OPENAI_API_KEY" if api == "openai" else ENVIRONMENT_VARIABLE), KEYRING_USERNAME
+
+
+def read_api_key(
+    source: str, places: tuple[str, str] = (ENVIRONMENT_VARIABLE, KEYRING_USERNAME)
+) -> str | None:
     """The key, or None when the source is none."""
+    variable, username = places
     if source == "none":
         return None
     if source == "env":
-        variable = ENVIRONMENT_VARIABLES[api]
         value = os.environ.get(variable)
         if value is None:
             raise KeySourceError(f"{variable} is not set")
@@ -54,7 +70,7 @@ def read_api_key(source: str, api: str = "anthropic") -> str | None:
                 " (pip install 'checker[keyring]')"
             ) from exc
         try:
-            value = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+            value = keyring.get_password(KEYRING_SERVICE, username)
         except Exception as exc:  # noqa: BLE001 - backends raise their own kinds
             raise KeySourceError(
                 f"the keyring could not be read ({type(exc).__name__}: locked, or no backend?)"
@@ -62,8 +78,8 @@ def read_api_key(source: str, api: str = "anthropic") -> str | None:
         if value is None:
             raise KeySourceError(
                 f"no key in the keyring for service {KEYRING_SERVICE!r}, username"
-                f" {KEYRING_USERNAME!r} (store one with `keyring set {KEYRING_SERVICE}"
-                f" {KEYRING_USERNAME}`)"
+                f" {username!r} (store one with `keyring set {KEYRING_SERVICE}"
+                f" {username}`)"
             )
         return _usable(value, "the keyring")
     if source.startswith("command:"):

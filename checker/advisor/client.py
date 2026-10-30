@@ -40,9 +40,10 @@ from pydantic import ValidationError
 from checker.advisor.prices import tokens_in
 from checker.advisor.roles import ROLES, SYSTEM_PROMPT
 from checker.advisor.roles import question as role_question
-from checker.evidence import Advisor, FallbackModel
+from checker.evidence import Advisor, FallbackModel, is_local
 
 MAX_TOKENS = 16_000
+ANTHROPIC_API = "https://api.anthropic.com"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 # A local model on a laptop's processor reads a large case in minutes and
 # writes its answer more slowly still.
@@ -150,9 +151,12 @@ def fallback_request(payload: dict[str, Any], role: str, advisor: Advisor) -> Re
     fallback: FallbackModel = advisor.fallback_model
     if fallback.api == "openai":
         return _openai_request(payload, role, fallback.model, fallback.base_url)
+    # Anthropic's own API keeps the organization's inference geography;
+    # another server can't honour it.
     settings = advisor.model_copy(
-        update={"model": fallback.model, "base_url": fallback.base_url, "fallback": "off",
-                "inference_geo": None}
+        update={"api": "anthropic", "model": fallback.model, "base_url": fallback.base_url,
+                "fallback": "off",
+                "inference_geo": None if fallback.base_url else advisor.inference_geo}
     )  # fmt: skip
     return build_request(payload, role, settings)
 
@@ -190,6 +194,10 @@ def make_client(api_key: str | None, api: str = "anthropic", base_url: str | Non
         raise AdvisorError(
             "the advisor needs the Anthropic SDK: pip install 'checker[advisor]'"
         ) from exc
+    # A server on this machine is reached directly, never through a proxy
+    # from the environment (which would carry the case off the machine);
+    # redirects are never followed (they would resend the case elsewhere).
+    direct = {"trust_env": not is_local(base_url), "follow_redirects": False}
     if api == "openai":
         import httpx2  # the SDK's own HTTP client
 
@@ -198,13 +206,19 @@ def make_client(api_key: str | None, api: str = "anthropic", base_url: str | Non
             base_url=base_url,
             headers=headers,
             timeout=httpx2.Timeout(OPENAI_TIMEOUT, connect=10),
-            follow_redirects=False,
+            **direct,
         )
     # No automatic retries: a request that timed out may still be answered
     # and billed, and a retry would bill it again past the confirmed
-    # estimate. A rate-limited run is simply run again.
+    # estimate. A rate-limited run is simply run again. The key and the
+    # address are always given, so the SDK never takes either from the
+    # environment (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL):
+    # an empty key for a server that takes none.
     return anthropic.Anthropic(
-        api_key=api_key, max_retries=0, **({"base_url": base_url} if base_url else {})
+        api_key=api_key or "",
+        base_url=base_url or ANTHROPIC_API,
+        max_retries=0,
+        http_client=anthropic.DefaultHttpxClient(**direct),
     )
 
 
@@ -300,8 +314,10 @@ def _send_openai(client, request: Request, role: str) -> Outcome:
         raise AdvisorError(f"could not reach {where} (is the server running?)") from None
     except httpx2.TimeoutException:
         raise AdvisorError(f"{where} didn't answer within {OPENAI_TIMEOUT} s", sent=True) from None
-    except httpx2.HTTPError as exc:
-        raise AdvisorError(f"the request to {where} failed ({type(exc).__name__})", True) from None
+    except Exception as exc:  # noqa: BLE001 - any other failure may have been after sending
+        raise AdvisorError(
+            f"the request to {where} failed ({type(exc).__name__})", sent=True
+        ) from None
     request_id = response.headers.get("x-request-id")
     if response.status_code != 200:
         raise AdvisorError(_explain_status(response, where), True, request_id)
@@ -312,7 +328,7 @@ def _send_openai(client, request: Request, role: str) -> Outcome:
         usage = data.get("usage") or {}
         if not all(isinstance(part, dict) for part in (choice, message, usage)):
             raise TypeError
-    except (ValueError, AttributeError, TypeError, IndexError, KeyError):
+    except (ValueError, AttributeError, TypeError, IndexError, KeyError, RecursionError):
         raise AdvisorError(
             f"{where} answered with something that isn't a chat answer", True, request_id
         ) from None
@@ -338,14 +354,16 @@ def _send_openai(client, request: Request, role: str) -> Outcome:
         outcome.declined_by = [outcome.model_answered]
         outcome.model_answered = None
         return outcome
-    expected = tokens_in(json.dumps(request.body, ensure_ascii=False))
+    # The messages' text only: the schema and JSON's own quoting aren't
+    # counted as prompt by the server.
+    expected = tokens_in("".join(m["content"] for m in request.body["messages"]))
     read = outcome.usage.get("input_tokens")
     if read is not None and read < expected * READ_AT_LEAST:
         outcome.status = "cut off"
         outcome.note = (
             f"the server read only {read} tokens of a request of about {expected}: the"
             " model's context is too small for this case, and the server cut it short"
-            " (Ollama: give the model a larger num_ctx)"
+            " (with Ollama, give the model a larger num_ctx)"
         )
         return outcome
     if choice.get("finish_reason") == "length":
@@ -364,6 +382,8 @@ def _send_openai(client, request: Request, role: str) -> Outcome:
 
 def _explain_status(response, where: str) -> str:
     code = response.status_code
+    if 300 <= code < 400:
+        return f"{where} redirected the request ({code}), which isn't followed: check base_url"
     if code == 401:
         return f"{where} refused the API key (authentication failed)"
     if code == 403:
@@ -376,11 +396,16 @@ def _explain_status(response, where: str) -> str:
         try:
             error = response.json().get("error")
             said = error.get("message") if isinstance(error, dict) else error
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, RecursionError):
             said = None
-        detail = f": {str(said)[:300]}" if said else ""
-        return f"{where} refused the request ({code}){detail}"
+        said = _printable(said) if said else ""
+        return f"{where} refused the request ({code})" + (f": {said}" if said else "")
     return f"{where} answered with an error ({code}); try again later"
+
+
+def _printable(text) -> str:
+    """A server's own words, shown on a terminal: printable ASCII only."""
+    return "".join(c if " " <= c <= "~" else "?" for c in str(text)[:300])
 
 
 def _usage(usage) -> dict[str, Any]:
@@ -440,9 +465,9 @@ def _explain(exc: Exception) -> str:
     if isinstance(exc, anthropic.RateLimitError):
         return "rate limited by the provider; try again later"
     if isinstance(exc, anthropic.BadRequestError):
-        return f"the provider refused the request: {getattr(exc, 'message', exc)}"
+        return f"the provider refused the request: {_printable(getattr(exc, 'message', exc))}"
     if isinstance(exc, anthropic.APIStatusError):
         return f"the provider answered with an error ({exc.status_code}); try again later"
     if isinstance(exc, anthropic.APIConnectionError):
         return "could not reach the provider (network)"
-    return f"the request couldn't be made ({type(exc).__name__}: {str(exc)[:200]})"
+    return f"the request couldn't be made ({type(exc).__name__}: {_printable(exc)})"

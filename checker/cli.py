@@ -14,7 +14,12 @@ import pyrage
 from pydantic import ValidationError
 
 from checker import __version__
-from checker.advisor.keys import KeySourceError, looks_like_anthropic_key, read_api_key
+from checker.advisor.keys import (
+    KeySourceError,
+    key_places,
+    looks_like_anthropic_key,
+    read_api_key,
+)
 from checker.analysis import load_events, parse_bundle, store_parsed
 from checker.assess import analyze, prior_for
 from checker.baseline import accept, changes, usable_bundles
@@ -52,6 +57,7 @@ from checker.settings import (
     describe,
     key_source_words,
     recipient,
+    recipients,
     value_of,
 )
 from checker.settings import change as change_setting
@@ -249,7 +255,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     print(f"{args.key}: {json.dumps(old)} -> {json.dumps(new)} (recorded).")
     if args.key == "advisor.enabled" and new:
         advisor = config.advisor
-        print(advisor_question(advisor.redaction, recipient(advisor.api, advisor.base_url)))
+        print(advisor_question(advisor.redaction, recipients(advisor)))
     for line in describe(config):
         print(line)
     return 0
@@ -283,17 +289,20 @@ def cmd_config_check_key(args: argparse.Namespace) -> int:
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 2
-    sources = [("", advisor.api_key_source, advisor.api)]
+    sources = [("", advisor.api_key_source, advisor.api, key_places(advisor.api))]
     if advisor.fallback == "model":
         fallback = advisor.fallback_model
-        sources.append(("The fallback model's key: ", fallback.api_key_source, fallback.api))
-    for label, source, api in sources:
+        sources.append(
+            ("The fallback model's key: ", fallback.api_key_source, fallback.api,
+             key_places(fallback.api, fallback.base_url, fallback=True))
+        )  # fmt: skip
+    for label, source, api, places in sources:
         if source == "none":
             print(f"{label}No key is used (api_key_source none). Nothing was sent.")
             continue
-        print(f"{label}Reading the key from {key_source_words(source, api)}…")
+        print(f"{label}Reading the key from {key_source_words(source, places)}…")
         try:
-            key = read_api_key(source, api)
+            key = read_api_key(source, places)
         except KeySourceError as exc:
             print(f"checker: {exc}", file=sys.stderr)
             return 1

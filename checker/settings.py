@@ -16,6 +16,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from checker.advisor.keys import ENVIRONMENT_VARIABLE, KEYRING_USERNAME, key_places
 from checker.evidence import (
     Config,
     EvidenceError,
@@ -82,10 +83,23 @@ def recipient(api: str, base_url: str | None) -> str:
     if not base_url:
         return ANTHROPIC if api == "anthropic" else "to the OpenAI-compatible API"
     if is_local(base_url):
-        return f"to the model running on this machine, at {base_url}; nothing leaves it"
+        return f"to a server on this machine (loopback), at {base_url}"
     kind = "Anthropic-compatible" if api == "anthropic" else "OpenAI-compatible"
     plain = ", not encrypted on the way (http)" if base_url.startswith("http:") else ""
     return f"to the server at {base_url} ({kind} API{plain})"
+
+
+def recipients(advisor) -> str:
+    """Who receives the case: the model's server, and the fallback model's
+    when declined requests go to one."""
+    to = recipient(advisor.api, advisor.base_url)
+    if advisor.fallback == "model":
+        fallback = advisor.fallback_model
+        to += (
+            f", and, when a request is declined, {recipient(fallback.api, fallback.base_url)}"
+            f" ({fallback.model})"
+        )
+    return to
 
 
 def advisor_question(redaction: str, to: str = ANTHROPIC) -> str:
@@ -102,12 +116,14 @@ def advisor_question(redaction: str, to: str = ANTHROPIC) -> str:
     return textwrap.fill(text, 78)
 
 
-def key_source_words(source: str, api: str = "anthropic") -> str:
+def key_source_words(
+    source: str, places: tuple[str, str] = (ENVIRONMENT_VARIABLE, KEYRING_USERNAME)
+) -> str:
+    variable, username = places
     if source == "env":
-        variable = "OPENAI_API_KEY" if api == "openai" else "ANTHROPIC_API_KEY"
         return f"the {variable} environment variable"
     if source == "keyring":
-        return "the OS keyring (service compromise-checker, username advisor-api-key)"
+        return f"the OS keyring (service compromise-checker, username {username})"
     if source == "none":
         return "nowhere (the server takes no key)"
     return f"the output of `{source.removeprefix('command:')}`"
@@ -131,7 +147,8 @@ def describe(config: Config) -> list[str]:
     lines += [
         f"AI advisor: on, model {advisor.model}"
         + (f", effort {advisor.effort}" if advisor.api == "anthropic" else "")
-        + f", API key from {key_source_words(advisor.api_key_source, advisor.api)}.",
+        + ", API key from"
+        + f" {key_source_words(advisor.api_key_source, key_places(advisor.api))}.",
         f"  Sent only when you run `checker advise`: {SENT[advisor.redaction]},"
         + (" to Anthropic with your own account." if to == ANTHROPIC else f" {to}."),
         f"  Redaction: {advisor.redaction}: {REDACTION[advisor.redaction]}.",
@@ -153,10 +170,11 @@ def _on_decline(advisor) -> str:
         )
     if advisor.fallback == "model":
         fallback = advisor.fallback_model
+        places = key_places(fallback.api, fallback.base_url, fallback=True)
         return (
             f"the same request, with the same redaction, is re-run on {fallback.model},"
             f" sent {recipient(fallback.api, fallback.base_url)}, with its key from"
-            f" {key_source_words(fallback.api_key_source, fallback.api)}; the report names both."
+            f" {key_source_words(fallback.api_key_source, places)}; the report names both."
         )
     return "nothing more is sent; the report says it was declined."
 

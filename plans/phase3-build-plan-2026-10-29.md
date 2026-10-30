@@ -403,6 +403,26 @@ The advisor's answers can't be golden-tested, so they are measured.
   (the server that answered; empty: Anthropic's), the report names it and,
   for a local model, says to expect lower quality. `--show` and the stored
   request name the endpoint, and the fallback request when one was sent.
+- **After review (3.7, 2026-10-29; 6 high, 5 medium):** the SDK is always
+  given its key and address, so it never takes `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_BASE_URL` from the environment
+  (`none` sends an empty key); a server on this machine is reached without
+  the environment's proxy, and no redirect is followed; the fallback model's
+  key has its own places (`CHECKER_FALLBACK_API_KEY`, keyring username
+  `advisor-fallback-api-key`; Anthropic's own API may use
+  `ANTHROPIC_API_KEY`), so one vendor's key never goes to another; an
+  unknown fallback cost makes the run ask; a local model falling back to
+  Claude builds an Anthropic request, keeping the inference geography; the
+  cut-off check counts the messages' text only (the schema isn't prompt);
+  a fallback that failed after sending is recorded with its server, request
+  id and an unknown cost; plain http to another machine with a key is
+  refused; addresses with spaces, %-escapes or token-like parts refused;
+  `.localhost` names count as this machine only when they resolve to
+  loopback; server error text shown as printable ASCII. The wording says
+  "a server on this machine (loopback)", not "nothing leaves it", and the
+  question names the fallback's recipient too. Known gap, documented: a
+  server that cuts a request to nearly its whole context isn't caught;
+  give the model more context than the case needs.
 
 ### 3.8 — Policy, docs, README
 

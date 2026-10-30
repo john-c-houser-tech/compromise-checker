@@ -799,6 +799,30 @@ def test_advise_judges_the_case_as_sent_for_steering(sudo_host, monkeypatch):
     assert advice.file is None and not list((base / "proposals").glob("*.yaml"))
     reasons = [j["reason"] for j in advice.answer["judged"]]
     assert reasons and all("addresses an AI" in r for r in reasons)
+    assert advice.warning.startswith("text in the case (F-")
+
+
+def test_a_failing_steering_check_sets_proposals_aside_and_keeps_the_answer(sudo_host, monkeypatch):
+    import checker.advisor.proposals as proposals
+
+    def broken(payload):
+        raise ValueError("odd")
+
+    monkeypatch.setattr(proposals, "steering", broken)
+    advice = run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
+    assert advice.status == "answered" and advice.file is None
+    assert advice.warning.startswith("the case's text couldn't be checked")
+    reasons = [j["reason"] for j in advice.answer["judged"]]
+    assert reasons and all(r.startswith("the case's text couldn't be checked") for r in reasons)
+
+
+def test_a_rule_reason_is_not_put_down_to_an_intruder():
+    from checker.advisor.proposals import judge
+
+    finding = {"check": "net.listener", "band": "low", "summary": "s", "entities": []}
+    (result,) = judge([{"findings": ["F-1"], "id": "x"}], [finding], [], [], [], [], set(),
+                      band="Low", steered="whitelist rule r1")  # fmt: skip
+    assert result.reason.startswith("the reason or match of whitelist rule r1 reads like words")
 
 
 def test_a_request_that_came_to_nothing_shows_for_every_role(sudo_host):

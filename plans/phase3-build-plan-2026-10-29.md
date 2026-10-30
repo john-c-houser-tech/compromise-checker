@@ -629,6 +629,26 @@ The advisor's answers can't be golden-tested, so they are measured.
   not in the case). The eval still reports FAIL, as a small model's
   run is expected to: the set-aside answer, and canaries drawing rules on
   three cases, none offered.
+- **3.10 — A warning on steered advice (2026-10-30, John: "do the warning
+  next").** The note left open in 3.9: when `steering()` finds text in the
+  case addressing an AI, the answer of every role (explain, coverage,
+  remediation, and whitelist, whose proposals are already set aside) is
+  still shown, with a warning naming where the text was, restored to real
+  names. The warning is stored with the encrypted answer and printed in
+  the terminal and the report. If the check itself fails, the paid answer
+  is kept with a warning that it couldn't be checked.
+- **After review (3.10; 1 medium, 6 low):** a whitelist rule's reason
+  (usually the organization's own, e.g. "these alerts are expected during
+  patching") was put down to an intruder on every answer: such a rule now
+  reads "the reason or match of whitelist rule … reads like words to an
+  AI … check the rule", in the warning and the proposals' reasons alike.
+  Steering is checked once per answer and the result passed to the
+  whitelist judge, so a failing check sets the proposals aside instead of
+  failing the answer; the place's name is restored inside the guard.
+  Tests for the remediation and whitelist roles, a set-aside answer, and
+  a rule's reason. Not done: answers stored before 3.10 aren't checked
+  again (the docs say so); the eval doesn't show the warning for the
+  other roles.
 
 - Threat packs and pack drafting (Phase 4).
 - **Scheduled checks** of production servers, run from a permanent

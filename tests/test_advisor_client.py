@@ -623,3 +623,76 @@ def test_advisor_requests_are_never_retried_automatically():
     from checker.advisor.client import make_client
 
     assert make_client(KEY).max_retries == 0
+
+
+# --- Text in the case that addresses an AI ---------------------------------------------------
+
+
+def test_an_answer_to_a_case_whose_text_addresses_an_ai_carries_a_warning(
+    enabled, capsys, monkeypatch
+):
+    """The answer is still shown, in the terminal and the report, with a
+    warning naming where the text was; here the uid-0 finding's own words
+    are set as what counts as addressing an AI."""
+    import checker.advisor.proposals as proposals
+    from checker.report import write_report
+
+    base, store, identity, config = enabled
+    monkeypatch.setattr(proposals, "ADDRESSED", re.compile(r"root under another name"))
+    advice = run(enabled, Provider())
+    assert advice.status == "answered" and advice.answer["verdict"]
+    assert advice.warning.startswith("text in the case (F-") and "addresses an AI" in advice.warning
+    (row,) = store.advice("b1")
+    record = latest_advice(store, "web01", identity, "b1", row["assessed_at"])["explain"]
+    assert record["answered"]["warning"] == advice.warning
+    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    assert "<strong>Warning: text in the case (F-" in html
+    cli._print_advice(advice, "explain")
+    assert "Warning: text in the case (F-" in capsys.readouterr().out
+
+
+def test_an_ordinary_case_carries_no_warning(enabled, capsys):
+    base, store, identity, config = enabled
+    advice = run(enabled, Provider())
+    assert advice.warning == ""
+    cli._print_advice(advice, "explain")
+    assert "Warning" not in capsys.readouterr().out
+    from checker.report import write_report
+
+    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    assert "Warning:" not in html
+
+
+def test_a_steering_check_that_fails_keeps_the_answer_with_a_warning(enabled, monkeypatch):
+    import checker.advisor.proposals as proposals
+
+    def broken(payload):
+        raise ValueError("odd")
+
+    monkeypatch.setattr(proposals, "steering", broken)
+    advice = run(enabled, Provider())
+    assert advice.status == "answered" and advice.answer["verdict"]
+    assert advice.warning.startswith("the case's text couldn't be checked")
+
+
+def test_the_warning_names_the_place_with_its_real_name(monkeypatch):
+    import checker.advisor.proposals as proposals
+
+    class Names:
+        def restore(self, text):
+            return text.replace("HOST-1-7f3a", "web01")
+
+    monkeypatch.setattr(proposals, "steering", lambda payload: "whitelist rule HOST-1-7f3a-db")
+    where, warning = advise_module._steered({}, Names())
+    assert where == "whitelist rule web01-db"
+    # A rule's reason is usually the organization's own: not put down to an intruder.
+    assert warning.startswith("the reason or match of whitelist rule web01-db reads like words")
+    assert "intruder steering" not in warning
+
+
+def test_an_answer_set_aside_carries_no_warning(enabled, monkeypatch):
+    import checker.advisor.proposals as proposals
+
+    monkeypatch.setattr(proposals, "ADDRESSED", re.compile(r"root under another name"))
+    advice = run(enabled, Provider(lambda body: answer_message(body, finding="F-999")))
+    assert advice.status == "invalid" and advice.warning == ""

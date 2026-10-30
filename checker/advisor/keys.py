@@ -1,6 +1,7 @@
 """The advisor's API key, read from where the organization keeps it
 (decision 1, 2026-10-29): an environment variable, the OS keyring, or a
-command that prints it. The key is read only when a request is about to be
+command that prints it; or none, for a server that takes no key (a local
+model). The key is read only when a request is about to be
 sent, kept in memory for that run, and never written, logged or shown.
 """
 
@@ -13,6 +14,14 @@ from checker.evidence import looks_like_a_key
 
 ENVIRONMENT_VARIABLE = "ANTHROPIC_API_KEY"
 KEYRING_USERNAME = "advisor-api-key"
+# A vendor's own variable is read only for that vendor's own API; any
+# other server's key, and the fallback model's, have places of their own,
+# so one vendor's key is never sent to another.
+OPENAI_VARIABLE = "OPENAI_API_KEY"
+OPENAI_API = "https://api.openai.com"
+SERVER_VARIABLE = "CHECKER_ADVISOR_API_KEY"
+FALLBACK_VARIABLE = "CHECKER_FALLBACK_API_KEY"
+FALLBACK_USERNAME = "advisor-fallback-api-key"
 # Long enough to answer a password manager's prompt; a missed prompt then
 # fails with a message instead of waiting for ever.
 COMMAND_TIMEOUT = 120
@@ -32,12 +41,32 @@ def _usable(text: str, where: str) -> str:
     return key
 
 
-def read_api_key(source: str) -> str:
+def key_places(
+    api: str = "anthropic", base_url: str | None = None, fallback: bool = False
+) -> tuple[str, str]:
+    """Where `env` and `keyring` look: the environment variable and the
+    keyring username, for the main model or the fallback model."""
+    if api == "anthropic" and not base_url:
+        variable = ENVIRONMENT_VARIABLE
+    elif api == "openai" and (base_url or "").startswith(OPENAI_API + "/"):
+        variable = OPENAI_VARIABLE
+    else:
+        variable = FALLBACK_VARIABLE if fallback else SERVER_VARIABLE
+    return variable, (FALLBACK_USERNAME if fallback else KEYRING_USERNAME)
+
+
+def read_api_key(
+    source: str, places: tuple[str, str] = (ENVIRONMENT_VARIABLE, KEYRING_USERNAME)
+) -> str | None:
+    """The key, or None when the source is none."""
+    variable, username = places
+    if source == "none":
+        return None
     if source == "env":
-        value = os.environ.get(ENVIRONMENT_VARIABLE)
+        value = os.environ.get(variable)
         if value is None:
-            raise KeySourceError(f"{ENVIRONMENT_VARIABLE} is not set")
-        return _usable(value, ENVIRONMENT_VARIABLE)
+            raise KeySourceError(f"{variable} is not set")
+        return _usable(value, variable)
     if source == "keyring":
         try:
             import keyring
@@ -47,7 +76,7 @@ def read_api_key(source: str) -> str:
                 " (pip install 'checker[keyring]')"
             ) from exc
         try:
-            value = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+            value = keyring.get_password(KEYRING_SERVICE, username)
         except Exception as exc:  # noqa: BLE001 - backends raise their own kinds
             raise KeySourceError(
                 f"the keyring could not be read ({type(exc).__name__}: locked, or no backend?)"
@@ -55,8 +84,8 @@ def read_api_key(source: str) -> str:
         if value is None:
             raise KeySourceError(
                 f"no key in the keyring for service {KEYRING_SERVICE!r}, username"
-                f" {KEYRING_USERNAME!r} (store one with `keyring set {KEYRING_SERVICE}"
-                f" {KEYRING_USERNAME}`)"
+                f" {username!r} (store one with `keyring set {KEYRING_SERVICE}"
+                f" {username}`)"
             )
         return _usable(value, "the keyring")
     if source.startswith("command:"):

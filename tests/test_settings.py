@@ -90,7 +90,7 @@ def test_init_refuses_a_bad_key_source(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
     assert main(["init", "--advisor", "on", "--advisor-key-source", "the-key-itself"]) == 2
     assert capsys.readouterr().err == (
-        "checker: --advisor-key-source: must be env, keyring or command:<command>\n"
+        "checker: --advisor-key-source: must be env, keyring, none or command:<command>\n"
     )
     assert not config_file(tmp_path).exists()
 
@@ -185,6 +185,15 @@ def test_older_configuration_files_get_the_advisor_off(base):
         ("advisor.inference_geo", "us", "us"),
         ("advisor.max_cost_per_run", "2.5", 2.5),
         ("advisor.fallback", "off", "off"),
+        ("advisor.base_url", "http://localhost:11434/v1", "http://localhost:11434/v1"),
+        ("advisor.fallback_model.model", "qwen2.5:7b", "qwen2.5:7b"),
+        ("advisor.fallback_model.api", "openai", "openai"),
+        (
+            "advisor.fallback_model.base_url",
+            "https://models.example.org/v1/",
+            "https://models.example.org/v1",
+        ),
+        ("advisor.fallback_model.api_key_source", "keyring", "keyring"),
     ],
 )
 def test_every_setting_round_trips(base, key, text, value):
@@ -201,7 +210,8 @@ def test_every_setting_round_trips(base, key, text, value):
 
 
 def test_the_table_lists_every_setting_tested():
-    assert len(SETTABLE) == 13
+    # advisor.api is tested with base_url, which it needs (test_advisor_endpoints).
+    assert len(SETTABLE) == 19
 
 
 @pytest.mark.parametrize(
@@ -212,7 +222,7 @@ def test_the_table_lists_every_setting_tested():
         ("retention_days", "0", "greater than or equal to 1"),
         ("prior", "1.5", "less than 1"),
         ("advisor.effort", "extreme", "'low', 'medium', 'high', 'xhigh' or 'max'"),
-        ("advisor.api_key_source", "sk-ant-abc", "must be env, keyring or command:<command>"),
+        ("advisor.api_key_source", "sk-ant-abc", "must be env, keyring, none or command:<command>"),
         ("advisor.api_key_source", "command:", "needs a command after it"),
         ("advisor.api_key_source", "command:op read 'unclosed", "doesn't parse"),
         ("advisor.model", "bad model; rm", "should match pattern"),

@@ -15,6 +15,22 @@ import pytest
 PASSWORD = "correct horse"
 
 
+@pytest.fixture(autouse=True)
+def _no_real_http(monkeypatch):
+    """No test reaches a real server over HTTP (the advisor's tests use mock
+    transports): a request that would is an error, at once, instead of a
+    call to a model server that may be running on this machine."""
+    try:
+        import httpx2
+    except ImportError:
+        return
+
+    def refuse(self, request):
+        raise RuntimeError(f"a test tried to reach {request.url.host}: use a mock transport")
+
+    monkeypatch.setattr(httpx2.HTTPTransport, "handle_request", refuse)
+
+
 @dataclass
 class Target:
     """What the fake target does, and what it saw."""

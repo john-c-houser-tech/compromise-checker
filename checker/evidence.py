@@ -8,9 +8,11 @@ an append-only chain of custody. Bundles are never modified once written.
 """
 
 import asyncio
+import functools
 import getpass
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -23,10 +25,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 import pyrage
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pyrage import x25519
 
 from checker.files import atomic_write, locked
@@ -57,6 +60,100 @@ class EvidenceError(Exception):
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 Redaction = Literal["pseudonymize", "strict", "none"]
 MODEL_NAME = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$"
+Api = Literal["anthropic", "openai"]
+
+
+def _key_source(value: str) -> str:
+    if value in ("env", "keyring", "none"):
+        return value
+    if value.startswith("command:"):
+        try:
+            words = shlex.split(value.removeprefix("command:"))
+        except ValueError as exc:
+            raise ValueError(f"the key command doesn't parse: {exc}") from None
+        if not words:
+            raise ValueError("command: needs a command after it")
+        # The setting is stored, shown and recorded for good (config
+        # changes can't be deleted), so a key pasted into the command
+        # itself must never get in.
+        if any(looks_like_a_key(word) for word in words):
+            raise ValueError(
+                "that looks like a key itself: give a command that prints the key"
+                " (for example op read 'op://…'), never the key"
+            )
+        return value
+    raise ValueError("must be env, keyring, none or command:<command>")
+
+
+# A path part starting like an API key ("sk-ant-…", "sk-proj-…").
+_KEY_PART = re.compile(r"(?:^|[/._-])sk-", re.IGNORECASE)
+
+
+def _base_url(value: str | None) -> str | None:
+    """A server's address: http or https, a host, nothing secret in it.
+    Settings are recorded for good (config_changes), so anything that may
+    be a credential is refused rather than kept."""
+    if value is None:
+        return None
+    if any(c.isspace() or not c.isprintable() for c in value) or "%" in value:
+        raise ValueError("must hold no spaces, control characters or %-escapes")
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        raise ValueError("must be an http or https address, e.g. http://localhost:11434/v1")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("must hold no user name, password, query or fragment")
+    if looks_like_a_key(value) or _KEY_PART.search(parsed.path):
+        raise ValueError("that looks like it holds a key: give the server's address only")
+    scheme, rest = value.split(":", 1)
+    return f"{scheme.lower()}:{rest}".rstrip("/")
+
+
+def is_local(base_url: str | None) -> bool:
+    """Whether a server address is this machine: a loopback address,
+    localhost, or a .localhost name every address of which is loopback
+    (resolved here: where such names aren't handled locally, a search
+    domain could make one remote)."""
+    if not base_url:
+        return False
+    return _loopback((urlsplit(base_url).hostname or "").lower())
+
+
+@functools.lru_cache(maxsize=32)
+def _loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        pass
+    if not host.endswith(".localhost"):
+        return False
+    try:
+        found = {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except (OSError, UnicodeError):
+        return False
+    try:
+        return bool(found) and all(
+            ipaddress.ip_address(address.split("%")[0]).is_loopback for address in found
+        )
+    except ValueError:
+        return False
+
+
+class FallbackModel(BaseModel):
+    """The model a declined request is re-run on when `advisor.fallback`
+    is `model` (decision 3): another vendor, an open-weight service or a
+    local model, with its own address and key."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    api: Api = "anthropic"
+    base_url: str | None = None
+    model: str | None = Field(default=None, pattern=MODEL_NAME)
+    api_key_source: str = "env"
+
+    _key_source = field_validator("api_key_source")(_key_source)
+    _base_url = field_validator("base_url")(_base_url)
 
 
 class Advisor(BaseModel):
@@ -69,9 +166,16 @@ class Advisor(BaseModel):
     model: str = Field(default="claude-opus-5-5", pattern=MODEL_NAME)
     effort: Effort = "high"
     redaction: Redaction = "pseudonymize"
+    # Which API the model is asked through: Anthropic's (the default), or
+    # the OpenAI-compatible one that local servers (Ollama, llama.cpp,
+    # vLLM) and other vendors offer, at base_url.
+    api: Api = "anthropic"
+    # The server's address; empty: Anthropic's own.
+    base_url: str | None = None
     # Where the API key comes from, never the key itself: "env"
-    # (ANTHROPIC_API_KEY), "keyring", or "command:<command>" whose output
-    # is the key (for example `op read 'op://…'`).
+    # (ANTHROPIC_API_KEY, or OPENAI_API_KEY for the OpenAI-compatible API),
+    # "keyring", "command:<command>" whose output is the key (for example
+    # `op read 'op://…'`), or "none" for a server that takes no key.
     api_key_source: str = "env"
     # Where the provider runs the model, for organizations that must keep
     # inference in one geography (e.g. "us"); empty: the provider's default.
@@ -81,31 +185,50 @@ class Advisor(BaseModel):
     max_cost_per_run: float = Field(default=1.0, gt=0, le=1000)
     # When the model's safety checks decline a request (decision 3): off,
     # nothing more; anthropic, re-run on Anthropic's recommended model for
-    # that kind of decline (same provider and account).
-    fallback: Literal["off", "anthropic"] = "anthropic"
+    # that kind of decline (same provider and account); model, re-run on
+    # fallback_model.
+    fallback: Literal["off", "anthropic", "model"] = "anthropic"
+    fallback_model: FallbackModel = Field(default_factory=FallbackModel)
 
-    @field_validator("api_key_source")
-    @classmethod
-    def _key_source(cls, value: str) -> str:
-        if value in ("env", "keyring"):
-            return value
-        if value.startswith("command:"):
-            try:
-                words = shlex.split(value.removeprefix("command:"))
-            except ValueError as exc:
-                raise ValueError(f"the key command doesn't parse: {exc}") from None
-            if not words:
-                raise ValueError("command: needs a command after it")
-            # The setting is stored, shown and recorded for good (config
-            # changes can't be deleted), so a key pasted into the command
-            # itself must never get in.
-            if any(looks_like_a_key(word) for word in words):
+    _key_source = field_validator("api_key_source")(_key_source)
+    _base_url = field_validator("base_url")(_base_url)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "Advisor":
+        if self.api == "openai" and not self.base_url:
+            raise ValueError(
+                "the OpenAI-compatible API needs advisor.base_url, the server's address"
+                " (e.g. http://localhost:11434/v1 for Ollama)"
+            )
+        if self.api_key_source == "none" and not self.base_url:
+            raise ValueError("no key (none) is only for a server at advisor.base_url")
+        if self.inference_geo and self.api != "anthropic":
+            raise ValueError("inference_geo is Anthropic's: set it to none for this API")
+        if self.fallback == "anthropic" and self.api != "anthropic":
+            raise ValueError(
+                "the anthropic fallback is Anthropic's own: set advisor.fallback to off or model"
+            )
+        for where, url, source in (
+            ("advisor.base_url", self.base_url, self.api_key_source),
+            ("the fallback model's base_url", self.fallback_model.base_url,
+             self.fallback_model.api_key_source),
+        ):  # fmt: skip
+            if url and url.startswith("http:") and source != "none" and not is_local(url):
                 raise ValueError(
-                    "that looks like a key itself: give a command that prints the key"
-                    " (for example op read 'op://…'), never the key"
+                    f"{where} is plain http to another machine: the key would cross the"
+                    " network unencrypted (use https, or a server on this machine)"
                 )
-            return value
-        raise ValueError("must be env, keyring or command:<command>")
+        fallback = self.fallback_model
+        if fallback.api == "openai" and fallback.model and not fallback.base_url:
+            raise ValueError("the fallback model's OpenAI-compatible API needs its base_url")
+        if fallback.api_key_source == "none" and fallback.model and not fallback.base_url:
+            raise ValueError("the fallback model's key can be none only with its base_url")
+        if self.fallback == "model" and not fallback.model:
+            raise ValueError(
+                "fallback model needs advisor.fallback_model.model (and its api, base_url"
+                " and api_key_source)"
+            )
+        return self
 
 
 def looks_like_a_key(text: str) -> bool:
@@ -688,7 +811,8 @@ CREATE TRIGGER IF NOT EXISTS purges_no_delete BEFORE DELETE ON purges
     BEGIN SELECT RAISE(ABORT, 'purges are append-only'); END;
 -- Each request to the AI advisor (policy §9) and what came of it: which
 -- assessment it read, the model asked and the model that answered, the
--- redaction, tokens and cost; the request as sent and the answer (with its
+-- redaction, tokens and cost, the server that answered (endpoint; empty:
+-- Anthropic's own); the request as sent and the answer (with its
 -- placeholders restored) encrypted to the evidence key, so an organization
 -- can show afterwards exactly what left. Purged with its bundle.
 CREATE TABLE IF NOT EXISTS advice (
@@ -711,7 +835,8 @@ CREATE TABLE IF NOT EXISTS advice (
     usage TEXT,
     estimated_cost REAL,
     request BLOB NOT NULL,
-    answer BLOB
+    answer BLOB,
+    endpoint TEXT
 );
 -- Each change to a setting after `checker init` (`checker config set`):
 -- who, when, from where, and the old and new values (JSON). Settings hold
@@ -795,6 +920,16 @@ class Store:
         # So INSERT OR REPLACE's implicit delete fires the append-only triggers.
         self._db.execute("PRAGMA recursive_triggers = ON")
         self._db.executescript(_SCHEMA + "".join(f"{sql};\n" for sql in _append_only_triggers()))
+        # Added in Phase 3 (PR 3.7), after the table was first made.
+        columns = {row["name"] for row in self._db.execute("PRAGMA table_info(advice)")}
+        if "endpoint" not in columns:
+            try:
+                with self._db:
+                    self._db.execute("ALTER TABLE advice ADD COLUMN endpoint TEXT")
+            except sqlite3.OperationalError:  # another process added it first
+                columns = {row["name"] for row in self._db.execute("PRAGMA table_info(advice)")}
+                if "endpoint" not in columns:
+                    raise
 
     def close(self) -> None:
         self._db.close()

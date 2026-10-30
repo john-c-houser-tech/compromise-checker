@@ -129,7 +129,7 @@ def band_of(enabled):
 def test_the_plan_is_checked_marked_and_shown(enabled, capsys, monkeypatch):
     band = band_of(enabled)
     provider = Provider(remediation_reply(plan(band)))
-    monkeypatch.setattr(advise_module, "make_client", lambda key: provider.client())
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x" + "y" * 30)
     assert cli.main(["advise", "web01", "--role", "remediation", "--yes"]) == 0
     out = capsys.readouterr().out

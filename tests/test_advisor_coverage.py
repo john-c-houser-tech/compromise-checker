@@ -113,7 +113,7 @@ def test_suggestions_are_judged_and_nothing_changes(enabled):
 
 def test_checker_advise_role_coverage(enabled, capsys, monkeypatch):
     provider = Provider(coverage_reply(SUGGESTIONS))
-    monkeypatch.setattr(advise_module, "make_client", lambda key: provider.client())
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x" + "y" * 30)
     assert cli.main(["advise", "web01", "--role", "coverage", "--yes"]) == 0
     out = capsys.readouterr().out

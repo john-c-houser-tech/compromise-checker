@@ -17,7 +17,7 @@ from pyrage import x25519
 
 from checker.analysis import load_events, parse_bundle, snapshot_of, store_parsed
 from checker.baseline import changes, usable_bundles
-from checker.checks import CHECKS_VERSION, Context, run_checks
+from checker.checks import CHECKS_VERSION, Context, parse_time, run_checks
 from checker.checks.containers import uninventoried
 from checker.correlate import find_chains
 from checker.events import PARSER_VERSION, Event
@@ -177,12 +177,40 @@ def evaluate(
     score: the findings (as stored, suppressed ones marked), which checks
     ran, the score, and what the whitelist did. What `analyze` stores, and
     what the golden reports pin (tests/golden)."""
+    raised, raised_by = _exposures(context)
     findings, ran = run_checks(context)
     found = [f.as_dict() for f in findings]
     applied = whitelist.apply(found, today, context.events) if whitelist is not None else None
     chains = find_chains(found, context.events, context.previous_time)
-    scored = score(found, prior[0], chains) | {"prior_source": prior[1], "chains": chains}
+    scored = score(found, prior[0], chains, raised, raised_by) | {
+        "prior_source": prior[1],
+        "chains": chains,
+    }
     return found, ran, scored, applied
+
+
+def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
+    """Each pack's exposure, judged once (for the pack check, on the
+    context) and what together they add to the prior (DESIGN.md §11.2)."""
+    from checker.packs.exposure import judge, prior_raise
+    from checker.packs.format import MAX_LR
+
+    if not context.packs:
+        return 0.0, []
+    collected = parse_time(context.collected_at) if context.collected_at else None
+    now = collected or datetime.now(UTC)
+    processes = context.snapshot.live.get("processes", [])
+    context.exposures = [
+        judge(pack, context.items("host"), context.items("packages"), processes, now)
+        for pack in context.packs
+    ]
+    raised_by = [
+        {"pack": e.pack_id, "version": e.pack_version, "status": e.status,
+         "share": round(e.share, 4), "ratio": e.likelihood_ratio}
+        for e in context.exposures
+        if e.share > 0
+    ]  # fmt: skip
+    return prior_raise(context.exposures, MAX_LR), raised_by
 
 
 def analyze(
@@ -193,6 +221,7 @@ def analyze(
     bundle_id: str | None = None,
     prior: tuple[float, str] = (DEFAULT_PRIOR, "default"),
     whitelist: Whitelist | None = None,
+    packs: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Run every check on a host's bundle (by default its latest), score
     the findings from `prior` (value, source) and store the assessment;
@@ -269,6 +298,8 @@ def analyze(
         previous_snapshot=previous_snapshot,
         baseline_time=baseline_time,
         baseline_snapshot=baseline_snapshot,
+        packs=list(packs or []),
+        collected_at=row["started_at"],
     )
     found_dicts, ran, scored, applied = evaluate(context, prior, whitelist)
     counts = count(found_dicts)
@@ -291,6 +322,8 @@ def analyze(
         "counts": counts,
         "score": scored,
         "whitelist": applied,
+        # The threat packs applied, so the analysis can be reproduced.
+        "packs": [{"id": p.id, "version": p.version} for p in packs or []],
         "findings": found_dicts,
         "checks": ran,
         "coverage": coverage(row, identity, parsed.events, parsed.summary, snapshot),

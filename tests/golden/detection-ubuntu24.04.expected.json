@@ -201,6 +201,11 @@
    "status": "ran"
   },
   {
+   "check": "pack.exposure",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "package.changed",
    "findings": 7,
    "status": "ran"

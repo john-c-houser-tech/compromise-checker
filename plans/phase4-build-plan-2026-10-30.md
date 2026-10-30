@@ -179,6 +179,19 @@ is John's to approve before it is committed. Also:
   his machine, and the first key list signed with the root key (I'll give
   the exact commands).
 
+- *As built (4.2, #80):* `checker/packs/signing.py` (minisign, prehashed
+  only, trusted comment under its global signature, UTF-8 comments),
+  `trust.py` (root key, key list kept whole per serial in
+  `packs/keylists/<serial>/`, highest serial recorded; a damaged or
+  missing kept list trusts no NouriLoop key), `state.py`
+  (`packs/state.json`: per pack id its signing domain, highest version
+  and every version's hash, so no rollback, changed content or takeover
+  even after a retire), `store.py` (active and retired packs, retired
+  files named by content hash). Organization keys can't be revoked or
+  root keys; two trusted keys sharing an id are both refused.
+  `ROOT_KEYS` is empty until 4.8. Not yet: interoperability with the real
+  minisign (at 4.8, with John's).
+
 ### 4.3 — Exposure
 
 - An installed package that matches several entries (one with no
@@ -201,6 +214,24 @@ is John's to approve before it is committed. Also:
 - The prior raised for a host exposed during the window (D3), shown in the
   report with the pack, the exposure and the formula's result.
 - The report's timeline marks the window.
+- *As built (4.3):* `checker/packs/exposure.py` judges each pack once per
+  analysis (host release from os-release: Ubuntu by version, RHEL,
+  Rocky and AlmaLinux by major version; packages by manager, binary name
+  and `versions` pattern; vulnerable if any matching entry says so; an
+  unreadable version is "can't judge", counted as exposed). The check
+  `pack.exposure` (variants vulnerable, cant_judge, was_exposed,
+  stale_code) reports in the exposure category; a release a pack doesn't
+  cover is a coverage gap. The prior's log-odds rise by each exposure's
+  share of log(ratio), all of them together at most log(10); the score
+  keeps `raised_prior` and `raised_by`, a re-score keeps the raise, and
+  the report says "raised to … by exposure to …". The analysis records
+  the packs applied. **The fix time is an upper limit** (a side note John
+  relayed, 2026-10-30): the collector has no package history (apt's,
+  dpkg's, dnf's logs), only each package's last install time, so a
+  routine update after the fix stretches the exposure; findings and the
+  report say "at the latest", and stale code is "may still run" (medium).
+  Not done: the timeline marking the window (with 4.6's report changes);
+  package history (a collection change, John's to decide).
 
 ### 4.4 — Mitigations
 

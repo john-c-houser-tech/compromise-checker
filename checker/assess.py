@@ -221,13 +221,15 @@ def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
         collected = parse_time(when) if when else None
         if collected is not None and snap is not None and "packages" in snap.sections:
             earlier.append((collected, snap.sections["packages"].items))
+    whole = context.snapshot.sections.get("package_history")
+    history_complete = whole is not None and whole.complete
     php = context.snapshot.sections.get("php_settings")
     php_complete = php is not None and php.complete
     context.exposures = []
     for pack in context.packs:
         found = judge(
             pack, context.items("host"), context.items("packages"), processes, now, complete,
-            history, earlier,
+            history, earlier, history_complete,
         )  # fmt: skip
         if found.status not in (NOT_AFFECTED, NOT_COVERED, UNKNOWN_RELEASE):
             found.mitigations = judge_mitigations(

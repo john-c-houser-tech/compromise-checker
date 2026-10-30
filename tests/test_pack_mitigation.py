@@ -21,7 +21,7 @@ def setting_items(files):
     """{path: [lines]} -> (php_settings items, web_config items)."""
     items, read = {}, {}
     for path, lines in files.items():
-        read[path] = {}
+        read[path] = {"content_sha256": "read"}
         items.update(dict(php_settings(path, lines)))
     return items, read
 
@@ -72,7 +72,7 @@ def test_each_fpm_pool_can_turn_it_back_on():
     result = judged(files)
     assert result.status == MISSING
     assert [p.where for p in result.places if p.value == "On"] == [
-        "/etc/php/8.3/fpm/pool.d/www.conf pool www"
+        "/etc/php/8.3/fpm/php.ini pool www"
     ]
 
 
@@ -137,8 +137,11 @@ def test_the_history_dates_the_fix_not_the_last_update():
 
 def test_a_first_install_already_fixed_exposed_nothing():
     history = [event("install", "8.3.6-0ubuntu0.24.04.6", "2026-10-25T00:00:00+00:00")]
-    found = judge(PACK, UBUNTU, dpkg("8.3.6-0ubuntu0.24.04.6"), [], NOW, True, history)
+    found = judge(PACK, UBUNTU, dpkg("8.3.6-0ubuntu0.24.04.6"), [], NOW, True, history, [], True)
     assert found.status == FIXED and found.share == 0.0 and found.exposed_from is None
+    # With part of the history missing, it may have replaced a vulnerable one.
+    partial = judge(PACK, UBUNTU, dpkg("8.3.6-0ubuntu0.24.04.6"), [], NOW, True, history)
+    assert partial.share == pytest.approx(0.5)
 
 
 def test_a_downgrade_back_restarts_the_clock():
@@ -167,9 +170,13 @@ def test_a_downgrade_back_restarts_the_clock():
 
 
 def test_an_earlier_collection_that_had_the_fix_bounds_it():
-    earlier = [(datetime(2026, 10, 22, tzinfo=UTC), dpkg("8.3.6-0ubuntu0.24.04.6"))]
+    earlier = [(datetime(2026, 10, 22, tzinfo=UTC), dpkg("8.3.6-0ubuntu0.24.04.7"))]
     found = judge(PACK, UBUNTU, dpkg("8.3.6-0ubuntu0.24.04.7", LATER), [], NOW, True, [], earlier)
     assert found.exposed_until.startswith("2026-10-22") and not found.fix_time_exact
+    # A different version then: it may have changed in between, so no bound.
+    changed = [(datetime(2026, 10, 22, tzinfo=UTC), dpkg("8.3.6-0ubuntu0.24.04.6"))]
+    later = judge(PACK, UBUNTU, dpkg("8.3.6-0ubuntu0.24.04.7", LATER), [], NOW, True, [], changed)
+    assert later.exposed_until.startswith("2026-10-28")
 
 
 def test_a_vulnerable_package_removed_in_the_window_was_exposed_until_then():
@@ -196,6 +203,7 @@ def test_an_analysis_reports_the_missing_mitigation_and_the_dated_fix(home):
 
     base, store, identity, config = home
     extra = (
+        rec("host_facts", "clock", localtime_link="/usr/share/zoneinfo/Etc/UTC"),
         rec(
             "software",
             "package_change",
@@ -245,3 +253,181 @@ def test_a_missing_mitigation_on_a_vulnerable_host_is_high(home):
     assessment = analyze(store, "web01", identity, config.recipients, packs=[PACK])
     (missing,) = [f for f in assessment["findings"] if f.get("variant") == "mitigation_missing"]
     assert missing["band"] == "high"
+
+
+# --- After review -------------------------------------------------------------------------------
+
+
+def judged_with(files, links=None, default="on", complete=True):
+    return judged(files, links, complete, default)
+
+
+def test_a_pools_admin_setting_isnt_overwritten_by_a_later_ordinary_one():
+    files = {
+        FPM: [f"{NAME} = Off"],
+        "/etc/php/8.3/fpm/pool.d/www.conf": [
+            "[www]", f"php_admin_flag[{NAME}] = on", f"php_flag[{NAME}] = off"
+        ],
+    }  # fmt: skip
+    assert judged(files).status == MISSING
+
+
+def test_a_path_section_turning_it_on_is_a_place_of_its_own():
+    result = judged({FPM: [f"{NAME} = Off", "[PATH=/var/www/a]", f"{NAME} = On"]})
+    assert result.status == MISSING
+    assert any(p.where.endswith("[PATH=/var/www/a]") for p in result.places)
+
+
+def test_a_setup_without_its_php_ini_runs_on_defaults():
+    files = {FPM: [f"{NAME} = Off"], "/etc/php/8.3/apache2/conf.d/10-opcache.ini": ["x = 1"]}
+    result = judged(files)
+    assert result.status == MISSING
+    assert any(p.where == "/etc/php/8.3/apache2/php.ini" and p.source == "PHP's default"
+               for p in result.places)  # fmt: skip
+
+
+def test_a_conf_d_link_to_a_file_not_read_isnt_seen():
+    items, read = setting_items({FPM: [f"{NAME} = Off"]})
+    read["/etc/php/8.3/fpm/conf.d/99-x.ini"] = {"resolved": "/opt/vendor/x.ini"}
+    (result,) = mitigations([PACK.mitigations[0]], items, read, True)
+    assert result.status == NOT_SEEN and "/opt/vendor/x.ini" in result.why
+
+
+@pytest.mark.parametrize(
+    "pools",
+    [
+        {"/etc/php/8.3/fpm/php-fpm.conf": ["[global]", "[www]", f"php_admin_value[{NAME}] = 1"]},
+        {"/etc/php/8.3/fpm/pool.d/sites/a.conf": ["[a]", f"php_value[{NAME}] = 1"]},
+    ],
+)
+def test_pools_in_php_fpm_conf_and_subfolders(pools):
+    assert judged({FPM: [f"{NAME} = Off"], **pools}).status == MISSING
+
+
+def test_a_pool_file_included_from_elsewhere_isnt_seen():
+    files = {
+        FPM: [f"{NAME} = Off"],
+        "/etc/php/8.3/fpm/php-fpm.conf": ["[global]", "include=/srv/pools/*.conf"],
+    }
+    result = judged(files)
+    assert result.status == NOT_SEEN and "/srv/pools/*.conf" in result.why
+
+
+def test_every_pool_overriding_it_makes_php_ini_moot():
+    files = {
+        FPM: [f"{NAME} = On"],
+        "/etc/php/8.3/fpm/pool.d/www.conf": ["[www]", f"php_admin_flag[{NAME}] = off"],
+    }
+    assert judged(files).status == IN_PLACE
+
+
+@pytest.mark.parametrize(
+    ("path", "line"),
+    [
+        ("/etc/apache2/sites-enabled/a.conf", f"php_admin_flag {NAME} on"),
+        ("/etc/nginx/sites-enabled/b", f'fastcgi_param PHP_VALUE "{NAME}=1";'),
+    ],
+)
+def test_a_web_servers_own_setting_counts(path, line):
+    assert judged({FPM: [f"{NAME} = Off"], path: [line]}).status == MISSING
+
+
+def test_php_ini_scan_dir_adds_what_wasnt_read():
+    files = {FPM: [f"{NAME} = Off"], "/etc/apache2/envvars": ["export PHP_INI_SCAN_DIR=/srv/ini"]}
+    result = judged(files)
+    assert result.status == NOT_SEEN and "PHP_INI_SCAN_DIR" in result.why
+
+
+def test_wrong_somewhere_is_missing_even_without_a_default():
+    files = {FPM: [f"{NAME} = On"], "/etc/php/8.3/apache2/php.ini": ["engine = On"]}
+    assert judged_with(files, default=None).status == MISSING
+
+
+def test_any_non_zero_integer_is_on():
+    assert judged({FPM: [f"{NAME} = 2"]}).status == MISSING
+    assert judged({FPM: [f"{NAME} = -1"]}).status == MISSING
+
+
+def test_the_pack_must_say_the_default():
+    from test_pack_format import GOOD, changed
+
+    from checker.packs.format import PackError, read
+
+    with pytest.raises(PackError, match="says the setting's default"):
+        read(changed('    default: "on"\n', ""))
+    assert GOOD
+
+
+V5, V6, V7 = "8.3.6-0ubuntu0.24.04.5", "8.3.6-0ubuntu0.24.04.6", "8.3.6-0ubuntu0.24.04.7"
+
+
+def test_a_purge_then_a_fresh_install_still_exposed_until_the_purge():
+    history = [
+        event("install", V5, "2026-09-01T00:00:00+00:00"),
+        event("purge", None, "2026-10-24T00:00:00+00:00", V5),
+        event("install", V6, "2026-10-25T00:00:00+00:00"),
+    ]
+    found = judge(PACK, UBUNTU, dpkg(V6), [], NOW, True, history, [], True)
+    assert found.share == pytest.approx(0.4) and found.removed_at.startswith("2026-10-24")
+
+
+def test_a_removal_counts_while_another_affected_package_stays():
+    history = [
+        event("install", V6, "2026-10-21T00:00:00+00:00", name="libapache2-mod-php8.3"),
+        event("remove", None, "2026-10-26T00:00:00+00:00", V5),
+    ]
+    installed = dpkg(V6, name="libapache2-mod-php8.3 amd64")
+    found = judge(PACK, UBUNTU, installed, [], NOW, True, history, [], True)
+    assert found.share == pytest.approx(0.6)
+
+
+def test_a_retried_upgrade_dates_from_the_retry():
+    history = [
+        event("upgrade", V6, "2026-10-21T00:00:00+00:00", V5),  # failed, rolled back
+        event("upgrade", V6, "2026-10-25T00:00:00+00:00", V5),
+    ]
+    found = judge(PACK, UBUNTU, dpkg(V6), [], NOW, True, history, [], True)
+    assert found.exposed_until.startswith("2026-10-25")
+
+
+def test_history_that_doesnt_reach_the_installed_version_isnt_exact():
+    history = [event("upgrade", V6, "2026-10-21T00:00:00+00:00", V5)]
+    found = judge(PACK, UBUNTU, dpkg(V7, LATER), [], NOW, True, history, [], True)
+    assert not found.fix_time_exact and found.exposed_until.startswith("2026-10-28")
+
+
+def test_an_uncertain_history_time_isnt_exact():
+    uncertain = event("upgrade", V6, "2026-10-21T00:00:00+00:00", V5)
+    uncertain["fields"]["zone_assumed"] = True
+    found = judge(PACK, UBUNTU, dpkg(V6), [], NOW, True, [uncertain], [], True)
+    assert not found.fix_time_exact
+
+
+def test_an_earlier_vulnerable_listing_means_a_later_install_isnt_fresh():
+    earlier = [(datetime(2026, 10, 21, tzinfo=UTC), dpkg(V5))]
+    history = [event("install", V6, "2026-10-25T00:00:00+00:00")]
+    found = judge(PACK, UBUNTU, dpkg(V6), [], NOW, True, history, earlier, True)
+    assert found.share == pytest.approx(0.5)
+
+
+def test_pending_history_leaves_it_incomplete(tmp_path):
+    from test_snapshot import host_records, snapshot_of_records
+
+    pending = rec("software", "package_history_pending", path="/var/lib/dnf/history.sqlite-wal")
+    records = host_records(planned=["host_facts", "software"], extra=[pending])
+    assert not snapshot_of_records(records, tmp_path).sections["package_history"].complete
+
+
+def test_wrong_somewhere_is_missing_even_when_something_else_isnt_seen():
+    files = {FPM: [f"{NAME} = On"], "/etc/apache2/envvars": ["export PHP_INI_SCAN_DIR=/srv/ini"]}
+    assert judged(files).status == MISSING
+
+
+def test_a_pool_given_it_twice_counts_the_wrong_one():
+    files = {
+        FPM: [f"{NAME} = Off"],
+        "/etc/php/8.3/fpm/pool.d/www.conf": [
+            "[www]", f"php_admin_flag[{NAME}] = on", f"php_admin_flag[{NAME}] = off"
+        ],
+    }  # fmt: skip
+    assert judged(files).status == MISSING

@@ -27,16 +27,40 @@ def test_ini_directives_with_their_sections():
 
 
 def test_pool_settings_per_pool():
-    lines = ["[www]", "user = www-data", "php_admin_flag[session.upload_progress.enabled] = off",
-             "[api]", "php_value[memory_limit] = 256M"]  # fmt: skip
-    found = dict(php_settings("/etc/php/8.3/fpm/pool.d/www.conf", lines))
-    assert found["/etc/php/8.3/fpm/pool.d/www.conf [www]: session.upload_progress.enabled"] == {
-        "path": "/etc/php/8.3/fpm/pool.d/www.conf", "kind": "pool",
-        "name": "session.upload_progress.enabled", "value": "off", "section": "www",
-        "admin": True,
-    }  # fmt: skip
-    assert found["/etc/php/8.3/fpm/pool.d/www.conf [api]: memory_limit"]["admin"] is False
-    assert php_settings("/etc/nginx/nginx.conf", ["user = x"]) == []
+    lines = ["[www]", "user = www-data", "php_admin_flag[session.upload_progress.enabled] = on",
+             "php_flag[session.upload_progress.enabled] = off", "[api]",
+             "php_value[memory_limit] = 256M", "include=/etc/php/8.3/fpm/extra/*.conf"]  # fmt: skip
+    found = php_settings("/etc/php/8.3/fpm/pool.d/www.conf", lines)
+    kinds = [(item["kind"], item.get("section"), item.get("how")) for _, item in found]
+    assert kinds == [
+        ("pool_header", "www", None),
+        ("pool", "www", "php_admin_flag"),
+        ("pool", "www", "php_flag"),  # both kept: the admin one isn't overwritten
+        ("pool_header", "api", None),
+        ("pool", "api", "php_value"),
+        ("include", None, None),
+    ]
+    assert found[1][1]["admin"] is True and found[2][1]["admin"] is False
+    assert (
+        php_settings("/etc/php/8.3/fpm/php-fpm.conf", ["[global]", "[www]"])[0][1]["section"]
+        == "www"
+    )
+
+
+def test_a_web_servers_own_php_settings():
+    apache = php_settings("/etc/apache2/sites-enabled/a.conf",
+                          ["  php_admin_flag session.upload_progress.enabled on",
+                           "SetEnv PHP_INI_SCAN_DIR /srv/ini"])  # fmt: skip
+    assert [(i["kind"], i.get("how"), i["value"]) for _, i in apache] == [
+        ("server", "php_admin_flag", "on"),
+        ("scan_dir", None, "/srv/ini"),
+    ]
+    nginx = php_settings(
+        "/etc/nginx/sites-enabled/b",
+        [r'  fastcgi_param PHP_VALUE "session.upload_progress.enabled=1\nx=2";'],
+    )
+    assert [(i["name"], i["value"]) for _, i in nginx] == [("session.upload_progress.enabled", "1"),
+                                                         ("x", "2")]  # fmt: skip
 
 
 def test_the_snapshot_holds_php_settings(tmp_path):

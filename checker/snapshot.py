@@ -333,6 +333,7 @@ def journald_storage(settings: list[tuple[str, list[str]]]) -> str | None:
 # Records that mean some of a module's data is missing.
 _GAPS = {
     "packages_pending",
+    "package_history_pending",
     "malformed_header",
     "unreadable_file",
     "listing_truncated",
@@ -350,7 +351,22 @@ _INI_SECTION = re.compile(r"^\s*\[([^\]]*)\]\s*$")
 _POOL_SETTING = re.compile(
     r"^\s*(php_(?:admin_)?(?:value|flag))\[([A-Za-z0-9_.-]+)\]\s*=\s*(.*?)\s*$"
 )
-_POOL_FILE = re.compile(r"/(?:pool\.d|php-fpm\.d)/[^/]+\.conf$")
+# PHP-FPM's configuration: php-fpm.conf (which can hold pools itself) and
+# every .conf under pool.d or php-fpm.d, however deep.
+_FPM_FILE = re.compile(r"/(?:pool\.d|php-fpm\.d)/.+\.conf$|/php-fpm\.conf$")
+_FPM_INCLUDE = re.compile(r"^\s*include\s*=\s*(.*?)\s*$")
+# PHP settings a web server's own configuration sets: Apache's module
+# (php_value, php_flag, php_admin_value, php_admin_flag), FastCGI
+# parameters (nginx's fastcgi_param, Apache's SetEnv) that PHP-FPM applies
+# per request, and PHP_INI_SCAN_DIR, which adds folders of ini files.
+_SERVER_SETTING = re.compile(
+    r"^\s*(php_(?:admin_)?(?:value|flag))\s+([A-Za-z0-9_.-]+)\s+(.*?)\s*$", re.IGNORECASE
+)
+_SERVER_PARAM = re.compile(
+    r"\b(?:fastcgi_param|SetEnv|proxy_set_header)\s+(PHP_(?:ADMIN_)?VALUE)\s+\"?(.*?)\"?\s*;?\s*$",
+    re.IGNORECASE,
+)
+_SCAN_DIR = re.compile(r"\bPHP_INI_SCAN_DIR\b\s*[= ]\s*\"?([^\"\s;]*)", re.IGNORECASE)
 
 
 _QUOTED_VALUE = re.compile(r'^"((?:[^"\\]|\\.)*)"|^\'([^\']*)\'')
@@ -366,52 +382,77 @@ def _ini_value(text: str) -> str:
 
 
 def is_php_config(path: str) -> bool:
-    """A PHP ini file or PHP-FPM pool file, as the collector reads them."""
+    """A PHP ini file or PHP-FPM configuration file, as the collector reads them."""
     return bool(
         path == "/etc/php.ini"
         or (path.endswith(".ini") and path.startswith(("/etc/php", "/etc/opt/remi/")))
-        or _POOL_FILE.search(path)
+        or _FPM_FILE.search(path)
     )
 
 
 def php_settings(path: str, lines: list[str]) -> list[tuple[str, dict[str, Any]]]:
-    """(item key, setting) for each PHP directive in an ini file, or each
-    php_value / php_flag (admin or not) in a PHP-FPM pool, with the
-    [section] (an ini file's, or the pool's name) it sits in."""
+    """(item key, setting) for what PHP's settings depend on, in file order
+    (`position`): each directive in an ini file, with its [section]; in
+    PHP-FPM's configuration each pool ([name], kind `pool_header`), each
+    pool's php_value / php_flag / php_admin_value / php_admin_flag (kind
+    `pool`, `how` saying which) and each include (kind `include`); in a
+    web server's configuration its own PHP settings (kind `server`) and
+    any PHP_INI_SCAN_DIR (kind `scan_dir`). A setting given again is kept
+    each time."""
     found: list[tuple[str, dict[str, Any]]] = []
+    seen: dict[str, int] = {}
+
+    def add(key: str, item: dict[str, Any]) -> None:
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] > 1:
+            key = f"{key} #{seen[key]}"
+        found.append((key, {"path": path, **item, "position": len(found)}))
+
     if path.endswith(".ini"):
         section = None
-        seen: dict[str, int] = {}
         for line in lines:
             if heading := _INI_SECTION.match(line):
                 section = heading.group(1)
             elif directive := _INI_DIRECTIVE.match(line):
                 name, value = directive.group(1), _ini_value(directive.group(2))
-                # [PATH=…] and [HOST=…] apply only there: keyed apart from the
-                # global value; a directive given again (extension=) is kept
-                # each time.
-                scope = (
-                    f" [{section}]"
-                    if section and section.upper().startswith(("PATH=", "HOST="))
-                    else ""
-                )
-                key = f"{path}{scope}: {name}"
-                seen[key] = seen.get(key, 0) + 1
-                if seen[key] > 1:
-                    key = f"{key} #{seen[key]}"
-                found.append((key, {"path": path, "kind": "ini", "name": name, "value": value,
-                                    "section": section, "position": len(found)}))  # fmt: skip
-
-    elif _POOL_FILE.search(path):
+                # [PATH=…] and [HOST=…] apply only there: keyed apart.
+                scoped = section and section.upper().startswith(("PATH=", "HOST="))
+                add(f"{path}{f' [{section}]' if scoped else ''}: {name}",
+                    {"kind": "ini", "name": name, "value": value, "section": section})  # fmt: skip
+    elif _FPM_FILE.search(path):
         pool = None
         for line in lines:
             if heading := _INI_SECTION.match(line):
                 pool = heading.group(1)
+                if pool.lower() != "global":
+                    add(f"{path} [{pool}]", {"kind": "pool_header", "name": "", "section": pool})
             elif setting := _POOL_SETTING.match(line):
                 how, name, value = setting.group(1), setting.group(2), _ini_value(setting.group(3))
-                found.append((f"{path} [{pool}]: {name}", {"path": path, "kind": "pool",
-                              "name": name, "value": value, "section": pool,
-                              "admin": "admin" in how}))  # fmt: skip
+                add(f"{path} [{pool}]: {how} {name}",
+                    {"kind": "pool", "how": how, "name": name, "value": value, "section": pool,
+                     "admin": "admin" in how})  # fmt: skip
+            elif include := _FPM_INCLUDE.match(line):
+                add(f"{path}: include", {"kind": "include", "name": "include",
+                                         "value": _ini_value(include.group(1))})  # fmt: skip
+    else:
+        for line in lines:
+            text = line.split("#", 1)[0]
+            if setting := _SERVER_SETTING.match(text):
+                how, name = setting.group(1).lower(), setting.group(2)
+                value = _ini_value(setting.group(3))
+                add(f"{path}: {how} {name}",
+                    {"kind": "server", "how": how, "name": name, "value": value})  # fmt: skip
+            elif param := _SERVER_PARAM.search(text):
+                # PHP_VALUE "a=1\nb=2": each setting it holds.
+                for pair in re.split(r"\\n|\n|;", param.group(2)):
+                    name, sep, value = pair.partition("=")
+                    if sep and name.strip():
+                        add(f"{path}: {param.group(1).upper()} {name.strip()}",
+                            {"kind": "server", "how": param.group(1).upper(),
+                             "name": name.strip(), "value": _ini_value(value)})  # fmt: skip
+            if scan := _SCAN_DIR.search(text):
+                add(f"{path}: PHP_INI_SCAN_DIR", {"kind": "scan_dir", "name": "PHP_INI_SCAN_DIR",
+                                                  "value": scan.group(1)})  # fmt: skip
     return found
 
 
@@ -460,7 +501,7 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
             return {"packages"}
         if (
             data.get("section") == "package_history"
-            or name == "package_history_absent"
+            or name in ("package_history_absent", "package_history_pending")
             or path in ("package history", "/var/lib/dnf/history.sqlite")
             or str(path or "").startswith("/var/log/dpkg.log")
         ):

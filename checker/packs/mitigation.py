@@ -2,15 +2,23 @@
 PHP's settings as collected (checker/snapshot.py php_settings) and the
 files the collector read (web_config, with its links).
 
-Each PHP set-up is judged as PHP reads it: its php.ini, then its conf.d
-files in name order (a link read as the file it points to); the last
-occurrence of a setting outside [PATH=…] and [HOST=…] sections wins;
-a setting no file sets is PHP's built-in default, the pack's `default`
-(session.upload_progress.enabled's is On). PHP-FPM pools can override it
-(php_value, php_admin_value), each pool apart. A mitigation is in place
-only if every set-up and pool has the expected value; "not seen" when
-PHP's settings weren't collected whole, or no PHP set-up was found.
-Settings an application changes as it runs (ini_set) aren't seen.
+Each PHP set-up (Debian's /etc/php/X/{fpm,apache2,cgi}, RHEL's /etc/php.ini
+and php.d, Remi's /etc/opt/remi/phpNN) is judged as PHP reads it: its
+php.ini (a link read as what it points to; none: no settings), then its
+conf.d files in name order; the last occurrence of a setting outside
+[PATH=…] and [HOST=…] sections wins; a setting no file sets is PHP's
+built-in default, the pack's `default` (session.upload_progress.enabled's
+is On). Each place a site can get another value is a place of its own: a
+[PATH=]/[HOST=] section, each PHP-FPM pool (its php_admin_* first, which
+nothing overrides, else its php_value/php_flag, else the set-up's), and
+the web server's own PHP settings (Apache's php_value, a FastCGI
+PHP_VALUE). Several values for one place: the one that isn't the
+expected, if any. A mitigation is in place only if every place has the
+expected value; missing if any has another; otherwise "not seen": PHP's
+settings not collected whole, no set-up found, a file in the chain not
+read (a link out of /etc), a pool file included from elsewhere, or
+PHP_INI_SCAN_DIR adding folders. A site's .user.ini and .htaccess, and
+ini_set at run time, aren't seen (the report says so).
 """
 
 from __future__ import annotations
@@ -20,33 +28,30 @@ from dataclasses import dataclass, field
 from typing import Any
 
 IN_PLACE, MISSING, NOT_SEEN = "in place", "missing", "not seen"
+DEFAULT = "PHP's default"
 
-# php.ini of each set-up, and where its conf.d files and pools are.
-_SETUPS = (
-    (re.compile(r"^/etc/php/([^/]+)/(fpm|apache2|cgi)/php\.ini$"),
-     lambda m: f"/etc/php/{m[1]}/{m[2]}/conf.d/",
-     lambda m: f"/etc/php/{m[1]}/fpm/pool.d/" if m[2] == "fpm" else None),
-    (re.compile(r"^/etc/php\.ini$"), lambda m: "/etc/php.d/", lambda m: "/etc/php-fpm.d/"),
-    (re.compile(r"^/etc/opt/remi/(php[0-9]+)/php\.ini$"),
-     lambda m: f"/etc/opt/remi/{m[1]}/php.d/", lambda m: f"/etc/opt/remi/{m[1]}/php-fpm.d/"),
-)  # fmt: skip
-_ON = {"1", "on", "true", "yes"}
-_OFF = {"0", "off", "false", "no", "none", ""}
+_ON = {"on", "true", "yes"}
+_OFF = {"off", "false", "no", "none", ""}
+_DEBIAN = re.compile(r"^/etc/php/([^/]+)/(fpm|apache2|cgi)/")
+_REMI = re.compile(r"^/etc/opt/remi/(php[0-9]+)/")
 
 
 def normal(value: str | None) -> str | None:
-    """A value as PHP reads a flag: on/1/true/yes and off/0/false/no/none are each one."""
+    """A value as PHP reads a flag: on/true/yes and any non-zero integer
+    are on; off/false/no/none, an empty value and 0 are off."""
     if value is None:
         return None
     text = value.strip().lower()
+    if re.fullmatch(r"[-+]?\d+", text):
+        return "off" if int(text) == 0 else "on"
     return "on" if text in _ON else "off" if text in _OFF else text
 
 
 @dataclass
 class Place:
-    where: str  # "/etc/php/8.3/fpm/php.ini", or "… pool www"
+    where: str  # "/etc/php/8.3/fpm/php.ini", "… pool www", "… [PATH=/x]"
     value: str | None  # as set, or the default; None: set nowhere and no default
-    source: str  # the file that set it, or "PHP's default"
+    source: str  # the file that set it, or DEFAULT
 
 
 @dataclass
@@ -59,6 +64,31 @@ class Judged:
     why: str = ""
 
 
+@dataclass
+class _Setup:
+    name: str  # where it is reported: its php.ini's path
+    conf_d: str
+    fpm: tuple[str, ...]  # path prefixes of its PHP-FPM configuration, if it has any
+
+
+def _setups(paths: set[str]) -> list[_Setup]:
+    """Every set-up any file read belongs to (a php.ini need not exist)."""
+    found: dict[str, _Setup] = {}
+    for path in paths:
+        if debian := _DEBIAN.match(path):
+            folder = f"/etc/php/{debian[1]}/{debian[2]}/"
+            fpm = (folder,) if debian[2] == "fpm" else ()
+            found.setdefault(folder, _Setup(folder + "php.ini", folder + "conf.d/", fpm))
+        elif path == "/etc/php.ini" or path.startswith(("/etc/php.d/", "/etc/php-fpm")):
+            fpm = ("/etc/php-fpm.conf", "/etc/php-fpm.d/")
+            found.setdefault("rhel", _Setup("/etc/php.ini", "/etc/php.d/", fpm))
+        elif remi := _REMI.match(path):
+            folder = f"/etc/opt/remi/{remi[1]}/"
+            fpm = (folder + "php-fpm.conf", folder + "php-fpm.d/")
+            found.setdefault(folder, _Setup(folder + "php.ini", folder + "php.d/", fpm))
+    return [found[k] for k in sorted(found)]
+
+
 def judge(
     mitigations: list[Any],
     settings: dict[str, dict[str, Any]],
@@ -69,52 +99,72 @@ def judge(
     the snapshot's php_settings items; `files`: its web_config items (the
     files read, and links with what they resolve to); `complete`: PHP's
     settings were collected whole."""
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for item in sorted(settings.values(), key=lambda i: i.get("position", 0)):
+        by_path.setdefault(str(item.get("path")), []).append(item)
+    setups = _setups(set(files) | set(by_path))
     found = []
     for mitigation in mitigations:
         if mitigation.setting.kind != "php_ini":
             continue
         result = Judged(mitigation.id, mitigation.setting.name, mitigation.expect, NOT_SEEN)
         found.append(result)
-        if not complete:
-            result.why = "PHP's settings weren't collected whole"
-            continue
-        places = _places(mitigation.setting.name, mitigation.default, settings, files)
-        if not places:
+        if not setups:
             result.why = "no PHP set-up was found among the files read"
             continue
+        places, doubts = _places(mitigation, setups, by_path, files)
+        if not complete:
+            doubts.append("PHP's settings weren't collected whole")
         result.places = places
-        if any(p.value is None for p in places):
-            result.why = "set nowhere, and the pack doesn't say PHP's default"
-            continue
         expect = normal(mitigation.expect)
-        result.status = IN_PLACE if all(normal(p.value) == expect for p in places) else MISSING
+        if any(p.value is not None and normal(p.value) != expect for p in places):
+            result.status = MISSING  # wrong somewhere, whatever else isn't known
+        elif doubts or any(p.value is None for p in places):
+            result.why = "; ".join(doubts) or "set nowhere, and the pack doesn't say PHP's default"
+        else:
+            result.status = IN_PLACE
     return found
 
 
-def _places(name: str, default: str | None, settings: dict, files: dict) -> list[Place]:
-    by_file: dict[str, list[dict[str, Any]]] = {}
-    for item in settings.values():
-        by_file.setdefault(item.get("path"), []).append(item)
-    places = []
-    for path in sorted(files):
-        for pattern, conf_dir, pool_dir in _SETUPS:
-            matched = pattern.match(path)
-            if not matched:
-                continue
-            chain = [path] + _conf_d(conf_dir(matched), files)
-            value, source = default, "PHP's default"
-            for file in chain:
-                for item in sorted(by_file.get(file, []), key=lambda i: i.get("position", 0)):
-                    section = str(item.get("section") or "").upper()
-                    if item.get("kind") != "ini" or section.startswith(("PATH=", "HOST=")):
-                        continue
-                    if item.get("name") == name:
-                        value, source = item.get("value"), file
-            places.append(Place(path, value, source))
-            pools = pool_dir(matched)
-            if pools:
-                places += _pools(name, pools, by_file)
-    return places
+def _worst(values: list[tuple[str, str | None]], expect: str) -> tuple[str, str | None]:
+    """Of several values for one place, one that isn't the expected, if
+    any: which one PHP uses can depend on more than the files show."""
+    wrong = [v for v in values if normal(v[1]) != normal(expect)]
+    return (wrong or values)[-1]
+
+
+def _places(mitigation: Any, setups: list[_Setup], by_path: dict, files: dict):
+    name, expect = mitigation.setting.name, mitigation.expect
+    places, doubts = [], []
+    for setup in setups:
+        ini = (files.get(setup.name) or {}).get("resolved") or setup.name
+        chain = ([ini] if setup.name in files or ini in by_path else []) + _conf_d(
+            setup.conf_d, files
+        )
+        for path in chain:
+            if "content_sha256" not in (files.get(path) or {}) and path not in by_path:
+                doubts.append(f"{path} is in {setup.name}'s settings but wasn't read")
+        value, source = mitigation.default, DEFAULT
+        for path in chain:
+            for item in by_path.get(path, []):
+                if item.get("kind") != "ini" or item.get("name") != name:
+                    continue
+                section = str(item.get("section") or "")
+                if section.upper().startswith(("PATH=", "HOST=")):
+                    places.append(Place(f"{path} [{section}]", item.get("value"), path))
+                else:
+                    value, source = item.get("value"), path
+        pools, pool_doubts = _pools(name, expect, setup, by_path, value, source)
+        doubts += pool_doubts
+        # A set-up with pools runs its requests in them; without, as set.
+        places += pools if pools else [Place(setup.name, value, source)]
+    for path, items in sorted(by_path.items()):
+        for item in items:
+            if item.get("kind") == "server" and item.get("name") == name:
+                places.append(Place(f"{path} ({item.get('how')})", item.get("value"), path))
+            elif item.get("kind") == "scan_dir" and item.get("value"):
+                doubts.append(f"{path} sets PHP_INI_SCAN_DIR: its folders' ini files weren't read")
+    return places, doubts
 
 
 def _conf_d(folder: str, files: dict) -> list[str]:
@@ -127,19 +177,37 @@ def _conf_d(folder: str, files: dict) -> list[str]:
     return [target for _, target in sorted(found)]
 
 
-def _pools(name: str, folder: str, by_file: dict) -> list[Place]:
-    """Pools that set the setting themselves; the others have the set-up's."""
-    places = []
-    for path, items in sorted(by_file.items()):
-        if not str(path).startswith(folder):
+def _pools(name: str, expect: str, setup: _Setup, by_path: dict, value: str | None, source: str):
+    """Each PHP-FPM pool of a set-up, with the value its requests run with:
+    its php_admin_* (nothing overrides them), else its php_value/php_flag,
+    else the set-up's."""
+    if not setup.fpm:
+        return [], []
+    pools: dict[str, dict[str, list[tuple[str, str | None]]]] = {}
+    doubts = []
+    for path, items in sorted(by_path.items()):
+        if not path.startswith(setup.fpm):
             continue
-        last: dict[str, dict[str, Any]] = {}
         for item in items:
-            if item.get("kind") == "pool" and item.get("name") == name:
-                pool = str(item.get("section"))
-                # php_admin_value can't be overridden by php_value.
-                if pool not in last or item.get("admin") or not last[pool].get("admin"):
-                    last[pool] = item
-        for pool, item in sorted(last.items()):
-            places.append(Place(f"{path} pool {pool}", item.get("value"), path))
-    return places
+            kind, section = item.get("kind"), str(item.get("section"))
+            if kind == "pool_header":
+                pools.setdefault(section, {"admin": [], "user": []})
+            elif kind == "pool" and item.get("name") == name:
+                which = "admin" if item.get("admin") else "user"
+                pools.setdefault(section, {"admin": [], "user": []})[which].append(
+                    (path, item.get("value"))
+                )
+            elif kind == "include" and not any(
+                str(item.get("value") or "").startswith(prefix) for prefix in setup.fpm
+            ):
+                doubts.append(f"{path} includes {item.get('value')}, which wasn't read")
+    places = []
+    for pool, sets in sorted(pools.items()):
+        where = f"{setup.name} pool {pool}"
+        chosen = sets["admin"] or sets["user"]
+        if chosen:
+            path, set_value = _worst(chosen, expect)
+            places.append(Place(where, set_value, path))
+        else:
+            places.append(Place(where, value, source))
+    return places, doubts

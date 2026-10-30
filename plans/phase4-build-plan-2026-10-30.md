@@ -319,7 +319,9 @@ is John's to approve before it is committed. Also:
   PHP) can set `session.upload_progress.enabled` again for that site; the
   collector reads neither, and the coverage section says so whenever a
   mitigation reads as in place. Reading them is a collection change:
-  John's decision, asked separately.
+  **John said yes (2026-10-30): read them after 4.4b, as 4.4c** (the web
+  roots the tool already walks; PHP settings lines only, masked; policy
+  §7 wording to John; the read-only proof again).
 - Fix times from the package history: the change into a fixed version
   after which the package stayed fixed dates the fix exactly (a later
   routine update no longer stretches the exposure); a first install of an
@@ -328,6 +330,27 @@ is John's to approve before it is committed. Also:
   fix bounds it; a vulnerable package removed during the window was
   exposed until its removal. Findings say "at" for an exact time and "by
   … at the latest" otherwise.
+- **After review (4.4b; 3 high, 7 medium, 6 low):** the worst two
+  outcomes both happened. An exposure cut to nothing: a vulnerable
+  version purged and reinstalled fixed, or removed while another affected
+  package stayed, counted as no exposure; now a removal always counts,
+  and a first install counts as fresh only with the history whole and
+  nothing vulnerable still installed just before it (any name). "Exact"
+  on partial history: now exact only if the last change found is to the
+  version installed and its time is certain; a retried upgrade dates from
+  the retry; dnf's pending write-ahead log leaves the history incomplete;
+  an earlier collection bounds the time only for the very same version.
+  "In place" with PHP on: a pool's php_admin_* line was overwritten by a
+  later php_flag in the snapshot; now every override is kept with its
+  kind and order, and a pool's admin values come first. Also now places
+  of their own: [PATH=]/[HOST=] sections, a set-up with no php.ini (its
+  defaults), pools in php-fpm.conf and pool subfolders, the web server's
+  own php_value / php_admin_* / FastCGI PHP_VALUE. "Not seen" when a
+  conf.d link points to a file not read, a pool file is included from
+  elsewhere, or PHP_INI_SCAN_DIR adds folders; but a value definitely
+  wrong anywhere is "missing" first. Any non-zero integer is on. A
+  php_ini mitigation must say its default. Clearer wording for an exact
+  fix after the window closed, a removal, and stale code.
 - Running kernels: no kernel pack exists yet; when one does, the running
   kernel (uname, in the host facts) is what to judge, since an installed
   but unbooted fix protects nothing. A design note for that pack, not

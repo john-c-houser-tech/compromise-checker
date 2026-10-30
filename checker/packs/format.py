@@ -326,6 +326,15 @@ class Mitigation(_Strict):
             raise ValueError("a CVE is listed twice")
         return value
 
+    @model_validator(mode="after")
+    def _says_the_default(self) -> Mitigation:
+        # A setting set nowhere is the default; without it, the commonest
+        # case (Ubuntu's php.ini leaves most settings commented out) can't
+        # be judged.
+        if self.setting.kind == "php_ini" and self.default is None:
+            raise ValueError("a php_ini mitigation says the setting's default (PHP's own)")
+        return self
+
 
 class Detection(_Strict):
     """A check built into the tool, weighted as the pack says inside the

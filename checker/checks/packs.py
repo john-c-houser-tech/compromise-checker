@@ -108,8 +108,9 @@ def _mitigations(item, named: str, pack: str, context: Context) -> list[Finding]
             # A site can set it again for itself (PHP_INI_PERDIR settings):
             # in .user.ini under PHP-FPM, or .htaccess under Apache's PHP.
             context.gaps.append(
-                f"pack {named}: mitigation {mitigation.id} is in place in PHP's own settings;"
-                " a site's .user.ini or .htaccess could set it back, and those aren't read"
+                f"pack {named}: mitigation {mitigation.id} is in place in the settings read;"
+                " a site's .user.ini or .htaccess, or an application changing it as it runs"
+                " (ini_set), could set it back, and those aren't seen"
             )
             continue
         if mitigation.status != MISSING:
@@ -144,16 +145,24 @@ def _was_exposed(item, named: str, pack: str, collected_at: str | None) -> Findi
             else "when the fix was installed isn't known"
         )
         summary = f"exposed from {item.exposed_from[:16]}, and still taken to be: {why} ({named})"
-    elif item.removed_at:
-        summary = (
-            f"exposed from {item.exposed_from[:16]} until the vulnerable package was removed at"
-            f" {item.removed_at[:16]} (the package history): {round(item.share * 100)}% of the"
-            f" window so far ({named})"
-        )
     elif item.fix_time_exact:
+        what = (
+            f"the vulnerable package was removed at {item.removed_at[:16]}"
+            if item.removed_at
+            else f"the fix was installed at {(item.fixed_at or '')[:16]}"
+        )
+        closed = (
+            item.window_end
+            and item.exposed_until
+            and item.exposed_until < (item.removed_at or item.fixed_at or "")
+        )
+        until = (
+            f"until the window closed at {item.exposed_until[:16]} ({what}, after it)"
+            if closed
+            else f"until {what}"
+        )
         summary = (
-            f"exposed from {item.exposed_from[:16]} until the fix was installed at"
-            f" {item.exposed_until[:16]} (the package history):"
+            f"exposed from {item.exposed_from[:16]} {until} (the package history):"
             f" {_days(item.exposed_from, item.exposed_until, collected_at)},"
             f" {round(item.share * 100)}% of the window so far ({named})"
         )
@@ -195,9 +204,8 @@ def _stale(item, named: str, pack: str) -> Finding:
     how = (
         ": its program file was replaced under it"
         if replaced
-        else f" started before its package was last installed or updated"
-        f" ({(item.fixed_at or '')[:16]}): it runs older code than installed, from before the"
-        " fix unless the fix came earlier"
+        else " started before its package's current version was installed: it runs older code"
+        " than installed, from before the fix unless the fix came earlier"
     )
     return Finding(
         "pack.exposure",

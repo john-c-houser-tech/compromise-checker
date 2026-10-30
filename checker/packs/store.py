@@ -148,7 +148,7 @@ def _retire(home: Path, path: Path, why: str) -> None:
 
 
 def add(
-    home: Path, organization: list[Any], data: bytes, signature: bytes, known_checks: set[str]
+    home: Path, organization: list[Any], data: bytes, signature: bytes, checks: dict[str, Any]
 ) -> tuple[Stored, str]:
     """Check a pack's signature, then its content, then that it is newer
     than any version of it accepted before (and in the same trust domain),
@@ -169,10 +169,12 @@ def add(
         pack = read(data)
     except PackError as exc:
         raise StoreError(f"its content:\n{exc}") from None
-    unknown = sorted({d.check for d in pack.detections if d.check} - known_checks)
+    from checker.packs.detect import reference_problems
+
+    unknown = reference_problems(pack, checks)
     if unknown:
         raise StoreError(
-            "its detections name checks this version doesn't have: " + ", ".join(unknown)
+            "its detections name what this version doesn't have: " + "; ".join(unknown)
         )
     digest = hashlib.sha256(data).hexdigest()
     state = read_state(home)

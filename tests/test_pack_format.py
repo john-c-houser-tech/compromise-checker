@@ -211,7 +211,9 @@ def test_check_from_the_command_line(tmp_path, capsys):
     unknown = tmp_path / "unknown.yaml"
     unknown.write_bytes(changed("check: web.worker_child", "check: web.not_a_check"))
     assert cli.main(["packs", "check", str(unknown)]) == 1
-    assert "checks this version doesn't have: web.not_a_check" in capsys.readouterr().err
+    assert (
+        "doesn't have: detection worker-child: no check web.not_a_check" in capsys.readouterr().err
+    )
 
     bad = tmp_path / "bad.yaml"
     bad.write_bytes(changed("version: 2", "version: 0"))

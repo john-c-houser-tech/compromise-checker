@@ -60,7 +60,7 @@ class Finding:
     # detection's ratio, or a core finding's raised while the host was
     # exposed, with the pack that raised it.
     likelihood_ratio: float | None = None
-    raised_by: str | None = None
+    raised_by_pack: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

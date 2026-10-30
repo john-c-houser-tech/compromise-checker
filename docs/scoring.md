@@ -40,9 +40,12 @@ before the band's: a pack's own rule up to 20 (the high band's), and a
 core check's finding the pack names, while the host was exposed, raised
 to the pack's ratio up to 100 (the critical band's) but never lowered.
 Each such finding records the ratio (`likelihood_ratio`), and a raised one
-the pack (`raised_by`). The caps below apply to them as to any finding:
-all of the packs' own detections are one check, `pack.detection`, so
-together they add at most a doubling beyond the strongest.
+the pack (`raised_by_pack`); a raised finding never weighs less than its
+check's own ratio (band or override) at the time it is scored. All of the
+packs' own detections are one check, `pack.detection`, so together they
+add at most a doubling beyond the strongest, and they never join a group:
+a pack's finding naming several paths mustn't merge core findings about
+them and cut them.
 
 ## Rules
 

@@ -268,7 +268,9 @@ def test_with_no_trusted_key_nothing_is_added(home, tmp_path, capsys, monkeypatc
 def test_a_pack_naming_an_unknown_check_is_refused(ours, tmp_path, capsys):
     text = GOOD.replace("check: web.worker_child", "check: web.not_a_check")
     assert cli.main(["packs", "add", str(pack(tmp_path, ours, text))]) == 1
-    assert "checks this version doesn't have: web.not_a_check" in capsys.readouterr().err
+    assert (
+        "doesn't have: detection worker-child: no check web.not_a_check" in capsys.readouterr().err
+    )
 
 
 def test_a_kept_pack_changed_on_disk_isnt_used(ours, home, tmp_path, capsys):

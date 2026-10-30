@@ -306,15 +306,19 @@ exposure is judged once per analysis (`checker/packs/exposure.py`).
 | Check | Finds | Band | Baseline |
 |---|---|---|---|
 | `pack.exposure` | exposure, not compromise: a package before the pack's fix (`vulnerable`, high), one whose version can't be judged against it (`cant_judge`, medium; counted as exposed), the host exposed for part of the window and fixed since (`was_exposed`, low), a service still running code from before the fix (`stale_code`), a pack's mitigation not in place (`mitigation_missing`: high while vulnerable, medium once fixed). Exposure raises the prior instead ([scoring](scoring.md)) | | no |
-| `pack.detection` | a pack's own rule, only while the host was exposed (from when it became exposed in the window to the fix, or the collection): events matching the rule (at least so many within a span, apart for each value of a field such as the source network), or snapshot items present, absent, or added, changed or removed since the baseline. Its band follows the pack's ratio (at most 20: high); the variant is `pack-id/detection-id` | from the ratio | for changes |
+| `pack.detection` | a pack's own rule, for a host the pack's threat reached: events matching the rule (at least so many within a span, apart for each value of a field such as the source network), or snapshot items present, absent, or added, changed or removed since the baseline (never the sections exposure is judged from). Each counts either while the host ran a vulnerable version, to the fix or the window's end (`while_exposed`: an attack attempt), or from its exposure on to the collection, fix or not (`since_exposed`, the default: someone already inside stays); what the snapshot shows now counts only when that time runs to the collection. Its band follows the pack's ratio (at most 20: high); the variant is `pack-id/detection-id` | from the ratio | for changes |
 
-A pack can also name a check built into the tool: that check's
-compromise findings in the time the host was exposed weigh as the pack
-says (at most 100), never less than they would, and say which pack raised
-them (`raised_by`). A detection whose data the collection lacks (web
-access logs not chosen, no audit log, requests' content types, which no
-log format the tool reads has), whose check didn't run, or that needs a
-baseline there isn't, is a coverage gap.
+A pack can also name a check built into the tool (never a pack's own):
+that check's compromise findings in the time its detection counts weigh
+as the pack says (at most 100), never less than the check says, and name
+the pack (`raised_by_pack`, shown in the report). Nothing counts for a
+host the pack doesn't affect, or whose only sign is a package listing
+collected in part. A detection whose data the collection lacks (what it
+says it needs, and the logs its event types come from: web requests, web
+errors, program starts; requests' content types and every web request,
+which no log format the tool reads gives), whose check didn't run, that
+needs a baseline there isn't, or whose matching ran past the analysis's
+budget, is a coverage gap, said once.
 
 ## Coverage
 

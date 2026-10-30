@@ -1922,12 +1922,13 @@ def cmd_packs_check(args: argparse.Namespace) -> int:
         for line in str(exc).splitlines():
             print(f"  {visible(line, 1000)}", file=sys.stderr)
         return 1
-    known = load_checks()
-    unknown = [d.check for d in pack.detections if d.check and d.check not in known]
+    from checker.packs.detect import reference_problems
+
+    unknown = reference_problems(pack, load_checks())
     if unknown:
         print(
-            f"checker: {args.file}: detections name checks this version doesn't have: "
-            + ", ".join(unknown),
+            f"checker: {args.file}: detections name what this version doesn't have: "
+            + "; ".join(unknown),
             file=sys.stderr,
         )
         return 1
@@ -1957,9 +1958,7 @@ def cmd_packs_add(args: argparse.Namespace) -> int:
         signature = _read_untrusted(args.signature or f"{args.file}.minisig", MAX_SIGNATURE_BYTES)
         with _packs_lock(base):
             config = load_config(base)  # inside the lock: a key removed meanwhile counts
-            stored, outcome = add(
-                base, config.packs.trusted_keys, data, signature, set(load_checks())
-            )
+            stored, outcome = add(base, config.packs.trusted_keys, data, signature, load_checks())
     except (EvidenceError, OSError, StateError) as exc:
         print(f"checker: {exc.strerror if isinstance(exc, OSError) and exc.strerror else exc}",
               file=sys.stderr)  # fmt: skip
@@ -2044,7 +2043,8 @@ def cmd_packs_show(args: argparse.Namespace) -> int:
         ratio = f"{detection.likelihood_ratio:g}"
         what = detection.check or visible(detection.title or "", 200)
         kind = "" if detection.check else (" (events)" if detection.events else " (snapshot)")
-        print(f"  Detection {detection.id}: {what}{kind} (LR {ratio} while exposed)")
+        when = detection.counts.replace("_", " ")
+        print(f"  Detection {detection.id}: {what}{kind} (LR {ratio}, {when})")
     return 0
 
 

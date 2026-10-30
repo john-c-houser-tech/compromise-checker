@@ -46,6 +46,7 @@ validates its drafts exactly as the tool reads them.
         likelihood_ratio: 10
       - id: fpm-crash                      # the pack's own rule over events
         title: PHP-FPM workers crashing
+        counts: while_exposed              # an attempt: harmless once fixed
         needs: [web_error_log]
         events:
           any_of:
@@ -79,18 +80,24 @@ A fixed version carries the vendor's revision (dpkg) or release (rpm):
 "8.3.6" alone would count every distribution build of 8.3.6 as fixed,
 backported fix or not.
 
-Detections (decision D1, plan 4.5) count only while the host was exposed
-(checker/packs/detect.py). One names a check built into the tool, whose
-findings then weigh as the pack says (up to the core's critical ratio,
-100); or it is the pack's own rule (up to the high band's, 20, so a pack
-can't outweigh the core checks), over events (one of up to five
-matchers, each an event type, exact or a prefix ending in ".", and its
-fields; at least so many within a span, by a field such as the source
-network) or over the snapshot (items of a section present, absent, or
-added, changed or removed since the baseline). Values are matched as
-text: exactly, by prefix, or by a glob with `*` and `?`, never by a
-regular expression. `needs` names data a detection can't work without;
-a host whose collection lacks it gets a coverage gap, not silence.
+Detections (decision D1, plan 4.5; checker/packs/detect.py) count only
+for a host the pack's threat reached: while it ran a vulnerable version
+(`counts: while_exposed`, for an attack attempt, harmless once fixed), or
+from then on, fix or not (`since_exposed`, the default: someone already
+inside stays). One names a check built into the tool (never a pack's own),
+whose findings then weigh as the pack says, up to the core's critical
+ratio, 100; or it is the pack's own rule, up to the high band's, 20, so a
+pack can't outweigh the core checks: over events (up to five matchers,
+each an event type, exact or a prefix ending in ".", and its fields; at
+least so many within a span, apart for each value of a field such as the
+source network) or over the snapshot (items of a section present, absent,
+or added, changed or removed since the baseline; never the sections
+exposure is judged from). Only some web requests become events (5xx,
+attack markers, scripts, sensitive paths). Values are matched as text:
+exactly, by prefix, or by a glob with `*` and `?`, never by a regular
+expression. `needs` names data a detection can't work without (rules over
+web requests, web errors and program starts need theirs anyway); a host
+whose collection lacks it gets a coverage gap, not silence.
 
 YAML is read as YAML 1.2 reads it: `off`, `no` and `yes` stay text, a
 leading zero doesn't make a number octal, and `1:30` isn't sixty-based.
@@ -101,7 +108,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import UTC, date, datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 import yaml
 from pydantic import (
@@ -374,10 +381,21 @@ _SECTION = re.compile(r"[a-z][a-z0-9_]{0,39}")
 _VARIANT = re.compile(r"[a-z][a-z0-9_]{0,39}")
 _DURATION = re.compile(r"([1-9][0-9]{0,6})([smhd])")
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-# What a detection can say it needs, each judged from the collection:
-# request_content_type is in no log format the tool reads, so a detection
-# needing it is always a coverage gap (DESIGN.md §10.2's multipart POSTs).
-NEEDS = ("web_access_log", "web_error_log", "process_starts", "request_content_type")
+# What a detection can say it needs, each judged from the collection.
+# Two are never there: request_content_type is in no log format the tool
+# reads (DESIGN.md §10.2's multipart POSTs), and every_web_request because
+# only some requests become events (5xx, attack markers, scripts, sensitive
+# paths; the rest are counted per network): a detection needing either is
+# always a coverage gap. Rules over web.request, web.error and process.exec
+# need their logs whether they say so or not.
+Need = Literal[
+    "web_access_log", "web_error_log", "process_starts", "request_content_type",
+    "every_web_request",
+]  # fmt: skip
+NEEDS = get_args(Need)
+# Snapshot sections a pack's own rule can't read: what its exposure and
+# mitigations are judged from, so exposure can't pass for compromise.
+EXPOSURE_SECTIONS = ("packages", "package_history", "php_settings", "web_config", "host")
 MatchText = Annotated[str, Field(min_length=1, max_length=200), AfterValidator(_plain)]
 
 
@@ -467,13 +485,21 @@ class SnapshotRule(_Strict):
     def _section(cls, value: str) -> str:
         if not _SECTION.fullmatch(value):
             raise ValueError(f"not a snapshot section: {value!r}")
+        if value in EXPOSURE_SECTIONS:
+            raise ValueError(
+                f"{value} is what exposure is judged from: a detection can't read it (exposure"
+                " isn't compromise)"
+            )
         return value
 
 
 class Detection(_Strict):
     """A check built into the tool (`check`, optionally one `variant`),
-    whose findings weigh as the pack says while the host was exposed; or
-    the pack's own rule (`events` or `snapshot`, with a `title`)."""
+    whose findings weigh as the pack says; or the pack's own rule (`events`
+    or `snapshot`, with a `title`). `counts`: `while_exposed`, only while
+    the host ran a vulnerable version (an attack attempt, harmless once
+    fixed), or `since_exposed`, from when the host first became exposed to
+    the collection, fix or not (someone already inside stays)."""
 
     id: str = Field(pattern=rf"^{_ID}$")
     check: str | None = None
@@ -481,7 +507,8 @@ class Detection(_Strict):
     title: Annotated[str, Field(min_length=1, max_length=200), AfterValidator(_plain)] | None = None
     events: EventRule | None = None
     snapshot: SnapshotRule | None = None
-    needs: list[Literal[NEEDS]] = Field(default=[], max_length=len(NEEDS))  # type: ignore[valid-type]
+    needs: list[Need] = Field(default=[], max_length=len(NEEDS))
+    counts: Literal["while_exposed", "since_exposed"] = "since_exposed"
     likelihood_ratio: float = Field(gt=1, le=MAX_CHECK_LR)
 
     @field_validator("check")
@@ -489,6 +516,10 @@ class Detection(_Strict):
     def _check(cls, value: str | None) -> str | None:
         if value is not None and not _CHECK.fullmatch(value):
             raise ValueError(f"not a check id: {value!r}")
+        if value is not None and value.startswith("pack."):
+            # The packs' own findings: naming them would lift every pack's
+            # detections past their cap.
+            raise ValueError(f"a detection can't name a pack check: {value!r}")
         return value
 
     @field_validator("variant")
@@ -505,6 +536,9 @@ class Detection(_Strict):
             raise ValueError("a detection is one of: check, events, snapshot")
         if self.variant is not None and self.check is None:
             raise ValueError("variant goes with check")
+        if self.check is not None and self.title is not None:
+            raise ValueError("a check's findings keep their own title: title goes with events"
+                             " or snapshot")  # fmt: skip
         if self.check is None:
             if self.title is None:
                 raise ValueError("a pack's own detection has a title")

@@ -142,8 +142,8 @@ What works today:
   report and purges what has expired, in one pass, and says which hosts
   need a look (band risen, a new high or critical finding, not collected);
   `notify_command` hands that short summary to a command of yours (mail,
-  a webhook). `--unattended` asks nothing and refuses hosts that would need
-  a prompt. `checker schedule install --at HH:MM` runs it every day (a
+  a webhook). `--unattended` asks nothing and leaves out, with a warning,
+  hosts that would need a prompt. `checker schedule install --at HH:MM` runs it every day (a
   systemd user timer, or a launchd agent on macOS)
   ([scheduling](docs/scheduling.md)).
 - `checker purge HOST | --before DATE | --expired` — deletes stored evidence,

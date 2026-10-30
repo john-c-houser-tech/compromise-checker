@@ -282,6 +282,11 @@ class Config(BaseModel):
             raise ValueError(f"can't be split into words: {exc}") from None
         if not words:
             raise ValueError("is empty: give a command, or none")
+        if not words[0].startswith("/"):
+            # A timer's PATH is short (launchd's has no /usr/local/bin).
+            raise ValueError(
+                "must start with the command's full path, e.g. /usr/local/bin/tell-ops"
+            )
         return value
 
 

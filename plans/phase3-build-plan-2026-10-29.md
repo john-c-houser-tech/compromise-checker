@@ -647,6 +647,23 @@ The advisor's answers can't be golden-tested, so they are measured.
   lingering hint) or a launchd agent (macOS), running this Python with
   `CHECKER_HOME` set. Where the permanent controller runs (the Mac mini
   or a small Linode) is still to choose.
+- **After review (3.11; 2 high, 4 medium, 9 low):** a host's own error
+  text (sudo's stderr) reached the summary unescaped: alerts are now in the
+  tool's words only (statuses, exception classes, check ids, titles), the
+  detail escaped in the log. One host needing a prompt stopped every run
+  silently: such a host is now left out and needs a look. Exceptions
+  outside the caught set skipped the purge and the notice: every step is
+  guarded, and a crash is notified. Alerts were lost when the notify
+  command failed or a manual analysis came between runs: the last run's
+  view and undelivered alerts are kept encrypted (`run-state.age`). The
+  keyring is waited for a minute at most; `TimeoutStartSec=4h`. A failure
+  now outranks the band in the exit status. systemd quoting: `$`, quotes
+  and backslashes are refused, not escaped. Purged baselines, partial
+  collections, newly failing checks and findings grown serious need a
+  look; a process's id doesn't make a finding new; a group listed in part
+  shows a new member. macOS install retries `bootstrap`; the notify
+  command needs a full path, keeps its output in a file and doesn't get
+  the advisor's keys; `python -P`; unreadable settings exit 2.
 - Carried over: RHEL proof only if there is interest; package verification
   against vendor packages; report encryption at rest (John's decision
   2026-10-27: revisit after the currently planned phases); outbound

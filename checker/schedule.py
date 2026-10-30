@@ -3,21 +3,29 @@ has expired, in one pass, unattended when a timer starts it) and
 `checker schedule` (the timer itself: a systemd user timer on Linux, a
 launchd agent on macOS).
 
-A run asks nothing: a host that would need a prompt (a password typed in,
-a key file with a passphrase, no SSH agent) is refused before anything is
-collected. The AI advisor is never asked. When a host's band rises, a new
-high or critical finding appears, or a host couldn't be collected or
-analysed, the run prints it and, if `notify_command` is set, hands a short
-summary to that command (host names, bands, the new findings' titles and
-the report's path; no evidence)."""
+An unattended run asks nothing: a host that would need a prompt (a password
+typed in, a key file with a passphrase, no SSH agent) isn't collected, and
+needs a look like any host that couldn't be. The AI advisor is never asked.
+What needs a look (a band risen, a high or critical finding new or newly
+that serious, a check newly failing, a host not collected or analysed, a
+step of the run failing, a baseline purged) is printed and, if
+`notify_command` is set, handed to that command as a short summary in the
+tool's own words: host names, bands, check ids, finding titles and the
+report's path, never text from a host. What each host looked like at the
+last run, and alerts not yet delivered, are kept encrypted between runs,
+so an alert the command couldn't deliver is sent with the next one."""
 
 import asyncio
 import fcntl
+import json
 import os
 import plistlib
+import re
 import shlex
 import subprocess
 import sys
+import tempfile
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -26,17 +34,26 @@ from typing import Any
 
 import asyncssh
 
-from checker.evidence import EvidenceError
-
 BANDS = ("Low", "Medium", "High", "Critical")
+FINDING_BANDS = ("info", "low", "medium", "high", "critical")
 SERIOUS = ("high", "critical")
-# The run's exit status: the worst band analysed, so a timer's log shows
-# trouble; a step that failed shows when nothing worse did.
+# The run's exit status: 1 when anything failed (the band is in the log and
+# the summary), else the worst band analysed, so a timer's log shows it.
 EXIT_BAND = {"Low": 0, "Medium": 10, "High": 11, "Critical": 12}
 EXIT_FAILED = 1
-EXIT_SETUP = 2  # nothing was collected: unattended problems, no key, bad settings
+EXIT_SETUP = 2  # nothing was collected: no evidence key, unreadable settings
 EXIT_BUSY = 3  # another run holds the lock
 NOTIFY_SECONDS = 120
+KEYRING_SECONDS = 60
+STATE_FILE = "run-state.age"
+EARLIER = "(from an earlier run) "
+# Kept from the notify command: the advisor's keys, for one.
+SECRET_VARIABLES = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "CHECKER_ADVISOR_API_KEY",
+    "CHECKER_FALLBACK_API_KEY",
+)
 UNIT = "compromise-checker"
 LAUNCHD_LABEL = "com.nouriloop.compromise-checker"
 
@@ -61,28 +78,34 @@ def run_lock(base: Path) -> Iterator[None]:
         os.close(fd)
 
 
-def unattended_problems(hosts: list, environ: dict[str, str] | None = None) -> list[str]:
-    """What would stop an unattended run at a prompt, per host, before
-    anything is collected. (An agent that asks for its key's passphrase
-    can't be seen from here: the docs say to use a key already unlocked.)"""
+# --- Unattended -----------------------------------------------------------------------------
+
+
+def host_problems(host, environ: dict[str, str] | None = None) -> list[str]:
+    """What would stop an unattended run at a prompt on this host. (An
+    agent that asks for its key's passphrase can't be seen from here: the
+    docs say to use a key already unlocked.)"""
     environ = os.environ if environ is None else environ
     problems = []
-    for host in hosts:
-        if host.needs_password() and host.password_source != "keyring":  # noqa: S105
-            what = "logs in with a password" if host.auth == "password" else "uses sudo's password"
-            problems.append(
-                f"{host.name} {what} typed at a prompt: keep it in the OS keyring"
-                " (password_source keyring), or use a key and NOPASSWD sudo"
-            )
-        if host.auth == "agent" and not environ.get("SSH_AUTH_SOCK"):
-            problems.append(
-                f"{host.name} logs in with the SSH agent, and there is none (SSH_AUTH_SOCK unset)"
-            )
-        if host.auth == "key":
-            problem = _key_problem(host.key_path)
-            if problem:
-                problems.append(f"{host.name}'s key {host.key_path}: {problem}")
+    if host.needs_password() and host.password_source != "keyring":  # noqa: S105
+        what = "logs in with a password" if host.auth == "password" else "uses sudo's password"
+        problems.append(
+            f"{host.name} {what} typed at a prompt: keep it in the OS keyring"
+            " (password_source keyring), or use a key and NOPASSWD sudo"
+        )
+    if host.auth == "agent" and not environ.get("SSH_AUTH_SOCK"):
+        problems.append(
+            f"{host.name} logs in with the SSH agent, and there is none (SSH_AUTH_SOCK unset)"
+        )
+    if host.auth == "key":
+        problem = _key_problem(host.key_path)
+        if problem:
+            problems.append(f"{host.name}'s key {host.key_path}: {problem}")
     return problems
+
+
+def unattended_problems(hosts: list, environ: dict[str, str] | None = None) -> list[str]:
+    return [problem for host in hosts for problem in host_problems(host, environ)]
 
 
 def _key_problem(path: str | None) -> str | None:
@@ -99,70 +122,149 @@ def _key_problem(path: str | None) -> str | None:
     return None
 
 
-def unattended_password(host) -> str:
-    """Passwords for an unattended run: from the keyring, never a prompt."""
+def unattended_password(host, timeout: float = KEYRING_SECONDS) -> str:
+    """Passwords for an unattended run: from the keyring, never a prompt,
+    and not waited for longer than `timeout` (a keyring that wants to be
+    unlocked shows a dialog no one answers)."""
     from checker.credentials import password_for
 
     if host.password_source != "keyring":  # noqa: S105 - a source name
         raise RuntimeError("an unattended run doesn't ask for passwords")
-    return password_for(host)
+    got: dict[str, Any] = {}
+
+    def fetch() -> None:
+        try:
+            got["password"] = password_for(host)
+        except Exception as exc:  # noqa: BLE001 - handed back below
+            got["error"] = exc
+
+    worker = threading.Thread(target=fetch, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise RuntimeError(f"the keyring didn't answer within {timeout:.0f} seconds")
+    if "error" in got:
+        raise got["error"]
+    return got["password"]
 
 
-# --- What changed since the last analysis ------------------------------------------------
+# --- What changed since the last run -------------------------------------------------------
 
 
-def _identity_of(finding: dict[str, Any]) -> tuple:
-    """The same finding in two analyses: its check and what it is about."""
-    entities = tuple(sorted(finding.get("entities") or []))
-    return (finding.get("check"), finding.get("variant"), entities or finding.get("title"))
-
-
-def _in_effect(assessment: dict[str, Any] | None) -> list[dict[str, Any]]:
-    return [f for f in (assessment or {}).get("findings") or [] if not f.get("suppressed_by")]
+def _identity_of(finding: dict[str, Any]) -> str:
+    """The same finding in two analyses: its check, its kind and what it is
+    about (a process's id left out: it changes when the process restarts).
+    For a group listed only in part, its summary too, so a new member shows."""
+    entities = sorted(e for e in finding.get("entities") or [] if not e.startswith("pid:"))
+    key = [finding.get("check"), finding.get("variant"), entities or finding.get("title")]
+    if not finding.get("entities_complete", True):
+        key.append(finding.get("summary"))
+    return json.dumps(key)
 
 
 def _band(assessment: dict[str, Any] | None) -> str | None:
     return ((assessment or {}).get("score") or {}).get("band")
 
 
+def remembered(assessment: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What a later run compares with: the band, each finding in effect
+    with its band, and the checks that failed."""
+    if assessment is None:
+        return None
+    return {
+        "band": _band(assessment),
+        "findings": {
+            _identity_of(f): f.get("band")
+            for f in assessment.get("findings") or []
+            if not f.get("suppressed_by")
+        },
+        "failed": sorted(
+            str(c.get("check"))
+            for c in assessment.get("checks") or []
+            if str(c.get("status", "")).startswith("failed")
+        ),
+    }
+
+
+def _rank(band: Any) -> int:
+    return FINDING_BANDS.index(band) if band in FINDING_BANDS else -1
+
+
 def alerts(host: str, before: dict | None, after: dict) -> list[str]:
-    """Lines worth someone's attention: the band rose (a host's first
-    analysis counts from Low), or a high or critical finding appeared
-    that the last analysis didn't have in effect."""
+    """What needs a look on a host analysed now, against what it looked like
+    (remembered()): the band rose (a first analysis counts from Low), a
+    high or critical finding is new or newly that serious, a check newly
+    failed. In the tool's own words: no text from the host."""
     from checker.report import visible
 
     lines = []
-    old, new = _band(before) or "Low", _band(after)
-    if new in BANDS and BANDS.index(new) > BANDS.index(old if old in BANDS else "Low"):
+    old, new = (before or {}).get("band") or "Low", _band(after)
+    old = old if old in BANDS else "Low"
+    if new in BANDS and BANDS.index(new) > BANDS.index(old):
         probability = (after.get("score") or {}).get("probability")
         shown = f" ({probability:.1%})" if isinstance(probability, (int, float)) else ""
         lines.append(f"{host}: {old} to {new}{shown}")
-    seen = {_identity_of(f) for f in _in_effect(before)}
-    for finding in _in_effect(after):
-        if finding.get("band") in SERIOUS and _identity_of(finding) not in seen:
-            lines.append(f"{host}: new {finding['band']}: {visible(finding.get('title'), 200)}")
+    seen = (before or {}).get("findings") or {}
+    for finding in after.get("findings") or []:
+        if finding.get("suppressed_by") or finding.get("band") not in SERIOUS:
+            continue
+        was = seen.get(_identity_of(finding))
+        if _rank(finding["band"]) > _rank(was):
+            what = f"new {finding['band']}" if was is None else f"now {finding['band']} (was {was})"
+            lines.append(f"{host}: {what}: {visible(finding.get('title'), 200)}")
+    failed_before = set((before or {}).get("failed") or [])
+    for check in (remembered(after) or {}).get("failed") or []:
+        if check not in failed_before:
+            lines.append(f"{host}: check {visible(check, 80)} failed")
     return lines
 
 
 def latest_assessment(store, host: str, identity) -> dict[str, Any] | None:
-    """The host's latest stored analysis, before this run adds one."""
+    """The host's latest stored analysis (for a host the run hasn't seen)."""
     from checker.assess import load_assessment
     from checker.baseline import usable_bundles
 
     for row in reversed(usable_bundles(store, host)):
         try:
             found = load_assessment(store, row["id"], identity)
-        except (EvidenceError, OSError, ValueError):
-            return None  # unreadable: compared with nothing, so all serious ones show
+        except Exception:  # noqa: BLE001 - unreadable: compared with nothing, so all show
+            return None
         if found is not None:
             return found
     return None
 
 
+def load_state(base: Path, identity) -> dict[str, Any]:
+    """The last run's view of each host, and alerts not yet delivered."""
+    from checker.evidence import open_text
+
+    path = base / STATE_FILE
+    try:
+        state = json.loads(open_text(path.read_bytes(), identity) or "{}")
+    except FileNotFoundError:
+        return {}
+    except Exception:  # noqa: BLE001 - unreadable: start again from the stored analyses
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def save_state(base: Path, state: dict[str, Any], recipients: list[str]) -> None:
+    from checker.evidence import seal_text
+
+    blob = seal_text(json.dumps(state), recipients) or b""
+    fd, tmp = tempfile.mkstemp(dir=base, prefix=f".{STATE_FILE}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(blob)
+        os.replace(tmp, base / STATE_FILE)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def summary(alerting: list[str], report: Path | None) -> str:
     """What the notify command reads: a subject line, then the lines."""
-    hosts = {line.split(":", 1)[0] for line in alerting}
-    text = f"Compromise Checker: {len(hosts)} host(s) need a look\n\n" + "\n".join(alerting)
+    text = f"Compromise Checker: {len(alerting)} thing(s) need a look\n\n" + "\n".join(alerting)
     if report is not None:
         text += f"\n\nReport: {report}"
     return text + "\n"
@@ -170,23 +272,30 @@ def summary(alerting: list[str], report: Path | None) -> str:
 
 def notify(command: str, text: str, timeout: float = NOTIFY_SECONDS) -> str | None:
     """Run the organization's notify command with `text` on its input. No
-    shell: the command is split into words. Returns why it failed, if it did."""
+    shell: the command is split into words; the advisor's keys are kept
+    from it. Its output goes to a file, so a program it leaves running in
+    the background doesn't hold the run. Returns why it failed, if it did."""
+    env = {k: v for k, v in os.environ.items() if k not in SECRET_VARIABLES}
     try:
-        done = subprocess.run(  # noqa: S603 - the organization's own command
-            shlex.split(command),
-            input=text,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
+        with tempfile.TemporaryFile("w+") as said:
+            done = subprocess.run(  # noqa: S603 - the organization's own command
+                shlex.split(command),
+                input=text,
+                text=True,
+                stdout=said,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                env=env,
+                check=False,
+            )
+            said.seek(0)
+            last = said.read().strip().splitlines()
     except subprocess.TimeoutExpired:
         return f"it didn't finish within {timeout:.0f} seconds"
     except (OSError, ValueError) as exc:
         return str(exc)
     if done.returncode != 0:
-        said = (done.stderr or done.stdout or "").strip().splitlines()
-        return f"it exited with status {done.returncode}" + (f": {said[-1][:200]}" if said else "")
+        return f"it exited with status {done.returncode}" + (f": {last[-1][:200]}" if last else "")
     return None
 
 
@@ -199,7 +308,7 @@ class HostResult:
     collected: str  # the collection's status
     band: str | None = None
     probability: float | None = None
-    problem: str | None = None
+    problem: str | None = None  # in detail, made safe to show; for the terminal and the log
     alerts: list[str] = field(default_factory=list)
 
 
@@ -207,18 +316,23 @@ class HostResult:
 class RunResult:
     hosts: list[HostResult]
     report: Path | None = None
-    problems: list[str] = field(default_factory=list)  # not tied to one host
+    problems: list[str] = field(default_factory=list)  # not tied to one host, in detail
+    run_alerts: list[str] = field(default_factory=list)  # not tied to one host
+    earlier: list[str] = field(default_factory=list)  # alerts an earlier run couldn't deliver
     notified: str | None = None  # why the notify command failed, if it did
 
     @property
     def alerting(self) -> list[str]:
-        return [line for h in self.hosts for line in h.alerts]
+        return [*self.earlier, *(line for h in self.hosts for line in h.alerts), *self.run_alerts]
+
+    def failed(self) -> bool:
+        return bool(self.problems or self.notified or any(h.problem for h in self.hosts))
 
     def exit_status(self) -> int:
+        if self.failed():
+            return EXIT_FAILED
         bands = [h.band for h in self.hosts if h.band in BANDS]
-        worst = max(bands, key=BANDS.index) if bands else "Low"
-        failed = self.problems or self.notified or any(h.problem for h in self.hosts)
-        return EXIT_BAND[worst] or (EXIT_FAILED if failed else 0)
+        return EXIT_BAND[max(bands, key=BANDS.index)] if bands else 0
 
 
 def run(
@@ -233,47 +347,80 @@ def run(
     parallel: int = 5,
     say: Callable[[str], None] = print,
     collect: Callable | None = None,
+    environ: dict[str, str] | None = None,
 ) -> RunResult:
-    """Collect, analyze, report and purge what has expired; alert on what
-    got worse. Takes the run lock; raises Busy if another run holds it."""
+    """Collect, analyze, report and purge what has expired; say what needs a
+    look. Each step's trouble is caught and reported, so the later steps
+    and the notification still happen. Raises Busy if another run holds the
+    lock."""
     from checker.assess import analyze, prior_for
     from checker.baseline import USABLE
     from checker.collect import collect_hosts
     from checker.credentials import password_for
     from checker.evidence import Store, database_file
-    from checker.report import write_report
-    from checker.whitelist import WhitelistError
+    from checker.report import visible, write_report
     from checker.whitelist import for_host as whitelist_for_host
 
     collect = collect or collect_hosts
+    result = RunResult([])
     with run_lock(base):
+        state = load_state(base, identity)
+        seen = state.get("hosts") if isinstance(state.get("hosts"), dict) else {}
+        result.earlier = [
+            line if line.startswith(EARLIER) else EARLIER + line
+            for line in state.get("pending") or []
+            if isinstance(line, str)
+        ]
         store = Store(database_file(base))
         try:
-            before = {h.name: latest_assessment(store, h.name, identity) for h in hosts}
-            outcomes = asyncio.run(
-                collect(
-                    base,
-                    config,
-                    hosts,
-                    days=days,
-                    parallel=parallel,
-                    password_provider=unattended_password if unattended else password_for,
-                )
-            )
+            refused = {}
+            if unattended:
+                for host in hosts:
+                    if problems := host_problems(host, environ):
+                        refused[host.name] = "; ".join(problems)
+            todo = [h for h in hosts if h.name not in refused]
+            before = {
+                h.name: seen.get(h.name) or remembered(latest_assessment(store, h.name, identity))
+                for h in todo
+            }
+            outcomes = []
+            if todo:
+                try:
+                    outcomes = asyncio.run(
+                        collect(
+                            base,
+                            config,
+                            todo,
+                            days=days,
+                            parallel=parallel,
+                            password_provider=unattended_password if unattended else password_for,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 - every host shows as not collected
+                    result.problems.append(
+                        f"collection failed ({type(exc).__name__}: {visible(str(exc), 300)})"
+                    )
             by_host = {o.host: o for o in outcomes}
-            results, analysed = [], []
+            analysed = []
             for host in hosts:
                 outcome = by_host.get(host.name)
-                status = outcome.status if outcome else "not run"
-                result = HostResult(host.name, status)
-                results.append(result)
-                if outcome is None or status not in USABLE:
-                    why = (outcome.error if outcome else None) or status
-                    result.problem = f"not collected ({why})"
-                    result.alerts.append(f"{host.name}: {result.problem}")
+                item = HostResult(host.name, outcome.status if outcome else "not run")
+                result.hosts.append(item)
+                if host.name in refused:
+                    item.collected = "refused"
+                    item.problem = f"not collected: {visible(refused[host.name], 600)}"
+                    item.alerts.append(f"{host.name}: not collected (it would need a prompt)")
+                    continue
+                if outcome is None or outcome.status not in USABLE:
+                    # The status is the tool's word; the detail (a host's own
+                    # error text, perhaps) stays out of the summary.
+                    detail = visible((outcome.error if outcome else None) or "", 300)
+                    item.problem = f"not collected ({item.collected})" + (
+                        f": {detail}" if detail else ""
+                    )
+                    item.alerts.append(f"{host.name}: not collected ({item.collected})")
                     continue
                 try:
-                    whitelist = whitelist_for_host(base, host.name, inventory)
                     assessment = analyze(
                         store,
                         host.name,
@@ -281,22 +428,25 @@ def run(
                         config.recipients,
                         outcome.bundle_id,
                         prior_for(host.name, config, inventory),
-                        whitelist,
+                        whitelist_for_host(base, host.name, inventory),
                     )
-                except (EvidenceError, WhitelistError, OSError) as exc:
-                    result.problem = f"not analysed ({exc})"
-                    result.alerts.append(f"{host.name}: {result.problem}")
+                except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'
+                    item.problem = f"not analysed ({type(exc).__name__}: {visible(str(exc), 300)})"
+                    item.alerts.append(f"{host.name}: not analysed ({type(exc).__name__})")
                     continue
                 analysed.append(host.name)
-                result.band = _band(assessment)
-                result.probability = (assessment.get("score") or {}).get("probability")
-                result.alerts += alerts(host.name, before.get(host.name), assessment)
-                if outcome.error:
-                    result.problem = f"collected in part ({outcome.error})"
-            run_result = RunResult(results)
+                item.band = _band(assessment)
+                item.probability = (assessment.get("score") or {}).get("probability")
+                item.alerts += alerts(host.name, before.get(host.name), assessment)
+                seen[host.name] = remembered(assessment)
+                if outcome.status != "complete" or outcome.error:
+                    item.problem = f"collected in part ({outcome.status})" + (
+                        f": {visible(outcome.error, 300)}" if outcome.error else ""
+                    )
+                    item.alerts.append(f"{host.name}: collected in part ({outcome.status})")
             if analysed:
                 try:
-                    run_result.report = write_report(
+                    result.report = write_report(
                         store,
                         analysed,
                         identity,
@@ -306,16 +456,25 @@ def run(
                         whitelists=lambda name: _whitelist_or_none(base, name, inventory),
                         advisor_enabled=config.advisor.enabled,
                     )
-                except (EvidenceError, OSError) as exc:
-                    run_result.problems.append(f"the report couldn't be written ({exc})")
-            run_result.problems += _purge_expired(store, base, config, inventory, say)
+                except Exception as exc:  # noqa: BLE001 - the purge and the notice still happen
+                    result.problems.append(
+                        f"the report couldn't be written ({type(exc).__name__}:"
+                        f" {visible(str(exc), 300)})"
+                    )
+                    result.run_alerts.append("the report couldn't be written")
+            _purge_expired(store, base, config, inventory, say, result)
         finally:
             store.close()
-    if run_result.alerting and config.notify_command:
-        run_result.notified = notify(
-            config.notify_command, summary(run_result.alerting, run_result.report)
-        )
-    return run_result
+        pending: list[str] = []
+        if result.alerting and config.notify_command:
+            result.notified = notify(config.notify_command, summary(result.alerting, result.report))
+            if result.notified:
+                pending = result.alerting  # sent with the next run's
+        try:
+            save_state(base, {"hosts": seen, "pending": pending}, config.recipients)
+        except OSError as exc:
+            result.problems.append(f"the run's state couldn't be kept ({exc})")
+    return result
 
 
 def _whitelist_or_none(base: Path, host: str, inventory):
@@ -328,39 +487,78 @@ def _whitelist_or_none(base: Path, host: str, inventory):
         return None
 
 
-def _purge_expired(store, base: Path, config, inventory, say) -> list[str]:
-    """`checker purge --expired --yes`, as part of the run (policy §8)."""
+def _purge_expired(store, base: Path, config, inventory, say, result: RunResult) -> None:
+    """`checker purge --expired --yes`, as part of the run (policy §8). A
+    baseline it takes needs a look: changes before the next one no longer show."""
     from checker.purge import execute, leftovers
     from checker.purge import plan as purge_plan
 
     names = {h.name for h in inventory.hosts}
     if not names:
-        return ["nothing purged: the inventory is empty, and expiry keeps inventoried baselines"]
+        result.problems.append(
+            "nothing purged: the inventory is empty, and expiry keeps inventoried baselines"
+        )
+        return
     try:
         chosen = purge_plan(store, base, names, config.retention_days, expired=True)
         if chosen.outside:
-            return ["nothing purged: some bundles are stored outside the evidence folder"]
+            result.problems.append(
+                "nothing purged: some bundles are stored outside the evidence folder"
+            )
+            result.run_alerts.append("the expired evidence couldn't be purged")
+            return
         if not chosen.bundles and not leftovers(store, base):
-            return []
+            return
         outcome = execute(store, base, chosen)
-    except (EvidenceError, OSError, ValueError) as exc:
-        return [f"the expired evidence couldn't be purged ({exc})"]
+    except Exception as exc:  # noqa: BLE001 - the notice still happens
+        result.problems.append(f"the expired evidence couldn't be purged ({exc})")
+        result.run_alerts.append("the expired evidence couldn't be purged")
+        return
     say(f"Purged {outcome.counts['bundles']} expired bundle(s).")
-    return [f"couldn't delete {path} ({reason})" for path, reason in outcome.failed]
+    for host, what in sorted(chosen.baselines.items()):
+        result.run_alerts.append(
+            f"{host}: its expired baseline was purged; a newer bundle becomes its baseline"
+            if what == "moved"
+            else f"{host}: all its evidence had expired and was purged"
+        )
+    for path, reason in outcome.failed:
+        result.problems.append(f"couldn't delete {path} ({reason})")
+    if outcome.failed:
+        result.run_alerts.append("some expired files couldn't be deleted")
+
+
+def notify_crash(config, exc: BaseException) -> str | None:
+    """A run that stopped on something unforeseen still tells someone."""
+    if not config.notify_command:
+        return None
+    return notify(
+        config.notify_command,
+        summary([f"the scheduled run stopped: {type(exc).__name__}"], None),
+    )
 
 
 # --- The timer ----------------------------------------------------------------------------
 
 
+# What systemd won't take in a path, or would read as its own syntax.
+SYSTEMD_UNSAFE = re.compile(r"[\x00-\x1f\x7f\"'\\$`]")
+
+
+def systemd_unsafe(env: dict[str, str]) -> list[str]:
+    """The paths the timer would need that a systemd unit can't hold."""
+    return [w for w in [*command_line(), *env.values()] if SYSTEMD_UNSAFE.search(w)]
+
+
 def _systemd_word(word: str) -> str:
-    """One word of a systemd ExecStart= or Environment= line."""
-    escaped = word.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-    return f'"{escaped.replace("$", "$$")}"'
+    """One word of a systemd ExecStart= or Environment= line (checked
+    with systemd_unsafe() first; "%" is systemd's own, so doubled)."""
+    return '"' + word.replace("%", "%%") + '"'
 
 
 def command_line() -> list[str]:
     """The run the timer starts: this Python, this installation."""
-    return [sys.executable, "-m", "checker", "run", "--all", "--unattended"]
+    # -P: the timer's working directory isn't where Python looks for code.
+    return [sys.executable, "-P", "-m", "checker", "run", "--all", "--unattended"]
 
 
 def timer_environment(base: Path, hosts: list, environ: dict[str, str] | None = None) -> dict:
@@ -388,6 +586,8 @@ def systemd_units(at: tuple[int, int], env: dict[str, str]) -> dict[str, str]:
             "ExecStart=" + " ".join(_systemd_word(w) for w in command_line()),
             # Exit statuses 10-12 are the worst band, not a failure to run.
             "SuccessExitStatus=10 11 12",
+            # A run waiting on something forever would keep the timer from starting it again.
+            "TimeoutStartSec=4h",
             "Nice=10",
             "",
         ]

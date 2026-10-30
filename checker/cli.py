@@ -1796,6 +1796,8 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
 def cmd_run(args: argparse.Namespace) -> int:
     """One pass, as a timer starts it: collect, analyze, report, purge what
     has expired, and alert on hosts that got worse (checker.schedule)."""
+    import yaml
+
     from checker import schedule
 
     base = home()
@@ -1804,22 +1806,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         inventory = _inventory_for_priors()
         hosts = _select_hosts(args)
         identity = _identity(args, base)
-    except (EvidenceError, KeyError) as exc:
+    except (EvidenceError, KeyError, ValidationError, yaml.YAMLError) as exc:
         print(f"checker: {exc.args[0] if isinstance(exc, KeyError) else exc}", file=sys.stderr)
         return schedule.EXIT_SETUP
     if not hosts:
         print("checker: no hosts selected", file=sys.stderr)
         return schedule.EXIT_SETUP
-    if args.unattended:
-        problems = schedule.unattended_problems(hosts)
-        if problems:
-            for problem in problems:
-                print(f"checker: {problem}", file=sys.stderr)
-            print(
-                "checker: nothing collected: an unattended run would stop at a prompt",
-                file=sys.stderr,
-            )
-            return schedule.EXIT_SETUP
     try:
         result = schedule.run(
             base, config, hosts, identity, inventory,
@@ -1828,6 +1820,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     except schedule.Busy as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return schedule.EXIT_BUSY
+    except Exception as exc:  # noqa: BLE001 - unforeseen: say so, and tell someone
+        print(f"checker: the run stopped: {type(exc).__name__}: {exc}", file=sys.stderr)
+        failed = schedule.notify_crash(config, exc)
+        if failed:
+            print(f"checker: the notify command failed too: {failed}", file=sys.stderr)
+        return schedule.EXIT_FAILED
     for item in result.hosts:
         band = item.band or "-"
         shown = f" ({percent(item.probability)})" if item.probability is not None else ""
@@ -1845,19 +1843,27 @@ def cmd_run(args: argparse.Namespace) -> int:
         if not config.notify_command:
             print("(No notify_command is set, so no one else was told.)")
         elif result.notified:
-            print(f"checker: the notify command failed: {result.notified}", file=sys.stderr)
+            print(
+                f"checker: the notify command failed: {result.notified}; these are sent again"
+                " with the next run's",
+                file=sys.stderr,
+            )
         else:
             print("The notify command was given the summary.")
     return result.exit_status()
 
 
-def cmd_schedule_install(args: argparse.Namespace) -> int:
+def cmd_schedule_install(
+    args: argparse.Namespace, pause: Callable[[float], None] | None = None
+) -> int:
     import getpass
     import os
     import subprocess
+    import time
 
     from checker import schedule
 
+    pause = pause or time.sleep
     base = home()
     try:
         load_config(base)
@@ -1866,12 +1872,27 @@ def cmd_schedule_install(args: argparse.Namespace) -> int:
     except (EvidenceError, ValueError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 2
+    env = schedule.timer_environment(base, hosts)
+    unsafe = schedule.systemd_unsafe(env) if sys.platform != "darwin" else []
+    if unsafe:
+        print(
+            "checker: a systemd unit can't hold these paths (quotes, backslashes, $, ` or"
+            " control characters): " + ", ".join(repr(w) for w in unsafe),
+            file=sys.stderr,
+        )
+        return 2
     problems = schedule.unattended_problems(hosts)
     for problem in problems:
         print(f"Warning: {problem}")
     if problems:
-        print("Until that changes, each scheduled run stops before collecting anything.")
-    env = schedule.timer_environment(base, hosts)
+        print("Until that changes, each scheduled run leaves those hosts out and says so.")
+    if "SSH_AUTH_SOCK" in env:
+        print(
+            f"It uses the SSH agent at {env['SSH_AUTH_SOCK']}: its key must be unlocked when"
+            " the run starts, or the run waits for a passphrase no one types."
+        )
+    if sys.platform == "darwin" and os.environ.get("SSH_CONNECTION"):
+        print("A launchd agent runs while you are logged in at the Mac (not over SSH).")
     where = schedule.placement(sys.platform, at, env, base, Path.home())
     for path, content in where.files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1881,7 +1902,12 @@ def cmd_schedule_install(args: argparse.Namespace) -> int:
         (base / "logs").mkdir(exist_ok=True, mode=0o700)
         subprocess.run(where.stop[0], capture_output=True, check=False)  # noqa: S603 - a reload
     for command in where.start:
-        done = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+        # launchd may still be unloading the old agent: a few tries, a second apart.
+        for _ in range(5 if sys.platform == "darwin" else 1):
+            done = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+            if done.returncode == 0:
+                break
+            pause(1.0)
         if done.returncode != 0:
             print(
                 f"checker: `{' '.join(command)}` failed: {(done.stderr or '').strip()}",
@@ -1892,18 +1918,11 @@ def cmd_schedule_install(args: argparse.Namespace) -> int:
         f"`checker run --all --unattended` will run every day at {args.at} (this machine's time)."
     )
     print(f"Its output: {where.logs}")
-    if "SSH_AUTH_SOCK" in env:
-        print(
-            f"It uses the SSH agent at {env['SSH_AUTH_SOCK']}: its key must be unlocked when"
-            " the run starts, or the run waits for a passphrase no one types."
-        )
     if sys.platform != "darwin" and schedule.lingering(getpass.getuser()) is False:
         print(
             "It runs only while you are logged in. To run it at night with no one logged"
             f" in: sudo loginctl enable-linger {getpass.getuser()}"
         )
-    if sys.platform == "darwin" and os.environ.get("SSH_CONNECTION"):
-        print("A launchd agent runs while you are logged in at the Mac (not over SSH).")
     return 0
 
 

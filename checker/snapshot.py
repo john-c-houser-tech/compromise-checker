@@ -371,6 +371,7 @@ _SERVER_PARAM = re.compile(
 _SCAN_DIR = re.compile(r"\bPHP_INI_SCAN_DIR\b\s*[= ]\s*\"?([^\"\s;]*)", re.IGNORECASE)
 # A site's own PHP settings, read in the web roots walked (plan 4.4c).
 SITE_PHP_FILES = (".user.ini", ".htaccess")
+_SITE_UNREAD = re.compile(r"^\[PHP_VALUE set by ([A-Za-z ]+): not read\]$")
 
 
 def is_site_php(path: str) -> bool:
@@ -457,7 +458,12 @@ def php_settings(
         kind = "site" if site else "server"
         for line in lines:
             text = line.split("#", 1)[0]
-            if setting := _SERVER_SETTING.match(text):
+            if site and (unread := _SITE_UNREAD.match(line)):
+                # The collector named a directive setting PHP_VALUE some
+                # other way (SetEnvIf, a rewrite's E= flag), not its values.
+                how = unread.group(1)
+                add(f"{path}: {how}", {"kind": "site_unread", "how": how, "name": "PHP_VALUE"})
+            elif setting := _SERVER_SETTING.match(text):
                 how, name = setting.group(1).lower(), setting.group(2)
                 value = _ini_value(setting.group(3))
                 add(f"{path}: {how} {name}",
@@ -514,17 +520,14 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
     if module == "unusual_files":
         # A site's .user.ini or .htaccess not read, or not all of them:
         # PHP's settings are incomplete, the walk itself isn't.
-        if (
-            name == "site_php_partial"
-            or is_site_php(str(path or ""))
-            and name
-            in (
-                "unreadable_file",
-                "source",
-            )
+        if name in ("site_php_partial", "site_php_missing") or (
+            is_site_php(str(path or "")) and name in ("unreadable_file", "source")
         ):
             return {"php_settings"}
-        return {"unusual_files", "web_files", "privileged_files"}
+        walked = {"unusual_files", "web_files", "privileged_files"}
+        if name == "phase_time_limit" and data.get("phase") == "web_roots":
+            return walked | {"php_settings"}  # sites' files may not all be read
+        return walked
     if module == "system_files":
         return {"privileged_files", "unowned_executables"}
     if module == "software":
@@ -749,6 +752,7 @@ class SnapshotBuilder:
         self._gaps: dict[str, list[tuple[str, set[str] | None]]] = {}
         self._names: dict[str, dict[str, int]] = {}
         self._unread: list[tuple[str, dict[str, Any]]] = []
+        self._site_php_read = False  # the collector said every web root's sites were read
         self._settings: list[tuple[str, list[str]]] = []  # logging configuration text
         self._mail_text: list[tuple[str, list[str]]] = []  # mail configuration text
         self._mac: dict[str, Any] | None = None
@@ -1017,6 +1021,8 @@ class SnapshotBuilder:
             self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 
     def _on_unusual_files(self, name: str, data: dict[str, Any]) -> None:
+        if name == "site_php":
+            self._site_php_read = True
         sections = {
             "unusual_file": "unusual_files",
             "web_file": "web_files",
@@ -1324,6 +1330,11 @@ class SnapshotBuilder:
 
     def finish(self) -> Snapshot:
         self._settle_unread()
+        result = (self.trailer_data.modules if self.trailer_data else {}).get("unusual_files")
+        if result is not None and result.status == "ok" and not self._site_php_read:
+            # An older collector: no site's .user.ini or .htaccess was read.
+            why = "sites' .user.ini and .htaccess weren't read (an older collector)"
+            self._module_gap("unusual_files", why, "site_php_missing", {})
         self._listeners()
         self._peers()
         self._logging()

@@ -171,8 +171,8 @@ def test_a_sites_user_ini_and_htaccess():
     ]  # PHP_INI_SCAN_DIR is read as PHP starts: a site can't set it
 
 
-def site_records(*extra, planned=("host_facts", "web_logs", "unusual_files")):
-    return host_records(planned=list(planned), extra=list(extra))
+def site_records(*extra, planned=("host_facts", "web_logs", "unusual_files"), site_php=True):
+    return host_records(planned=list(planned), extra=list(extra), site_php=site_php)
 
 
 def test_site_files_feed_php_settings(tmp_path):
@@ -217,3 +217,24 @@ def test_the_hour_that_happens_twice_is_uncertain():
     builder.record(record("software", "package_change", **change, local_time="2026-11-02 01:30:00"))
     twice, once = builder.events
     assert twice.fields.get("time_uncertain") is True and "time_uncertain" not in once.fields
+
+
+def test_a_php_value_set_some_other_way_is_kept_as_unread():
+    found = php_settings("/var/www/a/.htaccess", ["[PHP_VALUE set by SetEnvIf: not read]"], True)
+    assert [(i["kind"], i["how"]) for _, i in found] == [("site_unread", "SetEnvIf")]
+    # Only the collector's marker, only in a site's file.
+    assert php_settings("/etc/apache2/a.conf", ["[PHP_VALUE set by SetEnvIf: not read]"]) == []
+
+
+def test_an_older_collector_that_read_no_site_files_leaves_php_settings_incomplete(tmp_path):
+    snap = snapshot_of_records(site_records(site_php=False), tmp_path)
+    assert not snap.sections["php_settings"].complete
+    assert any("older collector" in gap for gap in snap.sections["php_settings"].gaps)
+    assert snap.sections["web_files"].complete
+
+
+def test_running_out_of_time_in_the_web_roots_leaves_php_settings_incomplete(tmp_path):
+    late = rec("unusual_files", "phase_time_limit", phase="web_roots", share=0.5)
+    assert not snapshot_of_records(site_records(late), tmp_path).sections["php_settings"].complete
+    early = rec("unusual_files", "phase_time_limit", phase="scratch", share=0.25)
+    assert snapshot_of_records(site_records(early), tmp_path).sections["php_settings"].complete

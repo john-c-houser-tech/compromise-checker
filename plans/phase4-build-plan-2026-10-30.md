@@ -379,6 +379,33 @@ is John's to approve before it is committed. Also:
   `php_value` (Apache's module) always counts. The in-place note now
   names what's still unseen: sites outside the web roots examined, and
   `ini_set`.
+- **After review (4.4c; 4 high, 5 medium, 6 low), all fixed:**
+  - a folder swapped for a link between the walk and the read could reach
+    a kept-out home: the file opened must now be the walked inode;
+  - secret settings inside `SetEnv PHP_VALUE` went out unmasked: each
+    pair is masked whole now, and any other directive naming `PHP_VALUE`
+    is sent only as a marker naming the directive ("not seen");
+  - time running out, or a root not examined, left `php_settings`
+    complete: `site_php_partial` is now recorded however reading ends,
+    a web-roots time limit maps to `php_settings`, and a `site_php`
+    record marks a collection that went through every root (without it,
+    an older collector: a gap);
+  - PHP-FPM applies a FastCGI `PHP_VALUE` over `php_admin_*` (php-src
+    `fpm_php_zend_ini_alter_master`): only `.user.ini` is locked out now;
+  - `user_ini.filename` is resolved per set-up and pool (empty: none
+    read; another name: "not seen");
+  - site values count only where something reads them: `.user.ini` under
+    PHP-FPM or CGI, `.htaccess` `php_*` under Apache's PHP module,
+    `SetEnv PHP_VALUE` under Apache with PHP-FPM;
+  - a linked site file is counted, never opened (its target was sent
+    unmasked); `.user.ini` sections aren't sent.
+  - Not modelled (they only make a site count where it might not):
+    which pools serve which site, AllowOverride, `<IfModule>`, Apache's
+    own `php_admin_*`, a `.user.ini` above the document root. One goes
+    the other way: RHEL's php-cgi (mod_fcgid) isn't recognised as CGI,
+    so with every pool locked a site's `.user.ini` there is wrongly left
+    out; the judge sees settings and files, not which packages provide
+    php-cgi.
 
 ### 4.5 — Detections
 

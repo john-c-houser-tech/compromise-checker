@@ -10,21 +10,28 @@ conf.d files in name order; the last occurrence of a setting outside
 built-in default, the pack's `default` (session.upload_progress.enabled's
 is On). Each place a site can get another value is a place of its own: a
 [PATH=]/[HOST=] section, each PHP-FPM pool (its php_admin_* first, which
-nothing overrides, else its php_value/php_flag, else the set-up's), and
-the web server's own PHP settings (Apache's php_value, a FastCGI
-PHP_VALUE), and each site's .user.ini or .htaccess in the web roots walked
-(plan 4.4c). A site's value doesn't count where every PHP-FPM pool sets
-the setting with php_admin_* to the expected value and no CGI set-up reads
-.user.ini, since nothing overrides php_admin_* (Apache's php_value in an
-.htaccess still counts: which pools serve which site isn't known, nor
-whether Apache's own php_admin_* covers it). Several values for one place:
-the one that isn't the expected, if any. A mitigation is in place only if
-every place has the expected value; missing if any has another; otherwise
-"not seen": PHP's settings not collected whole (a site's file not read
-among them), no set-up found, a file in the chain not read (a link out of
-/etc), a pool file included from elsewhere, or PHP_INI_SCAN_DIR adding
-folders. Sites outside the web roots walked, and ini_set at run time,
-aren't seen (the report says so).
+nothing in PHP's files overrides, else its php_value/php_flag, else the
+set-up's), the web server's own PHP settings (Apache's php_value, a
+FastCGI PHP_VALUE), and each site's .user.ini or .htaccess in the web
+roots walked (plan 4.4c), where something reads it:
+- .user.ini: PHP-FPM and CGI, under the name user_ini.filename gives (set
+  empty: none read; another name: those files weren't read, "not seen");
+  not where every pool reading it sets the setting with php_admin_* as
+  expected, which a .user.ini can't override;
+- .htaccess: only under Apache — php_value/php_flag through Apache's PHP
+  module; SetEnv PHP_VALUE / PHP_ADMIN_VALUE through PHP-FPM, which applies
+  them over any php_admin_* (php-src fpm_php_zend_ini_alter_master); one
+  set some other way (SetEnvIf, a rewrite's E= flag) was only named, "not
+  seen". Which sites a pool serves, AllowOverride, <IfModule> and Apache's
+  own php_admin_* aren't modelled: those only make a site count where it
+  might not.
+Several values for one place: the one that isn't the expected, if any. A
+mitigation is in place only if every place has the expected value; missing
+if any has another; otherwise "not seen": PHP's settings not collected
+whole (a site's file not read among them), no set-up found, a file in the
+chain not read (a link out of /etc), a pool file included from elsewhere,
+or PHP_INI_SCAN_DIR adding folders. Sites outside the web roots walked, and
+ini_set at run time, aren't seen (the report says so).
 """
 
 from __future__ import annotations
@@ -140,48 +147,89 @@ def _worst(values: list[tuple[str, str | None]], expect: str) -> tuple[str, str 
     return (wrong or values)[-1]
 
 
+def _setup_value(name: str, default: str | None, setup: _Setup, by_path: dict, files: dict):
+    """A setting in one set-up as PHP loads it: (its value, the file that set
+    it, its [PATH=]/[HOST=] places, doubts about files in the chain)."""
+    ini = (files.get(setup.name) or {}).get("resolved") or setup.name
+    chain = ([ini] if setup.name in files or ini in by_path else []) + _conf_d(setup.conf_d, files)
+    doubts = [
+        f"{path} is in {setup.name}'s settings but wasn't read"
+        for path in chain
+        if "content_sha256" not in (files.get(path) or {}) and path not in by_path
+    ]
+    value, source, scoped = default, DEFAULT, []
+    for path in chain:
+        for item in by_path.get(path, []):
+            if item.get("kind") != "ini" or item.get("name") != name:
+                continue
+            section = str(item.get("section") or "")
+            if section.upper().startswith(("PATH=", "HOST=")):
+                scoped.append(Place(f"{path} [{section}]", item.get("value"), path))
+            else:
+                value, source = item.get("value"), path
+    return value, source, scoped, doubts
+
+
 def _places(mitigation: Any, setups: list[_Setup], by_path: dict, files: dict):
     name, expect = mitigation.setting.name, mitigation.expect
-    places, doubts, fpm_pools = [], [], []
+    places, doubts = [], []
+    paths = set(by_path) | set(files)
+    # What reads a site's .user.ini: PHP-FPM (each pool) and CGI, as
+    # (where, locked: the pool's php_admin_* sets it as expected, which a
+    # .user.ini can't override, user_ini.filename there).
+    user_ini: list[tuple[str, bool, str]] = []
+    fpm = False
     for setup in setups:
-        ini = (files.get(setup.name) or {}).get("resolved") or setup.name
-        chain = ([ini] if setup.name in files or ini in by_path else []) + _conf_d(
-            setup.conf_d, files
+        value, source, scoped, chain_doubts = _setup_value(
+            name, mitigation.default, setup, by_path, files
         )
-        for path in chain:
-            if "content_sha256" not in (files.get(path) or {}) and path not in by_path:
-                doubts.append(f"{path} is in {setup.name}'s settings but wasn't read")
-        value, source = mitigation.default, DEFAULT
-        for path in chain:
-            for item in by_path.get(path, []):
-                if item.get("kind") != "ini" or item.get("name") != name:
-                    continue
-                section = str(item.get("section") or "")
-                if section.upper().startswith(("PATH=", "HOST=")):
-                    places.append(Place(f"{path} [{section}]", item.get("value"), path))
-                else:
-                    value, source = item.get("value"), path
+        places += scoped
+        doubts += chain_doubts
         pools, pool_doubts = _pools(name, expect, setup, by_path, value, source)
         doubts += pool_doubts
-        fpm_pools += pools
         # A set-up with pools runs its requests in them; without, as set.
         places += pools if pools else [Place(setup.name, value, source)]
-    # A site's .user.ini (or a PHP_VALUE its .htaccess passes to PHP-FPM)
-    # can't override a pool's php_admin_*; only PHP-FPM and CGI read them.
-    cgi = any(s.name.endswith("/cgi/php.ini") for s in setups)
-    locked = (
-        bool(fpm_pools)
-        and not cgi
-        and all(p.admin and normal(p.value) == normal(expect) for p in fpm_pools)
-    )
+        cgi = setup.name.endswith("/cgi/php.ini")
+        runs_fpm = bool(setup.fpm) and any(p.startswith(setup.fpm) for p in paths)
+        if not (cgi or runs_fpm):
+            continue  # Apache's own PHP module: it reads .htaccess, not .user.ini
+        fpm = fpm or runs_fpm
+        filename = _setup_value("user_ini.filename", ".user.ini", setup, by_path, files)[0]
+        named = {
+            p.where: p.value
+            for p in _pools("user_ini.filename", ".user.ini", setup, by_path, filename, "")[0]
+        }
+        for pool in pools if runs_fpm and pools else []:
+            locked = pool.admin and normal(pool.value) == normal(expect)
+            user_ini.append((pool.where, locked, str(named.get(pool.where, filename) or "")))
+        if cgi or not pools:
+            user_ini.append((setup.name, False, str(filename or "")))
+    for where, _, filename in user_ini:
+        if filename.strip() not in ("", ".user.ini"):
+            doubts.append(f"{where} reads sites' {filename.strip()}, which wasn't read")
+    # A site's .user.ini counts where something reads it under that name
+    # and no pool's php_admin_* locks the setting; its .htaccess only under
+    # Apache: php_value / php_flag (kept lowercase) through Apache's PHP
+    # module, SetEnv PHP_VALUE (uppercase) passed on to PHP-FPM, which
+    # applies it whatever php_admin_* says.
+    apache = any(p.startswith(("/etc/apache2/", "/etc/httpd/")) for p in paths)
+    mod_php = apache and any(not s.name.startswith("/etc/php/") or "/apache2/" in s.name
+                             for s in setups)  # fmt: skip
+    reads_user_ini = any(not locked and f.strip() == ".user.ini" for _, locked, f in user_ini)
     for path, items in sorted(by_path.items()):
         for item in items:
             kind, how = item.get("kind"), str(item.get("how"))
+            if kind == "site_unread" and apache and fpm:
+                doubts.append(f"{path} sets PHP_VALUE with {how}, whose value wasn't read")
             if kind not in ("server", "site") or item.get("name") != name:
                 continue
-            # Apache's php_value / php_flag (kept lowercase) aren't locked;
-            # .user.ini and PHP_VALUE (uppercase: a FastCGI parameter) are.
-            if kind == "site" and locked and not how.startswith("php_"):
+            if kind == "site" and not (
+                reads_user_ini
+                if how == ".user.ini"
+                else mod_php
+                if how.startswith("php_")
+                else apache and fpm
+            ):
                 continue
             places.append(Place(f"{path} ({how})", item.get("value"), path))
     for path, items in sorted(by_path.items()):

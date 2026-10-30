@@ -623,17 +623,27 @@ use up another's time; one that runs out of its share stops there
   `.htaccess` found there (up to 500 per web root) is then read for its
   PHP settings alone (plan 4.4c): a site can set a threat pack's
   mitigation back for itself there. From `.user.ini` only directive lines
-  are sent (as from php.ini, the same secret-named values masked whole);
-  from `.htaccess` only `php_value`, `php_flag`, their `php_admin_` forms
-  and a `PHP_VALUE` passed to PHP-FPM (`SetEnv`), masked — rewrite rules,
-  authentication lines and every other line are left out. These are the
-  only file contents read in a web root, and only under the rules for
-  walked files (no hard link, nothing inside a home kept out, no link
-  followed: the name and the web root are checked on the file actually
-  opened). One not read — a link, a refusal, a path that masking would
-  change (a source's path is sent as it is), more than 500, or a walk of
-  the root not whole — is reported (`site_php_partial`: found, read), and
-  the PHP settings count as incomplete;
+  are sent (as from php.ini, the same secret-named values masked whole; no
+  `[section]` lines); from `.htaccess` only `php_value`, `php_flag` and
+  their `php_admin_` forms, and `SetEnv PHP_VALUE` / `PHP_ADMIN_VALUE`,
+  masked — each secret-named setting's value whole, inside a `PHP_VALUE`
+  too. Another directive naming `PHP_VALUE` (`SetEnvIf`, `BrowserMatch`,
+  `ProxyFCGISetEnvIf`, a rewrite's `E=` flag) is sent only as a marker
+  naming the directive (`[PHP_VALUE set by SetEnvIf: not read]`), none of
+  its arguments; rewrite rules, authentication lines and every other line
+  are left out. These are the only file contents read in a web root, and
+  only under the rules for walked files (no hard link, nothing inside a
+  home kept out — www-data's home is often `/var/www`, kept out if a
+  shell history file is there), and only the very file the walk listed:
+  the file opened must have the walked inode on the root's filesystem, so
+  a folder swapped for a link afterwards leads nowhere. A link named
+  `.user.ini` or `.htaccess` is counted, never opened. One not read — a
+  link, a refusal, a path that masking would change (a source's path is
+  sent as it is), more than 500, a walk of the root not whole, a root not
+  examined, or time running out — is reported (`site_php_partial`), and
+  the PHP settings count as incomplete; a `site_php` record says every
+  web root was gone through (a collection without one, from an older
+  collector, read no site files);
 - every other top-level directory the system walk (`system_files`) doesn't
   cover — `/var`, `/home`, `/root`, `/srv`, `/run`, `/mnt`, `/media`, and
   whatever else is there (`/data`, `/app`, `/.x`) — and the files directly

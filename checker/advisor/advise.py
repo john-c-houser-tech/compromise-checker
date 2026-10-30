@@ -12,6 +12,7 @@ whitelist or a setting.
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -163,20 +164,24 @@ def advise(
     if outcome.status == "answered":
         ids = {f["id"] for f in payload.get("findings") or []}
         try:
-            CHECKS[role](outcome.answer, ids, which["band"], _quoted(payload))
+            own = (payload.get("host") or {}).get("name")
+            quoted = _quoted(payload) | ({own} if isinstance(own, str) and own else set())
+            CHECKS[role](outcome.answer, ids, which["band"], quoted)
         except InvalidAnswer as exc:
             status, note = "invalid", f"the answer was set aside: it {exc}"
         else:
             answer = _restore(raw, pseudonyms.restore) if pseudonyms is not None else raw
     judged, written = None, None
     if status == "answered" and role == "remediation":
-        from checker.advisor.roles import DESTRUCTIVE
+        from checker.advisor.roles import DESTRUCTIVE, _plain
 
-        # Marked by the tool's own reading too, whatever the step says.
+        # Marked by the tool's own reading too, whatever the step says; on a
+        # copy, so the stored raw answer stays the model's.
+        answer = copy.deepcopy(answer)
         for key in ("preserve", "contain", "eradicate", "recover"):
             for step in answer.get(key) or []:
                 step["destructive"] = bool(step.get("destructive")) or bool(
-                    DESTRUCTIVE.search(step.get("action") or "")
+                    DESTRUCTIVE.search(_plain(step.get("action") or ""))
                 )
     if status == "answered" and role == "coverage":
         from checker.advisor.coverage import judge as judge_coverage

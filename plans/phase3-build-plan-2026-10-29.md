@@ -313,6 +313,21 @@ assessment, its events, snapshot and whitelist, by one module
   Asked whenever the operator asks for it; the urgency rule keeps a quiet
   host's answer small. The display marks destructive steps by the tool's
   own reading too.
+- **After review (2026-10-29):** destructive is read from verb stems and
+  commands after NFKC folding and dropping hidden characters, and words
+  mixing look-alike letters from other scripts are refused; in contain,
+  eradicate and recover a destructive step (by flag or reading) needs
+  preservation first, while a preservation step is refused only when the
+  model itself flags it (a keyword there is marked, not rejected:
+  "do not reboot until…"); changing passwords or keys isn't destructive;
+  urgent plans start with preservation; every step cites a finding; an
+  unknown band fails closed; nothing may move data to or fetch code from
+  an address, host, domain or URL from the case or written out (the
+  host's own name excepted), and nothing pipes into a shell; tell is
+  checked in all its fields for addresses, placeholders and numbers. The
+  prompt states these rules so answers aren't paid for and set aside.
+  Keyword reading is best effort: the answer is advice a person reads,
+  and nothing runs.
 
 ### 3.6 — Advisor eval
 

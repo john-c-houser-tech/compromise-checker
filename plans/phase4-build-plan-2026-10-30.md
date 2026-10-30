@@ -230,7 +230,8 @@ is John's to approve before it is committed. Also:
 
 ## Decisions to settle (one at a time)
 
-- **D1. What a pack's detections can say.** A small declarative language
+- **D1. What a pack's detections can say. Decided 2026-10-30 (John): the
+  small language.** A small declarative language
   (events, snapshot items and core checks, with bounded matching and
   counts), so a pack can teach the tool about a new threat without a new
   release of the tool; or detections only as references to checks built

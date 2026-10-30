@@ -258,7 +258,8 @@ is John's to approve before it is committed. Also:
   never by running `php`), keeps only directive names and values, and
   masks them like any other text; a new module part, read-only like the
   rest, proven by the read-only proof.
-- **D5. The signing key.** John makes a minisign key pair on his machine
+- **D5. The signing key. Decided 2026-10-30 (John): he makes it at 4.8;
+  a test key until then.** John makes a minisign key pair on his machine
   (`minisign -G`), keeps the secret key and its password in 1Password with
   an offline backup, and gives me the public key to put in the tool and on
   nouriloop.com.

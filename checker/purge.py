@@ -144,7 +144,7 @@ def _reports(store: Store, base: Path, bundle_ids: list[str]) -> list[Path]:
     by the hash each report left in the custody of the bundles it covers. A
     report written elsewhere (`--output`) is the operator's to delete."""
     return _derived(
-        store, base / "reports", "report-*.html", bundle_ids, "reported", "report_sha256"
+        store, base / "reports", "report-*.html*", bundle_ids, "reported", "report_sha256"
     )
 
 

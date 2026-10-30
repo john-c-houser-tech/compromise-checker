@@ -861,8 +861,20 @@ def build_parser() -> argparse.ArgumentParser:
     chosen = reporting.add_mutually_exclusive_group(required=True)
     chosen.add_argument("host", nargs="?")
     chosen.add_argument("--all", action="store_true", help="every host with a usable bundle")
+    chosen.add_argument(
+        "--open",
+        nargs="?",
+        const="",
+        metavar="FILE",
+        help="show a report in the browser (default: the newest), keeping no plain copy",
+    )
     reporting.add_argument("--bundle", help="this bundle rather than the host's latest")
-    reporting.add_argument("--output", help="the file to write (default: reports/ in the home)")
+    reporting.add_argument(
+        "--output", help="the file to write (default: reports/ in the home; ends in .age)"
+    )
+    reporting.add_argument(
+        "--plain", action="store_true", help="write plain HTML, not encrypted (to hand it on)"
+    )
     reporting.add_argument("--identity", help="the evidence private key file")
     reporting.set_defaults(handler=cmd_report)
     changed = commands.add_parser(
@@ -1335,8 +1347,11 @@ def cmd_advise(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    """Write the HTML report: owner-only, confidential (policy §8)."""
+    """Write the HTML report: owner-only, encrypted unless --plain,
+    confidential (policy §8); or, with --open, show one."""
     base = home()
+    if args.open is not None:
+        return _open_report(args, base)
     store = Store(database_file(base))
     try:
         if args.all:
@@ -1361,6 +1376,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             partial(prior_for, config=config, inventory=inventory),
             whitelists.get,
             config.advisor.enabled,
+            args.plain,
         )
     except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -1368,10 +1384,30 @@ def cmd_report(args: argparse.Namespace) -> int:
     finally:
         store.close()
     print(f"Report written to {path}")
-    print(
-        "It is confidential: it describes weaknesses an attacker could use."
-        " Handle it like the evidence."
-    )
+    if args.plain:
+        print(
+            "Warning: it is plain HTML, not encrypted, and confidential: it describes weaknesses"
+            " an attacker could use. Keep it out of backups and synced folders, and delete it"
+            " when it has been read."
+        )
+    else:
+        print(f"Encrypted to the evidence key. To read it: checker report --open {path}")
+    return 0
+
+
+def _open_report(args: argparse.Namespace, base: Path) -> int:
+    from checker.report import latest_report, view
+
+    try:
+        path = Path(args.open) if args.open else latest_report(base / "reports")
+        if path is None:
+            raise EvidenceError("no report yet: `checker report HOST` writes one")
+        view(path, _identity(args, base))
+    except (EvidenceError, OSError, UnicodeDecodeError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("Plain copy deleted.")
     return 0
 
 

@@ -127,7 +127,10 @@ What works today:
   encrypted ([checks](docs/checks.md), [scoring](docs/scoring.md)).
 - `checker report HOST|--all` — writes one self-contained, confidential HTML
   report: findings with their evidence, a timeline, coverage, and the
-  collection's hashes and chain of custody ([report](docs/report.md)).
+  collection's hashes and chain of custody, encrypted to the evidence key
+  (`--plain` for plain HTML to hand on); `checker report --open [FILE]`
+  shows one in the browser and deletes the plain copy a minute later
+  ([report](docs/report.md)).
 - `checker whitelist check [HOST]`, `test HOST --file F`, `stale` —
   validate the whitelist files (global, per group, per host) and show a
   host's merged rules; show what a proposed file would hide or reveal on

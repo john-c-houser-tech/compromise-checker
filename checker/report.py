@@ -13,13 +13,16 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 import unicodedata
+import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pyrage
 from jinja2 import Environment, PackageLoader, select_autoescape
 from markupsafe import Markup
 from pyrage import x25519
@@ -386,9 +389,16 @@ def write_report(
     priors: Callable[[str], tuple[float, str]] | None = None,
     whitelists: Callable[[str], Whitelist | None] | None = None,
     advisor_enabled: bool = False,
+    plain: bool = False,
 ) -> Path:
-    """Write the report (owner-only, like the evidence) and add a
-    `reported` entry, with the report's hash, to each bundle's custody."""
+    """Write the report, encrypted to the evidence key (`report-….html.age`;
+    read_report() reads it) unless `plain`, owner-only either way, and add
+    a `reported` entry, with the hash of the file as written, to each
+    bundle's custody."""
+    if output is not None and not plain and output.suffix != ".age":
+        raise EvidenceError(
+            f"an encrypted report's name ends in .age ({output.name}); --plain writes plain HTML"
+        )
     priors = priors or (lambda _: (DEFAULT_PRIOR, "default"))
     whitelists = whitelists or (lambda _: None)
     reports = [
@@ -401,8 +411,10 @@ def write_report(
         directory.chmod(0o700)  # also when it was already there
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         name = hosts[0] if len(hosts) == 1 else f"{len(hosts)}-hosts"
-        output = directory / f"report-{name}-{stamp}.html"
+        output = directory / (f"report-{name}-{stamp}.html" + ("" if plain else ".age"))
     data = html.encode("utf-8", "backslashreplace")  # never fails on stray text
+    if not plain:
+        data = pyrage.encrypt(data, [x25519.Recipient.from_str(r) for r in recipients])
     # Written whole beside its place (mkstemp makes it owner-only) and then
     # moved there: a crash leaves the old file, a link at the path is
     # replaced rather than followed, and no one holding the old file open
@@ -419,5 +431,72 @@ def write_report(
         raise
     digest = hashlib.sha256(data).hexdigest()
     for report in reports:
-        store.custody(report.row["id"], "reported", {"report_sha256": digest})
+        store.custody(
+            report.row["id"], "reported", {"report_sha256": digest, "encrypted": not plain}
+        )
     return output
+
+
+def read_report(path: Path, identity: x25519.Identity) -> str:
+    """A report's HTML: decrypted when it was written encrypted (.age). The
+    one way in for anything that shows reports."""
+    data = path.read_bytes()
+    if path.suffix == ".age":
+        try:
+            data = pyrage.decrypt(data, [identity])
+        except pyrage.DecryptError as exc:
+            raise EvidenceError(f"cannot decrypt {path.name}: {exc}") from None
+    return data.decode("utf-8")
+
+
+def latest_report(directory: Path) -> Path | None:
+    """The newest report in the reports folder, encrypted or plain."""
+    found = [
+        p
+        for p in directory.glob("report-*.html*")
+        if p.name.endswith((".html", ".html.age")) and p.is_file() and not p.is_symlink()
+    ]
+    return max(found, key=lambda p: p.stat().st_mtime) if found else None
+
+
+VIEW_SECONDS = 60
+
+
+def view(
+    path: Path,
+    identity: x25519.Identity,
+    seconds: float = VIEW_SECONDS,
+    browser: Callable[[str], bool] | None = None,
+    wait: Callable[[float], None] | None = None,
+    ask: Callable[[str], str] = input,
+    say: Callable[[str], None] = print,
+) -> None:
+    """Show a report in the browser: a plain copy, owner-only, in a private
+    temporary folder (the session's runtime folder where there is one, so
+    memory, not disk), deleted once the browser has had time to read it."""
+    html = read_report(path, identity)
+    browser = browser or webbrowser.open
+    wait = wait or time.sleep
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    folder = Path(
+        tempfile.mkdtemp(
+            prefix="checker-report-", dir=runtime if runtime and Path(runtime).is_dir() else None
+        )
+    )
+    copy = folder / path.name.removesuffix(".age")
+    try:
+        fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(html)
+        if browser(copy.as_uri()):
+            say(
+                f"Opened {path.name}. The plain copy goes in {seconds:.0f} seconds (Ctrl-C:"
+                " now); reloading the page then needs `checker report --open` again."
+            )
+            wait(seconds)
+        else:
+            say(f"No browser could be started. The plain copy is at {copy}.")
+            ask("Press Enter to delete it: ")
+    finally:
+        copy.unlink(missing_ok=True)
+        folder.rmdir()

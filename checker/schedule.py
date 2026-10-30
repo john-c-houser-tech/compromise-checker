@@ -267,6 +267,8 @@ def summary(alerting: list[str], report: Path | None) -> str:
     text = f"Compromise Checker: {len(alerting)} thing(s) need a look\n\n" + "\n".join(alerting)
     if report is not None:
         text += f"\n\nReport: {report}"
+        if report.suffix == ".age":
+            text += f"\nTo read it: checker report --open {report}"
     return text + "\n"
 
 

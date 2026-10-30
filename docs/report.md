@@ -77,9 +77,19 @@ may have chosen them. The report:
 
 ## Where it goes
 
+- **Encrypted.** The report is encrypted to the evidence key, as the
+  evidence is (`report-HOST-TIME.html.age`). `checker report --open [FILE]`
+  (the newest by default) shows it: it decrypts a plain copy, readable
+  only by you, into a private temporary folder (the session's runtime
+  folder on Linux, in memory), opens it in the browser and deletes it a
+  minute later. Reloading the page then needs `--open` again. With no
+  browser to start (over SSH), it prints where the copy is and deletes it
+  when you press Enter.
+- **Plain, on purpose.** `--plain` writes plain HTML, to hand a report to
+  someone; it says so, and the file is yours to protect and delete.
 - **Location.** By default the report goes to `reports/` in the checker's
   home (a directory only its owner can open). `--output` writes it anywhere
-  else.
+  else (its name must end in `.age` unless `--plain`).
 - **Written whole, then moved into place.** The report is written to an
   owner-only temporary file beside its destination and then moved there,
   so:
@@ -90,12 +100,16 @@ may have chosen them. The report:
   The `reports/` directory is made owner-only, also when it already
   existed.
 - **Custody.** Each bundle in the report gets a `reported` entry in its
-  chain of custody, with the report's SHA-256.
+  chain of custody, with the SHA-256 of the file as written and whether it
+  is encrypted.
 
 Reports are confidential (policy §8): they describe weaknesses an attacker
 could use, and they repeat much of the evidence: file names, log lines,
-command lines (already masked). The report file itself is not encrypted, so
-keep the reports folder out of backups and synced folders, and delete
-reports you no longer need. `checker purge` deletes the reports in the
+command lines (already masked). Encryption keeps a copy of the reports
+folder (a backup, a synced folder, a disk image) from being read without
+the evidence key; it doesn't keep them from someone who can log in as you
+where that key is. Reports written before encryption, and plain ones, are
+not encrypted: keep them out of backups and synced folders, and delete
+them when they have been read. `checker purge` deletes the reports in the
 reports folder that show a purged bundle; a report written elsewhere with
 `--output` is yours to delete ([retention](retention.md)).

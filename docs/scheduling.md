@@ -113,7 +113,8 @@ Compromise Checker: 2 thing(s) need a look
 web01: Low to High (67.1%)
 web01: new critical: An account other than root has UID 0
 
-Report: /home/ops/.config/checker/reports/report-web01-20261030T030012Z.html
+Report: /home/ops/.config/checker/reports/report-web01-20261030T030012Z.html.age
+To read it: checker report --open /home/ops/.config/checker/reports/report-web01-20261030T030012Z.html.age
 ```
 
 It is in the tool's own words: host names (as in your inventory), bands,

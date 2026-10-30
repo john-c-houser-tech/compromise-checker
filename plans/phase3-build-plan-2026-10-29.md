@@ -672,7 +672,17 @@ The advisor's answers can't be golden-tested, so they are measured.
   Policy §10 (John approved the wording, 2026-10-30): notifications from
   `checker run` added to what can leave. It can send data somewhere, so
   under §15 it goes at the top of the next release's notes.
+- **3.12 — Reports encrypted at rest (2026-10-30, John: "build it that
+  way"; a web interface to view them comes later, DESIGN Phase 5).**
+  `write_report` encrypts to the evidence key (`report-….html.age`) unless
+  `plain` (`--plain`, with a warning); `--output` must end in `.age`
+  unless plain. Custody records the hash of the file as written and
+  `encrypted`. `read_report()` is the one way in (the web interface will
+  use it). `checker report --open [FILE]` (newest by default) writes a
+  plain copy, owner-only, in a private temporary folder
+  (`$XDG_RUNTIME_DIR` where there is one), opens the browser and deletes
+  it after a minute, or on Enter when no browser starts. Purge finds both
+  kinds by hash; the notify summary says how to open the report.
+  Reports written before stay as they are.
 - Carried over: RHEL proof only if there is interest; package verification
-  against vendor packages; report encryption at rest (John's decision
-  2026-10-27: revisit after the currently planned phases); outbound
-  connections over time.
+  against vendor packages; outbound connections over time.

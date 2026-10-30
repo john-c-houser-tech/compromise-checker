@@ -985,7 +985,7 @@ def _advise_all(args, base, store, config, inventory, identity) -> int:
     """`checker advise --all`: every host's estimate first, one question for
     the whole run (against advisor.max_cost_per_run, as one run), then each
     request in turn. A host that can't be asked is said and skipped."""
-    from checker.advisor.advise import advise, plan
+    from checker.advisor.advise import _client, advise, plan
     from checker.advisor.client import AdvisorError
 
     advisor = config.advisor
@@ -1003,12 +1003,12 @@ def _advise_all(args, base, store, config, inventory, identity) -> int:
                 plan(store, host, identity, config, inventory, prior_for(host, config, inventory),
                      _whitelist_for(base, host, inventory), args.role)
             )  # fmt: skip
-        except (EvidenceError, OSError, AdvisorError) as exc:
-            print(f"checker: {host}: {exc}; skipped", file=sys.stderr)
-            status = 1
         except KeyboardInterrupt:
             print("checker: interrupted while estimating; nothing was sent", file=sys.stderr)
             return 130
+        except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'
+            print(f"checker: {host}: {exc}; skipped", file=sys.stderr)
+            status = 1
     for item in planned:
         print(
             f"{item.host}: {item.line}"
@@ -1031,18 +1031,36 @@ def _advise_all(args, base, store, config, inventory, identity) -> int:
                 print("checker: not sent: confirm with --yes, or raise advisor.max_cost_per_run",
                       file=sys.stderr)  # fmt: skip
                 return 1
-            if input(f"{total} Send them? [y/N] ").strip().lower() not in ("y", "yes"):
+            try:
+                answer = input("Send them? [y/N] ")
+            except (KeyboardInterrupt, EOFError):
+                print("\nNothing was sent.")
+                return 130
+            if answer.strip().lower() not in ("y", "yes"):
                 print("Nothing was sent.")
                 return 1
-    for item in planned:
+    # The key is read once, after the yes: one password manager prompt.
+    client = _client(advisor.api_key_source, advisor.api, advisor.base_url)
+    for done, item in enumerate(planned):
         print(f"\n== {item.host} ==")
+        before = len(store.advice(item.bundle_id))
         try:
             advice = advise(
                 store, item.host, identity, config, inventory, item.prior, item.whitelist,
-                role=args.role, confirm=lambda question: True, say=lambda line: None,
-                home=base, model=item.model,
+                role=args.role, client=client, say=lambda line: None, home=base,
+                planned=item,
             )  # fmt: skip
-        except (EvidenceError, OSError, AdvisorError) as exc:
+        except KeyboardInterrupt:
+            left = len(store.advice(item.bundle_id)) > before
+            print(
+                f"checker: interrupted at {item.host}: {done} host(s) asked before it;"
+                + (" its request may have been sent, and is recorded;" if left
+                   else " its request was not sent;")
+                + f" {len(planned) - done - 1} not sent",
+                file=sys.stderr,
+            )  # fmt: skip
+            return 130
+        except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'
             print(f"checker: {item.host}: {exc}", file=sys.stderr)
             status = 1
             continue
@@ -1240,7 +1258,11 @@ def cmd_advise(args: argparse.Namespace) -> int:
                 print("checker: not sent: confirm with --yes, or raise advisor.max_cost_per_run",
                       file=sys.stderr)  # fmt: skip
                 return False
-            return input(question).strip().lower() in ("y", "yes")
+            try:
+                return input(question).strip().lower() in ("y", "yes")
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return False
 
         advice = advise(
             store, args.host, identity, config, inventory, prior, whitelist,

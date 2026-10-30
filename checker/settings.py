@@ -17,6 +17,7 @@ import yaml
 from pydantic import ValidationError
 
 from checker.advisor.keys import ENVIRONMENT_VARIABLE, KEYRING_USERNAME, key_places
+from checker.advisor.prices import PRICES, server_fallback
 from checker.evidence import (
     Config,
     EvidenceError,
@@ -158,8 +159,10 @@ def describe(config: Config) -> list[str]:
         f"  Redaction: {advisor.redaction}: {REDACTION[advisor.redaction]}.",
         *(
             [
-                f"  Explaining quiet hosts (Low, nothing medium or worse) in `checker advise"
-                f" --all`: {advisor.triage_model}, a faster, cheaper model."
+                f"  Explaining quiet hosts (Low, no chain, nothing medium or worse) in"
+                f" `checker advise --all`: the triage model, {advisor.triage_model}"
+                + _triage_doubt(advisor)
+                + "."
             ]
             if advisor.triage_model
             else []
@@ -185,7 +188,19 @@ def describe(config: Config) -> list[str]:
     return lines
 
 
+def _triage_doubt(advisor) -> str:
+    """A triage model that may not be served where it would be sent."""
+    model = advisor.triage_model or ""
+    if advisor.api == "openai" and model.startswith("claude-"):
+        return f" (a Claude name, sent to {advisor.base_url}: check that server has it)"
+    if advisor.api == "anthropic" and not advisor.base_url and model not in PRICES:
+        return " (no price is known for it: runs will ask, and Anthropic may not know it)"
+    return ""
+
+
 def _on_decline(advisor) -> str:
+    if advisor.fallback == "anthropic" and not server_fallback(advisor.model):
+        return f"nothing more is sent: {advisor.model} has no server-side fallback."
     if advisor.fallback == "anthropic":
         return (
             "it is re-run on the model Anthropic recommends for that kind of decline"

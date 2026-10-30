@@ -445,6 +445,17 @@ The advisor's answers can't be golden-tested, so they are measured.
   against `advisor.max_cost_per_run` (or when any cost is unknown;
   `--yes` for scripts); a host that can't be read is said and skipped.
   `--show`, `--bundle` and `--redaction` stay one-host options.
+- **After review (3.7b, 2026-10-29; 3 medium):** each host is sent the
+  bundle it was estimated on, and isn't sent if its analysis would now
+  pick another model or its estimate grew; the key is read once, after the
+  yes; Ctrl-C or end of input at a question sends nothing and says so, and
+  Ctrl-C partway names the host and what was and wasn't sent; any one
+  host's failure is said and the others go on. Quiet also needs no chain,
+  and only low or info findings in effect (an allow-list). Haiku models
+  have no server-side fallback (a request asking for one is refused), so
+  they are asked without it and the estimate leaves the re-run out.
+  `config show` names the triage model and any doubt about it (no known
+  price; a Claude name sent to an OpenAI-compatible server).
 
 ### 3.8 — Policy, docs, README
 

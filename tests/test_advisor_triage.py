@@ -34,16 +34,58 @@ def finding(band, suppressed=False):
     ],
 )
 def test_what_counts_as_a_quiet_host(band, findings, expected):
-    assert quiet(band, findings) is expected
+    assert quiet(band, {"findings": findings, "score": {"chains": []}}) is expected
+
+
+@pytest.mark.parametrize("odd", ["Medium", "", None, "severe"])
+def test_an_unexpected_finding_band_isnt_quiet(odd):
+    assert not quiet("Low", {"findings": [finding(odd)]})
+
+
+def test_a_chain_isnt_quiet():
+    chained = {"findings": [finding("low")], "score": {"chains": [{"name": "x"}]}}
+    assert not quiet("Low", chained)
 
 
 def test_the_triage_model_only_explains_quiet_hosts():
     advisor = Advisor(triage_model="claude-haiku-5-5")
-    assert model_for(advisor, "explain", "Low", []) == ("claude-haiku-5-5", True)
-    assert model_for(advisor, "explain", "Elevated", []) == ("claude-opus-5-5", False)
+    calm = {"findings": []}
+    assert model_for(advisor, "explain", "Low", calm) == ("claude-haiku-5-5", True)
+    assert model_for(advisor, "explain", "Elevated", calm) == ("claude-opus-5-5", False)
     for role in ("whitelist", "coverage", "remediation"):
-        assert model_for(advisor, role, "Low", []) == ("claude-opus-5-5", False)
-    assert model_for(Advisor(), "explain", "Low", []) == ("claude-opus-5-5", False)  # empty
+        assert model_for(advisor, role, "Low", calm) == ("claude-opus-5-5", False)
+    assert model_for(Advisor(), "explain", "Low", calm) == ("claude-opus-5-5", False)  # empty
+
+
+def test_haiku_is_asked_without_a_server_side_fallback():
+    from checker.advisor.advise import cost_line
+    from checker.advisor.client import FALLBACK_BETA, build_request
+
+    request = build_request({"findings": []}, "explain", Advisor(model="claude-haiku-5-5"))
+    assert "fallbacks" not in request.body and FALLBACK_BETA not in request.betas
+    line, _ = cost_line(Advisor(model="claude-haiku-5-5"), 10_000)
+    assert "re-run on a fallback model" not in line
+    lines = describe_for(Advisor(enabled=True, model="claude-haiku-5-5"))
+    assert "nothing more is sent: claude-haiku-5-5 has no server-side fallback." in lines
+
+
+def describe_for(advisor):
+    from checker.evidence import Config
+
+    return "\n".join(describe(Config(recipients=["age1x"], advisor=advisor)))
+
+
+@pytest.mark.parametrize(
+    ("settings", "words"),
+    [
+        ({"triage_model": "claude-haiku-5-5"}, "the triage model, claude-haiku-5-5."),
+        ({"triage_model": "qwen3:8b"}, "no price is known for it"),
+        ({"triage_model": "claude-haiku-5-5", "api": "openai", "base_url": "http://localhost:1/v1",
+          "fallback": "off", "api_key_source": "none"}, "a Claude name, sent to"),
+    ],
+)  # fmt: skip
+def test_the_triage_model_is_named_with_any_doubt(settings, words):
+    assert words in describe_for(Advisor(enabled=True, **settings))
 
 
 def test_it_ships_empty_and_says_so_when_set(home):
@@ -129,11 +171,11 @@ def test_one_question_for_the_whole_run(two_hosts, monkeypatch, capsys):
     questions = []
     monkeypatch.setattr("builtins.input", lambda q: questions.append(q) or "n")
     assert cli.main(["advise", "--all"]) == 1
-    assert len(questions) == 1 and "2 requests: likely about $" in questions[0]
-    assert provider.sent() == [] and "Nothing was sent." in capsys.readouterr().out
+    assert len(questions) == 1 and "2 requests: likely about $" in capsys.readouterr().out
+    assert provider.sent() == []
     questions.clear()
     monkeypatch.setattr("builtins.input", lambda q: questions.append(q) or "y")
-    cli.main(["advise", "--all"])
+    assert cli.main(["advise", "--all"]) == 0
     assert len(questions) == 1 and len(provider.sent()) == 2  # asked once, not per host
 
 
@@ -190,3 +232,152 @@ def test_the_limit_is_for_the_whole_run_not_each_host(two_hosts, monkeypatch, ca
     monkeypatch.setattr("builtins.input", lambda q: questions.append(q) or "n")
     assert cli.main(["advise", "--all"]) == 1
     assert len(questions) == 1 and provider.sent() == []
+
+
+# --- What the review of 3.7b found ------------------------------------------------------------
+
+
+def test_a_collection_between_estimate_and_send_isnt_sent(two_hosts, monkeypatch, capsys):
+    """A newer bundle (web02 now has a second UID 0 account) arrives after
+    the estimate: the bundle estimated is the one sent."""
+    home = two_hosts
+    change(home[0], "advisor.triage_model", "claude-haiku-5-5")
+    provider = Provider(verdict_for)
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
+    from checker.advisor import advise as module
+
+    real_plan = module.plan
+
+    def plan_then_collect(store, host, *args):
+        planned = real_plan(store, host, *args)
+        if host == "web02":
+            add_bundle(home, "b3", 5,
+                       host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))),
+                       host="web02")  # fmt: skip
+        return planned
+
+    monkeypatch.setattr(module, "plan", plan_then_collect)
+    assert cli.main(["advise", "--all", "--yes"]) == 0
+    store = home[1]
+    assert store.advice("b3") == []  # the newer bundle wasn't sent
+    assert store.advice("b2")[0]["model_asked"] == "claude-haiku-5-5"
+
+
+def test_a_changed_analysis_or_a_larger_estimate_isnt_sent(two_hosts, monkeypatch):
+    from dataclasses import replace
+
+    from checker.advisor.advise import Estimate, advise, plan
+    from checker.inventory import Inventory
+
+    base, store, identity, _ = two_hosts
+    change(base, "advisor.triage_model", "claude-haiku-5-5")
+    config = load_config(base)
+    provider = Provider(verdict_for)
+    args = (store, "web02", identity, config, Inventory(), (0.02, "default"), None)
+    planned = plan(*args, "explain")
+    wrong_model = replace(planned, model="claude-opus-5-5")  # as if web02 had been loud
+    advice = advise(*args, client=provider.client(), planned=wrong_model, say=lambda line: None)
+    assert advice.status == "not sent" and "analysis changed" in advice.note
+    smaller = replace(planned, priced=Estimate(planned.priced.likely / 10, planned.priced.most))
+    advice = advise(*args, client=provider.client(), planned=smaller, say=lambda line: None)
+    assert advice.status == "not sent" and "estimate grew" in advice.note
+    assert provider.sent() == []
+    advice = advise(*args, client=provider.client(), planned=planned, say=lambda line: None)
+    assert advice.status == "answered"
+
+
+@pytest.mark.parametrize("stop", [KeyboardInterrupt, EOFError])
+def test_stopping_at_the_question_sends_nothing(two_hosts, monkeypatch, capsys, stop):
+    change(two_hosts[0], "advisor.max_cost_per_run", "0.01")
+    provider = Provider()
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    def interrupted(question):
+        raise stop
+
+    monkeypatch.setattr("builtins.input", interrupted)
+    assert cli.main(["advise", "--all"]) == 130
+    captured = capsys.readouterr()
+    assert "Nothing was sent." in captured.out and "had been sent" not in captured.err
+    assert provider.sent() == []
+
+
+@pytest.mark.parametrize("stop", [KeyboardInterrupt, EOFError])
+def test_stopping_at_one_hosts_question_sends_nothing(two_hosts, monkeypatch, capsys, stop):
+    change(two_hosts[0], "advisor.max_cost_per_run", "0.01")
+    provider = Provider()
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    def interrupted(question):
+        raise stop
+
+    monkeypatch.setattr("builtins.input", interrupted)
+    assert cli.main(["advise", "web01"]) == 1
+    assert "had been sent" not in capsys.readouterr().err and provider.sent() == []
+
+
+def test_an_interrupt_partway_says_where(two_hosts, monkeypatch, capsys):
+    calls = []
+
+    def reply(body):
+        calls.append(body)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return verdict_for(body)
+
+    provider = Provider(reply)
+    assert run_all(monkeypatch, provider) == 130
+    err = capsys.readouterr().err
+    assert "interrupted at web02: 1 host(s) asked before it;" in err
+    assert "its request may have been sent, and is recorded; 0 not sent" in err
+    assert two_hosts[1].advice("b2")[0]["status"] == "interrupted"
+
+
+def test_the_key_is_read_once_after_the_yes(two_hosts, monkeypatch):
+    reads = []
+    provider = Provider(verdict_for)
+
+    def counted(key, *where):
+        reads.append(key)
+        return provider.client()
+
+    monkeypatch.setattr(advise_module, "make_client", counted)
+    assert cli.main(["advise", "--all", "--yes"]) == 0
+    assert len(reads) == 1 and len(provider.sent()) == 2
+
+
+def test_a_send_failure_on_one_host_doesnt_stop_the_others(two_hosts, monkeypatch, capsys):
+    real = advise_module.CHECKS["explain"]
+    calls = []
+
+    def check(*args):
+        calls.append(args)
+        if len(calls) == 1:
+            raise ValueError("something unexpected")
+        return real(*args)
+
+    monkeypatch.setitem(advise_module.CHECKS, "explain", check)
+    provider = Provider(verdict_for)
+    assert run_all(monkeypatch, provider) == 1
+    assert "web01: something unexpected" in capsys.readouterr().err
+    assert len(provider.sent()) == 2
+    assert two_hosts[1].advice("b2")[0]["status"] == "answered"
+
+
+def test_yes_sends_a_run_over_the_limit_without_asking(two_hosts, monkeypatch):
+    change(two_hosts[0], "advisor.max_cost_per_run", "0.01")
+    monkeypatch.setattr("builtins.input", lambda q: pytest.fail("asked"))
+    provider = Provider(verdict_for)
+    assert run_all(monkeypatch, provider) == 0 and len(provider.sent()) == 2
+
+
+def test_an_unpriced_triage_model_makes_the_run_ask(two_hosts, monkeypatch, capsys):
+    change(two_hosts[0], "advisor.triage_model", "claude-unknown-9")
+    provider = Provider(verdict_for)
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda q: "n")
+    assert cli.main(["advise", "--all"]) == 1
+    assert "some at a cost not known here" in capsys.readouterr().out and provider.sent() == []

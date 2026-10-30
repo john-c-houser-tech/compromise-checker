@@ -38,7 +38,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from checker.advisor.prices import tokens_in
+from checker.advisor.prices import server_fallback, tokens_in
 from checker.advisor.roles import ROLES, SYSTEM_PROMPT
 from checker.advisor.roles import question as role_question
 from checker.evidence import Advisor, FallbackModel, is_local
@@ -140,7 +140,7 @@ def build_request(payload: dict[str, Any], role: str, advisor: Advisor) -> Reque
     if advisor.inference_geo:
         body["inference_geo"] = advisor.inference_geo
     betas = []
-    if advisor.fallback == "anthropic":
+    if advisor.fallback == "anthropic" and server_fallback(advisor.model):
         body["fallbacks"] = "default"
         betas.append(FALLBACK_BETA)
     return Request(body, betas, base_url=advisor.base_url)

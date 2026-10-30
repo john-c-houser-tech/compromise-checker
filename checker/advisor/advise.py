@@ -31,7 +31,7 @@ from checker.advisor.client import (
     send,
 )
 from checker.advisor.keys import KeySourceError, key_places, read_api_key
-from checker.advisor.prices import Estimate, cost, estimate, tokens_in
+from checker.advisor.prices import Estimate, cost, estimate, server_fallback, tokens_in
 from checker.advisor.roles import CHECKS, FINDING_ID, InvalidAnswer
 from checker.evidence import Advisor, Config, is_local, open_text, seal_text
 
@@ -71,15 +71,18 @@ def advise(
     confirm: Callable[[str], bool] | None = None,
     say: Callable[[str], None] = print,
     home: Path | None = None,
-    model: str | None = None,
+    planned: Planned | None = None,
 ) -> Advice:
     """Ask the advisor about a host's current assessment. `confirm` is
     asked (with the estimate) when a run would cost more than the limit or
-    its cost is unknown; without it, such a run isn't sent. `model`, when
-    given, is asked instead of the configured one (the triage model)."""
+    its cost is unknown; without it, such a run isn't sent. With `planned`
+    (`checker advise --all`, already confirmed for the whole run), its
+    bundle and model are the ones asked, and the request is sent without
+    asking only while it still is what was estimated."""
     advisor = config.advisor
-    if model:
-        advisor = advisor.model_copy(update={"model": model})
+    if planned is not None:
+        bundle_id = planned.bundle_id
+        advisor = advisor.model_copy(update={"model": planned.model})
     if not advisor.enabled:
         raise AdvisorError(
             "the advisor is off: `checker config set advisor.enabled on` turns it on"
@@ -88,12 +91,24 @@ def advise(
     built, known, which = case_for_host(
         store, host, identity, config.recipients, inventory, prior, whitelist, bundle_id
     )
+    if planned is not None:
+        chosen, _ = model_for(config.advisor, role, which["band"], which["report"].assessment)
+        if chosen != planned.model:
+            note = "not sent: the host's analysis changed since the estimate; run again"
+            return Advice("not sent", None, None, note)
     payload, pseudonyms = redact(built, advisor.redaction, known)
     request = build_request(payload, role, advisor)
     tokens = tokens_in(json.dumps(request.body, ensure_ascii=False))
     line, priced = cost_line(advisor, tokens)
     say(line)
-    if priced is None or priced.likely > advisor.max_cost_per_run:
+    if planned is not None:
+        approved = planned.priced
+        if approved is not None and (
+            priced is None or priced.likely > approved.likely * 1.02 + 0.0001
+        ):
+            note = "not sent: its estimate grew since the run was confirmed; run again"
+            return Advice("not sent", None, None, note)
+    elif priced is None or priced.likely > advisor.max_cost_per_run:
         reason = (
             "not sent: no price is known for a model it may use, and it wasn't confirmed"
             if priced is None
@@ -284,6 +299,7 @@ class Planned:
     """One host's request in `checker advise --all`, before anything is sent."""
 
     host: str
+    bundle_id: str  # the bundle estimated: the one sent
     model: str
     triaged: bool  # the triage model, for a quiet host
     line: str  # its estimate in words
@@ -301,30 +317,35 @@ def plan(
     built, known, which = case_for_host(
         store, host, identity, config.recipients, inventory, prior, whitelist
     )
-    model, triaged = model_for(advisor, role, which["band"], which["report"].assessment["findings"])
+    model, triaged = model_for(advisor, role, which["band"], which["report"].assessment)
     advisor = advisor.model_copy(update={"model": model})
     payload, _ = redact(built, advisor.redaction, known)
     request = build_request(payload, role, advisor)
     line, priced = cost_line(advisor, tokens_in(json.dumps(request.body, ensure_ascii=False)))
-    return Planned(host, model, triaged, line, priced, prior, whitelist)
+    return Planned(host, which["bundle_id"], model, triaged, line, priced, prior, whitelist)
 
 
-# A finding at one of these bands keeps a host from being quiet.
-NOT_QUIET = ("medium", "high", "critical")
+# The only finding bands a quiet host may have in effect.
+QUIET_BANDS = ("low", "info")
 
 
-def quiet(band: str | None, findings: list[dict[str, Any]]) -> bool:
-    """A host assessed Low with no finding in effect at medium or worse
-    (whitelisted ones don't count): what the triage model may explain."""
-    return band == "Low" and not any(
-        f.get("band") in NOT_QUIET and not f.get("suppressed_by") for f in findings
+def quiet(band: str | None, assessment: dict[str, Any]) -> bool:
+    """A host assessed Low, with no chain and no finding in effect at
+    medium or worse (whitelisted ones don't count; a maintenance window
+    lowers a band, as everywhere): what the triage model may explain."""
+    findings = assessment.get("findings") or []
+    chains = (assessment.get("score") or {}).get("chains") or []
+    return (
+        band == "Low"
+        and not chains
+        and all(f.get("band") in QUIET_BANDS for f in findings if not f.get("suppressed_by"))
     )
 
 
-def model_for(advisor: Advisor, role: str, band: str | None, findings) -> tuple[str, bool]:
+def model_for(advisor: Advisor, role: str, band: str | None, assessment) -> tuple[str, bool]:
     """The model to ask, and whether it is the triage model: only to
     explain a quiet host, and only when the organization set one."""
-    if role == "explain" and advisor.triage_model and quiet(band, findings):
+    if role == "explain" and advisor.triage_model and quiet(band, assessment):
         return advisor.triage_model, True
     return advisor.model, False
 
@@ -355,6 +376,7 @@ def cost_line(advisor: Advisor, tokens: int) -> tuple[str, Estimate | None]:
     estimate (None: unknown, so the run asks). A model on this machine
     costs nothing; a server without a price list is unknown."""
     where = f" at {advisor.base_url}" if advisor.base_url else ""
+    rerun_on_anthropic = advisor.fallback == "anthropic" and server_fallback(advisor.model)
     if is_local(advisor.base_url):
         priced: Estimate | None = Estimate(0.0, 0.0)
         line = f"About {tokens} input tokens to {advisor.model} on this machine{where}: no charge."
@@ -362,7 +384,7 @@ def cost_line(advisor: Advisor, tokens: int) -> tuple[str, Estimate | None]:
         priced = (
             None
             if advisor.api == "openai"
-            else estimate(advisor.model, tokens, MAX_TOKENS, advisor.fallback == "anthropic")
+            else estimate(advisor.model, tokens, MAX_TOKENS, rerun_on_anthropic)
         )
         if priced is None:
             line = (
@@ -370,11 +392,7 @@ def cost_line(advisor: Advisor, tokens: int) -> tuple[str, Estimate | None]:
                 " no price is known for that model."
             )
         else:
-            rerun = (
-                ", and a re-run on a fallback model if declined"
-                if advisor.fallback == "anthropic"
-                else ""
-            )
+            rerun = ", and a re-run on a fallback model if declined" if rerun_on_anthropic else ""
             line = (
                 f"About {tokens} input tokens to {advisor.model}{where} (estimated here;"
                 f" nothing sent yet): likely about ${priced.likely:.2f}, at most about"

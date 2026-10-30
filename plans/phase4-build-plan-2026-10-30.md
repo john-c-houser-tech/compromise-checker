@@ -243,7 +243,8 @@ is John's to approve before it is committed. Also:
   the pack when it is made (offline, reproducible, works air-gapped); or
   the tool downloads the vendors' OVAL data at run time.
   *Recommendation:* in the pack.
-- **D3. How much exposure raises the prior.** DESIGN.md §11.2 says "in
+- **D3. How much exposure raises the prior. Decided 2026-10-30 (John):
+  proportional, PHP2Shell at 5.** DESIGN.md §11.2 says "in
   proportion to the pack's stated confidence and the length of exposure".
   *Recommendation:* the pack states a likelihood ratio for a host exposed
   through the whole window (PHP2Shell: 5, capped at 10 by the format);

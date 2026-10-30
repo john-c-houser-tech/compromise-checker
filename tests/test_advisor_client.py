@@ -419,7 +419,7 @@ def test_rate_limited_then_answered(enabled):
     assert advice.status == "answered" and len(calls) == 2
 
 
-def test_the_estimate_counts_a_fallback_and_a_no_sends_nothing_at_all(enabled):
+def test_the_most_counts_a_fallback_and_a_no_sends_nothing_at_all(enabled):
     base = enabled[0]
     change(base, "advisor.max_cost_per_run", "0.01")
     said = []
@@ -433,6 +433,16 @@ def test_the_estimate_counts_a_fallback_and_a_no_sends_nothing_at_all(enabled):
     assert "estimated here; nothing sent yet" in said[0]
     assert "and a re-run on a fallback model if declined" in said[0]
     assert "likely cost is above advisor.max_cost_per_run" in advice.note
+
+
+def test_between_the_likely_cost_and_the_most_it_sends_without_asking(enabled, monkeypatch):
+    from checker.advisor.prices import Estimate
+
+    monkeypatch.setattr(advise_module, "estimate", lambda *a, **k: Estimate(0.30, 1.20))
+    advice = run(enabled, Provider(), confirm=None)  # nobody to ask
+    assert advice.status == "answered"
+    monkeypatch.setattr(advise_module, "estimate", lambda *a, **k: Estimate(1.05, 1.20))
+    assert run(enabled, Provider(), confirm=None).status == "not sent"
 
 
 def test_a_model_without_a_price_says_so(enabled):

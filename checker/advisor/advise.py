@@ -94,7 +94,7 @@ def advise(
         rerun = ", and a re-run on a fallback model if declined" if with_fallback else ""
         line = (
             f"About {tokens} input tokens to {advisor.model} (estimated here; nothing sent"
-            f" yet): likely about ${priced.likely:.2f}, at most ${priced.most:.2f} (a"
+            f" yet): likely about ${priced.likely:.2f}, at most about ${priced.most:.2f} (a"
             f" {MAX_TOKENS}-token answer{rerun})."
         )
         reason = (

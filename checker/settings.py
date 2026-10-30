@@ -115,7 +115,8 @@ def describe(config: Config) -> list[str]:
         " Anthropic with your own account.",
         f"  Redaction: {advisor.redaction}: {REDACTION[advisor.redaction]}.",
         "  `checker config check-key` checks the key can be read, without sending anything.",
-        f"  Asks before a run estimated above ${advisor.max_cost_per_run:.2f}.",
+        f"  Asks before a run whose likely cost is above ${advisor.max_cost_per_run:.2f}"
+        " (the most it can cost is shown too).",
         "  If the model's safety checks decline a request: "
         + (
             "it is re-run on the model Anthropic recommends for that kind of decline"
@@ -164,7 +165,11 @@ SETTABLE: dict[str, Setting] = {
         Setting(("advisor", "redaction"), str, "pseudonymize, strict or none"),
         Setting(("advisor", "api_key_source"), str, "env, keyring or command:<command>"),
         Setting(("advisor", "inference_geo"), _optional, "e.g. us, or none"),
-        Setting(("advisor", "max_cost_per_run"), float, "US dollars (default 1.00)"),
+        Setting(
+            ("advisor", "max_cost_per_run"),
+            float,
+            "US dollars, checked against the likely cost (default 1.00)",
+        ),
         Setting(("advisor", "fallback"), str, "on a decline: anthropic (default) or off"),
     )
 }

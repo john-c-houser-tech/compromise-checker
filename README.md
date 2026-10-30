@@ -8,10 +8,12 @@ It logs in over SSH, streams a small collector to the server's own Python,
 brings the evidence back, and analyses it on the operator's machine. Nothing
 is written to the server.
 
-**Status: Phase 2 complete (2026-10-29).** The tool collects evidence,
+**Status: Phase 3 complete (2026-10-29).** The tool collects evidence,
 compares each host with its baseline, runs the checks, scores the host and
-writes the report. The AI advisor comes in Phase 3 and threat packs in
-Phase 4 (see [DESIGN.md §18](DESIGN.md)).
+writes the report; the optional AI advisor explains an analysis, proposes
+whitelist rules, suggests better coverage and advises on remediation
+([advisor](docs/advisor.md)). Threat packs come in Phase 4 (see
+[DESIGN.md §18](DESIGN.md)).
 
 What works today:
 
@@ -173,6 +175,8 @@ Set up a server for it with [docs/scanner-account.md](docs/scanner-account.md).
 - [DESIGN.md](DESIGN.md) — architecture, security and privacy policy, checks,
   scoring, and the decisions made so far.
 - [plans/](plans/) — build plans for each phase.
+- [The AI advisor](docs/advisor.md) — setup, redaction, roles, cost,
+  declines, local models, and how well it works.
 - [Security and privacy policy](docs/security-and-privacy-policy.md) — what the
   tool does on your servers and with your data. [SECURITY.md](SECURITY.md) —
   reporting a vulnerability.

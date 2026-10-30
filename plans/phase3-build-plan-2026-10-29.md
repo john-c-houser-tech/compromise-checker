@@ -1,7 +1,8 @@
 # Phase 3 build plan — 2026-10-29
 
 > **Status: DRAFT 1, 2026-10-29** — shape agreed by John; every
-> decision settled. 3.0–3.6 built and merged; 3.7 in progress.
+> decision settled. 3.0–3.7b built and merged; 3.8 (policy, docs) in
+> review.
 
 **Goal (DESIGN.md §18, Phase 3):** an operator who turns the advisor on
 gets a plain-language reading of an assessment, whitelist proposals they can
@@ -464,6 +465,16 @@ The advisor's answers can't be golden-tested, so they are measured.
   analysis of the pinned bundle isn't sent.
 
 ### 3.8 — Policy, docs, README
+
+- **As built (2026-10-29):** policy §9 rewritten in the wording John
+  approved (the four roles; key sources; `--show` and the cost question;
+  whitelist reasons shouldn't name people; SSH key fingerprints replaced;
+  fresh placeholders like `USER-2-7f3a`; strict sends kinds of coverage
+  gap; the three choices on a decline; inference geography; a local model
+  reached directly; advice only, never critical or chained findings; the
+  encrypted, append-only record, purged with the evidence; answers
+  checked). `docs/advisor.md`; README status Phase 3; DESIGN §12.4–12.5
+  point to it.
 
 - Policy §9 reconciled with what is built (agreed with John 2026-10-29:
   SSH key fingerprints added to what is replaced; strict also sends the

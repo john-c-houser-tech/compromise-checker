@@ -1,7 +1,7 @@
 # Security and Privacy Policy
 
 **Compromise Checker** (working title), published by NouriLoop LLC.
-Version 0.1 (draft), 2026-10-25.
+Version 0.1 (draft), 2026-10-29.
 
 This policy describes how the software behaves from its first release. Builds
 made before that release may not do everything described here yet; the
@@ -225,35 +225,70 @@ that may include access tokens, and sometimes secrets typed into commands.
 
 ## 9. The optional AI advisor
 
-The tool can use an AI model to explain findings, suggest settings that cut
-false alarms, suggest further collection, and advise on remediation. It works
-fully without it.
+The tool can use an AI model to explain an analysis, propose whitelist rules
+for a person to review, suggest settings and host configuration for better
+coverage, and advise on remediation. It works fully without it.
 
 - **Your choice at setup.** When the tool is set up, it asks whether to turn
   the advisor on and explains what would be sent and to whom. Installations
   set up without anyone answering questions leave it off unless the
-  configuration file turns it on.
+  configuration file turns it on. `checker config` changes the choice later,
+  and every change is recorded with who made it and when.
 - **Your account, your provider.** The advisor uses your organization's own
   account with the AI provider, or a model you run yourself on your own
   hardware. Data sent goes from your machine to that provider under your
   agreement with them. NouriLoop LLC does not pass it on, see it or keep it.
-- **What is sent:** findings, their scores, short excerpts of the evidence
-  behind them, the related settings, and which sources were missing. Never
-  whole log files, and never passwords or keys.
+  The API key is read from where you keep it (an environment variable, the
+  operating system's keyring, or a command such as a password manager's)
+  only when a request is about to be sent; it is never written to the
+  configuration, a log or the evidence store.
+- **Only when asked.** Nothing is sent until an operator runs
+  `checker advise`. `checker advise --show` prints exactly what would be
+  sent, after redaction, and sends nothing. Before sending, the tool shows
+  the likely cost and asks when it is above the limit your organization set,
+  or when the cost isn't known.
+- **What is sent:** findings, their scores, short masked excerpts of the
+  evidence behind them, the related whitelist rules, and the coverage gaps
+  (which sources were missing). Never whole log files, and never passwords
+  or keys. Whitelist rules are sent with the reasons written in them, so
+  those reasons should describe the activity, not name people.
 - **Redaction**, set by your organization:
   - *pseudonymize* (the default when the advisor is turned on) — server
-    names, IP addresses, usernames and email addresses are replaced with
-    consistent placeholders such as `HOST-3` or `USER-2` before sending, and
-    restored on your machine when the answer returns;
-  - *strict* — only the kinds of finding, counts and scores are sent;
+    names, IP addresses, usernames, email addresses and SSH key fingerprints
+    are replaced with placeholders such as `USER-2-7f3a` before sending, and
+    restored on your machine when the answer returns. The placeholders are
+    made fresh for each run and never stored, so the provider can't connect
+    one run to another by name;
+  - *strict* — only the kinds of finding, counts, scores and kinds of
+    coverage gap are sent;
   - *none* — excerpts are sent as collected (after secret masking).
+- **Declined requests.** An AI model's safety checks may decline security
+  content now and then. Your organization chooses what happens next: nothing
+  more; a re-run on the model the same provider recommends for that kind of
+  decline (the default, with Anthropic); or a re-run on a fallback model it
+  names, which may be another provider's or its own. The fallback model
+  receives the same request, with the same redaction and placeholders, and
+  `checker config show` says who would receive it. The report names the
+  model that declined and the model that answered.
+- **Where it runs.** Organizations that must keep processing in one
+  geography can set it (for example, the United States) where the provider
+  offers that. A model on the machine running the tool is reached directly,
+  never through a proxy.
 - **Advice only.** The advisor cannot connect to any server and cannot change
-  any setting or score. Its suggestions take effect only when a person
-  approves them. Every report section written by the advisor is labelled with
-  the model and redaction setting used.
+  any setting, score or whitelist. Its proposals are written to a file for a
+  person to review, and suggested settings are shown as commands for a
+  person to run. It never proposes whitelisting a critical finding or one
+  that is part of a chain. Every report section written by the advisor is
+  labelled with the model, the redaction setting and the time, and says
+  when the analysis it read isn't the one the report shows.
+- **A record of what left.** Each request and its answer are stored
+  encrypted with your evidence key, in an append-only record, so your
+  organization can show afterwards exactly what was sent and to whom. They
+  are deleted with the evidence they were about.
 - **Untrusted text.** Log content can be written by attackers (for example,
   a username or web address crafted to mislead an AI). It is always passed to
-  the advisor marked as data to examine, never as instructions.
+  the advisor marked as data to examine, never as instructions, and every
+  answer is checked against the evidence before anyone sees it.
 
 ## 10. What leaves your organization
 

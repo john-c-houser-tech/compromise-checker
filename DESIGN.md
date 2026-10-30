@@ -806,13 +806,15 @@ whitelist rules are rejected before the operator sees them).
 
 Configurable. The default is the most capable current Claude model for
 analysis and remediation, with a faster model available for routine triage
-of quiet hosts.
+of quiet hosts (`advisor.triage_model`, empty unless an organization sets
+one; [advisor](docs/advisor.md#triage-model)).
 
 ### 12.5 Air-gapped use
 
-A local model (for example through Ollama) can replace the API for
-organizations that cannot send anything out. The report notes the lower
-expected quality.
+A local model (for example through Ollama, over its OpenAI-compatible
+API) can replace the API for organizations that cannot send anything out.
+The report notes the lower expected quality
+([advisor](docs/advisor.md#local-and-other-models)).
 
 ---
 

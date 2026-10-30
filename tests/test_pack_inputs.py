@@ -144,10 +144,68 @@ def test_an_ini_file_not_read_leaves_php_settings_incomplete(tmp_path):
     snap = snapshot_of_records(records, tmp_path)
     assert not snap.sections["php_settings"].complete
     nginx = host_records(
-        planned=["host_facts", "web_logs"],
+        planned=["host_facts", "web_logs", "unusual_files"],
         extra=[rec("web_logs", "not_examined", path="/etc/nginx/nginx.conf", reason="x")],
     )
     assert snapshot_of_records(nginx, tmp_path).sections["php_settings"].complete
+
+
+# --- Sites' own PHP settings (plan 4.4c) -------------------------------------------------------
+
+
+def test_a_sites_user_ini_and_htaccess():
+    user_ini = php_settings("/var/www/a/.user.ini",
+                            ["session.upload_progress.enabled = 1", "[PATH=/x]",
+                             "PHP_INI_SCAN_DIR=/srv"], site=True)  # fmt: skip
+    assert [(i["kind"], i["how"], i["name"], i["value"]) for _, i in user_ini] == [
+        ("site", ".user.ini", "session.upload_progress.enabled", "1"),
+        ("site", ".user.ini", "PHP_INI_SCAN_DIR", "/srv"),  # just a setting there
+    ]
+    htaccess = php_settings("/var/www/a/.htaccess",
+                            ["php_flag session.upload_progress.enabled on",
+                             'SetEnv PHP_VALUE "memory_limit=1G"',
+                             "SetEnv PHP_INI_SCAN_DIR /srv"], site=True)  # fmt: skip
+    assert [(i["kind"], i["how"], i["name"]) for _, i in htaccess] == [
+        ("site", "php_flag", "session.upload_progress.enabled"),
+        ("site", "PHP_VALUE", "memory_limit"),
+    ]  # PHP_INI_SCAN_DIR is read as PHP starts: a site can't set it
+
+
+def site_records(*extra, planned=("host_facts", "web_logs", "unusual_files"), site_php=True):
+    return host_records(planned=list(planned), extra=list(extra), site_php=site_php)
+
+
+def test_site_files_feed_php_settings(tmp_path):
+    records = site_records(
+        *text_source(91, "unusual_files", "/var/www/a/.user.ini", "upload_max_filesize = 9M\n"),
+        *text_source(92, "unusual_files", "/var/www/a/.htaccess", "php_value x 1\n"),
+    )
+    section = snapshot_of_records(records, tmp_path).sections["php_settings"]
+    assert section.complete
+    assert section.items["/var/www/a/.user.ini: upload_max_filesize"]["kind"] == "site"
+    assert section.items["/var/www/a/.htaccess: php_value x"]["value"] == "1"
+
+
+def cut_source(*args):
+    records = text_source(*args)
+    records[-1].update(truncated=True, truncated_reason="size")
+    return records
+
+
+def test_a_site_file_not_read_leaves_only_php_settings_incomplete(tmp_path):
+    for extra in (
+        [rec("unusual_files", "site_php_partial", path="/var/www", found=3, read=2)],
+        [rec("unusual_files", "unreadable_file", path="/var/www/a/.htaccess", reason="x")],
+        cut_source(91, "unusual_files", "/var/www/a/.user.ini", "a = 1\n"),
+    ):
+        snap = snapshot_of_records(site_records(*extra), tmp_path)
+        assert not snap.sections["php_settings"].complete, extra
+        assert snap.sections["web_files"].complete, extra
+    other = site_records(
+        rec("unusual_files", "unreadable_file", path="/var/www/a/x.php", reason="x")
+    )
+    snap = snapshot_of_records(other, tmp_path)
+    assert snap.sections["php_settings"].complete and not snap.sections["web_files"].complete
 
 
 def test_the_hour_that_happens_twice_is_uncertain():
@@ -159,3 +217,24 @@ def test_the_hour_that_happens_twice_is_uncertain():
     builder.record(record("software", "package_change", **change, local_time="2026-11-02 01:30:00"))
     twice, once = builder.events
     assert twice.fields.get("time_uncertain") is True and "time_uncertain" not in once.fields
+
+
+def test_a_php_value_set_some_other_way_is_kept_as_unread():
+    found = php_settings("/var/www/a/.htaccess", ["[PHP_VALUE set by SetEnvIf: not read]"], True)
+    assert [(i["kind"], i["how"]) for _, i in found] == [("site_unread", "SetEnvIf")]
+    # Only the collector's marker, only in a site's file.
+    assert php_settings("/etc/apache2/a.conf", ["[PHP_VALUE set by SetEnvIf: not read]"]) == []
+
+
+def test_an_older_collector_that_read_no_site_files_leaves_php_settings_incomplete(tmp_path):
+    snap = snapshot_of_records(site_records(site_php=False), tmp_path)
+    assert not snap.sections["php_settings"].complete
+    assert any("older collector" in gap for gap in snap.sections["php_settings"].gaps)
+    assert snap.sections["web_files"].complete
+
+
+def test_running_out_of_time_in_the_web_roots_leaves_php_settings_incomplete(tmp_path):
+    late = rec("unusual_files", "phase_time_limit", phase="web_roots", share=0.5)
+    assert not snapshot_of_records(site_records(late), tmp_path).sections["php_settings"].complete
+    early = rec("unusual_files", "phase_time_limit", phase="scratch", share=0.25)
+    assert snapshot_of_records(site_records(early), tmp_path).sections["php_settings"].complete

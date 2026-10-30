@@ -22,7 +22,8 @@ def setting_items(files):
     items, read = {}, {}
     for path, lines in files.items():
         read[path] = {"content_sha256": "read"}
-        items.update(dict(php_settings(path, lines)))
+        # Under a web root: a site's .user.ini or .htaccess (plan 4.4c).
+        items.update(dict(php_settings(path, lines, site=path.startswith("/var/www/"))))
     return items, read
 
 
@@ -431,3 +432,94 @@ def test_a_pool_given_it_twice_counts_the_wrong_one():
         ],
     }  # fmt: skip
     assert judged(files).status == MISSING
+
+
+# --- Sites' own settings (plan 4.4c) ----------------------------------------------------------
+
+POOL = "/etc/php/8.3/fpm/pool.d/www.conf"
+USER_INI = "/var/www/shop/.user.ini"
+HTACCESS = "/var/www/blog/.htaccess"
+APACHE = "/etc/apache2/apache2.conf"
+MOD_PHP = "/etc/php/8.3/apache2/php.ini"
+LOCKED = ["[www]", f"php_admin_flag[{NAME}] = off", "[api]", f"php_admin_value[{NAME}] = 0"]
+
+
+def test_a_sites_user_ini_turning_it_back_on_is_missing():
+    result = judged({FPM: [f"{NAME} = Off"], USER_INI: [f"{NAME} = 1"]})
+    assert result.status == MISSING
+    assert [p.where for p in result.places if p.value == "1"] == [f"{USER_INI} (.user.ini)"]
+    assert judged({FPM: [f"{NAME} = Off"], USER_INI: [f"{NAME} = Off"]}).status == IN_PLACE
+
+
+def test_every_pools_admin_setting_locks_out_a_user_ini():
+    files = {FPM: [f"{NAME} = Off"], USER_INI: [f"{NAME} = On"], POOL: list(LOCKED)}
+    assert judged(files).status == IN_PLACE
+    # One pool without it: the site may run there.
+    files[POOL] += ["[legacy]", f"php_flag[{NAME}] = off"]
+    assert judged(files).status == MISSING
+    # CGI reads .user.ini too, and has no php_admin_*.
+    files[POOL] = list(LOCKED)
+    files["/etc/php/8.3/cgi/php.ini"] = [f"{NAME} = Off"]
+    assert judged(files).status == MISSING
+
+
+def test_a_php_value_passed_to_php_fpm_overrides_even_php_admin():
+    # PHP-FPM applies a FastCGI PHP_VALUE over php_admin_* (fpm_php.c).
+    for how in ("PHP_VALUE", "PHP_ADMIN_VALUE"):
+        files = {FPM: [f"{NAME} = Off"], POOL: list(LOCKED), APACHE: [],
+                 HTACCESS: [f'SetEnv {how} "{NAME}=1"']}  # fmt: skip
+        assert judged(files).status == MISSING, how
+    # Without Apache nothing reads an .htaccess.
+    del files[APACHE]
+    assert judged(files).status == IN_PLACE
+
+
+def test_an_htaccess_php_flag_counts_only_with_apaches_php_module():
+    files = {FPM: [f"{NAME} = Off"], MOD_PHP: [f"{NAME} = Off"], APACHE: [],
+             HTACCESS: [f"php_flag {NAME} on"], POOL: list(LOCKED)}  # fmt: skip
+    assert judged(files).status == MISSING  # pools' php_admin_* don't reach Apache's module
+    del files[MOD_PHP]
+    assert judged(files).status == IN_PLACE  # Apache passes PHP to PHP-FPM only
+
+
+def test_a_user_ini_counts_only_where_php_fpm_or_cgi_reads_it():
+    files = {MOD_PHP: [f"{NAME} = Off"], APACHE: [], USER_INI: [f"{NAME} = On"]}
+    assert judged(files).status == IN_PLACE
+
+
+@pytest.mark.parametrize(
+    ("where", "line", "status"),
+    [
+        (FPM, "user_ini.filename =", IN_PLACE),  # none read
+        (FPM, 'user_ini.filename = ""', IN_PLACE),
+        (POOL, "php_admin_value[user_ini.filename] = none", NOT_SEEN),
+        (FPM, "user_ini.filename = .phprc", NOT_SEEN),
+    ],
+)
+def test_user_ini_filename(where, line, status):
+    files = {FPM: [f"{NAME} = Off"], USER_INI: [f"{NAME} = On"]}
+    if where == POOL:
+        files[POOL] = ["[www]", line]
+        line = 'user_ini.filename = ""'
+    files[FPM].append(line)
+    result = judged(files)
+    assert result.status == status
+    if status == NOT_SEEN:
+        assert "which wasn't read" in result.why
+
+
+def test_php_value_set_some_other_way_isnt_seen():
+    files = {FPM: [f"{NAME} = Off"], APACHE: [],
+             HTACCESS: ["[PHP_VALUE set by SetEnvIf: not read]"]}  # fmt: skip
+    result = judged(files)
+    assert result.status == NOT_SEEN and "SetEnvIf" in result.why
+    files[USER_INI] = [f"{NAME} = On"]
+    assert judged(files).status == MISSING  # wrong somewhere wins
+
+
+def test_a_locking_admin_value_that_turns_it_on_locks_nothing():
+    files = {FPM: [f"{NAME} = Off"], USER_INI: [f"{NAME} = Off"],
+             POOL: ["[www]", f"php_admin_flag[{NAME}] = on"]}  # fmt: skip
+    result = judged(files)
+    assert result.status == MISSING
+    assert [p.where for p in result.places] == [f"{FPM} pool www", f"{USER_INI} (.user.ini)"]

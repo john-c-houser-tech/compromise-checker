@@ -19,7 +19,7 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 12  # 12: PHP settings, package history
+SNAPSHOT_VERSION = 13  # 12: PHP settings, package history; 13: sites' .user.ini, .htaccess
 # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers;
 # 11: the folders web servers serve
 
@@ -81,8 +81,9 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "mail_files": ("Postfix and Exim configuration files", ("mail",)),
     "web_config": ("nginx, Apache and PHP-FPM configuration files", ("web_logs",)),
     "php_settings": (
-        "PHP's settings: each ini file's directives and PHP-FPM pools' php_value lines",
-        ("web_logs",),
+        "PHP's settings: each ini file's directives, PHP-FPM pools' php_value lines, and the"
+        " PHP lines of sites' .user.ini and .htaccess files in the web roots",
+        ("web_logs", "unusual_files"),
     ),
     "package_history": (
         "package changes from dpkg's log or dnf's history (the changes are events)",
@@ -334,6 +335,7 @@ def journald_storage(settings: list[tuple[str, list[str]]]) -> str | None:
 _GAPS = {
     "packages_pending",
     "package_history_pending",
+    "site_php_partial",
     "malformed_header",
     "unreadable_file",
     "listing_truncated",
@@ -367,6 +369,13 @@ _SERVER_PARAM = re.compile(
     re.IGNORECASE,
 )
 _SCAN_DIR = re.compile(r"\bPHP_INI_SCAN_DIR\b\s*[= ]\s*\"?([^\"\s;]*)", re.IGNORECASE)
+# A site's own PHP settings, read in the web roots walked (plan 4.4c).
+SITE_PHP_FILES = (".user.ini", ".htaccess")
+_SITE_UNREAD = re.compile(r"^\[PHP_VALUE set by ([A-Za-z ]+): not read\]$")
+
+
+def is_site_php(path: str) -> bool:
+    return path.rsplit("/", 1)[-1] in SITE_PHP_FILES
 
 
 _QUOTED_VALUE = re.compile(r'^"((?:[^"\\]|\\.)*)"|^\'([^\']*)\'')
@@ -390,14 +399,18 @@ def is_php_config(path: str) -> bool:
     )
 
 
-def php_settings(path: str, lines: list[str]) -> list[tuple[str, dict[str, Any]]]:
+def php_settings(
+    path: str, lines: list[str], site: bool = False
+) -> list[tuple[str, dict[str, Any]]]:
     """(item key, setting) for what PHP's settings depend on, in file order
     (`position`): each directive in an ini file, with its [section]; in
     PHP-FPM's configuration each pool ([name], kind `pool_header`), each
     pool's php_value / php_flag / php_admin_value / php_admin_flag (kind
     `pool`, `how` saying which) and each include (kind `include`); in a
     web server's configuration its own PHP settings (kind `server`) and
-    any PHP_INI_SCAN_DIR (kind `scan_dir`). A setting given again is kept
+    any PHP_INI_SCAN_DIR (kind `scan_dir`). A site's .user.ini or
+    .htaccess (`site`): its settings as kind `site`, `how` saying which
+    (".user.ini", php_value…, PHP_VALUE). A setting given again is kept
     each time."""
     found: list[tuple[str, dict[str, Any]]] = []
     seen: dict[str, int] = {}
@@ -408,7 +421,14 @@ def php_settings(path: str, lines: list[str]) -> list[tuple[str, dict[str, Any]]
             key = f"{key} #{seen[key]}"
         found.append((key, {"path": path, **item, "position": len(found)}))
 
-    if path.endswith(".ini"):
+    if site and path.endswith("/.user.ini"):
+        for line in lines:
+            # No [PATH=]/[HOST=] sections here: those are php.ini's alone.
+            if not _INI_SECTION.match(line) and (directive := _INI_DIRECTIVE.match(line)):
+                name, value = directive.group(1), _ini_value(directive.group(2))
+                add(f"{path}: {name}",
+                    {"kind": "site", "how": ".user.ini", "name": name, "value": value})  # fmt: skip
+    elif path.endswith(".ini") and not site:
         section = None
         for line in lines:
             if heading := _INI_SECTION.match(line):
@@ -419,7 +439,7 @@ def php_settings(path: str, lines: list[str]) -> list[tuple[str, dict[str, Any]]
                 scoped = section and section.upper().startswith(("PATH=", "HOST="))
                 add(f"{path}{f' [{section}]' if scoped else ''}: {name}",
                     {"kind": "ini", "name": name, "value": value, "section": section})  # fmt: skip
-    elif _FPM_FILE.search(path):
+    elif _FPM_FILE.search(path) and not site:
         pool = None
         for line in lines:
             if heading := _INI_SECTION.match(line):
@@ -435,22 +455,29 @@ def php_settings(path: str, lines: list[str]) -> list[tuple[str, dict[str, Any]]
                 add(f"{path}: include", {"kind": "include", "name": "include",
                                          "value": _ini_value(include.group(1))})  # fmt: skip
     else:
+        kind = "site" if site else "server"
         for line in lines:
             text = line.split("#", 1)[0]
-            if setting := _SERVER_SETTING.match(text):
+            if site and (unread := _SITE_UNREAD.match(line)):
+                # The collector named a directive setting PHP_VALUE some
+                # other way (SetEnvIf, a rewrite's E= flag), not its values.
+                how = unread.group(1)
+                add(f"{path}: {how}", {"kind": "site_unread", "how": how, "name": "PHP_VALUE"})
+            elif setting := _SERVER_SETTING.match(text):
                 how, name = setting.group(1).lower(), setting.group(2)
                 value = _ini_value(setting.group(3))
                 add(f"{path}: {how} {name}",
-                    {"kind": "server", "how": how, "name": name, "value": value})  # fmt: skip
+                    {"kind": kind, "how": how, "name": name, "value": value})  # fmt: skip
             elif param := _SERVER_PARAM.search(text):
                 # PHP_VALUE "a=1\nb=2": each setting it holds.
                 for pair in re.split(r"\\n|\n|;", param.group(2)):
                     name, sep, value = pair.partition("=")
                     if sep and name.strip():
                         add(f"{path}: {param.group(1).upper()} {name.strip()}",
-                            {"kind": "server", "how": param.group(1).upper(),
+                            {"kind": kind, "how": param.group(1).upper(),
                              "name": name.strip(), "value": _ini_value(value)})  # fmt: skip
-            if scan := _SCAN_DIR.search(text):
+            # Read when PHP starts, not per request: a site can't set it.
+            if not site and (scan := _SCAN_DIR.search(text)):
                 add(f"{path}: PHP_INI_SCAN_DIR", {"kind": "scan_dir", "name": "PHP_INI_SCAN_DIR",
                                                   "value": scan.group(1)})  # fmt: skip
     return found
@@ -491,7 +518,16 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
     if module == "mail" and str(path or "").startswith("/var/log/"):
         return set()  # a mail log: the coverage reports it, the settings are whole
     if module == "unusual_files":
-        return {"unusual_files", "web_files", "privileged_files"}
+        # A site's .user.ini or .htaccess not read, or not all of them:
+        # PHP's settings are incomplete, the walk itself isn't.
+        if name in ("site_php_partial", "site_php_missing") or (
+            is_site_php(str(path or "")) and name in ("unreadable_file", "source")
+        ):
+            return {"php_settings"}
+        walked = {"unusual_files", "web_files", "privileged_files"}
+        if name == "phase_time_limit" and data.get("phase") == "web_roots":
+            return walked | {"php_settings"}  # sites' files may not all be read
+        return walked
     if module == "system_files":
         return {"privileged_files", "unowned_executables"}
     if module == "software":
@@ -716,6 +752,7 @@ class SnapshotBuilder:
         self._gaps: dict[str, list[tuple[str, set[str] | None]]] = {}
         self._names: dict[str, dict[str, int]] = {}
         self._unread: list[tuple[str, dict[str, Any]]] = []
+        self._site_php_read = False  # the collector said every web root's sites were read
         self._settings: list[tuple[str, list[str]]] = []  # logging configuration text
         self._mail_text: list[tuple[str, list[str]]] = []  # mail configuration text
         self._mac: dict[str, Any] | None = None
@@ -777,6 +814,9 @@ class SnapshotBuilder:
             # The firewall's loaded rules (nft, iptables-legacy-save).
             self._text[start.source_id] = ((start, hashlib.sha256()), [])
             return
+        if start.kind == "file" and start.module == "unusual_files" and is_site_php(start.name):
+            self._text[start.source_id] = ((start, hashlib.sha256()), [])
+            return
         wanted = start.kind == "file" and start.module in _FILE_SECTIONS
         if start.module in ("mail", "web_logs") and not start.name.startswith("/etc/"):
             wanted = False  # a log, read for events
@@ -824,6 +864,15 @@ class SnapshotBuilder:
                 section.items[f"{program}: {text}"] = {"program": program}
             if cut:
                 self._module_gap("network", f"{program} output cut short", "source", {})
+            return
+        if start.module == "unusual_files":
+            # A site's .user.ini or .htaccess: only its PHP lines were sent.
+            settings = self.section("php_settings")
+            for key, setting in php_settings(start.name, lines or [], site=True):
+                settings.items[key] = setting
+            if cut:
+                where = {"path": start.name}
+                self._module_gap(start.module, f"{start.name} cut short", "source", where)
             return
         section = _FILE_SECTIONS[start.module]
         item = self.section(section).items.setdefault(start.name, {})
@@ -972,6 +1021,8 @@ class SnapshotBuilder:
             self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 
     def _on_unusual_files(self, name: str, data: dict[str, Any]) -> None:
+        if name == "site_php":
+            self._site_php_read = True
         sections = {
             "unusual_file": "unusual_files",
             "web_file": "web_files",
@@ -1279,6 +1330,11 @@ class SnapshotBuilder:
 
     def finish(self) -> Snapshot:
         self._settle_unread()
+        result = (self.trailer_data.modules if self.trailer_data else {}).get("unusual_files")
+        if result is not None and result.status == "ok" and not self._site_php_read:
+            # An older collector: no site's .user.ini or .htaccess was read.
+            why = "sites' .user.ini and .htaccess weren't read (an older collector)"
+            self._module_gap("unusual_files", why, "site_php_missing", {})
         self._listeners()
         self._peers()
         self._logging()

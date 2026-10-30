@@ -144,6 +144,10 @@ that may include access tokens, and sometimes secrets typed into commands.
   PHP's configuration files (setting names and values, masked; comments
   left out), so a threat pack can tell when a fix arrived and whether a
   recommended setting is in place.
+- **Sites' own PHP settings.** In the web folders the tool already examines,
+  the PHP setting lines of `.user.ini` and `.htaccess` files (setting names
+  and values, masked; nothing else from those files), because a site can
+  override a protective PHP setting there.
 - **Mail logs.** Outgoing mail logs (Postfix, Exim) are collected, because
   mail sent from a compromised server is a common sign of misuse. Before they
   leave the server, every email address in them is changed: the part before

@@ -602,7 +602,9 @@ class Run:
         self.deadline = deadline
         self._protected = None
 
-    def refusal(self, opened, info, key_file=False, spool=False, walked=False, home=None):
+    def refusal(
+        self, opened, info, key_file=False, spool=False, walked=False, home=None, site_root=None
+    ):
         """Why the contents of a file just opened (its path after links, its
         fstat) must not be read, or None. These rules don't depend on knowing
         every history file on the server:
@@ -657,6 +659,13 @@ class Run:
             # from a configuration file can reach a spool.
             if not opened.startswith(SPOOL_LOCATIONS):
                 return "is outside cron's and at's spools"
+        elif site_root is not None:
+            # A site's own PHP settings (plan 4.4c): only these names, only
+            # inside the web root being walked; only their PHP lines are sent.
+            if opened.rsplit("/", 1)[-1] not in SITE_PHP_FILES:
+                return "is not a site's .user.ini or .htaccess"
+            if not opened.startswith(site_root.rstrip("/") + "/"):
+                return "is outside the web root being walked"
         elif not opened.startswith(SYSTEM_LOCATIONS):
             return "is outside the system locations configuration and logs are read from"
         if opened.startswith(homes):
@@ -864,6 +873,8 @@ def send_file(
     walked=False,
     home=None,
     transform=None,
+    site_root=None,
+    expect=None,
 ):
     """Send one file as a source: decompressed, masked, chunked, capped.
     Returns True if sent, False if it could not be read (recorded instead).
@@ -878,7 +889,10 @@ def send_file(
     link is read; with `home` (see homes_for), it is a home file whose text
     the opt-in allows, and must lie in that home and in no home the opt-in
     doesn't cover (Run.refusal). With `transform`, each line goes through
-    `transform(line, masker)` instead of the plain masking (see pump_lines)."""
+    `transform(line, masker)` instead of the plain masking (see pump_lines).
+    With `site_root`, see Run.refusal; with `expect` (device, inode), the
+    file opened must be that one (a walked file, not whatever its path
+    leads to now)."""
     suffix = os.path.splitext(absolute)[1]
     if suffix in _COMPRESSED and suffix not in _OPENERS:
         details = describe_unreadable(absolute)
@@ -895,7 +909,11 @@ def send_file(
         details["reason"] = str(exc)
         run.stream.record(module, "unreadable_file", details)
         return False
-    refusal = run.refusal(absolute, info, spool=spool, walked=walked, home=home)
+    refusal = run.refusal(
+        absolute, info, spool=spool, walked=walked, home=home, site_root=site_root
+    )
+    if not refusal and expect is not None and (info.st_dev, info.st_ino) != tuple(expect):
+        refusal = "is not the file the walk listed (replaced since); its contents aren't read"
     if refusal:
         # The file actually opened — through any link or hard link — is one
         # collected as status or metadata only: never send its text.
@@ -5564,13 +5582,18 @@ def mask_names(entry):
         entry["masked"] = found
 
 
-def walk_place(run, module, top, limit, keep, hash_it, record="unusual_file", prune=None):
+def walk_place(
+    run, module, top, limit, keep, hash_it, record="unusual_file", prune=None, missed=None
+):
     """Walk one place; send each entry `keep(entry)` accepts as `record`,
     annotated (hashed where `hash_it(entry, kind)` says), and count the
-    rest. Returns the walk's summary, or None if the place isn't there."""
+    rest. Returns the walk's summary, or None if the place isn't there, or
+    is there but couldn't be walked (then appended to `missed`, if given)."""
     directory, risk = resolve_links(top)
     if risk:
         run.stream.record(module, "not_examined", {"path": top, "reason": risk})
+        if missed is not None:
+            missed.append(top)
         return None
     try:
         info = os.lstat(path(directory))
@@ -5578,6 +5601,8 @@ def walk_place(run, module, top, limit, keep, hash_it, record="unusual_file", pr
         return None
     except OSError as exc:
         run.stream.record(module, "unreadable_file", {"path": top, "reason": str(exc)})
+        if missed is not None:
+            missed.append(top)
         return None
     if not stat.S_ISDIR(info.st_mode):
         return None
@@ -5605,6 +5630,102 @@ def walk_place(run, module, top, limit, keep, hash_it, record="unusual_file", pr
     summary["whole"] = not summary["truncated"] and not any(summary["not_descended"].values())
     run.stream.record(module, "walk_summary", summary)
     return summary
+
+
+# A site's own PHP settings (plan 4.4c): PHP-FPM reads .user.ini in each
+# folder of a request's path, Apache .htaccess; either can set a setting
+# again for that site (a pack's mitigation, say).
+SITE_PHP_FILES = (".user.ini", ".htaccess")
+MAX_SITE_PHP_FILES = 500
+_HTACCESS_PHP = re.compile(rb"^\s*php_(?:admin_)?(?:value|flag)\s+([A-Za-z0-9_.\[\]-]+)", re.I)
+_HTACCESS_SETENV = re.compile(rb"^(\s*SetEnv\s+PHP_(?:ADMIN_)?VALUE\s+)(.*?)(\s*)$", re.I)
+_HTACCESS_PHP_VALUE = re.compile(rb"\bPHP_(?:ADMIN_)?VALUE\b", re.I)
+# Directives that can set PHP_VALUE some other way (conditionally, or as a
+# rewrite's environment flag): named, their values never sent.
+_HTACCESS_OTHER = re.compile(
+    rb"^\s*(SetEnvIf(?:NoCase|Expr)?|BrowserMatch(?:NoCase)?|ProxyFCGISetEnvIf|RewriteRule"
+    rb"|RewriteCond|SetEnv|PassEnv|Define)\b",
+    re.I,
+)
+_INI_SECTION_LINE = re.compile(rb"^\s*\[")
+
+
+def _php_value_masked(value, masker):
+    """A PHP_VALUE's "a=1\\nb=2" with each secret setting's value masked whole."""
+    quoted = len(value) >= 2 and value[:1] == b'"' and value[-1:] == b'"'
+    inner = value[1:-1] if quoted else value
+    parts = re.split(rb"(\\n|;)", inner)
+    for n, part in enumerate(parts):
+        name, sep, _ = part.partition(b"=")
+        if sep and _PHP_SECRET_NAME.search(name.strip()):
+            parts[n] = name + b"=[MASKED:php_secret]"
+            masker.counts["php_secret"] = masker.counts.get("php_secret", 0) + 1
+    inner = b"".join(parts)
+    return b'"' + inner + b'"' if quoted else inner
+
+
+def htaccess_php_line(line, masker):
+    """An .htaccess line as sent: only a PHP setting (php_value, php_flag,
+    their admin forms, or SetEnv PHP_VALUE / PHP_ADMIN_VALUE), masked (a
+    secret setting's whole value). Another directive naming PHP_VALUE
+    (SetEnvIf, a rewrite's E= flag) is sent only as a marker naming the
+    directive, its arguments left out; everything else is left out."""
+    found = _HTACCESS_PHP.match(line)
+    if found:
+        if _PHP_SECRET_NAME.search(found.group(1)):
+            masker.counts["php_secret"] = masker.counts.get("php_secret", 0) + 1
+            return line[: found.end(1)] + b" [MASKED:php_secret]\n"
+        return masker.line(line)
+    setenv = _HTACCESS_SETENV.match(line.rstrip(b"\r\n"))
+    if setenv:
+        return masker.line(setenv.group(1) + _php_value_masked(setenv.group(2), masker) + b"\n")
+    if _HTACCESS_PHP_VALUE.search(line):
+        other = _HTACCESS_OTHER.match(line)
+        what = other.group(1) if other else b"another directive"
+        return b"[PHP_VALUE set by " + what + b": not read]\n"
+    return b""
+
+
+def user_ini_line(line, masker):
+    """A .user.ini line as sent: a directive only, as from php.ini (PHP
+    reads no sections there)."""
+    return b"" if _INI_SECTION_LINE.match(line) else php_ini_line(line, masker)
+
+
+def _site_php(run, module, summary, sites):
+    """Each .user.ini and .htaccess the walk of a web root found: their PHP
+    lines only, and only the very file the walk listed (a folder swapped
+    for a link since can't lead elsewhere: the file opened must have the
+    walked inode, on the root's filesystem, which the walk never left). One
+    not read — a link (never followed), a path that masking would change
+    (a source's path is sent as it is), refused, unreadable, or past the
+    limit — or a walk not whole or cut short by time, may hide a setting:
+    said so (`site_php_partial`), however the reading ends."""
+    root = summary.get("resolved") or summary.get("place")
+    read = 0
+    try:
+        try:
+            device = os.stat(path(root)).st_dev
+        except OSError:
+            device = None
+        for absolute, kind, inode in sites[:MAX_SITE_PHP_FILES]:
+            run.check_time()
+            if kind != "-" or device is None:
+                continue
+            _, masked = mask_text(absolute.encode("utf-8", "surrogateescape") + b"\n")
+            if masked:
+                continue
+            transform = user_ini_line if absolute.endswith(".user.ini") else htaccess_php_line
+            if send_file(run, module, absolute, text_only=True, walked=True, transform=transform,
+                         site_root=root, expect=(device, inode)):  # fmt: skip
+                read += 1
+    finally:
+        if read < len(sites) or not summary.get("whole"):
+            run.stream.record(
+                module,
+                "site_php_partial",
+                {"path": summary.get("place"), "found": len(sites), "read": read},
+            )
 
 
 def _is_web_listed(entry, root):
@@ -5717,19 +5838,34 @@ def module_unusual_files(run):
         module, "web_roots", {"roots": roots, "source": "default" if configured is None else "host"}
     )
     with time_share(run, module, "web_roots", WEB_TIME_SHARE):
-        for top in roots:
-            run.check_time()
-            note(
-                walk_place(
-                    run,
-                    module,
-                    top,
-                    MAX_WEB_ENTRIES,
-                    lambda entry, root=top: _is_web_listed(entry, root),
-                    _web_hashed,
-                    "web_file",
-                )
-            )
+        done = 0
+        try:
+            for top in roots:
+                run.check_time()
+                sites, missed = [], []
+
+                def web_listed(entry, root=top, sites=sites):
+                    # A site's own PHP settings are read after the walk; a
+                    # link isn't followed, so it counts as one not read.
+                    name = entry["path"].rsplit("/", 1)[-1]
+                    if name in SITE_PHP_FILES and entry.get("type") in ("-", "l"):
+                        sites.append((entry["path"], entry.get("type"), entry.get("inode")))
+                    return _is_web_listed(entry, root)
+
+                summary = walk_place(run, module, top, MAX_WEB_ENTRIES, web_listed, _web_hashed,
+                                     "web_file", missed=missed)  # fmt: skip
+                note(summary)
+                done += 1
+                if summary is not None:
+                    _site_php(run, module, summary, sites)
+                elif missed:  # there, but not examined or not readable
+                    run.stream.record(module, "site_php_partial", {"path": top, "read": 0})
+            # Every web root's sites were read, or what wasn't is said: a
+            # collection without this record (an older collector's) didn't.
+            run.stream.record(module, "site_php", {"roots": len(roots)})
+        finally:
+            for top in roots[done:]:  # time ran out first
+                run.stream.record(module, "site_php_partial", {"path": top, "read": 0})
 
     # The rest of the time: every top-level directory the system walk
     # doesn't cover.

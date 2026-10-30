@@ -356,6 +356,64 @@ is John's to approve before it is committed. Also:
   but unbooted fix protects nothing. A design note for that pack, not
   built.
 
+### 4.4c — Sites' own PHP settings (as built)
+
+- The web-root walk notes each `.user.ini` and `.htaccess` (a link too)
+  and then reads them, up to 500 per root: PHP lines only (`.user.ini`:
+  directives, as php.ini; `.htaccess`: `php_value`/`php_flag` and admin
+  forms, and `SetEnv PHP_VALUE`), masked, secret-named values whole. The
+  refusal rules gain one exception: with `site_root`, a file may lie
+  outside the system locations only if it has one of those two names and
+  lies inside the root being walked (checked on the file opened); the
+  hard-link, home and history rules still apply. A file whose path
+  masking would change isn't read (its source name would carry the
+  secret). Anything not read, or a walk not whole: `site_php_partial`.
+- The snapshot parses them into `php_settings` as kind `site` (`how`:
+  `.user.ini`, `php_value`…, `PHP_VALUE`); `php_settings` now also
+  depends on `unusual_files`; a site file not read leaves `php_settings`
+  incomplete, not the web-file sections. SNAPSHOT_VERSION 13.
+- The mitigation judge counts each site value as a place of its own.
+  A `.user.ini` or `PHP_VALUE` value doesn't count where every PHP-FPM
+  pool sets the setting with `php_admin_*` to the expected value and no
+  CGI set-up exists (nothing overrides `php_admin_*`); an `.htaccess`
+  `php_value` (Apache's module) always counts. The in-place note now
+  names what's still unseen: sites outside the web roots examined, and
+  `ini_set`.
+- **After review (4.4c; 4 high, 5 medium, 6 low), all fixed:**
+  - a folder swapped for a link between the walk and the read could reach
+    a kept-out home: the file opened must now be the walked inode;
+  - secret settings inside `SetEnv PHP_VALUE` went out unmasked: each
+    pair is masked whole now, and any other directive naming `PHP_VALUE`
+    is sent only as a marker naming the directive ("not seen");
+  - time running out, or a root not examined, left `php_settings`
+    complete: `site_php_partial` is now recorded however reading ends,
+    a web-roots time limit maps to `php_settings`, and a `site_php`
+    record marks a collection that went through every root (without it,
+    an older collector: a gap);
+  - PHP-FPM applies a FastCGI `PHP_VALUE` over `php_admin_*` (php-src
+    `fpm_php_zend_ini_alter_master`): only `.user.ini` is locked out now;
+  - `user_ini.filename` is resolved per set-up and pool (empty: none
+    read; another name: "not seen");
+  - site values count only where something reads them: `.user.ini` under
+    PHP-FPM or CGI, `.htaccess` `php_*` under Apache's PHP module,
+    `SetEnv PHP_VALUE` under Apache with PHP-FPM;
+  - a linked site file is counted, never opened (its target was sent
+    unmasked); `.user.ini` sections aren't sent.
+  - Not modelled (they only make a site count where it might not):
+    which pools serve which site, AllowOverride, `<IfModule>`, Apache's
+    own `php_admin_*`, a `.user.ini` above the document root. One goes
+    the other way: RHEL's php-cgi (mod_fcgid) isn't recognised as CGI,
+    so with every pool locked a site's `.user.ini` there is wrongly left
+    out; the judge sees settings and files, not which packages provide
+    php-cgi.
+- **Read-only proof (2026-10-30, after the review fixes): PASSED** on
+  ubuntu24.04 and rocky9. The collector wrote nothing; the planted
+  `/var/www/proof/.user.ini` and `.htaccess` were collected on both
+  (`.user.ini` with its secret-named setting masked, `.htaccess` down to
+  its `php_flag` line), the planted secret appeared nowhere in the
+  bundles, and `php_settings` was complete on both. Both servers deleted.
+  Spend: about $0.01 (Phase 4 so far: about $0.02 of the $10 cap).
+
 ### 4.5 — Detections
 
 - The detection language (D1): over events (type, fields matched by

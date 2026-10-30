@@ -6028,5 +6028,124 @@ class PhpIniReviewTests(FixtureRoot):
         self.assertNotIn("/var/log/php_app_errors.log", sent)
 
 
+class SitePhpTests(FixtureRoot):
+    """Sites' .user.ini and .htaccess in the web roots: their PHP lines only (plan 4.4c)."""
+
+    def run_sites(self, **overrides):
+        collector = load_collector(self.root)
+        collector.file_capabilities = lambda absolute: ({}, None)
+        for name, value in overrides.items():
+            setattr(collector, name, value)
+        out = io.BytesIO()
+        collector.main(unusual_settings(None), out=out)
+        return [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+
+    def test_only_php_lines_are_sent_masked(self):
+        secret = "sk-ant-api03-" + "a" * 60
+        self.write(
+            "var/www/shop/.user.ini",
+            f"; tuning\n[hunter5]\nupload_max_filesize = 9M\nmail.api_key = {secret}\n".encode(),
+        )
+        self.write(
+            "var/www/blog/.htaccess",
+            (
+                "RewriteEngine On\nRewriteRule ^admin$ /secret-panel [L]\n"
+                "AuthUserFile /var/www/.htpasswd\nSetEnv DB_PASSWORD hunter2\n"
+                "<IfModule mod_php.c>\n  php_flag session.upload_progress.enabled on\n"
+                f"  php_value mail.api_key {secret}\n</IfModule>\n"
+                'SetEnv PHP_VALUE "session.upload_progress.enabled=0"\n'
+                'SetEnv PHP_VALUE "a=1\\nmysqli.default_pw=hunter3;newrelic.license=hunter4"\n'
+                "SetEnv PHP_ADMIN_VALUE newrelic.license=hunter6\n"
+                "SetEnv DB_PASS hunter7 PHP_VALUE\n"
+                "SetEnv DB_PASS hunter10 PHP_VALUE x=1\n"
+                'SetEnvIf Request_URI "^/" PHP_VALUE=x=hunter8\n'
+                "RewriteRule .* - [E=PHP_VALUE:x=hunter9]\n"
+            ).encode(),
+        )
+        self.write("var/www/blog/index.php", b"<?php echo 1;")
+        records = self.run_sites()
+        sent = sources(records)
+        self.assertEqual(
+            sent["/var/www/shop/.user.ini"][1],
+            b"upload_max_filesize = 9M\nmail.api_key = [MASKED:php_secret]\n",
+        )
+        htaccess = sent["/var/www/blog/.htaccess"][1].decode()
+        self.assertEqual(
+            htaccess.splitlines(),
+            [
+                "  php_flag session.upload_progress.enabled on",
+                "  php_value mail.api_key [MASKED:php_secret]",
+                'SetEnv PHP_VALUE "session.upload_progress.enabled=0"',
+                'SetEnv PHP_VALUE "a=1\\nmysqli.default_pw=[MASKED:php_secret]'
+                ';newrelic.license=[MASKED:php_secret]"',
+                "SetEnv PHP_ADMIN_VALUE newrelic.license=[MASKED:php_secret]",
+                "[PHP_VALUE set by SetEnv: not read]",
+                "[PHP_VALUE set by SetEnv: not read]",
+                "[PHP_VALUE set by SetEnvIf: not read]",
+                "[PHP_VALUE set by RewriteRule: not read]",
+            ],
+        )
+        self.assertNotIn("/var/www/blog/index.php", sent)  # no other file's text
+        self.assertEqual(named(records, "site_php_partial"), [])
+        self.assertEqual(len(named(records, "site_php")), 1)
+
+    def test_one_not_read_is_said(self):
+        self.write("var/www/a/.htaccess", b"php_flag x on\n")
+        os.link(Path(self.root, "var/www/a/.htaccess"), Path(self.root, "var/www/a/copy"))
+        Path(self.root, "var/www/b").mkdir(parents=True)
+        os.symlink("../x/password=hunter2", Path(self.root, "var/www/b/.user.ini"))
+        self.write("var/www/c/password=hunter2/.user.ini", b"x = 1\n")
+        records = self.run_sites()
+        sent = sources(records)
+        self.assertFalse([name for name in sent if name.startswith("/var/www/")])
+        refused = [r["data"]["reason"] for r in named(records, "unreadable_file")]
+        self.assertTrue(any("hard-linked" in reason for reason in refused))
+        [partial] = named(records, "site_php_partial")
+        self.assertEqual(partial["data"], {"path": "/var/www", "found": 3, "read": 0})
+        # The link is counted, never opened: its target isn't repeated anywhere.
+        self.assertNotIn("hunter2", json.dumps(records))
+
+    def test_a_folder_swapped_for_a_link_after_the_walk_isnt_followed(self):
+        self.write("var/www/site/sub/.htaccess", b"php_value session.name ok\n")
+        self.write("home/bob/private/.htaccess", b"php_value session.name BOBSECRET\n")
+        collector = load_collector(self.root)
+        listed = collector._is_web_listed
+
+        def swap_after_listing(entry, root):
+            if entry["path"] == "/var/www/site/sub/.htaccess":
+                os.rename(Path(self.root, "var/www/site/sub"), Path(self.root, "var/www/site/old"))
+                os.symlink("../../../home/bob/private", Path(self.root, "var/www/site/sub"))
+            return listed(entry, root)
+
+        collector._is_web_listed = swap_after_listing
+        collector.file_capabilities = lambda absolute: ({}, None)
+        out = io.BytesIO()
+        collector.main(unusual_settings(None), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        self.assertNotIn("BOBSECRET", json.dumps(records))
+        refused = [r["data"]["reason"] for r in named(records, "unreadable_file")]
+        self.assertTrue(any("not the file the walk listed" in reason for reason in refused))
+        self.assertEqual(named(records, "site_php_partial")[0]["data"]["read"], 0)
+
+    def test_running_out_of_time_says_what_wasnt_read(self):
+        self.write("var/www/a/.user.ini", b"x = 1\n")
+        records = self.run_sites(WEB_TIME_SHARE=0.0)
+        self.assertEqual(named(records, "site_php"), [])
+        partial = {r["data"]["path"] for r in named(records, "site_php_partial")}
+        self.assertEqual(partial, {"/var/www", "/srv/www", "/srv/http", "/usr/share/nginx/html"})
+
+    def test_the_refusal_keeps_to_the_names_and_the_root(self):
+        collector = load_collector(self.root)
+        run = collector.Run(None, json.loads(settings([])), 1e12)
+        info = os.stat(self.write("var/www/a/.htaccess", b""))
+        root = "/var/www"
+        self.assertIsNone(run.refusal("/var/www/a/.htaccess", info, site_root=root))
+        self.assertIn("not a site's", run.refusal("/var/www/a/.env", info, site_root=root))
+        self.assertIn("outside the web root", run.refusal("/srv/.htaccess", info, site_root=root))
+        self.assertIn(
+            "outside the web root", run.refusal("/var/wwwx/.htaccess", info, site_root=root)
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

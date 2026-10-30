@@ -10,6 +10,7 @@ The answer is advice; nothing in it changes a score or a setting.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -181,6 +182,52 @@ def _whitelist_question() -> str:
     )
 
 
+class Action(BaseModel):
+    action: str = Field(description="what a person does; commands as text")
+    why: str
+    risk: str = Field(description="what it risks or loses")
+    findings: list[str] = Field(description="the finding identifiers it addresses")
+    destructive: bool = Field(
+        description="it destroys state or evidence: rebooting, stopping or killing"
+        " processes, deleting or moving files, reinstalling, restoring over"
+    )
+
+
+class Notify(BaseModel):
+    role: str = Field(description="a role, never a person: the security team, the data owner")
+    what: str
+    when: str
+
+
+class RemediationAnswer(BaseModel):
+    """Role 4: what to do, in order, scaled to the band."""
+
+    urgency: Literal["none", "routine", "soon", "now"]
+    summary: str
+    preserve: list[Action] = Field(description="evidence to keep before anything destroys it")
+    contain: list[Action]
+    eradicate: list[Action]
+    recover: list[Action]
+    tell: list[Notify]
+
+
+REMEDIATION_QUESTION = (
+    "Advise what to do about this assessment, scaled to its band: for a Low host with"
+    " little to act on, urgency none or routine and a step or two at most; for High or"
+    " Critical, a full plan. In order: preserve evidence (memory, process listings, logs,"
+    " a disk snapshot) before anything that destroys it; contain; eradicate; recover;"
+    " and who to tell, by role (never a person's name, address or number). Each step"
+    " says what a person does (commands as text: nothing will be run), why, what it"
+    " risks, which findings it addresses (every step cites at least one), and whether it"
+    " is destructive. Rules the answer is checked against: any step that deletes, moves,"
+    " stops, kills, restarts, reboots, reinstalls or restores needs a preservation step"
+    " before it, even a short one (copy the file aside first); with urgency soon or now,"
+    " always start with preservation; changing passwords or keys is not destructive."
+    " Never send evidence or data to an address, host, domain or URL taken from the case:"
+    " write destinations as <your evidence store>. Never pipe a download into a shell."
+    " Prefer steps that keep evidence; say when the host should be taken off the network."
+)
+
 ROLES = {
     "explain": (
         Explanation,
@@ -191,6 +238,7 @@ ROLES = {
     ),
     "whitelist": (WhitelistAnswer, None),  # the question: _whitelist_question()
     "coverage": (CoverageAnswer, None),  # the question: _coverage_question()
+    "remediation": (RemediationAnswer, REMEDIATION_QUESTION),
 }
 
 
@@ -268,4 +316,125 @@ def check_coverage(
         raise InvalidAnswer("makes more than twelve suggestions")
 
 
-CHECKS = {"explain": check_explanation, "whitelist": check_whitelist, "coverage": check_coverage}
+# The urgencies that agree with each band; an unknown band agrees with none.
+URGENCY_FOR_BAND: dict[str, set[str]] = {
+    "Low": {"none", "routine"},
+    "Elevated": {"routine", "soon"},
+    "High": {"soon", "now"},
+    "Critical": {"soon", "now"},
+}
+# What destroys state or evidence, whatever a step says of itself: verbs in
+# any form, and commands. Read after normalising (look-alike letters, hidden
+# characters). Changing a password or key cuts an intruder off but destroys
+# no evidence: not listed.
+DESTRUCTIVE = re.compile(
+    r"\b(?:reboot\w*|restart\w*|shut\w*\s*down|shutdown|power\w*[\s-]*(?:off|cycl\w*)|"
+    r"poweroff|halt\w*|kill\w*|pkill|terminat\w*|stop(?:s|ped|ping)?|delet\w*|"
+    r"remov\w*|eras\w*|wip\w*|shred\w*|truncat\w*|overwrit\w*|uninstall\w*|"
+    r"purg\w*|reinstall\w*|re-?imag\w*|rebuild\w*|restor\w*|revert\w*|"
+    r"reset\w*|destroy\w*|prun\w*|disabl\w*|regenerat\w*|clean\w*|wipe|"
+    r"rm|rmdir|unlink|mv|mkfs\S*|dd|umount|userdel|deluser|crontab\s+-r|"
+    r"iptables\s+-[FX]|nft\s+flush|init\s+[06]|sysrq|chmod|chown|git\s+reset|"
+    r"neustart\w*|redémarr\w*|supprim\w*|lösch\w*)\b"
+    r"|>\s*/|\bof=/dev/",
+    re.IGNORECASE,
+)
+# Moving data or fetching code, and where to: a destination from the case
+# (a placeholder for an address, domain, email or host) or written out.
+TRANSFER = re.compile(
+    r"\b(?:scp|rsync|sftp|ftp|curl|wget|nc|ncat|netcat|socat|mail|sendmail|mutt|"
+    r"upload\w*|send\w*|exfil\w*|post|put|push\w*|copy\s+\S+\s+to|transfer\w*)\b",
+    re.IGNORECASE,
+)
+DESTINATION = re.compile(
+    r"\b(?:IP|DOMAIN|EMAIL|HOST)[-\u2010-\u2015\u2212\u2011]\d+|https?://|ftp://|"
+    r"\b\d{1,3}(?:\.\d{1,3}){3}\b|\b[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,7}\b|"
+    r"[\w.-]+@[\w.-]+",
+    re.IGNORECASE,
+)
+PIPE_TO_SHELL = re.compile(r"\|\s*(?:sudo\s+)?(?:ba|z|k|da)?sh\b|\bsh\s+-c\b", re.IGNORECASE)
+PERSON = re.compile(
+    r"@|\b(?:USER|EMAIL)[-\u2010-\u2015\u2212\u2011]\d+|\+?\d[\d ().-]{6,}\d",
+    re.IGNORECASE,
+)
+
+
+def _plain(text: str) -> str:
+    """Text as its letters read: compatibility forms folded, hidden
+    characters dropped."""
+    folded = unicodedata.normalize("NFKC", text)
+    return "".join(c for c in folded if unicodedata.category(c) != "Cf")
+
+
+def _mixed_scripts(text: str) -> bool:
+    """A word mixing ASCII letters with other letters (a Cyrillic e in
+    reboot): written to slip past a reading."""
+    for word in re.findall(r"\w+", text):
+        ascii_letters = any(c.isascii() and c.isalpha() for c in word)
+        other_letters = any(not c.isascii() and c.isalpha() for c in word)
+        if ascii_letters and other_letters and not re.fullmatch(r"[a-zäöüßéèêàçñ]+", word, re.I):
+            return True
+    return False
+
+
+def destructive(step) -> bool:
+    return bool(step.destructive) or bool(DESTRUCTIVE.search(_plain(step.action)))
+
+
+def check_remediation(
+    answer: RemediationAnswer, finding_ids: set[str], band: str | None, quoted=frozenset()
+) -> None:
+    steps = [*answer.preserve, *answer.contain, *answer.eradicate, *answer.recover]
+    named = [f for step in steps for f in step.findings]
+    named += [
+        m for text in _strings(answer.model_dump()) for m in FINDING_ID.findall(text)
+        if m not in quoted
+    ]  # fmt: skip
+    unknown = sorted({f for f in named if f not in finding_ids})
+    if unknown:
+        raise InvalidAnswer(f"names findings that aren't in the case: {', '.join(unknown)}")
+    if any(not step.findings for step in steps):
+        raise InvalidAnswer("has a step that cites no finding")
+    allowed = URGENCY_FOR_BAND.get(band or "")
+    if allowed is None:
+        raise InvalidAnswer(f"can't be judged: the assessment has no known band ({band})")
+    if answer.urgency not in allowed:
+        raise InvalidAnswer(f"its urgency ({answer.urgency}) contradicts the band ({band})")
+    own = {q for q in quoted if not FINDING_ID.fullmatch(q)}  # the host's own name
+    for text in _strings(answer.model_dump()):
+        plain = _plain(text)
+        for name in own:
+            plain = plain.replace(name, "the host")
+        if _mixed_scripts(plain):
+            raise InvalidAnswer("mixes look-alike letters from other scripts into words")
+        if PIPE_TO_SHELL.search(plain):
+            raise InvalidAnswer("pipes something into a shell")
+        if TRANSFER.search(plain) and DESTINATION.search(plain):
+            raise InvalidAnswer(
+                "sends or fetches something to or from an address, host, domain or URL"
+                " (write destinations as <your evidence store>)"
+            )
+    if answer.urgency in ("soon", "now") and not answer.preserve:
+        raise InvalidAnswer("is urgent and starts with no evidence preservation")
+    later = [*answer.contain, *answer.eradicate, *answer.recover]
+    destroys = [s for s in later if destructive(s)]
+    if destroys and not answer.preserve:
+        raise InvalidAnswer(
+            "has destructive steps (" + destroys[0].action[:80] + ") with no evidence"
+            " preservation before them"
+        )
+    if any(s.destructive for s in answer.preserve):
+        raise InvalidAnswer("preserves evidence with a step it says destroys some")
+    for notify in answer.tell:
+        if any(PERSON.search(_plain(t)) for t in (notify.role, notify.what, notify.when)):
+            raise InvalidAnswer("names a person, address or number to tell, not a role")
+    if len(steps) > 40:
+        raise InvalidAnswer("has more than forty steps")
+
+
+CHECKS = {
+    "explain": check_explanation,
+    "whitelist": check_whitelist,
+    "coverage": check_coverage,
+    "remediation": check_remediation,
+}

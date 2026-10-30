@@ -191,6 +191,19 @@ uncertain findings count half. Suppressed and informational findings don't count
 <p class="muted">Written by an AI model from the findings above; the probability and band are the tool's own and unchanged. Finding numbers (F-n) count the analysis's findings in order.</p>
 </div>
 {% endif %}
+{% set m = (r.advice.get("remediation") or {}).get("answered") %}
+{% if m and m.answer %}
+<h3>AI advisor: remediation (advice; nothing was run)</h3>
+<div class="notice">
+<p class="meta">Asked {{ m.model_asked|visible(80) }}{% if m.declined_by %}; declined by {{ m.declined_by|join(", ")|visible(200) }}{% endif %}{% if m.model_answered %}; answered by {{ m.model_answered|visible(80) }}{% endif %} · redaction {{ m.redaction }} · {{ m.at[:16] }} UTC{% if m.stale %} · <strong>stale</strong>{% endif %}</p>
+<p><strong>Urgency: {{ m.answer.urgency|visible(20) }}.</strong> {{ m.answer.summary|visible(2000) }}</p>
+{% for title, key in (("Preserve evidence first", "preserve"), ("Contain", "contain"), ("Eradicate", "eradicate"), ("Recover", "recover")) %}
+{% if m.answer[key] %}<p>{{ title }}:</p><ol>{% for s in m.answer[key] %}<li><span class="mono">{{ s.action|visible(1000) }}</span>{% if s.destructive %} <strong>[destroys state]</strong>{% endif %}{% if s.findings %} ({{ s.findings|join(", ")|visible(100) }}){% endif %}<div class="muted">Why: {{ s.why|visible(600) }} · Risk: {{ s.risk|visible(400) }}</div></li>{% endfor %}</ol>{% endif %}
+{% endfor %}
+{% if m.answer.tell %}<p>Tell:</p><ul>{% for t in m.answer.tell %}<li>{{ t.role|visible(120) }}: {{ t.what|visible(400) }} ({{ t.when|visible(120) }})</li>{% endfor %}</ul>{% endif %}
+<p class="muted">Written by an AI model for a person to weigh against what they know of the host. Commands are shown as text; the tool runs nothing. Preserve evidence before any step marked as destroying state.</p>
+</div>
+{% endif %}
 {% set c = (r.advice.get("coverage") or {}).get("answered") %}
 {% if c and c.answer %}
 {% set offered = c.answer.judged|selectattr("accepted")|list %}

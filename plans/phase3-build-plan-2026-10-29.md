@@ -303,6 +303,31 @@ assessment, its events, snapshot and whitelist, by one module
   Program if refusals get in the way.
 - **Tests:** ordering rule (preservation before destructive containment)
   enforced by the validator; every step refers to findings in the case.
+- **As built (2026-10-29):** RemediationAnswer (urgency, summary, preserve,
+  contain, eradicate, recover, tell); urgency must agree with the band
+  (Low: none/routine; Elevated: routine/soon; High, Critical: soon/now);
+  a destructive step (by its flag or by what it does: reboot, kill, rm,
+  reinstall, restore, passwd, revoke…) needs evidence preservation before
+  it, and preservation steps may not destroy; tell names roles, never a
+  person, an address or a placeholder; findings cited must be in the case.
+  Asked whenever the operator asks for it; the urgency rule keeps a quiet
+  host's answer small. The display marks destructive steps by the tool's
+  own reading too.
+- **After review (2026-10-29):** destructive is read from verb stems and
+  commands after NFKC folding and dropping hidden characters, and words
+  mixing look-alike letters from other scripts are refused; in contain,
+  eradicate and recover a destructive step (by flag or reading) needs
+  preservation first, while a preservation step is refused only when the
+  model itself flags it (a keyword there is marked, not rejected:
+  "do not reboot until…"); changing passwords or keys isn't destructive;
+  urgent plans start with preservation; every step cites a finding; an
+  unknown band fails closed; nothing may move data to or fetch code from
+  an address, host, domain or URL from the case or written out (the
+  host's own name excepted), and nothing pipes into a shell; tell is
+  checked in all its fields for addresses, placeholders and numbers. The
+  prompt states these rules so answers aren't paid for and set aside.
+  Keyword reading is best effort: the answer is advice a person reads,
+  and nothing runs.
 
 ### 3.6 — Advisor eval
 

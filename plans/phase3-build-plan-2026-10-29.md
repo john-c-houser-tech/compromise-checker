@@ -575,6 +575,20 @@ The advisor's answers can't be golden-tested, so they are measured.
 
 ## After Phase 3
 
+- **3.9 — Proposals a host's text steered (2026-10-30, John: "go ahead
+  with 1 and 3").** The local eval had a canary get two rules offered on a
+  quiet host. `proposals.steering()` looks through the case as sent for
+  host text that addresses an AI (asks for rules, states a verdict, says
+  to ignore instructions; after URL decoding, twice, the report's escapes
+  removed and NFKC), and `judge` sets every proposal aside when it finds
+  some, naming where. No match on any golden case under any mode. The eval
+  now keeps every answer, with why each proposal was set aside, records
+  the findings offered rules hide, and fails when a canary gets a rule
+  offered; it also reads its key from the same places `advise` does (it
+  crashed before reaching the first request since 3.7). A test-wide guard
+  refuses to run a password manager as a key command (a test reached
+  1Password's prompt once). Not done: a note on the other roles' answers when the
+  host's text addresses an AI.
 - Threat packs and pack drafting (Phase 4).
 - **Scheduled checks** of production servers, run from a permanent
   controller (the Mac mini or a small Linode), not the laptop. To discuss

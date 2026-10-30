@@ -269,6 +269,10 @@ turned back into names, and offered only when:
   uses;
 - the host isn't assessed High or Critical and has no chain: tidying
   noise is for a host that looks clean;
+- no text from the host in the case addresses an AI (asks for rules,
+  states a verdict, tells the assistant to ignore its instructions…),
+  however it is encoded: that is an intruder steering the advisor, so
+  none of its proposals is offered until a person has looked;
 - its check is not written only by hand: the checks that can raise a
   critical finding (`account.uid0`, `kernel.taint`, `package.changed`,
   `persistence.ld_preload`, `process.hidden`), every check a chain is made
@@ -298,6 +302,8 @@ report lists what was proposed and what was set aside, and why.
 
 The checks bound what a rule can hide, not why it was proposed. Text an
 intruder wrote on a quiet host can ask the advisor for rules, and a rule
-for a low finding can pass every check (a small local model did this in
-the [eval](advisor.md#how-well-it-works)). Ask of each proposal whether
-you would have written it yourself from the findings it hides.
+for a low finding can pass every other check (a small local model did
+this in the [eval](advisor.md#how-well-it-works)). The tool sets aside
+every proposal for a host whose text addresses an AI, but such text can
+be worded in ways no check foresees. Ask of each proposal whether you
+would have written it yourself from the findings it hides.

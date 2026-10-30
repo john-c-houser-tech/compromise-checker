@@ -97,7 +97,7 @@ def recipients(advisor) -> str:
         fallback = advisor.fallback_model
         to += (
             f", and, when a request is declined, {recipient(fallback.api, fallback.base_url)}"
-            f" ({fallback.model})"
+            f" for the fallback model, {fallback.model}"
         )
     return to
 
@@ -110,7 +110,7 @@ def advisor_question(redaction: str, to: str = ANTHROPIC) -> str:
         "The optional AI advisor can explain findings, propose whitelist rules for you"
         " to review, suggest better coverage and advise on remediation. When you run"
         f" `checker advise`, it sends {SENT[redaction]} {to}. {SENT_DETAIL[redaction]}"
-        " It never connects to a server and never changes a score or a setting."
+        " It never connects to your servers and never changes a score or a setting."
         " Everything else in the tool works without it (security and privacy policy §9)."
     )
     return textwrap.fill(text, 78)
@@ -125,7 +125,7 @@ def key_source_words(
     if source == "keyring":
         return f"the OS keyring (service compromise-checker, username {username})"
     if source == "none":
-        return "nowhere (the server takes no key)"
+        return "nowhere: the server takes no key"
     return f"the output of `{source.removeprefix('command:')}`"
 
 
@@ -144,11 +144,15 @@ def describe(config: Config) -> list[str]:
         )
         return lines
     to = recipient(advisor.api, advisor.base_url)
+    main_places = key_places(advisor.api, advisor.base_url)
     lines += [
         f"AI advisor: on, model {advisor.model}"
         + (f", effort {advisor.effort}" if advisor.api == "anthropic" else "")
-        + ", API key from"
-        + f" {key_source_words(advisor.api_key_source, key_places(advisor.api))}.",
+        + (
+            ", no API key (the server takes none)."
+            if advisor.api_key_source == "none"
+            else f", API key from {key_source_words(advisor.api_key_source, main_places)}."
+        ),
         f"  Sent only when you run `checker advise`: {SENT[advisor.redaction]},"
         + (" to Anthropic with your own account." if to == ANTHROPIC else f" {to}."),
         f"  Redaction: {advisor.redaction}: {REDACTION[advisor.redaction]}.",

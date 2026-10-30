@@ -410,7 +410,7 @@ def test_describe_says_who_receives_it(base_with_config):
     lines = "\n".join(describe(load_config(base)))
     assert "to a server on this machine (loopback), at http://localhost:11434/v1." in lines
     assert "effort" not in lines
-    assert "API key from nowhere (the server takes no key)" in lines
+    assert "model qwen2.5:7b, no API key (the server takes none)." in lines
     change(base, "advisor.base_url", "http://10.0.0.5:11434/v1")  # no key: http allowed
     lines = "\n".join(describe(load_config(base)))
     assert "to the server at http://10.0.0.5:11434/v1 (OpenAI-compatible API, not encrypted" in (
@@ -717,7 +717,11 @@ def test_the_question_names_the_fallback_recipient_too():
         "model": "hosted", "api": "openai", "base_url": ELSEWHERE})  # fmt: skip
     text = advisor_question("pseudonymize", recipients(advisor)).replace("\n", " ")
     assert "to Anthropic, with your organization's own API key, and, when a request is" in text
-    assert f"declined, to the server at {ELSEWHERE} (OpenAI-compatible API) (hosted)" in text
+    assert (
+        f"declined, to the server at {ELSEWHERE} (OpenAI-compatible API) for the fallback"
+        " model, hosted." in text
+    )
+    assert "It never connects to your servers" in text
 
 
 def test_a_priced_fallback_that_may_have_run_makes_the_cost_unknown():

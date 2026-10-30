@@ -74,9 +74,14 @@ is John's to approve before it is committed. Also:
 - **Signatures before parsing.** A pack's signature is checked over the
   file's bytes before its YAML is read. The YAML loader is the safe one,
   with size and depth limits.
-- **The signing key never touches a server or CI.** John makes the key on
-  his own machine and keeps it in 1Password plus an offline backup
+- **The signing keys never touch a server or CI.** John makes them on his
+  own machine and keeps them in 1Password plus an offline backup
   (DESIGN.md §10.4). Releases are signed by hand.
+- **Two keys, so one can be replaced.** A root key, used rarely and kept
+  offline, signs only the list of trusted pack keys; a pack key signs
+  pack releases. A leaked or lost pack key is revoked and replaced by a
+  new list, without a tool release (4.2; a side note John relayed,
+  2026-10-30).
 - **Vendor data, not upstream strings.** Fixed versions come from each
   vendor's advisory for each release (Ubuntu USN/OVAL, Red Hat errata,
   the Sury PPA's changelog), recorded in the pack with their source.
@@ -140,15 +145,39 @@ is John's to approve before it is committed. Also:
   BLAKE2b-512 hash, minisign's default; the trusted comment checked too),
   with the `cryptography` library the tool already depends on through
   asyncssh. No minisign binary needed to verify.
-- The NouriLoop LLC public key in the tool's source; organization keys in
-  `config.yaml` (`packs.trusted_keys`, each with a name), changed with
-  `checker config` and recorded like other settings.
+- **Two NouriLoop LLC keys** (D5): a **root key**, whose public half is
+  in the tool's source and on nouriloop.com, and which signs nothing but
+  the **key list**; and a **pack key**, which signs pack releases and is
+  trusted only because the current key list names it. The root key is
+  never trusted for a pack, nor a pack key for a key list.
+- **The key list** (`keys.yaml` and its `.minisig`, signed by the root
+  key): a format number, a **serial** that only goes up, the date, the
+  pack keys to trust (minisign key id, public key, name) and the revoked
+  ones (key id, since when, why). A copy of the current list ships in the
+  tool; a newer one is taken from `checker packs pull` (4.7) or added by
+  hand (`checker packs keys add FILE`, for air-gapped sites). The tool
+  remembers the highest serial it has accepted and refuses a lower one,
+  so an old list can't be replayed to bring a revoked key back.
+- **Revocation:** a pack signed by a revoked key is refused when added or
+  pulled, and one already added is retired at once when the new list
+  arrives; the next analysis says it was retired and why. Reports made
+  with it stay readable.
+- **Losing or leaking the root key** needs a tool release with a new root
+  key; it is used perhaps once in years and never online, so that should
+  be rare. `checker packs keys` shows the list in force: its serial, the
+  trusted and revoked keys.
+- Organization keys in `config.yaml` (`packs.trusted_keys`, each with a
+  name), changed with `checker config` and recorded like other settings:
+  the organization replaces its own keys there; the key list doesn't
+  touch them.
 - `checker packs add FILE [--signature FILE.minisig]`: verifies, then
   copies into `packs/`. A pack whose id and version are already present
   with different content is refused. `checker packs list`, `show ID`,
   `retire ID`.
-- Needs from John (D5): the key pair, made with `minisign -G` on his
-  machine.
+- Built and tested with throwaway test keys; the real ones (D5) go in at
+  4.8. Needs from John then: both key pairs, made with `minisign -G` on
+  his machine, and the first key list signed with the root key (I'll give
+  the exact commands).
 
 ### 4.3 — Exposure
 
@@ -271,11 +300,14 @@ is John's to approve before it is committed. Also:
   never by running `php`), keeps only directive names and values, and
   masks them like any other text; a new module part, read-only like the
   rest, proven by the read-only proof.
-- **D5. The signing key. Decided 2026-10-30 (John): he makes it at 4.8;
-  a test key until then.** John makes a minisign key pair on his machine
-  (`minisign -G`), keeps the secret key and its password in 1Password with
-  an offline backup, and gives me the public key to put in the tool and on
-  nouriloop.com.
+- **D5. The signing keys. Decided 2026-10-30 (John): he makes them at
+  4.8; test keys until then. Two keys (decided the same day, after a side
+  note on replacing a key): a root key and a pack key, as in 4.2.** John
+  makes both minisign key pairs on his machine (`minisign -G`), keeps each
+  secret key and its password in 1Password with an offline backup (the
+  root key's backup apart from the pack key's), signs the first key list
+  with the root key, and gives me the public keys to put in the tool and
+  on nouriloop.com.
 - **D6. The packs repository. Decided 2026-10-30 (John): create it at
   4.7.** A new public repository,
   `john-c-houser-tech/compromise-checker-packs`, under CC BY 4.0.

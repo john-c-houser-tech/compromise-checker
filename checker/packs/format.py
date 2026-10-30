@@ -18,9 +18,19 @@ Phase 4") validates its drafts exactly as the tool reads them.
       likelihood_ratio: 5      # a host exposed through the whole window
       packages:
         - release: "ubuntu:24.04"
-          names: [php8.3-fpm, libapache2-mod-php8.3]
+          binary_names: [php8.3-fpm, libapache2-mod-php8.3]
           fixed: "8.3.6-0ubuntu0.24.04.6"
           source: https://ubuntu.com/security/notices/USN-0000-1
+        - release: "ubuntu:24.04"          # the same release, another repository
+          binary_names: [php8.3-fpm]
+          versions: "*+deb.sury.org*"      # only installed versions like this
+          fixed: "8.3.27-1+ubuntu24.04.1+deb.sury.org+1"
+          source: https://launchpad.net/~ondrej/+archive/ubuntu/php
+        - release: "rhel:9"
+          binary_names: [php-fpm]
+          versions: "8.1.*"                # one module stream
+          fixed: null                      # no fix yet: every one is affected
+          source: https://access.redhat.com/security/cve/CVE-2026-109618
       stale_code: {programs: ["php-fpm*"]}
     mitigations:
       - id: upload-progress-off
@@ -30,43 +40,86 @@ Phase 4") validates its drafts exactly as the tool reads them.
         text: Turn off upload progress tracking until PHP is fixed.
     detections:
       - id: worker-child
-        check: web.worker_child_process
+        check: web.worker_child
         likelihood_ratio: 10
     remediation:
       - Upgrade PHP to a fixed package and restart every PHP worker.
     references:
       - https://www.cisa.gov/...
 
+An installed package is matched by its binary name (the collector knows no
+source names) and, where an entry says, by a glob on its installed version:
+the way to tell apart repositories (Ubuntu's archive, the Sury PPA) and
+streams (RHEL's PHP modules) that ship the same name on one release. When
+a package matches several entries (an entry with no pattern matches every
+version), it is vulnerable if any of them says so: the Ubuntu archive's
+fixed version can't vouch for a Sury build that sorts above it.
+
+A fixed version carries the vendor's revision (dpkg) or release (rpm):
+"8.3.6" alone would count every distribution build of 8.3.6 as fixed,
+backported fix or not.
+
 Detections name a check built into the tool; the bounded matching
 language a pack can use for its own detections (decision D1) comes with
 plan 4.5 and widens this schema before the format is first published.
+
+YAML is read as YAML 1.2 reads it: `off`, `no` and `yes` stay text, a
+leading zero doesn't make a number octal, and `1:30` isn't sixty-based.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import UTC, date, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 FORMAT = 1
 MAX_BYTES = 256 * 1024
 MAX_DEPTH = 12
+MAX_PROBLEMS = 20
 MAX_LR = 10.0  # no pack outweighs the core checks (decision D3)
-FAMILIES = ("ubuntu", "rhel")  # Rocky Linux and AlmaLinux are matched as rhel
 
 _ID = r"[a-z0-9][a-z0-9-]{0,62}"
-_RELEASE = re.compile(r"(ubuntu):(\d{2}\.\d{2})|(rhel):(\d{1,2})")
+_RELEASE = re.compile(r"ubuntu:\d{2}\.\d{2}|rhel:\d{1,2}")
 _PACKAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9+._-]{0,99}")
 _VERSION = re.compile(r"[A-Za-z0-9.+~:^_-]{1,100}")
+_VERSION_GLOB = re.compile(r"[A-Za-z0-9.+~:^_*?-]{1,100}")
 _GLOB = re.compile(r"[A-Za-z0-9._+@*?/-]{1,64}")
 _CVE = re.compile(r"CVE-\d{4}-\d{4,7}")
 _CHECK = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+")
 _SETTING = re.compile(r"[A-Za-z0-9_.-]{1,100}")
+_LABEL = r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
+_HOST = re.compile(rf"(?:{_LABEL}\.)+[A-Za-z]{{2,63}}")
+_LOCAL_HOSTS = ("localhost", "localhost.localdomain")
 
-Text = Annotated[str, Field(min_length=1, max_length=2000)]
+# Characters that hide or disguise text (controls, format characters such
+# as bidi overrides, unassigned and private ones, line and paragraph
+# separators, and every space but the plain one): never in a pack, whose
+# text is shown in terminals and reports.
+_HIDING = {"Cc", "Cf", "Co", "Cs", "Cn", "Zl", "Zp"}
+
+
+def _plain(value: str) -> str:
+    for c in value:
+        if unicodedata.category(c) in _HIDING or (unicodedata.category(c) == "Zs" and c != " "):
+            raise ValueError(f"holds a hidden or control character (U+{ord(c):04X})")
+    return value
+
+
+Plain = Annotated[str, AfterValidator(_plain)]
+Text = Annotated[str, Field(min_length=1, max_length=2000), AfterValidator(_plain)]
 
 
 class PackError(Exception):
@@ -77,20 +130,49 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
-def _utc(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(None):
-        raise ValueError("must be a UTC time (ending in Z)")
+def _time(value: Any) -> Any:
+    """A UTC time, written so YAML reads it as one."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(None):
+            raise ValueError("must be a UTC time, ending in Z: 2026-10-20T00:00:00Z")
+        return value
+    raise ValueError("write a UTC time with seconds, unquoted: 2026-10-20T00:00:00Z")
+
+
+def _day(value: Any) -> Any:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    raise ValueError("write a date alone, unquoted: 2026-10-25")
+
+
+def _https(value: str) -> str:
+    """An https address on a public host name: no user part, no address
+    literal or local host, a real port, nothing hidden."""
+    if len(value) > 500:
+        raise ValueError("an address longer than 500 characters")
+    found = re.fullmatch(r"https://([^/:?#\s]+)(?::(\d{1,5}))?([/?#]\S*)?", _plain(value))
+    host = found and found.group(1)
+    if (
+        not found
+        or not _HOST.fullmatch(host)
+        or host.lower() in _LOCAL_HOSTS
+        or (found.group(2) and not 0 < int(found.group(2)) <= 65535)
+    ):
+        raise ValueError(f"not an https address on a public host name: {value!r}")
     return value
 
 
 class Package(_Strict):
-    """Affected packages on one distribution release, and the first version
-    the vendor fixed there, in the vendor's own numbering."""
+    """Affected binary packages on one distribution release, optionally only
+    those whose installed version matches `versions`, and the first version
+    the vendor fixed there, in its own numbering; `fixed: null` when there is
+    no fix yet, so every matching version is affected."""
 
-    release: str  # "ubuntu:24.04", "rhel:9"
-    names: list[str] = Field(min_length=1, max_length=50)  # binary package names
-    fixed: str
-    source: str  # where the fixed version came from (the vendor's advisory)
+    release: str  # "ubuntu:24.04", "rhel:9" (Rocky Linux and AlmaLinux as rhel)
+    binary_names: list[str] = Field(min_length=1, max_length=50)
+    versions: str | None = None  # a glob on the installed version
+    fixed: str | None
+    source: str  # the vendor's advisory the fixed version came from
 
     @field_validator("release")
     @classmethod
@@ -99,7 +181,7 @@ class Package(_Strict):
             raise ValueError("a release is ubuntu:YY.MM or rhel:N, e.g. ubuntu:24.04, rhel:9")
         return value
 
-    @field_validator("names")
+    @field_validator("binary_names")
     @classmethod
     def _names(cls, value: list[str]) -> list[str]:
         for name in value:
@@ -109,11 +191,23 @@ class Package(_Strict):
             raise ValueError("a package is named twice")
         return value
 
+    @field_validator("versions")
+    @classmethod
+    def _versions(cls, value: str | None) -> str | None:
+        if value is not None and (not _VERSION_GLOB.fullmatch(value) or value.count("*") > 3):
+            raise ValueError(f"not a version pattern (version characters, * and ?): {value!r}")
+        return value
+
     @field_validator("fixed")
     @classmethod
-    def _fixed(cls, value: str) -> str:
-        if not _VERSION.fullmatch(value):
+    def _fixed(cls, value: str | None) -> str | None:
+        if value is not None and not _VERSION.fullmatch(value):
             raise ValueError(f"not a package version: {value!r}")
+        if value is not None and not re.search(r"[^-]-[^-]+$", value.split(":", 1)[-1]):
+            raise ValueError(
+                f"a fixed version needs the vendor's revision or release, as installed"
+                f" (8.3.6-0ubuntu0.24.04.6, not 8.3.6): {value!r}"
+            )
         return value
 
     @field_validator("source")
@@ -147,10 +241,15 @@ class Exposure(_Strict):
     packages: list[Package] = Field(min_length=1, max_length=100)
     stale_code: StaleCode | None = None
 
-    @field_validator("window_start", "first_seen_in_wild", "window_end")
+    @field_validator("window_start", mode="before")
     @classmethod
-    def _times(cls, value: datetime | None) -> datetime | None:
-        return None if value is None else _utc(value)
+    def _start(cls, value: Any) -> Any:
+        return _time(value)
+
+    @field_validator("first_seen_in_wild", "window_end", mode="before")
+    @classmethod
+    def _times(cls, value: Any) -> Any:
+        return None if value is None else _time(value)
 
     @model_validator(mode="after")
     def _order(self) -> Exposure:
@@ -158,9 +257,21 @@ class Exposure(_Strict):
             raise ValueError("first_seen_in_wild is before window_start")
         if self.window_end and self.window_end <= self.window_start:
             raise ValueError("window_end must be after window_start")
-        releases = [p.release for p in self.packages]
-        if len(set(releases)) != len(releases):
-            raise ValueError("a release is listed twice: one entry per release")
+        if (
+            self.window_end
+            and self.first_seen_in_wild
+            and self.window_end < self.first_seen_in_wild
+        ):
+            raise ValueError("window_end is before first_seen_in_wild")
+        seen: dict[tuple[str, str | None], set[str]] = {}
+        for package in self.packages:
+            names = seen.setdefault((package.release, package.versions), set())
+            if names & set(package.binary_names):
+                raise ValueError(
+                    f"{package.release}: a package is in two entries with the same versions"
+                    " pattern: give each its own pattern"
+                )
+            names |= set(package.binary_names)
         return self
 
 
@@ -182,14 +293,19 @@ class Setting(_Strict):
 class Mitigation(_Strict):
     id: str = Field(pattern=rf"^{_ID}$")
     setting: Setting
-    expect: str = Field(min_length=1, max_length=100)  # compared without case; on/off forms equal
+    # Compared without regard to case; on/off, yes/no, true/false and 1/0
+    # are each the same.
+    expect: Annotated[str, Field(min_length=1, max_length=100), AfterValidator(_plain)]
     covers: list[str] = Field(default=[], max_length=20)  # CVEs it also covers
     text: Text
 
     @field_validator("covers")
     @classmethod
     def _covers(cls, value: list[str]) -> list[str]:
-        return [_cve(c) for c in value]
+        value = [_cve(c) for c in value]
+        if len(set(value)) != len(value):
+            raise ValueError("a CVE is listed twice")
+        return value
 
 
 class Detection(_Strict):
@@ -212,7 +328,7 @@ class Pack(_Strict):
     format: Literal[1]
     id: str = Field(pattern=rf"^{_ID}$")
     version: int = Field(ge=1, le=10_000)
-    title: str = Field(min_length=1, max_length=200)
+    title: Annotated[str, Field(min_length=1, max_length=200), AfterValidator(_plain)]
     published: date
     cves: list[str] = Field(default=[], max_length=50)
     exposure: Exposure
@@ -220,6 +336,11 @@ class Pack(_Strict):
     detections: list[Detection] = Field(default=[], max_length=50)
     remediation: list[Text] = Field(min_length=1, max_length=20)
     references: list[str] = Field(min_length=1, max_length=30)
+
+    @field_validator("published", mode="before")
+    @classmethod
+    def _published(cls, value: Any) -> Any:
+        return _day(value)
 
     @field_validator("cves")
     @classmethod
@@ -249,26 +370,64 @@ def _cve(value: str) -> str:
     return value
 
 
-def _https(value: str) -> str:
-    if (
-        not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[^\s]*)?", value)
-        or len(value) > 500
-    ):
-        raise ValueError(f"not an https address: {value!r}")
-    return value
-
-
 # --- Reading ---------------------------------------------------------------------------------
+
+_INT = "tag:yaml.org,2002:int"
+_FLOAT = "tag:yaml.org,2002:float"
+_BOOL = "tag:yaml.org,2002:bool"
 
 
 class _Loader(yaml.SafeLoader):
-    """safe_load, refusing a key given twice in one mapping (a reviewer
-    sees the first, YAML keeps the last)."""
+    """safe_load with YAML 1.2's plain types (true/false only; decimal
+    integers; no sixty-based numbers), refusing a key given twice in one
+    mapping (a reviewer sees the first, YAML keeps the last), a key that
+    isn't text, and merge keys."""
 
 
-def _no_duplicates(loader: _Loader, node: yaml.MappingNode, deep: bool = False):
+_Loader.yaml_implicit_resolvers = {
+    first: [(tag, rx) for tag, rx in resolvers if tag not in (_INT, _FLOAT, _BOOL)]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_Loader.add_implicit_resolver(_BOOL, re.compile(r"^(?:true|false)$"), list("tf"))
+_Loader.add_implicit_resolver(_INT, re.compile(r"^[-+]?[0-9]+$"), list("-+0123456789"))
+_Loader.add_implicit_resolver(
+    _FLOAT,
+    re.compile(r"^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?$"),
+    list("-+.0123456789"),
+)
+
+
+def _decimal(loader: _Loader, node: yaml.ScalarNode) -> int:
+    text = loader.construct_scalar(node)
+    if not re.fullmatch(r"[-+]?[0-9]{1,18}", text):
+        raise yaml.constructor.ConstructorError(
+            None, None, f"not a decimal integer: {text[:40]!r}", node.start_mark
+        )
+    return int(text)
+
+
+def _number(loader: _Loader, node: yaml.ScalarNode) -> float:
+    text = loader.construct_scalar(node)
+    if len(text) > 40 or not re.fullmatch(
+        r"[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?", text
+    ):
+        raise yaml.constructor.ConstructorError(
+            None, None, f"not a number: {text[:40]!r}", node.start_mark
+        )
+    return float(text)
+
+
+def _keys(loader: _Loader, node: yaml.MappingNode, deep: bool = False):
     seen = set()
     for key_node, _ in node.value:
+        if key_node.tag == "tag:yaml.org,2002:merge":
+            raise yaml.constructor.ConstructorError(
+                None, None, "merge keys (<<) aren't allowed", key_node.start_mark
+            )
+        if not (isinstance(key_node, yaml.ScalarNode) and key_node.tag == "tag:yaml.org,2002:str"):
+            raise yaml.constructor.ConstructorError(
+                None, None, "a key must be text", key_node.start_mark
+            )
         key = loader.construct_object(key_node, deep=deep)
         if key in seen:
             raise yaml.constructor.ConstructorError(
@@ -278,7 +437,9 @@ def _no_duplicates(loader: _Loader, node: yaml.MappingNode, deep: bool = False):
     return loader.construct_mapping(node, deep=deep)
 
 
-_Loader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicates)
+_Loader.add_constructor(_INT, _decimal)
+_Loader.add_constructor(_FLOAT, _number)
+_Loader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _keys)
 
 
 def _shape(text: str) -> None:
@@ -287,13 +448,21 @@ def _shape(text: str) -> None:
     depth = 0
     for event in yaml.parse(text, Loader=yaml.SafeLoader):
         if isinstance(event, yaml.AliasEvent):
-            raise PackError(f"line {event.start_mark.line + 1}: aliases (*name) aren't allowed")
+            raise PackError(
+                f"line {event.start_mark.line + 1}: aliases (*name) aren't allowed"
+                " (quote a value that starts with *)"
+            )
         if isinstance(event, yaml.CollectionStartEvent):
             depth += 1
             if depth > MAX_DEPTH:
                 raise PackError(f"line {event.start_mark.line + 1}: nested too deeply")
         elif isinstance(event, yaml.CollectionEndEvent):
             depth -= 1
+
+
+# What a malformed file can raise from inside PyYAML's constructors (a date
+# that doesn't exist, an odd explicit tag) besides YAMLError.
+_READ_ERRORS = (yaml.YAMLError, ValueError, TypeError, KeyError, AttributeError, OverflowError)
 
 
 def read(data: bytes) -> Pack:
@@ -308,20 +477,36 @@ def read(data: bytes) -> Pack:
     try:
         _shape(text)
         loaded = yaml.load(text, Loader=_Loader)  # noqa: S506 - a SafeLoader subclass
-    except yaml.YAMLError as exc:
-        raise PackError(f"not valid YAML: {exc}") from None
+    except _READ_ERRORS as exc:
+        raise PackError(_safe(f"not valid YAML: {exc}")) from None
     if not isinstance(loaded, dict):
         raise PackError("a pack is a mapping of fields (format, id, version, …)")
-    if loaded.get("format") != FORMAT:
+    if "format" not in loaded:
+        raise PackError(f"no format field: this version of the tool reads format {FORMAT}")
+    if type(loaded["format"]) is not int or loaded["format"] != FORMAT:
         raise PackError(
-            f"format {loaded.get('format')!r}: this version of the tool reads format {FORMAT}"
+            _safe(f"format {loaded['format']!r}: this version of the tool reads format {FORMAT}")
         )
     try:
         return Pack.model_validate(loaded)
     except ValidationError as exc:
-        raise PackError("\n".join(_problem(e) for e in exc.errors())) from None
+        errors = exc.errors()
+        lines = [_problem(e) for e in errors[:MAX_PROBLEMS]]
+        if len(errors) > MAX_PROBLEMS:
+            lines.append(f"…and {len(errors) - MAX_PROBLEMS} more")
+        raise PackError("\n".join(lines)) from None
+
+
+def _safe(text: str) -> str:
+    """Text from the file, made safe to print: hidden characters escaped."""
+    return "".join(
+        f"\\u{ord(c):04x}"
+        if unicodedata.category(c) in _HIDING or (unicodedata.category(c) == "Zs" and c != " ")
+        else c
+        for c in text
+    )
 
 
 def _problem(error: dict) -> str:
     where = ".".join(str(p) for p in error["loc"]) or "the pack"
-    return f"{where}: {error['msg'].removeprefix('Value error, ')}"
+    return _safe(f"{where}: {error['msg'].removeprefix('Value error, ')}")

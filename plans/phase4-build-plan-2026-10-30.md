@@ -110,6 +110,21 @@ is John's to approve before it is committed. Also:
   name a built-in check (the matching language widens this in 4.5, before
   the format is first published); `checker packs check FILE` also checks
   those checks exist. The `packs/` folder comes with `packs add` (4.2).
+- **After review (4.0; 2 high, 7 medium):** malformed files crashed the
+  reader (impossible dates, odd tags, huge numbers, unhashable keys): all
+  are pack errors now. One fixed version per release couldn't tell the
+  Ubuntu archive from the Sury PPA, nor RHEL's PHP module streams: a
+  release may now hold several entries, each picking installed versions
+  by a glob (`versions`), and `fixed: null` says no fix yet. `names`
+  became `binary_names` (the collector knows no source names). A fixed
+  version must carry the vendor's revision or release. Hidden and control
+  characters are refused in every text field and escaped in messages;
+  YAML is read with 1.2's plain types (`off` stays text, no octal or
+  sixty-based numbers); times and dates say how to write them; at most 20
+  problems are listed; `packs check` reads only a regular file, no more
+  than a pack may hold. Addresses must be public https host names. Still
+  to do once 4.1 is in: check each fixed version's structure with the
+  family's own parser.
 
 ### 4.1 — Version ordering
 
@@ -137,6 +152,12 @@ is John's to approve before it is committed. Also:
 
 ### 4.3 — Exposure
 
+- An installed package that matches several entries (one with no
+  `versions` pattern matches every version) is vulnerable if any of them
+  says so, so the Ubuntu archive's fix can't vouch for a Sury build that
+  sorts above it (a side note John relayed, 2026-10-30). An installed
+  version the family's parser refuses is "can't judge", reported, never
+  fixed and never skipped.
 - For each active pack and host: which affected packages are installed,
   their versions, vulnerable or fixed by the vendor's ordering, and for a
   fixed host when the fixed version was installed (the package's install

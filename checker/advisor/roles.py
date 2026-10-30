@@ -338,20 +338,36 @@ DESTRUCTIVE = re.compile(
     r"destroy\w*|prun\w*|disabl\w*\s+--now|wipe|"
     r"rm|rmdir|unlink|mv|mkfs\S*|dd|umount|userdel|deluser|crontab\s+-r|"
     r"iptables\s+-[FX]|nft\s+flush|init\s+[06]|sysrq|git\s+reset\s+--hard|"
+    r"git\s+clean|kubeadm\s+reset|ch(?:mod|own)\s+-R|history\s+-c|"
+    r"journalctl\s+--vacuum\S*|sed\s+-i\S*\s+\S+\s+/var/log\S*|"
     r"neustart\w*|redémarr\w*|supprim\w*|lösch\w*)\b"
     r"|>\s*/|\bof=/dev/",
     re.IGNORECASE,
 )
 # Moving data or fetching code, and where to: a destination from the case
 # (a placeholder for an address, domain, email or host) or written out.
+# Tools that move data or fetch it: their destination may stand anywhere in
+# an instruction (a variable, the line before, a continuation line).
+COMMAND_TRANSFER = re.compile(
+    r"\b(?:scp|rsync|sftp|ftp|curl|wget|nc|ncat|netcat|socat|ssh|sendmail|mutt|"
+    r"git\s+push|git\s+remote|s3\s+cp|rclone|lftp|smbclient)\b|/dev/(?:tcp|udp)/",
+    re.IGNORECASE,
+)
+# Words that send: their destination must follow them in one clause, since
+# descriptions use them too ("the outbound mail").
 TRANSFER = re.compile(
-    r"\b(?:scp|rsync|sftp|ftp|curl|wget|nc|ncat|netcat|socat|mail|sendmail|mutt|"
-    r"upload\w*|send\w*|exfil\w*|post|put|push\w*|copy\s+\S+\s+to|transfer\w*)\b",
+    r"\b(?:mail|upload\w*|send\w*|exfil\w*|post|put|push\w*|copy\s+\S+\s+to|"
+    r"transfer\w*)\b",
+    re.IGNORECASE,
+)
+# A command given as an instruction in a description (why, risk, summary).
+IMPERATIVE_COMMAND = re.compile(
+    r"\b(?:run|then|execute|afterwards|next|use)\b[^.;\n]{0,24}?" + COMMAND_TRANSFER.pattern,
     re.IGNORECASE,
 )
 DESTINATION = re.compile(
     r"\b(?:IP|DOMAIN|EMAIL|HOST)[-\u2010-\u2015\u2212\u2011]\d+|https?://|ftp://|"
-    r"[\w.-]+@[\w.-]+",
+    r"[\w.-]+@[\w.-]+|\b[\w-]+(?:\.[\w-]+)+/[\w./%?=&-]*",
     re.IGNORECASE,
 )
 _ADDRESS_LIKE = re.compile(r"(?<![\w:.])[0-9A-Fa-f:.]{3,}(?![\w:])")
@@ -363,8 +379,9 @@ def _destination(text: str) -> str | None:
     if found := DESTINATION.search(text):
         return found.group(0)
     for candidate in _ADDRESS_LIKE.findall(text):
+        candidate = re.sub(r"(?<=\d):\d{1,5}$", "", candidate.strip(".:"))  # a port
         try:
-            ipaddress.ip_address(candidate.strip(".:"))
+            ipaddress.ip_address(candidate)
         except ValueError:
             continue
         return candidate
@@ -373,7 +390,12 @@ def _destination(text: str) -> str | None:
 
 # A sending or fetching verb, then its destination, in one clause.
 _CLAUSE = re.compile(r"(?:[^;\n.]|\.(?!\s|$))+")  # a full stop ends one; mem.lime doesn't
-PIPE_TO_SHELL = re.compile(r"\|\s*(?:sudo\s+)?(?:ba|z|k|da)?sh\b|\bsh\s+-c\b", re.IGNORECASE)
+PIPE_TO_SHELL = re.compile(
+    r"\|\s*(?:sudo(?:\s+-\S+)*\s+)?(?:env\s+)?"
+    r"(?:(?:ba|z|k|da)?sh|python\d*(?:\.\d+)?|perl|ruby|node|php)\b"
+    r"|\bsh\s+-c\b|<\(\s*(?:curl|wget)\b|\$\(\s*(?:curl|wget)\b",
+    re.IGNORECASE,
+)
 PERSON = re.compile(
     r"@|\b(?:USER|EMAIL)[-\u2010-\u2015\u2212\u2011]\d+"
     r"|\+\d[\d ().-]{7,}\d|\(\d{3}\)\s*\d{3}[ .-]\d{4}|\b\d{3}[ .-]\d{3}[ .-]\d{4}\b",
@@ -382,7 +404,12 @@ PERSON = re.compile(
 
 
 def _sends(text: str) -> bool:
-    """A clause that sends or fetches, with its destination after the verb."""
+    """An instruction that sends or fetches to or from a destination: a
+    transfer tool with a destination anywhere in it, or a sending word with
+    its destination after it in one clause."""
+    text = re.sub(r"\\\s*\n", " ", text)  # shell continuation lines
+    if COMMAND_TRANSFER.search(text) and _destination(text):
+        return True
     for clause in _CLAUSE.findall(text):
         verb = TRANSFER.search(clause)
         if verb and _destination(clause[verb.end() :]):
@@ -433,8 +460,25 @@ def check_remediation(
         raise InvalidAnswer(f"its urgency ({answer.urgency}) contradicts the band ({band})")
     own = {q for q in quoted if not FINDING_ID.fullmatch(q)}  # the host's own name
     for text in _strings(answer.model_dump()):
-        if _mixed_scripts(_plain(text)):
+        plain = _plain(text)
+        if _mixed_scripts(plain):
             raise InvalidAnswer("mixes look-alike letters from other scripts into words")
+        if PIPE_TO_SHELL.search(plain):
+            raise InvalidAnswer("pipes something into a shell")
+    # Descriptions are shown to the operator too: a command given there as
+    # an instruction ("run scp ...") is judged like one.
+    descriptions = [answer.summary] + [x for s in steps for x in (s.why, s.risk)]
+    descriptions += [t.when for t in answer.tell]
+    for text in descriptions:
+        plain = _plain(text)
+        for name in own:
+            plain = plain.replace(name, "the host")
+        command = IMPERATIVE_COMMAND.search(plain)
+        if command and _destination(plain[command.start() :]):
+            raise InvalidAnswer(
+                "sends or fetches something to or from an address, host, domain or URL"
+                " (write destinations as <your evidence store>)"
+            )
     # What a person is told to do: the steps' actions, and what to tell whom
     # (descriptions may name the attacker's addresses; instructions may not
     # send there).
@@ -462,7 +506,9 @@ def check_remediation(
     if any(s.destructive for s in answer.preserve):
         raise InvalidAnswer("preserves evidence with a step it says destroys some")
     for notify in answer.tell:
-        if PERSON.search(_plain(notify.role)) or _destination(_plain(notify.role)):
+        role = _plain(notify.role)
+        # Roles hold no times or dates: any run of seven digits is a number.
+        if PERSON.search(role) or _destination(role) or re.search(r"\d[\d /().-]{5,}\d", role):
             raise InvalidAnswer("names a person, address or number to tell, not a role")
         if any(PERSON.search(_plain(t)) for t in (notify.what, notify.when)):
             raise InvalidAnswer("names a person, address or number to tell, not a role")

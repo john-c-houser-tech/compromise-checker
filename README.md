@@ -46,6 +46,15 @@ What works today:
   configuration (auditd for web accounts, a persistent journal, sshd
   `LogLevel VERBOSE`, a readable web log format, log retention), each
   citing the coverage gap or finding it helps with; nothing is changed.
+  `--role remediation` asks what to do, scaled to the band: evidence to
+  preserve first, then containment, eradication, recovery, and who to tell
+  (by role); it must agree with the band (no "now" for a Low host), keep
+  evidence before any step that destroys state (judged by what a step does,
+  not only by what it says), and cite only real findings. Commands are
+  shown as text; nothing runs. The model's safety checks may decline
+  security content now and then (the report says so, and a fallback model
+  answers when `advisor.fallback` is `anthropic`); organizations doing this
+  work regularly can apply to Anthropic's Cyber Verification Program.
   `--show [--redaction MODE]` prints exactly what would be sent,
   after redaction, and sends nothing. Under *pseudonymize* (the default) people's
   account names, host names, email addresses, IP addresses and SSH key

@@ -303,6 +303,16 @@ assessment, its events, snapshot and whitelist, by one module
   Program if refusals get in the way.
 - **Tests:** ordering rule (preservation before destructive containment)
   enforced by the validator; every step refers to findings in the case.
+- **As built (2026-10-29):** RemediationAnswer (urgency, summary, preserve,
+  contain, eradicate, recover, tell); urgency must agree with the band
+  (Low: none/routine; Elevated: routine/soon; High, Critical: soon/now);
+  a destructive step (by its flag or by what it does: reboot, kill, rm,
+  reinstall, restore, passwd, revoke…) needs evidence preservation before
+  it, and preservation steps may not destroy; tell names roles, never a
+  person, an address or a placeholder; findings cited must be in the case.
+  Asked whenever the operator asks for it; the urgency rule keeps a quiet
+  host's answer small. The display marks destructive steps by the tool's
+  own reading too.
 
 ### 3.6 — Advisor eval
 

@@ -169,6 +169,15 @@ def advise(
         else:
             answer = _restore(raw, pseudonyms.restore) if pseudonyms is not None else raw
     judged, written = None, None
+    if status == "answered" and role == "remediation":
+        from checker.advisor.roles import DESTRUCTIVE
+
+        # Marked by the tool's own reading too, whatever the step says.
+        for key in ("preserve", "contain", "eradicate", "recover"):
+            for step in answer.get(key) or []:
+                step["destructive"] = bool(step.get("destructive")) or bool(
+                    DESTRUCTIVE.search(step.get("action") or "")
+                )
     if status == "answered" and role == "coverage":
         from checker.advisor.coverage import judge as judge_coverage
 

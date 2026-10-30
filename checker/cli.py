@@ -911,11 +911,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     advising.add_argument(
         "--role",
-        choices=["explain", "whitelist", "coverage"],
+        choices=["explain", "whitelist", "coverage", "remediation"],
         default="explain",
         help=(
             "explain the analysis (default), propose whitelist rules for a person to review,"
-            " or suggest settings and host configuration for better coverage"
+            " suggest settings and host configuration for better coverage, or advise on"
+            " remediation"
         ),
     )
     advising.add_argument(
@@ -977,6 +978,9 @@ def _print_advice(advice, role: str) -> None:
     if role == "coverage":
         _print_coverage(advice, shown)
         return
+    if role == "remediation":
+        _print_remediation(answer, shown)
+        return
 
     print()
     print(f"Verdict: {shown(answer['verdict'])}")
@@ -994,6 +998,33 @@ def _print_advice(advice, role: str) -> None:
         for question in answer["what_would_settle_it"]:
             print(f"  - {shown(question)}")
     print("\n(AI advice: the score is the tool's own and is unchanged. Stored, encrypted.)")
+
+
+def _print_remediation(answer, shown) -> None:
+    print()
+    print(f"Urgency: {shown(answer['urgency'])}")
+    print(shown(answer["summary"]))
+    for title, key in (
+        ("Preserve evidence first", "preserve"),
+        ("Contain", "contain"),
+        ("Eradicate", "eradicate"),
+        ("Recover", "recover"),
+    ):
+        if answer.get(key):
+            print(f"\n{title}:")
+            for n, step in enumerate(answer[key], 1):
+                mark = " [destroys state]" if step.get("destructive") else ""
+                cites = ", ".join(step.get("findings") or [])
+                print(
+                    f"  {n}. {shown(step['action'])}{mark}"
+                    + (f" ({shown(cites)})" if cites else "")
+                )
+                print(f"     Why: {shown(step['why'])}  Risk: {shown(step['risk'])}")
+    if answer.get("tell"):
+        print("\nTell:")
+        for notify in answer["tell"]:
+            print(f"  {shown(notify['role'])}: {shown(notify['what'])} ({shown(notify['when'])})")
+    print("\n(AI advice for a person to weigh: nothing was run. Commands are text.)")
 
 
 def _print_coverage(advice, shown) -> None:

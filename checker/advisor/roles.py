@@ -181,6 +181,47 @@ def _whitelist_question() -> str:
     )
 
 
+class Action(BaseModel):
+    action: str = Field(description="what a person does; commands as text")
+    why: str
+    risk: str = Field(description="what it risks or loses")
+    findings: list[str] = Field(description="the finding identifiers it addresses")
+    destructive: bool = Field(
+        description="it destroys state or evidence: rebooting, killing processes, deleting,"
+        " reinstalling, restoring over, changing credentials an intruder holds"
+    )
+
+
+class Notify(BaseModel):
+    role: str = Field(description="a role, never a person: the security team, the data owner")
+    what: str
+    when: str
+
+
+class RemediationAnswer(BaseModel):
+    """Role 4: what to do, in order, scaled to the band."""
+
+    urgency: Literal["none", "routine", "soon", "now"]
+    summary: str
+    preserve: list[Action] = Field(description="evidence to keep before anything destroys it")
+    contain: list[Action]
+    eradicate: list[Action]
+    recover: list[Action]
+    tell: list[Notify]
+
+
+REMEDIATION_QUESTION = (
+    "Advise what to do about this assessment, scaled to its band: for a Low host with"
+    " little to act on, urgency none or routine and a step or two at most; for High or"
+    " Critical, a full plan. In order: preserve evidence (memory, process listings, logs,"
+    " a disk snapshot) before anything that destroys it; contain; eradicate; recover;"
+    " and who to tell, by role (never a person's name or address). Each step says what a"
+    " person does (commands as text: nothing will be run), why, what it risks, which"
+    " findings it addresses, and whether it is destructive (rebooting, killing"
+    " processes, deleting, reinstalling, restoring over, changing credentials). Prefer"
+    " steps that keep evidence; say when the host should be taken off the network."
+)
+
 ROLES = {
     "explain": (
         Explanation,
@@ -191,6 +232,7 @@ ROLES = {
     ),
     "whitelist": (WhitelistAnswer, None),  # the question: _whitelist_question()
     "coverage": (CoverageAnswer, None),  # the question: _coverage_question()
+    "remediation": (RemediationAnswer, REMEDIATION_QUESTION),
 }
 
 
@@ -268,4 +310,57 @@ def check_coverage(
         raise InvalidAnswer("makes more than twelve suggestions")
 
 
-CHECKS = {"explain": check_explanation, "whitelist": check_whitelist, "coverage": check_coverage}
+# The urgencies that agree with each band.
+URGENCY_FOR_BAND: dict[str, set[str]] = {
+    "Low": {"none", "routine"},
+    "Elevated": {"routine", "soon"},
+    "High": {"soon", "now"},
+    "Critical": {"soon", "now"},
+}
+# What destroys state or evidence, whatever a step says of itself.
+DESTRUCTIVE = re.compile(
+    r"\b(?:reboot|restart|shut\s*down|shutdown|power\s*off|poweroff|halt|kill|pkill|"
+    r"killall|rm|delete|remove|wipe|shred|truncate|reinstall|re-?image|rebuild|"
+    r"restore|format|userdel|deluser|passwd|rotate|revoke|systemctl\s+(?:stop|restart))\b",
+    re.IGNORECASE,
+)
+PERSON = re.compile(r"@|\b(?:USER|EMAIL)[-\u2011]\d+")
+
+
+def check_remediation(
+    answer: RemediationAnswer, finding_ids: set[str], band: str | None, quoted=frozenset()
+) -> None:
+    steps = [*answer.preserve, *answer.contain, *answer.eradicate, *answer.recover]
+    named = [f for step in steps for f in step.findings]
+    named += [
+        m for text in _strings(answer.model_dump()) for m in FINDING_ID.findall(text)
+        if m not in quoted
+    ]  # fmt: skip
+    unknown = sorted({f for f in named if f not in finding_ids})
+    if unknown:
+        raise InvalidAnswer(f"names findings that aren't in the case: {', '.join(unknown)}")
+    allowed = URGENCY_FOR_BAND.get(band or "")
+    if allowed is not None and answer.urgency not in allowed:
+        raise InvalidAnswer(f"its urgency ({answer.urgency}) contradicts the band ({band})")
+    later = [*answer.contain, *answer.eradicate, *answer.recover]
+    destroys = [s for s in later if s.destructive or DESTRUCTIVE.search(s.action)]
+    if destroys and not answer.preserve:
+        raise InvalidAnswer(
+            "has destructive steps (" + destroys[0].action[:80] + ") with no evidence"
+            " preservation before them"
+        )
+    if any(s.destructive or DESTRUCTIVE.search(s.action) for s in answer.preserve):
+        raise InvalidAnswer("preserves evidence with a step that destroys some")
+    for notify in answer.tell:
+        if PERSON.search(notify.role):
+            raise InvalidAnswer("names a person to tell, not a role")
+    if len(steps) > 40:
+        raise InvalidAnswer("has more than forty steps")
+
+
+CHECKS = {
+    "explain": check_explanation,
+    "whitelist": check_whitelist,
+    "coverage": check_coverage,
+    "remediation": check_remediation,
+}

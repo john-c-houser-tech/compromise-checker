@@ -3,12 +3,14 @@ whatever text a host sent."""
 
 import json
 import re
+import tempfile
 from pathlib import Path
 
+import pytest
 from test_snapshot import add_bundle, host_records, rec
 
 from checker import cli
-from checker.evidence import seal_text
+from checker.evidence import EvidenceError, seal_text
 from checker.report import read_report, visible, write_report
 
 HOSTILE = "<script>alert(1)</script>evil\u202egnp.exe"
@@ -118,7 +120,7 @@ def test_cli_report(home, capsys):
     assert f"To read it: checker report --open {written}" in out
     target = base / "mine.html"
     assert cli.main(["report", "web01", "--output", str(target)]) == 1  # not .age: refused
-    assert "ends in .age" in capsys.readouterr().err
+    assert "ends in .html.age" in capsys.readouterr().err
     assert cli.main(["report", "web01", "--output", str(target), "--plain"]) == 0
     assert "web01" in target.read_text() and "not encrypted" in capsys.readouterr().out
     assert cli.main(["report", "nowhere"]) == 1
@@ -247,55 +249,161 @@ def test_a_report_for_another_key_cant_be_read(home):
         read_report(path, x25519.Identity.generate())
 
 
-def test_open_shows_a_plain_copy_and_deletes_it(home, tmp_path, monkeypatch):
-    from checker.report import latest_report, view
+def fetch(url, host=None):
+    """A request to the viewer, past any proxy: (status, headers, body)."""
+    import urllib.error
+    import urllib.request
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(url, headers={"Host": host} if host else {})  # noqa: S310
+    try:
+        with opener.open(request, timeout=5) as answer:
+            return answer.status, dict(answer.headers), answer.read().decode()
+    except urllib.error.HTTPError as exc:
+        return exc.code, {}, ""
+
+
+def test_a_report_is_shown_from_memory_and_only_at_its_address(home, tmp_path, monkeypatch):
+    from checker.report import CSP, view
 
     base, store, identity, config = home
     add_bundle(home, "b1", 0, host_records())
-    write_report(store, ["web01"], identity, config.recipients, base / "reports", plain=True)
-    newest = write_report(store, ["web01"], identity, config.recipients, base / "reports")
-    assert latest_report(base / "reports") == newest
-    runtime = tmp_path / "runtime"
-    runtime.mkdir(mode=0o700)
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
-    seen, said = [], []
+    path = write_report(store, ["web01"], identity, config.recipients, base / "reports")
+    before = {p for p in Path(tempfile.gettempdir()).iterdir()}
+    seen = {}
 
     def browser(url):
-        copy = Path(url.removeprefix("file://"))
-        seen.append((copy, copy.read_text(), oct(copy.stat().st_mode & 0o777)))
+        seen["url"] = url
+        seen["page"] = fetch(url)
+        port = url.split(":")[2].split("/")[0]
+        seen["elsewhere"] = fetch(f"http://127.0.0.1:{port}/report.html")[0]
+        seen["rebound"] = fetch(url, host=f"evil.example:{port}")[0]
         return True
 
-    waited = []
-    view(newest, identity, browser=browser, say=said.append,
-         wait=lambda s: waited.append((s, seen[0][0].exists())))  # fmt: skip
-    ((copy, html, mode),) = seen
-    assert waited == [(60, True)]  # the copy stays while the browser reads it
-    assert copy.parent.parent == runtime and copy.name == newest.name.removesuffix(".age")
-    assert "web01" in html and mode == "0o600"
-    assert not copy.exists() and not copy.parent.exists() and list(runtime.iterdir()) == []
-    assert "The plain copy goes in 60 seconds" in said[0]
+    said = []
+    view(path, identity, browser=browser, ask=lambda q: "", say=said.append, screen=True)
+    status, headers, page = seen["page"]
+    assert status == 200 and "web01" in page
+    assert headers["Cache-Control"] == "no-store" and headers["Content-Security-Policy"] == CSP
+    assert seen["elsewhere"] == 404 and seen["rebound"] == 404  # a guess, or DNS rebinding
+    assert seen["url"].startswith("http://127.0.0.1:") and len(seen["url"].split("/")[3]) >= 40
+    assert "nothing is written in plain" in said[0]
+    with pytest.raises(OSError):
+        fetch(seen["url"])  # stopped with Enter
+    assert {p for p in Path(tempfile.gettempdir()).iterdir()} - before == set()
 
 
-def test_open_without_a_browser_waits_for_enter(home):
+def test_with_no_screen_it_says_how_to_reach_it(home):
     from checker.report import view
 
     base, store, identity, config = home
     add_bundle(home, "b1", 0, host_records())
     path = write_report(store, ["web01"], identity, config.recipients, base / "reports")
-    said, asked = [], []
-    view(path, identity, browser=lambda url: False, ask=asked.append, say=said.append)
-    copy = Path(said[0].split(" is at ")[1].removesuffix("."))
-    assert asked and not copy.exists()
+    said, pages = [], []
+
+    def ask(question):
+        url = said[0].split(" at ")[1].split("\n")[0]
+        pages.append(fetch(url)[2])
+        return ""
+
+    def no_browser(url):
+        raise AssertionError("no browser is started with no screen")
+
+    view(path, identity, browser=no_browser, ask=ask, say=said.append, screen=False)
+    assert "ssh -L " in said[0] and "web01" in pages[0]
+
+
+def test_with_no_terminal_it_is_shown_for_a_while(home):
+    from checker.report import NO_TERMINAL_SECONDS, view
+
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    path = write_report(store, ["web01"], identity, config.recipients, base / "reports")
+    waited = []
+
+    def no_terminal(question):
+        raise EOFError
+
+    view(path, identity, browser=lambda url: True, ask=no_terminal, wait=waited.append,
+         say=lambda line: None, screen=True)  # fmt: skip
+    assert waited == [NO_TERMINAL_SECONDS]
+
+
+def test_a_text_browser_isnt_started():
+    import webbrowser
+
+    from checker import report
+
+    class Text(webbrowser.GenericBrowser):
+        def open(self, url, new=0, autoraise=True):
+            raise AssertionError("a text browser would take the terminal")
+
+    original = webbrowser.get
+    webbrowser.get = lambda: Text("lynx")
+    try:
+        assert report._launch("http://127.0.0.1:1/x") is False
+    finally:
+        webbrowser.get = original
+
+
+def test_a_screen_is_a_display_or_a_mac_not_over_ssh():
+    from checker.report import has_screen
+
+    assert has_screen({"DISPLAY": ":0"}, "linux") and has_screen({"WAYLAND_DISPLAY": "w"}, "linux")
+    assert not has_screen({}, "linux")
+    assert has_screen({}, "darwin") and not has_screen({"SSH_CONNECTION": "x"}, "darwin")
+
+
+def test_the_newest_report_is_found_by_time_then_name(home):
+    import os
+
+    from checker.report import latest_report
+
+    folder = home[0] / "reports"
+    folder.mkdir()
+    for name in ("report-a-20261030T010000Z.html", "report-a-20261030T020000Z.html.age",
+                 ".report-x.tmp", "notes.html"):  # fmt: skip
+        (folder / name).write_text("x")
+        os.utime(folder / name, (1000, 1000))
+    (folder / "report-z-link.html.age").symlink_to(folder / "notes.html")
+    assert latest_report(folder).name == "report-a-20261030T020000Z.html.age"
+
+
+def test_output_names_say_what_they_hold(home):
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    with pytest.raises(EvidenceError, match=r"ends in \.html\.age"):
+        write_report(store, ["web01"], identity, config.recipients, base, output=base / "r.age")
+    with pytest.raises(EvidenceError, match="can't end in .age"):
+        write_report(store, ["web01"], identity, config.recipients, base,
+                     output=base / "r.html.age", plain=True)  # fmt: skip
 
 
 def test_open_from_the_command_line(home, monkeypatch, capsys):
+    from checker import report
+
     base, store, identity, config = home
     assert cli.main(["report", "--open"]) == 1
     assert "no report yet" in capsys.readouterr().err
     add_bundle(home, "b1", 0, host_records())
     assert cli.main(["report", "web01"]) == 0
-    opened = []
-    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
-    monkeypatch.setattr("time.sleep", lambda s: None)
+    shown = []
+    monkeypatch.setattr(report, "view", lambda path, key, **kw: shown.append((path, key)))
     assert cli.main(["report", "--open"]) == 0
-    assert opened and opened[0].endswith(".html")
+    assert shown[0][0].name.endswith(".html.age") and shown[0][1] is not None
+    assert cli.main(["report", "--open", "--plain"]) == 2
+    assert cli.main(["report", "--open", str(base / "checker.db")]) == 1
+    assert "not a report" in capsys.readouterr().err
+    assert cli.main(["report", "--open", "web01.html"]) == 1
+    assert "checker report HOST" in capsys.readouterr().err
+    plain = base / "p.html"
+    assert cli.main(["report", "web01", "--plain", "--output", str(plain)]) == 0
+    monkeypatch.setattr("checker.cli._identity", lambda *a: pytest.fail("no key for plain"))
+    assert cli.main(["report", "--open", str(plain)]) == 0
+    assert shown[-1] == (plain, None)
+
+    def interrupted(path, key, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(report, "view", interrupted)
+    assert cli.main(["report", "--open", str(plain)]) == 130

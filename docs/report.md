@@ -79,17 +79,20 @@ may have chosen them. The report:
 
 - **Encrypted.** The report is encrypted to the evidence key, as the
   evidence is (`report-HOST-TIME.html.age`). `checker report --open [FILE]`
-  (the newest by default) shows it: it decrypts a plain copy, readable
-  only by you, into a private temporary folder (the session's runtime
-  folder on Linux, in memory), opens it in the browser and deletes it a
-  minute later. Reloading the page then needs `--open` again. With no
-  browser to start (over SSH), it prints where the copy is and deletes it
-  when you press Enter.
+  (the newest by default) shows it without writing it anywhere in plain:
+  it decrypts it in memory and serves it to your browser from this
+  machine only (127.0.0.1), at an address no one can guess, never to be
+  cached, until you press Enter. Sandboxed browsers (snap, Flatpak) can
+  show it too. With no screen (over SSH), it prints the address and the
+  `ssh -L` line that shows it on your own machine; with no terminal, it is
+  shown for ten minutes. A plain report opens without the evidence key.
+  The browser's history keeps the address, not the report.
 - **Plain, on purpose.** `--plain` writes plain HTML, to hand a report to
   someone; it says so, and the file is yours to protect and delete.
 - **Location.** By default the report goes to `reports/` in the checker's
   home (a directory only its owner can open). `--output` writes it anywhere
-  else (its name must end in `.age` unless `--plain`).
+  else (its name must end in `.html.age`, or, with `--plain`, must not end
+  in `.age`).
 - **Written whole, then moved into place.** The report is written to an
   owner-only temporary file beside its destination and then moved there,
   so:

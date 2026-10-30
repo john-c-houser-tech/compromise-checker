@@ -129,8 +129,8 @@ What works today:
   report: findings with their evidence, a timeline, coverage, and the
   collection's hashes and chain of custody, encrypted to the evidence key
   (`--plain` for plain HTML to hand on); `checker report --open [FILE]`
-  shows one in the browser and deletes the plain copy a minute later
-  ([report](docs/report.md)).
+  shows one in the browser, served from memory on this machine, never
+  written in plain ([report](docs/report.md)).
 - `checker whitelist check [HOST]`, `test HOST --file F`, `stale` —
   validate the whitelist files (global, per group, per host) and show a
   host's merged rules; show what a proposed file would hide or reveal on

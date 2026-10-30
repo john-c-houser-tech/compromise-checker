@@ -866,7 +866,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         const="",
         metavar="FILE",
-        help="show a report in the browser (default: the newest), keeping no plain copy",
+        help="show a report in the browser (default: the newest), served from memory",
     )
     reporting.add_argument("--bundle", help="this bundle rather than the host's latest")
     reporting.add_argument(
@@ -1398,16 +1398,29 @@ def cmd_report(args: argparse.Namespace) -> int:
 def _open_report(args: argparse.Namespace, base: Path) -> int:
     from checker.report import latest_report, view
 
+    clashing = [f for f, given in (("--plain", args.plain), ("--output", args.output),
+                                   ("--bundle", args.bundle)) if given]  # fmt: skip
+    if clashing:
+        print(f"checker: --open shows a report; {', '.join(clashing)} write one", file=sys.stderr)
+        return 2
     try:
         path = Path(args.open) if args.open else latest_report(base / "reports")
         if path is None:
             raise EvidenceError("no report yet: `checker report HOST` writes one")
-        view(path, _identity(args, base))
+        if not path.name.endswith((".html", ".html.age")):
+            raise EvidenceError(f"not a report (its name ends in .html.age or .html): {path}")
+        if not path.is_file():
+            raise EvidenceError(
+                f"no such report: {path} (to write one for a host: checker report HOST)"
+            )
+        view(path, _identity(args, base) if path.suffix == ".age" else None)
     except (EvidenceError, OSError, UnicodeDecodeError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("Plain copy deleted.")
+        print("\nStopped.")
+        return 130
+    print("Stopped.")
     return 0
 
 

@@ -104,6 +104,12 @@ is John's to approve before it is committed. Also:
   as a library (done means 10); a test holds it to that.
 - Where packs live: `packs/` in the checker's home (active and retired),
   owner-only.
+- *As built (4.0):* `checker/packs/format.py`, strict schema (no type
+  coercion), YAML read with aliases, deep nesting and repeated keys
+  refused, 256 KiB at most; https references and sources only; detections
+  name a built-in check (the matching language widens this in 4.5, before
+  the format is first published); `checker packs check FILE` also checks
+  those checks exist. The `packs/` folder comes with `packs add` (4.2).
 
 ### 4.1 — Version ordering
 

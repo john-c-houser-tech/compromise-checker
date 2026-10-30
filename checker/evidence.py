@@ -85,8 +85,8 @@ def _key_source(value: str) -> str:
     raise ValueError("must be env, keyring, none or command:<command>")
 
 
-# A path part this long, of key characters, may be a token: refused.
-_TOKEN_LIKE = re.compile(r"[A-Za-z0-9_-]{32,}")
+# A path part starting like an API key ("sk-ant-…", "sk-proj-…").
+_KEY_PART = re.compile(r"(?:^|[/._-])sk-", re.IGNORECASE)
 
 
 def _base_url(value: str | None) -> str | None:
@@ -102,7 +102,7 @@ def _base_url(value: str | None) -> str | None:
         raise ValueError("must be an http or https address, e.g. http://localhost:11434/v1")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("must hold no user name, password, query or fragment")
-    if looks_like_a_key(value) or _TOKEN_LIKE.search(parsed.path) or "sk-" in value.lower():
+    if looks_like_a_key(value) or _KEY_PART.search(parsed.path):
         raise ValueError("that looks like it holds a key: give the server's address only")
     scheme, rest = value.split(":", 1)
     return f"{scheme.lower()}:{rest}".rstrip("/")

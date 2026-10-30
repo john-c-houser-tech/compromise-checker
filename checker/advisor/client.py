@@ -32,6 +32,7 @@ and a request read only in part is reported as cut off, not answered.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -194,13 +195,17 @@ def make_client(api_key: str | None, api: str = "anthropic", base_url: str | Non
         raise AdvisorError(
             "the advisor needs the Anthropic SDK: pip install 'checker[advisor]'"
         ) from exc
-    # A server on this machine is reached directly, never through a proxy
-    # from the environment (which would carry the case off the machine);
-    # redirects are never followed (they would resend the case elsewhere).
-    direct = {"trust_env": not is_local(base_url), "follow_redirects": False}
-    if api == "openai":
-        import httpx2  # the SDK's own HTTP client
+    import httpx2  # the SDK's own HTTP client
 
+    # A server on this machine is reached directly, never through a proxy
+    # from the environment (which would carry the case off the machine): an
+    # explicit transport, since the SDK's client mounts the environment's
+    # proxies whatever trust_env says. Redirects are never followed (they
+    # would resend the case elsewhere).
+    direct: dict[str, Any] = {"follow_redirects": False}
+    if is_local(base_url):
+        direct |= {"trust_env": False, "transport": httpx2.HTTPTransport()}
+    if api == "openai":
         headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
         return httpx2.Client(
             base_url=base_url,
@@ -208,16 +213,25 @@ def make_client(api_key: str | None, api: str = "anthropic", base_url: str | Non
             timeout=httpx2.Timeout(OPENAI_TIMEOUT, connect=10),
             **direct,
         )
+    if base_url and os.environ.get("ANTHROPIC_CUSTOM_HEADERS") is not None:
+        # The SDK adds that variable's headers to every request, and they
+        # may hold a key meant for Anthropic or a gateway.
+        raise AdvisorError(
+            f"ANTHROPIC_CUSTOM_HEADERS is set: its headers would go to {base_url} too;"
+            " unset it to use that server"
+        )
     # No automatic retries: a request that timed out may still be answered
     # and billed, and a retry would bill it again past the confirmed
     # estimate. A rate-limited run is simply run again. The key and the
     # address are always given, so the SDK never takes either from the
-    # environment (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL):
-    # an empty key for a server that takes none.
+    # environment (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, profiles,
+    # ANTHROPIC_BASE_URL): an empty key for a server that takes none. No
+    # tracing: spans could carry the case.
     return anthropic.Anthropic(
         api_key=api_key or "",
         base_url=base_url or ANTHROPIC_API,
         max_retries=0,
+        open_telemetry=False,
         http_client=anthropic.DefaultHttpxClient(**direct),
     )
 
@@ -466,6 +480,11 @@ def _explain(exc: Exception) -> str:
         return "rate limited by the provider; try again later"
     if isinstance(exc, anthropic.BadRequestError):
         return f"the provider refused the request: {_printable(getattr(exc, 'message', exc))}"
+    if isinstance(exc, anthropic.APIStatusError) and 300 <= exc.status_code < 400:
+        return (
+            f"the provider redirected the request ({exc.status_code}), which isn't followed:"
+            " check base_url"
+        )
     if isinstance(exc, anthropic.APIStatusError):
         return f"the provider answered with an error ({exc.status_code}); try again later"
     if isinstance(exc, anthropic.APIConnectionError):

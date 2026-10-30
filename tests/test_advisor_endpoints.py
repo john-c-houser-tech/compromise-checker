@@ -141,12 +141,12 @@ def test_an_anthropic_compatible_server_is_named_too(enabled):
 
 
 def test_the_key_goes_as_a_bearer_token(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-" + "x" * 40)
-    key = read_api_key("env", key_places("openai"))
+    monkeypatch.setenv("CHECKER_ADVISOR_API_KEY", "sk-proj-" + "x" * 40)
+    key = read_api_key("env", key_places("openai", ELSEWHERE))
     client = make_client(key, "openai", ELSEWHERE)
     assert client.headers["authorization"] == f"Bearer {key}"
     assert str(client.base_url).rstrip("/") == ELSEWHERE
-    assert read_api_key("none", key_places("openai")) is None
+    assert read_api_key("none", key_places("openai", LOCAL)) is None
     assert "authorization" not in make_client(None, "openai", LOCAL).headers
 
 
@@ -566,10 +566,14 @@ def test_no_key_never_means_the_environments_key(monkeypatch):
 @pytest.mark.parametrize(("api", "url", "direct"), [("openai", LOCAL, True),
                          ("anthropic", "http://127.0.0.1:8080", True),
                          ("openai", ELSEWHERE, False), ("anthropic", None, False)])  # fmt: skip
-def test_a_server_on_this_machine_is_reached_without_a_proxy(api, url, direct):
+def test_a_server_on_this_machine_is_reached_without_a_proxy(api, url, direct, monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp.example:3128")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.corp.example:3128")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
     client = make_client("k", api, url)
     http = client if api == "openai" else client._client
-    assert http._trust_env is not direct
+    assert (http._mounts == {}) is direct  # no proxy transport mounted for this machine
     assert http.follow_redirects is False
 
 
@@ -577,7 +581,15 @@ def test_a_server_on_this_machine_is_reached_without_a_proxy(api, url, direct):
     ("api", "url", "fallback", "places"),
     [
         ("anthropic", None, False, ("ANTHROPIC_API_KEY", "advisor-api-key")),
-        ("openai", LOCAL, False, ("OPENAI_API_KEY", "advisor-api-key")),
+        ("openai", "https://api.openai.com/v1", False, ("OPENAI_API_KEY", "advisor-api-key")),
+        ("openai", LOCAL, False, ("CHECKER_ADVISOR_API_KEY", "advisor-api-key")),
+        ("anthropic", ELSEWHERE, False, ("CHECKER_ADVISOR_API_KEY", "advisor-api-key")),
+        (
+            "openai",
+            "https://api.openai.com/v1",
+            True,
+            ("OPENAI_API_KEY", "advisor-fallback-api-key"),
+        ),
         ("anthropic", None, True, ("ANTHROPIC_API_KEY", "advisor-fallback-api-key")),
         ("anthropic", ELSEWHERE, True, ("CHECKER_FALLBACK_API_KEY", "advisor-fallback-api-key")),
         ("openai", ELSEWHERE, True, ("CHECKER_FALLBACK_API_KEY", "advisor-fallback-api-key")),
@@ -673,7 +685,7 @@ def test_plain_http_to_another_machine_with_a_key_is_refused(base_with_config):
         "http://local\thost:11434/v1",
         "https://x.example/%73k-ant",
         "https://x.example/sk-proj-abcdef",
-        "https://x.example/" + "0123456789abcdef" * 2,
+        "https://x.example/v1/Ab3dEf6hIj9lMn2pQr5tUv8xYz1bCd4fGh7",
         "https://x.example/v1\n",
     ],
 )
@@ -721,3 +733,73 @@ def test_a_priced_fallback_that_may_have_run_makes_the_cost_unknown():
     assert both.status == "declined" and both.model_answered is None
     assert [h["request_id"] for h in both.iterations] == ["req_1", "req_2"]
     assert spent(both) is None  # claude-opus-4-8 has a price, but its usage is unknown
+
+
+def test_custom_headers_from_the_environment_never_go_to_another_server(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "x-api-key: sk-ant-from-env")
+    with pytest.raises(AdvisorError, match="ANTHROPIC_CUSTOM_HEADERS is set"):
+        make_client(None, "anthropic", "http://localhost:11434")
+    make_client("sk-ant-mine", "anthropic", None)  # Anthropic's own: the organization's choice
+    make_client(None, "openai", LOCAL)  # the OpenAI-compatible client never reads it
+
+
+def test_no_tracing_from_the_environment(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_OPEN_TELEMETRY", "1")
+    monkeypatch.setenv("ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE", "content")
+    client = make_client("sk-ant-mine", "anthropic", None)
+    assert client._open_telemetry["traces"]["enabled"] is False
+    assert client._open_telemetry["traces"]["content_mode"] == "metadata_only"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://risk-llm.example.com/v1",
+        "https://ask-ai.corp.example/v1",
+        "https://gateway.ai.cloudflare.com/v1/0123456789abcdef0123456789abcdef/gw/anthropic",
+    ],
+)
+def test_ordinary_addresses_are_kept(url):
+    assert Advisor(base_url=url).base_url == url
+
+
+def test_effort_is_recorded_when_the_fallback_was_sent_in_anthropics_form(enabled, monkeypatch):
+    base, store, _, _ = enabled
+    local(base)
+    change(base, "advisor.fallback_model.model", "claude-opus-5-5")
+    change(base, "advisor.fallback", "model")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    provider = Provider()
+    monkeypatch.setattr(
+        advise_module, "make_client",
+        lambda key, api, url: provider.client() if api == "anthropic" else None,
+    )  # fmt: skip
+    run(enabled, Server(lambda body: (200, chat(body, explain_answer(), "content_filter"))))
+    assert store.advice("b1")[0]["effort"] == "high"
+    run(enabled, Server())  # answered locally: no effort was sent
+    assert store.advice("b1")[1]["effort"] is None
+
+
+def test_a_fallback_answer_that_breaks_the_reader_is_recorded_as_failed(enabled, monkeypatch):
+    base, store, _, _ = enabled
+    fallback_to_local(base)
+
+    def broken(*args):
+        raise TypeError("unexpected")
+
+    monkeypatch.setattr(advise_module, "make_client", lambda key, api, url: Server().client())
+    real_send = advise_module.send
+    monkeypatch.setattr(
+        advise_module, "send",
+        lambda client, request, role: real_send(client, request, role)
+        if request.api == "anthropic" else broken(),
+    )  # fmt: skip
+    with pytest.raises(TypeError):
+        run(enabled, Provider(declined_by_claude))
+    row = store.advice("b1")[0]
+    assert row["status"] == "failed" and row["endpoint"] == LOCAL
+
+
+def test_an_sdk_redirect_is_named(enabled):
+    with pytest.raises(AdvisorError, match="redirected the request \\(307\\)"):
+        run(enabled, Provider(status=307))

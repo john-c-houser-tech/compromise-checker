@@ -14,9 +14,12 @@ from checker.evidence import looks_like_a_key
 
 ENVIRONMENT_VARIABLE = "ANTHROPIC_API_KEY"
 KEYRING_USERNAME = "advisor-api-key"
-# The fallback model's key has places of its own, so one vendor's key is
-# never sent to another; a fallback on Anthropic's own API may use the
-# Anthropic variable.
+# A vendor's own variable is read only for that vendor's own API; any
+# other server's key, and the fallback model's, have places of their own,
+# so one vendor's key is never sent to another.
+OPENAI_VARIABLE = "OPENAI_API_KEY"
+OPENAI_API = "https://api.openai.com"
+SERVER_VARIABLE = "CHECKER_ADVISOR_API_KEY"
 FALLBACK_VARIABLE = "CHECKER_FALLBACK_API_KEY"
 FALLBACK_USERNAME = "advisor-fallback-api-key"
 # Long enough to answer a password manager's prompt; a missed prompt then
@@ -43,10 +46,13 @@ def key_places(
 ) -> tuple[str, str]:
     """Where `env` and `keyring` look: the environment variable and the
     keyring username, for the main model or the fallback model."""
-    if fallback:
-        own = api == "anthropic" and not base_url
-        return (ENVIRONMENT_VARIABLE if own else FALLBACK_VARIABLE), FALLBACK_USERNAME
-    return ("OPENAI_API_KEY" if api == "openai" else ENVIRONMENT_VARIABLE), KEYRING_USERNAME
+    if api == "anthropic" and not base_url:
+        variable = ENVIRONMENT_VARIABLE
+    elif api == "openai" and (base_url or "").startswith(OPENAI_API + "/"):
+        variable = OPENAI_VARIABLE
+    else:
+        variable = FALLBACK_VARIABLE if fallback else SERVER_VARIABLE
+    return variable, (FALLBACK_USERNAME if fallback else KEYRING_USERNAME)
 
 
 def read_api_key(

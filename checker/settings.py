@@ -158,7 +158,18 @@ def describe(config: Config) -> list[str]:
         "  If the model's safety checks decline a request: " + _on_decline(advisor),
     ]
     if advisor.inference_geo:
-        lines.append(f"  Inference geography: {advisor.inference_geo}.")
+        elsewhere = advisor.base_url or (
+            advisor.fallback == "model"
+            and (advisor.fallback_model.api != "anthropic" or advisor.fallback_model.base_url)
+        )
+        lines.append(
+            f"  Inference geography: {advisor.inference_geo}"
+            + (
+                " (Anthropic's own API keeps to it; other servers aren't asked to)."
+                if elsewhere
+                else "."
+            )
+        )
     return lines
 
 

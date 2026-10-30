@@ -121,7 +121,11 @@ def advise(
                 if outcome and outcome.declined_by
                 else None,
                 "refusal_category": outcome.refusal_category if outcome else None,
-                "effort": advisor.effort if advisor.api == "anthropic" else None,
+                # Effort is sent only in Anthropic's form of the request.
+                "effort": advisor.effort
+                if "output_config" in request.body
+                or (sent_fallback and "output_config" in sent_fallback.body)
+                else None,
                 "request_id": outcome.request_id if outcome else request_id,
                 "usage": json.dumps(
                     {"total": outcome.usage, "per_model": outcome.iterations} if outcome else {}
@@ -168,7 +172,12 @@ def advise(
                    "declined; interrupted before the fallback model was asked")  # fmt: skip
             raise
         else:
-            sent_fallback = fallback_request(payload, role, advisor)
+            try:
+                sent_fallback = fallback_request(payload, role, advisor)
+            except BaseException:
+                record(outcome, "declined", None, None,
+                       "declined; the fallback request couldn't be built")  # fmt: skip
+                raise
             try:
                 second = send(fallback_client, sent_fallback, role)
             except AdvisorError as exc:
@@ -177,10 +186,13 @@ def advise(
                     outcome = _fallback_failed(outcome, sent_fallback, exc.request_id)
                 else:
                     sent_fallback = None
-            except BaseException:
+            except BaseException as exc:
                 outcome = _fallback_failed(outcome, sent_fallback, None)
-                record(outcome, "interrupted", None, None,
-                       "declined; interrupted waiting for the fallback model")  # fmt: skip
+                interrupted = isinstance(exc, KeyboardInterrupt)
+                record(outcome, "interrupted" if interrupted else "failed", None, None,
+                       "declined; interrupted waiting for the fallback model" if interrupted
+                       else f"declined; the fallback model's answer couldn't be read"
+                       f" ({type(exc).__name__})")  # fmt: skip
                 raise
             else:
                 fallback_declined = second.status == "declined"

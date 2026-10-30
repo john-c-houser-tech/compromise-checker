@@ -420,9 +420,21 @@ The advisor's answers can't be golden-tested, so they are measured.
   `.localhost` names count as this machine only when they resolve to
   loopback; server error text shown as printable ASCII. The wording says
   "a server on this machine (loopback)", not "nothing leaves it", and the
-  question names the fallback's recipient too. Known gap, documented: a
-  server that cuts a request to nearly its whole context isn't caught;
-  give the model more context than the case needs.
+  question names the fallback's recipient too.
+- **After the second review (3.7):** the SDK's own client mounts the
+  environment's proxies whatever `trust_env` says, so a server on this
+  machine gets an explicit direct transport (checked: no proxy mounts with
+  `HTTPS_PROXY` set); `ANTHROPIC_CUSTOM_HEADERS` (which the SDK adds to
+  every request, and may hold a key) refuses any server but Anthropic's
+  own; the SDK's tracing is off; `env` reads a vendor's own variable only
+  for that vendor's own API (`CHECKER_ADVISOR_API_KEY` otherwise); the
+  address checks no longer refuse ordinary names (`risk-llm…`, gateway
+  account ids); effort recorded when Anthropic's form was sent; every
+  failure around the fallback recorded; tests can't open a real HTTP
+  connection (a mutated test once reached the running local Ollama).
+  Ollama 0.40.7 cut a 28 933-token prompt at a 4 096 context to 2 050 (its
+  log: about half the context), and read a 30 742-token one at 32 768
+  whole; prefix-cached requests still report the full prompt.
 
 ### 3.8 — Policy, docs, README
 

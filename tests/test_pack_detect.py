@@ -623,3 +623,16 @@ def test_web_logs_in_a_format_not_recognised_are_missing():
     live = dict(LOGS, web_requests={"lines": {"a": 10}, "unparsed": {"a": 9}})
     found = context(pack, live=live)
     assert own_detections(found) == [] and "format not recognised" in found.gaps[0]
+
+
+@pytest.mark.parametrize(
+    ("band", "raised"), [("low", 4), ("medium", 20), ("high", 60), ("critical", None)]
+)
+def test_a_raise_is_at_most_one_band_up(band, raised):
+    pack = read(changed("likelihood_ratio: 20\n", "likelihood_ratio: 60\n"))
+    finding = dict(core(), band=band)
+    raise_referenced(context(pack), [finding], RAN)
+    if raised is None:
+        assert "raised_by_pack" not in finding  # critical's 100 is above the pack's 60
+    else:
+        assert ratio(finding) == raised and finding["raised_by_pack"]

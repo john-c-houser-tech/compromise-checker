@@ -86,7 +86,7 @@ for a host the pack's threat reached: while it ran a vulnerable version
 from then on, fix or not (`since_exposed`, the default: someone already
 inside stays). One names a check built into the tool (never a pack's own),
 whose findings then weigh as the pack says, up to the core's critical
-ratio, 100; or it is the pack's own rule, up to the high band's, 20, so a
+ratio, 100, and at most one band above their own; or it is the pack's own rule, up to the high band's, 20, so a
 pack can't outweigh the core checks: over events (up to five matchers,
 each an event type, exact or a prefix ending in ".", and its fields; at
 least so many within a span, apart for each value of a field such as the

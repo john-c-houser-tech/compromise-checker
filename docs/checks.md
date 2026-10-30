@@ -310,7 +310,8 @@ exposure is judged once per analysis (`checker/packs/exposure.py`).
 
 A pack can also name a check built into the tool (never a pack's own):
 that check's compromise findings in the time its detection counts weigh
-as the pack says (at most 100), never less than the check says, and name
+as the pack says (at most 100, and at most one band up: low to 4,
+medium to 20, high to 100), never less than the check says, and name
 the pack (`raised_by_pack`, shown in the report). Nothing counts for a
 host the pack doesn't affect, or whose only sign is a package listing
 collected in part. A detection whose data the collection lacks (what it

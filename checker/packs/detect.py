@@ -450,10 +450,12 @@ def raise_referenced(
     context: Context, found: list[dict[str, Any]], ran: list[dict[str, Any]]
 ) -> None:
     """Findings of a check a pack names, in the time its detection counts,
-    weigh as the pack says (if more than they would); the finding records
+    weigh as the pack says if more than they would, but at most one band
+    up (low to medium's ratio, medium to high's, high to critical's: a
+    pack can't make a check's everyday noise critical); the finding records
     which pack raised it. A check that didn't run, or whose needs the
     collection lacks, is a coverage gap."""
-    from checker.scoring import ratio
+    from checker.scoring import BAND_RATIOS, ratio
 
     status = {r["check"]: r.get("status") for r in ran}
     for pack, exposure, start in _exposed(context):
@@ -473,8 +475,11 @@ def raise_referenced(
                     continue
                 if not _overlaps(finding, interval):
                     continue
-                if detection.likelihood_ratio > ratio(finding):
-                    finding["likelihood_ratio"] = detection.likelihood_ratio
+                own = ratio(finding)
+                above = [r for r in BAND_RATIOS.values() if r > own]
+                raised = min(detection.likelihood_ratio, min(above, default=own))
+                if raised > own:
+                    finding["likelihood_ratio"] = raised
                     finding["raised_by_pack"] = f"{pack.id} v{pack.version} ({detection.id})"
 
 

@@ -502,8 +502,10 @@ is John's to approve before it is committed. Also:
     raised a finding; untimed matches and too many groups are gaps; gaps
     are said once; a failing reference is a gap, not a failed analysis;
     a check detection can't carry a title.
-  - **Left for John:** M7 — raising a low or medium check to 100 can put
-    a clean but exposed host at Critical with two referenced checks.
+  - M7, decided by John (2026-10-30): a raise is at most one band up
+    (low to 4, medium to 20, high to 100), so a pack can't turn a check's
+    everyday noise (a login from a new address) into a critical score;
+    PHP2Shell's `web.worker_child` (high) can still reach 100.
 
 ### 4.6 — Applying packs to stored evidence
 

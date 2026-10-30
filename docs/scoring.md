@@ -37,8 +37,10 @@ reason recorded here.
 
 A threat pack's detections (plan 4.5) carry their own ratio, which comes
 before the band's: a pack's own rule up to 20 (the high band's), and a
-core check's finding the pack names, while the host was exposed, raised
-to the pack's ratio up to 100 (the critical band's) but never lowered.
+core check's finding the pack names, while its detection counts, raised
+to the pack's ratio up to 100 (the critical band's), at most one band
+above its own (low to medium's 4, medium to high's 20, high to
+critical's 100), and never lowered.
 Each such finding records the ratio (`likelihood_ratio`), and a raised one
 the pack (`raised_by_pack`); a raised finding never weighs less than its
 check's own ratio (band or override) at the time it is scored. All of the

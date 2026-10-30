@@ -76,8 +76,9 @@ def test_a_good_pack_reads_whole():
         ("likelihood_ratio: 5", "likelihood_ratio: 11", "less than or equal to 10"),
         ("likelihood_ratio: 5", "likelihood_ratio: 1", "greater than 1"),
         ('release: "ubuntu:24.04"', 'release: "debian:12"', "ubuntu:YY.MM or rhel:N"),
-        ('release: "rhel:9"\n      binary_names: [php-fpm]',
-         'release: "ubuntu:24.04"\n      binary_names: [php8.3-fpm]', "same versions pattern"),
+        ('release: "rhel:9"\n      binary_names: [php-fpm]\n      fixed: "8.3.15-1.el9_6"',
+         'release: "ubuntu:24.04"\n      binary_names: [php8.3-fpm]\n      fixed: "8.3.6-1"',
+         "same versions pattern"),
         ('fixed: "8.3.15-1.el9_6"', 'fixed: "8.3 15"', "not a package version"),
         ("binary_names: [php-fpm]", "binary_names: [php-fpm, php-fpm]", "a package is named twice"),
         ("binary_names: [php-fpm]", "binary_names: ['php fpm']", "not a package name"),
@@ -182,7 +183,8 @@ def test_the_format_stands_alone():
         f"f.read({GOOD.encode()!r})\n"
         "loaded = {m.split('.')[0] for m in set(sys.modules) - before}\n"
         "print(sorted(m for m in sys.modules if m.startswith('checker')"
-        " and m not in ('checker', 'checker.packs', 'checker.packs.format')))\n"
+        " and m not in ('checker', 'checker.packs', 'checker.packs.format',"
+        " 'checker.packs.versions')))\n"
         "print(sorted(m for m in loaded"
         " if m not in sys.stdlib_module_names and not m.startswith('_')))\n"
     )
@@ -420,3 +422,15 @@ def test_a_fixed_version_carries_the_vendors_part(fixed):
     with pytest.raises(PackError, match="revision or release"):
         read(changed('fixed: "8.3.15-1.el9_6"', f'fixed: "{fixed}"'))
     assert read(changed('fixed: "8.3.15-1.el9_6"', 'fixed: "1:8.3.15-1.el9_6"'))
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('fixed: "8.3.6-0ubuntu0.24.04.6"', 'fixed: "8.3.6-0ubuntu_0"'),  # _ isn't dpkg's
+        ('fixed: "8.3.15-1.el9_6"', 'fixed: "99999999999:8.3.15-1.el9_6"'),  # epoch too big
+    ],
+)
+def test_a_fixed_version_is_read_as_its_family_reads_it(old, new):
+    with pytest.raises(PackError, match="dpkg|rpm"):
+        read(changed(old, new))

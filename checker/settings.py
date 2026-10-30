@@ -351,3 +351,36 @@ def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
         finally:
             store.close()
     return old, new, config
+
+
+def change_trusted_keys(home: Path, update) -> tuple[Any, Any, Config]:
+    """Change the organization's own pack keys (`packs.trusted_keys`):
+    `update(old list) -> new list`, read and written under the
+    configuration's lock, validated against the whole configuration and
+    recorded like any other change."""
+    path = config_file(home)
+    with locked(path):
+        current = load_config(home)
+        data = current.model_dump()
+        old = data["packs"]["trusted_keys"]
+        data["packs"]["trusted_keys"] = update([dict(k) for k in old])
+        try:
+            config = Config.model_validate(data)
+        except ValidationError as exc:
+            raise EvidenceError(message(exc, "packs.trusted_keys")) from None
+        new = config.model_dump()["packs"]["trusted_keys"]
+        if new == old:
+            return old, new, current
+        before = path.read_text(encoding="utf-8")
+        store = Store(database_file(home))
+        try:
+            store.record_config_change(
+                "packs.trusted_keys",
+                old,
+                new,
+                lambda: atomic_write(path, yaml.safe_dump(config.model_dump(), sort_keys=False)),
+                lambda: atomic_write(path, before),
+            )
+        finally:
+            store.close()
+    return old, new, config

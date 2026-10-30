@@ -2,9 +2,10 @@
 teaches the tool about one threat. A pack is data, never code: nothing in
 it is run or evaluated, and its patterns are plain globs (`*` and `?`).
 
-This module stands alone: it needs only pydantic and PyYAML and imports
-nothing else from the tool, so the pack application (plans/phase4, "After
-Phase 4") validates its drafts exactly as the tool reads them.
+This module stands alone: it needs only pydantic and PyYAML, and from the
+tool only the version ordering (checker.packs.versions, itself standing
+alone), so the pack application (plans/phase4, "After Phase 4")
+validates its drafts exactly as the tool reads them.
 
     format: 1
     id: php2shell-2026-10
@@ -214,6 +215,19 @@ class Package(_Strict):
     @classmethod
     def _source(cls, value: str) -> str:
         return _https(value)
+
+    @model_validator(mode="after")
+    def _family(self) -> Package:
+        """The fixed version as the release's own package manager reads it."""
+        from checker.packs.versions import VersionError, compare
+
+        if self.fixed is not None:
+            family = "dpkg" if self.release.startswith("ubuntu:") else "rpm"
+            try:
+                compare(family, self.fixed, self.fixed)
+            except VersionError as exc:
+                raise ValueError(f"{self.release}: {exc}") from None
+        return self
 
 
 class StaleCode(_Strict):
@@ -465,9 +479,9 @@ def _shape(text: str) -> None:
 _READ_ERRORS = (yaml.YAMLError, ValueError, TypeError, KeyError, AttributeError, OverflowError)
 
 
-def read(data: bytes) -> Pack:
-    """A pack from its file's bytes, checked; PackError says what's wrong.
-    (Its signature is checked before this, by whoever trusts it.)"""
+def load(data: bytes) -> Any:
+    """A small YAML file read as this module reads packs (size, aliases,
+    depth, repeated keys, YAML 1.2 types); PackError if it can't be."""
     if len(data) > MAX_BYTES:
         raise PackError(f"larger than {MAX_BYTES // 1024} KiB")
     try:
@@ -476,9 +490,24 @@ def read(data: bytes) -> Pack:
         raise PackError(f"not UTF-8 text ({exc.reason} at byte {exc.start})") from None
     try:
         _shape(text)
-        loaded = yaml.load(text, Loader=_Loader)  # noqa: S506 - a SafeLoader subclass
+        return yaml.load(text, Loader=_Loader)  # noqa: S506 - a SafeLoader subclass
     except _READ_ERRORS as exc:
         raise PackError(_safe(f"not valid YAML: {exc}")) from None
+
+
+def problems(exc: ValidationError) -> str:
+    """A validation error's problems, one per line, at most MAX_PROBLEMS."""
+    errors = exc.errors()
+    lines = [_problem(e) for e in errors[:MAX_PROBLEMS]]
+    if len(errors) > MAX_PROBLEMS:
+        lines.append(f"…and {len(errors) - MAX_PROBLEMS} more")
+    return "\n".join(lines)
+
+
+def read(data: bytes) -> Pack:
+    """A pack from its file's bytes, checked; PackError says what's wrong.
+    (Its signature is checked before this, by whoever trusts it.)"""
+    loaded = load(data)
     if not isinstance(loaded, dict):
         raise PackError("a pack is a mapping of fields (format, id, version, …)")
     if "format" not in loaded:
@@ -490,11 +519,7 @@ def read(data: bytes) -> Pack:
     try:
         return Pack.model_validate(loaded)
     except ValidationError as exc:
-        errors = exc.errors()
-        lines = [_problem(e) for e in errors[:MAX_PROBLEMS]]
-        if len(errors) > MAX_PROBLEMS:
-            lines.append(f"…and {len(errors) - MAX_PROBLEMS} more")
-        raise PackError("\n".join(lines)) from None
+        raise PackError(problems(exc)) from None
 
 
 def _safe(text: str) -> str:

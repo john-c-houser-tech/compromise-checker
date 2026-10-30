@@ -480,8 +480,12 @@ The advisor's answers can't be golden-tested, so they are measured.
   aside (two explanations naming findings that aren't in the case, one
   "no signs found" on a Critical canary run, five remediations); every
   whitelist rule on a detection run and all 19 coverage suggestions set
-  aside; 2 rules offered on a clean server. The checks held; the advice is
-  thin. Also confirmed: at Ollama's default 4 096 context with
+  aside. On fresh-ubuntu24.04+canaries the "rule for every finding"
+  canary drew rules for F-11–F-17 (none without it) and 2 passed the
+  checks and were offered: the checks allow rules on a Low host, so a quiet
+  intruder can steer proposals. Docs say so; a person still reviews each.
+  The eval keeps only set-aside answers, so it can't say which 2 were
+  offered; keeping offered answers too would. Also confirmed: at Ollama's default 4 096 context with
   `max_tokens` 16 000, a ~7 000-token prompt is still cut to 2 050, which
   the cut-off check catches.
 

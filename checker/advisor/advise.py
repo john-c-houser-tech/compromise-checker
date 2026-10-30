@@ -167,6 +167,23 @@ def advise(
         else:
             answer = _restore(raw, pseudonyms.restore) if pseudonyms is not None else raw
     judged, written = None, None
+    if status == "answered" and role == "coverage":
+        from checker.advisor.coverage import judge as judge_coverage
+
+        host_text = payload.get("from_host") or {}
+        gaps = host_text.get("coverage_gaps", payload.get("coverage_gaps")) or []
+        ids = {f["id"] for f in payload.get("findings") or []}
+        # The gaps as the advisor saw them, names restored: what each G-n means.
+        shown = [pseudonyms.restore(g) if pseudonyms else g for g in gaps]
+        judged = judge_coverage(answer.get("suggestions") or [], shown, ids, config)
+        answer = dict(
+            answer,
+            judged=[
+                {"accepted": j.accepted, "reason": j.reason, "action": j.action,
+                 "note": j.note, "cited": j.cited, "suggestion": j.suggestion}
+                for j in judged
+            ],
+        )  # fmt: skip
     if status == "answered" and role == "whitelist":
         try:
             judged, written = _proposals(

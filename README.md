@@ -39,7 +39,13 @@ What works today:
   chain, on the host's stored analyses and, for a group rule, the
   group's) and the accepted ones written to `proposals/` with
   the owner left empty, for a person to review and copy in; nothing is
-  applied. `--show [--redaction MODE]` prints exactly what would be sent,
+  applied. `--role coverage` asks what would let the next collection see
+  more, picked only from the tool's collection settings (printed as the
+  `checker config set` line to run) and a fixed catalogue of host
+  configuration (auditd for web accounts, a persistent journal, sshd
+  `LogLevel VERBOSE`, a readable web log format, log retention), each
+  citing the coverage gap or finding it helps with; nothing is changed.
+  `--show [--redaction MODE]` prints exactly what would be sent,
   after redaction, and sends nothing. Under *pseudonymize* (the default) people's
   account names, host names, email addresses, IP addresses and SSH key
   fingerprints become placeholders (USER-2-7f3a) made fresh for each run;

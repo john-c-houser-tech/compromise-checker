@@ -274,6 +274,14 @@ assessment, its events, snapshot and whitelist, by one module
   person to run; host configuration is shown as text, never run.
 - **Tests:** a suggestion of a module or setting that doesn't exist is
   rejected; each suggestion refers to a gap that is in the case.
+- **As built (2026-10-29):** every collector module always runs, so the
+  levers are the collection settings (`web_access_logs on`, `exec_records
+  privileged|all`, `home_text privileged|all`, each opting in to more:
+  the trade-off is privacy) and a catalogue in `checker/advisor/coverage.py`
+  (auditd-web-exec, auditd-running, journald-persistent, sshd-log-verbose,
+  web-log-format, log-retention). Each suggestion cites G-n (the case's
+  coverage gaps, numbered in order) or F-n; a setting must change the
+  current value. Nothing runs or changes.
 
 ### 3.5 — Role 4: remediation
 

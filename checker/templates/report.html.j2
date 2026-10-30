@@ -191,6 +191,19 @@ uncertain findings count half. Suppressed and informational findings don't count
 <p class="muted">Written by an AI model from the findings above; the probability and band are the tool's own and unchanged. Finding numbers (F-n) count the analysis's findings in order.</p>
 </div>
 {% endif %}
+{% set c = (r.advice.get("coverage") or {}).get("answered") %}
+{% if c and c.answer %}
+{% set offered = c.answer.judged|selectattr("accepted")|list %}
+<h3>AI advisor: coverage suggestions (nothing changed)</h3>
+<div class="notice">
+<p class="meta">Asked {{ c.model_asked|visible(80) }}{% if c.declined_by %}; declined by {{ c.declined_by|join(", ")|visible(200) }}{% endif %}{% if c.model_answered %}; answered by {{ c.model_answered|visible(80) }}{% endif %} · redaction {{ c.redaction }} · {{ c.at[:16] }} UTC{% if c.stale %} · <strong>stale</strong>{% endif %}</p>
+<p class="muted">As judged against the settings at {{ c.at[:16] }} UTC; a setting changed since may already be in place.</p>
+{% if offered %}<ul>{% for j in offered %}<li>{{ j.suggestion.why|visible(600) }}{% for g in j.cited %}<div class="muted">For {{ g|visible(400) }}</div>{% endfor %}<div class="muted">Cost, as the advisor sees it: {{ j.suggestion.trade_off|visible(300) }}</div>{% if j.note %}<div><strong>{{ j.note|visible(1000) }}</strong></div>{% endif %}<div class="mono">{{ j.action|visible(1000) }}</div></li>{% endfor %}</ul>
+{% else %}<p>No suggestions offered.</p>{% endif %}
+{% set aside = c.answer.judged|rejectattr("accepted")|list %}
+{% if aside %}<p class="muted">{{ aside|length }} set aside: {% for j in aside %}{{ j.reason|visible(200) }}{% if not loop.last %}; {% endif %}{% endfor %}.</p>{% endif %}
+</div>
+{% endif %}
 {% set w = (r.advice.get("whitelist") or {}).get("answered") %}
 {% if w and w.answer %}
 {% set offered = w.answer.judged|selectattr("accepted")|list %}

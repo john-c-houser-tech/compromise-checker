@@ -127,6 +127,37 @@ class WhitelistAnswer(BaseModel):
     )
 
 
+class Suggestion(BaseModel):
+    kind: Literal["setting", "host"]
+    setting: str | None = Field(default=None, description="for kind setting: its name")
+    value: str | None = Field(default=None, description="for kind setting: the value")
+    item: str | None = Field(default=None, description="for kind host: the catalogue entry")
+    helps_with: list[str] = Field(
+        description="the coverage gaps (G-n, numbered in the case's order) or findings (F-n)"
+    )
+    why: str
+    trade_off: str = Field(description="what it costs: privacy, disk, noise")
+
+
+class CoverageAnswer(BaseModel):
+    """Role 3: what would let the next collection see more."""
+
+    suggestions: list[Suggestion]
+
+
+def _coverage_question() -> str:
+    from checker.advisor.coverage import catalogue_text
+
+    return (
+        "Suggest what would let the next collection see more: only from this list,"
+        f" nothing else. {catalogue_text()} Each suggestion cites the coverage gaps it"
+        " closes, numbered G-1, G-2… in the order the case lists them, or the uncertain"
+        " findings (F-n) it would settle, says why, and says what it costs (privacy for"
+        " settings that collect more, disk or noise for host configuration). Suggest"
+        " nothing when coverage is good."
+    )
+
+
 def _whitelist_question() -> str:
     from checker.advisor.proposals import HAND_ONLY
 
@@ -159,12 +190,15 @@ ROLES = {
         " there are any; and the questions or checks that would settle it.",
     ),
     "whitelist": (WhitelistAnswer, None),  # the question: _whitelist_question()
+    "coverage": (CoverageAnswer, None),  # the question: _coverage_question()
 }
 
 
 def question(role: str) -> str:
     _, text = ROLES[role]
-    return text if text is not None else _whitelist_question()
+    if text is not None:
+        return text
+    return {"whitelist": _whitelist_question, "coverage": _coverage_question}[role]()
 
 
 class InvalidAnswer(Exception):
@@ -225,4 +259,13 @@ def check_whitelist(
         raise InvalidAnswer("proposes more than twenty rules")
 
 
-CHECKS = {"explain": check_explanation, "whitelist": check_whitelist}
+def check_coverage(
+    answer: CoverageAnswer, finding_ids: set[str], band: str | None, quoted=frozenset()
+) -> None:
+    """The answer's shape; whether each suggestion is one the tool offers is
+    checker.advisor.coverage's."""
+    if len(answer.suggestions) > 12:
+        raise InvalidAnswer("makes more than twelve suggestions")
+
+
+CHECKS = {"explain": check_explanation, "whitelist": check_whitelist, "coverage": check_coverage}

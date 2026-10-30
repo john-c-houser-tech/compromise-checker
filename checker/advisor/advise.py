@@ -173,12 +173,14 @@ def advise(
         host_text = payload.get("from_host") or {}
         gaps = host_text.get("coverage_gaps", payload.get("coverage_gaps")) or []
         ids = {f["id"] for f in payload.get("findings") or []}
-        judged = judge_coverage(answer.get("suggestions") or [], len(gaps), ids, config)
+        # The gaps as the advisor saw them, names restored: what each G-n means.
+        shown = [pseudonyms.restore(g) if pseudonyms else g for g in gaps]
+        judged = judge_coverage(answer.get("suggestions") or [], shown, ids, config)
         answer = dict(
             answer,
             judged=[
                 {"accepted": j.accepted, "reason": j.reason, "action": j.action,
-                 "suggestion": j.suggestion}
+                 "note": j.note, "cited": j.cited, "suggestion": j.suggestion}
                 for j in judged
             ],
         )  # fmt: skip

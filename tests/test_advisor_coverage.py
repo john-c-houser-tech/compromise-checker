@@ -13,6 +13,11 @@ from checker.advisor import advise as advise_module
 from checker.advisor.coverage import CATALOGUE, judge
 from checker.evidence import Config, load_config
 
+GAPS = [
+    "no audit log: earlier program starts by web accounts can't be checked",
+    "web access logs not collected (not chosen at setup)",
+]
+
 
 def config(**settings):
     return Config(recipients=["age1x"], **settings)
@@ -29,12 +34,12 @@ def host(item, helps=("G-1",)):
 
 
 def test_a_known_setting_is_offered_as_a_command():
-    (result,) = judge([setting("web_access_logs", "on")], 2, set(), config())
+    (result,) = judge([setting("web_access_logs", "on")], GAPS, set(), config())
     assert result.accepted and result.action == "checker config set web_access_logs on"
 
 
 def test_a_catalogue_entry_is_offered_as_text():
-    (result,) = judge([host("journald-persistent", ["F-2"])], 0, {"F-2"}, config())
+    (result,) = judge([host("journald-persistent", ["F-2"])], [], {"F-2"}, config())
     assert result.accepted and result.action == CATALOGUE["journald-persistent"]["how"]
 
 
@@ -44,7 +49,7 @@ def test_a_catalogue_entry_is_offered_as_text():
         (setting("advisor.enabled", "on"), "isn't a collection setting"),
         (setting("retention_days", "9999"), "isn't a collection setting"),
         (setting("exec_records", "none"), "can't be suggested as 'none'"),
-        (setting("web_access_logs", "off"), "can't be suggested as 'off'"),
+        (setting("web_access_logs", "off"), "already off"),
         (host("curl-pipe-bash"), "isn't in the host configuration catalogue"),
         (setting("web_access_logs", "on", ["G-9"]), "isn't one of the case's 2 coverage gaps"),
         (setting("web_access_logs", "on", ["F-9"]), "isn't a finding of the case"),
@@ -55,21 +60,21 @@ def test_a_catalogue_entry_is_offered_as_text():
     ],
 )
 def test_anything_else_is_set_aside(suggestion, why):
-    (result,) = judge([suggestion], 2, {"F-1"}, config())
+    (result,) = judge([suggestion], GAPS, {"F-1"}, config())
     assert not result.accepted and why in result.reason, result.reason
 
 
 def test_a_setting_already_so_is_set_aside():
     (result,) = judge(
-        [setting("home_text", "privileged")], 2, set(), config(home_text="privileged")
+        [setting("home_text", "privileged")], GAPS, set(), config(home_text="privileged")
     )
     assert "already privileged" in result.reason
-    (result,) = judge([setting("web_access_logs", "on")], 2, set(), config(web_access_logs=True))
+    (result,) = judge([setting("web_access_logs", "on")], GAPS, set(), config(web_access_logs=True))
     assert "already on" in result.reason
 
 
 def test_a_repeat_is_set_aside():
-    first, second = judge([host("auditd-running"), host("auditd-running")], 2, set(), config())
+    first, second = judge([host("auditd-running"), host("auditd-running")], GAPS, set(), config())
     assert first.accepted and "repeats" in second.reason
 
 
@@ -127,3 +132,65 @@ def test_the_report_lists_the_suggestions(enabled):
                         base / "reports").read_text()  # fmt: skip
     section = html.split("coverage suggestions (nothing changed)")[1].split("<h")[0]
     assert "checker config set web_access_logs on" in section and "1 set aside" in section
+    assert "security and privacy policy §7" in section and "As judged against" in section
+
+
+# --- What the review of 3.4 found ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("current", "suggested"),
+    [({"exec_records": "all"}, ("exec_records", "privileged")),
+     ({"home_text": "all"}, ("home_text", "off")),
+     ({"exec_records": "privileged"}, ("exec_records", "web"))],
+)  # fmt: skip
+def test_only_wider_settings_are_offered(current, suggested):
+    (result,) = judge([setting(*suggested)], GAPS, set(), config(**current))
+    assert not result.accepted and "collects no more" in result.reason
+
+
+def test_a_setting_carries_the_tools_own_privacy_note():
+    (result,) = judge([setting("exec_records", "all")], GAPS, set(), config())
+    assert result.note.startswith("Program starts by every account, ordinary users' included.")
+    assert "security and privacy policy §7" in result.note
+
+
+def test_a_cited_gap_carries_its_text():
+    (result,) = judge([setting("web_access_logs", "on", ["G-2"])], GAPS, set(), config())
+    assert result.cited == ["G-2: web access logs not collected (not chosen at setup)"]
+
+
+def test_the_catalogue_survives_being_shown():
+    from checker.report import visible
+
+    for name, item in CATALOGUE.items():
+        assert "\\" not in item["how"], name
+        assert str(visible(item["how"], 1000)) == item["how"], name
+        assert "checker config set" not in item["how"], name
+
+
+def test_repeats_are_caught_by_the_name_checked():
+    junk = {**host("auditd-running"), "setting": "junk"}
+    first, second = judge([host("auditd-running"), junk], GAPS, set(), config())
+    assert first.accepted and "repeats" in second.reason
+
+
+def test_under_strict_g_n_counts_the_kinds_the_advisor_saw(enabled):
+    from checker.settings import change
+
+    base = enabled[0]
+    change(base, "advisor.redaction", "strict")
+    seen = {}
+
+    def reply(body):
+        text = body["messages"][0]["content"][0]["text"]
+        case = json.loads(text.removeprefix("The case file:\n"))
+        seen["gaps"] = case["coverage_gaps"]
+        cite = f"G-{len(case['coverage_gaps'])}" if case["coverage_gaps"] else "F-1"
+        return coverage_reply([setting("web_access_logs", "on", [cite])])(body)
+
+    advice = run(enabled, Provider(reply), role="coverage")
+    (item,) = advice.judged
+    assert item.accepted, item.reason
+    if seen["gaps"]:
+        assert item.cited == [f"G-{len(seen['gaps'])}: {seen['gaps'][-1]}"]

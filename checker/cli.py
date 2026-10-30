@@ -1004,11 +1004,14 @@ def _print_coverage(advice, shown) -> None:
     for item in judged:
         s = item.suggestion
         what = s.get("setting") if s.get("kind") == "setting" else s.get("item")
-        helps = ", ".join(str(r) for r in s.get("helps_with") or [])
         if item.accepted:
-            print(f"Suggested ({shown(helps)}): {shown(s.get('why'))}")
-            print(f"  Cost: {shown(s.get('trade_off'))}")
-            print(f"  {shown(item.action)}")
+            print(f"Suggested: {shown(s.get('why'))}")
+            for cited in item.cited:
+                print(f"  For {shown(cited)}")
+            print(f"  Cost, as the advisor sees it: {shown(s.get('trade_off'))}")
+            if item.note:
+                print(f"  {item.note}")
+            print(f"  {item.action}")  # the tool's own text, printed as it is
         else:
             print(f"Set aside: {shown(what)}: {shown(item.reason)}")
     if any(j.accepted for j in judged):

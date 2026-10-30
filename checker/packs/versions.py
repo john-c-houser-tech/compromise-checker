@@ -17,7 +17,16 @@ Family = Literal["dpkg", "rpm"]
 
 
 class VersionError(ValueError):
-    """Not a version this family's tools would accept."""
+    """Not a version this family's tools would accept. An installed
+    version comes from the server's own package database, which an
+    intruder can write: a caller judging exposure treats this as "can't
+    judge" (reported), never as fixed and never by skipping the package."""
+
+
+# dpkg's own limit on an epoch (INT_MAX), and the characters it accepts.
+MAX_EPOCH = 2**31 - 1
+_DPKG_UPSTREAM = set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.+~-:")
+_DPKG_REVISION = set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.+~")
 
 
 def compare(family: Family, a: str, b: str) -> int:
@@ -33,6 +42,32 @@ def _sign(n: int) -> int:
     return (n > 0) - (n < 0)
 
 
+def _text(version: object, family: str) -> str:
+    if not isinstance(version, str):
+        raise VersionError(f"not a {family} version: {version!r}")
+    text = version.strip()
+    if not text or any(c.isspace() for c in text):
+        raise VersionError(f"not a {family} version: {version[:100]!r}")
+    return text
+
+
+def _epoch(head: str, version: str, family: str) -> str:
+    """An epoch as digits without leading zeros ("" for 0): compared by
+    length, then text, so no number is ever built from it."""
+    if not head or not all(_digit(c) for c in head):
+        raise VersionError(f"a {family} epoch is a number: {version[:100]!r}")
+    digits = head.lstrip("0")
+    if len(digits) > 10 or (digits and int(digits) > MAX_EPOCH):
+        raise VersionError(f"a {family} epoch too big: {version[:100]!r}")
+    return digits
+
+
+def _epoch_compare(a: str, b: str) -> int:
+    if len(a) != len(b):
+        return 1 if len(a) > len(b) else -1
+    return (a > b) - (a < b)
+
+
 def _digit(c: str) -> bool:
     return "0" <= c <= "9"  # ASCII only, as the C code's isdigit in the C locale
 
@@ -40,22 +75,24 @@ def _digit(c: str) -> bool:
 # --- dpkg ---------------------------------------------------------------------------------------
 
 
-def _dpkg_parts(version: str) -> tuple[int, str, str]:
-    """(epoch, upstream, revision): `[epoch:]upstream[-revision]`."""
-    text = version.strip()
-    if not text or any(c.isspace() for c in text):
-        raise VersionError(f"not a dpkg version: {version!r}")
-    epoch = 0
+def _dpkg_parts(version: object) -> tuple[str, str, str]:
+    """(epoch, upstream, revision): `[epoch:]upstream[-revision]`, split as
+    dpkg's parseversion splits it (the first colon, the last hyphen) and
+    refused where dpkg refuses it."""
+    text = _text(version, "dpkg")
+    epoch = ""
     if ":" in text:
         head, text = text.split(":", 1)
-        if not head or not all(_digit(c) for c in head):
-            raise VersionError(f"a dpkg epoch is a number: {version!r}")
-        epoch = int(head)
-    upstream, _, revision = text.rpartition("-")
-    if not upstream:  # no hyphen: all of it is the upstream version
-        upstream, revision = revision, ""
+        epoch = _epoch(head, text, "dpkg")
+    upstream, hyphen, revision = text.rpartition("-")
+    if not hyphen:  # no hyphen: all of it is the upstream version
+        upstream, revision = text, ""
     if not upstream:
-        raise VersionError(f"not a dpkg version: {version!r}")
+        raise VersionError(f"a dpkg version number is empty: {text[:100]!r}")
+    if hyphen and not revision:
+        raise VersionError(f"a dpkg revision number is empty: {text[:100]!r}")
+    if set(upstream) - _DPKG_UPSTREAM or set(revision) - _DPKG_REVISION:
+        raise VersionError(f"a character dpkg doesn't allow in a version: {text[:100]!r}")
     return epoch, upstream, revision
 
 
@@ -101,9 +138,7 @@ def _verrevcmp(a: str, b: str) -> int:
 def dpkg_compare(a: str, b: str) -> int:
     ea, ua, ra = _dpkg_parts(a)
     eb, ub, rb = _dpkg_parts(b)
-    if ea != eb:
-        return _sign(ea - eb)
-    return _verrevcmp(ua, ub) or _verrevcmp(ra, rb)
+    return _epoch_compare(ea, eb) or _verrevcmp(ua, ub) or _verrevcmp(ra, rb)
 
 
 # --- rpm ----------------------------------------------------------------------------------------
@@ -167,30 +202,32 @@ def rpmvercmp(a: str, b: str) -> int:
     return -1 if i >= len(a) else 1
 
 
-def _rpm_parts(version: str) -> tuple[int, str, str | None]:
-    """(epoch, version, release): `[epoch:]version[-release]`."""
-    text = version.strip()
-    if not text or any(c.isspace() for c in text):
-        raise VersionError(f"not an rpm version: {version!r}")
-    epoch = 0
+def _rpm_parts(version: object) -> tuple[str, str, str | None]:
+    """(epoch, version, release): `[epoch:]version[-release]`, split as
+    rpm's parseEVR splits it (the first colon, the last hyphen)."""
+    text = _text(version, "rpm")
+    epoch = ""
     if ":" in text:
         head, text = text.split(":", 1)
-        if not head or not all(_digit(c) for c in head):
-            raise VersionError(f"an rpm epoch is a number: {version!r}")
-        epoch = int(head)
-    if text.count("-") > 1:
-        raise VersionError(f"an rpm version and release hold no hyphen: {version!r}")
-    upstream, _, release = text.partition("-")
+        epoch = _epoch(head, text, "rpm")
+    upstream, hyphen, release = text.rpartition("-")
+    if not hyphen:
+        upstream, release = text, ""
     if not upstream:
-        raise VersionError(f"not an rpm version: {version!r}")
+        raise VersionError(f"not an rpm version: {text[:100]!r}")
     return epoch, upstream, release or None
 
 
 def rpm_compare(a: str, b: str) -> int:
     """`[epoch:]version[-release]`, as rpm orders them; a release is
-    compared only when both have one (as rpm does for a dependency)."""
+    compared only when both have one (as rpm does for a dependency). An
+    installed version always has one (the collector sends
+    epoch:version-release), and a pack's fixed version must have one, so
+    the two are always compared whole."""
     ea, va, ra = _rpm_parts(a)
     eb, vb, rb = _rpm_parts(b)
-    if ea != eb:
-        return _sign(ea - eb)
-    return rpmvercmp(va, vb) or (rpmvercmp(ra, rb) if ra is not None and rb is not None else 0)
+    return (
+        _epoch_compare(ea, eb)
+        or rpmvercmp(va, vb)
+        or (rpmvercmp(ra, rb) if ra is not None and rb is not None else 0)
+    )

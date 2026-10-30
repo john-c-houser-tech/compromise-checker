@@ -1,6 +1,7 @@
 """Package version ordering (checker/packs/versions.py, plan 4.1). The rpm
-table is rpm's own (tests/rpmvercmp.at); the dpkg one follows dpkg's
-version tests and Debian policy §5.6.12."""
+table is rpm's own (tests/rpmvercmp.at); the dpkg one is written by hand
+from dpkg's rules (lib/dpkg/version.c) and Debian policy §5.6.12, and
+checked against dpkg itself where it is installed."""
 
 import random
 import subprocess
@@ -105,7 +106,11 @@ def test_dpkg_tilde_chain():
     ("family", "text"),
     [
         ("dpkg", ""), ("dpkg", "1.0 2"), ("dpkg", "x:1.0"), ("dpkg", ":1.0"), ("dpkg", "1:"),
-        ("rpm", ""), ("rpm", "a:1"), ("rpm", "1.0-1-2"), ("rpm", "-1"), ("rpm", "1²:1"),
+        ("rpm", ""), ("rpm", "a:1"), ("rpm", "-1"), ("rpm", "1²:1"),
+        ("dpkg", "-1"), ("dpkg", "0:-0"), ("dpkg", "1.0-"),
+        ("dpkg", "999999999999999999999999:0-1"), ("dpkg", "9" * 5000 + ":1"),
+        ("dpkg", "1.0_1"), ("dpkg", "1.0-1:2"),
+        ("rpm", "9" * 5000 + ":1"), ("dpkg", None), ("rpm", 3),
     ],
 )  # fmt: skip
 def test_what_isnt_a_version(family, text):
@@ -114,9 +119,33 @@ def test_what_isnt_a_version(family, text):
 
 
 def test_only_ascii_digits_count():
-    # A digit from another script isn't one to dpkg or rpm.
-    assert rpmvercmp("1.٣", "1.3") != 0
-    assert dpkg_compare("1.٣", "1.3") != 0
+    # A digit from another script isn't one to rpm, and dpkg refuses it.
+    arabic_three = "1." + chr(0x663)
+    assert rpmvercmp(arabic_three, "1.3") != 0
+    with pytest.raises(VersionError):
+        dpkg_compare(arabic_three, "1.3")
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "expected"),
+    [
+        ("1.0-beta-1", "1.0-beta-2", -1),  # an upstream version holding hyphens
+        ("1:2:3-1", "1:2:3-1", 0), ("1:2:3-1", "1:2:4-1", -1),  # and colons, after an epoch
+        ("01:1.0", "1:1.0", 0), ("1:1.0", "2:0.1", -1), ("9:1.0", "10:1.0", -1),
+        ("1." + "9" * 40, "1." + "9" * 39, 1),
+    ],
+)  # fmt: skip
+def test_dpkg_splits_as_dpkg_does(a, b, expected):
+    assert dpkg_compare(a, b) == expected
+
+
+def test_rpm_splits_as_rpm_does():
+    """rpm's parseEVR splits on the last hyphen; leading zeros in an epoch
+    don't count; long numbers compare as numbers."""
+    assert rpm_compare("1.0-1-1", "1.0-1-2") == -1
+    assert rpm_compare("1.0-1-9", "1.0.1-1") == 1  # version 1.0-1 equals 1.0.1; release 9 > 1
+    assert rpm_compare("01:1.0-1", "1:1.0-1") == 0
+    assert rpm_compare("1." + "9" * 40 + "-1", "1." + "9" * 39 + "-1") == 1
 
 
 def test_an_unknown_family():
@@ -125,7 +154,9 @@ def test_an_unknown_family():
 
 
 def golden_versions():
-    sys.path.insert(0, "tests/integration")
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent / "integration"))
     import golden
 
     found = {"dpkg": set(), "rpm": set()}
@@ -147,6 +178,8 @@ def test_every_golden_version_orders_consistently():
     assert len(found["dpkg"]) > 100 and len(found["rpm"]) > 100
     for family, versions in found.items():
         versions = sorted(versions)
+        for version in versions:  # every one parses
+            assert compare(family, version, version) == 0
         sample = random.Random(1).sample(versions, 60)  # noqa: S311 - a fixed sample
         for a in sample:
             assert compare(family, a, a) == 0

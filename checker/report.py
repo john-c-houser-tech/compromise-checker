@@ -466,7 +466,11 @@ def latest_report(directory: Path) -> Path | None:
         for p in directory.glob("report-*.html*")
         if p.name.endswith((".html", ".html.age")) and p.is_file() and not p.is_symlink()
     ]
-    return max(found, key=lambda p: (p.stat().st_mtime, p.name)) if found else None
+    return _newest(found)
+
+
+def _newest(paths: list[Path]) -> Path | None:
+    return max(paths, key=lambda p: (p.stat().st_mtime, p.name)) if paths else None
 
 
 # The page's own policy, sent as a header too: it loads nothing.

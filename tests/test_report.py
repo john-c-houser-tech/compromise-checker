@@ -4,6 +4,8 @@ whatever text a host sent."""
 import json
 import re
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -270,6 +272,7 @@ def test_a_report_is_shown_from_memory_and_only_at_its_address(home, tmp_path, m
     add_bundle(home, "b1", 0, host_records())
     path = write_report(store, ["web01"], identity, config.recipients, base / "reports")
     before = {p for p in Path(tempfile.gettempdir()).iterdir()}
+    threads = threading.active_count()
     seen = {}
 
     def browser(url):
@@ -291,6 +294,11 @@ def test_a_report_is_shown_from_memory_and_only_at_its_address(home, tmp_path, m
     with pytest.raises(OSError):
         fetch(seen["url"])  # stopped with Enter
     assert {p for p in Path(tempfile.gettempdir()).iterdir()} - before == set()
+    for _ in range(50):  # the server's thread ends with it
+        if threading.active_count() == threads:
+            break
+        time.sleep(0.02)
+    assert threading.active_count() == threads
 
 
 def test_with_no_screen_it_says_how_to_reach_it(home):
@@ -367,6 +375,13 @@ def test_the_newest_report_is_found_by_time_then_name(home):
         os.utime(folder / name, (1000, 1000))
     (folder / "report-z-link.html.age").symlink_to(folder / "notes.html")
     assert latest_report(folder).name == "report-a-20261030T020000Z.html.age"
+    from checker.report import _newest
+
+    older, newer = (
+        folder / "report-a-20261030T010000Z.html",
+        folder / "report-a-20261030T020000Z.html.age",
+    )
+    assert _newest([older, newer]) == newer == _newest([newer, older])  # same second: by name
 
 
 def test_output_names_say_what_they_hold(home):

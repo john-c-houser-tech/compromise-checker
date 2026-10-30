@@ -1,8 +1,9 @@
 # Phase 4 build plan — 2026-10-30
 
-> **Status: DRAFT 1, 2026-10-30** — for John's review. Nothing built yet.
-> Decisions D1–D8 below are open; each is asked on its own, with a
-> recommendation.
+> **Status: DRAFT 2, 2026-10-30** — every decision settled (D1–D7).
+> Restructured the same day (John): pack drafting moved out of the tool
+> into a separate pack application in the packs repository, with its own
+> plan after Phase 4 (see "After Phase 4"). Nothing built yet.
 
 **Goal (DESIGN.md §18, Phase 4):** when a new threat is published, an
 organization can check its whole fleet against it within a day, from the
@@ -13,9 +14,10 @@ was active in the wild, what settings reduce exposure, what to look for on
 a host, and what to do. The tool verifies the pack's signature, applies it
 to stored evidence at once, reports exposure separately from signs of
 compromise, raises the host's prior when it was exposed during the window,
-and focuses the timeline there. The AI advisor can draft a pack from
-advisories the operator supplies, for a person to review. The first real
-pack is PHP2Shell (DESIGN.md §10.2).
+and focuses the timeline there. The first real pack is PHP2Shell
+(DESIGN.md §10.2), written by hand from the advisories. Drafting packs is
+not the tool's job: a separate pack application, in the packs repository,
+will watch for threats and draft packs for approval (after Phase 4).
 
 **Done means:**
 1. **Format.** A pack is YAML with a fixed, versioned schema (DESIGN.md
@@ -53,12 +55,9 @@ pack is PHP2Shell (DESIGN.md §10.2).
    throwaway servers: a vulnerable PHP is reported exposed, a fixed one
    fixed, a fixed one whose PHP-FPM wasn't restarted stale, and the
    mitigation setting found on or off.
-10. **Drafting.** `checker packs draft --from FILE…` asks the advisor (role
-    5) for a pack from advisory text the operator saved; the draft is
-    checked against the schema and against the text it was given (every
-    version, date, CVE id and reference in the draft must appear in the
-    supplied text), written unsigned to `packs/drafts/` for review, and
-    never trusted until a person signs it.
+10. **The format as a library.** The pack format and its checks can be
+    used on their own, without the rest of the tool, so the pack
+    application validates its drafts exactly as the tool will read them.
 
 ## Ground rules
 
@@ -84,10 +83,8 @@ is John's to approve before it is committed. Also:
 - **Exposure isn't compromise.** Being vulnerable raises the prior; it is
   never itself a sign of compromise.
 - **No network by default.** Only `checker packs pull` downloads, and only
-  when asked (policy §10, §11). Drafting reads files the operator saved;
-  the tool fetches no advisory itself.
-- **Spend is asked.** Drafting is an advisor request: estimated, shown and
-  confirmed like the other roles. Eval runs need John's OK per run.
+  when asked (policy §10, §11). The tool fetches no advisory and asks no
+  AI about packs: the advisor's roles stay the four of Phase 3.
 
 ## Pull requests
 
@@ -102,8 +99,11 @@ is John's to approve before it is committed. Also:
   each with the source package or binary package names and the first fixed
   version in that vendor's own numbering, plus where it came from.
 - `checker packs check FILE`: validates without trusting or installing.
-- Where packs live: `packs/` in the checker's home (active, retired,
-  drafts), owner-only.
+- `checker.packs.format` depends on nothing but pydantic and PyYAML and
+  imports nothing else from the tool, so the pack application can use it
+  as a library (done means 10); a test holds it to that.
+- Where packs live: `packs/` in the checker's home (active and retired),
+  owner-only.
 
 ### 4.1 — Version ordering
 
@@ -204,29 +204,15 @@ is John's to approve before it is committed. Also:
   log lines written in the shapes the advisories describe.
 - Applied to nouriloop-prod's stored evidence only with John's OK.
 
-### 4.9 — Drafting (advisor role 5)
-
-- `checker packs draft --from FILE… [--show]`: the operator's saved
-  advisories (text, HTML or Markdown files; the tool fetches nothing)
-  are the case; the answer is a pack in the schema.
-- Checked before anyone sees it: the schema; every CVE id, version, date
-  and URL in the draft appears in the supplied text; package names exist
-  for that distribution (from the packages in stored evidence, where
-  there are any); detections use only the language's terms.
-- Written unsigned to `packs/drafts/ID-vN.yaml` with what was checked and
-  what wasn't; the report of the run names the model, like every advisor
-  answer. A draft is never applied until a person signs and adds it.
-- The eval: drafts from the PHP2Shell advisories compared with the
-  reviewed pack (API spend with John's OK per run).
-
-### 4.10 — Policy, docs and README
+### 4.9 — Policy, docs and README
 
 - Policy §11 (threat packs and trust) brought up to date with what was
-  built; §10 (`checker packs pull` downloads); §9 (role 5: advisory text
-  the operator supplies is sent). Wording to John first.
+  built; §10 (`checker packs pull` downloads). Wording to John first.
 - `docs/packs.md`: writing, checking, signing, adding, pulling, retiring a
   pack; the detection language; how exposure and the prior are computed.
-- DESIGN.md §10 and §11.2 as built; README "Status: Phase 4 complete".
+- DESIGN.md §10 and §11.2 as built; §10.3, §12.1 (role 5) and §18 say
+  drafting moved to the pack application; README "Status: Phase 4
+  complete".
 
 ## Decisions to settle (one at a time)
 
@@ -268,17 +254,39 @@ is John's to approve before it is committed. Also:
   `john-c-houser-tech/compromise-checker-packs`, under CC BY 4.0.
   Creating it is outward-facing, so it waits for John's word.
 - **D7. Spend on throwaway servers. Decided 2026-10-30 (John): Phase 2's
-  rules: one OK per PR, $10 cap, stop and tell at $5.** The PHP2Shell proof needs a few
-  short-lived Linodes, as in Phase 2. *Recommendation:* the same rules: one
-  OK per PR, a $10 cap, stop and tell at $5.
-- **D8. What drafting sends.** The advisory text the operator supplies
-  goes to the model, and, to check package names, nothing from the
-  evidence (names are checked locally afterwards). *Recommendation:* that,
-  with `--show` printing the request first, like the other roles.
+  rules: one OK per PR, $10 cap, stop and tell at $5.** The PHP2Shell
+  proof needs a few short-lived Linodes, as in Phase 2.
+- ~~D8. What drafting sends.~~ **Dropped 2026-10-30 (John):** drafting
+  moved out of the tool, into the pack application.
 
 ## Order
 
 4.0 → 4.1 → 4.2 can go first, in that order, without any decision but D5
 (4.2 can be built and tested with a test key; the real key goes in when
 John has made it). 4.3 needs D2 and D3; 4.4 needs D4; 4.5 needs D1; 4.7
-needs D6; 4.8 needs D7; 4.9 needs D8. 4.10 last.
+needs D6; 4.8 needs D5 and D7. 4.9 last.
+
+## After Phase 4: the pack application
+
+John's idea (2026-10-30): a separate application, in the packs repository
+and entirely apart from Compromise Checker, that watches public sources for
+new threats, proposes packs, gets a person's approval through a web
+interface, and then uses AI to write them. It gets its own build plan,
+started after Phase 4. What that plan starts from (agreed in outline):
+
+- **Feeds, not scraping:** CISA's Known Exploited Vulnerabilities list,
+  OSV, Ubuntu's and Red Hat's security data (OVAL/CSAF), the NVD API.
+- **Versions from vendor data, never from the AI.** Fixed versions are
+  filled in mechanically from the vendors' structured data; the AI writes
+  the prose and proposes detections, and every draft is checked with the
+  tool's own pack format (done means 10). Fetched advisories are
+  untrusted text, as host text is to the advisor.
+- **Approval before spending:** the AI drafts only threats a person has
+  approved in the web interface.
+- **Signing stays by hand.** The web interface approves drafts; it can't
+  sign them. John signs each release on his own machine after seeing what
+  changed, so a compromised web interface can't publish a pack.
+- **No customer evidence**, ever: it reads only public data.
+- **Its relation to the CVE response orchestrator** (a separate product
+  idea with the same core: watching advisories, triage, human approval)
+  to be settled in that plan.

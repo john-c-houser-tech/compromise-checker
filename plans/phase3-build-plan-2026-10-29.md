@@ -361,9 +361,9 @@ The advisor's answers can't be golden-tested, so they are measured.
   The first run set aside 5 of 8 remediation answers: false positives in
   the checks (times read as IPv6, dates as phone numbers, descriptions as
   instructions); narrowed and replayed on the stored answers, then a live
-  remediation rerun passed 8 of 8. Cost: run 1 \$5.16 (32 requests), the
-  diagnostic rerun \$1.53, the confirming rerun \$1.62; Phase 3 to date
-  about \$8.54 of \$25. The cache holds only the system prompt across roles
+  remediation rerun passed 8 of 8. Cost: run 1 $5.16 (32 requests), the
+  diagnostic rerun $1.53, the confirming rerun $1.62; Phase 3 to date
+  about $8.54 of $25. The cache holds only the system prompt across roles
   (about 1 600-2 700 tokens): each role's answer schema differs.
 
 ### 3.7 — Triage model and local models

@@ -252,6 +252,10 @@ rule has expired since, the next report applies the current one to the
 stored findings and scores them again (the checks don't run again), as a
 new assessment; the earlier one is kept.
 
+A path or exe pattern made of wildcards alone (`/**`, `/*/**`, `/**/*`)
+matches every path: a rule with one needs `broad: true`, as one naming
+nothing does.
+
 ## Proposals from the AI advisor
 
 `checker advise HOST --role whitelist` asks the optional advisor
@@ -263,16 +267,23 @@ turned back into names, and offered only when:
 - it is a valid rule (the same model as these files) that narrows its
   check, expires within 90 days, and has an id no whitelist it could join
   uses;
-- its check isn't one that can raise a critical finding (`account.uid0`,
-  `kernel.taint`, `package.changed`, `persistence.ld_preload`,
-  `process.hidden`): a rule for one could hide a critical finding later,
-  so those are written only by hand;
-- it hides every finding it names, none already suppressed, none
-  **critical** or **part of a chain** (only by hand: Phase 3 decision 7),
-  all of one variant, which the rule names;
-- it is exact: a path or exe pattern only when several named findings need
-  it, no wider than their common directory; a network only when several
-  named addresses need it, no wider than /24 (/64);
+- the host isn't assessed High or Critical and has no chain: tidying
+  noise is for a host that looks clean;
+- its check is not written only by hand: the checks that can raise a
+  critical finding (`account.uid0`, `kernel.taint`, `package.changed`,
+  `persistence.ld_preload`, `process.hidden`), every check a chain is made
+  of (a suppressed finding takes no part in a chain, so a rule could stop
+  one forming), and `web.exploit` (what an attack was isn't one of its
+  entities);
+- it hides every finding it names, none already suppressed, critical or
+  part of a chain (Phase 3 decision 7), all of one variant, which the rule
+  names;
+- it names every kind of entity its findings carry (account, address,
+  path, exe…), with the findings' exact values; a pattern only when several
+  named findings in one directory need it, `*` or `?` in its last part
+  only, never `**` and never a last part of wildcards alone; a network only
+  when several named addresses need it, no wider than /24 (/64); an
+  interpreter (`python3`, `bash`, `node`…) as exe only with an account;
 - it hides nothing else in any stored analysis of the host, and, for a
   group rule, of any host in the group, and nothing critical or chained
   there either.

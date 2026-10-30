@@ -200,7 +200,9 @@ class Match(BaseModel):
                 continue
             if name == "address" and ipaddress.ip_network(value).prefixlen == 0:
                 continue
-            if name in PATTERN_FIELDS and all(s == "**" for s in value.strip("/").split("/")):
+            # A pattern of wildcards alone (/**, /*/**, /**/*) is every path.
+            segments = value.strip("/").split("/")
+            if name in PATTERN_FIELDS and all(set(s) <= {"*"} for s in segments):
                 continue
             return True
         return False

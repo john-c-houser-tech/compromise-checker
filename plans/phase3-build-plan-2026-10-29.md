@@ -250,6 +250,15 @@ assessment, its events, snapshot and whitelist, by one module
 - **Tests:** proposals that are too broad, name unknown findings, use a
   field the rule model doesn't have, or touch a protected check are all
   rejected; a correct proposal hides exactly its findings.
+- **As built after two adversarial reviews (2026-10-29):** no proposals
+  while the host is assessed High or Critical or has a chain; hand-only
+  checks (those that can raise critical findings, every chain step,
+  web.exploit); the rule names every entity kind its findings carry and
+  their variant; patterns only for several findings in one directory, last
+  part only, no `**`; networks no wider than /24 (/64); interpreter exes
+  only with an account; twins elsewhere compared by check, variant, title
+  and entities; the file's comments escaped and the file read back as
+  exactly the accepted rules before it is kept; files in `proposals/`.
 
 ### 3.4 — Role 3: further collection and coverage
 

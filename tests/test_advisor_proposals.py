@@ -59,10 +59,10 @@ def proposal(findings=("F-1",), layer="host", id="deploy-office", days=30, **mat
     }
 
 
-def judged(*proposals, others=(), group_others=(), rule_ids=(), group=None):
+def judged(*proposals, others=(), group_others=(), rule_ids=(), group=None, chains=(), band="Low"):
     return judge(
-        list(proposals), FINDINGS, CHAINS, [], list(others), list(group_others),
-        set(rule_ids), TODAY, group,
+        list(proposals), FINDINGS, list(chains), [], list(others), list(group_others),
+        set(rule_ids), TODAY, group, band,
     )  # fmt: skip
 
 
@@ -87,13 +87,13 @@ def test_a_narrow_rule_is_offered():
         (proposal(days=0), "1 to 90 days"),
         (proposal(["F-3"], match=None) if False else {**proposal(["F-3"]), "match": {
          "check": "account.uid0", "account": "toor"}}, "only by hand"),
-        ({**proposal(["F-4"]), "match": {"check": "sudo.rules", "account": "eve"}},
-         "F-4 is part of a chain"),
+        ({**proposal(["F-4"]), "match": {"check": "sudo.rules", "account": "eve",
+          "path": "/etc/sudoers"}}, "only by hand"),
         (proposal(["F-5"], address="192.0.2.9/32", account="ops"), "already suppressed"),
         (proposal(["F-9"]), "F-9 isn't a finding"),
         (proposal(["F-1"], address="203.0.113.5/32", account="someone"), "doesn't hide F-1"),
         (proposal(["F-1"], address="128.0.0.0/1", account=None),
-         "network where the single address"),
+         "must name the findings' account"),
         ({**proposal(), "match": {"check": "nope", "account": "deploy"}}, "no check 'nope'"),
         ({**proposal(), "id": "Has Spaces"}, "lower-case letters"),
         (proposal(layer="group"), "the host is in none"),
@@ -159,14 +159,23 @@ def test_no_file_when_nothing_is_offered(tmp_path):
 
 
 @pytest.fixture
-def sudo_host(enabled):
-    base, store, identity, config = enabled
+def sudo_host(home):
+    """A quiet host (Low) whose second collection has a new listener."""
+    from checker.settings import change
+
+    base, store, identity, config = home
+    change(base, "advisor.enabled", "on")
+    add_bundle(home, "b1", 0, host_records())
     cli.main(["analyze", "web01"])
-    add_bundle(enabled, "b2", 10, host_records(
-        accounts=(("root", 0), ("jch", 1000), ("toor", 0)),
-        sudoers="root ALL=(ALL) ALL\njch ALL=(ALL) ALL\n",
-    ))  # fmt: skip
-    return enabled
+    add_bundle(home, "b2", 10, host_records(listening=(
+        ("tcp", ["0.0.0.0", 22], "listen", 700), ("tcp", ["0.0.0.0", 8080], "listen", 701),
+    )))  # fmt: skip
+    return home
+
+
+@pytest.fixture
+def compromised_host(enabled):
+    return enabled  # toor has UID 0: Critical
 
 
 def whitelist_reply(pick):
@@ -186,13 +195,14 @@ def whitelist_reply(pick):
 
 
 def sudo_rule(case):
-    sudo = next(f for f in case["findings"] if f["check"] == "sudo.rules")
-    account = next(e for e in sudo["from_host"]["entities"] if e.startswith("account:"))
+    """A rule for the new listener (the name kept from an earlier version)."""
+    found = next(f for f in case["findings"] if f["check"] == "net.listener")
+    entities = dict(e.split(":", 1) for e in found["from_host"]["entities"])
     return [{
-        "findings": [sudo["id"]], "layer": "host", "id": "jch-admin",
-        "match": {"check": "sudo.rules", "account": account.removeprefix("account:"),
-                  "path": "/etc/sudoers"},
-        "reason": "jch is the administrator.", "expires_in_days": 60,
+        "findings": [found["id"]], "layer": "host", "id": "app-listener",
+        "match": {"check": "net.listener", "address": entities["address"] + "/32",
+                  "account": entities["account"]},
+        "reason": "The app listens on 8080.", "expires_in_days": 60,
     }]  # fmt: skip
 
 
@@ -212,29 +222,30 @@ def test_an_accepted_proposal_is_written_with_real_names(sudo_host):
     advice = run(sudo_host, provider, role="whitelist")
     assert advice.status == "answered", advice.note
     sent = json.dumps(provider.sent()[0])
-    assert "jch" not in sent and TOKEN.search(sent)  # it left pseudonymized
+    assert "web01" not in sent and TOKEN.search(sent)  # it left pseudonymized
     (item,) = advice.judged
     assert item.accepted, item.reason
     text = advice.file.read_text()
-    assert "account: jch" in text and not TOKEN.search(text)  # restored
+    assert "account: root" in text and "address: 0.0.0.0/32" in text
+    assert not TOKEN.search(text) and "web01" in text  # restored
     assert advice.file.parent == base / "proposals"
     assert not (base / "whitelist" / "hosts" / "web01.yaml").exists()  # nothing applied
 
 
-def test_a_proposal_to_hide_a_critical_finding_is_never_offered(sudo_host):
-    advice = run(sudo_host, Provider(whitelist_reply(critical_rule)), role="whitelist")
+def test_a_proposal_to_hide_a_critical_finding_is_never_offered(compromised_host):
+    advice = run(compromised_host, Provider(whitelist_reply(critical_rule)), role="whitelist")
     (item,) = advice.judged
-    assert not item.accepted and "critical" in item.reason
+    assert not item.accepted and "until it has been investigated" in item.reason
     assert advice.file is None
 
 
 def test_checker_advise_role_whitelist(sudo_host, capsys, monkeypatch):
-    provider = Provider(whitelist_reply(lambda c: sudo_rule(c) + critical_rule(c)))
+    provider = Provider(whitelist_reply(lambda c: sudo_rule(c) + sudo_rule(c)))
     monkeypatch.setattr(advise_module, "make_client", lambda key: provider.client())
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x" + "y" * 30)
     assert cli.main(["advise", "web01", "--role", "whitelist", "--yes"]) == 0
     out = capsys.readouterr().out
-    assert "Proposed: jch-admin" in out and "Set aside: toor-ok" in out
+    assert "Proposed: app-listener" in out and "Set aside: app-listener" in out
     assert "nothing is in effect until" in out
     assert re.search(r"written to .*proposals/web01-\d{8}T\d{6}Z\.yaml", out)
 
@@ -243,13 +254,13 @@ def test_the_report_lists_the_proposals(sudo_host):
     from checker.report import write_report
 
     base, store, identity, config = sudo_host
-    run(sudo_host, Provider(whitelist_reply(lambda c: sudo_rule(c) + critical_rule(c))),
+    run(sudo_host, Provider(whitelist_reply(lambda c: sudo_rule(c) + sudo_rule(c))),
         role="whitelist")  # fmt: skip
     html = write_report(store, ["web01"], identity, load_config(base).recipients,
                         base / "reports").read_text()  # fmt: skip
     section = html.split("whitelist proposals (not in effect)")[1].split("</div>")[0]
     assert "1 proposed" in section and "1 set aside" in section
-    assert "jch-admin" in section and "critical" in section
+    assert "app-listener" in section and "already used" in section
 
 
 # --- What the review of 3.3 found ---------------------------------------------------------------
@@ -343,9 +354,9 @@ def path_proposal(names, pattern):
     ("paths", "names", "pattern", "why"),
     [
         (["/var/www/app/a.php"], ["F-1"], "/var/www/app/*", "pattern where the exact value"),
-        (["/var/www/app/a.php", "/var/www/app/b.php"], ["F-1", "F-2"], "/var/**", "reaches above"),
+        (["/var/www/app/a.php", "/var/www/app/b.php"], ["F-1", "F-2"], "/var/**", "uses **"),
         (["/var/www/app/*"], ["F-1"], "/var/www/app/*", "holds a wildcard character"),
-        (["/usr/share/doc/foo/README"], ["F-1"], "/usr/**", "pattern where the exact value"),
+        (["/usr/share/doc/foo/README"], ["F-1"], "/usr/**", "uses **"),
     ],
 )
 def test_patterns_must_be_needed_and_no_wider(paths, names, pattern, why):
@@ -356,7 +367,7 @@ def test_patterns_must_be_needed_and_no_wider(paths, names, pattern, why):
 
 def test_a_pattern_several_findings_need_is_offered():
     findings = [path_finding(p, p) for p in ("/var/www/app/a.php", "/var/www/app/b.php")]
-    (result,) = judge([path_proposal(["F-1", "F-2"], "/var/www/app/*")], findings, [], [], [],
+    (result,) = judge([path_proposal(["F-1", "F-2"], "/var/www/app/*.php")], findings, [], [], [],
                       [], set(), TODAY)  # fmt: skip
     assert result.accepted, result.reason
 
@@ -427,3 +438,102 @@ def test_a_proposal_file_doesnt_break_whitelist_check(sudo_host, capsys):
     run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
     assert list((sudo_host[0] / "proposals").iterdir())
     assert cli.main(["whitelist", "check"]) == 0
+
+
+# --- What the second review of 3.3 found --------------------------------------------------------
+
+
+def test_chain_steps_are_hand_only_worked_out_from_the_chains():
+    from checker.advisor.proposals import CHAIN_CHECKS, HAND_ONLY
+    from checker.correlate import CHAINS as DEFINED
+
+    steps = {check for chain in DEFINED for step in chain.steps for check, _ in step.kinds}
+    assert steps and steps == CHAIN_CHECKS and steps <= HAND_ONLY
+    assert {"web.new_script_hit", "web.worker_child", "sudo.rules", "ssh.guessed"} <= HAND_ONLY
+    assert "web.exploit" in HAND_ONLY
+
+
+def test_no_proposals_for_a_host_that_may_be_compromised():
+    for kwargs in ({"band": "High"}, {"band": "Critical"}, {"chains": CHAINS}):
+        (result,) = judged(proposal(), **kwargs)
+        assert not result.accepted and "until it has been investigated" in result.reason
+
+
+@pytest.mark.parametrize(
+    ("paths", "pattern", "why"),
+    [
+        (["/tmp/a.sh", "/var/tmp/b.sh"], "/**/*", "matches every finding of its check"),
+        (["/tmp/a.sh", "/var/tmp/b.sh"], "/*/*", "matches every finding of its check"),
+        (["/tmp/a.sh", "/srv/b.sh"], "/*/*.sh", "wildcard above its last part"),
+        (["/var/www/app/a.php", "/var/www/app/b.php"], "/var/www/app/**", "uses **"),
+        (["/var/www/app/a.php", "/var/www/app/b.php"], "/var/www/app/*", "wildcards alone"),
+        (["/var/www/app/a.php", "/var/www/app/b.php"], "/var/www/app/*.php", None),
+        (["/var/www/app/a.php", "/var/www/app/b.php"], "/var/www/app/?.php", None),
+    ],
+)
+def test_patterns_stay_in_one_directory_last_part_only(paths, pattern, why):
+    findings = [path_finding(p, p) for p in paths]
+    names = [f"F-{i + 1}" for i in range(len(findings))]
+    (result,) = judge([path_proposal(names, pattern)], findings, [], [], [], [], set(), TODAY)
+    if why is None:
+        assert result.accepted, result.reason
+    else:
+        assert not result.accepted and why in result.reason, result.reason
+
+
+def test_wildcard_only_patterns_are_broad_for_hand_rules_too():
+    from checker.whitelist import Match
+
+    for pattern in ("/**", "/*/**", "/**/*", "/*"):
+        assert not Match(check="files.scratch", path=pattern).narrow(), pattern
+    assert Match(check="files.scratch", path="/boot/efi/**").narrow()
+
+
+def test_every_entity_kind_the_findings_carry_must_be_named():
+    (result,) = judged(proposal(address=None, account="deploy"))
+    assert "must name the findings' address" in result.reason
+
+
+def test_a_named_network_wider_than_24_is_refused():
+    wide = finding("ssh.login", "medium", ["address:2001:db8:1::/48", "account:deploy"],
+                   "2001:db8:1::/48", "new_address")  # fmt: skip
+    (result,) = judge([proposal(["F-1"], address="2001:db8:1::/48", account="deploy")], [wide],
+                      [], [], [], [], set(), TODAY)  # fmt: skip
+    assert "wider than /64" in result.reason
+
+
+def test_an_interpreter_needs_an_account():
+    from checker.advisor.proposals import _exactness, _rule
+
+    rule = _rule({"id": "py", "match": {"check": "process.executable", "exe": "/usr/bin/python3"},
+                  "reason": "r", "expires_in_days": 5}, TODAY)  # fmt: skip
+    assert "interpreter" in _exactness(
+        rule, [finding("process.executable", "medium", ["exe:/usr/bin/python3"], "x")]
+    )
+
+
+def test_a_twin_elsewhere_must_have_the_same_title_too():
+    other = dict(FINDINGS[0], title="Another kind of finding")
+    original = dict(FINDINGS[0], title="Logins from an address never seen before")
+    findings = [original] + FINDINGS[1:]
+    results = judge([proposal()], findings, [], [], [{"findings": [other]}], [], set(), TODAY)
+    assert "would also hide" in results[0].reason
+
+
+def test_long_reasons_stay_on_one_line(tmp_path):
+    reason = "routine " * 40 + "# hides F-2: and F-3"
+    path = write_file(tmp_path, "web01", None, judged({**proposal(), "reason": reason}), "now")
+    lines = path.read_text().split("\n")
+    comments = [line for line in lines if line.lstrip().startswith("#")]
+    assert not any("F-3" in line for line in comments)
+    # Unfolded: a folded continuation line could read like a comment.
+    assert any(reason.strip() in line for line in lines)
+
+
+def test_a_linked_proposals_directory_is_refused(tmp_path):
+    from checker.advisor.proposals import ProposalFileError
+
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "proposals").symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(ProposalFileError, match="is a link"):
+        write_file(tmp_path, "web01", None, judged(proposal()), "now")

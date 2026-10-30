@@ -222,7 +222,16 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home)
 
     others = assessments(host, skip=which["bundle_id"])
     group_others: list[dict] = []
-    rule_ids = {placed.rule.id for placed in whitelist.rules} if whitelist else set()
+
+    def ids(whitelist) -> set[str]:
+        """Every id a rule could clash with when copied in: rules, windows,
+        and the ones a layer disables."""
+        if whitelist is None:
+            return set()
+        found = {placed.rule.id for placed in [*whitelist.rules, *whitelist.windows]}
+        return found | {str(d.get("id")) for d in whitelist.disabled}
+
+    rule_ids = ids(whitelist)
     if group:
         for entry in inventory.hosts:
             if entry.group == group and entry.name != host:
@@ -231,8 +240,7 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home)
                     theirs = whitelist_for_host(base, entry.name, inventory)
                 except WhitelistError:
                     theirs = None
-                if theirs:
-                    rule_ids |= {placed.rule.id for placed in theirs.rules}
+                rule_ids |= ids(theirs)
     judged = judge(
         answer.get("proposals") or [],
         report.assessment["findings"],
@@ -242,6 +250,7 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home)
         group_others,
         rule_ids,
         group=group,
+        band=which["band"],
     )
     written = write_file(base, host, group, judged, datetime.now(UTC).strftime("%Y-%m-%d %H:%M"))
     return judged, written

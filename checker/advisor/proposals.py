@@ -41,20 +41,38 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from checker.correlate import CHAINS
 from checker.report import visible
 from checker.whitelist import Rule, matches
 
 MAX_DAYS = 90
 OWNER_PLACEHOLDER = "proposal"  # only for validating; the file leaves it empty
-# Checks that can raise a critical finding (tests/test_advisor_proposals.py
-# keeps this list complete): their rules are only ever written by hand.
-HAND_ONLY = {
+# Checks whose rules are only ever written by hand:
+# - those that can raise a critical finding (tests/test_advisor_proposals.py
+#   keeps the list complete): a rule could hide one later;
+# - every check a chain is made of: a suppressed finding takes no part in a
+#   chain (correlate.find_chains), so a rule could stop one forming later;
+# - web.exploit: what an attack was isn't one of its entities, so a rule for
+#   a refused scan would hide a later answered one from the same network.
+CRITICAL_CHECKS = {
     "account.uid0",
     "kernel.taint",
     "package.changed",
     "persistence.ld_preload",
     "process.hidden",
 }
+CHAIN_CHECKS = {check for chain in CHAINS for step in chain.steps for check, _ in step.kinds}
+HAND_ONLY = CRITICAL_CHECKS | CHAIN_CHECKS | {"web.exploit"}
+# Entity kinds a rule must name when its findings carry them (program is a
+# process's own name, which it sets itself: it narrows nothing).
+MUST_NAME = ("account", "group", "key", "module", "package", "address", "path", "exe",
+             "container", "image")  # fmt: skip
+# Interpreters run whatever script they are given: as an exe they narrow
+# nothing by themselves.
+INTERPRETERS = re.compile(
+    r"(?:^|/)(?:python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|node(?:js)?|java|php[0-9.]*(?:-fpm)?"
+    r"|bash|dash|sh|zsh|ksh|busybox|lua[0-9.]*|deno|bun)$"
+)
 FINDING_ID = re.compile(r"F-([1-9][0-9]{0,5})")
 WILDCARDS = re.compile(r"[*?]")
 WIDEST = {4: 24, 6: 64}  # the widest network a proposal may name
@@ -104,16 +122,21 @@ def _entities(finding: dict[str, Any], kind: str) -> list[str]:
 
 
 def _identity(finding: dict[str, Any]) -> tuple:
-    """A finding the same as another, wherever it was found."""
+    """A finding the same as another, wherever it was found: its check,
+    variant, title (what kind of thing it is) and entities."""
     return (
         finding.get("check"),
         finding.get("variant"),
-        tuple(sorted(finding.get("entities") or [])),
+        finding.get("title"),
+        tuple(sorted(str(e) for e in finding.get("entities") or [])),
     )
 
 
 def _exactness(rule: Rule, named: list[dict[str, Any]]) -> str | None:
     """Why the rule is wider than its findings need, or None."""
+    for kind in MUST_NAME:
+        if any(_entities(f, kind) for f in named) and getattr(rule.match, kind) is None:
+            return f"it must name the findings' {kind} (they carry one)"
     for kind in ("path", "exe"):
         pattern = getattr(rule.match, kind)
         values = [v for f in named for v in _entities(f, kind)]
@@ -121,22 +144,28 @@ def _exactness(rule: Rule, named: list[dict[str, Any]]) -> str | None:
             return f"a named {kind} holds a wildcard character itself: only by hand"
         if pattern is None or not WILDCARDS.search(pattern):
             continue
+        if "**" in pattern:
+            return f"its {kind} pattern uses **: only by hand"
         if len(set(values)) < 2:
             return f"its {kind} is a pattern where the exact value does"
-        fixed = pattern.split("*")[0].split("?")[0].rsplit("/", 1)[0] or "/"
-        common = posixpath.commonpath([posixpath.dirname(v) for v in values])
-        if len(fixed.rstrip("/")) < len(common.rstrip("/")):
-            return f"its {kind} pattern reaches above {common}, the findings' own directory"
+        directory, _, last = pattern.rpartition("/")
+        if WILDCARDS.search(directory):
+            return f"its {kind} pattern has a wildcard above its last part"
+        if {posixpath.dirname(v) for v in values} != {directory}:
+            return f"its {kind} pattern must stay in the findings' one directory"
+        if not last.strip("*?"):
+            return f"its {kind} pattern's last part is wildcards alone"
+    exe = rule.match.exe
+    if exe is not None and INTERPRETERS.search(exe) and rule.match.account is None:
+        return "its exe is an interpreter, which runs any script: name the account too"
     if rule.match.address is not None:
         network = ipaddress.ip_network(rule.match.address)
+        if network.prefixlen < WIDEST[network.version]:
+            return f"its network is wider than /{WIDEST[network.version]}"
         if network.prefixlen < network.max_prefixlen:
             values = [v for f in named for v in _entities(f, "address")]
-            if rule.match.address in values:
-                return None  # the finding is about that network
-            if len(set(values)) < 2:
+            if rule.match.address not in values and len(set(values)) < 2:
                 return "its address is a network where the single address does"
-            if network.prefixlen < WIDEST[network.version]:
-                return f"its network is wider than /{WIDEST[network.version]}"
     return None
 
 
@@ -167,6 +196,7 @@ def judge(
     rule_ids: set[str],
     today: date | None = None,
     group: str | None = None,
+    band: str | None = None,
 ) -> list[Judged]:
     """`findings` are the assessment's (F-n is findings[n-1]); `others` are
     the host's other stored assessments, `group_others` those of the other
@@ -174,6 +204,14 @@ def judge(
     today = today or datetime.now(UTC).date()
     in_chain = {i for chain in chains for i in chain.get("findings") or []}
     results, taken = [], set(rule_ids)
+    if band in ("High", "Critical") or chains:
+        # Tidying noise is for a host that looks clean: on one that may be
+        # compromised, a rule hides most where it matters most.
+        why = "the host is assessed " + (band if band in ("High", "Critical") else "with a chain")
+        return [
+            Judged(p, False, f"{why}: no proposals until it has been investigated")
+            for p in proposals
+        ]
     for proposal in proposals:
         try:
             rule = _rule(proposal, today)
@@ -303,12 +341,14 @@ def write_file(
         lines += ["", f"  # for {target}"]
         for hidden in item.hides:
             lines.append(f"  # hides {_comment(hidden)}")
-        body = yaml.safe_dump([item.rule], sort_keys=False, allow_unicode=False)
+        body = yaml.safe_dump([item.rule], sort_keys=False, allow_unicode=False, width=float("inf"))
         lines += ["  " + line for line in body.rstrip("\n").split("\n")]
     text = "\n".join(lines) + "\n"
     if yaml.safe_load(text) != {"rules": [item.rule for item in accepted]}:
         raise ProposalFileError("the proposal file didn't read back as the accepted rules")
     directory = proposals_directory(home)
+    if directory.is_symlink():
+        raise ProposalFileError(f"{directory} is a link: proposals aren't written through one")
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(directory, 0o700)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")

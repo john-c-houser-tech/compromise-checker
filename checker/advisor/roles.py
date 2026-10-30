@@ -127,24 +127,28 @@ class WhitelistAnswer(BaseModel):
     )
 
 
-WHITELIST_QUESTION = (
-    "Propose whitelist rules for findings that are routine for this host: expected "
-    "behaviour the evidence explains (a known deploy account, a monitoring agent, a "
-    "package's own account). Each rule is as narrow as the evidence allows: its check "
-    "(and the findings' variant), plus values copied exactly from the findings' entities "
-    "(kind:value) for account, group, key, module, package, program, address, path and "
-    "exe, container and image (only together). Use the exact value; a network (host bits "
-    "zero) or a pattern (* within one directory, ** across) only when several named "
-    "findings need it, no wider than they need. Give the findings each rule should hide, "
-    "a layer (host, or group for what every host in the group does), an id, a reason a "
-    "reviewer can check, and an expiry of at most 90 days. A rule must hide only the "
-    "findings it names. Critical findings and findings that are part of a chain are never"
-    " whitelisted by proposal, nor are the checks that can raise critical findings "
-    "(account.uid0, kernel.taint, package.changed, persistence.ld_preload, "
-    "process.hidden); neither are suppressed findings. Propose nothing when nothing is "
-    "routine, and list under left_alone the findings that might look routine but should "
-    "stay visible."
-)
+def _whitelist_question() -> str:
+    from checker.advisor.proposals import HAND_ONLY
+
+    return (
+        "Propose whitelist rules for findings that are routine for this host: expected"
+        " behaviour the evidence explains (a known deploy account, a monitoring agent, a"
+        " package's own account). Each rule is as narrow as the evidence allows: its check"
+        " and the findings' variant, plus every entity kind the findings carry (account,"
+        " group, key, module, package, address, path, exe, container, image), copied"
+        " exactly. Use exact values; a pattern only when several named findings in one"
+        " directory need it, with * or ? in its last part only; a network (host bits"
+        " zero, no wider than /24) only when several named addresses need it. Give the"
+        " findings each rule should hide, a layer (host, or group for what every host in"
+        " the group does), an id, a reason a reviewer can check, and an expiry of at most"
+        " 90 days. A rule must hide only the findings it names. Never proposed: rules for"
+        " critical findings, findings in a chain or suppressed ones, rules for these"
+        f" checks: {', '.join(sorted(HAND_ONLY))}, and any rule while the host is"
+        " assessed High or Critical or has a chain. Propose nothing when nothing is"
+        " routine, and list under left_alone the findings that might look routine but"
+        " should stay visible."
+    )
+
 
 ROLES = {
     "explain": (
@@ -154,8 +158,13 @@ ROLES = {
         " important findings and why; plausible innocent explanations for findings where"
         " there are any; and the questions or checks that would settle it.",
     ),
-    "whitelist": (WhitelistAnswer, WHITELIST_QUESTION),
+    "whitelist": (WhitelistAnswer, None),  # the question: _whitelist_question()
 }
+
+
+def question(role: str) -> str:
+    _, text = ROLES[role]
+    return text if text is not None else _whitelist_question()
 
 
 class InvalidAnswer(Exception):

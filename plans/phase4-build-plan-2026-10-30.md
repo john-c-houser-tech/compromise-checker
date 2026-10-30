@@ -406,6 +406,13 @@ is John's to approve before it is committed. Also:
     so with every pool locked a site's `.user.ini` there is wrongly left
     out; the judge sees settings and files, not which packages provide
     php-cgi.
+- **Read-only proof (2026-10-30, after the review fixes): PASSED** on
+  ubuntu24.04 and rocky9. The collector wrote nothing; the planted
+  `/var/www/proof/.user.ini` and `.htaccess` were collected on both
+  (`.user.ini` with its secret-named setting masked, `.htaccess` down to
+  its `php_flag` line), the planted secret appeared nowhere in the
+  bundles, and `php_settings` was complete on both. Both servers deleted.
+  Spend: about $0.01 (Phase 4 so far: about $0.02 of the $10 cap).
 
 ### 4.5 — Detections
 

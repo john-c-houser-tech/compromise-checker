@@ -129,7 +129,7 @@ baseline <span class="mono">{{ r.assessment.baseline_id|visible(120) }}</span>{%
 {% set s = r.assessment.score %}
 <h3>Probability of compromise</h3>
 <p class="scoreline"><span class="score {{ s.band|lower }}">{{ s.probability|percent }} · {{ s.band }}</span>
-<span class="muted">from a prior of {{ s.prior|percent }} ({{ s.prior_source|visible(60) }});
+<span class="muted">from a prior of {{ s.prior|percent }} ({{ s.prior_source|visible(60) }}){% if s.raised_prior %}, raised to {{ s.raised_prior|percent }} by exposure to {% for b in s.raised_by %}{{ b.pack|visible(80) }} v{{ b.version }} ({{ (b.share * 100)|round|int }}% of its window, at most){% if not loop.last %}, {% endif %}{% endfor %}{% endif %};
 {{ r.assessment.coverage.gaps|length }} coverage gap(s) below. Hygiene and exposure, rated separately: {{ s.hygiene_and_exposure.band }}.</span></p>
 {% if s.contributors %}
 <div class="wrap"><table>
@@ -143,7 +143,7 @@ baseline <span class="mono">{{ r.assessment.baseline_id|visible(120) }}</span>{%
 <p class="muted">Findings about the same file or process count once in full; one check's repeated findings add at most a doubling;
 "capped" marks a finding a cap cut;
 uncertain findings count half. Suppressed and informational findings don't count.</p>
-{% else %}<p class="muted">No compromise indicators: the probability is the prior.</p>{% endif %}
+{% else %}<p class="muted">No compromise indicators: the probability is the prior{% if s.raised_prior %}, as raised{% endif %}.</p>{% endif %}
 
 <h3>Compromise indicators</h3>
 {% set shown = r.findings.get("compromise indicator", [])|rejectattr("band", "equalto", "info")|list %}

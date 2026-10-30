@@ -38,7 +38,7 @@ from checker.baseline import USABLE, usable_bundles
 from checker.checks import BANDS, CATEGORIES, CHECKS_VERSION
 from checker.correlate import find_chains
 from checker.evidence import EvidenceError, Store, open_text, who_and_where
-from checker.scoring import DEFAULT_PRIOR, percent, score
+from checker.scoring import DEFAULT_PRIOR, percent, prior_raise_of, score
 from checker.snapshot import Snapshot
 from checker.whitelist import Whitelist, reapply
 
@@ -236,7 +236,11 @@ def reassess(
     again["analysed_at"] = datetime.now(UTC).isoformat()
     again["whitelist"] = reapply(again["findings"], whitelist, events=events)
     chains = find_chains(again["findings"], events, assessment.get("previous_time"))
-    again["score"] = score(again["findings"], prior[0], chains) | {
+    # Exposure to the packs' threats raised the prior when it was analysed:
+    # the same raise, whatever the prior is now.
+    raised_by = assessment["score"].get("raised_by") or []
+    raised = prior_raise_of(raised_by)
+    again["score"] = score(again["findings"], prior[0], chains, raised, raised_by) | {
         "prior_source": prior[1],
         "chains": chains,
     }

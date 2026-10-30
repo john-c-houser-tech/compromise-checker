@@ -90,6 +90,12 @@ class Context:
     # What a check couldn't judge, for the assessment's coverage (checks add
     # to it as they run).
     gaps: list[str] = field(default_factory=list)
+    # Threat packs in force (checker.packs.format.Pack), when the bundle was
+    # collected (controller clock), and each pack's exposure judged once
+    # (checker.packs.exposure), for the pack check and the prior.
+    packs: list[Any] = field(default_factory=list)
+    collected_at: str | None = None
+    exposures: list[Any] = field(default_factory=list)
 
     def of(self, *types: str) -> Iterator[tuple[int, Event]]:
         """(index, event) for events of these types (or type prefixes ending
@@ -180,6 +186,7 @@ def load_checks() -> dict[str, Check]:
         kernel,
         mail,
         network,
+        packs,
         persistence,
         processes,
         reboots,

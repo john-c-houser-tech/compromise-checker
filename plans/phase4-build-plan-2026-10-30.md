@@ -179,6 +179,19 @@ is John's to approve before it is committed. Also:
   his machine, and the first key list signed with the root key (I'll give
   the exact commands).
 
+- *As built (4.2, #80):* `checker/packs/signing.py` (minisign, prehashed
+  only, trusted comment under its global signature, UTF-8 comments),
+  `trust.py` (root key, key list kept whole per serial in
+  `packs/keylists/<serial>/`, highest serial recorded; a damaged or
+  missing kept list trusts no NouriLoop key), `state.py`
+  (`packs/state.json`: per pack id its signing domain, highest version
+  and every version's hash, so no rollback, changed content or takeover
+  even after a retire), `store.py` (active and retired packs, retired
+  files named by content hash). Organization keys can't be revoked or
+  root keys; two trusted keys sharing an id are both refused.
+  `ROOT_KEYS` is empty until 4.8. Not yet: interoperability with the real
+  minisign (at 4.8, with John's).
+
 ### 4.3 — Exposure
 
 - An installed package that matches several entries (one with no
@@ -201,6 +214,46 @@ is John's to approve before it is committed. Also:
 - The prior raised for a host exposed during the window (D3), shown in the
   report with the pack, the exposure and the formula's result.
 - The report's timeline marks the window.
+- *As built (4.3):* `checker/packs/exposure.py` judges each pack once per
+  analysis (host release from os-release: Ubuntu by version, RHEL,
+  Rocky and AlmaLinux by major version; packages by manager, binary name
+  and `versions` pattern; vulnerable if any matching entry says so; an
+  unreadable version is "can't judge", counted as exposed). The check
+  `pack.exposure` (variants vulnerable, cant_judge, was_exposed,
+  stale_code) reports in the exposure category; a release a pack doesn't
+  cover is a coverage gap. The prior's log-odds rise by each exposure's
+  share of log(ratio), all of them together at most log(10); the score
+  keeps `raised_prior` and `raised_by`, a re-score keeps the raise, and
+  the report says "raised to … by exposure to …". The analysis records
+  the packs applied. **The fix time is an upper limit** (a side note John
+  relayed, 2026-10-30): the collector has no package history (apt's,
+  dpkg's, dnf's logs), only each package's last install time, so a
+  routine update after the fix stretches the exposure; findings and the
+  report say "at the latest", and stale code is "may still run" (medium).
+  Not done: the timeline marking the window (with 4.6's report changes).
+  Package history: John said yes (2026-10-30), collected alongside 4.4.
+- **After review (4.3; 2 high, 6 medium, 7 low):** an installed epoch the
+  pack's fix doesn't write (1:8.3.6…5 against 8.3.6…6) read as fixed: now
+  "can't judge", and `versions` patterns match with or without the epoch.
+  A service still on pre-fix code didn't extend the exposure: now the host
+  stays exposed (share 1) while one runs, and a program file replaced
+  under a service counts whatever its start. One fixed package with an
+  unknown install time now makes the fix time unknown (exposed); an
+  impossible install time can't break the analysis; a package listing
+  collected only in part is "can't judge" (exposed), not "not affected";
+  a build from another repository that sorts above the vendor's fix
+  (Remi, Sury with no entry of its own) is "can't judge" unless it
+  carries the fix's vendor mark (`ubuntu`, `.elN`). Whitelist rules for
+  `pack.exposure` must name the pack (new `pack` field), so one pack's
+  rule can't hide a later pack's findings. Smaller: an entry with no fix
+  wins over an unreadable version; the raise is stored exactly
+  (`log_raise`) for re-scores; a naive collection time is UTC; stale
+  services are one finding per pack, not per worker; the wording when the
+  window closed before the fix, or the time is unknown; a release not
+  covered names the OS. Still to do, with package history (4.4b): earlier
+  collections' package listings as history (a package removed during the
+  window; a fix seen in an earlier bundle bounds the fix time), and
+  kernels judged by the running kernel (a design note for kernel packs).
 
 ### 4.4 — Mitigations
 

@@ -669,6 +669,9 @@ The advisor's answers can't be golden-tested, so they are measured.
   re-adding it would hide changes made meanwhile. A run now purges only
   inventoried hosts; the others wait for a person's `checker purge
   --expired`, and each run notes how many bundles wait.
+  Policy §10 (John approved the wording, 2026-10-30): notifications from
+  `checker run` added to what can leave. It can send data somewhere, so
+  under §15 it goes at the top of the next release's notes.
 - Carried over: RHEL proof only if there is interest; package verification
   against vendor packages; report encryption at rest (John's decision
   2026-10-27: revisit after the currently planned phases); outbound

@@ -251,7 +251,8 @@ is John's to approve before it is committed. Also:
   a host exposed for part of it gets that ratio scaled by the share of the
   window it was exposed (in log-odds), and a host never exposed gets none.
   At 2% and a full window, the prior becomes 9%.
-- **D4. Reading PHP's settings.** PHP2Shell's mitigation is an ini setting
+- **D4. Reading PHP's settings. Decided 2026-10-30 (John): read the ini
+  files, as recommended.** PHP2Shell's mitigation is an ini setting
   the collector doesn't read. *Recommendation:* the collector reads the
   ini files of each installed PHP (`php.ini` and `conf.d/*.ini`, by file,
   never by running `php`), keeps only directive names and values, and

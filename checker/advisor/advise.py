@@ -276,7 +276,10 @@ def advise(
                     store, host, identity, inventory, whitelist, which, answer, home
                 )
             except Exception as exc:  # the answer was paid for: kept, whatever happens next
-                note = f"the proposals couldn't be judged: {type(exc).__name__}: {exc}"
+                if isinstance(exc, _Unrecorded):
+                    note = f"the proposal file couldn't be recorded, so it wasn't kept: {exc}"
+                else:
+                    note = f"the proposals couldn't be judged: {type(exc).__name__}: {exc}"
                 record(outcome, "invalid", raw, answer, note)
                 raise AdvisorError(note) from exc
             answer = dict(
@@ -548,10 +551,17 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home)
             digest = hashlib.sha256(written.read_bytes()).hexdigest()
             store.custody(which["bundle_id"], "proposed",
                           {"proposal_sha256": digest, "file": written.name})  # fmt: skip
+        except Exception as exc:
+            written.unlink(missing_ok=True)
+            raise _Unrecorded(f"{type(exc).__name__}: {exc}") from exc
         except BaseException:
             written.unlink(missing_ok=True)
             raise
     return judged, written
+
+
+class _Unrecorded(Exception):
+    """The proposal file was written but its custody entry wasn't."""
 
 
 def _quoted(payload: dict[str, Any]) -> set[str]:

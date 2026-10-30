@@ -614,6 +614,39 @@ def test_a_proposal_a_purge_couldnt_delete_goes_at_the_next(sudo_host, monkeypat
     assert not advice.file.exists() and leftovers(store, base) == []
 
 
+def test_a_file_that_changes_after_planning_is_left_and_not_retried(sudo_host):
+    """Another report or proposal written at a planned name before the purge
+    runs isn't deleted, now or by a later purge."""
+    from datetime import UTC, datetime
+
+    from checker.purge import execute, leftovers, plan
+
+    base, store, _, _ = sudo_host
+    advice = run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
+    chosen = plan(store, base, set(), 90, before=datetime(2100, 1, 1, tzinfo=UTC))
+    assert chosen.proposals == [advice.file]
+    advice.file.write_text("rules: []  # someone else's\n")
+    outcome = execute(store, base, chosen)
+    assert outcome.changed == [advice.file] and outcome.counts["proposals"] == 0
+    assert advice.file.exists() and leftovers(store, base) == []
+
+
+def test_odd_purge_records_dont_break_later_purges(sudo_host):
+    from checker.purge import leftovers
+
+    base, store, _, _ = sudo_host
+    (base / "proposals").mkdir(exist_ok=True)
+    (base / "proposals" / "a.yaml").write_text("rules: []\n")  # an operator's, kept
+    for derived in (5, "x", [5], [["proposals/a.yaml"]], [["proposals/a.yaml", None]],
+                    [["proposals/a.yaml", "0"]], [["../a.yaml", "0"]], [[1, 2]]):  # fmt: skip
+        store._db.execute(
+            "INSERT INTO purges (at, operator, controller, scope, bundles, counts, baselines)"
+            " VALUES ('t', 'o', 'c', ?, '[]', '{}', '{}')",
+            (json.dumps({"derived": derived}),),
+        )
+    assert leftovers(store, base) == []
+
+
 def test_a_proposal_file_with_no_custody_record_isnt_kept(sudo_host, monkeypatch):
     base, store, _, _ = sudo_host
     real = store.__class__.custody
@@ -626,7 +659,9 @@ def test_a_proposal_file_with_no_custody_record_isnt_kept(sudo_host, monkeypatch
     monkeypatch.setattr(store.__class__, "custody", broken)
     from checker.advisor.client import AdvisorError
 
-    with pytest.raises(AdvisorError, match="disk full"):
+    with pytest.raises(
+        AdvisorError, match="couldn't be recorded, so it wasn't kept: OSError: disk full"
+    ):
         run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
     assert (base / "proposals").is_dir()
     assert list((base / "proposals").glob("*.yaml")) == []

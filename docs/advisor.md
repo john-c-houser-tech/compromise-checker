@@ -85,8 +85,9 @@ the provider can't connect one run to another by name; the answer's
 placeholders are turned back into names on your machine. Names a host
 mentions only in free text (another company's domain in a log line, a
 person's name in a comment) aren't recognised, and common system accounts
-(`root`, `www-data`, `ubuntu`…), the system's group names (`wheel`,
-`sudo`…) and loopback addresses are kept as they are. The server's OS and kernel version are sent.
+(`root`, `www-data`, `ubuntu`…), the host's own group names (`wheel`,
+or ones your organization made) and loopback addresses are kept as they
+are. The server's OS and kernel version are sent.
 
 ```json
 {"id": "F-1", "check": "account.uid0", "band": "critical",
@@ -188,7 +189,9 @@ evidence key. The record is append-only, so your organization can show
 afterwards exactly what left, and it is deleted with the evidence it was
 about (`checker purge`). Whitelist proposals are files in `proposals/`,
 owner-only, with real names in them; `checker purge` deletes them with the
-bundle they were made from.
+bundle they were made from, as long as they keep the name they were
+written under (a copy moved or renamed, and rules copied into a whitelist,
+are yours to remove).
 
 ## How well it works
 

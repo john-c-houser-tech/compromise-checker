@@ -34,6 +34,9 @@ class Plan:
     files: list[Path] = field(default_factory=list)
     reports: list[Path] = field(default_factory=list)
     proposals: list[Path] = field(default_factory=list)  # the advisor's whitelist proposals
+    # Each report's and proposal's hash when planned: one that changes before
+    # the purge runs (another report written at its name) is left alone.
+    digests: dict[Path, str] = field(default_factory=dict)
     outside: list[str] = field(default_factory=list)  # paths not under the evidence folder
     # Each affected host's Store.purge_state when planned; the purge itself
     # re-checks it, so a baseline set meanwhile isn't purged unprotected.
@@ -114,6 +117,11 @@ def plan(
     ids = [r["id"] for r in result.bundles]
     result.reports = _reports(store, base, ids)
     result.proposals = _proposals(store, base, ids)
+    for path in result.reports + result.proposals:
+        if (digest := _hash(path)) is not None:
+            result.digests[path] = digest
+    result.reports = [p for p in result.reports if p in result.digests]
+    result.proposals = [p for p in result.proposals if p in result.digests]
     return result
 
 
@@ -147,7 +155,7 @@ def _derived(
         return []
     found = []
     for path in sorted(folder.glob(pattern)):
-        if path.is_file() and not path.is_symlink() and _sha256(path) in digests:
+        if path.is_file() and not path.is_symlink() and _hash(path) in digests:
             found.append(path)
     return found
 
@@ -205,10 +213,12 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _sha256_or_none(path: Path) -> str | None:
+def _hash(path: Path) -> str | None:
+    """The file's sha256, or None when it can't be read (gone, or not ours
+    to read): such a file is never taken for one that was planned."""
     try:
         return _sha256(path)
-    except FileNotFoundError:
+    except OSError:
         return None
 
 
@@ -217,6 +227,7 @@ class Outcome:
     counts: dict[str, int]
     deleted: list[Path]
     failed: list[tuple[Path, str]]
+    changed: list[Path] = field(default_factory=list)  # left: not what was planned
 
 
 def execute(store: Store, base: Path, chosen: Plan) -> Outcome:
@@ -224,22 +235,27 @@ def execute(store: Store, base: Path, chosen: Plan) -> Outcome:
     files. A crash between the two leaves files no row refers to; every
     purge also removes those (leftovers), even when it has nothing new to
     delete."""
+    planned = chosen.reports + chosen.proposals
+    now = {path: _hash(path) for path in planned}
+    changed = [p for p in planned if now[p] is not None and now[p] != chosen.digests.get(p)]
+    reports = [p for p in chosen.reports if now[p] == chosen.digests.get(p)]
+    proposals = [p for p in chosen.proposals if now[p] == chosen.digests.get(p)]
     if chosen.bundles:
-        # The reports and proposals are named in the record, so a purge that
-        # can't delete one now (or is cut short) is finished by the next:
-        # once the custody rows go, nothing else leads to them.
+        # The reports and proposals are named in the record, with their
+        # hashes, so a purge that can't delete one now (or is cut short) is
+        # finished by the next: once the custody rows go, nothing else leads
+        # to them.
         derived = [
-            [str(path.relative_to(base)), _sha256_or_none(path) if kind == "reports" else None]
-            for kind, paths in (("reports", chosen.reports), ("proposals", chosen.proposals))
-            for path in paths
+            [path.relative_to(base).as_posix(), chosen.digests[path]]
+            for path in reports + proposals
         ]
         counts = store.purge(
             [r["id"] for r in chosen.bundles],
             chosen.scope
             | {
                 "files_planned": len(chosen.files),
-                "reports": len(chosen.reports),
-                "proposals": len(chosen.proposals),
+                "reports": len(reports),
+                "proposals": len(proposals),
                 "derived": derived,
             },
             chosen.baselines,
@@ -247,19 +263,17 @@ def execute(store: Store, base: Path, chosen: Plan) -> Outcome:
         )
     else:
         counts = {"bundles": 0}
-    counts["reports"] = len(chosen.reports)
-    counts["proposals"] = len(chosen.proposals)
-    deleted, failed = _delete(
-        chosen.files + chosen.reports + chosen.proposals + leftovers(store, base)
-    )
+    counts["reports"] = len(reports)
+    counts["proposals"] = len(proposals)
+    deleted, failed = _delete(chosen.files + reports + proposals + leftovers(store, base))
     _remove_empty_folders(base, chosen.bundles)
-    return Outcome(counts, deleted, failed)
+    return Outcome(counts, deleted, failed, changed)
 
 
 def leftovers(store: Store, base: Path) -> list[Path]:
     """Files of bundles an earlier purge removed from the database but
-    couldn't delete from disk, and the reports and proposals it named.
-    A report is taken only while it still has the hash it had then."""
+    couldn't delete from disk, and the reports and proposals it named,
+    each only while it still has the hash it had then."""
     evidence = base / "evidence"
     present = {r["id"] for r in store.bundles()}
     found: list[Path] = []
@@ -280,27 +294,28 @@ def leftovers(store: Store, base: Path) -> list[Path]:
 
 def _derived_left(base: Path, row: Any) -> list[Path]:
     try:
-        derived = json.loads(row["scope"]).get("derived") or []
+        derived = json.loads(row["scope"]).get("derived")
     except (ValueError, AttributeError):
+        return []
+    if not isinstance(derived, list):
         return []
     found = []
     for item in derived:
-        if not (isinstance(item, list) and len(item) == 2 and isinstance(item[0], str)):
+        if not (isinstance(item, list) and len(item) == 2):
             continue
         where, digest = item
+        if not (isinstance(where, str) and isinstance(digest, str)):
+            continue
         folder_name, _, name = where.partition("/")
         pattern = {"reports": "report-*.html", "proposals": "*.yaml"}.get(folder_name)
         if pattern is None or not _plain_name(name, pattern):
             continue
-        if folder_name == "reports" and digest is None:
-            continue  # gone before the purge: nothing to tell a newer one by
         folder = base / folder_name
         path = folder / name
         if folder.is_symlink() or path.is_symlink() or not path.is_file():
             continue
-        if digest is not None and _sha256(path) != digest:
-            continue
-        found.append(path)
+        if _hash(path) == digest:
+            found.append(path)
     return found
 
 

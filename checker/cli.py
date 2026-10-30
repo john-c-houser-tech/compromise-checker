@@ -1751,6 +1751,12 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
             f"checker: couldn't delete {path} ({reason}); the next purge tries again",
             file=sys.stderr,
         )
+    for path in outcome.changed:
+        print(
+            f"checker: {path} changed after the purge was planned, so it was left as it is;"
+            " delete it yourself if it shows the purged evidence",
+            file=sys.stderr,
+        )
     return 1 if outcome.failed else 0
 
 

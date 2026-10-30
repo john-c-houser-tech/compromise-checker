@@ -262,6 +262,37 @@ is John's to approve before it is committed. Also:
   reads (sshd, sysctl, systemd units, web server configuration) and, for
   PHP2Shell, PHP's ini settings, which it doesn't read yet (D4).
 - Each mitigation reported as in place, missing, or not seen.
+- **A setting written nowhere is PHP's built-in default** (a side note
+  John relayed, 2026-10-30): `session.upload_progress.enabled` defaults to
+  On, and Ubuntu's php.ini leaves the line commented out, so it is often
+  in no file at all. The pack format gains the setting's default (`default:
+  "on"`), and "set nowhere" counts as that default: unprotected, never
+  "in place" or "not seen". Only a settings section collected in part is
+  "not seen". The last occurrence wins, as PHP reads them (each setting
+  carries its position; `[PATH=…]` and `[HOST=…]` sections apart; a pool's
+  php_admin_value over the ini file).
+- *As built (4.4, #82): the collection.* PHP's ini files and the package
+  history are collected (see the 4.4 PR and docs/collector-modules.md);
+  4.4b judges with them.
+- **After review (4.4; 1 high, 5 medium, 11 low):** dnf's history query
+  could spill a sort to a temporary file in /tmp on a busy server (a
+  write): every SQLite read of a server's database (dnf's, and rpm's
+  three) now keeps sorts in memory, runs no schema functions, refuses
+  views in place of dnf's tables, and checks the deadline inside SQLite (a
+  crafted view looped forever). PHP settings not read whole leave
+  `php_settings` incomplete. Secret directives (`*_pw`, `license`,
+  `auth`, `save_path`…) are masked whole. Quoted values followed by a
+  comment parse as PHP reads them. The 20,000 cap keeps the newest
+  changes; old lines in a recent dpkg log are skipped; logrotate's
+  dateext names and .xz/.bz2 are read; the horizon reaches back as far as
+  the look-back window if that is longer; obsoleting/obsoleted dnf
+  changes are recorded; dnf's write-ahead log is reported when not empty;
+  a host whose dpkg log is only old isn't "no history"; repeated
+  directives and [PATH=]/[HOST=] sections are kept apart; dpkg times in
+  the hour that happens twice are marked uncertain. php.ini's own
+  error_log no longer leads the collector to PHP's application error log
+  (collecting it would widen collection without a decision). Not done:
+  dnf5's database (Fedora 41+, not RHEL 9/10).
 
 ### 4.5 — Detections
 

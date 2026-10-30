@@ -345,7 +345,7 @@ _GAPS = {
 
 # PHP's ini files (decision D4: directive names and values; the collector
 # sends no comments) and PHP-FPM pools' per-pool settings.
-_INI_DIRECTIVE = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*=\s*(.*?)\s*$")
+_INI_DIRECTIVE = re.compile(r"^\s*([A-Za-z0-9_.\[\]-]+)\s*=\s*(.*?)\s*$")
 _INI_SECTION = re.compile(r"^\s*\[([^\]]*)\]\s*$")
 _POOL_SETTING = re.compile(
     r"^\s*(php_(?:admin_)?(?:value|flag))\[([A-Za-z0-9_.-]+)\]\s*=\s*(.*?)\s*$"
@@ -353,9 +353,25 @@ _POOL_SETTING = re.compile(
 _POOL_FILE = re.compile(r"/(?:pool\.d|php-fpm\.d)/[^/]+\.conf$")
 
 
+_QUOTED_VALUE = re.compile(r'^"((?:[^"\\]|\\.)*)"|^\'([^\']*)\'')
+
+
 def _ini_value(text: str) -> str:
-    text = text.split(";", 1)[0].strip() if not text.startswith('"') else text
-    return text.strip().strip('"')
+    """A directive's value as PHP reads it: a quoted string up to its
+    closing quote (a comment after it ignored), else up to a `;`."""
+    quoted = _QUOTED_VALUE.match(text.strip())
+    if quoted:
+        return quoted.group(1) if quoted.group(1) is not None else quoted.group(2)
+    return text.split(";", 1)[0].strip()
+
+
+def is_php_config(path: str) -> bool:
+    """A PHP ini file or PHP-FPM pool file, as the collector reads them."""
+    return bool(
+        path == "/etc/php.ini"
+        or (path.endswith(".ini") and path.startswith(("/etc/php", "/etc/opt/remi/")))
+        or _POOL_FILE.search(path)
+    )
 
 
 def php_settings(path: str, lines: list[str]) -> list[tuple[str, dict[str, Any]]]:
@@ -365,13 +381,27 @@ def php_settings(path: str, lines: list[str]) -> list[tuple[str, dict[str, Any]]
     found: list[tuple[str, dict[str, Any]]] = []
     if path.endswith(".ini"):
         section = None
+        seen: dict[str, int] = {}
         for line in lines:
             if heading := _INI_SECTION.match(line):
                 section = heading.group(1)
             elif directive := _INI_DIRECTIVE.match(line):
                 name, value = directive.group(1), _ini_value(directive.group(2))
-                found.append((f"{path}: {name}", {"path": path, "kind": "ini", "name": name,
-                                                  "value": value, "section": section}))  # fmt: skip
+                # [PATH=…] and [HOST=…] apply only there: keyed apart from the
+                # global value; a directive given again (extension=) is kept
+                # each time.
+                scope = (
+                    f" [{section}]"
+                    if section and section.upper().startswith(("PATH=", "HOST="))
+                    else ""
+                )
+                key = f"{path}{scope}: {name}"
+                seen[key] = seen.get(key, 0) + 1
+                if seen[key] > 1:
+                    key = f"{key} #{seen[key]}"
+                found.append((key, {"path": path, "kind": "ini", "name": name, "value": value,
+                                    "section": section, "position": len(found)}))  # fmt: skip
+
     elif _POOL_FILE.search(path):
         pool = None
         for line in lines:
@@ -410,8 +440,13 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
         return {"pam"}
     if module == "web_logs":
         # Only its configuration is a section: logs and audit records are
-        # coverage, reported there.
-        return {"web_config", "web_served"} if str(path or "").startswith("/etc/") else set()
+        # coverage, reported there. A PHP ini or pool file not read whole
+        # leaves PHP's settings incomplete too: an absent setting proves
+        # nothing then.
+        if not str(path or "").startswith("/etc/"):
+            return set()
+        php = is_php_config(str(path))
+        return {"web_config", "web_served"} | ({"php_settings"} if php else set())
     if module == "mail" and str(path or "").startswith("/var/log/"):
         return set()  # a mail log: the coverage reports it, the settings are whole
     if module == "unusual_files":
@@ -1189,6 +1224,11 @@ class SnapshotBuilder:
         change. Only one not listed at all leaves its section incomplete."""
         for module, data in self._unread:
             item = self.sections.get(_FILE_SECTIONS[module], Section()).items.get(data["path"])
+            if module == "web_logs" and is_php_config(str(data["path"])):
+                # Its settings weren't read, whatever its walk shows.
+                self._module_gap(
+                    module, f"unreadable_file: {data['path']}", "unreadable_file", data
+                )
             if item is not None and "inode" in item:
                 item["content_unread"] = data.get("reason") or "unreadable"
             else:

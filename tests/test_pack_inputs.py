@@ -22,7 +22,7 @@ def test_ini_directives_with_their_sections():
     upload = found["/etc/php/8.3/fpm/php.ini: session.upload_progress.enabled"]
     assert upload == {"path": "/etc/php/8.3/fpm/php.ini", "kind": "ini",
                       "name": "session.upload_progress.enabled", "value": "Off",
-                      "section": "Session"}  # fmt: skip
+                      "section": "Session", "position": 2}  # fmt: skip
     assert found["/etc/php/8.3/fpm/php.ini: session.save_path"]["value"] == "/var/lib/php/sessions"
 
 
@@ -94,3 +94,44 @@ def test_a_local_time_without_a_known_zone_says_so():
     builder.record(record("software", "package_change", **change))
     (event,) = builder.events
     assert event.fields.get("zone_assumed") is True
+
+
+def test_quoted_values_scoped_sections_and_repeats():
+    lines = ['session.upload_progress.enabled = "0" ; off for CVE-2026-115560',
+             "x = 'raw ; value'", "extension=a.so", "extension=b.so",
+             "[PATH=/var/www/legacy]", "session.upload_progress.enabled = 1"]  # fmt: skip
+    found = dict(php_settings("/etc/php.ini", lines))
+    assert found["/etc/php.ini: session.upload_progress.enabled"]["value"] == "0"
+    assert found["/etc/php.ini: x"]["value"] == "raw ; value"
+    assert found["/etc/php.ini: extension"]["value"] == "a.so"
+    assert found["/etc/php.ini: extension #2"]["value"] == "b.so"
+    scoped = found["/etc/php.ini [PATH=/var/www/legacy]: session.upload_progress.enabled"]
+    assert (
+        scoped["value"] == "1"
+        and scoped["position"] > found["/etc/php.ini: extension #2"]["position"]
+    )
+
+
+def test_an_ini_file_not_read_leaves_php_settings_incomplete(tmp_path):
+    records = host_records(
+        planned=["host_facts", "web_logs"],
+        extra=[rec("web_logs", "not_examined", path="/etc/php/8.3/fpm/php.ini", reason="x")],
+    )
+    snap = snapshot_of_records(records, tmp_path)
+    assert not snap.sections["php_settings"].complete
+    nginx = host_records(
+        planned=["host_facts", "web_logs"],
+        extra=[rec("web_logs", "not_examined", path="/etc/nginx/nginx.conf", reason="x")],
+    )
+    assert snapshot_of_records(nginx, tmp_path).sections["php_settings"].complete
+
+
+def test_the_hour_that_happens_twice_is_uncertain():
+    builder = EventBuilder()
+    zone = "/usr/share/zoneinfo/America/Los_Angeles"
+    builder.record(record("host_facts", "clock", localtime_link=zone))
+    change = {"manager": "dpkg", "action": "install", "name": "nginx", "version": "1.24-1"}
+    builder.record(record("software", "package_change", **change, local_time="2026-11-01 01:30:00"))
+    builder.record(record("software", "package_change", **change, local_time="2026-11-02 01:30:00"))
+    twice, once = builder.events
+    assert twice.fields.get("time_uncertain") is True and "time_uncertain" not in once.fields

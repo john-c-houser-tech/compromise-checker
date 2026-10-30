@@ -691,12 +691,17 @@ class EventBuilder:
         action = data.get("action")
         if action not in self._PACKAGE_ACTIONS or not data.get("name"):
             return
+        ambiguous = False
         try:
             if data.get("time"):
                 moment = datetime.fromisoformat(data["time"])
             elif data.get("local_time"):
                 local = datetime.strptime(data["local_time"], "%Y-%m-%d %H:%M:%S")
                 moment = local.replace(tzinfo=self.zone)
+                # The hour the clocks go back happens twice: either is possible.
+                ambiguous = (
+                    moment.utcoffset() != local.replace(tzinfo=self.zone, fold=1).utcoffset()
+                )
             else:
                 moment = None
         except (ValueError, TypeError):
@@ -708,6 +713,8 @@ class EventBuilder:
         }
         if self.zone_assumed and data.get("local_time"):
             fields["zone_assumed"] = True
+        if data.get("local_time") and moment is not None and ambiguous:
+            fields["time_uncertain"] = True
         self._add(moment, f"software:{data.get('source') or 'package history'}",
                   f"package.{action}", fields)  # fmt: skip
 

@@ -5765,10 +5765,6 @@ class ContainerTests(FixtureRoot):
         self.assertIn("containerd (k8s.io)", summary["data"]["not_inventoried"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PackageHistoryTests(FixtureRoot):
     """Package changes from dpkg's log and dnf's history (plan 4.4)."""
 
@@ -5891,3 +5887,146 @@ class PhpIniTests(FixtureRoot):
         sent = sources(collect(self.root, ["web_logs"]))
         self.assertEqual(sent["/etc/php.ini"][1], b"[PHP]\nexpose_php = Off\n")
         self.assertIn("/etc/php.d/20-session.ini", sent)
+
+
+class PackageHistoryReviewTests(FixtureRoot):
+    """The review of plan 4.4's collection."""
+
+    def dnf_db(self, rows, transactions):
+        import sqlite3
+
+        db = Path(self.root, "var/lib/dnf/history.sqlite")
+        db.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(db)
+        connection.executescript(
+            "CREATE TABLE trans (id INTEGER PRIMARY KEY, dt_begin INTEGER);"
+            "CREATE TABLE trans_item (id INTEGER PRIMARY KEY, trans_id INTEGER, item_id INTEGER,"
+            " action INTEGER, state INTEGER);"
+            "CREATE TABLE rpm (item_id INTEGER PRIMARY KEY, name TEXT, epoch INTEGER,"
+            " version TEXT, release TEXT, arch TEXT);"
+        )
+        for trans_id, began in transactions:
+            connection.execute("INSERT INTO trans VALUES (?, ?)", (trans_id, began))
+        for item, trans, action, name in rows:
+            connection.execute(
+                "INSERT INTO trans_item VALUES (?, ?, ?, ?, 1)", (item, trans, item, action)
+            )
+            connection.execute(
+                "INSERT INTO rpm VALUES (?, ?, 0, '1.0', '1.el9', 'x86_64')", (item, name)
+            )
+        connection.commit()
+        connection.close()
+        return db
+
+    def test_obsoleting_and_obsoleted_packages_are_changes(self):
+        recent = int(NOW - DAY)
+        self.dnf_db([(1, 1, 4, "new-name"), (2, 1, 5, "old-name")], [(1, recent)])
+        changes = [r["data"] for r in named(collect(self.root, ["software"]), "package_change")]
+        self.assertEqual([(c["action"], c["name"]) for c in changes],
+                         [("install", "new-name"), ("remove", "old-name")])  # fmt: skip
+
+    def test_a_view_in_place_of_dnfs_tables_isnt_read(self):
+        import sqlite3
+
+        db = self.dnf_db([], [(1, int(NOW))])
+        connection = sqlite3.connect(db)
+        connection.executescript(
+            "DROP TABLE trans_item;"
+            "CREATE VIEW trans_item AS WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL"
+            " SELECT n + 1 FROM r) SELECT n AS id, 1 AS trans_id, 1 AS item_id, 1 AS action,"
+            " 1 AS state FROM r WHERE n < 0;"
+        )
+        connection.close()
+        records = collect(self.root, ["software"])
+        reasons = [r["data"].get("reason") for r in named(records, "not_examined")]
+        self.assertIn("not dnf's tables", reasons)
+
+    def test_a_query_that_runs_too_long_is_stopped(self):
+        import sqlite3
+
+        db = Path(self.root, "loop.sqlite")
+        connection = sqlite3.connect(db)
+        connection.execute("CREATE TABLE t (x)")
+        connection.commit()
+        connection.close()
+        collector = load_collector(self.root)
+        run = direct_run(collector, seconds=1)
+        reader = collector.sqlite_readonly(run, "/loop.sqlite")
+        started = time.monotonic()
+        with self.assertRaises(sqlite3.OperationalError):
+            reader.execute(
+                "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r)"
+                " SELECT count(*) FROM r"
+            ).fetchall()
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(reader.execute("PRAGMA temp_store").fetchone()[0], 2)  # memory
+        reader.close()
+
+    def test_transactions_still_in_the_write_ahead_log_are_said(self):
+        db = self.dnf_db([], [(1, int(NOW))])
+        Path(str(db) + "-wal").write_bytes(b"x" * 100)
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_pending")), 1)
+
+    def test_dateext_and_xz_rotations_and_old_lines_and_the_newest_kept(self):
+        import lzma
+
+        line = "{} upgrade pkg{}:amd64 1.0-1 1.0-2\n"
+        recent = datetime.datetime.fromtimestamp(NOW - 2 * DAY).strftime("%Y-%m-%d %H:%M:%S")
+        self.write(
+            "var/log/dpkg.log",
+            (
+                "2019-01-01 00:00:00 upgrade ancient:amd64 1-1 1-2\n" + line.format(recent, "c")
+            ).encode(),
+        )
+        dateext = gzip.compress(line.format(recent, "a").encode())
+        self.write("var/log/dpkg.log-20261001.gz", dateext, age_days=3)
+        self.write(
+            "var/log/dpkg.log.3.xz", lzma.compress(line.format(recent, "b").encode()), age_days=4
+        )
+        collector = load_collector(self.root)
+        collector.MAX_PACKAGE_CHANGES = 2
+        out = io.BytesIO()
+        collector.main(settings(["software"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        names = sorted(r["data"]["name"] for r in named(records, "package_change"))
+        self.assertNotIn("ancient", names)  # before the horizon, though in a recent file
+        self.assertEqual(len(names), 2)
+        self.assertIn("pkgc", names)  # the newest file's change is kept
+        [cut] = [r for r in named(records, "listing_truncated")]
+        self.assertEqual(cut["data"]["found"], 3)
+
+    def test_a_quiet_host_still_has_a_history(self):
+        self.write("var/log/dpkg.log", b"", age_days=600)
+        records = collect(self.root, ["software"])
+        self.assertEqual(named(records, "package_history_absent"), [])
+
+
+class PhpIniReviewTests(FixtureRoot):
+    def test_secret_directives_are_masked_whole(self):
+        self.write(
+            "etc/php.ini",
+            (
+                b"mysqli.default_pw = hunter2xyz\n"
+                b"newrelic.license = 0123456789abcdef0123456789abcdef01234567\n"
+                b'session.save_path = "tcp://10.0.0.1:6379?auth[]=user&auth[]=s3cret"\n'
+                b"foo[bar] = 1\n"
+                b"session.upload_progress.enabled = On\n"
+            ),
+        )
+        text = sources(collect(self.root, ["web_logs"]))["/etc/php.ini"][1].decode()
+        for secret in ("hunter2xyz", "0123456789abcdef", "s3cret"):
+            self.assertNotIn(secret, text)
+        self.assertIn("mysqli.default_pw = [MASKED:php_secret]", text)
+        self.assertIn("foo[bar] = 1", text)
+        self.assertIn("session.upload_progress.enabled = On", text)
+
+    def test_php_ini_doesnt_lead_to_phps_own_error_log(self):
+        self.write("etc/php.ini", b"error_log = /var/log/php_app_errors.log\n")
+        self.write("var/log/php_app_errors.log", b"PHP Warning: x\n")
+        sent = sources(collect(self.root, ["web_logs"]))
+        self.assertNotIn("/var/log/php_app_errors.log", sent)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -818,12 +818,19 @@ packages installed system-wide by hand.
   not only when a package was last updated): dpkg's log
   (`/var/log/dpkg.log` and its rotated copies, `.gz` read here) or dnf's
   history database (`/var/lib/dnf/history.sqlite`, opened immutable like
-  rpm's), going back 400 days, at most 20,000 changes: each install,
-  upgrade, downgrade, reinstall or removal with its time, package name,
-  architecture and versions, as `package_change` records. The log's lines
-  are parsed on the server and nothing else of them is sent; dpkg's times
-  are the host's local time (read in its zone), dnf's are UTC.
-  `package_history_absent` says there was none to read;
+  rpm's), going back 400 days or the look-back window if longer, the
+  newest 20,000 changes: each install, upgrade, downgrade, reinstall,
+  obsoleting or removal with its time, package name, architecture and
+  versions, as `package_change` records. dpkg's rotated logs are read in
+  any name logrotate gives them (`.1`, `.2.gz`, `-20261001.gz`) and any
+  compression this collector opens. The log's lines are parsed on the
+  server and nothing else of them is sent; dpkg's times are the host's
+  local time (read in its zone), dnf's are UTC. `package_history_absent`
+  says there was none to read; `package_history_pending`, that dnf's
+  write-ahead log holds changes an immutable read can't see. Every SQLite
+  read of a server's database (this and rpm's) keeps its sorts in memory
+  (none spills to a file), runs no functions from the database's schema,
+  and checks the deadline while SQLite works;
 - repositories as masked text (a password in a repository's URL is
   masked): `/etc/apt/sources.list`, `sources.list.d`, `/etc/yum.repos.d`,
   `/etc/dnf/dnf.conf`, `/etc/yum.conf`, `/etc/dnf/vars`, `/etc/yum/vars`
@@ -947,8 +954,12 @@ exploit attempts that got an answer, error bursts.
   not the CLI's; `/etc/php.ini` and `/etc/php.d`; Remi's
   `/etc/opt/remi/php*/php.ini` and `php.d`), by file, never by running
   `php`. Only directive and `[section]` lines are sent, masked; comments and
-  blank lines are left out. A `conf.d` link into `mods-available` is
-  followed and sent under its target's name, with a `config_link` record;
+  blank lines are left out. A directive whose value is or may hold a
+  secret (`*_pw`, `license`, `secret`, `token`, `auth`, `key`, `dsn`,
+  `save_path`, `credential`) has its whole value masked. A `conf.d` link
+  into `mods-available` is followed and sent under its target's name,
+  with a `config_link` record. The log files php.ini names (PHP's own
+  `error_log`) are not read;
 - the log files that configuration names (`access_log`, `error_log`,
   `CustomLog`, `TransferLog`, `ErrorLog`, PHP-FPM's `error_log`, `slowlog`
   and `access.log`; `${APACHE_LOG_DIR}` and RHEL's relative `logs/`

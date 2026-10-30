@@ -247,6 +247,39 @@ def looks_like_a_key(text: str) -> bool:
     return False
 
 
+class TrustedKey(BaseModel):
+    """An organization's own key for its private threat packs (plan 4.2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9 ._()-]+$")
+    public_key: str  # minisign's base64 line
+
+    @field_validator("public_key")
+    @classmethod
+    def _key(cls, value: str) -> str:
+        from checker.packs.signing import SignatureError, public_key
+
+        try:
+            return public_key(value).text
+        except SignatureError as exc:
+            raise ValueError(str(exc)) from None
+
+
+class Packs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trusted_keys: list[TrustedKey] = Field(default=[], max_length=20)
+
+    @model_validator(mode="after")
+    def _unique(self) -> "Packs":
+        names = [k.name for k in self.trusted_keys]
+        keys = [k.public_key for k in self.trusted_keys]
+        if len(set(names)) != len(names) or len(set(keys)) != len(keys):
+            raise ValueError("a trusted key, or its name, is given twice")
+        return self
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -270,6 +303,8 @@ class Config(BaseModel):
     # Given a short summary on its input when a scheduled run finds a host
     # worse (checker.schedule); split into words, never run by a shell.
     notify_command: str | None = None
+    # Keys of the organization's own, for its private threat packs.
+    packs: Packs = Field(default_factory=Packs)
 
     @field_validator("notify_command")
     @classmethod

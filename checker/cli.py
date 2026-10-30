@@ -908,6 +908,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     checking_pack.add_argument("file", help="the pack's YAML file")
     checking_pack.set_defaults(handler=cmd_packs_check)
+    adding_pack = pack_commands.add_parser(
+        "add", help="check a pack's signature and content, and put it in force"
+    )
+    adding_pack.add_argument("file", help="the pack's YAML file")
+    adding_pack.add_argument("--signature", help="its minisign signature (default: FILE.minisig)")
+    adding_pack.set_defaults(handler=cmd_packs_add)
+    listing_packs = pack_commands.add_parser("list", help="the packs in force, and retired ones")
+    listing_packs.add_argument("--retired", action="store_true", help="also the retired ones")
+    listing_packs.set_defaults(handler=cmd_packs_list)
+    showing_pack = pack_commands.add_parser("show", help="what a pack in force says")
+    showing_pack.add_argument("id", help="the pack's id")
+    showing_pack.set_defaults(handler=cmd_packs_show)
+    retiring_pack = pack_commands.add_parser("retire", help="take a pack out of use (it is kept)")
+    retiring_pack.add_argument("id", help="the pack's id")
+    retiring_pack.add_argument("--reason", required=True, help="why, for the record")
+    retiring_pack.set_defaults(handler=cmd_packs_retire)
+    keying = pack_commands.add_parser("keys", help="the keys trusted to sign packs")
+    key_commands = keying.add_subparsers(dest="keys_command", metavar="ACTION")
+    keying.set_defaults(handler=cmd_packs_keys)
+    adding_keys = key_commands.add_parser(
+        "add", help="put a newer NouriLoop key list in force (air-gapped sites)"
+    )
+    adding_keys.add_argument("file", help="keys.yaml")
+    adding_keys.add_argument("--signature", help="its signature (default: FILE.minisig)")
+    adding_keys.set_defaults(handler=cmd_packs_keys_add)
+    trusting = pack_commands.add_parser("trust", help="your organization's own pack keys")
+    trust_commands = trusting.add_subparsers(dest="trust_command", metavar="ACTION", required=True)
+    trust_add = trust_commands.add_parser("add", help="trust a key for your private packs")
+    trust_add.add_argument("name", help="a name for it")
+    trust_add.add_argument("key", help="its minisign public key file (.pub)")
+    trust_add.set_defaults(handler=cmd_packs_trust_add)
+    trust_remove = trust_commands.add_parser(
+        "remove", help="stop trusting a key; packs it signed are retired"
+    )
+    trust_remove.add_argument("name")
+    trust_remove.set_defaults(handler=cmd_packs_trust_remove)
 
     whitelisting = commands.add_parser("whitelist", help="check the whitelist files")
     whitelist_commands = whitelisting.add_subparsers(
@@ -1852,24 +1888,30 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
     return 1 if outcome.failed else 0
 
 
+def _read_untrusted(name: str, limit: int) -> bytes:
+    """A file someone else wrote: only a regular file, no more than `limit`
+    bytes (one byte more, so "too large" can be told)."""
+    import os
+    import stat
+
+    fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError(0, "not a regular file")
+        return handle.read(limit + 1)
+
+
 def cmd_packs_check(args: argparse.Namespace) -> int:
     """Validate a pack as the tool would read it: its format, then that
     its detections name checks this version of the tool has. The file is
     untrusted: only a regular file is read, no more than a pack may hold,
     and its text is shown with hidden characters escaped."""
-    import os
-    import stat
-
     from checker.checks import load_checks
     from checker.packs.format import MAX_BYTES, PackError, read
     from checker.report import visible
 
     try:
-        fd = os.open(args.file, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
-        with os.fdopen(fd, "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                raise OSError(0, "not a regular file")
-            data = handle.read(MAX_BYTES + 1)
+        data = _read_untrusted(args.file, MAX_BYTES)
     except OSError as exc:
         print(f"checker: {args.file}: {exc.strerror or exc}", file=sys.stderr)
         return 1
@@ -1892,6 +1934,219 @@ def cmd_packs_check(args: argparse.Namespace) -> int:
     releases = ", ".join(dict.fromkeys(p.release for p in pack.exposure.packages))
     print(f"Valid: {pack.id} version {pack.version} ({visible(pack.title, 200)}), for {releases}.")
     print("Checked only: nothing was trusted or added (adding a pack checks its signature).")
+    return 0
+
+
+def _packs_lock(base: Path):
+    from checker.files import locked
+
+    return locked(base / "packs" / "state")
+
+
+def cmd_packs_add(args: argparse.Namespace) -> int:
+    from checker.checks import load_checks
+    from checker.packs.format import MAX_BYTES
+    from checker.packs.signing import MAX_SIGNATURE_BYTES
+    from checker.packs.store import StoreError, add
+    from checker.report import visible
+
+    base = home()
+    try:
+        config = load_config(base)
+        data = _read_untrusted(args.file, MAX_BYTES)
+        signature = _read_untrusted(args.signature or f"{args.file}.minisig", MAX_SIGNATURE_BYTES)
+        with _packs_lock(base):
+            stored, outcome = add(
+                base, config.packs.trusted_keys, data, signature, set(load_checks())
+            )
+    except (EvidenceError, OSError) as exc:
+        print(f"checker: {exc.strerror if isinstance(exc, OSError) and exc.strerror else exc}",
+              file=sys.stderr)  # fmt: skip
+        return 1
+    except StoreError as exc:
+        print(f"checker: {args.file} wasn't added:", file=sys.stderr)
+        for line in str(exc).splitlines():
+            print(f"  {visible(line, 1000)}", file=sys.stderr)
+        return 1
+    pack = stored.pack
+    print(
+        f"{pack.id} version {pack.version} ({visible(pack.title, 200)}): {outcome}."
+        f" Signed by {stored.signed_by.who} ({stored.signed_by.key.key_id})."
+    )
+    if outcome != "already in force":
+        print("`checker analyze --all` applies it to every host's latest bundle.")
+    return 0
+
+
+def cmd_packs_list(args: argparse.Namespace) -> int:
+    from checker.packs.store import active, retired
+    from checker.report import visible
+
+    base = home()
+    try:
+        config = load_config(base)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    usable, problems = active(base, config.packs.trusted_keys)
+    if not usable:
+        print("No pack is in force.")
+    for stored in usable:
+        pack = stored.pack
+        print(
+            f"{pack.id:28} v{pack.version:<4} {pack.published}  {visible(pack.title, 80)}"
+            f"  (signed by {stored.signed_by.who})"
+        )
+    for problem in problems:
+        print(f"checker: not used: {visible(problem, 300)}", file=sys.stderr)
+    if args.retired:
+        for pack_id, version, why in retired(base):
+            print(f"retired: {pack_id} v{version}: {visible(why, 300)}")
+    return 1 if problems else 0
+
+
+def cmd_packs_show(args: argparse.Namespace) -> int:
+    from checker.packs.store import active
+    from checker.report import visible
+
+    base = home()
+    try:
+        config = load_config(base)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    usable, _ = active(base, config.packs.trusted_keys)
+    found = [s for s in usable if s.pack.id == args.id]
+    if not found:
+        print(f"checker: no pack {args.id!r} is in force", file=sys.stderr)
+        return 1
+    stored = found[-1]
+    pack = stored.pack
+    exposure = pack.exposure
+    print(f"{pack.id} version {pack.version}, published {pack.published}")
+    print(f"  {visible(pack.title, 200)}")
+    signer = stored.signed_by
+    print(f"  Signed by {signer.who} ({signer.key.key_id}); sha256 {stored.sha256}")
+    if pack.cves:
+        print(f"  CVEs: {', '.join(pack.cves)}")
+    window = exposure.window_end.isoformat() if exposure.window_end else "still active"
+    print(f"  Exposure window: {exposure.window_start.isoformat()} to {window}")
+    print(f"  A host exposed through it: odds of compromise times {exposure.likelihood_ratio:g}")
+    for entry in exposure.packages:
+        which = f" (installed versions {entry.versions})" if entry.versions else ""
+        fixed = entry.fixed or "no fix yet"
+        print(f"  {entry.release}: {', '.join(entry.binary_names)}{which}: fixed in {fixed}")
+    for mitigation in pack.mitigations:
+        expect = visible(mitigation.expect, 100)
+        print(f"  Mitigation {mitigation.id}: {mitigation.setting.name} = {expect}")
+    for detection in pack.detections:
+        ratio = f"{detection.likelihood_ratio:g}"
+        print(f"  Detection {detection.id}: {detection.check} (LR {ratio} in the window)")
+    return 0
+
+
+def cmd_packs_retire(args: argparse.Namespace) -> int:
+    from checker.packs.store import StoreError, retire
+
+    base = home()
+    try:
+        with _packs_lock(base):
+            names = retire(base, args.id, f"retired by hand: {args.reason}")
+    except (StoreError, OSError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    print(f"Retired: {', '.join(names)} (kept in packs/retired/).")
+    return 0
+
+
+def cmd_packs_keys(args: argparse.Namespace) -> int:
+    from checker.packs.trust import key_list, root_keys
+
+    base = home()
+    try:
+        config = load_config(base)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    listed = key_list(base)
+    if not root_keys():
+        print("NouriLoop keys: none yet in this version of the tool.")
+    elif listed is None:
+        print("NouriLoop keys: no key list in force.")
+    else:
+        print(f"NouriLoop key list: serial {listed.serial}, issued {listed.issued}.")
+        for entry in listed.pack_keys:
+            from checker.packs.signing import public_key
+
+            print(f"  trusted: {entry.name} ({public_key(entry.public_key).key_id})")
+        for gone in listed.revoked:
+            print(f"  revoked: {gone.key_id} since {gone.since}: {gone.reason}")
+    if config.packs.trusted_keys:
+        from checker.packs.signing import public_key
+
+        print("Your organization's keys:")
+        for entry in config.packs.trusted_keys:
+            print(f"  {entry.name} ({public_key(entry.public_key).key_id})")
+    return 0
+
+
+def cmd_packs_keys_add(args: argparse.Namespace) -> int:
+    from checker.packs.signing import MAX_SIGNATURE_BYTES
+    from checker.packs.store import sweep
+    from checker.packs.trust import TrustError, accept_key_list
+
+    base = home()
+    try:
+        config = load_config(base)
+        data = _read_untrusted(args.file, 64 * 1024)
+        signature = _read_untrusted(args.signature or f"{args.file}.minisig", MAX_SIGNATURE_BYTES)
+        with _packs_lock(base):
+            new, old = accept_key_list(base, data, signature)
+            retired = sweep(base, config.packs.trusted_keys)
+    except (EvidenceError, OSError, TrustError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    print(f"Key list serial {new.serial} is in force" + (f" (was {old.serial})." if old else "."))
+    for name in retired:
+        print(f"Retired {name}: its signing key is no longer trusted.")
+    return 0
+
+
+def cmd_packs_trust_add(args: argparse.Namespace) -> int:
+    from checker.packs.signing import SignatureError, public_key
+    from checker.settings import change_trusted_keys
+
+    base = home()
+    try:
+        key = public_key(_read_untrusted(args.key, 4096).decode("ascii", "replace"))
+        current = [k.model_dump() for k in load_config(base).packs.trusted_keys]
+        change_trusted_keys(base, [*current, {"name": args.name, "public_key": key.text}])
+    except (EvidenceError, OSError, SignatureError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    print(f"Trusted for your packs: {args.name} ({key.key_id}). Recorded (checker config history).")
+    return 0
+
+
+def cmd_packs_trust_remove(args: argparse.Namespace) -> int:
+    from checker.packs.store import sweep
+    from checker.settings import change_trusted_keys
+
+    base = home()
+    try:
+        current = [k.model_dump() for k in load_config(base).packs.trusted_keys]
+        kept = [k for k in current if k["name"] != args.name]
+        if len(kept) == len(current):
+            raise EvidenceError(f"no trusted key is named {args.name!r}")
+        with _packs_lock(base):
+            _, _, config = change_trusted_keys(base, kept)
+            retired = sweep(base, config.packs.trusted_keys)
+    except (EvidenceError, OSError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    print(f"No longer trusted: {args.name}. Recorded (checker config history).")
+    for name in retired:
+        print(f"Retired {name}: it was signed with that key.")
     return 0
 
 

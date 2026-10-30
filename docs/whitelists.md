@@ -261,17 +261,26 @@ checked against the host's real findings, after its placeholders are
 turned back into names, and offered only when:
 
 - it is a valid rule (the same model as these files) that narrows its
-  check, expires within 90 days, and has an id the host's whitelist doesn't
-  use;
-- it hides every finding it names, none already suppressed;
-- none of them is **critical** or **part of a chain**: those are never
-  whitelisted by proposal, only by hand (Phase 3 decision 7);
+  check, expires within 90 days, and has an id no whitelist it could join
+  uses;
+- its check isn't one that can raise a critical finding (`account.uid0`,
+  `kernel.taint`, `package.changed`, `persistence.ld_preload`,
+  `process.hidden`): a rule for one could hide a critical finding later,
+  so those are written only by hand;
+- it hides every finding it names, none already suppressed, none
+  **critical** or **part of a chain** (only by hand: Phase 3 decision 7),
+  all of one variant, which the rule names;
+- it is exact: a path or exe pattern only when several named findings need
+  it, no wider than their common directory; a network only when several
+  named addresses need it, no wider than /24 (/64);
 - it hides nothing else in any stored analysis of the host, and, for a
-  group rule, of any host in the group.
+  group rule, of any host in the group, and nothing critical or chained
+  there either.
 
-The accepted rules are written to `whitelist/proposals/HOST-TIME.yaml`
+The accepted rules are written to `proposals/HOST-TIME.yaml` (beside `whitelist/`, not in it)
 (owner-only), each with the layer file it belongs in and the findings it
-hides. Its `owner` is left empty, so `checker whitelist check` refuses it
+hides. The file is read back before it is kept and must hold exactly the
+accepted rules, so text from a host quoted in its comments can't add one. Its `owner` is left empty, so `checker whitelist check` refuses it
 until a person writes in who vouches for it. Review, set the owner, try it
 with `checker whitelist test`, then copy it into the layer file. The
 report lists what was proposed and what was set aside, and why.

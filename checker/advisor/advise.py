@@ -168,9 +168,14 @@ def advise(
             answer = _restore(raw, pseudonyms.restore) if pseudonyms is not None else raw
     judged, written = None, None
     if status == "answered" and role == "whitelist":
-        judged, written = _proposals(
-            store, host, identity, inventory, whitelist, which, answer, home
-        )
+        try:
+            judged, written = _proposals(
+                store, host, identity, inventory, whitelist, which, answer, home
+            )
+        except Exception as exc:  # the answer was paid for: kept, whatever happens next
+            note = f"the proposals couldn't be judged: {type(exc).__name__}: {exc}"
+            record(outcome, "invalid", raw, answer, note)
+            raise AdvisorError(note) from exc
         answer = dict(
             answer,
             judged=[
@@ -201,27 +206,33 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home)
     from checker.assess import load_assessment
     from checker.baseline import usable_bundles
     from checker.inventory import home as default_home
+    from checker.whitelist import WhitelistError
+    from checker.whitelist import for_host as whitelist_for_host
 
+    base = home or default_home()
     report = which["report"]
     group = which["group"]
 
-    def latest_findings(name: str, skip: str | None = None) -> list[list[dict]]:
+    def assessments(name: str, skip: str | None = None) -> list[dict]:
         found = []
         for row in usable_bundles(store, name):
-            if row["id"] == skip:
-                continue
-            assessment = load_assessment(store, row["id"], identity)
-            if assessment is not None:
-                found.append(assessment.get("findings") or [])
+            if row["id"] != skip and (assessment := load_assessment(store, row["id"], identity)):
+                found.append(assessment)
         return found
 
-    others = latest_findings(host, skip=which["bundle_id"])
-    group_others = []
+    others = assessments(host, skip=which["bundle_id"])
+    group_others: list[dict] = []
+    rule_ids = {placed.rule.id for placed in whitelist.rules} if whitelist else set()
     if group:
         for entry in inventory.hosts:
             if entry.group == group and entry.name != host:
-                group_others += latest_findings(entry.name)[-1:]
-    rule_ids = {placed.rule.id for placed in whitelist.rules} if whitelist else set()
+                group_others += assessments(entry.name)
+                try:
+                    theirs = whitelist_for_host(base, entry.name, inventory)
+                except WhitelistError:
+                    theirs = None
+                if theirs:
+                    rule_ids |= {placed.rule.id for placed in theirs.rules}
     judged = judge(
         answer.get("proposals") or [],
         report.assessment["findings"],
@@ -232,9 +243,7 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home)
         rule_ids,
         group=group,
     )
-    written = write_file(
-        home or default_home(), host, group, judged, datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-    )
+    written = write_file(base, host, group, judged, datetime.now(UTC).strftime("%Y-%m-%d %H:%M"))
     return judged, written
 
 

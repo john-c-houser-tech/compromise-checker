@@ -6,22 +6,33 @@ they are offered in.
 A proposal is offered only when, in this order:
 
 1. it is a valid whitelist rule (checker/whitelist.py's own model) that
-   narrows its check, expires within 90 days, and whose id the host's
-   whitelist doesn't use already;
-2. it hides every finding it names, none of them already suppressed;
-3. none of those is in the critical band or part of a chain: those are
-   never whitelisted by proposal, only by hand (decision 7);
-4. it hides nothing else, in any stored assessment of the host, and for a
-   group rule of any host in the group.
+   narrows its check, expires within 90 days, and whose id isn't in use;
+2. its check is not one that can raise a critical finding (HAND_ONLY):
+   a rule for such a check could hide a critical finding later;
+3. it hides every finding it names, none of them already suppressed,
+   critical or part of a chain (decision 7: those only by hand), all of
+   one variant, which the rule names;
+4. it is exact where it can be: a path or exe pattern only when several
+   named findings need it, no wider than their common directory; a network
+   only when several named addresses need it, no wider than /24 (/64); no
+   named entity that itself holds a wildcard character;
+5. it hides nothing else, now or in any stored assessment of the host, and
+   for a group rule of any host in the group; and nothing it would hide
+   there is critical or part of a chain.
 
 Nothing here writes a whitelist: accepted rules go to a proposal file a
-person reviews, completes (the owner is left empty, so `checker whitelist
-check` refuses the rule until someone vouches for it) and copies in.
+person reviews, completes (the owner is left empty, so the rule is refused
+until someone vouches for it) and copies in. The file is read back before
+it is kept: it must hold exactly the accepted rules, so text from a host
+can't add one.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import posixpath
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -30,25 +41,41 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from checker.files import atomic_write
+from checker.report import visible
 from checker.whitelist import Rule, matches
 
 MAX_DAYS = 90
 OWNER_PLACEHOLDER = "proposal"  # only for validating; the file leaves it empty
+# Checks that can raise a critical finding (tests/test_advisor_proposals.py
+# keeps this list complete): their rules are only ever written by hand.
+HAND_ONLY = {
+    "account.uid0",
+    "kernel.taint",
+    "package.changed",
+    "persistence.ld_preload",
+    "process.hidden",
+}
+FINDING_ID = re.compile(r"F-([1-9][0-9]{0,5})")
+WILDCARDS = re.compile(r"[*?]")
+WIDEST = {4: 24, 6: 64}  # the widest network a proposal may name
 
 
 @dataclass
 class Judged:
     proposal: dict[str, Any]
     accepted: bool
-    reason: str = ""  # why it was rejected
+    reason: str = ""  # why it was set aside
     rule: dict[str, Any] | None = None  # as it goes in the file
     hides: list[str] = field(default_factory=list)  # F-ids, with their summaries
 
 
+class ProposalFileError(Exception):
+    """The file didn't read back as exactly the accepted rules."""
+
+
 def _rule(proposal: dict[str, Any], today: date) -> Rule:
     days = proposal.get("expires_in_days")
-    if not isinstance(days, int) or not 1 <= days <= MAX_DAYS:
+    if not isinstance(days, int) or isinstance(days, bool) or not 1 <= days <= MAX_DAYS:
         raise ValueError(f"its expiry must be 1 to {MAX_DAYS} days away (got {days})")
     match = {k: v for k, v in (proposal.get("match") or {}).items() if v not in (None, "")}
     return Rule.model_validate(
@@ -68,20 +95,82 @@ def _first_error(exc: ValidationError) -> str:
     return f"not a valid rule ({where}: {error['msg'].removeprefix('Value error, ')})"
 
 
+def _entities(finding: dict[str, Any], kind: str) -> list[str]:
+    return [
+        str(e).partition(":")[2]
+        for e in finding.get("entities") or []
+        if str(e).startswith(kind + ":")
+    ]
+
+
+def _identity(finding: dict[str, Any]) -> tuple:
+    """A finding the same as another, wherever it was found."""
+    return (
+        finding.get("check"),
+        finding.get("variant"),
+        tuple(sorted(finding.get("entities") or [])),
+    )
+
+
+def _exactness(rule: Rule, named: list[dict[str, Any]]) -> str | None:
+    """Why the rule is wider than its findings need, or None."""
+    for kind in ("path", "exe"):
+        pattern = getattr(rule.match, kind)
+        values = [v for f in named for v in _entities(f, kind)]
+        if any(WILDCARDS.search(v) for v in values):
+            return f"a named {kind} holds a wildcard character itself: only by hand"
+        if pattern is None or not WILDCARDS.search(pattern):
+            continue
+        if len(set(values)) < 2:
+            return f"its {kind} is a pattern where the exact value does"
+        fixed = pattern.split("*")[0].split("?")[0].rsplit("/", 1)[0] or "/"
+        common = posixpath.commonpath([posixpath.dirname(v) for v in values])
+        if len(fixed.rstrip("/")) < len(common.rstrip("/")):
+            return f"its {kind} pattern reaches above {common}, the findings' own directory"
+    if rule.match.address is not None:
+        network = ipaddress.ip_network(rule.match.address)
+        if network.prefixlen < network.max_prefixlen:
+            values = [v for f in named for v in _entities(f, "address")]
+            if rule.match.address in values:
+                return None  # the finding is about that network
+            if len(set(values)) < 2:
+                return "its address is a network where the single address does"
+            if network.prefixlen < WIDEST[network.version]:
+                return f"its network is wider than /{WIDEST[network.version]}"
+    return None
+
+
+def _pool_problem(rule: Rule, assessment: dict[str, Any], named_ids: set, where: str) -> str | None:
+    found = assessment.get("findings") or []
+    chained = {
+        i
+        for c in (assessment.get("score") or {}).get("chains") or []
+        for i in c.get("findings") or []
+    }
+    for index, finding in enumerate(found):
+        if not matches(rule.match, finding):
+            continue
+        if finding.get("band") == "critical" or index in chained:
+            return f"it would hide a critical or chained finding in {where}"
+        if _identity(finding) not in named_ids:
+            return f"it would also hide, in {where}: {str(finding.get('summary'))[:120]}"
+    return None
+
+
 def judge(
     proposals: list[dict[str, Any]],
     findings: list[dict[str, Any]],
     chains: list[dict[str, Any]],
     events: list,
-    others: list[list[dict[str, Any]]],
-    group_others: list[list[dict[str, Any]]],
+    others: list[dict[str, Any]],
+    group_others: list[dict[str, Any]],
     rule_ids: set[str],
     today: date | None = None,
     group: str | None = None,
 ) -> list[Judged]:
     """`findings` are the assessment's (F-n is findings[n-1]); `others` are
-    the host's other stored assessments' findings, `group_others` the other
-    hosts' in its group; `rule_ids` the ids its whitelist uses."""
+    the host's other stored assessments, `group_others` those of the other
+    hosts in its group; `rule_ids` the ids their whitelists use."""
     today = today or datetime.now(UTC).date()
     in_chain = {i for chain in chains for i in chain.get("findings") or []}
     results, taken = [], set(rule_ids)
@@ -97,25 +186,26 @@ def judge(
         problem = None
         if rule.id in taken:
             problem = f"its id {rule.id!r} is already used"
+        elif proposal.get("layer") not in ("host", "group"):
+            problem = "its layer must be host or group"
         elif proposal.get("layer") == "group" and not group:
             problem = "it is for the group, and the host is in none"
-        named = []
+        elif rule.match.check in HAND_ONLY:
+            problem = f"{rule.match.check} can raise critical findings: its rules are only by hand"
+        named: list[int] = []
         for fid in proposal.get("findings") or []:
-            try:
-                index = int(str(fid).removeprefix("F-")) - 1
-            except ValueError:
-                index = -1
+            found = FINDING_ID.fullmatch(str(fid))
+            index = int(found.group(1)) - 1 if found else -1
             if not 0 <= index < len(findings):
                 problem = problem or f"{fid} isn't a finding of this assessment"
-                continue
-            named.append(index)
+            elif index not in named:
+                named.append(index)
         if not named:
             problem = problem or "it names no finding"
         for index in named:
-            finding = findings[index]
-            fid = f"F-{index + 1}"
             if problem:
                 break
+            finding, fid = findings[index], f"F-{index + 1}"
             if finding.get("suppressed_by"):
                 problem = f"{fid} is already suppressed by {finding['suppressed_by'].get('rule')}"
             elif finding.get("band") == "critical":
@@ -125,6 +215,14 @@ def judge(
             elif not matches(rule.match, finding, events):
                 problem = f"it doesn't hide {fid}"
         if not problem:
+            variants = {findings[i].get("variant") for i in named}
+            if len(variants) > 1:
+                problem = "it names findings of different variants"
+            elif rule.match.variant != next(iter(variants)):
+                problem = f"it must name the findings' variant ({next(iter(variants))})"
+        if not problem:
+            problem = _exactness(rule, [findings[i] for i in named])
+        if not problem:
             extra = [
                 f"F-{i + 1}"
                 for i, f in enumerate(findings)
@@ -133,18 +231,14 @@ def judge(
             if extra:
                 problem = f"it would also hide {', '.join(extra)}, which it doesn't name"
         if not problem:
+            named_ids = {_identity(findings[i]) for i in named}
             pools = [("another of the host's assessments", others)]
             if proposal.get("layer") == "group":
-                pools.append(("a finding on another host in the group", group_others))
+                pools.append(("another host in the group", group_others))
             for where, pool in pools:
-                for listed in pool:
-                    hidden = [f for f in listed if matches(rule.match, f)]
-                    named_checks = {(findings[i]["check"], findings[i]["summary"]) for i in named}
-                    unexplained = [
-                        f for f in hidden if (f["check"], f.get("summary")) not in named_checks
-                    ]
-                    if unexplained:
-                        problem = f"it would also hide {where}: {unexplained[0]['summary'][:120]}"
+                for assessment in pool:
+                    problem = _pool_problem(rule, assessment, named_ids, where)
+                    if problem:
                         break
                 if problem:
                     break
@@ -166,41 +260,66 @@ def judge(
     return results
 
 
+def _comment(text: Any, limit: int = 150) -> str:
+    """Text for a comment line: shown escaped (line breaks of every kind
+    become visible escapes), so it can't end the comment."""
+    shown = str(visible(text, limit))
+    return re.sub(r"[\r\n\x0b\x0c\x85\u2028\u2029]", " ", shown)
+
+
+def proposals_directory(home: Path) -> Path:
+    """Beside, not inside, whitelist/: a proposal isn't a layer file."""
+    return home / "proposals"
+
+
 def write_file(
     home: Path, host: str, group: str | None, judged: list[Judged], advice_at: str
 ) -> Path | None:
     """The proposal file, owner-only like the evidence (it names the host's
-    accounts and paths); None when nothing was accepted."""
+    accounts and paths); None when nothing was accepted. Read back before it
+    is kept: it must hold exactly the accepted rules."""
     accepted = [j for j in judged if j.accepted]
     if not accepted:
         return None
-    directory = home / "whitelist" / "proposals"
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(directory, 0o700)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    path = directory / f"{host}-{stamp}.yaml"
     lines = [
-        f"# Whitelist proposals for {host} from the AI advisor ({advice_at} UTC).",
+        f"# Whitelist proposals for {_comment(host, 80)} from the AI advisor"
+        f" ({_comment(advice_at, 40)} UTC).",
         "# Advice, not rules: nothing here is in effect. Review each one; set its",
-        "# owner (who vouches for it: `checker whitelist check` refuses an empty one);",
-        "# copy it into the layer file named above it; `checker whitelist test` first.",
-        "# The file is itself a valid whitelist layer once every owner is set.",
+        "# owner (who vouches for it: an empty one is refused); copy it into the",
+        "# layer file named above it, with `checker whitelist test` first.",
         "# Each was checked: it hides only the findings it names, none of them",
         "# critical or part of a chain, on this host's stored assessments"
-        + (" and the group's hosts." if group else "."),
+        + (" and its group's." if group else "."),
+        "",
+        "rules:",
     ]
-    lines += ["", "rules:"]
     for item in accepted:
         layer = item.proposal.get("layer", "host")
         target = (
-            f"whitelist/groups/{group}.yaml"
+            f"whitelist/groups/{_comment(group, 80)}.yaml"
             if layer == "group"
-            else (f"whitelist/hosts/{host}.yaml")
+            else f"whitelist/hosts/{_comment(host, 80)}.yaml"
         )
         lines += ["", f"  # for {target}"]
         for hidden in item.hides:
-            lines.append(f"  # hides {hidden[:150]}")
-        body = yaml.safe_dump([item.rule], sort_keys=False, allow_unicode=True)
+            lines.append(f"  # hides {_comment(hidden)}")
+        body = yaml.safe_dump([item.rule], sort_keys=False, allow_unicode=False)
         lines += ["  " + line for line in body.rstrip("\n").split("\n")]
-    atomic_write(path, "\n".join(lines) + "\n")
-    return path
+    text = "\n".join(lines) + "\n"
+    if yaml.safe_load(text) != {"rules": [item.rule for item in accepted]}:
+        raise ProposalFileError("the proposal file didn't read back as the accepted rules")
+    directory = proposals_directory(home)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(directory, 0o700)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    safe_host = re.sub(r"[^A-Za-z0-9._-]", "_", host)
+    for attempt in range(100):
+        path = directory / f"{safe_host}-{stamp}{f'-{attempt + 1}' if attempt else ''}.yaml"
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(text)
+        return path
+    raise ProposalFileError("no free name for the proposal file")

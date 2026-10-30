@@ -128,19 +128,22 @@ class WhitelistAnswer(BaseModel):
 
 
 WHITELIST_QUESTION = (
-    "Propose whitelist rules for findings that are routine for this host: expected"
-    " behaviour the evidence explains (a known deploy account, a monitoring agent, a"
-    " package's own account). Each rule is as narrow as the evidence allows: its check"
-    " (and variant), plus values copied from the findings' entities (kind:value) for"
-    " account, group, key, module, package, program, address (an address or network,"
-    " host bits zero), path and exe (anchored patterns: * within one directory, **"
-    " across), container and image (only together). Give the findings each rule should"
-    " hide, a layer (host, or group for what every host in the group does), an id, a"
-    " reason a reviewer can check, and an expiry of at most 90 days. A rule must hide"
-    " only the findings it names. Critical findings and findings that are part of a"
-    " chain are never whitelisted by proposal; neither are suppressed ones. Propose"
-    " nothing when nothing is routine, and list under left_alone the findings that"
-    " might look routine but should stay visible."
+    "Propose whitelist rules for findings that are routine for this host: expected "
+    "behaviour the evidence explains (a known deploy account, a monitoring agent, a "
+    "package's own account). Each rule is as narrow as the evidence allows: its check "
+    "(and the findings' variant), plus values copied exactly from the findings' entities "
+    "(kind:value) for account, group, key, module, package, program, address, path and "
+    "exe, container and image (only together). Use the exact value; a network (host bits "
+    "zero) or a pattern (* within one directory, ** across) only when several named "
+    "findings need it, no wider than they need. Give the findings each rule should hide, "
+    "a layer (host, or group for what every host in the group does), an id, a reason a "
+    "reviewer can check, and an expiry of at most 90 days. A rule must hide only the "
+    "findings it names. Critical findings and findings that are part of a chain are never"
+    " whitelisted by proposal, nor are the checks that can raise critical findings "
+    "(account.uid0, kernel.taint, package.changed, persistence.ld_preload, "
+    "process.hidden); neither are suppressed findings. Propose nothing when nothing is "
+    "routine, and list under left_alone the findings that might look routine but should "
+    "stay visible."
 )
 
 ROLES = {

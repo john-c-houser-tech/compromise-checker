@@ -86,13 +86,14 @@ def test_a_narrow_rule_is_offered():
         (proposal(days=120), "1 to 90 days"),
         (proposal(days=0), "1 to 90 days"),
         (proposal(["F-3"], match=None) if False else {**proposal(["F-3"]), "match": {
-         "check": "account.uid0", "account": "toor"}}, "F-3 is critical"),
+         "check": "account.uid0", "account": "toor"}}, "only by hand"),
         ({**proposal(["F-4"]), "match": {"check": "sudo.rules", "account": "eve"}},
          "F-4 is part of a chain"),
         (proposal(["F-5"], address="192.0.2.9/32", account="ops"), "already suppressed"),
         (proposal(["F-9"]), "F-9 isn't a finding"),
         (proposal(["F-1"], address="203.0.113.5/32", account="someone"), "doesn't hide F-1"),
-        (proposal(["F-1"], address="128.0.0.0/1", account=None), "also hide F-2"),
+        (proposal(["F-1"], address="128.0.0.0/1", account=None),
+         "network where the single address"),
         ({**proposal(), "match": {"check": "nope", "account": "deploy"}}, "no check 'nope'"),
         ({**proposal(), "id": "Has Spaces"}, "lower-case letters"),
         (proposal(layer="group"), "the host is in none"),
@@ -112,22 +113,24 @@ def test_ids_already_used_are_set_aside():
 
 
 def test_a_rule_hiding_something_in_another_stored_assessment_is_set_aside():
-    older = [finding("ssh.login", "medium", ["address:203.0.113.5", "account:deploy"],
+    older = [finding("ssh.login", "medium",
+                     ["address:203.0.113.5", "account:deploy", "program:sshd-session"],
                      "203.0.113.5: 9 login(s) as deploy at night", "new_address")]  # fmt: skip
-    (result,) = judged(proposal(), others=[older])
+    (result,) = judged(proposal(), others=[{"findings": older}])
     assert "another of the host's assessments" in result.reason
     same = [FINDINGS[0]]  # the same finding in an older assessment is fine
-    assert judged(proposal(), others=[same])[0].accepted
+    assert judged(proposal(), others=[{"findings": same}])[0].accepted
 
 
 def test_a_group_rule_must_be_safe_for_the_whole_group():
-    elsewhere = [finding("ssh.login", "medium", ["address:203.0.113.5", "account:deploy"],
+    elsewhere = [finding("ssh.login", "medium",
+                         ["address:203.0.113.5", "account:deploy", "program:sshd-session"],
                          "203.0.113.5: 3 login(s) as deploy on db01", "new_address")]  # fmt: skip
-    (result,) = judged(proposal(layer="group"), group_others=[elsewhere], group="web")
+    (result,) = judged(proposal(layer="group"), group_others=[{"findings": elsewhere}], group="web")
     assert "another host in the group" in result.reason
     assert judged(proposal(layer="group"), group="web")[0].accepted
     # A host rule doesn't look at the group.
-    assert judged(proposal(), group_others=[elsewhere], group="web")[0].accepted
+    assert judged(proposal(), group_others=[{"findings": elsewhere}], group="web")[0].accepted
 
 
 def test_the_file_is_a_valid_layer_once_owners_are_set(tmp_path):
@@ -214,7 +217,7 @@ def test_an_accepted_proposal_is_written_with_real_names(sudo_host):
     assert item.accepted, item.reason
     text = advice.file.read_text()
     assert "account: jch" in text and not TOKEN.search(text)  # restored
-    assert advice.file.parent == base / "whitelist" / "proposals"
+    assert advice.file.parent == base / "proposals"
     assert not (base / "whitelist" / "hosts" / "web01.yaml").exists()  # nothing applied
 
 
@@ -247,3 +250,180 @@ def test_the_report_lists_the_proposals(sudo_host):
     section = html.split("whitelist proposals (not in effect)")[1].split("</div>")[0]
     assert "1 proposed" in section and "1 set aside" in section
     assert "jch-admin" in section and "critical" in section
+
+
+# --- What the review of 3.3 found ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("brk", ["\n", "\r", "\x85", "\u2028", "\u2029", "\x0b"])
+def test_host_text_in_comments_cant_add_a_rule(tmp_path, brk):
+    planted = (
+        f"/usr/sbin/nginx LD_PRELOAD=/x{brk}  - {{id: e, match: {{check: persistence.ld_preload}},"
+        " broad: true, reason: r, owner: o, expires: never}"
+    )
+    findings = [dict(FINDINGS[0], summary=planted)]
+    results = judge([proposal()], findings, [], [], [], [], set(), TODAY)
+    path = write_file(tmp_path, "web01", None, results, "now")
+    data = yaml.safe_load(path.read_text())
+    assert [r["id"] for r in data["rules"]] == ["deploy-office"]
+    assert all(
+        line.startswith("  # hides") for line in path.read_text().splitlines() if "nginx" in line
+    )
+
+
+def test_the_file_must_read_back_as_the_accepted_rules(tmp_path, monkeypatch):
+    from checker.advisor import proposals
+
+    results = judged(proposal())
+    monkeypatch.setattr(proposals.yaml, "safe_load", lambda text: {"rules": []})
+    with pytest.raises(proposals.ProposalFileError):
+        write_file(tmp_path, "web01", None, results, "now")
+    assert not (tmp_path / "proposals").exists() or not list((tmp_path / "proposals").iterdir())
+
+
+def test_unicode_is_written_escaped(tmp_path):
+    rlo = chr(0x202E)
+    results = judged({**proposal(), "reason": "the office" + rlo + "gnp"})
+    text = write_file(tmp_path, "web01", None, results, "now").read_text()
+    assert rlo not in text and "\\u202E" in text
+    assert yaml.safe_load(text)["rules"][0]["reason"] == "the office" + rlo + "gnp"
+
+
+def test_checks_that_can_raise_critical_findings_are_hand_only():
+    medium_uid0 = finding("account.uid0", "high", ["account:deploy"], "deploy appears again")
+    results = judge(
+        [{**proposal(), "match": {"check": "account.uid0", "account": "deploy"}}],
+        [medium_uid0], [], [], [], [], set(), TODAY,
+    )  # fmt: skip
+    assert "only by hand" in results[0].reason
+
+
+def test_hand_only_covers_every_check_seen_raising_critical():
+    import sys
+    from pathlib import Path
+
+    from checker.advisor.proposals import HAND_ONLY
+
+    sys.path.insert(0, str(Path(__file__).parent / "integration"))
+    import golden
+
+    critical = set()
+    for path in golden.cases():
+        for found in golden.run_case(golden.load_case(path))["findings"]:
+            if found["band"] == "critical":
+                critical.add(found["check"])
+    assert critical and critical <= HAND_ONLY
+    # And in the checks' code: each literal "critical" band belongs to one.
+    import inspect
+
+    from checker.checks import load_checks
+
+    for check_id, item in load_checks().items():
+        if '"critical"' in inspect.getsource(item.run):
+            assert check_id in HAND_ONLY, check_id
+
+
+def test_the_variant_must_be_named():
+    results = judged({**proposal(), "match": {"check": "ssh.login", "address": "203.0.113.5/32",
+                                              "account": "deploy"}})  # fmt: skip
+    assert "must name the findings' variant (new_address)" in results[0].reason
+
+
+def path_finding(path, summary):
+    return finding("files.scratch", "medium", [f"path:{path}"], summary)
+
+
+def path_proposal(names, pattern):
+    return {"findings": names, "layer": "host", "id": "app-cache", "match": {
+        "check": "files.scratch", "path": pattern}, "reason": "the app's cache",
+        "expires_in_days": 30}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("paths", "names", "pattern", "why"),
+    [
+        (["/var/www/app/a.php"], ["F-1"], "/var/www/app/*", "pattern where the exact value"),
+        (["/var/www/app/a.php", "/var/www/app/b.php"], ["F-1", "F-2"], "/var/**", "reaches above"),
+        (["/var/www/app/*"], ["F-1"], "/var/www/app/*", "holds a wildcard character"),
+        (["/usr/share/doc/foo/README"], ["F-1"], "/usr/**", "pattern where the exact value"),
+    ],
+)
+def test_patterns_must_be_needed_and_no_wider(paths, names, pattern, why):
+    findings = [path_finding(p, p) for p in paths]
+    (result,) = judge([path_proposal(names, pattern)], findings, [], [], [], [], set(), TODAY)
+    assert not result.accepted and why in result.reason, result.reason
+
+
+def test_a_pattern_several_findings_need_is_offered():
+    findings = [path_finding(p, p) for p in ("/var/www/app/a.php", "/var/www/app/b.php")]
+    (result,) = judge([path_proposal(["F-1", "F-2"], "/var/www/app/*")], findings, [], [], [],
+                      [], set(), TODAY)  # fmt: skip
+    assert result.accepted, result.reason
+
+
+def address_finding(address):
+    return finding("ssh.login", "medium", [f"address:{address}", "account:deploy"],
+                   f"{address}: 1 login(s) as deploy", "new_address")  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("addresses", "network", "accepted"),
+    [
+        (["203.0.113.5"], "203.0.113.0/24", False),
+        (["203.0.113.5", "203.0.113.9"], "203.0.113.0/24", True),
+        (["203.0.113.5", "203.0.120.9"], "203.0.0.0/16", False),
+        (["203.0.113.0/28"], "203.0.113.0/28", True),
+    ],
+)
+def test_networks_must_be_needed_and_no_wider_than_24(addresses, network, accepted):
+    findings = [address_finding(a) for a in addresses]
+    names = [f"F-{i + 1}" for i in range(len(findings))]
+    (result,) = judge([proposal(names, address=network, account="deploy")], findings, [], [], [],
+                      [], set(), TODAY)  # fmt: skip
+    assert result.accepted is accepted, result.reason
+
+
+def test_a_critical_or_chained_twin_elsewhere_stops_a_rule():
+    twin = dict(FINDINGS[0], band="critical")
+    (result,) = judged(proposal(), others=[{"findings": [twin]}])
+    assert "critical or chained" in result.reason
+    chained = {"findings": [FINDINGS[0]], "score": {"chains": [{"findings": [0]}]}}
+    (result,) = judged(proposal(), others=[chained])
+    assert "critical or chained" in result.reason
+
+
+def test_the_same_finding_with_another_summary_is_still_the_same():
+    again = dict(FINDINGS[0], summary="203.0.113.5: 7 login(s) as deploy")
+    assert judged(proposal(), others=[{"findings": [again]}])[0].accepted
+
+
+@pytest.mark.parametrize("fid", ["F-01", "F-+1", "F- 1", "1", "F-0", "F-1.5"])
+def test_finding_ids_are_read_strictly(fid):
+    (result,) = judged(proposal([fid]))
+    assert not result.accepted and "isn't a finding" in result.reason
+
+
+def test_two_files_in_one_second_dont_overwrite(tmp_path):
+    first = write_file(tmp_path, "web01", None, judged(proposal()), "now")
+    second = write_file(tmp_path, "web01", None, judged(proposal()), "now")
+    assert first != second and first.exists() and second.exists()
+
+
+def test_an_answer_whose_proposals_cant_be_judged_is_still_recorded(sudo_host, monkeypatch):
+    from checker.advisor import proposals
+    from checker.advisor.client import AdvisorError
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(proposals, "judge", broken)
+    with pytest.raises(AdvisorError, match="couldn't be judged"):
+        run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
+    rows = sudo_host[1].advice("b2")
+    assert rows and rows[-1]["status"] == "invalid"
+
+
+def test_a_proposal_file_doesnt_break_whitelist_check(sudo_host, capsys):
+    run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
+    assert list((sudo_host[0] / "proposals").iterdir())
+    assert cli.main(["whitelist", "check"]) == 0

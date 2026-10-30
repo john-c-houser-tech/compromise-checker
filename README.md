@@ -37,7 +37,7 @@ What works today:
   are routine on the host: each is checked against the real findings (it
   must hide exactly the findings it names, none critical or part of a
   chain, on the host's stored analyses and, for a group rule, the
-  group's) and the accepted ones written to `whitelist/proposals/` with
+  group's) and the accepted ones written to `proposals/` with
   the owner left empty, for a person to review and copy in; nothing is
   applied. `--show [--redaction MODE]` prints exactly what would be sent,
   after redaction, and sends nothing. Under *pseudonymize* (the default) people's

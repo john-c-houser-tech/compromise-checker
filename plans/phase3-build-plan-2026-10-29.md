@@ -240,7 +240,7 @@ assessment, its events, snapshot and whitelist, by one module
   group rule over the group's hosts: anything else it would hide is listed,
   and a proposal that would hide a finding it didn't name is rejected);
   it doesn't match a protected check (decision 7).
-- **Output:** a proposal file under `whitelist/proposals/HOST-TIME.yaml`
+- **Output:** a proposal file under `proposals/HOST-TIME.yaml` (beside `whitelist/`)
   (restored from tokens, owner-only), with a comment per rule naming the
   layer file it belongs in and the findings it hides; the owner left empty
   so `checker whitelist check` refuses a rule nobody vouched for; the file

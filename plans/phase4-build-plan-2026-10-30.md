@@ -267,7 +267,8 @@ is John's to approve before it is committed. Also:
   4.7.** A new public repository,
   `john-c-houser-tech/compromise-checker-packs`, under CC BY 4.0.
   Creating it is outward-facing, so it waits for John's word.
-- **D7. Spend on throwaway servers.** The PHP2Shell proof needs a few
+- **D7. Spend on throwaway servers. Decided 2026-10-30 (John): Phase 2's
+  rules: one OK per PR, $10 cap, stop and tell at $5.** The PHP2Shell proof needs a few
   short-lived Linodes, as in Phase 2. *Recommendation:* the same rules: one
   OK per PR, a $10 cap, stop and tell at $5.
 - **D8. What drafting sends.** The advisory text the operator supplies

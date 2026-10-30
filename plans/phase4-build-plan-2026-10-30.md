@@ -97,7 +97,8 @@ is John's to approve before it is committed. Also:
   a `format` number, and validation messages a pack author can act on.
   Pack ids are `[a-z0-9-]`, versions are integers, dates are UTC.
 - Package rules per distribution release: `ubuntu:24.04`, `rhel:9` (also
-  matching Rocky Linux and AlmaLinux 9, by their os-release `ID_LIKE`),
+  matching Rocky Linux and AlmaLinux 9, which the tool maps to their RHEL
+  release),
   each with the source package or binary package names and the first fixed
   version in that vendor's own numbering, plus where it came from.
 - `checker packs check FILE`: validates without trusting or installing.

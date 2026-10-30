@@ -501,23 +501,27 @@ def test_an_older_advice_table_gains_the_endpoint_column(tmp_path):
 
 
 def test_the_report_names_the_server_and_the_lower_quality(enabled):
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config = enabled
     local(base)
     run(enabled, Server())
-    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
     assert "answered by qwen2.5:7b at http://localhost:11434/v1" in html
     assert "Answered by a local model, on the machine that ran" in html
     assert "expect lower quality" in html
 
 
 def test_the_report_is_unchanged_for_anthropic(enabled):
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config = enabled
     run(enabled, Provider())
-    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
     assert "answered by claude-opus-5-5 ·" in html
     assert "Answered by a local model" not in html
 

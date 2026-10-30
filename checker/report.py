@@ -12,14 +12,21 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
+import sys
 import tempfile
+import threading
+import time
 import unicodedata
+import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import pyrage
 from jinja2 import Environment, PackageLoader, select_autoescape
 from markupsafe import Markup
 from pyrage import x25519
@@ -386,9 +393,19 @@ def write_report(
     priors: Callable[[str], tuple[float, str]] | None = None,
     whitelists: Callable[[str], Whitelist | None] | None = None,
     advisor_enabled: bool = False,
+    plain: bool = False,
 ) -> Path:
-    """Write the report (owner-only, like the evidence) and add a
-    `reported` entry, with the report's hash, to each bundle's custody."""
+    """Write the report, encrypted to the evidence key (`report-….html.age`;
+    read_report() reads it) unless `plain`, owner-only either way, and add
+    a `reported` entry, with the hash of the file as written, to each
+    bundle's custody."""
+    if output is not None and not plain and not output.name.endswith(".html.age"):
+        raise EvidenceError(
+            f"an encrypted report's name ends in .html.age ({output.name}); --plain writes"
+            " plain HTML"
+        )
+    if output is not None and plain and output.suffix == ".age":
+        raise EvidenceError(f"a plain report's name can't end in .age ({output.name})")
     priors = priors or (lambda _: (DEFAULT_PRIOR, "default"))
     whitelists = whitelists or (lambda _: None)
     reports = [
@@ -401,8 +418,10 @@ def write_report(
         directory.chmod(0o700)  # also when it was already there
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         name = hosts[0] if len(hosts) == 1 else f"{len(hosts)}-hosts"
-        output = directory / f"report-{name}-{stamp}.html"
+        output = directory / (f"report-{name}-{stamp}.html" + ("" if plain else ".age"))
     data = html.encode("utf-8", "backslashreplace")  # never fails on stray text
+    if not plain:
+        data = pyrage.encrypt(data, [x25519.Recipient.from_str(r) for r in recipients])
     # Written whole beside its place (mkstemp makes it owner-only) and then
     # moved there: a crash leaves the old file, a link at the path is
     # replaced rather than followed, and no one holding the old file open
@@ -419,5 +438,129 @@ def write_report(
         raise
     digest = hashlib.sha256(data).hexdigest()
     for report in reports:
-        store.custody(report.row["id"], "reported", {"report_sha256": digest})
+        store.custody(
+            report.row["id"], "reported", {"report_sha256": digest, "encrypted": not plain}
+        )
     return output
+
+
+def read_report(path: Path, identity: x25519.Identity | None) -> str:
+    """A report's HTML: decrypted when it was written encrypted (.age). The
+    one way in for anything that shows reports."""
+    data = path.read_bytes()
+    if path.suffix == ".age":
+        if identity is None:
+            raise EvidenceError("no evidence key here; pass --identity PATH")
+        try:
+            data = pyrage.decrypt(data, [identity])
+        except pyrage.DecryptError as exc:
+            raise EvidenceError(f"cannot decrypt {path.name}: {exc}") from None
+    return data.decode("utf-8")
+
+
+def latest_report(directory: Path) -> Path | None:
+    """The newest report in the reports folder, encrypted or plain (by time,
+    then by name, whose UTC stamp sorts by time where clocks are coarse)."""
+    found = [
+        p
+        for p in directory.glob("report-*.html*")
+        if p.name.endswith((".html", ".html.age")) and p.is_file() and not p.is_symlink()
+    ]
+    return _newest(found)
+
+
+def _newest(paths: list[Path]) -> Path | None:
+    return max(paths, key=lambda p: (p.stat().st_mtime, p.name)) if paths else None
+
+
+# The page's own policy, sent as a header too: it loads nothing.
+CSP = (
+    "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; form-action 'none';"
+    " base-uri 'none'"
+)
+NO_TERMINAL_SECONDS = 600  # how long a report is shown with no terminal to press Enter in
+
+
+def has_screen(environ: dict[str, str] | None = None, platform: str | None = None) -> bool:
+    """Whether a graphical browser can be started here (not over SSH)."""
+    environ = os.environ if environ is None else environ
+    if (platform or sys.platform) == "darwin":
+        return not environ.get("SSH_CONNECTION")
+    return bool(environ.get("DISPLAY") or environ.get("WAYLAND_DISPLAY"))
+
+
+def _launch(url: str) -> bool:
+    try:
+        browser = webbrowser.get()
+    except webbrowser.Error:
+        return False
+    if isinstance(browser, webbrowser.GenericBrowser) and not isinstance(
+        browser, webbrowser.BackgroundBrowser
+    ):  # a text browser (lynx, w3m, $BROWSER): it would take the terminal
+        return False
+    return browser.open(url)
+
+
+def view(
+    path: Path,
+    identity: x25519.Identity | None,
+    browser: Callable[[str], bool] | None = None,
+    ask: Callable[[str], str] = input,
+    wait: Callable[[float], None] | None = None,
+    say: Callable[[str], None] = print,
+    screen: bool | None = None,
+) -> None:
+    """Show a report in the browser without writing it anywhere in plain. It
+    is served from memory on 127.0.0.1, at an address no one can guess (a
+    random port and a long random path), to requests naming that address
+    as their host, never to be cached; until Enter is pressed, or, with no
+    terminal, for ten minutes. Sandboxed browsers (snap, Flatpak), which
+    can't read a private file, can read it; over SSH, it says how to see it
+    through a forwarded port."""
+    body = read_report(path, identity).encode("utf-8")
+    route = f"/{secrets.token_urlsafe(32)}/{path.name.removesuffix('.age')}"
+
+    class Show(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - the library's name
+            port = self.server.server_address[1]
+            if self.path != route or self.headers.get("Host") != f"127.0.0.1:{port}":
+                self.send_error(404)
+                return
+            self.send_response(200)
+            for name, value in (
+                ("Content-Type", "text/html; charset=utf-8"),
+                ("Content-Length", str(len(body))),
+                ("Cache-Control", "no-store"),
+                ("Content-Security-Policy", CSP),
+                ("Referrer-Policy", "no-referrer"),
+                ("X-Content-Type-Options", "nosniff"),
+            ):
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: Any) -> None:  # nothing on the terminal per request
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Show)
+    port = server.server_address[1]
+    url = f"http://127.0.0.1:{port}{route}"
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        if (has_screen() if screen is None else screen) and (browser or _launch)(url):
+            say(f"Showing {path.name} in your browser, from memory: nothing is written in plain.")
+        else:
+            say(
+                f"Showing {path.name} at {url}\n"
+                f"From another machine: ssh -L {port}:127.0.0.1:{port} THIS-HOST, then open"
+                " that address there."
+            )
+        try:
+            ask("Press Enter to stop showing it: ")
+        except EOFError:
+            minutes = NO_TERMINAL_SECONDS // 60
+            say(f"No terminal to press Enter in: it is shown for {minutes} minutes.")
+            (wait or time.sleep)(NO_TERMINAL_SECONDS)
+    finally:
+        server.shutdown()
+        server.server_close()

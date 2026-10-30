@@ -252,13 +252,13 @@ def test_checker_advise_role_whitelist(sudo_host, capsys, monkeypatch):
 
 
 def test_the_report_lists_the_proposals(sudo_host):
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config = sudo_host
     run(sudo_host, Provider(whitelist_reply(lambda c: sudo_rule(c) + sudo_rule(c))),
         role="whitelist")  # fmt: skip
-    html = write_report(store, ["web01"], identity, load_config(base).recipients,
-                        base / "reports").read_text()  # fmt: skip
+    html = read_report(write_report(store, ["web01"], identity, load_config(base).recipients,
+                        base / "reports"), identity)  # fmt: skip
     section = html.split("whitelist proposals (not in effect)")[1].split("</div>")[0]
     assert "1 proposed" in section and "1 set aside" in section
     assert "app-listener" in section and "already used" in section
@@ -826,7 +826,7 @@ def test_a_rule_reason_is_not_put_down_to_an_intruder():
 
 
 def test_a_request_that_came_to_nothing_shows_for_every_role(sudo_host):
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config = sudo_host
     declined = {"id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
@@ -835,7 +835,9 @@ def test_a_request_that_came_to_nothing_shows_for_every_role(sudo_host):
                 "usage": {"input_tokens": 10, "output_tokens": 0}}  # fmt: skip
     for role in ("whitelist", "coverage", "remediation"):
         run(sudo_host, Provider(lambda body: declined), role=role)
-    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
     for title in ("whitelist proposals", "coverage suggestions", "remediation"):
         assert f"AI advisor, {title}: a request (claude-opus-5-5," in html
     assert html.count("declined by the model&#39;s safety checks (cyber)") >= 3

@@ -146,13 +146,13 @@ def test_a_plan_contradicting_the_band_is_set_aside(enabled):
 
 
 def test_the_report_shows_the_plan(enabled):
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config = enabled
     band = band_of(enabled)
     run(enabled, Provider(remediation_reply(plan(band))), role="remediation")
-    html = write_report(store, ["web01"], identity, config.recipients,
-                        base / "reports").read_text()  # fmt: skip
+    html = read_report(write_report(store, ["web01"], identity, config.recipients,
+                        base / "reports"), identity)  # fmt: skip
     section = html.split("remediation (advice; nothing was run)")[1].split("<h2")[0]
     assert "Preserve evidence first" in section and "[destroys state]" in section
     assert "the security team" in section

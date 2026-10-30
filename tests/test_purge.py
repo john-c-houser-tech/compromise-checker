@@ -258,12 +258,14 @@ def test_reports_showing_a_purged_bundle_go_and_others_stay(home):
     analysed(home)
     analysed(home, "db01")
     mine = write_report(store, ["web01"], identity, config.recipients, base / "reports")
-    both = base / "reports" / "report-2-hosts-x.html"
+    both = base / "reports" / "report-2-hosts-x.html.age"
     write_report(
         store, ["web01", "db01"], identity, config.recipients, base / "reports", None, both
     )
-    theirs = base / "reports" / "report-db01-x.html"
-    write_report(store, ["db01"], identity, config.recipients, base / "reports", None, theirs)
+    theirs = base / "reports" / "report-db01-x.html"  # plain: found by its hash all the same
+    write_report(
+        store, ["db01"], identity, config.recipients, base / "reports", None, theirs, plain=True
+    )
     link = base / "reports" / "report-link.html"
     link.symlink_to(mine)
 

@@ -102,6 +102,7 @@ def test_a_first_run_on_a_rooted_host_alerts_reports_and_tells(fleet, tmp_path):
     text = told.read_text()
     assert text.startswith("Compromise Checker: 2 thing(s) need a look\n")
     assert f"Report: {result.report}" in text
+    assert f"To read it: checker report --open {result.report}" in text
     assert "toor" not in text  # titles and bands only: no evidence
 
 

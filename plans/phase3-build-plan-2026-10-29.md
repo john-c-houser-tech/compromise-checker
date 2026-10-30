@@ -692,7 +692,30 @@ The advisor's answers can't be golden-tested, so they are measured.
   Policy §10 (John approved the wording, 2026-10-30): notifications from
   `checker run` added to what can leave. It can send data somewhere, so
   under §15 it goes at the top of the next release's notes.
+- **3.12 — Reports encrypted at rest (2026-10-30, John: "build it that
+  way"; a web interface to view them comes later, DESIGN Phase 5).**
+  `write_report` encrypts to the evidence key (`report-….html.age`) unless
+  `plain` (`--plain`, with a warning); `--output` must end in `.age`
+  unless plain. Custody records the hash of the file as written and
+  `encrypted`. `read_report()` is the one way in (the web interface will
+  use it). `checker report --open [FILE]` (newest by default) serves it
+  from memory on 127.0.0.1 (random port, unguessable path, Host checked,
+  `no-store`, the page's CSP as a header) until Enter. Purge finds both
+  kinds by hash; the notify summary says how to open the report.
+  Reports written before stay as they are.
+- **After review (3.12; 4 medium, 7 low):** the first viewer wrote a plain
+  copy to a private temporary folder for a minute: snap and Flatpak
+  browsers can't read such a folder, a slow browser lost the race,
+  `xdg-open` "succeeded" with nothing shown, a text browser over SSH took
+  the terminal, and a closed terminal left the copy behind. Now nothing
+  plain is written: served from memory (above); no browser is started
+  without a screen (the `ssh -L` line instead) or when it would be a text
+  browser. Encrypted `--output` must end in `.html.age`, a plain one
+  mustn't end in `.age`; `--open` takes only `.html`/`.html.age` files,
+  refuses `--plain`/`--output`/`--bundle`, needs no key for a plain
+  report, and exits 130 on Ctrl-C; the newest report is found by time,
+  then name.
+  Policy §8 (John approved the wording, 2026-10-30): reports encrypted
+  like the evidence; `--open` serves from memory; `--plain` is yours to protect.
 - Carried over: RHEL proof only if there is interest; package verification
-  against vendor packages; report encryption at rest (John's decision
-  2026-10-27: revisit after the currently planned phases); outbound
-  connections over time.
+  against vendor packages; outbound connections over time.

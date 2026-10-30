@@ -221,7 +221,11 @@ that may include access tokens, and sometimes secrets typed into commands.
   server removed from the inventory has no such exception. Each purge is
   recorded by identifiers, times and counts only, never content.
 - **Reports are confidential documents.** They describe weaknesses an attacker
-  could use. Handle them like the evidence.
+  could use, so they are encrypted to the same key as the evidence. Showing
+  one (`checker report --open`) serves it to your browser from memory, on
+  this machine only, without writing a plain copy. A report written as plain
+  HTML on purpose (`--plain`), to hand on, is yours to protect: handle it
+  like the evidence.
 
 ## 9. The optional AI advisor
 

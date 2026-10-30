@@ -264,7 +264,7 @@ def test_checker_advise_without_a_key(enabled, capsys, monkeypatch):
 
 
 def test_the_report_shows_the_advice_labelled(enabled):
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config = enabled
     fallback = {
@@ -276,7 +276,9 @@ def test_the_report_shows_the_advice_labelled(enabled):
         enabled,
         Provider(lambda body: answer_message(body, model="claude-opus-4-8", before=[fallback])),
     )
-    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
     assert "AI advisor (advice, not findings)" in html
     assert "declined by claude-opus-5-5; answered by claude-opus-4-8" in html
     assert "redaction pseudonymize" in html and "Verdict: strong signs of compromise." in html
@@ -481,7 +483,7 @@ def test_the_terminal_gets_the_models_words_escaped(enabled, capsys, monkeypatch
 
 
 def test_the_report_keeps_the_last_good_answer_and_marks_old_ones_stale(enabled):
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config = enabled
     run(enabled, Provider())
@@ -491,12 +493,16 @@ def test_the_report_keeps_the_last_good_answer_and_marks_old_ones_stale(enabled)
         )
     )
     run(enabled, declined)
-    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
     section = html.split("AI advisor (advice")[1].split("</div>")[0]
     assert "Verdict: strong signs of compromise." in section
     assert "A later request" in section and "(cyber)" in section
     add_bundle(enabled, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))))
-    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
     assert "stale: it read another collection or assessment" in html
 
 

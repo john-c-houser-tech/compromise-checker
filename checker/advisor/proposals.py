@@ -33,6 +33,7 @@ can't add one.
 
 from __future__ import annotations
 
+import html
 import ipaddress
 import os
 import posixpath
@@ -82,26 +83,48 @@ INTERPRETERS = re.compile(
 FINDING_ID = re.compile(r"F-([1-9][0-9]{0,5})")
 WILDCARDS = re.compile(r"[*?]")
 WIDEST = {4: 24, 6: 64}  # the widest network a proposal may name
-# Host text that speaks to an AI, as an intruder steering the advisor would
-# write it: none of the sources the tool reads writes like this. Matched in
-# lower case after undoing URL encoding and the report's escapes. A match
-# costs only the host's proposals, so these lean towards matching.
+# Text in the case that speaks to an AI, as an intruder steering the
+# advisor would write it: none of the sources the tool reads writes like
+# this. Matched on _plain() text. A match costs the host its proposals, so
+# each pattern needs words aimed at an assistant or at the findings
+# themselves, not words an administrator's own commands use ("ipset add
+# whitelist", "add rules for service").
+_AI = (
+    r"(?:assistant|ai|llm|chatbot|language model|claude|chatgpt|copilot|reviewer"
+    r"|reviewing agent|ai agent|security model)"
+)
+_FINDINGS = r"(?:every|all|each|these|this|the|any) (?:findings?|alerts?|detections?|issues?)"
 ADDRESSED = re.compile(
     "|".join(
         (
-            r"\b(?:ignore|disregard|forget|override)\b.{0,40}\b(?:instructions?|prompts?|guidelines)\b",
-            r"\b(?:assistant|ai|llm|chatbot|language model|claude|chatgpt|gpt|copilot)\b.{0,40}"
-            r"\b(?:instructions?|verdict|whitelist|propose|you must|you should)\b",
-            r"\byour (?:verdict|answer|response|task|instructions)\b",
-            r"\b(?:propose|suggest|add|create|write)\b.{0,30}\b(?:whitelist|rules? for)\b",
-            r"\bsystem prompt\b",
-            r"\bno signs found\b",
-            r"\bverified\b.{0,20}\bclean\b",
+            r"\b(?:ignore|disregard|forget|override)\b.{0,40}"
+            r"\b(?:instructions?|prompts?|guidelines|rules above)\b",
+            # A space between: "copilot-instructions.md", a path bots probe
+            # for, is not an address.
+            rf"\b{_AI}\b[ ,:;!]*\s[^/]{{0,60}}?\b(?:instructions?|verdict|whitelist|allow ?list"
+            r"|propose|suppress|you must|you should|you are|do not flag)\b",
+            r"\byour (?:verdict|instructions|task)\b",
+            r"\b(?:propose|suggest|recommend)\b.{0,30}"
+            r"\b(?:whitelist|allow ?list|rules?|suppress\w*|exceptions?)\b",
+            rf"\b(?:rules?|exceptions?) for {_FINDINGS}\b",
+            rf"\b(?:suppress|whitelist|allow ?list|ignore|dismiss)\b.{{0,20}}\b{_FINDINGS}\b",
+            r"\b(?:findings?|alerts?|detections?)\b.{0,30}"
+            r"\b(?:are|is) (?:benign|false positives?|expected|safe to ignore)\b",
+            r"\bno signs (?:found|of compromise)\b",
+            r"\b(?:host|server|system|machine)\b.{0,20}"
+            r"\b(?:is|as) (?:clean|benign|not compromised)\b",
             r"\btell the (?:operator|user|admin)",
         )
     )
 )
-ESCAPES = re.compile(r"\\(?:u[0-9a-f]{4}|x[0-9a-f]{2}|U[0-9a-f]{8})", re.IGNORECASE)
+# Letters from other scripts that look like Latin ones (a Cyrillic а in
+# "аssistant"): read as the letter they pass for.
+LOOK_ALIKES = str.maketrans(
+    "аеорсухіјѕԁһӏкмнтвАЕОРСУХІЈЅНКМТВαεοριυνκτχΑΕΟΡΙΥΝΚΤΧΒΜ",
+    "aeopcyxijsdhlkmhtbAEOPCYXIJSHKMTBaeopiuvktxAEOPIYNKTXBM",
+)
+ESCAPE = re.compile(r"\\(\\|U[0-9a-fA-F]{8}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2})")
+CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
 @dataclass
@@ -212,16 +235,36 @@ def _pool_problem(rule: Rule, assessment: dict[str, Any], named_ids: set, where:
     return None
 
 
+def _unescape(match: re.Match) -> str:
+    body = match.group(1)
+    return "\\" if body == "\\" else chr(int(body[1:], 16))
+
+
 def _plain(text: str) -> str:
-    for _ in range(2):  # doubly encoded too
-        text = unquote_plus(text)
-    text = unicodedata.normalize("NFKC", ESCAPES.sub("", text))
+    """Text as a model would read it: URL and HTML encoding and the
+    report's escapes undone (until nothing changes), spaces of every kind
+    made spaces, invisible and combining marks dropped, compatibility
+    forms and look-alike letters folded, camelCase split, lower case."""
+    for _ in range(8):
+        before = text
+        text = ESCAPE.sub(_unescape, html.unescape(unquote_plus(text)))
+        if text == before:
+            break
+    kept = []
+    for char in unicodedata.normalize("NFKC", text):
+        category = unicodedata.category(char)
+        if category in ("Cc", "Zs", "Zl", "Zp"):
+            kept.append(" ")
+        elif category not in ("Cf", "Mn", "Me"):
+            kept.append(char)
+    text = CAMEL.sub(" ", "".join(kept).translate(LOOK_ALIKES))
     return re.sub(r"[\s_+]+", " ", text).lower()
 
 
 def steering(payload: dict[str, Any]) -> str | None:
-    """Where the case's host text addresses an AI, if it does anywhere:
-    a finding's id, or "the host's facts" (its OS, kernel, notes, chains)."""
+    """Where the case's text addresses an AI, if it does anywhere: a
+    finding's id, "the host's facts" (its OS, kernel, notes, chains), or a
+    whitelist rule the case quotes."""
 
     def found(value: Any) -> bool:
         if isinstance(value, str):
@@ -239,7 +282,14 @@ def steering(payload: dict[str, Any]) -> str | None:
     facts = [host.get("os"), host.get("kernel"), payload.get("from_host")]
     facts += [chain.get("account") for chain in payload.get("chains") or []
               if isinstance(chain, dict)]  # fmt: skip
-    return "the host's facts" if found(facts) else None
+    if found(facts):
+        return "the host's facts"
+    # Organization-written, but a rule once proposed carries the model's
+    # reason, which could repeat what steered it.
+    for rule in payload.get("whitelist_rules") or []:
+        if isinstance(rule, dict) and found([rule.get("reason"), rule.get("match")]):
+            return f"whitelist rule {rule.get('id')}"
+    return None
 
 
 def judge(
@@ -274,8 +324,8 @@ def judge(
         # The answer may be what that text asked for: a quiet intruder's
         # own rules. A person looks first.
         why = (
-            f"text from the host ({steered}) addresses an AI, as an intruder steering the"
-            " advisor would: no proposals until a person has looked at it"
+            f"text in the case ({steered}) addresses an AI, as an intruder steering the"
+            " advisor might: no proposals until a person has looked at it"
         )
         return [Judged(p, False, why) for p in proposals]
     for proposal in proposals:

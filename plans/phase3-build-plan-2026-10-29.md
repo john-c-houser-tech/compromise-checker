@@ -578,17 +578,34 @@ The advisor's answers can't be golden-tested, so they are measured.
 - **3.9 — Proposals a host's text steered (2026-10-30, John: "go ahead
   with 1 and 3").** The local eval had a canary get two rules offered on a
   quiet host. `proposals.steering()` looks through the case as sent for
-  host text that addresses an AI (asks for rules, states a verdict, says
-  to ignore instructions; after URL decoding, twice, the report's escapes
-  removed and NFKC), and `judge` sets every proposal aside when it finds
-  some, naming where. No match on any golden case under any mode. The eval
-  now keeps every answer, with why each proposal was set aside, records
-  the findings offered rules hide, and fails when a canary gets a rule
-  offered; it also reads its key from the same places `advise` does (it
-  crashed before reaching the first request since 3.7). A test-wide guard
-  refuses to run a password manager as a key command (a test reached
-  1Password's prompt once). Not done: a note on the other roles' answers when the
-  host's text addresses an AI.
+  text that addresses an AI (asks for rules or exceptions for the
+  findings, states a verdict, says to ignore instructions) in host text and
+  in quoted whitelist rules' reasons, and `judge` sets every proposal aside
+  when it finds some, naming where. Text is read as a model would: URL and
+  HTML encoding and the report's escapes undone until stable, spaces of
+  every kind made spaces, invisible and combining marks dropped, NFKC,
+  Cyrillic and Greek look-alikes folded, camelCase split. Each pattern
+  needs words aimed at an assistant or at the findings, so an
+  administrator's own `ipset add whitelist` or a bot probing
+  `copilot-instructions.md` doesn't count. No match on the golden cases
+  (pseudonymize and strict; strict sends no host text). The eval now keeps
+  every answer with why each proposal was set aside, records the findings
+  offered rules hide, fails when a canary gets a rule offered, and notes
+  rules only the steering check stopped; it also reads its key from the
+  same places `advise` does (it crashed before the first request since
+  3.7). Test-wide guards refuse to run a password manager as a key
+  command, however wrapped, or to read the OS keyring (a test reached
+  1Password's prompt once).
+- **After review (3.9; 2 high, 3 medium, 3 low):** escapes were deleted,
+  not decoded (a tab or an escaped letter split words; astral escapes
+  misparsed), URL-encoded invisible characters survived; synonyms
+  (allowlist, suppress, benign, reviewer), camelCase, Cyrillic letters and
+  triple encoding slipped past; `gpt`, "add … whitelist", "add rules for",
+  "your response" and "verified … clean" matched ordinary logs; the eval's
+  new check couldn't fail (all canaries match), hence the unsteered note;
+  the guard missed wrapped commands and the keyring. All fixed. Not done:
+  a note on the other roles' answers when the case's text addresses an AI.
+
 - Threat packs and pack drafting (Phase 4).
 - **Scheduled checks** of production servers, run from a permanent
   controller (the Mac mini or a small Linode), not the laptop. To discuss

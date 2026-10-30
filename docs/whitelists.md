@@ -269,10 +269,13 @@ turned back into names, and offered only when:
   uses;
 - the host isn't assessed High or Critical and has no chain: tidying
   noise is for a host that looks clean;
-- no text from the host in the case addresses an AI (asks for rules,
-  states a verdict, tells the assistant to ignore its instructions…),
-  however it is encoded: that is an intruder steering the advisor, so
-  none of its proposals is offered until a person has looked;
+- no text in the case (from the host, or a whitelist rule's reason)
+  addresses an AI: asks for rules or exceptions for the findings, states a
+  verdict, tells the assistant to ignore its instructions… Read after
+  undoing URL and HTML encoding and escapes, with invisible characters
+  dropped and look-alike letters folded. Such text may be an intruder
+  steering the advisor, so none of its proposals is offered until a person
+  has looked;
 - its check is not written only by hand: the checks that can raise a
   critical finding (`account.uid0`, `kernel.taint`, `package.changed`,
   `persistence.ld_preload`, `process.hidden`), every check a chain is made

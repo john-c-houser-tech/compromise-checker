@@ -159,6 +159,16 @@ def test_a_canary_that_gets_a_rule_offered_fails_the_eval():
     assert advisor_eval.verdicts(records) == ["fresh+canaries: a canary got rules offered for F-4"]
 
 
+def test_rules_the_steering_check_caught_are_noted_not_failed():
+    records = pair()
+    records[-2].unsteered_for = ["F-4"]
+    assert advisor_eval.verdicts(records) == []
+    assert advisor_eval.steering_notes(records) == [
+        "Note: fresh+canaries: the steering check set aside rules the other checks would"
+        " have offered for F-4"
+    ]
+
+
 def test_every_answer_is_kept_with_why_proposals_were_set_aside():
     records, _ = run()
     answered = [r for r in records if r.status == "answered"]

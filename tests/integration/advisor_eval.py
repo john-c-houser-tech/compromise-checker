@@ -103,6 +103,9 @@ class Record:
     preserves_first: bool | None = None
     targets: list[str] = field(default_factory=list)  # findings the proposals named
     offered_for: list[str] = field(default_factory=list)  # findings offered rules hide
+    # ... had the steering check not caught the case's text: what the other
+    # checks alone would have let through.
+    unsteered_for: list[str] = field(default_factory=list)
     model: str | None = None
     declined_by: list[str] = field(default_factory=list)
     cost: float | None = 0.0  # None: a model that ran has no price
@@ -186,6 +189,10 @@ def _quoted(payload: dict[str, Any]) -> set[str]:
     return found | ({own} if isinstance(own, str) else set())
 
 
+def _hidden(judged) -> list[str]:
+    return sorted({str(f) for j in judged if j.accepted for f in j.proposal.get("findings") or []})
+
+
 def ask(client, case: Case, role: str, request, sent) -> Record:
     payload, pseudonyms = sent
     try:
@@ -228,8 +235,18 @@ def ask(client, case: Case, role: str, request, sent) -> Record:
         )  # fmt: skip
         record.offered = sum(j.accepted for j in judged)
         record.set_aside = len(judged) - record.offered
-        record.offered_for = sorted(
-            {str(f) for j in judged if j.accepted for f in j.proposal.get("findings") or []}
+        record.offered_for = _hidden(judged)
+        record.unsteered_for = _hidden(
+            judge_proposals(
+                answer["proposals"],
+                case.findings,
+                case.chains,
+                case.events,
+                [],
+                [],
+                set(),
+                band=case.band,
+            )  # fmt: skip
         )
         # Why each was set aside, beside the answer it came from.
         record.answer = dict(answer, judged=[j.reason for j in judged])
@@ -314,6 +331,17 @@ def verdicts(records: list[Record]) -> list[str]:
     if sent and len(declined) * 10 > len(sent):
         failures.append(f"declined {len(declined)} of {len(sent)} requests (over one in ten)")
     return failures
+
+
+def steering_notes(records: list[Record]) -> list[str]:
+    """Not failures: rules the steering check set aside that the other
+    checks would have offered, so a reader sees what it caught."""
+    return [
+        f"Note: {r.case}: the steering check set aside rules the other checks would have"
+        f" offered for {', '.join(r.unsteered_for)}"
+        for r in records
+        if r.role == "whitelist" and set(r.unsteered_for) - set(r.offered_for)
+    ]
 
 
 def table(records: list[Record]) -> str:
@@ -411,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
     print(table(records))
     failures = verdicts(records)
     print("\nPASS" if not failures else "\nFAIL:\n  " + "\n  ".join(failures))
+    for note in steering_notes(records):
+        print(note)
     print(f"Spent about ${spent:.2f}.")
     return 0 if not failures else 1
 

@@ -5,6 +5,7 @@ part (prompting, not prompting, rejecting) so every sudo mode is exercised.
 """
 
 import asyncio
+import re
 import shlex
 import sys
 from dataclasses import dataclass, field
@@ -33,13 +34,22 @@ def _no_real_http(monkeypatch):
 
 # Password managers and keychains a key command might name: a test that
 # reaches one would put a real prompt in front of whoever is at the machine.
-SECRET_STORES = {"op", "bw", "pass", "gopass", "security", "secret-tool", "gpg", "keepassxc-cli"}
+SECRET_STORES = {"op", "bw", "rbw", "lpass", "pass", "gopass", "security", "secret-tool",
+                 "gpg", "gpg2", "keepassxc-cli", "kwallet-query", "vault", "doppler"}  # fmt: skip
+
+
+def _words(text: str) -> list[str]:
+    try:
+        return shlex.split(text)
+    except ValueError:  # unbalanced quotes: a shell would refuse it, but look anyway
+        return text.split()
 
 
 @pytest.fixture(autouse=True)
 def _no_real_key_command(monkeypatch):
     """No test runs a password manager as a key command (the eval's default
-    source is one): it is an error, at once, before any prompt appears."""
+    source is one), however it is wrapped (`env op …`, `sh -c 'op …'`), or
+    reads the OS keyring: it is an error, at once, before any prompt."""
     import os
     import subprocess
 
@@ -48,12 +58,23 @@ def _no_real_key_command(monkeypatch):
     real = subprocess.run
 
     def guarded(args, *rest, **kwargs):
-        first = args[0] if isinstance(args, list | tuple) and args else str(args).split()[0]
-        if os.path.basename(str(first)) in SECRET_STORES:
-            raise RuntimeError(f"a test tried to run {first!r} as a key command: use env")
+        words = args if isinstance(args, list | tuple) else [args]
+        for word in (w for item in words for w in _words(str(item))):
+            for part in re.split(r"[\s;|&()`$]+", word):
+                if os.path.basename(part) in SECRET_STORES:
+                    raise RuntimeError(f"a test tried to run {part!r} as a key command: use env")
         return real(args, *rest, **kwargs)
 
     monkeypatch.setattr(keys.subprocess, "run", guarded)
+    try:
+        import keyring
+    except ImportError:
+        return
+
+    def no_keyring(*args, **kwargs):
+        raise RuntimeError("a test tried to read the OS keyring: use a fake")
+
+    monkeypatch.setattr(keyring, "get_password", no_keyring)
 
 
 @dataclass

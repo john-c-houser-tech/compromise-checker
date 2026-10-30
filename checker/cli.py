@@ -1097,6 +1097,8 @@ def _print_advice(advice, role: str) -> None:
         print(line + ".")
     if advice.note:
         print(shown(advice.note[0].upper() + advice.note[1:]) + ".")
+    if advice.warning:
+        print(f"Warning: {shown(advice.warning)}.")
     answer = advice.answer
     if not answer:
         return

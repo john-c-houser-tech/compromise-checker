@@ -629,6 +629,14 @@ The advisor's answers can't be golden-tested, so they are measured.
   not in the case). The eval still reports FAIL, as a small model's
   run is expected to: the set-aside answer, and canaries drawing rules on
   three cases, none offered.
+- **3.10 — A warning on steered advice (2026-10-30, John: "do the warning
+  next").** The note left open in 3.9: when `steering()` finds text in the
+  case addressing an AI, the answer of every role (explain, coverage,
+  remediation, and whitelist, whose proposals are already set aside) is
+  still shown, with a warning naming where the text was, restored to real
+  names. The warning is stored with the encrypted answer and printed in
+  the terminal and the report. If the check itself fails, the paid answer
+  is kept with a warning that it couldn't be checked.
 
 - Threat packs and pack drafting (Phase 4).
 - **Scheduled checks** of production servers, run from a permanent

@@ -45,6 +45,7 @@ class Advice:
     note: str = ""
     judged: list | None = None  # whitelist proposals, each accepted or why not
     file: Path | None = None  # where the accepted ones were written
+    warning: str = ""  # the case's text addresses an AI: the answer may have been steered
 
 
 def _restore(value: Any, restore: Callable[[str], str]) -> Any:
@@ -122,6 +123,7 @@ def advise(
     if client is None:
         client = _client(advisor.api_key_source, advisor.api, advisor.base_url)
     sent_fallback = None
+    warning = ""
 
     recorded = False
 
@@ -167,7 +169,10 @@ def advise(
                     config.recipients,
                 ),
                 "answer": seal_text(
-                    json.dumps({"raw": raw, "restored": answer, "note": note}, ensure_ascii=False),
+                    json.dumps(
+                        {"raw": raw, "restored": answer, "note": note, "warning": warning},
+                        ensure_ascii=False,
+                    ),
                     config.recipients,
                 ),
             }
@@ -241,6 +246,7 @@ def advise(
                 status, note = "invalid", f"the answer was set aside: it {exc}"
             else:
                 answer = _restore(raw, pseudonyms.restore) if pseudonyms is not None else raw
+                warning = _steered(payload, pseudonyms)
         judged, written = None, None
         if status == "answered" and role == "remediation":
             from checker.advisor.roles import DESTRUCTIVE, _plain
@@ -307,7 +313,7 @@ def advise(
         elif outcome.status == "unreadable":
             note = "the answer didn't fit the requested form"
         record(outcome, status, raw, answer, note)
-        return Advice(status, outcome, answer, note, judged, written)
+        return Advice(status, outcome, answer, note, judged, written, warning)
     except BaseException as exc:
         if not recorded:
             interrupted = isinstance(exc, KeyboardInterrupt)
@@ -318,6 +324,29 @@ def advise(
             )
             record(outcome, "interrupted" if interrupted else "failed", raw, None, why)
         raise
+
+
+def _steered(payload: dict[str, Any], pseudonyms) -> str:
+    """The warning shown with an answer when text in the case addresses an
+    AI (as an intruder steering the advisor might), else "". The answer is
+    still shown: a person weighs it, knowing it may have been steered."""
+    from checker.advisor.proposals import steering
+
+    try:
+        where = steering(payload)
+    except Exception as exc:  # noqa: BLE001 - the answer was paid for: kept, with a warning
+        return (
+            f"the case's text couldn't be checked for words addressing an AI"
+            f" ({type(exc).__name__}): this advice may have been steered"
+        )
+    if not where:
+        return ""
+    if pseudonyms is not None:
+        where = pseudonyms.restore(where)
+    return (
+        f"text in the case ({where}) addresses an AI, as an intruder steering the advisor"
+        " might: this advice may have been steered; weigh it with that in mind"
+    )
 
 
 @dataclass
@@ -604,6 +633,7 @@ def latest_advice(
         saved = json.loads(open_text(row["answer"], identity) or "{}")
         record["answer"] = saved.get("restored")
         record["note"] = saved.get("note") or ""
+        record["warning"] = saved.get("warning") or ""
         record["declined_by"] = json.loads(row["declined_by"]) if row["declined_by"] else []
         record["stale"] = row["bundle_id"] != bundle_id or row["assessed_at"] != assessed_at
         record["local"] = is_local(row["endpoint"])

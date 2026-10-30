@@ -68,6 +68,10 @@ in (Anthropic's count) and 2 600 out, $0.23 on `claude-opus-5-5`.
 
 An answer that fails its checks is set aside, and the terminal and the
 report say why.
+When text in the case addresses an AI, as an intruder steering the
+advisor might (the same check that holds back whitelist proposals), the
+answer of every role is still shown, with a warning naming where the text
+was: weigh it knowing it may have been steered.
 Commands are shown as text; nothing runs. The report shows each section
 labelled with the model, the redaction mode, the time, and whether the
 analysis it read is the one the report shows.

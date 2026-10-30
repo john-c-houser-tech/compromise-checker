@@ -95,6 +95,7 @@ policy §9).</p>
 </table></div>
 
 {% macro advice_meta(x, full=False) %}<p class="meta">Asked {{ x.model_asked|visible(80) }}{% if x.declined_by %}; declined by {{ x.declined_by|join(", ")|visible(200) }}{% endif %}{% if x.model_answered %}; answered by {{ x.model_answered|visible(80) }}{% if x.endpoint %} at {{ x.endpoint|visible(200) }}{% endif %}{% endif %} · redaction {{ x.redaction }} · {{ x.at[:16] }} UTC{% if full %} · about the assessment of {{ x.assessed_at[:16] }}{% endif %}{% if x.stale %} · <strong>stale{% if full %}: it read another collection or assessment of this host than this report shows{% endif %}</strong>{% endif %}</p>
+{% if x.warning %}<p><strong>Warning: {{ x.warning|visible(600) }}.</strong></p>{% endif %}
 {% if x.local and x.model_answered %}<p class="muted">Answered by a local model, on the machine that ran <span class="mono">checker advise</span>: expect lower quality than from a large hosted model, and read it with more care.</p>{% endif %}{% endmacro %}
 {% macro came_to_nothing(title, entry) %}{% set x = entry.get("later") %}{% if x %}<p class="muted">AI advisor, {{ title }}: {% if entry.get("answered") %}a later request{% else %}a request{% endif %} ({{ x.model_asked|visible(80) }}, {{ x.at[:16] }} UTC) came to nothing: {{ x.note|visible(400) }}.</p>{% endif %}{% endmacro %}
 {% macro finding_card(f) %}

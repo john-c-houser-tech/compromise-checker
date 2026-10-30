@@ -293,6 +293,13 @@ is John's to approve before it is committed. Also:
   error_log no longer leads the collector to PHP's application error log
   (collecting it would widen collection without a decision). Not done:
   dnf5's database (Fedora 41+, not RHEL 9/10).
+- **Read-only proof (4.4, 2026-10-30, John's OK):** throwaway Ubuntu 24.04
+  and Rocky Linux 9 Linodes with nginx and PHP-FPM installed by the setup:
+  both PASS, bundle complete, the collector wrote nothing; package history
+  (`package_change`) and php.ini collected on both (one secret directive
+  masked on each: `session.save_path`'s whole value). About 60 seconds of
+  collection each; both servers deleted. Spend: about $0.01 (Phase 4 so
+  far: about $0.01 of the $10 cap).
 
 ### 4.5 — Detections
 

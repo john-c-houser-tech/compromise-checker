@@ -911,9 +911,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     advising.add_argument(
         "--role",
-        choices=["explain", "whitelist"],
+        choices=["explain", "whitelist", "coverage"],
         default="explain",
-        help="explain the analysis (default), or propose whitelist rules for a person to review",
+        help=(
+            "explain the analysis (default), propose whitelist rules for a person to review,"
+            " or suggest settings and host configuration for better coverage"
+        ),
     )
     advising.add_argument(
         "--yes",
@@ -971,6 +974,9 @@ def _print_advice(advice, role: str) -> None:
     if role == "whitelist":
         _print_proposals(advice, shown)
         return
+    if role == "coverage":
+        _print_coverage(advice, shown)
+        return
 
     print()
     print(f"Verdict: {shown(answer['verdict'])}")
@@ -988,6 +994,26 @@ def _print_advice(advice, role: str) -> None:
         for question in answer["what_would_settle_it"]:
             print(f"  - {shown(question)}")
     print("\n(AI advice: the score is the tool's own and is unchanged. Stored, encrypted.)")
+
+
+def _print_coverage(advice, shown) -> None:
+    judged = advice.judged or []
+    print()
+    if not judged:
+        print("No suggestions: coverage looks good to the advisor.")
+    for item in judged:
+        s = item.suggestion
+        what = s.get("setting") if s.get("kind") == "setting" else s.get("item")
+        helps = ", ".join(str(r) for r in s.get("helps_with") or [])
+        if item.accepted:
+            print(f"Suggested ({shown(helps)}): {shown(s.get('why'))}")
+            print(f"  Cost: {shown(s.get('trade_off'))}")
+            print(f"  {shown(item.action)}")
+        else:
+            print(f"Set aside: {shown(what)}: {shown(item.reason)}")
+    if any(j.accepted for j in judged):
+        print("\n(Suggestions only: nothing was changed. Settings take effect at the next")
+        print("collection; host configuration is for an administrator to apply.)")
 
 
 def _print_proposals(advice, shown) -> None:

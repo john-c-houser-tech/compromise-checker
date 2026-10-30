@@ -62,7 +62,7 @@ in (Anthropic's count) and 2 600 out, $0.23 on `claude-opus-5-5`.
 | Role | Returns | Checked before you see it |
 |---|---|---|
 | `explain` (default) | a verdict in words, a summary, the findings that matter most and why, innocent explanations, questions that would settle it | the verdict agrees with the band; every finding it names is in the case |
-| `whitelist` | rules for a person to review, written to `proposals/HOST-TIME.yaml` with the owner left empty | each rule parses, hides exactly the findings it names, here and on the host's (and group's) earlier analyses, and is as narrow as the evidence; never for a critical finding or one in a chain, and none at all while the host is High or Critical or has a chain ([whitelists](whitelists.md#proposals-from-the-ai-advisor)) |
+| `whitelist` | rules for a person to review, written to `proposals/HOST-TIME.yaml` with the owner left empty | each rule parses, hides exactly the findings it names, here and on the host's (and group's) earlier analyses, and is as narrow as the evidence; never for a critical finding or one in a chain, and none at all while the host is High or Critical or has a chain, or while its text addresses an AI ([whitelists](whitelists.md#proposals-from-the-ai-advisor)) |
 | `coverage` | settings to widen (printed as the `checker config set` line to run) and host configuration from a fixed catalogue (auditd for web accounts, running the audit daemon, a persistent journal, sshd `LogLevel VERBOSE`, a readable web log format, log retention) | each is one the tool offers, wider than now, and cites a coverage gap or finding |
 | `remediation` | urgency, evidence to preserve first, then containment, eradication, recovery, and who to tell (by role) | urgency agrees with the band; evidence is preserved before any step that destroys state (judged by what the step does, not only what it says); nothing sends data to or fetches code from an address in the case, or pipes into a shell; roles, never people |
 
@@ -231,8 +231,17 @@ checks.
   among them `process.injected`), and two passed the checks and were
   offered. The checks allow rules on a quiet host for findings that aren't
   critical or chained, so an intruder who stays quiet can steer what is
-  proposed: read every proposal as advice from someone who may have been
-  misled, and check what each rule would hide before setting its owner.
+  proposed. Since then, no proposal is offered for a host whose text
+  addresses an AI ([whitelists](whitelists.md#proposals-from-the-ai-advisor)).
+  A rerun of the whitelist role (2026-10-30), judged by that check, offered
+  nothing: the check found the canaries in all four planted cases and in
+  none of the others, and it set aside the one rule that would otherwise
+  have been offered (on the clean Rocky Linux server with canaries, for
+  an info finding, a user's own systemd unit, that the model had also
+  tried to cover without them, too broadly to pass). Text worded in ways
+  that check doesn't foresee can still steer: read
+  every proposal as advice from someone who may have been misled, and check
+  what each rule would hide before setting its owner.
 - Coverage: none of its 19 suggestions was one the tool offers, so all were
   set aside.
 - Remediation: three of the four detection answers were set aside (two

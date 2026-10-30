@@ -273,7 +273,7 @@ def advise(
         if status == "answered" and role == "whitelist":
             try:
                 judged, written = _proposals(
-                    store, host, identity, inventory, whitelist, which, answer, home
+                    store, host, identity, inventory, whitelist, which, answer, home, payload
                 )
             except Exception as exc:  # the answer was paid for: kept, whatever happens next
                 if isinstance(exc, _Unrecorded):
@@ -490,10 +490,11 @@ def spent(outcome: Outcome) -> float | None:
     return cost(outcome.model_answered or outcome.model_asked, outcome.usage)
 
 
-def _proposals(store, host, identity, inventory, whitelist, which, answer, home):
+def _proposals(store, host, identity, inventory, whitelist, which, answer, home, payload):
     """Role 2's rules judged against the real findings (checker.advisor.
-    proposals), and the file the accepted ones go to."""
-    from checker.advisor.proposals import judge, write_file
+    proposals), and the file the accepted ones go to. `payload` is the case
+    as sent: its host text is what could have steered the answer."""
+    from checker.advisor.proposals import judge, steering, write_file
     from checker.assess import load_assessment
     from checker.baseline import usable_bundles
     from checker.inventory import home as default_home
@@ -542,6 +543,7 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home)
         rule_ids,
         group=group,
         band=which["band"],
+        steered=steering(payload),
     )
     written = write_file(base, host, group, judged, datetime.now(UTC).strftime("%Y-%m-%d %H:%M"))
     if written is not None:

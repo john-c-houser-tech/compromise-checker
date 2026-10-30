@@ -269,6 +269,15 @@ turned back into names, and offered only when:
   uses;
 - the host isn't assessed High or Critical and has no chain: tidying
   noise is for a host that looks clean;
+- no text in the case (from the host, or a quoted whitelist rule's
+  reason or match) addresses an AI: asks for rules or exceptions for the
+  findings, states a verdict, tells the assistant to ignore its
+  instructions… Read after undoing URL and HTML encoding and escapes, with
+  invisible characters and accents dropped and look-alike letters folded.
+  Such text may be an intruder steering the advisor, so none of its
+  proposals is offered until a person has looked. Scanners already send
+  requests like `?prompt=ignore+previous+instructions` to web servers, so
+  an internet-facing web server often gets no proposals;
 - its check is not written only by hand: the checks that can raise a
   critical finding (`account.uid0`, `kernel.taint`, `package.changed`,
   `persistence.ld_preload`, `process.hidden`), every check a chain is made
@@ -298,6 +307,8 @@ report lists what was proposed and what was set aside, and why.
 
 The checks bound what a rule can hide, not why it was proposed. Text an
 intruder wrote on a quiet host can ask the advisor for rules, and a rule
-for a low finding can pass every check (a small local model did this in
-the [eval](advisor.md#how-well-it-works)). Ask of each proposal whether
-you would have written it yourself from the findings it hides.
+for a low finding can pass every other check (a small local model did
+this in the [eval](advisor.md#how-well-it-works)). The tool sets aside
+every proposal for a host whose text addresses an AI, but such text can
+be worded in ways no check foresees. Ask of each proposal whether you
+would have written it yourself from the findings it hides.

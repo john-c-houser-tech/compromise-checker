@@ -12,6 +12,7 @@ baseline."""
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -112,9 +113,7 @@ def plan(
         result.files.extend(_bundle_files(path, row["id"]))
     ids = [r["id"] for r in result.bundles]
     result.reports = _reports(store, base, ids)
-    result.proposals = _derived(
-        store, base / "proposals", "*.yaml", ids, "proposed", "proposal_sha256"
-    )
+    result.proposals = _proposals(store, base, ids)
     return result
 
 
@@ -141,14 +140,9 @@ def _reports(store: Store, base: Path, bundle_ids: list[str]) -> list[Path]:
 def _derived(
     store: Store, folder: Path, pattern: str, bundle_ids: list[str], action: str, key: str
 ) -> list[Path]:
-    """Files in `folder` made from any of these bundles (reports; the
-    advisor's whitelist proposals): found by the hash each left in the
-    custody of the bundles it was made from."""
-    digests = set()
-    for bundle_id in bundle_ids:
-        for entry in store.custody_of(bundle_id):
-            if entry["action"] == action and entry["detail"]:
-                digests.add(json.loads(entry["detail"]).get(key))
+    """Files in `folder` made from any of these bundles: found by the hash
+    each left in the custody of the bundles it was made from."""
+    digests = {_detail(entry).get(key) for entry in _entries(store, bundle_ids, action)}
     if not digests or not folder.is_dir() or folder.is_symlink():
         return []
     found = []
@@ -158,12 +152,64 @@ def _derived(
     return found
 
 
+def _proposals(store: Store, base: Path, bundle_ids: list[str]) -> list[Path]:
+    """The advisor's whitelist proposal files made from any of these
+    bundles: found by the name each left in their custody, not its hash,
+    since the operator is told to edit the file (its owner). A name is only
+    ever a plain file name in the proposals folder."""
+    folder = base / "proposals"
+    if not folder.is_dir() or folder.is_symlink():
+        return []
+    found = []
+    for entry in _entries(store, bundle_ids, "proposed"):
+        name = _detail(entry).get("file")
+        if not isinstance(name, str) or not _plain_name(name, "*.yaml"):
+            continue
+        path = folder / name
+        if path.is_file() and not path.is_symlink():
+            found.append(path)
+    return sorted(set(found))
+
+
+def _plain_name(name: str, pattern: str) -> bool:
+    return (
+        name == Path(name).name
+        and name not in ("", ".", "..")
+        and "\\" not in name
+        and fnmatch.fnmatchcase(name, pattern)
+    )
+
+
+def _entries(store: Store, bundle_ids: list[str], action: str) -> list[Any]:
+    return [
+        entry
+        for bundle_id in bundle_ids
+        for entry in store.custody_of(bundle_id)
+        if entry["action"] == action and entry["detail"]
+    ]
+
+
+def _detail(entry: Any) -> dict[str, Any]:
+    try:
+        detail = json.loads(entry["detail"])
+    except ValueError:
+        return {}
+    return detail if isinstance(detail, dict) else {}
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as f:
         while block := f.read(1 << 20):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _sha256_or_none(path: Path) -> str | None:
+    try:
+        return _sha256(path)
+    except FileNotFoundError:
+        return None
 
 
 @dataclass
@@ -179,9 +225,23 @@ def execute(store: Store, base: Path, chosen: Plan) -> Outcome:
     purge also removes those (leftovers), even when it has nothing new to
     delete."""
     if chosen.bundles:
+        # The reports and proposals are named in the record, so a purge that
+        # can't delete one now (or is cut short) is finished by the next:
+        # once the custody rows go, nothing else leads to them.
+        derived = [
+            [str(path.relative_to(base)), _sha256_or_none(path) if kind == "reports" else None]
+            for kind, paths in (("reports", chosen.reports), ("proposals", chosen.proposals))
+            for path in paths
+        ]
         counts = store.purge(
             [r["id"] for r in chosen.bundles],
-            chosen.scope | {"files_planned": len(chosen.files)},
+            chosen.scope
+            | {
+                "files_planned": len(chosen.files),
+                "reports": len(chosen.reports),
+                "proposals": len(chosen.proposals),
+                "derived": derived,
+            },
             chosen.baselines,
             chosen.expect,
         )
@@ -198,11 +258,13 @@ def execute(store: Store, base: Path, chosen: Plan) -> Outcome:
 
 def leftovers(store: Store, base: Path) -> list[Path]:
     """Files of bundles an earlier purge removed from the database but
-    couldn't delete from disk."""
+    couldn't delete from disk, and the reports and proposals it named.
+    A report is taken only while it still has the hash it had then."""
     evidence = base / "evidence"
     present = {r["id"] for r in store.bundles()}
     found: list[Path] = []
     for row in store.purges():
+        found.extend(_derived_left(base, row))
         for bundle_id, host in json.loads(row["bundles"]):
             if bundle_id in present:
                 continue
@@ -214,6 +276,32 @@ def leftovers(store: Store, base: Path) -> list[Path]:
                     if p.name.startswith(f"{bundle_id}.") and not p.is_dir()
                 )
     return sorted(set(found))
+
+
+def _derived_left(base: Path, row: Any) -> list[Path]:
+    try:
+        derived = json.loads(row["scope"]).get("derived") or []
+    except (ValueError, AttributeError):
+        return []
+    found = []
+    for item in derived:
+        if not (isinstance(item, list) and len(item) == 2 and isinstance(item[0], str)):
+            continue
+        where, digest = item
+        folder_name, _, name = where.partition("/")
+        pattern = {"reports": "report-*.html", "proposals": "*.yaml"}.get(folder_name)
+        if pattern is None or not _plain_name(name, pattern):
+            continue
+        if folder_name == "reports" and digest is None:
+            continue  # gone before the purge: nothing to tell a newer one by
+        folder = base / folder_name
+        path = folder / name
+        if folder.is_symlink() or path.is_symlink() or not path.is_file():
+            continue
+        if digest is not None and _sha256(path) != digest:
+            continue
+        found.append(path)
+    return found
 
 
 def _delete(paths: list[Path]) -> tuple[list[Path], list[tuple[Path, str]]]:

@@ -542,10 +542,15 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home)
     )
     written = write_file(base, host, group, judged, datetime.now(UTC).strftime("%Y-%m-%d %H:%M"))
     if written is not None:
-        # So `checker purge` finds it with the bundle it was made from.
-        digest = hashlib.sha256(written.read_bytes()).hexdigest()
-        store.custody(which["bundle_id"], "proposed",
-                      {"proposal_sha256": digest, "file": written.name})  # fmt: skip
+        # So `checker purge` finds it with the bundle it was made from; a
+        # file with no such record would never be purged, so it isn't kept.
+        try:
+            digest = hashlib.sha256(written.read_bytes()).hexdigest()
+            store.custody(which["bundle_id"], "proposed",
+                          {"proposal_sha256": digest, "file": written.name})  # fmt: skip
+        except BaseException:
+            written.unlink(missing_ok=True)
+            raise
     return judged, written
 
 

@@ -78,14 +78,15 @@ analysis it read is the one the report shows.
 account on a detection test server) under each mode:
 
 **pseudonymize** (the default when the advisor is turned on): server names
-(and their domains), IP addresses, usernames and groups, email addresses
-and SSH key fingerprints become placeholders, made fresh for each run so
+(and their domains), IP addresses, usernames, the host's group in your
+inventory, email addresses and SSH key fingerprints become placeholders,
+made fresh for each run so
 the provider can't connect one run to another by name; the answer's
 placeholders are turned back into names on your machine. Names a host
 mentions only in free text (another company's domain in a log line, a
 person's name in a comment) aren't recognised, and common system accounts
-(`root`, `www-data`, `ubuntu`…) and loopback addresses are kept as they
-are. The server's OS and kernel version are sent.
+(`root`, `www-data`, `ubuntu`…), the system's group names (`wheel`,
+`sudo`…) and loopback addresses are kept as they are. The server's OS and kernel version are sent.
 
 ```json
 {"id": "F-1", "check": "account.uid0", "band": "critical",
@@ -155,8 +156,9 @@ checker config set advisor.model qwen2.5:7b-32k
 ```
 
 - A model on the same machine (loopback) costs nothing, and is reached
-  directly, never through a proxy. Any other server has no price here, so
-  each run asks first.
+  directly, never through a proxy. Any other OpenAI-compatible server has
+  no price here, so each run asks first; another server on Anthropic's API
+  (a gateway) is priced as Anthropic's list price for the model.
 - Ollama's own Anthropic-style endpoint ignores the answer's schema; its
   OpenAI-style one enforces it, which is why the tool uses that.
 - **The context must hold the whole case.** A detection case is about

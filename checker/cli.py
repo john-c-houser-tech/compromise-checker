@@ -975,6 +975,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     purging.add_argument("--yes", action="store_true", help="don't ask before deleting")
     purging.set_defaults(handler=cmd_purge)
+
+    running = commands.add_parser(
+        "run", help="collect, analyze, report and purge what has expired, in one pass"
+    )
+    chosen_hosts = running.add_mutually_exclusive_group(required=True)
+    chosen_hosts.add_argument("names", nargs="*", default=[], help="host names")
+    chosen_hosts.add_argument("--group", help="every host in this group")
+    chosen_hosts.add_argument("--all", action="store_true", help="every host in the inventory")
+    running.add_argument(
+        "--unattended",
+        action="store_true",
+        help="ask nothing: refuse hosts that would need a prompt, before collecting",
+    )
+    running.add_argument("--days", type=int, default=30, help="look-back window (default 30)")
+    running.add_argument("--parallel", type=int, default=5, help="hosts at a time (default 5)")
+    running.add_argument("--identity", help="the evidence private key file")
+    running.set_defaults(handler=cmd_run)
+
+    scheduling = commands.add_parser("schedule", help="run `checker run --all` daily, on a timer")
+    schedule_commands = scheduling.add_subparsers(
+        dest="schedule_command", metavar="ACTION", required=True
+    )
+    install = schedule_commands.add_parser(
+        "install", help="write and start the timer (systemd on Linux, launchd on macOS)"
+    )
+    install.add_argument("--at", default="03:00", help="time of day, HH:MM (default 03:00)")
+    install.set_defaults(handler=cmd_schedule_install)
+    schedule_commands.add_parser("remove", help="stop and delete the timer").set_defaults(
+        handler=cmd_schedule_remove
+    )
+    schedule_commands.add_parser("show", help="whether the timer is installed").set_defaults(
+        handler=cmd_schedule_show
+    )
     return parser
 
 
@@ -1760,6 +1793,174 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
             file=sys.stderr,
         )
     return 1 if outcome.failed else 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """One pass, as a timer starts it: collect, analyze, report, purge what
+    has expired, and alert on hosts that got worse (checker.schedule)."""
+    import yaml
+
+    from checker import schedule
+
+    base = home()
+    try:
+        config = load_config(base)
+        inventory = _inventory_for_priors()
+        hosts = _select_hosts(args)
+        identity = _identity(args, base)
+    except (EvidenceError, KeyError, ValidationError, yaml.YAMLError) as exc:
+        print(f"checker: {exc.args[0] if isinstance(exc, KeyError) else exc}", file=sys.stderr)
+        return schedule.EXIT_SETUP
+    if not hosts:
+        print("checker: no hosts selected", file=sys.stderr)
+        return schedule.EXIT_SETUP
+    try:
+        result = schedule.run(
+            base, config, hosts, identity, inventory,
+            unattended=args.unattended, days=args.days, parallel=args.parallel,
+        )  # fmt: skip
+    except schedule.Busy as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return schedule.EXIT_BUSY
+    except Exception as exc:  # noqa: BLE001 - unforeseen: say so, and tell someone
+        print(f"checker: the run stopped: {type(exc).__name__}: {exc}", file=sys.stderr)
+        failed = schedule.notify_crash(config, exc)
+        if failed:
+            print(f"checker: the notify command failed too: {failed}", file=sys.stderr)
+        return schedule.EXIT_FAILED
+    for item in result.hosts:
+        band = item.band or "-"
+        shown = f" ({percent(item.probability)})" if item.probability is not None else ""
+        print(f"{item.host:20} {item.collected:12} {band}{shown}")
+        if item.problem:
+            print(f"checker: {item.host}: {item.problem}", file=sys.stderr)
+    for problem in result.problems:
+        print(f"checker: {problem}", file=sys.stderr)
+    if result.report:
+        print(f"Report written to {result.report}")
+    if result.alerting:
+        print("\nNeeds a look:")
+        for line in result.alerting:
+            print(f"  {line}")
+        if not config.notify_command:
+            print("(No notify_command is set, so no one else was told.)")
+        elif result.notified:
+            print(
+                f"checker: the notify command failed: {result.notified}; these are sent again"
+                " with the next run's",
+                file=sys.stderr,
+            )
+        else:
+            print("The notify command was given the summary.")
+    return result.exit_status()
+
+
+def cmd_schedule_install(
+    args: argparse.Namespace, pause: Callable[[float], None] | None = None
+) -> int:
+    import getpass
+    import os
+    import subprocess
+    import time
+
+    from checker import schedule
+
+    pause = pause or time.sleep
+    base = home()
+    try:
+        load_config(base)
+        at = schedule.parse_time(args.at)
+        hosts = load_inventory().hosts
+    except (EvidenceError, ValueError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    env = schedule.timer_environment(base, hosts)
+    unsafe = schedule.systemd_unsafe(env) if sys.platform != "darwin" else []
+    if unsafe:
+        print(
+            "checker: a systemd unit can't hold these paths (quotes, backslashes, $, ` or"
+            " control characters): " + ", ".join(repr(w) for w in unsafe),
+            file=sys.stderr,
+        )
+        return 2
+    problems = schedule.unattended_problems(hosts)
+    for problem in problems:
+        print(f"Warning: {problem}")
+    if problems:
+        print("Until that changes, each scheduled run leaves those hosts out and says so.")
+    if "SSH_AUTH_SOCK" in env:
+        print(
+            f"It uses the SSH agent at {env['SSH_AUTH_SOCK']}: its key must be unlocked when"
+            " the run starts, or the run waits for a passphrase no one types."
+        )
+    if sys.platform == "darwin" and os.environ.get("SSH_CONNECTION"):
+        print("A launchd agent runs while you are logged in at the Mac (not over SSH).")
+    where = schedule.placement(sys.platform, at, env, base, Path.home())
+    for path, content in where.files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        print(f"Wrote {path}")
+    if sys.platform == "darwin":
+        (base / "logs").mkdir(exist_ok=True, mode=0o700)
+        subprocess.run(where.stop[0], capture_output=True, check=False)  # noqa: S603 - a reload
+    for command in where.start:
+        # launchd may still be unloading the old agent: a few tries, a second apart.
+        for _ in range(5 if sys.platform == "darwin" else 1):
+            done = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+            if done.returncode == 0:
+                break
+            pause(1.0)
+        if done.returncode != 0:
+            print(
+                f"checker: `{' '.join(command)}` failed: {(done.stderr or '').strip()}",
+                file=sys.stderr,
+            )
+            return 1
+    print(
+        f"`checker run --all --unattended` will run every day at {args.at} (this machine's time)."
+    )
+    print(f"Its output: {where.logs}")
+    if sys.platform != "darwin" and schedule.lingering(getpass.getuser()) is False:
+        print(
+            "It runs only while you are logged in. To run it at night with no one logged"
+            f" in: sudo loginctl enable-linger {getpass.getuser()}"
+        )
+    return 0
+
+
+def cmd_schedule_remove(args: argparse.Namespace) -> int:
+    import subprocess
+
+    from checker import schedule
+
+    where = schedule.placement(sys.platform, (3, 0), {}, home(), Path.home())
+    present = [path for path in where.files if path.exists()]
+    if not present:
+        print("No timer is installed.")
+        return 0
+    stop, *after = where.stop  # stopped while its files are there; reloaded once they're gone
+    subprocess.run(stop, capture_output=True, check=False)  # noqa: S603
+    for path in present:
+        path.unlink()
+        print(f"Deleted {path}")
+    for command in after:
+        subprocess.run(command, capture_output=True, check=False)  # noqa: S603
+    print("Scheduled runs stopped.")
+    return 0
+
+
+def cmd_schedule_show(args: argparse.Namespace) -> int:
+    from checker import schedule
+
+    where = schedule.placement(sys.platform, (3, 0), {}, home(), Path.home())
+    present = [path for path in where.files if path.exists()]
+    if not present:
+        print("No timer is installed: `checker schedule install --at HH:MM` adds one.")
+        return 0
+    for path in present:
+        print(f"Installed: {path}")
+    print(f"Output of past runs: {where.logs}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

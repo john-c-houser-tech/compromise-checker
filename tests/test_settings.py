@@ -176,6 +176,7 @@ def test_older_configuration_files_get_the_advisor_off(base):
         ("web_access_logs", "on", True),
         ("exec_records", "all", "all"),
         ("retention_days", "30", 30),
+        ("notify_command", "/usr/local/bin/tell-ops", "/usr/local/bin/tell-ops"),
         ("prior", "0.05", 0.05),
         ("advisor.enabled", "on", True),
         ("advisor.model", "claude-sonnet-5-5", "claude-sonnet-5-5"),
@@ -212,7 +213,7 @@ def test_every_setting_round_trips(base, key, text, value):
 
 def test_the_table_lists_every_setting_tested():
     # advisor.api is tested with base_url, which it needs (test_advisor_endpoints).
-    assert len(SETTABLE) == 20
+    assert len(SETTABLE) == 21
 
 
 @pytest.mark.parametrize(

@@ -314,7 +314,12 @@ Nothing, unless you choose one of these:
 
 - the AI advisor (section 9);
 - optional reputation checks, which send IP addresses or file fingerprints
-  (never files) to a reputation service you configure.
+  (never files) to a reputation service you configure;
+- notifications from `checker run`, if you set a notify command: the tool
+  runs your command on your machine and gives it a short summary in the
+  tool's own words (host names, bands, check names, finding titles and the
+  report's path; never evidence or text from a host); where that command
+  sends it is your choice.
 
 The tool has no telemetry, usage reporting or licence check, and it never
 contacts NouriLoop LLC. Updates to threat packs (section 11) are downloaded

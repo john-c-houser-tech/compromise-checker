@@ -263,7 +263,8 @@ is John's to approve before it is committed. Also:
   (`minisign -G`), keeps the secret key and its password in 1Password with
   an offline backup, and gives me the public key to put in the tool and on
   nouriloop.com.
-- **D6. The packs repository.** A new public repository,
+- **D6. The packs repository. Decided 2026-10-30 (John): create it at
+  4.7.** A new public repository,
   `john-c-houser-tech/compromise-checker-packs`, under CC BY 4.0.
   Creating it is outward-facing, so it waits for John's word.
 - **D7. Spend on throwaway servers.** The PHP2Shell proof needs a few

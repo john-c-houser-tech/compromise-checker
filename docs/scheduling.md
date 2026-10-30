@@ -17,8 +17,12 @@ In order:
    what the host looked like at the last run (or, for a host no run has
    seen, its latest analysis);
 3. writes one report for the hosts analysed (as `checker report`);
-4. deletes what is past its retention period (as `checker purge --expired
-   --yes`; each host's current baseline is kept);
+4. deletes what is past its retention period for the hosts in the
+   inventory (as `checker purge --expired --yes`; each host's current
+   baseline is kept). A host taken out of the inventory, perhaps only to
+   pause it, keeps all its evidence, baseline included, until you run
+   `checker purge --expired` yourself (that purge does take its expired
+   baseline, policy §8); each run notes how many such bundles wait;
 5. says what needs a look, and tells your notify command (below).
 
 A host that couldn't be collected isn't analysed again from an older

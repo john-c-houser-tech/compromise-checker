@@ -664,6 +664,11 @@ The advisor's answers can't be golden-tested, so they are measured.
   shows a new member. macOS install retries `bootstrap`; the notify
   command needs a full path, keeps its output in a file and doesn't get
   the advisor's keys; `python -P`; unreadable settings exit 2.
+  A side note (John relayed it): the unattended purge would take the
+  expired baseline of a host taken out of the inventory to pause it, so
+  re-adding it would hide changes made meanwhile. A run now purges only
+  inventoried hosts; the others wait for a person's `checker purge
+  --expired`, and each run notes how many bundles wait.
 - Carried over: RHEL proof only if there is interest; package verification
   against vendor packages; report encryption at rest (John's decision
   2026-10-27: revisit after the currently planned phases); outbound

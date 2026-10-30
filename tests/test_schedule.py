@@ -522,3 +522,19 @@ def test_install_on_a_mac_waits_for_the_old_agent_to_go(fleet, tmp_path, monkeyp
     assert waited == [1.0, 1.0]
     agents = tmp_path / "user" / "Library" / "LaunchAgents"
     assert (agents / "com.nouriloop.compromise-checker.plist").exists()
+
+
+def test_a_run_purges_only_hosts_in_the_inventory(fleet):
+    """A host taken out of the inventory (perhaps only paused) keeps its
+    evidence and baseline until a person runs the purge."""
+    from test_purge import add
+
+    base, store, _, config = fleet
+    add(fleet, "old-web", 400)
+    add(fleet, "old-paused", 400, host="paused")
+    said = []
+    result = schedule.RunResult([])
+    schedule._purge_expired(store, base, config, load_inventory(), said.append, result)
+    assert store.bundles("web01") == [] and len(store.bundles("paused")) == 1
+    assert result.run_alerts == ["web01: all its evidence had expired and was purged"]
+    assert any("1 expired bundle(s) of hosts not in the inventory are kept" in s for s in said)

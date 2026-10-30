@@ -488,8 +488,12 @@ def _whitelist_or_none(base: Path, host: str, inventory):
 
 
 def _purge_expired(store, base: Path, config, inventory, say, result: RunResult) -> None:
-    """`checker purge --expired --yes`, as part of the run (policy §8). A
-    baseline it takes needs a look: changes before the next one no longer show."""
+    """`checker purge --expired --yes` for the hosts in the inventory, as
+    part of the run (policy §8). A baseline it takes needs a look: changes
+    before the next one no longer show. Hosts no longer in the inventory
+    (perhaps only paused) keep their evidence, baselines included, until a
+    person runs the purge: their baselines have no protection from expiry,
+    and a run shouldn't take them unasked."""
     from checker.purge import execute, leftovers
     from checker.purge import plan as purge_plan
 
@@ -500,7 +504,20 @@ def _purge_expired(store, base: Path, config, inventory, say, result: RunResult)
         )
         return
     try:
-        chosen = purge_plan(store, base, names, config.retention_days, expired=True)
+        chosen = purge_plan(store, base, names, config.retention_days, expired=True, only=names)
+        others = set(store.hosts()) - names
+        waiting = (
+            purge_plan(
+                store, base, names, config.retention_days, expired=True, files=False, only=others
+            ).bundles
+            if others
+            else []
+        )
+        if waiting:
+            say(
+                f"Note: {len(waiting)} expired bundle(s) of hosts not in the inventory are kept"
+                " (with their baselines): `checker purge --expired` deletes them."
+            )
         if chosen.outside:
             result.problems.append(
                 "nothing purged: some bundles are stored outside the evidence folder"

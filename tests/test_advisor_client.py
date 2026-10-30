@@ -641,7 +641,7 @@ def test_an_answer_to_a_case_whose_text_addresses_an_ai_carries_a_warning(
     warning naming where the text was; here the uid-0 finding's own words
     are set as what counts as addressing an AI."""
     import checker.advisor.proposals as proposals
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config = enabled
     monkeypatch.setattr(proposals, "ADDRESSED", re.compile(r"root under another name"))
@@ -651,7 +651,9 @@ def test_an_answer_to_a_case_whose_text_addresses_an_ai_carries_a_warning(
     (row,) = store.advice("b1")
     record = latest_advice(store, "web01", identity, "b1", row["assessed_at"])["explain"]
     assert record["answered"]["warning"] == advice.warning
-    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
     assert "<strong>Warning: text in the case (F-" in html
     cli._print_advice(advice, "explain")
     assert "Warning: text in the case (F-" in capsys.readouterr().out
@@ -663,9 +665,11 @@ def test_an_ordinary_case_carries_no_warning(enabled, capsys):
     assert advice.warning == ""
     cli._print_advice(advice, "explain")
     assert "Warning" not in capsys.readouterr().out
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
-    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
     assert "Warning:" not in html
 
 

@@ -76,7 +76,8 @@ class Advisor(BaseModel):
     # Where the provider runs the model, for organizations that must keep
     # inference in one geography (e.g. "us"); empty: the provider's default.
     inference_geo: str | None = Field(default=None, pattern=r"^[a-z]{2,16}$")
-    # Asks before sending a run estimated to cost more (US dollars).
+    # Asks before sending a run likely to cost more (US dollars); the most it
+    # can cost is shown beside it, and isn't capped.
     max_cost_per_run: float = Field(default=1.0, gt=0, le=1000)
     # When the model's safety checks decline a request (decision 3): off,
     # nothing more; anthropic, re-run on Anthropic's recommended model for

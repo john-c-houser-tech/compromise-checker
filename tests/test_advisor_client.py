@@ -419,7 +419,7 @@ def test_rate_limited_then_answered(enabled):
     assert advice.status == "answered" and len(calls) == 2
 
 
-def test_the_estimate_counts_a_fallback_and_a_no_sends_nothing_at_all(enabled):
+def test_the_most_counts_a_fallback_and_a_no_sends_nothing_at_all(enabled):
     base = enabled[0]
     change(base, "advisor.max_cost_per_run", "0.01")
     said = []
@@ -431,8 +431,18 @@ def test_the_estimate_counts_a_fallback_and_a_no_sends_nothing_at_all(enabled):
     )  # fmt: skip
     assert advice.status == "not sent" and provider.requests == []
     assert "estimated here; nothing sent yet" in said[0]
-    assert "counting a possible re-run on a fallback model" in said[0]
-    assert "above advisor.max_cost_per_run" in advice.note
+    assert "and a re-run on a fallback model if declined" in said[0]
+    assert "likely cost is above advisor.max_cost_per_run" in advice.note
+
+
+def test_between_the_likely_cost_and_the_most_it_sends_without_asking(enabled, monkeypatch):
+    from checker.advisor.prices import Estimate
+
+    monkeypatch.setattr(advise_module, "estimate", lambda *a, **k: Estimate(0.30, 1.20))
+    advice = run(enabled, Provider(), confirm=None)  # nobody to ask
+    assert advice.status == "answered"
+    monkeypatch.setattr(advise_module, "estimate", lambda *a, **k: Estimate(1.05, 1.20))
+    assert run(enabled, Provider(), confirm=None).status == "not sent"
 
 
 def test_a_model_without_a_price_says_so(enabled):
@@ -497,8 +507,19 @@ def test_the_estimate_errs_high_for_a_real_case():
     # tokens, all written to the cache, and 2 618 out; it cost $0.23.
     tokens = tokens_in("x" * 86_000)
     assert tokens >= 35_831
-    input_cost, _ = estimate("claude-opus-5-5", tokens, 16_000)
-    assert input_cost >= 35_831 * 4 * 1.25 / 1e6
+    priced = estimate("claude-opus-5-5", tokens, 16_000)
+    assert priced.likely >= 0.23  # what it cost
+    assert priced.likely < 1.00  # sent at the default limit without asking
+
+
+def test_the_limit_is_checked_against_the_likely_cost():
+    from checker.advisor.prices import estimate, tokens_in
+
+    real = estimate("claude-opus-5-5", tokens_in("x" * 86_000), 16_000, fallback=True)
+    assert real.likely == pytest.approx(43_001 * 5 / 1e6 + 4_000 * 20 / 1e6)
+    assert real.most > 1.00 > real.likely  # the worst case shown, not the check
+    huge = estimate("claude-opus-5-5", tokens_in("x" * 400_000), 16_000, fallback=True)
+    assert huge.likely > 1.00  # a huge case still asks
 
 
 # --- What the second review of 3.2 found ---------------------------------------------------------

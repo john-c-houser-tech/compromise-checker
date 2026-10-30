@@ -27,8 +27,9 @@ What works today:
   the configuration).
 - `checker advise HOST [--yes]` — asks the optional AI advisor to explain a
   host's latest analysis (verdict, what matters most, innocent
-  explanations, what would settle it), after showing the estimated cost
-  and asking above `advisor.max_cost_per_run`. The answer is checked
+  explanations, what would settle it), after showing the likely cost and
+  the most it can cost, and asking when the likely cost is above
+  `advisor.max_cost_per_run`. The answer is checked
   against the case (it must name only real findings and agree with the
   band), its placeholders turned back into names, and it is stored
   encrypted with exactly what was sent; the report shows it, labelled

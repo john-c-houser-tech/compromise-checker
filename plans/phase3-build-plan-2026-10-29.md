@@ -185,7 +185,10 @@ assessment, its events, snapshot and whitelist, by one module
   request, 86 000 characters, was 35 800 tokens and cost $0.23; built 2026-10-29 in place of
   `count_tokens`, which would have sent the case before the operator said
   yes), from a price table in one place (`checker/advisor/prices.py`,
-  dated), counting a possible fallback re-run; shown before sending; above
+  dated); shown before sending as the likely cost (the input and a
+  typical 4 000-token answer) and the most (the longest answer, and a
+  fallback re-run if on); the limit is checked against the likely cost
+  (John, 2026-10-29: the worst case asked almost every time); above
   `max_cost_per_run` (or with no price for the model) it asks; `--yes` for
   scripts. The real cost, each model at its own rate from the usage per
   model, is stored. Nothing at all leaves before the yes.

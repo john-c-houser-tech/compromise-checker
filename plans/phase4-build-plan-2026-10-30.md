@@ -238,7 +238,8 @@ is John's to approve before it is committed. Also:
   into the tool, so anything new waits for a tool release.
   *Recommendation:* the small language, with no code and no regular
   expressions; a pack whose detections need more waits for a release.
-- **D2. Where vulnerable versions come from.** Fixed versions written into
+- **D2. Where vulnerable versions come from. Decided 2026-10-30 (John): in
+  the pack.** Fixed versions written into
   the pack when it is made (offline, reproducible, works air-gapped); or
   the tool downloads the vendors' OVAL data at run time.
   *Recommendation:* in the pack.

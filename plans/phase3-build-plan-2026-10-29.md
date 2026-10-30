@@ -485,9 +485,20 @@ The advisor's answers can't be golden-tested, so they are measured.
   checks and were offered: the checks allow rules on a Low host, so a quiet
   intruder can steer proposals. Docs say so; a person still reviews each.
   The eval keeps only set-aside answers, so it can't say which 2 were
-  offered; keeping offered answers too would. Also confirmed: at Ollama's default 4 096 context with
-  `max_tokens` 16 000, a ~7 000-token prompt is still cut to 2 050, which
-  the cut-off check catches.
+  offered; keeping offered answers too would. Also confirmed: at Ollama's
+  default 4 096 context with `max_tokens` 16 000, a ~7 000-token prompt is
+  still cut to 2 050, which the cut-off check catches.
+- **After two reviews (3.8, 2026-10-30):** purge finds proposal files by
+  the name in their bundle's custody (the operator edits them), deletes a
+  report or proposal only while it has the hash it had when planned, and
+  names them with those hashes in the purge record, so the next purge
+  finishes one it couldn't delete; a proposal file whose custody entry
+  fails isn't kept. Policy §9 corrected three more times with John's
+  approval: what is sent in full, the host's own group names are sent,
+  `--show` and the fallback, baseline quotes, hand edits unrecorded, the
+  tool (not the model) never offers critical or chained rules, moved
+  proposals are the operator's. Later: replacing the host's own group
+  names would need a list of system groups to keep.
 
 - Policy §9 reconciled with what is built (agreed with John 2026-10-29:
   SSH key fingerprints added to what is replaced; strict also sends the

@@ -233,7 +233,7 @@ coverage, and advise on remediation. It works fully without it.
   the advisor on and explains what would be sent and to whom. Installations
   set up without anyone answering questions leave it off unless the
   configuration file turns it on. `checker config` changes the choice later,
-  and every change is recorded with who made it and when.
+  and every change made with it is recorded with who made it and when.
 - **Your account, your provider.** The advisor uses your organization's own
   account with the AI provider, or a model you run yourself on your own
   hardware. Data sent goes from your machine to that provider under your
@@ -244,21 +244,27 @@ coverage, and advise on remediation. It works fully without it.
   configuration, a log or the evidence store.
 - **Only when asked.** Nothing is sent until an operator runs
   `checker advise`. `checker advise --show` prints exactly what would be
-  sent, after redaction, and sends nothing. Before sending, the tool shows
+  sent, after redaction (apart from the placeholders' random tag, which
+  each run draws afresh), and sends nothing. Before sending, the tool shows
   the likely cost and asks when it is above the limit your organization set,
   or when the cost isn't known.
-- **What is sent:** findings, their scores, short masked excerpts of the
-  evidence behind them, the related whitelist rules, and the coverage gaps
-  (which sources were missing). Never whole log files, and never passwords
+- **What is sent:** the server's operating system and kernel version,
+  findings, their scores, short masked excerpts of the evidence behind
+  them, the related whitelist rules, and the coverage gaps (which sources
+  were missing). Never whole log files, and never passwords
   or keys. Whitelist rules are sent with the reasons written in them, so
   those reasons should describe the activity, not name people.
 - **Redaction**, set by your organization:
   - *pseudonymize* (the default when the advisor is turned on) — server
-    names, IP addresses, usernames, email addresses and SSH key fingerprints
-    are replaced with placeholders such as `USER-2-7f3a` before sending, and
-    restored on your machine when the answer returns. The placeholders are
-    made fresh for each run and never stored, so the provider can't connect
-    one run to another by name;
+    names and their domains, IP addresses, usernames and groups, email
+    addresses and SSH key fingerprints are replaced with placeholders such
+    as `USER-2-7f3a` before sending, and restored on your machine when the
+    answer returns. The placeholders are made fresh for each run, so the
+    provider can't connect one run to another by name; your encrypted
+    record keeps the request as it was sent. Names that appear only in free
+    text (another company's domain in a log line, a person's name in a
+    comment) aren't recognised, and common system accounts such as `root`
+    are kept as they are;
   - *strict* — only the kinds of finding, counts, scores and kinds of
     coverage gap are sent;
   - *none* — excerpts are sent as collected (after secret masking).
@@ -284,7 +290,9 @@ coverage, and advise on remediation. It works fully without it.
 - **A record of what left.** Each request and its answer are stored
   encrypted with your evidence key, in an append-only record, so your
   organization can show afterwards exactly what was sent and to whom. They
-  are deleted with the evidence they were about.
+  are deleted with the evidence they were about. Whitelist proposals are
+  files readable only by their owner, with real names in them, and are
+  deleted with the same evidence.
 - **Untrusted text.** Log content can be written by attackers (for example,
   a username or web address crafted to mislead an AI). It is always passed to
   the advisor marked as data to examine, never as instructions, and every

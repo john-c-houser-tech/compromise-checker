@@ -19,8 +19,8 @@ checker config show          # every setting in words, including who receives wh
 checker config check-key     # reads the key from its source; sends nothing
 ```
 
-Every change is recorded with who made it and when (`checker config
-history`).
+Every change made with `checker config set` is recorded with who made it
+and when (`checker config history`); edits to the file by hand are not.
 
 ### The key
 

@@ -901,6 +901,14 @@ def build_parser() -> argparse.ArgumentParser:
     accepting.add_argument("--bundle", help="this bundle rather than the host's latest")
     accepting.add_argument("--identity", help="the evidence private key file")
     accepting.set_defaults(handler=cmd_baseline_accept)
+    packing = commands.add_parser("packs", help="threat packs (DESIGN.md §10)")
+    pack_commands = packing.add_subparsers(dest="packs_command", metavar="ACTION", required=True)
+    checking_pack = pack_commands.add_parser(
+        "check", help="validate a pack file, without trusting or adding it"
+    )
+    checking_pack.add_argument("file", help="the pack's YAML file")
+    checking_pack.set_defaults(handler=cmd_packs_check)
+
     whitelisting = commands.add_parser("whitelist", help="check the whitelist files")
     whitelist_commands = whitelisting.add_subparsers(
         dest="whitelist_command", metavar="ACTION", required=True
@@ -1842,6 +1850,49 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
             file=sys.stderr,
         )
     return 1 if outcome.failed else 0
+
+
+def cmd_packs_check(args: argparse.Namespace) -> int:
+    """Validate a pack as the tool would read it: its format, then that
+    its detections name checks this version of the tool has. The file is
+    untrusted: only a regular file is read, no more than a pack may hold,
+    and its text is shown with hidden characters escaped."""
+    import os
+    import stat
+
+    from checker.checks import load_checks
+    from checker.packs.format import MAX_BYTES, PackError, read
+    from checker.report import visible
+
+    try:
+        fd = os.open(args.file, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise OSError(0, "not a regular file")
+            data = handle.read(MAX_BYTES + 1)
+    except OSError as exc:
+        print(f"checker: {args.file}: {exc.strerror or exc}", file=sys.stderr)
+        return 1
+    try:
+        pack = read(data)
+    except PackError as exc:
+        print(f"checker: {args.file} isn't a valid pack:", file=sys.stderr)
+        for line in str(exc).splitlines():
+            print(f"  {visible(line, 1000)}", file=sys.stderr)
+        return 1
+    known = load_checks()
+    unknown = [d.check for d in pack.detections if d.check not in known]
+    if unknown:
+        print(
+            f"checker: {args.file}: detections name checks this version doesn't have: "
+            + ", ".join(unknown),
+            file=sys.stderr,
+        )
+        return 1
+    releases = ", ".join(dict.fromkeys(p.release for p in pack.exposure.packages))
+    print(f"Valid: {pack.id} version {pack.version} ({visible(pack.title, 200)}), for {releases}.")
+    print("Checked only: nothing was trusted or added (adding a pack checks its signature).")
+    return 0
 
 
 def cmd_run(args: argparse.Namespace) -> int:

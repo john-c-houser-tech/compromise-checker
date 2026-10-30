@@ -637,6 +637,18 @@ The advisor's answers can't be golden-tested, so they are measured.
   names. The warning is stored with the encrypted answer and printed in
   the terminal and the report. If the check itself fails, the paid answer
   is kept with a warning that it couldn't be checked.
+- **After review (3.10; 1 medium, 6 low):** a whitelist rule's reason
+  (usually the organization's own, e.g. "these alerts are expected during
+  patching") was put down to an intruder on every answer: such a rule now
+  reads "the reason or match of whitelist rule … reads like words to an
+  AI … check the rule", in the warning and the proposals' reasons alike.
+  Steering is checked once per answer and the result passed to the
+  whitelist judge, so a failing check sets the proposals aside instead of
+  failing the answer; the place's name is restored inside the guard.
+  Tests for the remediation and whitelist roles, a set-aside answer, and
+  a rule's reason. Not done: answers stored before 3.10 aren't checked
+  again (the docs say so); the eval doesn't show the warning for the
+  other roles.
 
 - Threat packs and pack drafting (Phase 4).
 - **Scheduled checks** of production servers, run from a permanent

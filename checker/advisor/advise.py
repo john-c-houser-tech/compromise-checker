@@ -123,7 +123,7 @@ def advise(
     if client is None:
         client = _client(advisor.api_key_source, advisor.api, advisor.base_url)
     sent_fallback = None
-    warning = ""
+    warning, steered = "", None
 
     recorded = False
 
@@ -246,7 +246,7 @@ def advise(
                 status, note = "invalid", f"the answer was set aside: it {exc}"
             else:
                 answer = _restore(raw, pseudonyms.restore) if pseudonyms is not None else raw
-                warning = _steered(payload, pseudonyms)
+                steered, warning = _steered(payload, pseudonyms)
         judged, written = None, None
         if status == "answered" and role == "remediation":
             from checker.advisor.roles import DESTRUCTIVE, _plain
@@ -279,7 +279,7 @@ def advise(
         if status == "answered" and role == "whitelist":
             try:
                 judged, written = _proposals(
-                    store, host, identity, inventory, whitelist, which, answer, home, payload
+                    store, host, identity, inventory, whitelist, which, answer, home, steered
                 )
             except Exception as exc:  # the answer was paid for: kept, whatever happens next
                 if isinstance(exc, _Unrecorded):
@@ -326,26 +326,23 @@ def advise(
         raise
 
 
-def _steered(payload: dict[str, Any], pseudonyms) -> str:
-    """The warning shown with an answer when text in the case addresses an
-    AI (as an intruder steering the advisor might), else "". The answer is
-    still shown: a person weighs it, knowing it may have been steered."""
-    from checker.advisor.proposals import steering
+def _steered(payload: dict[str, Any], pseudonyms) -> tuple[str | None, str]:
+    """Where text in the case as sent addresses an AI (proposals.steering(),
+    real names restored; UNCHECKED if the check failed), and the warning
+    shown with the answer, else (None, ""). The answer is still shown: a
+    person weighs it, knowing it may have been steered."""
+    from checker.advisor.proposals import UNCHECKED, steered_words, steering
 
     try:
         where = steering(payload)
-    except Exception as exc:  # noqa: BLE001 - the answer was paid for: kept, with a warning
-        return (
-            f"the case's text couldn't be checked for words addressing an AI"
-            f" ({type(exc).__name__}): this advice may have been steered"
-        )
+        if where and pseudonyms is not None:
+            where = pseudonyms.restore(where)
+    except Exception:  # noqa: BLE001 - the answer was paid for: kept, with a warning
+        where = UNCHECKED
     if not where:
-        return ""
-    if pseudonyms is not None:
-        where = pseudonyms.restore(where)
-    return (
-        f"text in the case ({where}) addresses an AI, as an intruder steering the advisor"
-        " might: this advice may have been steered; weigh it with that in mind"
+        return None, ""
+    return where, (
+        f"{steered_words(where)}: this advice may have been steered; weigh it with that in mind"
     )
 
 
@@ -519,11 +516,11 @@ def spent(outcome: Outcome) -> float | None:
     return cost(outcome.model_answered or outcome.model_asked, outcome.usage)
 
 
-def _proposals(store, host, identity, inventory, whitelist, which, answer, home, payload):
+def _proposals(store, host, identity, inventory, whitelist, which, answer, home, steered):
     """Role 2's rules judged against the real findings (checker.advisor.
-    proposals), and the file the accepted ones go to. `payload` is the case
-    as sent: its host text is what could have steered the answer."""
-    from checker.advisor.proposals import judge, steering, write_file
+    proposals), and the file the accepted ones go to. `steered` is where
+    the case as sent addresses an AI (_steered()): none are offered then."""
+    from checker.advisor.proposals import judge, write_file
     from checker.assess import load_assessment
     from checker.baseline import usable_bundles
     from checker.inventory import home as default_home
@@ -572,7 +569,7 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home,
         rule_ids,
         group=group,
         band=which["band"],
-        steered=steering(payload),
+        steered=steered,
     )
     written = write_file(base, host, group, judged, datetime.now(UTC).strftime("%Y-%m-%d %H:%M"))
     if written is not None:

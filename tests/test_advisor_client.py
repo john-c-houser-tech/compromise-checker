@@ -672,10 +672,7 @@ def test_a_steering_check_that_fails_keeps_the_answer_with_a_warning(enabled, mo
     monkeypatch.setattr(proposals, "steering", broken)
     advice = run(enabled, Provider())
     assert advice.status == "answered" and advice.answer["verdict"]
-    assert (
-        advice.warning.startswith("the case's text couldn't be checked")
-        and "(ValueError)" in advice.warning
-    )
+    assert advice.warning.startswith("the case's text couldn't be checked")
 
 
 def test_the_warning_names_the_place_with_its_real_name(monkeypatch):
@@ -686,5 +683,16 @@ def test_the_warning_names_the_place_with_its_real_name(monkeypatch):
             return text.replace("HOST-1-7f3a", "web01")
 
     monkeypatch.setattr(proposals, "steering", lambda payload: "whitelist rule HOST-1-7f3a-db")
-    warning = advise_module._steered({}, Names())
-    assert warning.startswith("text in the case (whitelist rule web01-db) addresses an AI")
+    where, warning = advise_module._steered({}, Names())
+    assert where == "whitelist rule web01-db"
+    # A rule's reason is usually the organization's own: not put down to an intruder.
+    assert warning.startswith("the reason or match of whitelist rule web01-db reads like words")
+    assert "intruder steering" not in warning
+
+
+def test_an_answer_set_aside_carries_no_warning(enabled, monkeypatch):
+    import checker.advisor.proposals as proposals
+
+    monkeypatch.setattr(proposals, "ADDRESSED", re.compile(r"root under another name"))
+    advice = run(enabled, Provider(lambda body: answer_message(body, finding="F-999")))
+    assert advice.status == "invalid" and advice.warning == ""

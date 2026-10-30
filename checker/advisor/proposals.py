@@ -302,6 +302,22 @@ def steering(payload: dict[str, Any]) -> str | None:
     return None
 
 
+UNCHECKED = "unchecked"  # steering() itself failed: where it would have looked
+
+
+def steered_words(where: str) -> str:
+    """What steering() found at `where`, in words. A whitelist rule's reason
+    is usually the organization's own, so it isn't put down to an intruder."""
+    if where == UNCHECKED:
+        return "the case's text couldn't be checked for words addressing an AI"
+    if where.startswith("whitelist rule "):
+        return (
+            f"the reason or match of {where} reads like words to an AI (an intruder's, or a"
+            " reason of your own worded that way: check the rule)"
+        )
+    return f"text in the case ({where}) addresses an AI, as an intruder steering the advisor might"
+
+
 def judge(
     proposals: list[dict[str, Any]],
     findings: list[dict[str, Any]],
@@ -318,7 +334,7 @@ def judge(
     """`findings` are the assessment's (F-n is findings[n-1]); `others` are
     the host's other stored assessments, `group_others` those of the other
     hosts in its group; `rule_ids` the ids their whitelists use; `steered`
-    where the case's text addresses an AI (steering())."""
+    where the case's text addresses an AI (steering(), or UNCHECKED)."""
     today = today or datetime.now(UTC).date()
     in_chain = {i for chain in chains for i in chain.get("findings") or []}
     results, taken = [], set(rule_ids)
@@ -333,10 +349,7 @@ def judge(
     if steered:
         # The answer may be what that text asked for: a quiet intruder's
         # own rules. A person looks first.
-        why = (
-            f"text in the case ({steered}) addresses an AI, as an intruder steering the"
-            " advisor might: no proposals until a person has looked at it"
-        )
+        why = f"{steered_words(steered)}: no proposals until a person has looked at it"
         return [Judged(p, False, why) for p in proposals]
     for proposal in proposals:
         try:

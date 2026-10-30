@@ -381,3 +381,20 @@ def test_numbers_in_a_role(role):
 def test_a_continuation_line_doesnt_end_a_clause():
     with pytest.raises(InvalidAnswer, match="sends or fetches"):
         check(answer(contain=[step("Upload the memory image \\\n  to IP-3-7f3a:/drop")]))
+
+
+def test_a_plan_for_a_case_whose_text_addresses_an_ai_is_shown_with_a_warning(
+    enabled, capsys, monkeypatch
+):
+    import re
+
+    import checker.advisor.proposals as proposals
+
+    band = band_of(enabled)
+    provider = Provider(remediation_reply(plan(band)))
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x" + "y" * 30)
+    monkeypatch.setattr(proposals, "ADDRESSED", re.compile(r"root under another name"))
+    assert cli.main(["advise", "web01", "--role", "remediation", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "Warning: text in the case (F-" in out and "Preserve evidence first:" in out

@@ -301,6 +301,38 @@ is John's to approve before it is committed. Also:
   collection each; both servers deleted. Spend: about $0.01 (Phase 4 so
   far: about $0.01 of the $10 cap).
 
+### 4.4b — Mitigations and dated fixes (as built)
+
+- The pack format's mitigation gains `default` (PHP's built-in value
+  when no file sets it). `checker/packs/mitigation.py` judges each PHP
+  set-up as PHP loads it (php.ini, then conf.d in name order through its
+  links; the last occurrence outside [PATH=]/[HOST=] wins; set nowhere =
+  the default) and each PHP-FPM pool's override: in place only if every
+  set-up and pool has the expected value; "not seen" when PHP's settings
+  weren't collected whole, no set-up was found, or the pack gives no
+  default for a setting set nowhere. A missing mitigation is a
+  `pack.exposure` finding (`mitigation_missing`): high while the host is
+  vulnerable or can't be judged, medium once fixed. Mitigations don't move
+  the prior (D3 didn't say they should).
+- **What an in-place mitigation can't see** (a side note John relayed,
+  2026-10-30): a site's `.user.ini` (PHP-FPM) or `.htaccess` (Apache's
+  PHP) can set `session.upload_progress.enabled` again for that site; the
+  collector reads neither, and the coverage section says so whenever a
+  mitigation reads as in place. Reading them is a collection change:
+  John's decision, asked separately.
+- Fix times from the package history: the change into a fixed version
+  after which the package stayed fixed dates the fix exactly (a later
+  routine update no longer stretches the exposure); a first install of an
+  already-fixed version extends no exposure; a downgrade back restarts
+  the clock; without history, an earlier collection that already had the
+  fix bounds it; a vulnerable package removed during the window was
+  exposed until its removal. Findings say "at" for an exact time and "by
+  … at the latest" otherwise.
+- Running kernels: no kernel pack exists yet; when one does, the running
+  kernel (uname, in the host facts) is what to judge, since an installed
+  but unbooted fix protects nothing. A design note for that pack, not
+  built.
+
 ### 4.5 — Detections
 
 - The detection language (D1): over events (type, fields matched by

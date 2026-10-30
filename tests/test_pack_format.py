@@ -36,6 +36,7 @@ GOOD = textwrap.dedent(
       - id: upload-progress-off
         setting: {kind: php_ini, name: session.upload_progress.enabled}
         expect: "off"
+        default: "on"
         covers: [CVE-2026-115560]
         text: Turn off upload progress tracking until PHP is fixed.
     detections:

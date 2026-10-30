@@ -53,6 +53,12 @@ class Judged:
     status: str  # VULNERABLE, FIXED or CANT_JUDGE
     fixed: str | None  # the fix it was judged against (the deciding entry's)
     why: str = ""
+    # For a fixed package: when the fix arrived, whether that is exact (the
+    # package history says so), and whether it arrived as a first install
+    # (nothing vulnerable before it).
+    fixed_since: str | None = None
+    exact: bool = False
+    fresh: bool = False
 
 
 @dataclass
@@ -69,7 +75,10 @@ class Exposure:
     exposed_until: str | None = None  # None while still exposed
     share: float = 0.0  # of the window so far, 0..1
     fixed_at: str | None = None
+    fix_time_exact: bool = False  # from the package history, not a last update's time
+    removed_at: str | None = None  # a vulnerable package removed in the window, when
     stale: list[dict[str, Any]] = field(default_factory=list)  # processes still on old code
+    mitigations: list[Any] = field(default_factory=list)  # checker.packs.mitigation.Judged
 
     def log_ratio(self) -> float:
         """What this exposure adds to the prior's log-odds (decision D3)."""
@@ -132,11 +141,16 @@ def judge(
     processes: list[dict[str, Any]],
     now: datetime,
     complete: bool = True,
+    history: list[dict[str, Any]] | None = None,
+    earlier: list[tuple[datetime, dict[str, dict[str, Any]]]] | None = None,
 ) -> Exposure:
     """The exposure of one host (its host facts, installed packages, and
     live processes, as collected at `now`) to one pack. `complete`: the
     package listing was collected whole; when it wasn't, finding nothing
-    vulnerable proves nothing."""
+    vulnerable proves nothing. `history`: the package changes the evidence
+    holds ({"time", "type": "package.<action>", "fields"}), which date a
+    fix exactly; `earlier`: earlier collections' package listings, with when
+    they were collected, which bound it."""
     now = now if now.tzinfo else now.replace(tzinfo=UTC)
     window = pack.exposure
     start = window.window_start
@@ -168,7 +182,18 @@ def judge(
             continue
         installed = _time(item.get("installed"))
         found.packages.append(_judge_one(key, name, version, installed, matching, manager))
+    history = sorted((h for h in history or [] if _time(h.get("time"))), key=lambda h: h["time"])
     statuses = {p.status for p in found.packages}
+    if not statuses and complete:
+        removed = _removed(history, entries, manager, start)
+        if removed is not None:
+            # Not installed now, but a vulnerable version was until then.
+            found.status, found.removed_at, found.fix_time_exact = FIXED, removed.isoformat(), True
+            if end > start:
+                until = min(removed, end)
+                found.exposed_from, found.exposed_until = start.isoformat(), until.isoformat()
+                found.share = (until - start).total_seconds() / (end - start).total_seconds()
+            return found
     if VULNERABLE in statuses:
         found.status = VULNERABLE
     elif CANT_JUDGE in statuses or not complete:
@@ -180,13 +205,20 @@ def judge(
         found.status = NOT_AFFECTED
         return found
     fixed = [p for p in found.packages if p.status == FIXED]
-    times = [_time(p.installed) for p in fixed]
+    for package in fixed:
+        _arrival(package, history, earlier or [], entries, manager)
     # Every fixed package's time is needed: one unknown is a fix at an
-    # unknown time.
-    fixed_at = max(times) if times and None not in times else None
-    found.fixed_at = fixed_at.isoformat() if fixed_at else None
+    # unknown time. A package first installed already fixed had nothing
+    # vulnerable before it, so it extends no exposure.
+    counted = [p for p in fixed if not p.fresh]
+    times = [_time(p.fixed_since) for p in counted]
+    fixed_at = max(times) if times and None not in times else (None if times else start)
+    found.fixed_at = fixed_at.isoformat() if fixed_at and counted else None
+    found.fix_time_exact = bool(counted) and all(p.exact for p in counted)
     if found.status == FIXED:
-        found.stale = _stale(window, processes, fixed_at)
+        # Old code: a service started before the newest of these arrived.
+        newest = [_time(p.fixed_since) for p in fixed]
+        found.stale = _stale(window, processes, max(newest) if None not in newest else None)
     if end <= start:
         return found  # the window hasn't opened yet at collection time
     span = (end - start).total_seconds()
@@ -200,6 +232,75 @@ def judge(
         found.exposed_from, found.exposed_until = start.isoformat(), until.isoformat()
         found.share = min(1.0, (until - start).total_seconds() / span)
     return found
+
+
+def _state(name: str, version: str | None, entries: list, manager: str) -> str:
+    """A version's standing against the pack: VULNERABLE, FIXED, CANT_JUDGE,
+    or "absent" (removed, or not a version any entry covers)."""
+    if version is None:
+        return "absent"
+    matching = [e for e in entries if name in e.binary_names and _matches(e, version)]
+    if not matching:
+        return "absent"
+    return _judge_one("", name, version, None, matching, manager).status
+
+
+def _events(history: list[dict[str, Any]], name: str, arch: str | None) -> list[dict[str, Any]]:
+    return [
+        h
+        for h in history
+        if (h.get("fields") or {}).get("name") == name
+        and (arch is None or (h.get("fields") or {}).get("arch") in (None, arch, "all"))
+    ]
+
+
+def _arrival(package: Judged, history: list, earlier: list, entries: list, manager: str) -> None:
+    """When a fixed package's fix arrived. The package history dates it
+    exactly: the change into a fixed version after which it stayed fixed
+    (a first install of a fixed version had nothing vulnerable before it).
+    Without that, the last install or update is the latest it can have
+    been, earlier still if an earlier collection already had it fixed."""
+    parts = package.key.split(" ")
+    arch = parts[1] if len(parts) > 1 else None
+    since, fresh = None, False
+    for event in _events(history, package.name, arch):
+        fields = event.get("fields") or {}
+        state = _state(package.name, fields.get("version"), entries, manager)
+        if state == FIXED:
+            if since is None:
+                since = event["time"]
+                fresh = event.get("type") == "package.install" and not fields.get("previous")
+        else:
+            since, fresh = None, False
+    if since is not None:
+        package.fixed_since, package.exact, package.fresh = since, True, fresh
+        return
+    latest = _time(package.installed)
+    for collected, listing in earlier:
+        before = (listing.get(package.key) or {}).get("version")
+        if before is not None and _state(package.name, str(before), entries, manager) == FIXED:
+            if latest is None or collected < latest:
+                latest = collected
+    package.fixed_since = latest.isoformat() if latest else None
+
+
+def _removed(history: list, entries: list, manager: str, start: datetime) -> datetime | None:
+    """When the last vulnerable version an entry covers was removed in the
+    window, if one was (the package history says so)."""
+    removed = None
+    for event in history:
+        fields = event.get("fields") or {}
+        if fields.get("version") is not None or event.get("type") not in (
+            "package.remove",
+            "package.purge",
+        ):
+            continue
+        name, before = fields.get("name"), fields.get("previous")
+        if before and _state(str(name), str(before), entries, manager) in (VULNERABLE, CANT_JUDGE):
+            when = _time(event.get("time"))
+            if when is not None and when > start and (removed is None or when > removed):
+                removed = when
+    return removed
 
 
 def _stale(window: Any, processes: list[dict[str, Any]], fixed_at: datetime | None) -> list:

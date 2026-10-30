@@ -192,8 +192,15 @@ def evaluate(
 def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
     """Each pack's exposure, judged once (for the pack check, on the
     context) and what together they add to the prior (DESIGN.md §11.2)."""
-    from checker.packs.exposure import judge, prior_raise
+    from checker.packs.exposure import (
+        NOT_AFFECTED,
+        NOT_COVERED,
+        UNKNOWN_RELEASE,
+        judge,
+        prior_raise,
+    )
     from checker.packs.format import MAX_LR
+    from checker.packs.mitigation import judge as judge_mitigations
 
     if not context.packs:
         return 0.0, []
@@ -202,10 +209,32 @@ def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
     processes = context.snapshot.live.get("processes", [])
     listing = context.snapshot.sections.get("packages")
     complete = listing is not None and listing.complete
-    context.exposures = [
-        judge(pack, context.items("host"), context.items("packages"), processes, now, complete)
-        for pack in context.packs
+    history = [
+        {"time": e.corrected or e.time, "type": e.type, "fields": e.fields}
+        for _, e in context.of("package.")
     ]
+    earlier = []
+    for when, snap in (
+        (context.previous_time, context.previous_snapshot),
+        (context.baseline_time, context.baseline_snapshot),
+    ):
+        collected = parse_time(when) if when else None
+        if collected is not None and snap is not None and "packages" in snap.sections:
+            earlier.append((collected, snap.sections["packages"].items))
+    php = context.snapshot.sections.get("php_settings")
+    php_complete = php is not None and php.complete
+    context.exposures = []
+    for pack in context.packs:
+        found = judge(
+            pack, context.items("host"), context.items("packages"), processes, now, complete,
+            history, earlier,
+        )  # fmt: skip
+        if found.status not in (NOT_AFFECTED, NOT_COVERED, UNKNOWN_RELEASE):
+            found.mitigations = judge_mitigations(
+                pack.mitigations, context.items("php_settings"), context.items("web_config"),
+                php_complete,
+            )  # fmt: skip
+        context.exposures.append(found)
     raised = prior_raise(context.exposures, MAX_LR)
     raised_by = [
         {"pack": e.pack_id, "version": e.pack_version, "status": e.status,

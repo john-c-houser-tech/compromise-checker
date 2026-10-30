@@ -91,15 +91,17 @@ def advise(
         line = f"About {tokens} input tokens to {advisor.model}; no price is known for that model."
         reason = "not sent: no price is known for the model, and it wasn't confirmed"
     else:
-        rerun = ", counting a possible re-run on a fallback model" if with_fallback else ""
+        rerun = ", and a re-run on a fallback model if declined" if with_fallback else ""
         line = (
             f"About {tokens} input tokens to {advisor.model} (estimated here; nothing sent"
-            f" yet): at most about ${priced[0]:.2f} for the input and ${priced[1]:.2f} for"
-            f" the answer{rerun}; usually much less."
+            f" yet): likely about ${priced.likely:.2f}, at most ${priced.most:.2f} (a"
+            f" {MAX_TOKENS}-token answer{rerun})."
         )
-        reason = "not sent: the estimate is above advisor.max_cost_per_run, and it wasn't confirmed"
+        reason = (
+            "not sent: the likely cost is above advisor.max_cost_per_run, and it wasn't confirmed"
+        )
     say(line)
-    if priced is None or sum(priced) > advisor.max_cost_per_run:
+    if priced is None or priced.likely > advisor.max_cost_per_run:
         if confirm is None or not confirm(f"{line} Send it? [y/N] "):
             return Advice("not sent", None, None, reason)
     if client is None:

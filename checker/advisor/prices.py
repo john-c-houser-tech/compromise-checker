@@ -45,24 +45,33 @@ def tokens_in(text: str) -> int:
     return len(text) // CHARACTERS_PER_TOKEN + 1
 
 
+# A typical answer: the first real request's was 2 618 tokens (2026-10-29).
+TYPICAL_OUTPUT = 4_000
+
+
+@dataclass(frozen=True)
+class Estimate:
+    likely: float  # the input and a typical answer, no fallback
+    most: float  # the longest answer, and a re-run on a fallback model if on
+
+
 def estimate(
     model: str, input_tokens: int, max_output_tokens: int, fallback: bool = False
-) -> tuple[float, float] | None:
-    """(the input's cost, the most the output can cost) for a request, or
-    None for a model without a price. The input is priced as a cache
-    write (a first request writes the cache). With the fallback on, a
-    declined request may be billed again on the dearest fallback model."""
+) -> Estimate | None:
+    """What a request will likely cost and the most it can, or None for a
+    model without a price. The input is priced as a cache write (a first
+    request writes the cache). The limit is checked against the likely
+    cost; the most is shown beside it."""
     price = PRICES.get(model)
     if price is None:
         return None
-    first = (input_tokens * price.cache_write / 1e6, max_output_tokens * price.output / 1e6)
-    if not fallback:
-        return first
-    dearest = max((PRICES[m] for m in FALLBACK_MODELS), key=lambda p: p.input + p.output)
-    return (
-        first[0] + input_tokens * dearest.cache_write / 1e6,
-        first[1] + max_output_tokens * dearest.output / 1e6,
-    )
+    first_input = input_tokens * price.cache_write / 1e6
+    likely = first_input + TYPICAL_OUTPUT * price.output / 1e6
+    most = first_input + max_output_tokens * price.output / 1e6
+    if fallback:
+        dearest = max((PRICES[m] for m in FALLBACK_MODELS), key=lambda p: p.input + p.output)
+        most += input_tokens * dearest.cache_write / 1e6 + max_output_tokens * dearest.output / 1e6
+    return Estimate(likely, most)
 
 
 def _priced(price: Price, usage: dict[str, Any]) -> float:

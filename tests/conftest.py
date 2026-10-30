@@ -5,6 +5,7 @@ part (prompting, not prompting, rejecting) so every sudo mode is exercised.
 """
 
 import asyncio
+import os
 import re
 import shlex
 import sys
@@ -38,6 +39,34 @@ SECRET_STORES = {"op", "bw", "rbw", "lpass", "pass", "gopass", "security", "secr
                  "gpg", "gpg2", "keepassxc-cli", "kwallet-query", "vault", "doppler"}  # fmt: skip
 
 
+# Commands that run the command after them (`env op …`, `sudo op …`), and
+# shells whose -c script is read for the commands in it.
+WRAPPERS = {"env", "sudo", "doas", "nice", "nohup", "timeout", "exec", "command", "stdbuf"}
+SHELLS = {"sh", "bash", "dash", "zsh", "ksh", "fish"}
+
+
+def _commands(args) -> list[str]:
+    """The words in command position: the program, what a wrapper runs, and
+    each command in a shell's -c script; not arguments (`--reason pass`)."""
+    words = list(args) if isinstance(args, list | tuple) else _words(str(args))
+    words = [str(w) for w in words]
+    found = []
+    while words:
+        first = words.pop(0)
+        found.append(first)
+        name = os.path.basename(first)
+        if name in WRAPPERS:
+            while words and (words[0].startswith("-") or "=" in words[0] or words[0][:1].isdigit()):
+                words.pop(0)
+            continue
+        if name in SHELLS and "-c" in words:
+            script = words[words.index("-c") + 1 : words.index("-c") + 2]
+            for part in re.split(r"[;|&()`\n]+|\$\(", script[0] if script else ""):
+                found += _commands(_words(part.strip())) if part.strip() else []
+        break
+    return found
+
+
 def _words(text: str) -> list[str]:
     try:
         return shlex.split(text)
@@ -50,7 +79,6 @@ def _no_real_key_command(monkeypatch):
     """No test runs a password manager as a key command (the eval's default
     source is one), however it is wrapped (`env op …`, `sh -c 'op …'`), or
     reads the OS keyring: it is an error, at once, before any prompt."""
-    import os
     import subprocess
 
     import checker.advisor.keys as keys
@@ -58,11 +86,9 @@ def _no_real_key_command(monkeypatch):
     real = subprocess.run
 
     def guarded(args, *rest, **kwargs):
-        words = args if isinstance(args, list | tuple) else [args]
-        for word in (w for item in words for w in _words(str(item))):
-            for part in re.split(r"[\s;|&()`$]+", word):
-                if os.path.basename(part) in SECRET_STORES:
-                    raise RuntimeError(f"a test tried to run {part!r} as a key command: use env")
+        for word in _commands(args):
+            if os.path.basename(word) in SECRET_STORES:
+                raise RuntimeError(f"a test tried to run {word!r} as a key command: use env")
         return real(args, *rest, **kwargs)
 
     monkeypatch.setattr(keys.subprocess, "run", guarded)

@@ -91,7 +91,7 @@ WIDEST = {4: 24, 6: 64}  # the widest network a proposal may name
 # whitelist", "add rules for service").
 _AI = (
     r"(?:assistant|ai|llm|chatbot|language model|claude|chatgpt|copilot|reviewer"
-    r"|reviewing agent|ai agent|security model)"
+    r"|reviewing agent|ai agent|automated agent|analyst|security model)"
 )
 _FINDINGS = r"(?:every|all|each|these|this|the|any) (?:findings?|alerts?|detections?|issues?)"
 ADDRESSED = re.compile(
@@ -99,29 +99,31 @@ ADDRESSED = re.compile(
         (
             r"\b(?:ignore|disregard|forget|override)\b.{0,40}"
             r"\b(?:instructions?|prompts?|guidelines|rules above)\b",
-            # A space between: "copilot-instructions.md", a path bots probe
-            # for, is not an address.
-            rf"\b{_AI}\b[ ,:;!]*\s[^/]{{0,60}}?\b(?:instructions?|verdict|whitelist|allow ?list"
-            r"|propose|suppress|you must|you should|you are|do not flag)\b",
-            r"\byour (?:verdict|instructions|task)\b",
+            # Not where the word is part of a name or path: "copilot-
+            # instructions.md" (a file bots probe for), "home-assistant.service".
+            rf"\b{_AI}(?![-./\w])[\s,:;!\u2013\u2014]*.{{0,60}}?\b(?:instructions?|verdict"
+            r"|whitelist|allow ?list|propose|suppress|you must|you should|you will|do not flag)\b",
+            r"\byour (?:verdict|instructions)\b",
+            r"\bnew instructions\b",
+            r"<\|im ?start\|>|\[/?inst\]",  # chat templates ("_" reads as a space)
             r"\b(?:propose|suggest|recommend)\b.{0,30}"
-            r"\b(?:whitelist|allow ?list|rules?|suppress\w*|exceptions?)\b",
+            r"\b(?:whitelist|allow ?list|suppress\w*|exceptions? for)\b",
             rf"\b(?:rules?|exceptions?) for {_FINDINGS}\b",
             rf"\b(?:suppress|whitelist|allow ?list|ignore|dismiss)\b.{{0,20}}\b{_FINDINGS}\b",
             r"\b(?:findings?|alerts?|detections?)\b.{0,30}"
             r"\b(?:are|is) (?:benign|false positives?|expected|safe to ignore)\b",
+            r"\btreat\b.{0,40}\bas (?:authori[sz]ed|legitimate|safe|benign|routine|expected)\b",
             r"\bno signs (?:found|of compromise)\b",
-            r"\b(?:host|server|system|machine)\b.{0,20}"
-            r"\b(?:is|as) (?:clean|benign|not compromised)\b",
+            r"\b(?:host|server)\b.{0,20}\b(?:is|as) (?:clean|benign|not compromised)\b",
             r"\btell the (?:operator|user|admin)",
         )
     )
 )
-# Letters from other scripts that look like Latin ones (a Cyrillic а in
-# "аssistant"): read as the letter they pass for.
+# Letters that look like Latin ones (a Cyrillic а in "аssistant", a dotless
+# ı, small capitals): read as the letter they pass for.
 LOOK_ALIKES = str.maketrans(
-    "аеорсухіјѕԁһӏкмнтвАЕОРСУХІЈЅНКМТВαεοριυνκτχΑΕΟΡΙΥΝΚΤΧΒΜ",
-    "aeopcyxijsdhlkmhtbAEOPCYXIJSHKMTBaeopiuvktxAEOPIYNKTXBM",
+    "аеорсухіјѕԁһӏкмнтвАЕОРСУХІЈЅНКМТВαεοριυνκτχΑΕΟΡΙΥΝΚΤΧΒΜıᴀʙᴄᴅᴇɢʜɪᴊᴋʟᴍɴᴏᴘʀꜱᴛᴜᴠᴡʏᴢօսհո",
+    "aeopcyxijsdhlkmhtbAEOPCYXIJSHKMTBaeopiuvktxAEOPIYNKTXBMiabcdeghijklmnoprstuvwyzouhn",
 )
 ESCAPE = re.compile(r"\\(\\|U[0-9a-fA-F]{8}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2})")
 CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
@@ -237,28 +239,33 @@ def _pool_problem(rule: Rule, assessment: dict[str, Any], named_ids: set, where:
 
 def _unescape(match: re.Match) -> str:
     body = match.group(1)
-    return "\\" if body == "\\" else chr(int(body[1:], 16))
+    if body == "\\":
+        return "\\"
+    code = int(body[1:], 16)
+    return chr(code) if code <= 0x10FFFF else match.group(0)  # not a character: as written
 
 
-def _plain(text: str) -> str:
+def _readings(text: str) -> tuple[str, str]:
     """Text as a model would read it: URL and HTML encoding and the
     report's escapes undone (until nothing changes), spaces of every kind
-    made spaces, invisible and combining marks dropped, compatibility
-    forms and look-alike letters folded, camelCase split, lower case."""
+    made spaces, invisible characters and accents dropped, compatibility
+    forms and look-alike letters folded, in lower case; as written and
+    with camelCase split (not only split: "iGNORE" would split wrongly)."""
     for _ in range(8):
         before = text
         text = ESCAPE.sub(_unescape, html.unescape(unquote_plus(text)))
         if text == before:
             break
     kept = []
-    for char in unicodedata.normalize("NFKC", text):
+    for char in unicodedata.normalize("NFKD", text):
         category = unicodedata.category(char)
         if category in ("Cc", "Zs", "Zl", "Zp"):
             kept.append(" ")
         elif category not in ("Cf", "Mn", "Me"):
             kept.append(char)
-    text = CAMEL.sub(" ", "".join(kept).translate(LOOK_ALIKES))
-    return re.sub(r"[\s_+]+", " ", text).lower()
+    text = unicodedata.normalize("NFKC", "".join(kept)).translate(LOOK_ALIKES)
+    plain, split = (re.sub(r"[\s_+]+", " ", f).lower() for f in (text, CAMEL.sub(" ", text)))
+    return plain, split
 
 
 def steering(payload: dict[str, Any]) -> str | None:
@@ -268,17 +275,19 @@ def steering(payload: dict[str, Any]) -> str | None:
 
     def found(value: Any) -> bool:
         if isinstance(value, str):
-            return bool(ADDRESSED.search(_plain(value)))
+            return any(ADDRESSED.search(form) for form in _readings(value))
         if isinstance(value, list):
             return any(found(item) for item in value)
         if isinstance(value, dict):
             return any(found(item) for item in value.values())
         return False
 
-    for finding in payload.get("findings") or []:
+    findings = payload.get("findings")
+    for finding in findings if isinstance(findings, list) else []:
         if isinstance(finding, dict) and found(finding.get("from_host")):
             return str(finding.get("id"))
-    host = payload.get("host") or {}
+    host = payload.get("host")
+    host = host if isinstance(host, dict) else {}
     facts = [host.get("os"), host.get("kernel"), payload.get("from_host")]
     facts += [chain.get("account") for chain in payload.get("chains") or []
               if isinstance(chain, dict)]  # fmt: skip
@@ -286,7 +295,8 @@ def steering(payload: dict[str, Any]) -> str | None:
         return "the host's facts"
     # Organization-written, but a rule once proposed carries the model's
     # reason, which could repeat what steered it.
-    for rule in payload.get("whitelist_rules") or []:
+    rules = payload.get("whitelist_rules")
+    for rule in rules if isinstance(rules, list) else []:
         if isinstance(rule, dict) and found([rule.get("reason"), rule.get("match")]):
             return f"whitelist rule {rule.get('id')}"
     return None
@@ -308,7 +318,7 @@ def judge(
     """`findings` are the assessment's (F-n is findings[n-1]); `others` are
     the host's other stored assessments, `group_others` those of the other
     hosts in its group; `rule_ids` the ids their whitelists use; `steered`
-    where the case's host text addresses an AI (steering())."""
+    where the case's text addresses an AI (steering())."""
     today = today or datetime.now(UTC).date()
     in_chain = {i for chain in chains for i in chain.get("findings") or []}
     results, taken = [], set(rule_ids)

@@ -14,6 +14,8 @@ import checker.advisor.keys as keys
         ["/usr/bin/env", "op", "--version"],
         ["sh", "-c", "op --version"],
         ["sh", "-c", "true; rbw --version"],
+        ["env", "LANG=C", "sudo", "-n", "op", "--version"],
+        ["bash", "-c", "echo $(op --version)"],
         "op --version",
     ],
 )
@@ -22,8 +24,9 @@ def test_a_password_manager_is_refused_however_it_is_wrapped(args):
         keys.subprocess.run(args)
 
 
-def test_other_commands_still_run():
+def test_other_commands_still_run_whatever_their_arguments():
     assert keys.subprocess.run(["true"]).returncode == 0
+    assert keys.subprocess.run(["true", "--reason", "pass", "security", "vault"]).returncode == 0
 
 
 def test_the_keyring_is_refused():

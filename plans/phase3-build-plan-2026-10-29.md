@@ -605,6 +605,19 @@ The advisor's answers can't be golden-tested, so they are measured.
   new check couldn't fail (all canaries match), hence the unsteered note;
   the guard missed wrapped commands and the keyring. All fixed. Not done:
   a note on the other roles' answers when the case's text addresses an AI.
+- **After the second review (3.9; 1 high, 3 medium):** an escape for a
+  number past U+10FFFF (`GET /%5CU00110000`) crashed the check, which
+  set the paid answer aside: now left as written. Mixed case
+  (`iGNORE`), accents NFKC recombined, a dotless ı, small capitals and
+  Armenian look-alikes, and an AI word followed by a path or no space
+  slipped past: text is now read both as written and with camelCase
+  split, decomposed before accents are dropped, and more look-alikes
+  fold. Chat-template markers, "new instructions" and "treat … as
+  authorized" added; "recommend … rules", "your task", "system is clean"
+  and "Copilot: you are" no longer match. Odd case shapes don't crash it;
+  the test guard reads only words in command position. Scanners' own
+  injection probes mean internet-facing web servers often get no
+  proposals: the whitelist doc says so.
 
 - Threat packs and pack drafting (Phase 4).
 - **Scheduled checks** of production servers, run from a permanent

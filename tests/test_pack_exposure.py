@@ -213,3 +213,127 @@ def test_a_host_on_a_release_the_pack_doesnt_cover_is_a_coverage_gap(home):
     assert any("has no entry for this host's release (ubuntu:22.04)" in g
                for g in assessment["coverage"]["gaps"])  # fmt: skip
     assert "raised_prior" not in assessment["score"]
+
+
+# --- After review ------------------------------------------------------------------------------
+
+
+def test_an_epoch_the_fix_doesnt_write_cant_be_judged():
+    """1:8.3.6…5 sorts above 8.3.6…6 as written: that mustn't read as fixed."""
+    found = judge(PACK, UBUNTU, dpkg("1:8.3.6-0ubuntu0.24.04.5"), [], NOW)
+    assert found.status == CANT_JUDGE and "has an epoch" in found.packages[0].why
+    assert found.share == 1.0
+
+
+RHEL_STREAM = GOOD.replace(
+    '      fixed: "8.3.15-1.el9_6"', '      versions: "8.1.*"\n      fixed: "8.1.30-1.el9_6"'
+)
+
+
+def test_a_versions_pattern_matches_with_or_without_the_epoch():
+    pack = with_pack(RHEL_STREAM)
+    rpm = {"php-fpm x86_64": {"manager": "rpm", "version": "1:8.1.14-1.el9", "installed": FIXED_AT}}
+    assert judge(pack, ROCKY, rpm, [], NOW).status == CANT_JUDGE  # matched, not "not affected"
+    rpm["php-fpm x86_64"]["version"] = "8.1.14-1.el9"
+    assert judge(pack, ROCKY, rpm, [], NOW).status == VULNERABLE
+
+
+def test_a_build_from_another_repository_above_the_fix_cant_be_judged():
+    remi = {"php-fpm x86_64": {"manager": "rpm", "version": "8.3.20-1.remi", "installed": FIXED_AT}}
+    found = judge(PACK, ROCKY, remi, [], NOW)
+    assert found.status == CANT_JUDGE and "isn't the vendor's own build" in found.packages[0].why
+    # The vendor's own build above the fix is fixed.
+    own = {"php-fpm x86_64": {"manager": "rpm", "version": "8.3.16-1.el9_6", "installed": FIXED_AT}}
+    assert judge(PACK, ROCKY, own, [], NOW).status == FIXED
+
+
+def test_a_service_on_old_code_keeps_the_host_exposed_even_when_the_fix_came_first():
+    early = datetime(2026, 10, 2, tzinfo=UTC).timestamp()  # before the window opened
+    old = {"pid": 7, "comm": "php-fpm8.3", "start_time": "2026-09-01T00:00:00+00:00"}
+    found = judge(PACK, UBUNTU, dpkg("8.3.6-0ubuntu0.24.04.6", early), [old], NOW)
+    assert found.status == FIXED and found.share == 1.0 and found.exposed_until is None
+    assert [p["pid"] for p in found.stale] == [7]
+
+
+def test_a_program_replaced_under_a_service_is_stale_whatever_its_start():
+    later = {"pid": 9, "comm": "php-fpm8.3", "start_time": "2026-10-28T00:00:00+00:00",
+             "exe_deleted": True, "exe": "/usr/sbin/php-fpm8.3 (deleted)"}  # fmt: skip
+    found = judge(PACK, UBUNTU, dpkg("8.3.6-0ubuntu0.24.04.6"), [later], NOW)
+    assert [p["pid"] for p in found.stale] == [9]
+
+
+def test_one_unknown_install_time_makes_the_fix_time_unknown():
+    both = {
+        **dpkg("8.3.6-0ubuntu0.24.04.6", None),
+        **dpkg("8.3.6-0ubuntu0.24.04.6", datetime(2026, 10, 21, tzinfo=UTC).timestamp(),
+               name="libapache2-mod-php8.3 amd64"),
+    }  # fmt: skip
+    found = judge(PACK, UBUNTU, both, [], NOW)
+    assert found.status == FIXED and found.share == 1.0 and found.fixed_at is None
+
+
+@pytest.mark.parametrize("installed", [1e20, float("nan"), "year 30000", -1e18])
+def test_an_impossible_install_time_doesnt_break_the_analysis(installed):
+    found = judge(PACK, UBUNTU, dpkg("8.3.6-0ubuntu0.24.04.6", installed), [], NOW)
+    assert found.status == FIXED and found.share == 1.0
+
+
+def test_a_listing_collected_in_part_proves_nothing():
+    found = judge(PACK, UBUNTU, dpkg("1.0-1", name="nginx amd64"), [], NOW, complete=False)
+    assert found.status == CANT_JUDGE and found.share == 1.0
+
+
+def test_no_fix_yet_wins_over_a_version_that_cant_be_read():
+    sury = 'versions: "*+deb.sury.org*"\n      fixed: "8.3.27-1+ubuntu24.04.1+deb.sury.org+1"'
+    text = SURY.replace(sury, 'versions: "*"\n      fixed: null')
+    found = judge(with_pack(text), UBUNTU, dpkg("8.3_6"), [], NOW)
+    assert found.status == VULNERABLE
+
+
+def test_a_naive_collection_time_is_taken_as_utc():
+    found = judge(PACK, UBUNTU, dpkg("8.3.6-0ubuntu0.24.04.5"), [], datetime(2026, 10, 30))
+    assert found.share == 1.0
+
+
+def test_the_raise_is_kept_exactly_for_a_rescore():
+    from checker.scoring import prior_raise_of
+
+    assert prior_raise_of([{"log_raise": 1.2345678, "share": 0.5, "ratio": 5}]) == 1.2345678
+    assert prior_raise_of([]) == 0.0
+
+
+def findings_for(home, version, extra_records=(), **kwargs):
+    assessment = analysed_with(home, version, extra_records, **kwargs)
+    return [f for f in assessment["findings"] if f["check"] == "pack.exposure"], assessment
+
+
+def analysed_with(home, version, extra_records=(), installed=FIXED_AT, pack=PACK):
+    from checker.assess import analyze
+
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, records(version, installed, extra_records))
+    return analyze(store, "web01", identity, config.recipients, packs=[pack])
+
+
+def test_the_findings_say_what_is_known(home):
+    pack = with_pack(
+        GOOD.replace(
+            "  likelihood_ratio: 5", "  window_end: 2026-10-23T00:00:00Z\n  likelihood_ratio: 5"
+        )
+    )
+    found, _ = findings_for(home, "8.3.6-0ubuntu0.24.04.6", pack=pack)
+    (exposed,) = [f for f in found if f["variant"] == "was_exposed"]
+    assert "until the window closed at 2026-10-23" in exposed["summary"]
+
+
+def test_a_rule_for_pack_findings_must_name_the_pack():
+    from checker.whitelist import Match
+
+    with pytest.raises(ValueError, match="must name the pack"):
+        Match(check="pack.exposure", package="php8.3-fpm")
+    assert Match(check="pack.exposure", package="php8.3-fpm", pack="example-2026-10")
+
+
+def test_a_release_not_covered_names_the_os(home):
+    found = judge(PACK, {"os": {"id": "centos", "version_id": "9"}}, {}, [], NOW)
+    assert found.status == UNKNOWN_RELEASE and found.release == "centos"

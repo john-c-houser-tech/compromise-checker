@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import fnmatch
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -89,19 +90,54 @@ def release_of(host: dict[str, Any]) -> tuple[str | None, str | None]:
 
 
 def _time(value: Any) -> datetime | None:
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, UTC)
+    """A time from the evidence, or None: a value out of range (a package
+    database an intruder set to the year 30000) is not a time."""
     try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, UTC)
         parsed = datetime.fromisoformat(str(value))
-    except ValueError:
+    except (ValueError, OverflowError, OSError):
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def judge(pack: Pack, host: dict[str, Any], packages: dict[str, dict[str, Any]],
-          processes: list[dict[str, Any]], now: datetime) -> Exposure:  # fmt: skip
-    """The exposure of one host (its host facts, installed packages and
-    live processes, as collected at `now`) to one pack."""
+def _unepoched(version: str) -> str:
+    head, sep, rest = version.partition(":")
+    return rest if sep and head.isdigit() else version
+
+
+def _matches(entry: Any, version: str) -> bool:
+    """An entry's `versions` pattern against the installed version, with or
+    without its epoch (packs write versions as vendors show them)."""
+    if entry.versions is None:
+        return True
+    return any(fnmatch.fnmatchcase(v, entry.versions) for v in (version, _unepoched(version)))
+
+
+# The vendor's own mark in a version: an entry without a `versions` pattern
+# vouches as fixed only for a build that carries the same mark as its fix
+# (a Remi or Sury build that sorts above the vendor's fix is someone else's
+# numbering: "can't judge" unless an entry with a pattern covers it).
+_VENDOR_MARKS = (re.compile(r"ubuntu"), re.compile(r"\.el\d+"))
+
+
+def _vendor_mark(fixed: str) -> re.Pattern | None:
+    return next((m for m in _VENDOR_MARKS if m.search(fixed)), None)
+
+
+def judge(
+    pack: Pack,
+    host: dict[str, Any],
+    packages: dict[str, dict[str, Any]],
+    processes: list[dict[str, Any]],
+    now: datetime,
+    complete: bool = True,
+) -> Exposure:
+    """The exposure of one host (its host facts, installed packages, and
+    live processes, as collected at `now`) to one pack. `complete`: the
+    package listing was collected whole; when it wasn't, finding nothing
+    vulnerable proves nothing."""
+    now = now if now.tzinfo else now.replace(tzinfo=UTC)
     window = pack.exposure
     start = window.window_start
     end = min(window.window_end, now) if window.window_end else now
@@ -115,7 +151,7 @@ def judge(pack: Pack, host: dict[str, Any], packages: dict[str, dict[str, Any]],
         window_end=window.window_end.isoformat() if window.window_end else None,
     )
     release, manager = release_of(host)
-    found.release = release
+    found.release = release or str((host.get("os") or {}).get("id") or "unknown")
     if release is None:
         return found
     entries = [e for e in window.packages if e.release == release]
@@ -124,14 +160,10 @@ def judge(pack: Pack, host: dict[str, Any], packages: dict[str, dict[str, Any]],
         return found
     for key, item in sorted(packages.items()):
         name = key.split(" ", 1)[0]
-        version = item.get("version")
+        version = str(item.get("version"))
         if item.get("manager") != manager:
             continue
-        matching = [
-            e for e in entries
-            if name in e.binary_names
-            and (e.versions is None or fnmatch.fnmatchcase(str(version), e.versions))
-        ]  # fmt: skip
+        matching = [e for e in entries if name in e.binary_names and _matches(e, version)]
         if not matching:
             continue
         installed = _time(item.get("installed"))
@@ -139,63 +171,91 @@ def judge(pack: Pack, host: dict[str, Any], packages: dict[str, dict[str, Any]],
     statuses = {p.status for p in found.packages}
     if VULNERABLE in statuses:
         found.status = VULNERABLE
-    elif CANT_JUDGE in statuses:
+    elif CANT_JUDGE in statuses or not complete:
+        # A listing collected only in part could hide a vulnerable package.
         found.status = CANT_JUDGE
     elif FIXED in statuses:
         found.status = FIXED
     else:
         found.status = NOT_AFFECTED
         return found
+    fixed = [p for p in found.packages if p.status == FIXED]
+    times = [_time(p.installed) for p in fixed]
+    # Every fixed package's time is needed: one unknown is a fix at an
+    # unknown time.
+    fixed_at = max(times) if times and None not in times else None
+    found.fixed_at = fixed_at.isoformat() if fixed_at else None
+    if found.status == FIXED:
+        found.stale = _stale(window, processes, fixed_at)
     if end <= start:
         return found  # the window hasn't opened yet at collection time
     span = (end - start).total_seconds()
-    if found.status in (VULNERABLE, CANT_JUDGE):
+    if found.status in (VULNERABLE, CANT_JUDGE) or fixed_at is None or found.stale:
+        # Vulnerable, unknown, or a service still on the old code: exposed
+        # through the window so far.
         found.exposed_from, found.share = start.isoformat(), 1.0
         return found
-    times = [_time(p.installed) for p in found.packages]
-    fixed_at = max((t for t in times if t is not None), default=None)
-    if fixed_at is None:
-        found.exposed_from, found.share = start.isoformat(), 1.0  # when unknown: exposed
-        return found
-    found.fixed_at = fixed_at.isoformat()
     if fixed_at > start:
         until = min(fixed_at, end)
         found.exposed_from, found.exposed_until = start.isoformat(), until.isoformat()
         found.share = min(1.0, (until - start).total_seconds() / span)
+    return found
+
+
+def _stale(window: Any, processes: list[dict[str, Any]], fixed_at: datetime | None) -> list:
+    """Processes matching the pack's stale-code patterns that started before
+    the fix was (last) installed, or whose program file was replaced under
+    them; with no known install time, only the latter."""
     patterns = window.stale_code.programs if window.stale_code else []
+    found = []
     for process in processes:
-        started = _time(process.get("start_time"))
         names = {
             str(process.get("comm") or ""),
             str(process.get("exe") or "").removesuffix(" (deleted)").rsplit("/", 1)[-1],
         }
-        if (
-            started is not None
-            and started < fixed_at
-            and any(fnmatch.fnmatchcase(n, p) for n in names for p in patterns)
-        ):
-            found.stale.append(process)
+        if not any(fnmatch.fnmatchcase(n, p) for n in names for p in patterns):
+            continue
+        started = _time(process.get("start_time"))
+        replaced = bool(process.get("exe_deleted"))
+        if replaced or (started is not None and fixed_at is not None and started < fixed_at):
+            found.append(process)
     return found
 
 
 def _judge_one(
-    key: str, name: str, version: Any, installed: datetime | None, entries: list, manager: str
+    key: str, name: str, version: str, installed: datetime | None, entries: list, manager: str
 ) -> Judged:
     """One installed package against every entry it matches: vulnerable if
-    any says so; can't judge if its version can't be read."""
+    any says so (an entry with no fix first); can't judge if its version
+    can't be read, if its epoch is one the fix doesn't write, or if it
+    sorts above a fix whose vendor's mark it doesn't carry."""
     when = installed.isoformat() if installed else None
-    decided = None
     for entry in entries:
         if entry.fixed is None:
-            return Judged(key, name, str(version), when, VULNERABLE, None, "no fix yet")
+            return Judged(key, name, version, when, VULNERABLE, None, "no fix yet")
+    decided, doubt = None, None
+    for entry in entries:
         try:
             older = compare(manager, version, entry.fixed) < 0
         except VersionError as exc:
-            return Judged(key, name, str(version)[:100], when, CANT_JUDGE, entry.fixed, str(exc))
+            return Judged(key, name, version[:100], when, CANT_JUDGE, entry.fixed, str(exc))
         if older:
-            return Judged(key, name, str(version), when, VULNERABLE, entry.fixed)
+            return Judged(key, name, version, when, VULNERABLE, entry.fixed)
+        if _unepoched(version) != version and _unepoched(entry.fixed) == entry.fixed:
+            doubt = doubt or (
+                f"installed {version} has an epoch and the pack's fix {entry.fixed} doesn't:"
+                " they can't be compared as written"
+            )
+        mark = _vendor_mark(entry.fixed) if entry.versions is None else None
+        if mark is not None and not mark.search(version):
+            doubt = doubt or (
+                f"{version} isn't the vendor's own build (the fix {entry.fixed} is): a version"
+                " from another repository needs its own entry"
+            )
         decided = entry.fixed
-    return Judged(key, name, str(version), when, FIXED, decided)
+    if doubt:
+        return Judged(key, name, version, when, CANT_JUDGE, decided, doubt)
+    return Judged(key, name, version, when, FIXED, decided)
 
 
 def prior_raise(exposures: list[Exposure], cap: float) -> float:

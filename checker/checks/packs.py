@@ -5,18 +5,20 @@ compromise probability; the exposure itself raises the prior instead
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from checker.checks import EXPOSURE, Context, Finding, check
 from checker.packs.exposure import CANT_JUDGE, FIXED, NOT_COVERED, UNKNOWN_RELEASE, VULNERABLE
 
+MAX_PIDS = 10  # processes named in one stale-code finding
+
 
 def _days(start: str, until: str | None, now: str | None) -> str:
-    from datetime import datetime
-
     try:
         end = datetime.fromisoformat(until or now or start)
         seconds = (end - datetime.fromisoformat(start)).total_seconds()
-    except ValueError:
-        return ""
+    except (ValueError, TypeError):
+        return "an unknown time"
     return f"{seconds / 86400:.1f} days"
 
 
@@ -29,13 +31,14 @@ def exposure(context: Context) -> list[Finding]:
     found = []
     for item in context.exposures:
         named = f"{item.pack_id} v{item.pack_version}"
+        pack = f"pack:{item.pack_id}"
         if item.status in (NOT_COVERED, UNKNOWN_RELEASE):
             context.gaps.append(
-                f"pack {named} has no entry for this host's release ({item.release or 'unknown'})"
+                f"pack {named} has no entry for this host's release ({item.release})"
             )
             continue
         for judged in item.packages:
-            entities = [f"package:{judged.name}", f"pack:{item.pack_id}"]
+            entities = [f"package:{judged.name}", pack]
             if judged.status == VULNERABLE:
                 against = f"the fix {judged.fixed}" if judged.fixed else "a fix (none released yet)"
                 found.append(
@@ -57,50 +60,96 @@ def exposure(context: Context) -> list[Finding]:
                         "A package's version can't be judged against a threat pack",
                         EXPOSURE,
                         "medium",
-                        f"{judged.name}'s installed version can't be read as its package manager"
-                        f" reads versions ({named}): {judged.why}",
+                        f"{judged.name} {judged.version}: {judged.why} ({named}); counted as"
+                        " exposed",
                         entities,
                         [{"item": ["packages", judged.key]}],
                         variant="cant_judge",
-                        uncertain="the version in the package database isn't one the package"
-                        " manager would accept",
                     )
                 )
-        if item.status == FIXED and item.exposed_from:
-            found.append(
-                Finding(
-                    "pack.exposure",
-                    "The host was exposed to a threat while it was active",
-                    EXPOSURE,
-                    "low",
-                    f"exposed from {item.exposed_from[:16]} until the fix was installed, by"
-                    f" {(item.exposed_until or '')[:16]} at the latest (its last install or"
-                    f" update; it may have come earlier): at most"
-                    f" {_days(item.exposed_from, item.exposed_until, context.collected_at)},"
-                    f" {round(item.share * 100)}% of the window so far ({named})",
-                    [f"pack:{item.pack_id}"],
-                    [{"item": ["packages", p.key]} for p in item.packages],
-                    variant="was_exposed",
-                )
+        if item.status == CANT_JUDGE and not any(p.status == CANT_JUDGE for p in item.packages):
+            context.gaps.append(
+                f"pack {named}: the package listing wasn't collected whole, so a vulnerable"
+                " package may be missing from it; counted as exposed"
             )
-        for process in item.stale:
-            pid = process.get("pid")
             found.append(
                 Finding(
                     "pack.exposure",
-                    "A service may still run code from before a threat's fix",
+                    "A package's version can't be judged against a threat pack",
                     EXPOSURE,
                     "medium",
-                    f"{process.get('comm')} (pid {pid}) started"
-                    f" {str(process.get('start_time'))[:16]}, before its package was last"
-                    f" installed or updated ({(item.fixed_at or '')[:16]}): it runs older code"
-                    f" than installed, from before the fix unless the fix came earlier; restart"
-                    f" it ({named})",
-                    [f"program:{process.get('comm')}", f"pid:{pid}", f"pack:{item.pack_id}"],
-                    [{"live": ["processes", pid]}],
-                    process.get("start_time"),
-                    process.get("start_time"),
-                    variant="stale_code",
+                    f"the package listing wasn't collected whole ({named}): counted as exposed",
+                    [pack],
+                    [],
+                    variant="cant_judge",
                 )
             )
+        if item.status == FIXED and item.exposed_from:
+            found.append(_was_exposed(item, named, pack, context.collected_at))
+        if item.stale:
+            found.append(_stale(item, named, pack))
     return found
+
+
+def _was_exposed(item, named: str, pack: str, collected_at: str | None) -> Finding:
+    if item.exposed_until is None:
+        why = (
+            "a service still runs code from before the fix"
+            if item.stale
+            else "when the fix was installed isn't known"
+        )
+        summary = f"exposed from {item.exposed_from[:16]}, and still taken to be: {why} ({named})"
+    else:
+        closed = bool(item.window_end and item.fixed_at and item.fixed_at > item.window_end)
+        ending = (
+            f"until the window closed at {item.exposed_until[:16]} (the fix was installed after"
+            " it, at the latest at its last install or update)"
+            if closed
+            else f"until the fix was installed, by {item.exposed_until[:16]} at the latest (its"
+            " last install or update; it may have come earlier)"
+        )
+        summary = (
+            f"exposed from {item.exposed_from[:16]} {ending}: at most"
+            f" {_days(item.exposed_from, item.exposed_until, collected_at)},"
+            f" {round(item.share * 100)}% of the window so far ({named})"
+        )
+    return Finding(
+        "pack.exposure",
+        "The host was exposed to a threat while it was active",
+        EXPOSURE,
+        "low",
+        summary,
+        [pack],
+        [{"item": ["packages", p.key]} for p in item.packages],
+        variant="was_exposed",
+    )
+
+
+def _stale(item, named: str, pack: str) -> Finding:
+    """One finding for every process of the pack's services still on old
+    code (a pool of PHP workers is one service)."""
+    pids = [p.get("pid") for p in item.stale]
+    programs = sorted({str(p.get("comm")) for p in item.stale})
+    starts = sorted(str(p.get("start_time")) for p in item.stale if p.get("start_time"))
+    replaced = any(p.get("exe_deleted") for p in item.stale)
+    shown = ", ".join(str(pid) for pid in pids[:MAX_PIDS])
+    more = f" and {len(pids) - MAX_PIDS} more" if len(pids) > MAX_PIDS else ""
+    how = (
+        ": its program file was replaced under it"
+        if replaced
+        else f" started before its package was last installed or updated"
+        f" ({(item.fixed_at or '')[:16]}): it runs older code than installed, from before the"
+        " fix unless the fix came earlier"
+    )
+    return Finding(
+        "pack.exposure",
+        "A service may still run code from before a threat's fix",
+        EXPOSURE,
+        "high" if replaced else "medium",
+        f"{', '.join(programs)} (pid {shown}{more}){how}; restart it ({named})",
+        [*(f"program:{p}" for p in programs), *(f"pid:{pid}" for pid in pids), pack],
+        [{"live": ["processes", pid]} for pid in pids[:MAX_PIDS]],
+        starts[0] if starts else None,
+        starts[-1] if starts else None,
+        variant="stale_code",
+    )

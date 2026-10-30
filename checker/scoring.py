@@ -51,12 +51,10 @@ PROBABILITY_BANDS = ((0.90, "Critical"), (0.50, "High"), (0.10, "Elevated"), (0.
 COMPROMISE = "compromise indicator"
 
 
-def prior_raise_of(raised_by: list[dict[str, Any]], cap: float = 10.0) -> float:
-    """The prior's log-odds raise a stored score's `raised_by` stands for
-    (checker/packs/exposure.py: each exposure's share of log(ratio), the
-    whole at most log(cap))."""
-    total = sum(float(b["share"]) * math.log(float(b["ratio"])) for b in raised_by)
-    return min(total, math.log(cap))
+def prior_raise_of(raised_by: list[dict[str, Any]]) -> float:
+    """The prior's log-odds raise a stored score's `raised_by` stands for,
+    exactly as it was computed (checker/packs/exposure.py)."""
+    return float(raised_by[0]["log_raise"]) if raised_by else 0.0
 
 
 def ratio(finding: dict[str, Any]) -> float:

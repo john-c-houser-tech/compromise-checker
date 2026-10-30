@@ -200,17 +200,20 @@ def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
     collected = parse_time(context.collected_at) if context.collected_at else None
     now = collected or datetime.now(UTC)
     processes = context.snapshot.live.get("processes", [])
+    listing = context.snapshot.sections.get("packages")
+    complete = listing is not None and listing.complete
     context.exposures = [
-        judge(pack, context.items("host"), context.items("packages"), processes, now)
+        judge(pack, context.items("host"), context.items("packages"), processes, now, complete)
         for pack in context.packs
     ]
+    raised = prior_raise(context.exposures, MAX_LR)
     raised_by = [
         {"pack": e.pack_id, "version": e.pack_version, "status": e.status,
-         "share": round(e.share, 4), "ratio": e.likelihood_ratio}
+         "share": round(e.share, 4), "ratio": e.likelihood_ratio, "log_raise": raised}
         for e in context.exposures
         if e.share > 0
     ]  # fmt: skip
-    return prior_raise(context.exposures, MAX_LR), raised_by
+    return raised, raised_by
 
 
 def analyze(

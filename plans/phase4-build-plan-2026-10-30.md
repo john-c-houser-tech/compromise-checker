@@ -230,8 +230,30 @@ is John's to approve before it is committed. Also:
   dpkg's, dnf's logs), only each package's last install time, so a
   routine update after the fix stretches the exposure; findings and the
   report say "at the latest", and stale code is "may still run" (medium).
-  Not done: the timeline marking the window (with 4.6's report changes);
-  package history (a collection change, John's to decide).
+  Not done: the timeline marking the window (with 4.6's report changes).
+  Package history: John said yes (2026-10-30), collected alongside 4.4.
+- **After review (4.3; 2 high, 6 medium, 7 low):** an installed epoch the
+  pack's fix doesn't write (1:8.3.6…5 against 8.3.6…6) read as fixed: now
+  "can't judge", and `versions` patterns match with or without the epoch.
+  A service still on pre-fix code didn't extend the exposure: now the host
+  stays exposed (share 1) while one runs, and a program file replaced
+  under a service counts whatever its start. One fixed package with an
+  unknown install time now makes the fix time unknown (exposed); an
+  impossible install time can't break the analysis; a package listing
+  collected only in part is "can't judge" (exposed), not "not affected";
+  a build from another repository that sorts above the vendor's fix
+  (Remi, Sury with no entry of its own) is "can't judge" unless it
+  carries the fix's vendor mark (`ubuntu`, `.elN`). Whitelist rules for
+  `pack.exposure` must name the pack (new `pack` field), so one pack's
+  rule can't hide a later pack's findings. Smaller: an entry with no fix
+  wins over an unreadable version; the raise is stored exactly
+  (`log_raise`) for re-scores; a naive collection time is UTC; stale
+  services are one finding per pack, not per worker; the wording when the
+  window closed before the fix, or the time is unknown; a release not
+  covered names the OS. Still to do, with package history (4.4b): earlier
+  collections' package listings as history (a package removed during the
+  window; a fix seen in an earlier bundle bounds the fix time), and
+  kernels judged by the running kernel (a design note for kernel packs).
 
 ### 4.4 — Mitigations
 

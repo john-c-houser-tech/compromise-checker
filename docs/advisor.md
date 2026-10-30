@@ -232,8 +232,14 @@ checks.
   offered. The checks allow rules on a quiet host for findings that aren't
   critical or chained, so an intruder who stays quiet can steer what is
   proposed. Since then, no proposal is offered for a host whose text
-  addresses an AI ([whitelists](whitelists.md#proposals-from-the-ai-advisor)),
-  but text worded in ways that check doesn't foresee can still steer: read
+  addresses an AI ([whitelists](whitelists.md#proposals-from-the-ai-advisor)).
+  A rerun of the whitelist role (2026-10-30), judged by that check, offered
+  nothing: the check found the canaries in all four planted cases and in
+  none of the others, and it set aside the one rule that would otherwise
+  have been offered (on the clean Rocky Linux server with canaries, for
+  an info finding, a user's own systemd unit, that the model had also
+  tried to cover without them, too broadly to pass). Text worded in ways
+  that check doesn't foresee can still steer: read
   every proposal as advice from someone who may have been misled, and check
   what each rule would hide before setting its owner.
 - Coverage: none of its 19 suggestions was one the tool offers, so all were

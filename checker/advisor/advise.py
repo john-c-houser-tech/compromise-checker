@@ -71,11 +71,15 @@ def advise(
     confirm: Callable[[str], bool] | None = None,
     say: Callable[[str], None] = print,
     home: Path | None = None,
+    model: str | None = None,
 ) -> Advice:
     """Ask the advisor about a host's current assessment. `confirm` is
     asked (with the estimate) when a run would cost more than the limit or
-    its cost is unknown; without it, such a run isn't sent."""
+    its cost is unknown; without it, such a run isn't sent. `model`, when
+    given, is asked instead of the configured one (the triage model)."""
     advisor = config.advisor
+    if model:
+        advisor = advisor.model_copy(update={"model": model})
     if not advisor.enabled:
         raise AdvisorError(
             "the advisor is off: `checker config set advisor.enabled on` turns it on"
@@ -273,6 +277,56 @@ def advise(
         note = "the answer didn't fit the requested form"
     record(outcome, status, raw, answer, note)
     return Advice(status, outcome, answer, note, judged, written)
+
+
+@dataclass
+class Planned:
+    """One host's request in `checker advise --all`, before anything is sent."""
+
+    host: str
+    model: str
+    triaged: bool  # the triage model, for a quiet host
+    line: str  # its estimate in words
+    priced: Estimate | None
+    prior: Any
+    whitelist: Any
+
+
+def plan(
+    store, host: str, identity, config: Config, inventory, prior, whitelist, role: str
+) -> Planned:
+    """The model a host's request would go to and its estimate: the case is
+    built and redacted as `advise` will, and nothing is sent."""
+    advisor = config.advisor
+    built, known, which = case_for_host(
+        store, host, identity, config.recipients, inventory, prior, whitelist
+    )
+    model, triaged = model_for(advisor, role, which["band"], which["report"].assessment["findings"])
+    advisor = advisor.model_copy(update={"model": model})
+    payload, _ = redact(built, advisor.redaction, known)
+    request = build_request(payload, role, advisor)
+    line, priced = cost_line(advisor, tokens_in(json.dumps(request.body, ensure_ascii=False)))
+    return Planned(host, model, triaged, line, priced, prior, whitelist)
+
+
+# A finding at one of these bands keeps a host from being quiet.
+NOT_QUIET = ("medium", "high", "critical")
+
+
+def quiet(band: str | None, findings: list[dict[str, Any]]) -> bool:
+    """A host assessed Low with no finding in effect at medium or worse
+    (whitelisted ones don't count): what the triage model may explain."""
+    return band == "Low" and not any(
+        f.get("band") in NOT_QUIET and not f.get("suppressed_by") for f in findings
+    )
+
+
+def model_for(advisor: Advisor, role: str, band: str | None, findings) -> tuple[str, bool]:
+    """The model to ask, and whether it is the triage model: only to
+    explain a quiet host, and only when the organization set one."""
+    if role == "explain" and advisor.triage_model and quiet(band, findings):
+        return advisor.triage_model, True
+    return advisor.model, False
 
 
 def _client(source: str, api: str, base_url: str | None, fallback: bool = False):

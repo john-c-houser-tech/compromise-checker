@@ -156,6 +156,14 @@ def describe(config: Config) -> list[str]:
         f"  Sent only when you run `checker advise`: {SENT[advisor.redaction]},"
         + (" to Anthropic with your own account." if to == ANTHROPIC else f" {to}."),
         f"  Redaction: {advisor.redaction}: {REDACTION[advisor.redaction]}.",
+        *(
+            [
+                f"  Explaining quiet hosts (Low, nothing medium or worse) in `checker advise"
+                f" --all`: {advisor.triage_model}, a faster, cheaper model."
+            ]
+            if advisor.triage_model
+            else []
+        ),
         "  `checker config check-key` checks the key can be read, without sending anything.",
         f"  Asks before a run whose likely cost is above ${advisor.max_cost_per_run:.2f}"
         " (the most it can cost is shown too), or whose cost isn't known.",
@@ -225,6 +233,11 @@ SETTABLE: dict[str, Setting] = {
         Setting(("prior",), float, "prior probability of compromise (default 0.02)"),
         Setting(("advisor", "enabled"), _bool, "on or off"),
         Setting(("advisor", "model"), str, "the model's name (default claude-opus-5-5)"),
+        Setting(
+            ("advisor", "triage_model"),
+            _optional,
+            "for quiet hosts in `advise --all`, e.g. claude-haiku-5-5; none: the model",
+        ),
         Setting(("advisor", "effort"), str, "low, medium, high, xhigh or max"),
         Setting(("advisor", "redaction"), str, "pseudonymize, strict or none"),
         Setting(("advisor", "api_key_source"), str, "env, keyring, none or command:<command>"),

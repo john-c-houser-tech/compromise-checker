@@ -164,6 +164,10 @@ class Advisor(BaseModel):
 
     enabled: bool = False
     model: str = Field(default="claude-opus-5-5", pattern=MODEL_NAME)
+    # A faster, cheaper model for explaining quiet hosts in `checker advise
+    # --all` (DESIGN.md §12.4; decision 5: empty, so every request uses the
+    # main model unless the organization chooses one), through the same API.
+    triage_model: str | None = Field(default=None, pattern=MODEL_NAME)
     effort: Effort = "high"
     redaction: Redaction = "pseudonymize"
     # Which API the model is asked through: Anthropic's (the default), or

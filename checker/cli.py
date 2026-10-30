@@ -923,7 +923,15 @@ def build_parser() -> argparse.ArgumentParser:
     advising = commands.add_parser(
         "advise", help="ask the optional AI advisor about a host's latest analysis"
     )
-    advising.add_argument("host")
+    advising.add_argument("host", nargs="?")
+    advising.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "every host with a usable bundle, asking once for the whole run; explanations"
+            " of quiet hosts use advisor.triage_model when it is set"
+        ),
+    )
     advising.add_argument(
         "--show",
         action="store_true",
@@ -971,6 +979,77 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 SHOWN = 20  # items listed per kind and section without --all
+
+
+def _advise_all(args, base, store, config, inventory, identity) -> int:
+    """`checker advise --all`: every host's estimate first, one question for
+    the whole run (against advisor.max_cost_per_run, as one run), then each
+    request in turn. A host that can't be asked is said and skipped."""
+    from checker.advisor.advise import advise, plan
+    from checker.advisor.client import AdvisorError
+
+    advisor = config.advisor
+    if not advisor.enabled:
+        raise AdvisorError(
+            "the advisor is off: `checker config set advisor.enabled on` turns it on"
+        )
+    hosts = [h for h in store.hosts() if usable_bundles(store, h)]
+    if not hosts:
+        raise EvidenceError("no host has a usable bundle yet: collect first")
+    status, planned = 0, []
+    for host in hosts:
+        try:
+            planned.append(
+                plan(store, host, identity, config, inventory, prior_for(host, config, inventory),
+                     _whitelist_for(base, host, inventory), args.role)
+            )  # fmt: skip
+        except (EvidenceError, OSError, AdvisorError) as exc:
+            print(f"checker: {host}: {exc}; skipped", file=sys.stderr)
+            status = 1
+        except KeyboardInterrupt:
+            print("checker: interrupted while estimating; nothing was sent", file=sys.stderr)
+            return 130
+    for item in planned:
+        print(
+            f"{item.host}: {item.line}"
+            + (" (the triage model: a quiet host)" if item.triaged else "")
+        )
+    if not planned:
+        return 1
+    known = [item.priced for item in planned if item.priced is not None]
+    likely, most = sum(p.likely for p in known), sum(p.most for p in known)
+    unknown = len(known) < len(planned)
+    total = (
+        f"{len(planned)} requests: likely about ${likely:.2f} in all, at most about ${most:.2f}"
+        + (", and some at a cost not known here" if unknown else "")
+        + "."
+    )
+    print(total)
+    if unknown or likely > advisor.max_cost_per_run:
+        if not args.yes:
+            if not sys.stdin.isatty():
+                print("checker: not sent: confirm with --yes, or raise advisor.max_cost_per_run",
+                      file=sys.stderr)  # fmt: skip
+                return 1
+            if input(f"{total} Send them? [y/N] ").strip().lower() not in ("y", "yes"):
+                print("Nothing was sent.")
+                return 1
+    for item in planned:
+        print(f"\n== {item.host} ==")
+        try:
+            advice = advise(
+                store, item.host, identity, config, inventory, item.prior, item.whitelist,
+                role=args.role, confirm=lambda question: True, say=lambda line: None,
+                home=base, model=item.model,
+            )  # fmt: skip
+        except (EvidenceError, OSError, AdvisorError) as exc:
+            print(f"checker: {item.host}: {exc}", file=sys.stderr)
+            status = 1
+            continue
+        _print_advice(advice, args.role)
+        if advice.status != "answered":
+            status = 1
+    return status
 
 
 def _print_advice(advice, role: str) -> None:
@@ -1099,14 +1178,25 @@ def cmd_advise(args: argparse.Namespace) -> int:
     from checker.advisor.client import AdvisorError, build_request
     from checker.advisor.prices import tokens_in
 
+    if args.all == bool(args.host):
+        print("checker: name a host, or --all", file=sys.stderr)
+        return 2
+    if args.all and (args.show or args.bundle or args.redaction):
+        print("checker: --show, --bundle and --redaction are for one host", file=sys.stderr)
+        return 2
     base = home()
     store = Store(database_file(base))
     try:
         config = load_config(base)
         inventory = _inventory_for_priors()
-        prior = prior_for(args.host, config, inventory)
-        whitelist = _whitelist_for(base, args.host, inventory)
+        if args.all:
+            prior = whitelist = None
+        else:
+            prior = prior_for(args.host, config, inventory)
+            whitelist = _whitelist_for(base, args.host, inventory)
         identity = _identity(args, base)
+        if args.all:
+            return _advise_all(args, base, store, config, inventory, identity)
         if args.show:
             built, known, _ = case_for_host(
                 store, args.host, identity, config.recipients, inventory, prior, whitelist,

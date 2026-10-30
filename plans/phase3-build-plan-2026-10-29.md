@@ -436,6 +436,16 @@ The advisor's answers can't be golden-tested, so they are measured.
   log: about half the context), and read a 30 742-token one at 32 768
   whole; prefix-cached requests still report the full prompt.
 
+- **As built (3.7b, 2026-10-29):** `advisor.triage_model` (empty;
+  `config show` names it when set), used by `checker advise --all` for
+  role explain on hosts at Low with no medium-or-worse finding in effect
+  (whitelisted ones don't count), through the same API, address and key
+  as the main model. `--all` estimates every host first (nothing sent),
+  prints each estimate and the total, and asks once for the whole run
+  against `advisor.max_cost_per_run` (or when any cost is unknown;
+  `--yes` for scripts); a host that can't be read is said and skipped.
+  `--show`, `--bundle` and `--redaction` stay one-host options.
+
 ### 3.8 — Policy, docs, README
 
 - Policy §9 reconciled with what is built (agreed with John 2026-10-29:

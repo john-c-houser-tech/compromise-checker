@@ -251,13 +251,14 @@ coverage, and advise on remediation. It works fully without it.
   tool shows the likely cost and asks when it is above the limit your
   organization set, or when the cost isn't known.
 - **What is sent:** the server's operating system and kernel version, the
-  host's group in your inventory, findings with their titles, scores and when
-  they were first and last seen, how findings link into chains, short masked
-  excerpts of the evidence behind them, the related whitelist rules, and the
-  coverage gaps (which sources were missing, and how far back each log
-  reaches). Never whole log files, and never passwords or keys. Whitelist
-  rules are sent with the reasons written in them, so those reasons should
-  describe the activity, not name people.
+  host's group in your inventory, findings with their titles, summaries, the
+  accounts and paths they involve, scores and when they were first and last
+  seen, how findings link into chains, short masked excerpts of the evidence
+  behind them, notes on what the analysis is unsure of, the related whitelist
+  rules, and the coverage gaps (which sources were missing, and how far back
+  each log reaches). Never whole log files, and never passwords or keys.
+  Whitelist rules are sent with the reasons written in them, so those reasons
+  should describe the activity, not name people.
 - **Redaction**, set by your organization:
   - *pseudonymize* (the default when the advisor is turned on) — server names
     and their domains, IP addresses, usernames, the host's group in your
@@ -267,8 +268,9 @@ coverage, and advise on remediation. It works fully without it.
     run, so the provider can't connect one run to another by name; your
     encrypted record keeps the request as it was sent. Names that appear only
     in free text (another company's domain in a log line, a person's name in a
-    comment) aren't recognised, and common system accounts and group names
-    such as `root` and `wheel` are kept as they are;
+    comment) aren't recognised, and common system accounts such as `root` are
+    kept as they are, and so are the host's own group names (`wheel`, or ones
+    your organization made);
   - *strict* — only the kinds of finding, counts, scores and kinds of coverage
     gap are sent;
   - *none* — excerpts are sent as collected (after secret masking).
@@ -299,7 +301,8 @@ coverage, and advise on remediation. It works fully without it.
   finding compares with it, so purging only the baseline leaves those quotes
   in later records until those are purged too. Whitelist proposals are files
   readable only by their owner, with real names in them, and are deleted with
-  the same evidence.
+  the same evidence while they keep the name they were written under; a copy
+  moved or renamed, and rules copied into a whitelist, are yours to remove.
 - **Untrusted text.** Log content can be written by attackers (for example, a
   username or web address crafted to mislead an AI). It is always passed to
   the advisor marked as data to examine, never as instructions, and every

@@ -18,7 +18,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-PARSER_VERSION = 7  # 3: clock_changed; 4: unit.starting/finished; 5: mail; 6: web; 7: useradd shell
+# 3: clock_changed; 4: unit.starting/finished; 5: mail; 6: web; 7: useradd shell;
+# 8: package history
+PARSER_VERSION = 8
 MAX_EVENT_LINE = 2048  # characters of the source line kept on each event
 
 _MONTHS = {m: i for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)}
@@ -458,6 +460,8 @@ class EventBuilder:
             self.sudo_lookup = bool(record.data.get("lookup_command"))
         elif (record.module, record.name) == ("web_logs", "exec_record"):
             self._exec_record(record.data)
+        elif (record.module, record.name) == ("software", "package_change"):
+            self._package_change(record.data)
 
     def source_start(self, start: SourceStart) -> None:
         if _log_kind(start) is not None:
@@ -677,6 +681,42 @@ class EventBuilder:
         "boot_time": "system.boot",
         "login_process": "login.prompt",
     }
+
+    _PACKAGE_ACTIONS = ("install", "upgrade", "downgrade", "reinstall", "remove", "purge")
+
+    def _package_change(self, data: dict[str, Any]) -> None:
+        """A package installed, upgraded or removed (dpkg's log, dnf's
+        history): `package.<action>`. dpkg logs the host's local time, read
+        in the host's zone (host_facts comes first)."""
+        action = data.get("action")
+        if action not in self._PACKAGE_ACTIONS or not data.get("name"):
+            return
+        ambiguous = False
+        try:
+            if data.get("time"):
+                moment = datetime.fromisoformat(data["time"])
+            elif data.get("local_time"):
+                local = datetime.strptime(data["local_time"], "%Y-%m-%d %H:%M:%S")
+                moment = local.replace(tzinfo=self.zone)
+                # The hour the clocks go back happens twice: either is possible.
+                ambiguous = (
+                    moment.utcoffset() != local.replace(tzinfo=self.zone, fold=1).utcoffset()
+                )
+            else:
+                moment = None
+        except (ValueError, TypeError):
+            moment = None
+        fields = {
+            k: str(data[k])[:200]
+            for k in ("manager", "name", "arch", "version", "previous")
+            if data.get(k) not in (None, "")
+        }
+        if self.zone_assumed and data.get("local_time"):
+            fields["zone_assumed"] = True
+        if data.get("local_time") and moment is not None and ambiguous:
+            fields["time_uncertain"] = True
+        self._add(moment, f"software:{data.get('source') or 'package history'}",
+                  f"package.{action}", fields)  # fmt: skip
 
     def _login_record(self, data: dict[str, Any]) -> None:
         path = data.get("path") or ""

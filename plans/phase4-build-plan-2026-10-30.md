@@ -232,6 +232,7 @@ is John's to approve before it is committed. Also:
   report say "at the latest", and stale code is "may still run" (medium).
   Not done: the timeline marking the window (with 4.6's report changes).
   Package history: John said yes (2026-10-30), collected alongside 4.4.
+  Policy §7 bullet for it approved by John the same day (in #82).
 - **After review (4.3; 2 high, 6 medium, 7 low):** an installed epoch the
   pack's fix doesn't write (1:8.3.6…5 against 8.3.6…6) read as fixed: now
   "can't judge", and `versions` patterns match with or without the epoch.
@@ -261,6 +262,44 @@ is John's to approve before it is committed. Also:
   reads (sshd, sysctl, systemd units, web server configuration) and, for
   PHP2Shell, PHP's ini settings, which it doesn't read yet (D4).
 - Each mitigation reported as in place, missing, or not seen.
+- **A setting written nowhere is PHP's built-in default** (a side note
+  John relayed, 2026-10-30): `session.upload_progress.enabled` defaults to
+  On, and Ubuntu's php.ini leaves the line commented out, so it is often
+  in no file at all. The pack format gains the setting's default (`default:
+  "on"`), and "set nowhere" counts as that default: unprotected, never
+  "in place" or "not seen". Only a settings section collected in part is
+  "not seen". The last occurrence wins, as PHP reads them (each setting
+  carries its position; `[PATH=…]` and `[HOST=…]` sections apart; a pool's
+  php_admin_value over the ini file).
+- *As built (4.4, #82): the collection.* PHP's ini files and the package
+  history are collected (see the 4.4 PR and docs/collector-modules.md);
+  4.4b judges with them.
+- **After review (4.4; 1 high, 5 medium, 11 low):** dnf's history query
+  could spill a sort to a temporary file in /tmp on a busy server (a
+  write): every SQLite read of a server's database (dnf's, and rpm's
+  three) now keeps sorts in memory, runs no schema functions, refuses
+  views in place of dnf's tables, and checks the deadline inside SQLite (a
+  crafted view looped forever). PHP settings not read whole leave
+  `php_settings` incomplete. Secret directives (`*_pw`, `license`,
+  `auth`, `save_path`…) are masked whole. Quoted values followed by a
+  comment parse as PHP reads them. The 20,000 cap keeps the newest
+  changes; old lines in a recent dpkg log are skipped; logrotate's
+  dateext names and .xz/.bz2 are read; the horizon reaches back as far as
+  the look-back window if that is longer; obsoleting/obsoleted dnf
+  changes are recorded; dnf's write-ahead log is reported when not empty;
+  a host whose dpkg log is only old isn't "no history"; repeated
+  directives and [PATH=]/[HOST=] sections are kept apart; dpkg times in
+  the hour that happens twice are marked uncertain. php.ini's own
+  error_log no longer leads the collector to PHP's application error log
+  (collecting it would widen collection without a decision). Not done:
+  dnf5's database (Fedora 41+, not RHEL 9/10).
+- **Read-only proof (4.4, 2026-10-30, John's OK):** throwaway Ubuntu 24.04
+  and Rocky Linux 9 Linodes with nginx and PHP-FPM installed by the setup:
+  both PASS, bundle complete, the collector wrote nothing; package history
+  (`package_change`) and php.ini collected on both (one secret directive
+  masked on each: `session.save_path`'s whole value). About 60 seconds of
+  collection each; both servers deleted. Spend: about $0.01 (Phase 4 so
+  far: about $0.01 of the $10 cap).
 
 ### 4.5 — Detections
 
@@ -302,6 +341,14 @@ is John's to approve before it is committed. Also:
   Ubuntu 22.04, 24.04 and 26.04, RHEL (and its rebuilds) 9 and 10, and the
   Sury PPA, with the fixed version for each release and its source. Every
   version and date checked against the vendor's own page before signing.
+- **A Sury entry for each release** (a side note John relayed,
+  2026-10-30): an Ubuntu entry with no `versions` pattern vouches only
+  for Ubuntu's own builds (4.3's review), so a Sury build is "can't
+  judge", exposed for the whole window. nouriloop-prod runs PHP 8.4 on
+  Ubuntu 24.04, whose own PHP is 8.3, so most likely from Sury: the pack
+  needs `versions: "*+deb.sury.org*"` entries with Sury's own fixed
+  versions, checked against the PPA's changelog, or prod looks exposed
+  after it is fixed.
 - Mitigation: `session.upload_progress.enabled` off (it also covers
   CVE-2026-115560, unpatched when the pack was first published).
 - Detections from DESIGN.md §10.2: web worker child processes, memory-limit

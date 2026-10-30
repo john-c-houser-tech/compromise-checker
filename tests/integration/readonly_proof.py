@@ -305,6 +305,7 @@ EXPECTED_RECORDS = (
     ("logging_state", "audit_records"),
     ("logging_state", "mac_state"),
     ("software", "package"),
+    ("software", "package_change"),  # the setup's own installs, in dpkg's log or dnf's history
     ("software", "signing_key"),
     ("mail", "mail_servers"),
     ("mail", "mail_queue"),  # Postfix, installed by the setup
@@ -886,6 +887,9 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             result.missing = [f"{m}.{n}" for m, n in EXPECTED_RECORDS if not counts.get(f"{m}.{n}")]
             with_sources = {s.get("module") for s in opened.summary.sources if s.get("bytes")}
             result.missing += [f"{m} (source)" for m in EXPECTED_SOURCES if m not in with_sources]
+            # PHP-FPM, installed by the setup: its php.ini, comments left out (plan 4.4).
+            if not any(str(s["name"]).endswith("php.ini") for s in opened.summary.sources):
+                result.missing.append("php.ini (source)")
             check_parse(result, home, outcome.bundle_id, Path(config.identity_file), scanner_key)
             result.sudo_listing += check_directory_lookup(
                 home, third.bundle_id, Path(config.identity_file)

@@ -19,7 +19,7 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 11
+SNAPSHOT_VERSION = 12  # 12: PHP settings, package history
 # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers;
 # 11: the folders web servers serve
 
@@ -80,6 +80,14 @@ SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     "mail_files": ("Postfix and Exim configuration files", ("mail",)),
     "web_config": ("nginx, Apache and PHP-FPM configuration files", ("web_logs",)),
+    "php_settings": (
+        "PHP's settings: each ini file's directives and PHP-FPM pools' php_value lines",
+        ("web_logs",),
+    ),
+    "package_history": (
+        "package changes from dpkg's log or dnf's history (the changes are events)",
+        ("software",),
+    ),
     "web_served": (
         "the folders nginx and Apache serve (root, alias, DocumentRoot, Alias), per file",
         ("web_logs",),
@@ -124,6 +132,7 @@ _MASKED = {
     "mail_config",
     "web_config",
     "web_served",
+    "php_settings",
     "containers",
 }
 
@@ -334,6 +343,78 @@ _GAPS = {
 }
 
 
+# PHP's ini files (decision D4: directive names and values; the collector
+# sends no comments) and PHP-FPM pools' per-pool settings.
+_INI_DIRECTIVE = re.compile(r"^\s*([A-Za-z0-9_.\[\]-]+)\s*=\s*(.*?)\s*$")
+_INI_SECTION = re.compile(r"^\s*\[([^\]]*)\]\s*$")
+_POOL_SETTING = re.compile(
+    r"^\s*(php_(?:admin_)?(?:value|flag))\[([A-Za-z0-9_.-]+)\]\s*=\s*(.*?)\s*$"
+)
+_POOL_FILE = re.compile(r"/(?:pool\.d|php-fpm\.d)/[^/]+\.conf$")
+
+
+_QUOTED_VALUE = re.compile(r'^"((?:[^"\\]|\\.)*)"|^\'([^\']*)\'')
+
+
+def _ini_value(text: str) -> str:
+    """A directive's value as PHP reads it: a quoted string up to its
+    closing quote (a comment after it ignored), else up to a `;`."""
+    quoted = _QUOTED_VALUE.match(text.strip())
+    if quoted:
+        return quoted.group(1) if quoted.group(1) is not None else quoted.group(2)
+    return text.split(";", 1)[0].strip()
+
+
+def is_php_config(path: str) -> bool:
+    """A PHP ini file or PHP-FPM pool file, as the collector reads them."""
+    return bool(
+        path == "/etc/php.ini"
+        or (path.endswith(".ini") and path.startswith(("/etc/php", "/etc/opt/remi/")))
+        or _POOL_FILE.search(path)
+    )
+
+
+def php_settings(path: str, lines: list[str]) -> list[tuple[str, dict[str, Any]]]:
+    """(item key, setting) for each PHP directive in an ini file, or each
+    php_value / php_flag (admin or not) in a PHP-FPM pool, with the
+    [section] (an ini file's, or the pool's name) it sits in."""
+    found: list[tuple[str, dict[str, Any]]] = []
+    if path.endswith(".ini"):
+        section = None
+        seen: dict[str, int] = {}
+        for line in lines:
+            if heading := _INI_SECTION.match(line):
+                section = heading.group(1)
+            elif directive := _INI_DIRECTIVE.match(line):
+                name, value = directive.group(1), _ini_value(directive.group(2))
+                # [PATH=…] and [HOST=…] apply only there: keyed apart from the
+                # global value; a directive given again (extension=) is kept
+                # each time.
+                scope = (
+                    f" [{section}]"
+                    if section and section.upper().startswith(("PATH=", "HOST="))
+                    else ""
+                )
+                key = f"{path}{scope}: {name}"
+                seen[key] = seen.get(key, 0) + 1
+                if seen[key] > 1:
+                    key = f"{key} #{seen[key]}"
+                found.append((key, {"path": path, "kind": "ini", "name": name, "value": value,
+                                    "section": section, "position": len(found)}))  # fmt: skip
+
+    elif _POOL_FILE.search(path):
+        pool = None
+        for line in lines:
+            if heading := _INI_SECTION.match(line):
+                pool = heading.group(1)
+            elif setting := _POOL_SETTING.match(line):
+                how, name, value = setting.group(1), setting.group(2), _ini_value(setting.group(3))
+                found.append((f"{path} [{pool}]: {name}", {"path": path, "kind": "pool",
+                              "name": name, "value": value, "section": pool,
+                              "admin": "admin" in how}))  # fmt: skip
+    return found
+
+
 def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | None:
     """The sections a gap leaves incomplete, where a module feeds several,
     judged by what kind of record reported it; None: all of them (a gap
@@ -359,8 +440,13 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
         return {"pam"}
     if module == "web_logs":
         # Only its configuration is a section: logs and audit records are
-        # coverage, reported there.
-        return {"web_config", "web_served"} if str(path or "").startswith("/etc/") else set()
+        # coverage, reported there. A PHP ini or pool file not read whole
+        # leaves PHP's settings incomplete too: an absent setting proves
+        # nothing then.
+        if not str(path or "").startswith("/etc/"):
+            return set()
+        php = is_php_config(str(path))
+        return {"web_config", "web_served"} | ({"php_settings"} if php else set())
     if module == "mail" and str(path or "").startswith("/var/log/"):
         return set()  # a mail log: the coverage reports it, the settings are whole
     if module == "unusual_files":
@@ -372,6 +458,13 @@ def _gap_sections(module: str, name: str, data: dict[str, Any]) -> set[str] | No
             return {data["section"]}
         if name in ("packages_pending", "malformed_header") or path == "/var/lib/dpkg/status":
             return {"packages"}
+        if (
+            data.get("section") == "package_history"
+            or name == "package_history_absent"
+            or path in ("package history", "/var/lib/dnf/history.sqlite")
+            or str(path or "").startswith("/var/log/dpkg.log")
+        ):
+            return {"package_history"}
         return {"software_files"}
     if module == "network":
         if name in ("command_unavailable", "command_failed", "set_unterminated", "source") or (
@@ -714,6 +807,9 @@ class SnapshotBuilder:
             self._mail_text.append((start.name, lines))
             return
         if start.module == "web_logs":
+            settings = self.section("php_settings")
+            for key, setting in php_settings(start.name, lines):
+                settings.items[key] = setting
             served = self.section("web_served")
             for directive, folder in web_served(start.name, lines):
                 served.items[f"{start.name}: {directive} {folder}"] = {
@@ -849,6 +945,8 @@ class SnapshotBuilder:
             self.section(sections[name]).items[data["path"]] = item
 
     def _on_software(self, name: str, data: dict[str, Any]) -> None:
+        if name == "package_history_absent":
+            self._module_gap("software", "no package history (dpkg's log or dnf's)", name, data)
         if name == "package" and data.get("name"):
             key = f"{data['name']} {data.get('arch') or ''}".strip()
             if data["name"] in VERSIONED_PACKAGES:
@@ -1126,6 +1224,11 @@ class SnapshotBuilder:
         change. Only one not listed at all leaves its section incomplete."""
         for module, data in self._unread:
             item = self.sections.get(_FILE_SECTIONS[module], Section()).items.get(data["path"])
+            if module == "web_logs" and is_php_config(str(data["path"])):
+                # Its settings weren't read, whatever its walk shows.
+                self._module_gap(
+                    module, f"unreadable_file: {data['path']}", "unreadable_file", data
+                )
             if item is not None and "inode" in item:
                 item["content_unread"] = data.get("reason") or "unreadable"
             else:

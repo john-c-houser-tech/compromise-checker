@@ -537,3 +537,36 @@ def test_a_linked_proposals_directory_is_refused(tmp_path):
     (tmp_path / "proposals").symlink_to(tmp_path / "elsewhere")
     with pytest.raises(ProposalFileError, match="is a link"):
         write_file(tmp_path, "web01", None, judged(proposal()), "now")
+
+
+def test_a_proposal_file_is_purged_with_its_bundle(sudo_host, capsys):
+    base, store, _, _ = sudo_host
+    advice = run(sudo_host, Provider(whitelist_reply(sudo_rule)), role="whitelist")
+    assert advice.file.exists()
+    by_hand = base / "proposals" / "web01-notes.yaml"  # not made from a bundle: kept
+    by_hand.write_text("rules: []\n")
+    from datetime import UTC, datetime
+
+    from checker.purge import execute, plan
+
+    chosen = plan(store, base, set(), 90, before=datetime(2100, 1, 1, tzinfo=UTC))
+    assert chosen.proposals == [advice.file]
+    outcome = execute(store, base, chosen)
+    assert outcome.counts["proposals"] == 1
+    assert not advice.file.exists() and by_hand.exists()
+
+
+def test_a_request_that_came_to_nothing_shows_for_every_role(sudo_host):
+    from checker.report import write_report
+
+    base, store, identity, config = sudo_host
+    declined = {"id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+                "content": [], "stop_reason": "refusal", "stop_sequence": None,
+                "stop_details": {"type": "refusal", "category": "cyber"},
+                "usage": {"input_tokens": 10, "output_tokens": 0}}  # fmt: skip
+    for role in ("whitelist", "coverage", "remediation"):
+        run(sudo_host, Provider(lambda body: declined), role=role)
+    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    for title in ("whitelist proposals", "coverage suggestions", "remediation"):
+        assert f"AI advisor, {title}: a request (claude-opus-5-5," in html
+    assert html.count("declined by the model&#39;s safety checks (cyber)") >= 3

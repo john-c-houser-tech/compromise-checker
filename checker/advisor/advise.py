@@ -13,6 +13,7 @@ whitelist or a setting.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -540,6 +541,11 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home)
         band=which["band"],
     )
     written = write_file(base, host, group, judged, datetime.now(UTC).strftime("%Y-%m-%d %H:%M"))
+    if written is not None:
+        # So `checker purge` finds it with the bundle it was made from.
+        digest = hashlib.sha256(written.read_bytes()).hexdigest()
+        store.custody(which["bundle_id"], "proposed",
+                      {"proposal_sha256": digest, "file": written.name})  # fmt: skip
     return judged, written
 
 

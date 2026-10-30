@@ -45,8 +45,9 @@ What works today:
   applied. `--role coverage` asks what would let the next collection see
   more, picked only from the tool's collection settings (printed as the
   `checker config set` line to run) and a fixed catalogue of host
-  configuration (auditd for web accounts, a persistent journal, sshd
-  `LogLevel VERBOSE`, a readable web log format, log retention), each
+  configuration (auditd for web accounts, running the audit daemon, a
+  persistent journal, sshd `LogLevel VERBOSE`, a readable web log format,
+  log retention), each
   citing the coverage gap or finding it helps with; nothing is changed.
   `--role remediation` asks what to do, scaled to the band: evidence to
   preserve first, then containment, eradication, recovery, and who to tell

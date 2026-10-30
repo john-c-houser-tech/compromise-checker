@@ -41,11 +41,11 @@ HOME_TEXT = {
 }
 REDACTION = {
     "pseudonymize": (
-        "server names, IP addresses, usernames and email addresses are replaced with"
-        " placeholders such as USER-2-7f3a before sending, and restored here when"
-        " the answer returns"
+        "server names, IP addresses, usernames, email addresses and SSH key fingerprints"
+        " are replaced with placeholders such as USER-2-7f3a before sending, and restored"
+        " here when the answer returns"
     ),
-    "strict": "only the kinds of finding, counts and scores are sent",
+    "strict": "only the kinds of finding, counts, scores and kinds of coverage gap are sent",
     "none": "excerpts are sent as collected (after secret masking)",
 }
 
@@ -60,12 +60,12 @@ SENT = {
         "findings, their scores, short masked excerpts of the evidence behind them, the"
         " related whitelist rules and coverage gaps"
     ),
-    "strict": "only the kinds of finding, their counts and scores, and coverage gaps",
+    "strict": "only the kinds of finding, their counts and scores, and the kinds of coverage gap",
 }
 SENT_DETAIL = {
     "pseudonymize": (
-        "Server names, IP addresses, usernames and email addresses are replaced with"
-        " placeholders first."
+        "Server names, IP addresses, usernames, email addresses and SSH key fingerprints"
+        " are replaced with placeholders first."
     ),
     "none": (
         "Excerpts are sent as collected, after secret masking, with server names, IP"

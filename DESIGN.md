@@ -197,7 +197,7 @@ sometimes secrets typed into shell commands.
   else working, and reports carry a one-line note that the advisor exists.
   Unattended installs leave it off unless the configuration file turns it on.
   The tool works fully without it.
-- **The organization's own API key** (or a local model; see section 11.5).
+- **The organization's own API key** (or a local model; see section 12.5).
   NouriLoop LLC does not proxy, see, or store any of the data.
 - **What is sent:** findings, their scores, short evidence excerpts, the
   relevant whitelist rules, and coverage information. Not whole log files,

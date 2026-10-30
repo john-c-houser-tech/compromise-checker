@@ -32,6 +32,7 @@ class Plan:
     kept: list[Any] = field(default_factory=list)  # expired baselines kept
     files: list[Path] = field(default_factory=list)
     reports: list[Path] = field(default_factory=list)
+    proposals: list[Path] = field(default_factory=list)  # the advisor's whitelist proposals
     outside: list[str] = field(default_factory=list)  # paths not under the evidence folder
     # Each affected host's Store.purge_state when planned; the purge itself
     # re-checks it, so a baseline set meanwhile isn't purged unprotected.
@@ -109,7 +110,11 @@ def plan(
             result.outside.append(str(path))
             continue
         result.files.extend(_bundle_files(path, row["id"]))
-    result.reports = _reports(store, base, [r["id"] for r in result.bundles])
+    ids = [r["id"] for r in result.bundles]
+    result.reports = _reports(store, base, ids)
+    result.proposals = _derived(
+        store, base / "proposals", "*.yaml", ids, "proposed", "proposal_sha256"
+    )
     return result
 
 
@@ -128,16 +133,26 @@ def _reports(store: Store, base: Path, bundle_ids: list[str]) -> list[Path]:
     """Reports in the reports folder that show any of these bundles: found
     by the hash each report left in the custody of the bundles it covers. A
     report written elsewhere (`--output`) is the operator's to delete."""
+    return _derived(
+        store, base / "reports", "report-*.html", bundle_ids, "reported", "report_sha256"
+    )
+
+
+def _derived(
+    store: Store, folder: Path, pattern: str, bundle_ids: list[str], action: str, key: str
+) -> list[Path]:
+    """Files in `folder` made from any of these bundles (reports; the
+    advisor's whitelist proposals): found by the hash each left in the
+    custody of the bundles it was made from."""
     digests = set()
     for bundle_id in bundle_ids:
         for entry in store.custody_of(bundle_id):
-            if entry["action"] == "reported" and entry["detail"]:
-                digests.add(json.loads(entry["detail"]).get("report_sha256"))
-    folder = base / "reports"
-    if not digests or not folder.is_dir():
+            if entry["action"] == action and entry["detail"]:
+                digests.add(json.loads(entry["detail"]).get(key))
+    if not digests or not folder.is_dir() or folder.is_symlink():
         return []
     found = []
-    for path in sorted(folder.glob("report-*.html")):
+    for path in sorted(folder.glob(pattern)):
         if path.is_file() and not path.is_symlink() and _sha256(path) in digests:
             found.append(path)
     return found
@@ -173,7 +188,10 @@ def execute(store: Store, base: Path, chosen: Plan) -> Outcome:
     else:
         counts = {"bundles": 0}
     counts["reports"] = len(chosen.reports)
-    deleted, failed = _delete(chosen.files + chosen.reports + leftovers(store, base))
+    counts["proposals"] = len(chosen.proposals)
+    deleted, failed = _delete(
+        chosen.files + chosen.reports + chosen.proposals + leftovers(store, base)
+    )
     _remove_empty_folders(base, chosen.bundles)
     return Outcome(counts, deleted, failed)
 

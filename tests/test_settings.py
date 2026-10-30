@@ -83,7 +83,7 @@ def test_init_advisor_flags(tmp_path, monkeypatch, capsys):
     assert (advisor.enabled, advisor.api_key_source, advisor.redaction) == (True, source, "strict")
     out = capsys.readouterr().out
     assert "op read 'op://Vault/Anthropic key/credential'" in out
-    assert "only the kinds of finding, counts and scores are sent" in out
+    assert "only the kinds of finding, counts, scores and kinds of coverage gap are sent" in out
 
 
 def test_init_refuses_a_bad_key_source(tmp_path, monkeypatch, capsys):

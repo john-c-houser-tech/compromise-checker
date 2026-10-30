@@ -310,8 +310,11 @@ def _derived_left(base: Path, row: Any) -> list[Path]:
         if not (isinstance(where, str) and isinstance(digest, str)):
             continue
         folder_name, _, name = where.partition("/")
-        pattern = {"reports": "report-*.html", "proposals": "*.yaml"}.get(folder_name)
-        if pattern is None or not _plain_name(name, pattern):
+        patterns = {
+            "reports": ("report-*.html", "report-*.html.age"),  # plain, encrypted
+            "proposals": ("*.yaml",),
+        }.get(folder_name, ())
+        if not any(_plain_name(name, pattern) for pattern in patterns):
             continue
         folder = base / folder_name
         path = folder / name

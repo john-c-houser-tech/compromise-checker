@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pyrage
 import pytest
@@ -287,6 +288,30 @@ def test_files_left_by_an_interrupted_purge_go_at_the_next(home):
     outcome = execute(store, base, plan(store, base, set(), 90, host="nothing-here"))
     assert outcome.counts["bundles"] == 0
     assert files_of(home, "b1") == [] and leftovers(store, base) == []
+
+
+@pytest.mark.parametrize("plain", [False, True])
+def test_a_report_a_purge_couldnt_delete_goes_at_the_next(home, monkeypatch, plain):
+    base, store, identity, config = home
+    add(home, "b1", 40)
+    analysed(home)
+    report = write_report(
+        store, ["web01"], identity, config.recipients, base / "reports", plain=plain
+    )
+    real = Path.unlink
+
+    def stuck(self, *args, **kwargs):
+        if self == report:
+            raise PermissionError(13, "Permission denied")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", stuck)
+    outcome = execute(store, base, plan(store, base, set(), 90, host="web01"))
+    assert [p for p, _ in outcome.failed] == [report]
+    monkeypatch.setattr(Path, "unlink", real)
+    assert leftovers(store, base) == [report]
+    execute(store, base, plan(store, base, set(), 90, host="nothing-here"))
+    assert not report.exists() and leftovers(store, base) == []
 
 
 def test_bundles_outside_the_evidence_folder_are_listed_not_touched(home, tmp_path):

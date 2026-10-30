@@ -12,13 +12,19 @@ is On). Each place a site can get another value is a place of its own: a
 [PATH=]/[HOST=] section, each PHP-FPM pool (its php_admin_* first, which
 nothing overrides, else its php_value/php_flag, else the set-up's), and
 the web server's own PHP settings (Apache's php_value, a FastCGI
-PHP_VALUE). Several values for one place: the one that isn't the
-expected, if any. A mitigation is in place only if every place has the
-expected value; missing if any has another; otherwise "not seen": PHP's
-settings not collected whole, no set-up found, a file in the chain not
-read (a link out of /etc), a pool file included from elsewhere, or
-PHP_INI_SCAN_DIR adding folders. A site's .user.ini and .htaccess, and
-ini_set at run time, aren't seen (the report says so).
+PHP_VALUE), and each site's .user.ini or .htaccess in the web roots walked
+(plan 4.4c). A site's value doesn't count where every PHP-FPM pool sets
+the setting with php_admin_* to the expected value and no CGI set-up reads
+.user.ini, since nothing overrides php_admin_* (Apache's php_value in an
+.htaccess still counts: which pools serve which site isn't known, nor
+whether Apache's own php_admin_* covers it). Several values for one place:
+the one that isn't the expected, if any. A mitigation is in place only if
+every place has the expected value; missing if any has another; otherwise
+"not seen": PHP's settings not collected whole (a site's file not read
+among them), no set-up found, a file in the chain not read (a link out of
+/etc), a pool file included from elsewhere, or PHP_INI_SCAN_DIR adding
+folders. Sites outside the web roots walked, and ini_set at run time,
+aren't seen (the report says so).
 """
 
 from __future__ import annotations
@@ -52,6 +58,7 @@ class Place:
     where: str  # "/etc/php/8.3/fpm/php.ini", "… pool www", "… [PATH=/x]"
     value: str | None  # as set, or the default; None: set nowhere and no default
     source: str  # the file that set it, or DEFAULT
+    admin: bool = False  # a PHP-FPM pool's php_admin_* value: nothing overrides it
 
 
 @dataclass
@@ -135,7 +142,7 @@ def _worst(values: list[tuple[str, str | None]], expect: str) -> tuple[str, str 
 
 def _places(mitigation: Any, setups: list[_Setup], by_path: dict, files: dict):
     name, expect = mitigation.setting.name, mitigation.expect
-    places, doubts = [], []
+    places, doubts, fpm_pools = [], [], []
     for setup in setups:
         ini = (files.get(setup.name) or {}).get("resolved") or setup.name
         chain = ([ini] if setup.name in files or ini in by_path else []) + _conf_d(
@@ -156,13 +163,30 @@ def _places(mitigation: Any, setups: list[_Setup], by_path: dict, files: dict):
                     value, source = item.get("value"), path
         pools, pool_doubts = _pools(name, expect, setup, by_path, value, source)
         doubts += pool_doubts
+        fpm_pools += pools
         # A set-up with pools runs its requests in them; without, as set.
         places += pools if pools else [Place(setup.name, value, source)]
+    # A site's .user.ini (or a PHP_VALUE its .htaccess passes to PHP-FPM)
+    # can't override a pool's php_admin_*; only PHP-FPM and CGI read them.
+    cgi = any(s.name.endswith("/cgi/php.ini") for s in setups)
+    locked = (
+        bool(fpm_pools)
+        and not cgi
+        and all(p.admin and normal(p.value) == normal(expect) for p in fpm_pools)
+    )
     for path, items in sorted(by_path.items()):
         for item in items:
-            if item.get("kind") == "server" and item.get("name") == name:
-                places.append(Place(f"{path} ({item.get('how')})", item.get("value"), path))
-            elif item.get("kind") == "scan_dir" and item.get("value"):
+            kind, how = item.get("kind"), str(item.get("how"))
+            if kind not in ("server", "site") or item.get("name") != name:
+                continue
+            # Apache's php_value / php_flag (kept lowercase) aren't locked;
+            # .user.ini and PHP_VALUE (uppercase: a FastCGI parameter) are.
+            if kind == "site" and locked and not how.startswith("php_"):
+                continue
+            places.append(Place(f"{path} ({how})", item.get("value"), path))
+    for path, items in sorted(by_path.items()):
+        for item in items:
+            if item.get("kind") == "scan_dir" and item.get("value"):
                 doubts.append(f"{path} sets PHP_INI_SCAN_DIR: its folders' ini files weren't read")
     return places, doubts
 
@@ -207,7 +231,7 @@ def _pools(name: str, expect: str, setup: _Setup, by_path: dict, value: str | No
         chosen = sets["admin"] or sets["user"]
         if chosen:
             path, set_value = _worst(chosen, expect)
-            places.append(Place(where, set_value, path))
+            places.append(Place(where, set_value, path, admin=bool(sets["admin"])))
         else:
             places.append(Place(where, value, source))
     return places, doubts

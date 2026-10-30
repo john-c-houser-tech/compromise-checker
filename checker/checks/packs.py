@@ -105,12 +105,13 @@ def _mitigations(item, named: str, pack: str, context: Context) -> list[Finding]
             )
             continue
         if mitigation.status == IN_PLACE:
-            # A site can set it again for itself (PHP_INI_PERDIR settings):
-            # in .user.ini under PHP-FPM, or .htaccess under Apache's PHP.
+            # The sites' .user.ini and .htaccess in the web roots walked are
+            # among the settings read (plan 4.4c); others, and ini_set, aren't.
             context.gaps.append(
                 f"pack {named}: mitigation {mitigation.id} is in place in the settings read;"
-                " a site's .user.ini or .htaccess, or an application changing it as it runs"
-                " (ini_set), could set it back, and those aren't seen"
+                " a site outside the web roots examined (its .user.ini or .htaccess), or an"
+                " application changing it as it runs (ini_set), could set it back, and those"
+                " aren't seen"
             )
             continue
         if mitigation.status != MISSING:

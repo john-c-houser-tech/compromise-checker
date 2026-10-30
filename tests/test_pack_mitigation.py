@@ -22,7 +22,8 @@ def setting_items(files):
     items, read = {}, {}
     for path, lines in files.items():
         read[path] = {"content_sha256": "read"}
-        items.update(dict(php_settings(path, lines)))
+        # Under a web root: a site's .user.ini or .htaccess (plan 4.4c).
+        items.update(dict(php_settings(path, lines, site=path.startswith("/var/www/"))))
     return items, read
 
 
@@ -431,3 +432,50 @@ def test_a_pool_given_it_twice_counts_the_wrong_one():
         ],
     }  # fmt: skip
     assert judged(files).status == MISSING
+
+
+# --- Sites' own settings (plan 4.4c) ----------------------------------------------------------
+
+POOL = "/etc/php/8.3/fpm/pool.d/www.conf"
+USER_INI = "/var/www/shop/.user.ini"
+HTACCESS = "/var/www/blog/.htaccess"
+
+
+def test_a_sites_user_ini_turning_it_back_on_is_missing():
+    result = judged({FPM: [f"{NAME} = Off"], USER_INI: [f"{NAME} = 1"]})
+    assert result.status == MISSING
+    assert [p.where for p in result.places if p.value == "1"] == [f"{USER_INI} (.user.ini)"]
+    assert judged({FPM: [f"{NAME} = Off"], USER_INI: [f"{NAME} = Off"]}).status == IN_PLACE
+
+
+@pytest.mark.parametrize(
+    ("site", "line"),
+    [(USER_INI, f"{NAME} = On"), (HTACCESS, f'SetEnv PHP_VALUE "{NAME}=1"')],
+)
+def test_every_pools_admin_setting_locks_out_what_a_site_sets_for_php_fpm(site, line):
+    files = {FPM: [f"{NAME} = Off"], site: [line],
+             POOL: ["[www]", f"php_admin_flag[{NAME}] = off", "[api]",
+                    f"php_admin_value[{NAME}] = 0"]}  # fmt: skip
+    assert judged(files).status == IN_PLACE
+    # One pool without it: the site may run there.
+    files[POOL] += ["[legacy]", f"php_flag[{NAME}] = off"]
+    assert judged(files).status == MISSING
+    # CGI reads .user.ini too, and has no php_admin_*.
+    del files[POOL][-2:]
+    files["/etc/php/8.3/cgi/php.ini"] = [f"{NAME} = Off"]
+    assert judged(files).status == MISSING
+
+
+def test_an_htaccess_php_flag_counts_even_with_pools_locked():
+    # Apache's own PHP module reads it; pools' php_admin_* don't reach there.
+    files = {FPM: [f"{NAME} = Off"], HTACCESS: [f"php_flag {NAME} on"],
+             POOL: ["[www]", f"php_admin_flag[{NAME}] = off"]}  # fmt: skip
+    assert judged(files).status == MISSING
+
+
+def test_a_locking_admin_value_that_turns_it_on_locks_nothing():
+    files = {FPM: [f"{NAME} = Off"], USER_INI: [f"{NAME} = Off"],
+             POOL: ["[www]", f"php_admin_flag[{NAME}] = on"]}  # fmt: skip
+    result = judged(files)
+    assert result.status == MISSING
+    assert [p.where for p in result.places] == [f"{FPM} pool www", f"{USER_INI} (.user.ini)"]

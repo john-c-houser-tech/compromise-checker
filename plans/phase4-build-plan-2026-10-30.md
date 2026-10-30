@@ -356,6 +356,30 @@ is John's to approve before it is committed. Also:
   but unbooted fix protects nothing. A design note for that pack, not
   built.
 
+### 4.4c — Sites' own PHP settings (as built)
+
+- The web-root walk notes each `.user.ini` and `.htaccess` (a link too)
+  and then reads them, up to 500 per root: PHP lines only (`.user.ini`:
+  directives, as php.ini; `.htaccess`: `php_value`/`php_flag` and admin
+  forms, and `SetEnv PHP_VALUE`), masked, secret-named values whole. The
+  refusal rules gain one exception: with `site_root`, a file may lie
+  outside the system locations only if it has one of those two names and
+  lies inside the root being walked (checked on the file opened); the
+  hard-link, home and history rules still apply. A file whose path
+  masking would change isn't read (its source name would carry the
+  secret). Anything not read, or a walk not whole: `site_php_partial`.
+- The snapshot parses them into `php_settings` as kind `site` (`how`:
+  `.user.ini`, `php_value`…, `PHP_VALUE`); `php_settings` now also
+  depends on `unusual_files`; a site file not read leaves `php_settings`
+  incomplete, not the web-file sections. SNAPSHOT_VERSION 13.
+- The mitigation judge counts each site value as a place of its own.
+  A `.user.ini` or `PHP_VALUE` value doesn't count where every PHP-FPM
+  pool sets the setting with `php_admin_*` to the expected value and no
+  CGI set-up exists (nothing overrides `php_admin_*`); an `.htaccess`
+  `php_value` (Apache's module) always counts. The in-place note now
+  names what's still unseen: sites outside the web roots examined, and
+  `ini_set`.
+
 ### 4.5 — Detections
 
 - The detection language (D1): over events (type, fields matched by

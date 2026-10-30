@@ -6028,5 +6028,77 @@ class PhpIniReviewTests(FixtureRoot):
         self.assertNotIn("/var/log/php_app_errors.log", sent)
 
 
+class SitePhpTests(FixtureRoot):
+    """Sites' .user.ini and .htaccess in the web roots: their PHP lines only (plan 4.4c)."""
+
+    def run_sites(self):
+        collector = load_collector(self.root)
+        collector.file_capabilities = lambda absolute: ({}, None)
+        out = io.BytesIO()
+        collector.main(unusual_settings(None), out=out)
+        return [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+
+    def test_only_php_lines_are_sent_masked(self):
+        secret = "sk-ant-api03-" + "a" * 60
+        self.write(
+            "var/www/shop/.user.ini",
+            f"; tuning\nupload_max_filesize = 9M\nmail.api_key = {secret}\n".encode(),
+        )
+        self.write(
+            "var/www/blog/.htaccess",
+            (
+                "RewriteEngine On\nRewriteRule ^admin$ /secret-panel [L]\n"
+                "AuthUserFile /var/www/.htpasswd\nSetEnv DB_PASSWORD hunter2\n"
+                "<IfModule mod_php.c>\n  php_flag session.upload_progress.enabled on\n"
+                f"  php_value mail.api_key {secret}\n</IfModule>\n"
+                'SetEnv PHP_VALUE "session.upload_progress.enabled=0"\n'
+            ).encode(),
+        )
+        self.write("var/www/blog/index.php", b"<?php echo 1;")
+        records = self.run_sites()
+        sent = sources(records)
+        self.assertEqual(
+            sent["/var/www/shop/.user.ini"][1],
+            b"upload_max_filesize = 9M\nmail.api_key = [MASKED:php_secret]\n",
+        )
+        htaccess = sent["/var/www/blog/.htaccess"][1].decode()
+        self.assertEqual(
+            htaccess.splitlines(),
+            [
+                "  php_flag session.upload_progress.enabled on",
+                "  php_value mail.api_key [MASKED:php_secret]",
+                'SetEnv PHP_VALUE "session.upload_progress.enabled=0"',
+            ],
+        )
+        self.assertNotIn("/var/www/blog/index.php", sent)  # no other file's text
+        self.assertEqual(named(records, "site_php_partial"), [])
+
+    def test_one_not_read_is_said(self):
+        self.write("var/www/a/.htaccess", b"php_flag x on\n")
+        os.link(Path(self.root, "var/www/a/.htaccess"), Path(self.root, "var/www/a/copy"))
+        Path(self.root, "var/www/b").mkdir(parents=True)
+        os.symlink("/etc/shadow", Path(self.root, "var/www/b/.user.ini"))
+        self.write("var/www/c/password=hunter2/.user.ini", b"x = 1\n")
+        records = self.run_sites()
+        sent = sources(records)
+        self.assertFalse([name for name in sent if name.startswith("/var/www/")])
+        refused = [r["data"]["reason"] for r in named(records, "unreadable_file")]
+        self.assertTrue(any("hard-linked" in reason for reason in refused))
+        [partial] = named(records, "site_php_partial")
+        self.assertEqual(partial["data"], {"path": "/var/www", "found": 3, "read": 0})
+
+    def test_the_refusal_keeps_to_the_names_and_the_root(self):
+        collector = load_collector(self.root)
+        run = collector.Run(None, json.loads(settings([])), 1e12)
+        info = os.stat(self.write("var/www/a/.htaccess", b""))
+        root = "/var/www"
+        self.assertIsNone(run.refusal("/var/www/a/.htaccess", info, site_root=root))
+        self.assertIn("not a site's", run.refusal("/var/www/a/.env", info, site_root=root))
+        self.assertIn("outside the web root", run.refusal("/srv/.htaccess", info, site_root=root))
+        self.assertIn(
+            "outside the web root", run.refusal("/var/wwwx/.htaccess", info, site_root=root)
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

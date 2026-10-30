@@ -602,7 +602,9 @@ class Run:
         self.deadline = deadline
         self._protected = None
 
-    def refusal(self, opened, info, key_file=False, spool=False, walked=False, home=None):
+    def refusal(
+        self, opened, info, key_file=False, spool=False, walked=False, home=None, site_root=None
+    ):
         """Why the contents of a file just opened (its path after links, its
         fstat) must not be read, or None. These rules don't depend on knowing
         every history file on the server:
@@ -657,6 +659,13 @@ class Run:
             # from a configuration file can reach a spool.
             if not opened.startswith(SPOOL_LOCATIONS):
                 return "is outside cron's and at's spools"
+        elif site_root is not None:
+            # A site's own PHP settings (plan 4.4c): only these names, only
+            # inside the web root being walked; only their PHP lines are sent.
+            if opened.rsplit("/", 1)[-1] not in SITE_PHP_FILES:
+                return "is not a site's .user.ini or .htaccess"
+            if not opened.startswith(site_root.rstrip("/") + "/"):
+                return "is outside the web root being walked"
         elif not opened.startswith(SYSTEM_LOCATIONS):
             return "is outside the system locations configuration and logs are read from"
         if opened.startswith(homes):
@@ -864,6 +873,7 @@ def send_file(
     walked=False,
     home=None,
     transform=None,
+    site_root=None,
 ):
     """Send one file as a source: decompressed, masked, chunked, capped.
     Returns True if sent, False if it could not be read (recorded instead).
@@ -895,7 +905,9 @@ def send_file(
         details["reason"] = str(exc)
         run.stream.record(module, "unreadable_file", details)
         return False
-    refusal = run.refusal(absolute, info, spool=spool, walked=walked, home=home)
+    refusal = run.refusal(
+        absolute, info, spool=spool, walked=walked, home=home, site_root=site_root
+    )
     if refusal:
         # The file actually opened — through any link or hard link — is one
         # collected as status or metadata only: never send its text.
@@ -5607,6 +5619,55 @@ def walk_place(run, module, top, limit, keep, hash_it, record="unusual_file", pr
     return summary
 
 
+# A site's own PHP settings (plan 4.4c): PHP-FPM reads .user.ini in each
+# folder of a request's path, Apache's PHP module .htaccess; either can set
+# a PHP_INI_PERDIR setting again for that site (a pack's mitigation, say).
+SITE_PHP_FILES = (".user.ini", ".htaccess")
+MAX_SITE_PHP_FILES = 500
+_HTACCESS_PHP = re.compile(
+    rb"^\s*(?:php_(?:admin_)?(?:value|flag)\s+([A-Za-z0-9_.\[\]-]+)"
+    rb"|(?:SetEnv|SetEnvIf\S*)\s+.*\bPHP_(?:ADMIN_)?VALUE\b)",
+    re.IGNORECASE,
+)
+
+
+def htaccess_php_line(line, masker):
+    """An .htaccess line as sent: only a PHP setting (php_value, php_flag,
+    their admin forms, or a PHP_VALUE given to PHP-FPM), masked (a secret
+    setting's whole value); everything else in the file is left out."""
+    found = _HTACCESS_PHP.match(line)
+    if not found:
+        return b""
+    if found.group(1) and _PHP_SECRET_NAME.search(found.group(1)):
+        masker.counts["php_secret"] = masker.counts.get("php_secret", 0) + 1
+        return line[: found.end(1)] + b" [MASKED:php_secret]\n"
+    return masker.line(line)
+
+
+def _site_php(run, module, summary, sites):
+    """Each .user.ini and .htaccess the walk of a web root found: their PHP
+    lines only. One not read (a path that masking would change, since a
+    source's path is sent as it is; refused; unreadable), or a walk not
+    whole, may hide a setting: said so."""
+    root = summary.get("resolved") or summary.get("place")
+    read = 0
+    for absolute in sites[:MAX_SITE_PHP_FILES]:
+        run.check_time()
+        _, masked = mask_text(absolute.encode("utf-8", "surrogateescape") + b"\n")
+        if masked:
+            continue
+        transform = php_ini_line if absolute.endswith(".user.ini") else htaccess_php_line
+        if send_file(run, module, absolute, text_only=True, walked=True, transform=transform,
+                     site_root=root):  # fmt: skip
+            read += 1
+    if read < len(sites) or not summary.get("whole"):
+        run.stream.record(
+            module,
+            "site_php_partial",
+            {"path": summary.get("place"), "found": len(sites), "read": read},
+        )
+
+
 def _is_web_listed(entry, root):
     name = entry["path"].rsplit("/", 1)[-1]
     kind = entry.get("type")
@@ -5719,17 +5780,22 @@ def module_unusual_files(run):
     with time_share(run, module, "web_roots", WEB_TIME_SHARE):
         for top in roots:
             run.check_time()
-            note(
-                walk_place(
-                    run,
-                    module,
-                    top,
-                    MAX_WEB_ENTRIES,
-                    lambda entry, root=top: _is_web_listed(entry, root),
-                    _web_hashed,
-                    "web_file",
-                )
+            sites = []
+
+            def web_listed(entry, root=top, sites=sites):
+                # A site's own PHP settings are read after the walk; a link
+                # isn't followed, so it counts as one not read.
+                name = entry["path"].rsplit("/", 1)[-1]
+                if name in SITE_PHP_FILES and entry.get("type") in ("-", "l"):
+                    sites.append(entry["path"])
+                return _is_web_listed(entry, root)
+
+            summary = walk_place(
+                run, module, top, MAX_WEB_ENTRIES, web_listed, _web_hashed, "web_file"
             )
+            note(summary)
+            if summary is not None:
+                _site_php(run, module, summary, sites)
 
     # The rest of the time: every top-level directory the system walk
     # doesn't cover.

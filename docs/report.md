@@ -123,24 +123,35 @@ reports folder that show a purged bundle; a report written elsewhere with
 
 `checker fleet [--group GROUP]` lists every host, most worrying first:
 
-1. hosts whose stored analysis can't be read, or doesn't match its recorded hash;
+1. hosts whose stored analysis can't be read: it says why (doesn't match its recorded hash,
+   file missing, damaged), and what the last readable analysis said, never as the current
+   result. A store that can't answer, or a key that opens nothing, is one error for the whole
+   fleet, not a claim about each host;
 2. Critical, then High;
-3. hosts with no result to go on, and Elevated or Low results with nothing recent behind
-   them: the last collection failed, the collection was partial, a newer one isn't
-   analysed yet, or it is more than 8 days old;
-4. Elevated, then Low.
+3. hosts with no result to go on, and Elevated or Low results that can't be relied on: the
+   last collection failed or was partial, a newer one isn't analysed yet, a check couldn't
+   run, it can see less than before, the whitelist or threat packs have changed (so a report
+   might now say something worse), or it is old. Old means over 3 days:
+   `checker config set stale_after_days N` if you check less often than daily, or every host
+   will say so;
+4. Elevated, then Low, those with high or critical findings first. Hygiene and exposure
+   findings don't move the band, so this keeps them from hiding under a low score.
+
+A newer version of the tool's checks is said, but doesn't move hosts up: an upgrade shouldn't
+alarm the whole fleet. High and Critical never move down, and a doubt under one says "may
+have changed since", not that it can be ignored.
 
 For each host it shows the band and probability, threat packs it was exposed to, coverage
 gaps, and what changed since the analysis before. High and critical findings that went away
-are told apart: no longer found, now suppressed by a whitelist, or not seen in a partial
-collection, which says nothing either way. An exposure known before stays listed when a
-later listing can't judge it, and is marked as such.
+are told apart: no longer found, now suppressed by a whitelist, or not seen. "No longer found"
+is said only between two whole collections, by the same checks, with nothing failed and no
+new gap: wiped logs make findings disappear too. An exposure known before stays listed when
+later listings can't judge it, looking back up to 30 analyses.
 
 It reads what is stored, and collects, analyses and writes nothing: the database is opened
-read-only, and it doesn't adopt a newer key list or retire packs, which is left to runs. So
-it says when a result may not be what a report would say now (older checks, other packs,
-another whitelist or starting probability), and keeps showing the older result until it is
-analysed, so a known problem doesn't disappear.
+read-only, and it doesn't adopt a newer key list or retire packs, which is left to runs. For
+the same reason it can't repair a store: after an interrupted run it says which command does.
 
 A host's whole evidence being purged is said only while it is in the inventory. A host
-removed from the inventory stays listed while it has bundles, under any group filter.
+removed from the inventory stays listed while it has bundles, under any group filter, and
+says how to purge it.

@@ -276,6 +276,12 @@ SETTABLE: dict[str, Setting] = {
         Setting(("web_access_logs",), _bool, "on or off"),
         Setting(("exec_records",), str, "web, privileged or all"),
         Setting(("retention_days",), int, "days evidence is kept (default 90)"),
+        Setting(
+            ("stale_after_days",),
+            int,
+            "days before the fleet view calls a collection old (default 3; raise it if"
+            " you check less often than daily)",
+        ),
         Setting(("prior",), float, "prior probability of compromise (default 0.02)"),
         Setting(
             ("packs", "apply"),

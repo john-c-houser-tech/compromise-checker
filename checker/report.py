@@ -261,6 +261,9 @@ def whitelist_hash(assessment: dict) -> str | None:
     return (assessment.get("whitelist") or {}).get("hash")
 
 
+OLDER_CHECKS = "analysed by an older version of the checks"
+
+
 def out_of_date(
     assessment: dict,
     prior: tuple[float, str] | None,
@@ -278,7 +281,7 @@ def out_of_date(
     # Its evidence points into one parse of the bundle (event numbers,
     # snapshot keys): any newer parser or checks means analysing again.
     if assessment.get("versions") != current_versions():
-        analyse.append("analysed by an older version of the checks")
+        analyse.append(OLDER_CHECKS)
     # So do other packs: what they judge and detect isn't in the findings.
     if check_packs and (
         assessment.get("packs", []) != packs_applied(packs)

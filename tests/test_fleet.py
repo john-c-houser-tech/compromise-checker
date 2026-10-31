@@ -4,8 +4,10 @@ of date, from what is stored, with nothing written."""
 import hashlib
 import sqlite3
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
+from pyrage import x25519
 from test_purge import add as add_to_evidence
 from test_schedule import CLEAN, ROOTED, keyed_host
 from test_snapshot import START, add_bundle
@@ -13,12 +15,14 @@ from test_snapshot import START, add_bundle
 from checker import cli
 from checker import fleet as fleet_module
 from checker.assess import analyze, events_of, load_assessment
-from checker.evidence import EvidenceError, Store, load_identity
+from checker.evidence import EvidenceError, Store, load_identity, store_unreadable
 from checker.fleet import STALE_AFTER, FleetHost, fleet, fleet_host, sort_key
 from checker.inventory import inventory_transaction
 from checker.packs.trust import shipped_newer
 from checker.report import host_report, out_of_date, reassess, whitelist_hash
+from checker.schedule import _identity_of
 from checker.scoring import DEFAULT_PRIOR
+from checker.settings import change as set_setting
 
 BIDI = chr(0x202E)
 SOON = START + timedelta(minutes=30)
@@ -135,23 +139,6 @@ def test_an_older_analysis_unreadable_leaves_the_latest_alone(home):
     assert item.out_of_date == ()
 
 
-def test_a_known_exposure_stays_when_a_later_listing_cannot_judge_it(home, monkeypatch):
-    analysed(home, "b1", 10, CLEAN)
-    analysed(home, "b2", 20, CLEAN)
-    real = fleet_module.load_assessment
-
-    def load(store, bundle, identity, which=-1):
-        found = real(store, bundle, identity, which)
-        pack = {"pack": "p1", "version": 1, "status": "vulnerable", "share": 1, "judged": True}
-        if bundle == "b2":
-            pack.update(status="can't judge", judged=False, share=0)
-        return {**found, "exposures": [pack]}
-
-    monkeypatch.setattr(fleet_module, "load_assessment", load)
-    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
-    assert item.exposed == {"p1": "vulnerable"} and item.unjudged == ("p1",)
-
-
 def test_findings_missing_from_a_partial_collection_are_not_called_gone(home):
     analysed(home, "b1", 10, ROOTED)
     add_bundle(home, "b2", 20, CLEAN, status="partial")
@@ -169,15 +156,166 @@ def test_findings_missing_from_a_whole_collection_are_resolved(home):
 
 
 def test_a_finding_now_suppressed_is_not_called_resolved():
-    before = {"findings": {"k": "critical"}}
     finding = {"check": "c", "title": "t", "suppressed_by": "rule"}
-    key = fleet_module._identity_of(finding)
+    key = _identity_of(finding)
+    other = _identity_of({"check": "d", "title": "t"})
     assert fleet_module._gone({"findings": {key: "critical"}}, {"findings": [finding]}, True) == (
         0,
         1,
         0,
     )
-    assert fleet_module._gone(before, {"findings": []}, True) == (1, 0, 0)
+    assert fleet_module._gone({"findings": {other: "high"}}, {"findings": []}, True) == (1, 0, 0)
+
+
+def test_a_group_listed_in_part_with_a_new_count_is_the_same_finding():
+    before = {"check": "c", "entities": ["a"], "entities_complete": False, "summary": "3 of 40"}
+    after = {**before, "summary": "3 of 41"}
+    assert _identity_of(before) != _identity_of(after)
+    gone = fleet_module._gone(
+        {"findings": {_identity_of(before): "critical"}}, {"findings": [after]}, True
+    )
+    assert gone == (0, 0, 0)
+
+
+def patched(monkeypatch, changes):
+    """Stored analyses with some fields changed, by bundle."""
+    real = fleet_module.load_assessment
+
+    def load(store, bundle, identity, which=-1):
+        found = real(store, bundle, identity, which)
+        return {**found, **changes.get(bundle, {})} if found else found
+
+    monkeypatch.setattr(fleet_module, "load_assessment", load)
+
+
+def exposure(status, judged=True):
+    share = 1 if judged and status != "not exposed" else 0
+    return [{"pack": "p1", "version": 1, "status": status, "share": share, "judged": judged}]
+
+
+def test_a_failed_check_is_a_standing_doubt_and_its_findings_are_not_resolved(home, monkeypatch):
+    analysed(home, "b1", 10, ROOTED)
+    analysed(home, "b2", 20, CLEAN)
+    patched(monkeypatch, {"b2": {"checks": [{"check": "account.uid0", "status": "failed: boom"}]}})
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.resolved == 0 and item.not_seen >= 1
+    assert any("couldn't run: account.uid0" in d for d in item.doubts)
+    assert sort_key(item)[0] == 2
+
+
+def test_seeing_less_than_before_is_a_doubt_and_its_findings_are_not_resolved(home, monkeypatch):
+    analysed(home, "b1", 10, ROOTED)
+    wiped = analysed(home, "b2", 20, CLEAN)
+    gaps = [*wiped["coverage"]["gaps"], "no authentication log events: logins can't be checked"]
+    patched(monkeypatch, {"b2": {"coverage": {"gaps": gaps}}})
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert any("no authentication log events" in d for d in item.doubts)
+    assert item.resolved == 0 and item.not_seen >= 1
+
+
+def test_a_gap_differing_only_in_a_number_is_not_new(home):
+    analysed(home, "b1", 10, CLEAN)
+    analysed(home, "b2", 20, CLEAN)  # a clock offset differs between these
+    assert fleet_host(home[1], "web01", identity_of(home), now=SOON).doubts == ()
+
+
+def test_rescoring_with_other_checks_says_nothing_about_the_host(home, monkeypatch):
+    analysed(home, "b1", 10, ROOTED)
+    analysed(home, "b2", 20, CLEAN)
+    patched(monkeypatch, {"b1": {"versions": {"checks": 0}}})
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.resolved == 0 and item.not_seen >= 1
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        (exposure("vulnerable"), exposure("can't judge", False), exposure("can't judge", False)),
+        (exposure("vulnerable"), exposure("can't judge", False)),
+    ],
+)
+def test_a_known_exposure_survives_however_many_listings_cannot_judge_it(home, monkeypatch, steps):
+    names = [f"b{n}" for n in range(len(steps))]
+    for n, name in enumerate(names):
+        analysed(home, name, 10 * (n + 1), CLEAN)
+    patched(monkeypatch, {n: {"exposures": s} for n, s in zip(names, steps, strict=True)})
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.exposed == {"p1": "vulnerable"} and item.unjudged == ("p1",)
+
+
+def test_an_exposure_judged_again_as_vulnerable_is_not_news(home, monkeypatch):
+    for n, name in enumerate(("b1", "b2", "b3")):
+        analysed(home, name, 10 * (n + 1), CLEAN)
+    patched(
+        monkeypatch,
+        {
+            "b1": {"exposures": exposure("vulnerable")},
+            "b2": {"exposures": exposure("can't judge", False)},
+            "b3": {"exposures": exposure("vulnerable")},
+        },
+    )
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert not any("exposed to threat pack" in line for line in item.changes)
+
+
+def test_a_changed_whitelist_makes_a_low_result_doubtful(home):
+    analysed(home, "b1", 10, CLEAN)
+    item = fleet_host(
+        home[1], "web01", identity_of(home), whitelist_for=lambda _: _Whitelist(), now=SOON
+    )
+    assert "the whitelist has changed" in item.doubts and sort_key(item)[0] == 2
+
+
+def test_changed_packs_make_a_low_result_doubtful(home):
+    analysed(home, "b1", 10, CLEAN)
+    item = fleet_host(
+        home[1], "web01", identity_of(home), packs_for=lambda _: ([], ["bad"]), now=SOON
+    )
+    assert any("packs" in d for d in item.doubts) and sort_key(item)[0] == 2
+
+
+def test_newer_checks_are_said_but_do_not_alarm_the_fleet(home, monkeypatch):
+    analysed(home, "b1", 10, CLEAN)
+    monkeypatch.setattr("checker.report.current_versions", lambda: {"checks": -1})
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.out_of_date and item.doubts == () and sort_key(item)[0] == 4
+
+
+def test_a_doubted_elevated_result_moves_up_and_a_newer_collection_is_a_doubt(home):
+    item = FleetHost("x", band="Elevated", state="analysed", doubts=("why",))
+    assert sort_key(item)[0] == 2
+    analysed(home, "b1", 10, CLEAN)
+    add_bundle(home, "b2", 20, CLEAN)
+    fresh = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert "a newer collection hasn't been analysed" in fresh.doubts
+
+
+def test_a_date_that_cannot_be_read_counts_as_old():
+    assert fleet_module._old("not a date", SOON, STALE_AFTER)
+
+
+def test_serious_findings_come_first_among_low_results():
+    plain = FleetHost("a", band="Low", state="analysed", probability=0.03)
+    hidden = FleetHost(
+        "b", band="Low", state="analysed", probability=0.02, counts={"hygiene/critical": 2}
+    )
+    assert sorted([plain, hidden], key=sort_key) == [hidden, plain]
+
+
+def test_the_previous_collection_is_what_a_rescored_one_is_compared_with(home):
+    analysed(home, "b1", 10, ROOTED)
+    earlier = analysed(home, "b2", 20, CLEAN)
+    reassess(
+        home[1],
+        home[1].bundle("b2"),
+        home[3].recipients,
+        earlier,
+        (0.0002, "host"),
+        None,
+        events_of(home[1], home[1].bundle("b2"), identity_of(home), home[3].recipients),
+    )
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.band_before == "High" and item.rescored_from is None
 
 
 def test_rescoring_one_collection_is_not_a_first_analysis(home):
@@ -208,15 +346,140 @@ def test_one_hosts_broken_whitelist_leaves_the_fleet_listed(home):
     hosts = fleet(home[1], identity_of(home), {}, whitelist_for=whitelist, now=SOON)
     assert [h.host for h in hosts] == ["rooted", "clean"]
     assert "its whitelist can't be read" in hosts[1].out_of_date
+    assert "the whitelist has changed" not in hosts[1].out_of_date  # it can't say
     assert hosts[1].band == "Low"
 
 
-def test_any_other_trouble_with_one_host_is_loud_not_fatal(home, monkeypatch):
+def test_trouble_working_out_the_details_keeps_the_band(home, monkeypatch):
     analysed(home, "a", 10, ROOTED, host="rooted")
     analysed(home, "b", 10, CLEAN, host="odd")
     monkeypatch.setattr(fleet_module, "out_of_date", _boom_on_low(fleet_module.out_of_date))
-    hosts = fleet(home[1], identity_of(home), {}, now=SOON)
-    assert hosts[0].host == "odd" and hosts[0].state == "unreadable"
+    hosts = {h.host: h for h in fleet(home[1], identity_of(home), {}, now=SOON)}
+    assert hosts["odd"].band == "Low" and hosts["odd"].doubts
+    assert hosts["rooted"].band == "High"
+
+
+def test_trouble_before_any_band_is_read_is_loud_not_fatal(home, monkeypatch):
+    analysed(home, "a", 10, ROOTED, host="rooted")
+
+    def broken(*args):
+        raise ValueError("odd")
+
+    monkeypatch.setattr(fleet_module, "usable_bundles", broken)
+    (only,) = fleet(home[1], identity_of(home), {})
+    assert only.state == "unreadable" and only.unreadable_why == "internal"
+
+
+def test_a_missing_file_is_not_called_tampering(home):
+    analysed(home, "b1", 10, ROOTED)
+    Path(home[1].assessments("b1")[-1]["path"]).unlink()
+    assert fleet_host(home[1], "web01", identity_of(home)).unreadable_why == "missing"
+
+
+def test_a_hash_mismatch_says_so(home):
+    analysed(home, "b1", 10, ROOTED)
+    with open(home[1].assessments("b1")[-1]["path"], "ab") as f:
+        f.write(b"x")
+    assert fleet_host(home[1], "web01", identity_of(home)).unreadable_why == "mismatch"
+    assert "tampered" in fleet_module.UNREADABLE["mismatch"]
+
+
+def test_the_wrong_key_is_one_error_not_every_host_tampered_with(home):
+    analysed(home, "b1", 10, ROOTED)
+    analysed(home, "c1", 10, CLEAN, host="other")
+    wrong = x25519.Identity.generate()
+    with pytest.raises(EvidenceError, match="right one"):
+        fleet(home[1], wrong, {})
+
+
+def test_a_store_that_cannot_answer_is_one_error(home, monkeypatch):
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(home[1], "bundles", locked)
+    analysed_name = {"web01": None}
+    with pytest.raises(EvidenceError, match="busy"):
+        fleet(home[1], identity_of(home), analysed_name)
+
+
+@pytest.mark.parametrize(
+    ("text", "words"),
+    [
+        ("attempt to write a readonly database", "bundle list"),
+        ("database is locked", "busy"),
+        ("no such table: purges", "older version"),
+        ("file is not a database", "damaged"),
+    ],
+)
+def test_each_store_trouble_says_what_to_do(text, words):
+    assert words in store_unreadable(sqlite3.OperationalError(text))
+
+
+def test_a_damaged_store_is_a_plain_error_from_the_command(home, capsys):
+    (home[0] / "checker.db").write_bytes(b"not a database, not at all" * 100)
+    assert cli.main(["fleet"]) == 1
+    assert "damaged" in capsys.readouterr().err
+
+
+def test_an_empty_store_is_a_plain_error_from_the_command(home, capsys):
+    (home[0] / "checker.db").write_bytes(b"")
+    assert cli.main(["fleet"]) == 1
+    assert "older version" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("name", ["hosts.yaml", "config.yaml"])
+def test_a_broken_settings_file_is_a_plain_error_from_the_command(home, capsys, name):
+    (home[0] / name).write_text("a: [unclosed")
+    assert cli.main(["fleet"]) == 1
+    assert capsys.readouterr().err.startswith("checker: ")
+
+
+def test_the_command_passes_the_whitelist_and_the_prior(home, tmp_path, capsys):
+    with inventory_transaction() as hosts:
+        hosts.add(keyed_host(tmp_path, prior=0.5))
+    analysed(home, "b1", 10, CLEAN)
+    folder = home[0] / "whitelist" / "hosts"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "web01.yaml").write_text("rules: [unclosed")
+    assert cli.main(["fleet"]) == 0
+    out = capsys.readouterr().out
+    assert "its whitelist can't be read" in out and "starting probability" in out
+
+
+def test_the_command_passes_the_packs(home, capsys, monkeypatch):
+    analysed(home, "b1", 10, CLEAN)
+    monkeypatch.setattr(
+        "checker.packs.store.in_force_read_only", lambda *args: ([], ["a pack is broken"])
+    )
+    assert cli.main(["fleet"]) == 0
+    captured = capsys.readouterr()
+    assert "threat packs in force have changed" in captured.out
+    assert "a pack is broken" in captured.err
+
+
+def test_the_command_uses_the_stale_after_setting(home, capsys):
+    analysed(home, "b1", 10, CLEAN)
+    set_setting(home[0], "stale_after_days", "100000")
+    assert cli.main(["fleet"]) == 0
+    assert "days ago" not in capsys.readouterr().out
+
+
+def test_a_doubt_under_a_serious_result_does_not_excuse_it(home, capsys):
+    analysed(home, "b1", 10, ROOTED)
+    add_bundle(home, "b2", 20, CLEAN, status="failed")
+    assert cli.main(["fleet"]) == 0
+    out = capsys.readouterr().out
+    assert "may have changed since: its last collection was failed" in out
+    assert "can't be relied on" not in out
+
+
+def test_a_host_no_longer_in_the_inventory_says_so_and_is_not_called_old(home, tmp_path, capsys):
+    with inventory_transaction() as hosts:
+        hosts.add(keyed_host(tmp_path, name="kept"))
+    analysed(home, "b1", 10, CLEAN, host="gone")
+    assert cli.main(["fleet"]) == 0
+    out = capsys.readouterr().out
+    assert "checker purge gone" in out and "days ago" not in out
 
 
 def _boom_on_low(real):
@@ -263,9 +526,6 @@ def test_what_the_fleet_calls_out_of_date_is_what_the_report_redoes(
     analyse, rescore = out_of_date(assessment, prior, None, None, kwargs.get("pack_problems"))
     assert analyse or rescore
     before = len(home[1].assessments("b1"))
-    if change == "versions":
-        monkeypatch.undo()  # the analysis it starts records the real versions
-        monkeypatch.setattr("checker.report.current_versions", lambda: {"checks": -1})
     host_report(
         home[1],
         "web01",
@@ -278,6 +538,14 @@ def test_what_the_fleet_calls_out_of_date_is_what_the_report_redoes(
         kwargs.get("pack_problems"),
     )
     assert len(home[1].assessments("b1")) == before + 1
+
+
+def test_nothing_out_of_date_means_the_report_redoes_nothing(home):
+    assessment = analysed(home, "b1", 10, CLEAN)
+    prior = (assessment["score"]["prior"], assessment["score"]["prior_source"])
+    assert out_of_date(assessment, prior) == ([], [])
+    host_report(home[1], "web01", identity_of(home), home[3].recipients, None, prior)
+    assert len(home[1].assessments("b1")) == 1
 
 
 class _Whitelist:
@@ -308,9 +576,11 @@ def test_a_whitelist_changed_or_expired_means_scoring_again(home):
 
 def _tree(base):
     return {
-        str(p.relative_to(base)): hashlib.sha256(p.read_bytes()).hexdigest()
+        str(p.relative_to(base)): (
+            hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else "directory",
+            p.stat().st_mtime_ns,
+        )
         for p in sorted(base.rglob("*"))
-        if p.is_file()
     }
 
 
@@ -336,7 +606,7 @@ def test_the_command_on_a_home_not_set_up_creates_nothing(tmp_path, monkeypatch,
     monkeypatch.setenv("CHECKER_HOME", str(tmp_path / "new"))
     assert cli.main(["fleet"]) == 1
     assert "not set up yet" in capsys.readouterr().err
-    assert not (tmp_path / "new").exists() or not list((tmp_path / "new").rglob("*"))
+    assert not (tmp_path / "new").exists()
 
 
 def test_the_read_only_store_refuses_a_write(home):

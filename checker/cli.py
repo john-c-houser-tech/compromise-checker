@@ -11,6 +11,7 @@ from functools import partial
 from pathlib import Path
 
 import pyrage
+import yaml
 from pydantic import ValidationError
 
 from checker import __version__
@@ -1546,16 +1547,17 @@ def cmd_report(args: argparse.Namespace) -> int:
 def cmd_fleet(args: argparse.Namespace) -> int:
     """Every host at a glance, from what is stored: it collects, analyses
     and writes nothing."""
-    from checker.fleet import fleet
+    from checker.fleet import UNREADABLE, fleet, serious
     from checker.packs.choice import for_host
     from checker.packs.store import in_force_read_only
     from checker.report import visible
 
+    unreadable_settings = (EvidenceError, OSError, ValidationError, yaml.YAMLError)
     base = home()
     try:
         config = load_config(base)
         store = Store(database_file(base), read_only=True)
-    except EvidenceError as exc:
+    except unreadable_settings as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     try:
@@ -1571,8 +1573,9 @@ def cmd_fleet(args: argparse.Namespace) -> int:
             lambda name: _whitelist_for(base, name, inventory),
             partial(for_host, config=config, inventory=inventory, found=found),
             args.group,
+            stale_after=timedelta(days=config.stale_after_days),
         )
-    except (EvidenceError, OSError) as exc:
+    except unreadable_settings as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     finally:
@@ -1585,20 +1588,31 @@ def cmd_fleet(args: argparse.Namespace) -> int:
         "no_evidence": "nothing collected yet",
         "collections_failed": "no collection has worked yet",
         "purged": "all its evidence was purged, so nothing is known now",
-        "unreadable": "its analysis can't be read: check the store hasn't been tampered with",
     }
     for item in hosts:
         name = visible(item.host, 80)
-        if item.state != "analysed":
+        if item.state == "unreadable":
+            print(f"{name}  {UNREADABLE[item.unreadable_why or 'internal']}")
+        elif item.state != "analysed":
             print(f"{name}  {words[item.state]}")
-        elif item.probability is None:
-            print(f"{name}  no score  collected {item.collected_at}")
         else:
-            print(f"{name}  {item.band} {item.probability:.1%}  collected {item.collected_at}")
+            score = visible(item.band or "no score", 20)
+            shown = f" {item.probability:.1%}" if item.probability is not None else ""
+            print(f"{name}  {score}{shown}  collected {item.collected_at}")
+        if item.removed:
+            print(f"  no longer in the inventory; `checker purge {name}` removes its evidence")
         if item.last_readable_band:
-            print(f"  the last readable analysis said {item.last_readable_band}")
+            print(f"  the last readable analysis said {visible(item.last_readable_band, 20)}")
+        # Under a serious result, a doubt mustn't read as a reason to ignore it.
+        label = (
+            "may have changed since" if item.band in ("High", "Critical") else "can't be relied on"
+        )
         for doubt in item.doubts:
-            print(f"  can't be relied on: {doubt}")
+            print(f"  {label}: {doubt}")
+        if serious(item):
+            print(f"  high or critical findings: {serious(item)}")
+        if item.hygiene and item.hygiene != "none":
+            print(f"  hygiene and exposure: {visible(item.hygiene, 40)}")
         if item.exposed:
             packs = ", ".join(f"{visible(p, 80)} ({s})" for p, s in sorted(item.exposed.items()))
             print(f"  threat packs: {packs}")
@@ -1609,13 +1623,14 @@ def cmd_fleet(args: argparse.Namespace) -> int:
         if item.last_failed:
             print(f"  last collection {item.last_failed[0]} at {item.last_failed[1]}")
         for reason in item.out_of_date:
-            print(f"  out of date: {reason}")
+            if reason not in item.doubts:
+                print(f"  out of date: {reason}")
         if item.before_unreadable:
             print("  the analysis before can't be read, so changes can't be shown")
-        if item.band_before and item.band_before != item.band:
-            print(f"  was {item.band_before} at the analysis before")
         if item.rescored_from:
             print(f"  this collection was {item.rescored_from} before it was scored again")
+        elif item.band_before and item.band_before != item.band:
+            print(f"  was {item.band_before} at the analysis before")
         for line in item.changes:
             print(f"  {line.partition(': ')[2]}")
         if item.resolved:
@@ -1624,7 +1639,8 @@ def cmd_fleet(args: argparse.Namespace) -> int:
             print(f"  now suppressed by a whitelist: {item.suppressed} high or critical finding(s)")
         if item.not_seen:
             print(
-                f"  not seen in a partial collection: {item.not_seen} high or critical finding(s)"
+                f"  not seen, which says nothing either way: {item.not_seen} high or critical"
+                " finding(s)"
             )
     return 0
 

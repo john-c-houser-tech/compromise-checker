@@ -283,6 +283,21 @@ class Packs(BaseModel):
     # per group; a host's own, in the inventory, wins.
     apply: PackRule = "all"
     group_apply: dict[str, PackRule] = {}
+    # Where `checker packs pull` downloads from: NouriLoop's packs
+    # repository, or a mirror of it (HTTPS only).
+    source: str = (
+        "https://raw.githubusercontent.com/john-c-houser-tech/compromise-checker-packs/main/"
+    )
+
+    @field_validator("source")
+    @classmethod
+    def _source(cls, value: str) -> str:
+        if not value.isascii() or not re.fullmatch(r"https://[^\s?#@\x00-\x1f\x7f]+", value):
+            raise ValueError(
+                "must be an https:// address in plain ASCII, with no spaces, control"
+                " characters, query, fragment or user name"
+            )
+        return value if value.endswith("/") else value + "/"
 
     @field_validator("group_apply")
     @classmethod

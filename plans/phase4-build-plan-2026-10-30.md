@@ -583,6 +583,60 @@ is John's to approve before it is committed. Also:
 - The public key published on nouriloop.com (the site is GitHub Pages), so
   it can be checked against the copy in the tool.
 
+- As built (2026-10-30): `checker/packs/pull.py`. The repository holds
+  `keys.yaml` (root-signed), `index.yaml` (signed by a NouriLoop pack
+  key: an organization's own key can't sign it) and `packs/<id>/PACK.yaml`,
+  each with its `.minisig`. A pull takes a newer key list first (and
+  retires packs whose key it revokes), then the index: its serial only
+  goes up (`index_serial` in `packs/state.json`), and a pack newer than
+  any version accepted here is downloaded, must have the index's SHA-256,
+  and goes through `packs add`'s checks; one a person retired isn't
+  brought back; a withdrawn one is retired. A pack's path comes from its
+  id, never from the index. HTTPS only, redirects included (urllib, the
+  system's certificates), each file's size capped, 30 seconds a file.
+  `packs.source` (default the repository's raw files on GitHub) can point
+  at a mirror. `checker packs index DIR` writes the index for signing by
+  hand (hashes quoted: a hash of digits alone would read as a number).
+- **A stale source** (a side note relayed 2026-10-30): a serial stops an
+  older index, not the current one served for ever, which would hide a
+  new pack or a revoking key list. So the index is signed again at least
+  monthly, even with nothing new, and the pull and `checker packs list`
+  point out one older than 30 days, with when the last pull was.
+- Waits for 4.8's keys: the repository's first `keys.yaml` and index, and
+  the root public key on nouriloop.com.
+- **After review (4.7; 1 high, 7 medium, 12 low), all fixed:** an HTTP
+  protocol error (a body cut short) crashed the pull; a NouriLoop
+  withdrawal, or index entry, could touch an organization's own pack of
+  the same id (now left alone); a mirror could re-sign NouriLoop's bytes
+  with an organization key and take the id into that domain (a pulled
+  pack must be signed by a NouriLoop key); an index entry naming another
+  pack wrote before it was refused (`add` now checks the expected id and
+  version first); the release writer's ids (`2026-10-30`, `1e5`, `null`)
+  and non-BMP reasons didn't round-trip (all quoted); a missing key list
+  passed quietly (now refused; an older one is a problem, exit 1); what
+  a pull did before failing went unsaid; a changed pack under the same
+  version could be released (refused, and a pull says so); the index
+  serial is recorded as soon as it is checked, with its hash (one serial,
+  one index); a future-dated index is pointed out; a file gets two
+  minutes in all; the source refuses control characters and user
+  names; a damaged last-pull record doesn't break `packs list`; the
+  index cap matches the reader's; withdrawals can be forgotten; a
+  release checks every pack's signature against the repository's
+  keys.yaml; a pack retired by hand stays out of pulls, whatever version
+  is offered, until a person adds it again. Revocations still depend on
+  the source (pull.py's docstring says so; nouriloop.com is the second
+  place to check the key list).
+- **Second review (the fixes; 2 medium, 6 low), all fixed:** the per-file
+  deadline didn't hold against a server sending a byte at a time (now
+  read1, tested with a real socket); what a pull did went unsaid when it
+  stopped on anything but a PullError; a person couldn't hold back a pack
+  already out of use, and the hold was written after the move; `packs
+  list` didn't flag a future-dated index; a pack in force with no record
+  (state lost) could be overwritten; the source took non-ASCII; the
+  release writer dropped a pack without a word, and let one withdrawn be
+  relisted at a version sites already had (a withdrawal now keeps the
+  version it covered).
+
 ### 4.8 — The PHP2Shell pack
 
 - Written from the advisories: CISA's alert, the vendors' errata for

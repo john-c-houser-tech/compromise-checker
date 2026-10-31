@@ -159,12 +159,21 @@ def _retire(home: Path, path: Path, why: str) -> None:
 
 
 def add(
-    home: Path, organization: list[Any], data: bytes, signature: bytes, checks: dict[str, Any]
+    home: Path,
+    organization: list[Any],
+    data: bytes,
+    signature: bytes,
+    checks: dict[str, Any],
+    domain: str | None = None,
+    expect: tuple[str, int] | None = None,
 ) -> tuple[Stored, str]:
     """Check a pack's signature, then its content, then that it is newer
     than any version of it accepted before (and in the same trust domain),
-    then keep it in force; an older version is retired. The caller holds
-    the packs lock. Returns it and what happened."""
+    then keep it in force; an older version is retired. `domain`: only a
+    key of that trust domain may have signed it; `expect`: it must be that
+    pack id and version (a pull's index entry). Nothing is written unless
+    every check passes. The caller holds the packs lock. Returns it and
+    what happened. A pack a person retired is in force again once added."""
     keys, problem = trusted_keys(home, organization)
     if not keys:
         raise StoreError(
@@ -176,10 +185,16 @@ def add(
         signer = _signed(data, signature, keys)  # before the content is read at all
     except SignatureError as exc:
         raise StoreError(f"its signature: {exc}") from None
+    if domain is not None and signer.domain != domain:
+        raise StoreError(f"it is signed by {signer.who}, not by one of {domain}'s keys")
     try:
         pack = read(data)
     except PackError as exc:
         raise StoreError(f"its content:\n{exc}") from None
+    if expect is not None and (pack.id, pack.version) != expect:
+        raise StoreError(
+            f"the file holds {pack.id} version {pack.version}, not {expect[0]} version {expect[1]}"
+        )
     from checker.packs.detect import reference_problems
 
     unknown = reference_problems(pack, checks)
@@ -212,6 +227,13 @@ def add(
     path = target / name
     if path.is_file() and path.read_bytes() == data:
         return Stored(pack, path, signer, digest), "already in force"
+    if record is None and any(n["id"] == pack.id for n, _ in _files(target, _ACTIVE)):
+        # The state that would say whose it is was lost (a restore from an
+        # older backup): nothing in force is replaced on a guess.
+        raise StoreError(
+            f"a {pack.id} is in force that this home has no record of: `checker packs retire"
+            f" {pack.id}` first, if this one is to replace it"
+        )
     older = [p for named, p in _files(target, _ACTIVE) if named["id"] == pack.id and p != path]
     _write(path.with_name(name + ".minisig"), signature)
     _write(path, data)
@@ -219,7 +241,7 @@ def add(
         "domain": signer.domain,
         "highest": pack.version,
         "seen": {**(record or {}).get("seen", {}), str(pack.version): digest},
-    }
+    }  # and no longer held back from pulls, if a person had retired it
     write_state(home, state)
     for old in older:
         _retire(home, old, f"replaced by version {pack.version}")
@@ -231,15 +253,23 @@ def add(
     return Stored(pack, path, signer, digest), outcome
 
 
-def retire(home: Path, pack_id: str, why: str) -> list[str]:
-    """Take a pack out of use, every version in force; returns their names."""
+def retire(home: Path, pack_id: str, why: str, by_hand: bool = False) -> list[str]:
+    """Take a pack out of use, every version in force; returns their names.
+    One retired `by_hand` is held back from pulls, whatever version they
+    offer, until a person adds it again (`checker packs add`)."""
+    held = False
+    if by_hand:  # first, so a crash part way leaves it held, never pulled back
+        state = read_state(home)
+        if pack_id in state["packs"]:
+            state["packs"][pack_id]["held"] = held = True
+            write_state(home, state)
     done = []
     for named, path in _files(home / "packs" / "active", _ACTIVE):
         if named["id"] == pack_id:
             _retire(home, path, why)
             done.append(path.name)
-    if not done:
-        raise StoreError(f"no pack {pack_id!r} is in force")
+    if not done and not held:
+        raise StoreError(f"no pack {pack_id!r} is in force, or was ever accepted here")
     return done
 
 

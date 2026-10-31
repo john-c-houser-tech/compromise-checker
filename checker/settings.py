@@ -284,6 +284,11 @@ SETTABLE: dict[str, Setting] = {
             " (default), none, 'only: ID, ...' or 'except: ID, ...'",
         ),
         Setting(
+            ("packs", "source"),
+            str,
+            "where `checker packs pull` downloads from (https://; default NouriLoop's repository)",
+        ),
+        Setting(
             ("notify_command",),
             _optional,
             "a command given a short summary when a scheduled run finds a host worse, or none",

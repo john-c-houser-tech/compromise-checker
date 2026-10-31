@@ -584,7 +584,7 @@ def test_the_page_shows_the_same_order_as_the_command(web):
     analysed(home, "b", 10, ROOTED, host="rooted")
     text = client.get("/").content.decode()
     assert text.index("<h2>rooted") < text.index("<h2>clean")
-    assert "estimate, not proof" in text
+    assert "not proof" in text
 
 
 def test_looking_at_the_page_leaves_the_evidence_store_alone(web):
@@ -639,6 +639,47 @@ def test_hostile_host_text_does_nothing_in_the_page(web, monkeypatch):
     assert "<script>alert" not in text and "<img src=x" not in text
     assert BIDI not in text
     assert "&lt;script&gt;" in text
+
+
+def test_a_hostile_filter_does_nothing_in_the_page(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    text = client.get("/", {"group": HOSTILE, "show": HOSTILE}).content.decode()
+    assert "<script>alert" not in text and "No servers match" in text
+
+
+def test_a_hostile_group_name_does_nothing_in_a_link(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    host = FleetHost("x", HOSTILE, state="no_evidence")
+    monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: ([host], []))
+    text = client.get("/").content.decode()
+    assert "<script>alert" not in text and "<img src=x" not in text and BIDI not in text
+    assert 'href="?group=%3Cscript' in text
+
+
+def test_filters_narrow_the_list_but_not_the_answer(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    hosts = [
+        FleetHost("bad", "web", "analysed", "Critical", 0.98),
+        FleetHost("fine", "db", "analysed", "Low", 0.02),
+        FleetHost("gone", None, "analysed", "Critical", 0.98, removed=True),
+    ]
+    monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (hosts, []))
+    text = client.get("/", {"group": "db"}).content.decode()
+    assert "2 of your 3 servers need attention" in text
+    assert "<h2>fine" in text and "<h2>bad" not in text
+    assert "<h2>gone" in text  # a removed host's bad result isn't filtered out of sight
+    text = client.get("/", {"show": "low"}).content.decode()
+    assert "<h2>fine" in text and "<h2>bad" not in text
+
+
+def test_no_servers_says_what_to_do(web):
+    client, _ = signed_in(web)
+    assert "Add your first server" in client.get("/").content.decode()
 
 
 def test_hostile_text_from_a_real_finding_does_nothing(web):

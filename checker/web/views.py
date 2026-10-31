@@ -20,9 +20,9 @@ from pydantic import ValidationError as SettingsError
 from yaml import YAMLError
 
 from checker.evidence import EvidenceError
-from checker.fleet import UNREADABLE, read_fleet, serious
+from checker.fleet import read_fleet
 from checker.inventory import home
-from checker.web import accounts
+from checker.web import accounts, wording
 from checker.web.app import HERE, is_local
 
 # Where a login may go on to: not a form's address, which would land on an error.
@@ -134,23 +134,40 @@ def logout_page(request) -> HttpResponse:
 @require_GET
 def fleet_page(request) -> HttpResponse:
     group = request.GET.get("group") or None
+    tone = request.GET.get("show") or None
     try:
-        hosts, problems = read_fleet(home(), group=group)
+        hosts, problems = read_fleet(home())
     except EvidenceError as exc:  # the tool's own words, and what to do
         return _unavailable(request, str(exc))
     except (OSError, SettingsError, YAMLError) as exc:
         # Details may quote a settings file, secrets included: only the kind goes to the log.
         print(f"checker web: can't read the settings: {type(exc).__name__}", file=sys.stderr)
         return _unavailable(request, "A settings file or the evidence key can't be read.")
+    rows = wording.rows_for(hosts)
+    groups = sorted({h.group for h in hosts if h.group})
+    tones = [t for t in wording.TONE_NAMES if any(r.tone == t for r in rows)]
+    # The filters narrow the list, never the answer at the top: it's about every server.
+    shown = [
+        r
+        for r in rows
+        # A removed host has no group: its bad result shouldn't be filtered out of sight.
+        if (group is None or r.host.group == group or r.host.removed)
+        and (tone is None or r.tone == tone)
+    ]
+    title, title_tone = wording.headline(rows)
     return render(
         request,
         "fleet.html.j2",
         {
-            "hosts": hosts,
+            "headline": title,
+            "headline_tone": title_tone,
+            "rows": shown,
+            "total": len(rows),
             "problems": problems,
             "group": group,
-            "unreadable_words": UNREADABLE,
-            "serious": serious,
+            "groups": groups,
+            "tone": tone,
+            "tones": [(t, wording.TONE_NAMES[t]) for t in tones],
         },
     )
 

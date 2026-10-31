@@ -710,6 +710,37 @@ reports remain reproducible.
   trust. Additional public signers can be considered later if a community
   grows.
 
+### 10.5 Kernel threats (Phase 6)
+
+Decided 2026-10-31: Phase 6, after the web interface. Kernels are most of the
+exploited threats on supported releases (six of nine in the 180 days to
+2026-10-31), but package rules can't judge them, so until then a pack can't cover
+one honestly. A kernel differs from other packages in four ways:
+
+- **What is running decides, not what is installed.** Old kernels stay installed
+  beside new ones, and don't expose a host unless booted, so an old one left
+  installed must not read as vulnerable. A fixed kernel installed but not yet
+  booted leaves the host exposed: the same idea as stale code, ended by a reboot
+  and not a service restart.
+- **The running version must be matched to a package.** `uname -r` is the package
+  version on the RHEL family (`5.14.0-427.13.1.el9_4.x86_64`), but only the ABI on
+  Ubuntu (`6.8.0-45-generic`, package `6.8.0-45.45`), so there it has to be read
+  through the matching installed image package. If that can't be done, the answer
+  is "can't judge", not "not affected".
+- **Live patches can cover a flaw with no reboot** (`kpatch-patch` on the RHEL
+  family, Canonical Livepatch on Ubuntu). A patch counts only where the evidence
+  shows it loaded and covering that CVE; what can be read for this, within the
+  collector's read-only rules, is settled in the Phase 6 plan.
+- **Flavours and exposure over time.** Ubuntu has many kernel packages per release
+  (`linux`, `linux-aws`, `linux-azure` and more), and a release's entries must
+  name them or say `other_builds: cant_judge`. The boot list says which kernel ran
+  when, so the exposure window comes from boots, not from package history.
+
+Most of these flaws need local access first, so what a kernel pack does to the
+score is set by its own likelihood ratio, as for any pack. The format gains a
+kernel rule, so a tool older than Phase 6 refuses such a pack; kernel packs ship
+after the tool.
+
 ---
 
 ## 11. Scoring
@@ -946,6 +977,7 @@ Lessons that changed this design:
 | 3 | AI advisor (roles 1–4), redaction modes |
 | 4 | Threat packs: format, signing, distribution, PHP2Shell pack (drafting moved to a separate pack application) |
 | 5 | Fleet view, PDF/JSON, PostgreSQL, web interface |
+| 6 | Kernel threats: packs judged by the running kernel (section 10.5) |
 
 ---
 

@@ -2,7 +2,7 @@
 
 > **Status: DRAFT 2, 2026-10-30** — every decision settled (D1–D7).
 > Restructured the same day (John): pack drafting moved out of the tool
-> into a separate pack application in the packs repository, with its own
+> into a separate pack application in its own repository, with its own
 > plan after Phase 4 (see "After Phase 4"). Nothing built yet.
 
 **Goal (DESIGN.md §18, Phase 4):** when a new threat is published, an
@@ -16,7 +16,7 @@ to stored evidence at once, reports exposure separately from signs of
 compromise, raises the host's prior when it was exposed during the window,
 and focuses the timeline there. The first real pack is PHP2Shell
 (DESIGN.md §10.2), written by hand from the advisories. Drafting packs is
-not the tool's job: a separate pack application, in the packs repository,
+not the tool's job: a separate pack application, in its own repository,
 will watch for threats and draft packs for approval (after Phase 4).
 
 **Done means:**
@@ -815,8 +815,8 @@ isn't compared; a set of 50 or fewer filled as it runs churns, as text always di
 
 ## After Phase 4: the pack application
 
-John's idea (2026-10-30): a separate application, in the packs repository
-and entirely apart from Compromise Checker, that watches public sources for
+John's idea (2026-10-30): a separate application, in its own repository (John, 2026-10-31; at first
+the packs repository) and entirely apart from Compromise Checker, that watches public sources for
 new threats, proposes packs, gets a person's approval through a web
 interface, and then uses AI to write them. It gets its own build plan,
 started after Phase 4. What that plan starts from (agreed in outline):

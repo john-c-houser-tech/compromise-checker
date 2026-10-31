@@ -636,3 +636,32 @@ def test_a_raise_is_at_most_one_band_up(band, raised):
         assert "raised_by_pack" not in finding  # critical's 100 is above the pack's 60
     else:
         assert ratio(finding) == raised and finding["raised_by_pack"]
+
+
+def test_phps_own_error_log_is_read_with_the_zone_it_names(home):
+    """RHEL's PHP-FPM pools log here by default; the pack's memory rule reads it."""
+    from test_snapshot import text_source
+
+    from checker.assess import analyze
+
+    _, store, identity, config = home
+    lines = "".join(
+        f"[22-Oct-2026 03:0{m}:00 America/Los_Angeles] PHP Fatal error:  Allowed memory size of"
+        " 134217728 bytes exhausted (tried to allocate 20480 bytes) in /var/www/a.php on line 3\n"
+        for m in range(3)
+    )
+    extra = (
+        rec("host_facts", "clock", localtime_link="/usr/share/zoneinfo/Etc/UTC"),
+        rec("web_logs", "web_logs_summary", access_logs_opted_in=False, error_sent=1),
+        *text_source(9, "web_logs", "/var/log/php-fpm/www-error.log", lines),
+    )
+    add_bundle(home, "b1", 0, records("8.3.6-0ubuntu0.24.04.5", FIXED_AT, extra))
+    analyze(store, "web01", identity, config.recipients)
+    from checker.analysis import load_events
+
+    events = [e for e in load_events(store, store.bundle("b1"), identity).events
+              if e.type == "web.error"]  # fmt: skip
+    assert len(events) == 3
+    assert events[0].fields["level"] == "fatal error"
+    assert "Allowed memory size" in events[0].fields["message"]
+    assert events[0].time.startswith("2026-10-22T10:00:00+00:00")  # 03:00 there

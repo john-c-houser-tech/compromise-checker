@@ -180,10 +180,16 @@ def judge(
         version = str(item.get("version"))
         if item.get("manager") != manager:
             continue
-        matching = [e for e in entries if name in e.binary_names and _matches(e, version)]
+        named = [e for e in entries if name in e.binary_names]
+        matching = [e for e in named if _matches(e, version)]
+        installed = _time(item.get("installed"))
+        if named and not matching and window.other_builds == "cant_judge":
+            found.packages.append(
+                Judged(key, name, version[:100], installed.isoformat() if installed else None,
+                       CANT_JUDGE, None, "a build from a repository the pack doesn't cover")
+            )  # fmt: skip
         if not matching:
             continue
-        installed = _time(item.get("installed"))
         found.packages.append(_judge_one(key, name, version, installed, matching, manager))
     history = sorted((h for h in history or [] if _time(h.get("time"))), key=lambda h: h["time"])
     statuses = {p.status for p in found.packages}

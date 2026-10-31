@@ -19,8 +19,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
 # 3: clock_changed; 4: unit.starting/finished; 5: mail; 6: web; 7: useradd shell;
-# 8: package history
-PARSER_VERSION = 8
+# 8: package history; 9: PHP's own error log
+PARSER_VERSION = 9
 MAX_EVENT_LINE = 2048  # characters of the source line kept on each event
 
 _MONTHS = {m: i for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)}
@@ -756,6 +756,12 @@ _WEB_APACHE_ERROR = re.compile(
 _WEB_PHP_FPM = re.compile(
     r"^\[(?P<time>\d\d-\w{3}-\d{4} \d\d:\d\d:\d\d(?:\.\d+)?)\] (?P<level>\w+): (?P<message>.*)$"
 )
+# PHP's own error_log file (RHEL's PHP-FPM pools default to one), which
+# names its time zone.
+_WEB_PHP_ERROR = re.compile(
+    r"^\[(?P<time>\d\d-\w{3}-\d{4} \d\d:\d\d:\d\d) (?P<zone>[\w/+-]+)\]"
+    r" PHP (?P<level>[A-Za-z ]+?):\s+(?P<message>.*)$"
+)
 _WEB_ERROR_CLIENT = re.compile(r"client: ([^,\s]+)")
 _WEB_ERROR_REQUEST = re.compile(r'request: "([^"]*)"')
 # Paths a check looks at even when answered 2xx: scripts, and files a site
@@ -829,6 +835,7 @@ class WebLogs:
             (_WEB_NGINX_ERROR, "%Y/%m/%d %H:%M:%S"),
             (_WEB_APACHE_ERROR, "%a %b %d %H:%M:%S.%f %Y"),
             (_WEB_PHP_FPM, "%d-%b-%Y %H:%M:%S"),
+            (_WEB_PHP_ERROR, "%d-%b-%Y %H:%M:%S"),
         ):
             found = pattern.match(text)
             if found:
@@ -896,7 +903,14 @@ class WebLogs:
         elif "%f" not in form and "." in stamp:
             stamp = stamp.split(".", 1)[0]
         try:
-            moment = datetime.strptime(" ".join(stamp.split()), form).replace(tzinfo=builder.zone)
+            zone = builder.zone
+            named = found.groupdict().get("zone")
+            if named:
+                try:
+                    zone = ZoneInfo(named)
+                except (ValueError, OSError, ZoneInfoNotFoundError):
+                    pass  # a name it doesn't know: the host's, as for other logs
+            moment = datetime.strptime(" ".join(stamp.split()), form).replace(tzinfo=zone)
         except ValueError:
             moment = None
         message = found["message"]

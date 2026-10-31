@@ -661,6 +661,19 @@ is John's to approve before it is committed. Also:
   reported as expected. No exploit is run; the detections are shown with
   log lines written in the shapes the advisories describe.
 - Applied to nouriloop-prod's stored evidence only with John's OK.
+- As built so far (2026-10-30): a vendor check of the first draft found
+  real vulnerable builds read as "not affected" (AlmaLinux's module form,
+  RHEL 9's php:8.1, Remi's older branches and Collections, Sury 5.6 to
+  7.3), because a version no pattern matched was treated as safe. So a
+  pack can now say `other_builds: cant_judge`; the entries were corrected
+  too. The tool also reads PHP's own error log, RHEL's PHP-FPM default,
+  which it silently couldn't parse. Dropped from the plan's detections:
+  multipart POSTs (no log format gives content types, so it could only
+  be a permanent gap), and a 5xx rule of the pack's own (it doubled
+  `web.errors`, now named by the pack instead). Known limits: patched
+  RHEL EUS and SAP-minor builds read vulnerable, since one pattern can't
+  exclude them; mod_php's Apache isn't in stale code, since it would flag
+  every Apache in front of PHP-FPM; PHP 8.6 pre-releases aren't covered.
 
 ### 4.9 — Policy, docs and README
 

@@ -337,3 +337,21 @@ def test_a_rule_for_pack_findings_must_name_the_pack():
 def test_a_release_not_covered_names_the_os(home):
     found = judge(PACK, {"os": {"id": "centos", "version_id": "9"}}, {}, [], NOW)
     assert found.status == UNKNOWN_RELEASE and found.release == "centos"
+
+
+def test_a_build_no_entry_matches_is_safe_only_if_the_pack_says_so():
+    text = GOOD.replace(
+        "binary_names: [php8.3-fpm, libapache2-mod-php8.3]\n",
+        'binary_names: [php8.3-fpm, libapache2-mod-php8.3]\n      versions: "8.3.6-*"\n',
+    )
+    listed = {"php8.3-fpm amd64": {"manager": "dpkg", "version": "8.3.99-custom"}}
+    plain = judge(read(text.encode()), UBUNTU, listed, [], NOW)
+    assert plain.status == "not affected"
+    strict = read(
+        text.replace("  stale_code:", "  other_builds: cant_judge\n  stale_code:").encode()
+    )
+    found = judge(strict, UBUNTU, listed, [], NOW)
+    assert found.status == "can't judge" and "doesn't cover" in found.packages[0].why
+    # A package no entry names is still not this pack's.
+    other = {"nginx amd64": {"manager": "dpkg", "version": "1.0-1"}}
+    assert judge(strict, UBUNTU, other, [], NOW).status == "not affected"

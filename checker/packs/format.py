@@ -74,7 +74,9 @@ the way to tell apart repositories (Ubuntu's archive, the Sury PPA) and
 streams (RHEL's PHP modules) that ship the same name on one release. When
 a package matches several entries (an entry with no pattern matches every
 version), it is vulnerable if any of them says so: the Ubuntu archive's
-fixed version can't vouch for a Sury build that sorts above it.
+fixed version can't vouch for a Sury build that sorts above it. A version
+no entry matches is not affected, unless the pack says `other_builds:
+cant_judge`, for a threat in every build of the package.
 
 A fixed version carries the vendor's revision (dpkg) or release (rpm):
 "8.3.6" alone would count every distribution build of 8.3.6 as fixed,
@@ -289,6 +291,10 @@ class Exposure(_Strict):
     # window; a host exposed for part of it gets that share (decision D3).
     likelihood_ratio: float = Field(gt=1, le=MAX_LR)
     packages: list[Package] = Field(min_length=1, max_length=100)
+    # A package an entry names, in a version no entry's pattern matches: not
+    # affected (the pattern is the affected stream), or can't judge (every
+    # build is affected, and one from an unlisted repository isn't safe).
+    other_builds: Literal["not_affected", "cant_judge"] = "not_affected"
     stale_code: StaleCode | None = None
 
     @field_validator("window_start", mode="before")

@@ -987,12 +987,10 @@ exploit attempts that got an answer, error bursts.
   `error_log`) are not read;
 - the log files that configuration names (`access_log`, `error_log`,
   `CustomLog`, `TransferLog`, `ErrorLog`, PHP-FPM's `error_log`, `slowlog`
-  and `access.log`, a pool's `php_admin_value[error_log]`;
-  `${APACHE_LOG_DIR}` and RHEL's relative `logs/`
+  and `access.log`; `${APACHE_LOG_DIR}` and RHEL's relative `logs/`
   understood; pipes and syslog targets skipped), with their rotated copies,
   and the files in `/var/log/nginx`, `/var/log/apache2`, `/var/log/httpd`
-  and `/var/log/php-fpm` and each Remi collection's
-  `/var/opt/remi/phpNN/log/php-fpm`, and `/var/log/php*-fpm.log`, told apart by name
+  and `/var/log/php-fpm`, and `/var/log/php*-fpm.log`, told apart by name
   (`access`, or `error`/`slow`). Error logs are always sent; access logs
   only where the organization chose them in `checker init
   --web-access-logs` (policy §7); a file named both ways, or neither, in

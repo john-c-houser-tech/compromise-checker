@@ -679,10 +679,12 @@ is John's to approve before it is committed. Also:
   log line dated year 1 or 9999 stopped a whole analysis (now no time);
   `other_builds` didn't reach the package-history path, so an uncovered
   build removed in the window looked never exposed; a PHP stack trace's
-  lines counted as an unknown format and could blind the log rules; a
-  pool's `php_admin_value[error_log]` and Remi's log folders weren't
-  collected; the pack missed php8.5-litespeed and let third-party Ubuntu
-  builds read fixed. A tool older than this rejects a pack using
+  lines counted as an unknown format and could blind the log rules; the
+  pack missed php8.5-litespeed and let third-party Ubuntu builds read
+  fixed. Left as a limit, not changed: Remi collections' logs under
+  `/var/opt/remi` and a pool's `php_admin_value[error_log]` elsewhere aren't
+  read, because the collector refuses files outside its system locations
+  and widening that boundary is John's to decide. A tool older than this rejects a pack using
   `other_builds`: the pack ships after the tool.
 
 ### 4.9 — Policy, docs and README

@@ -2197,7 +2197,7 @@ def cmd_packs_retire(args: argparse.Namespace) -> int:
 
 def cmd_packs_keys(args: argparse.Namespace) -> int:
     from checker.packs.state import StateError
-    from checker.packs.trust import TrustError, key_list, root_keys
+    from checker.packs.trust import TrustError, key_list
 
     base = home()
     try:
@@ -2210,9 +2210,7 @@ def cmd_packs_keys(args: argparse.Namespace) -> int:
     except (TrustError, StateError) as exc:
         print(f"checker: no NouriLoop key is trusted now: {exc}", file=sys.stderr)
         listed = None
-    if not root_keys():
-        print("NouriLoop keys: none yet in this version of the tool.")
-    elif listed is None:
+    if listed is None:
         print("NouriLoop keys: no key list in force.")
     else:
         print(f"NouriLoop key list: serial {listed.serial}, issued {listed.issued}.")
@@ -2234,8 +2232,8 @@ def cmd_packs_keys(args: argparse.Namespace) -> int:
 def cmd_packs_keys_add(args: argparse.Namespace) -> int:
     from checker.packs.signing import MAX_SIGNATURE_BYTES
     from checker.packs.state import StateError
-    from checker.packs.store import sweep
-    from checker.packs.trust import TrustError, accept_key_list
+    from checker.packs.store import adopt, sweep
+    from checker.packs.trust import TrustError, accept_key_list, key_list, read_key_list
 
     base = home()
     try:
@@ -2243,8 +2241,12 @@ def cmd_packs_keys_add(args: argparse.Namespace) -> int:
         signature = _read_untrusted(args.signature or f"{args.file}.minisig", MAX_SIGNATURE_BYTES)
         with _packs_lock(base):
             config = load_config(base)
+            retired = adopt(base, config.packs.trusted_keys)
+            if read_key_list(data, signature) == key_list(base):
+                print(f"Key list serial {key_list(base).serial} is already in force.")
+                return 0
             new, old = accept_key_list(base, data, signature)
-            retired = sweep(base, config.packs.trusted_keys)
+            retired += sweep(base, config.packs.trusted_keys)
     except (EvidenceError, OSError, TrustError, StateError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1

@@ -38,6 +38,12 @@ jobs:
           ruff format --check .
       - name: Tests
         run: pytest -q
+      - name: The package holds the key list
+        run: |
+          pip wheel --no-deps -q -w /tmp/wheel .
+          python -m zipfile -l /tmp/wheel/*.whl > /tmp/wheel/files
+          grep -q 'checker/packs/keys/keys\.yaml ' /tmp/wheel/files
+          grep -q 'checker/packs/keys/keys\.yaml\.minisig ' /tmp/wheel/files
 
   collector:
     name: Collector on ${{ matrix.image }}

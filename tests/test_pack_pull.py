@@ -183,7 +183,7 @@ def test_without_a_root_key_nothing_can_be_trusted(home, monkeypatch):
     monkeypatch.setattr("checker.packs.trust.ROOT_KEYS", ())
     repo = Repository(Key(), Key())
     repo.index(1, [GOOD])
-    with pytest.raises(PullError, match="no NouriLoop root key yet"):
+    with pytest.raises(PullError, match="no NouriLoop root key"):
         run(home, repo)
 
 
@@ -695,3 +695,19 @@ def test_a_pack_dropped_without_a_withdrawal_is_pointed_out(tmp_path, signer):
     shutil.rmtree(tmp_path / "packs" / "example-2026-10")
     _, _, warnings = write_index(tmp_path, None, {}, NOW)
     assert "neither in packs/ nor withdrawn" in warnings[0]
+
+
+def test_a_revocation_that_came_with_the_tool_is_said_by_the_pull(nouriloop, home, repo):
+    from test_pack_trust import ship
+
+    repo.index(1, [GOOD])
+    run(home, repo)
+    leaked, fresh = repo.signer, Key()
+    newer = key_list(nouriloop, 2, [fresh], revoked=[leaked])
+    ship(newer)  # the tool was updated, and the source serves the same list
+    repo.files[SOURCE + "keys.yaml"], repo.files[SOURCE + "keys.yaml.minisig"] = newer
+    repo.signer = fresh
+    repo.index(2, [NEWER])
+    done = run(home, repo)
+    assert done.retired_by_keys == ["example-2026-10-v2.yaml"] and done.key_list is None
+    assert done.added == [("example-2026-10", 3, "added")]

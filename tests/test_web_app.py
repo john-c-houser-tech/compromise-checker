@@ -1327,6 +1327,17 @@ def recorded(status, **extra):
         ),
         ({"pack_records": recorded("fixed", exposed_until="2026-10-23")}, "fixed now"),
         ({"pack_records": recorded("fixed", exposed_until=None)}, "old code"),
+        (
+            {"pack_records": recorded("fixed", exposed_until="2026-10-23", fix_time_exact=False)},
+            "May have been open",
+        ),
+        (
+            {
+                "pack_records": recorded("fixed", exposed_until="2026-10-23"),
+                "package_history_incomplete": True,
+            },
+            "May have been open",
+        ),
         ({"pack_records": recorded("not covered")}, "doesn't cover"),
         ({"pack_records": recorded("unknown release")}, "doesn't cover"),
         ({"packs_applied": {}}, "Not checked for this threat yet"),

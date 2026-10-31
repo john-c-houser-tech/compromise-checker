@@ -96,6 +96,9 @@ class FleetHost:
     # What its analysis recorded about each threat pack, as recorded (pack id: status, share,
     # judged, exposed_until), and which pack versions it applied.
     pack_records: dict[str, dict] = field(default_factory=dict)
+    # With the package history unread, a first install can't be told from a fix, so what's
+    # recorded about a threat is an upper limit.
+    package_history_incomplete: bool = False
     packs_applied: dict[str, int] = field(default_factory=dict)
     # Since the analysis before; `first` when there was none to compare with.
     first: bool = True
@@ -245,6 +248,8 @@ def _gaps(assessment: dict | None) -> list[str]:
 def _reduces_coverage(gap: str) -> bool:
     """A gap in what the tool set out to read, as opposed to a note about what a host
     simply doesn't have. A long log cut short is routine on a busy server, so it isn't one."""
+    if "package_history_pending" in gap:
+        return False  # the package manager's history was mid-write: routine right after an install
     return gap.startswith(("not collected:", "error in ")) or " incomplete: " in gap
 
 
@@ -311,6 +316,9 @@ def _headline(host: str, group, row, after: dict, last_failed, removed: bool) ->
         gaps=len(_gaps(after)),
         hygiene=(score.get("hygiene_and_exposure") or {}).get("band"),
         pack_records=_pack_records(after),
+        package_history_incomplete=any(
+            g.startswith("package_history incomplete") for g in _gaps(after)
+        ),
         packs_applied=_packs_applied(after),
         # So far as this analysis says: _with_details adds what earlier ones knew.
         exposed=_exposed_safely(after)[0],

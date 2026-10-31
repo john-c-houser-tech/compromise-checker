@@ -41,6 +41,7 @@ TONE_NAMES = {
     "low": "No strong signs",
     "removed": "No longer checked",
 }
+MAX_CHANGES_SHOWN = 3
 FRESH_CHECK = "Run a fresh check."
 ASK_WHY = "Ask whoever runs this server why."
 SETTINGS_CHANGED = "Settings have changed since this result, so it may change at the next check."
@@ -239,6 +240,28 @@ def _only_by_time(host: FleetHost) -> bool:
     return bool(host.doubts) and all(_doubt(d)[1] for d in host.doubts)
 
 
+def _only_upper_limit(host: FleetHost, pack: str) -> bool:
+    """When the fix arrived is only a latest time, so "it was open" can't be claimed: there's
+    no package history, or part of it couldn't be read, so a first install looks like a fix."""
+    exact = (host.pack_records.get(pack) or {}).get("fix_time_exact", True)
+    return not exact or host.package_history_incomplete
+
+
+def _exposure_words(host: FleetHost, pack: str, how: str) -> str:
+    words = EXPOSURE_WORDS[how].format(pack)
+    if how != "fixed":
+        return words
+    # While old code still runs, "fixed" isn't the whole story: a note above says so.
+    if host.stale_code:
+        return words.replace(", and is fixed now", ", and has a fix installed")
+    # With no package history, when the fix arrived is only a latest time.
+    if _only_upper_limit(host, pack):
+        return (
+            f"May have been open to a known threat while it was active, and is fixed now: {pack}."
+        )
+    return words
+
+
 def _row(host: FleetHost, now: datetime) -> Row:
     cautions, notes = _cautions(host)
     if host.state == "unreadable":
@@ -275,12 +298,14 @@ def _row(host: FleetHost, now: datetime) -> Row:
         notes.append("This is its first check, so changes will show from the next one.")
     if OLDER_CHECKS in host.out_of_date:
         notes.append("Worked out by an older version of this tool.")
-    changes = tuple(dict.fromkeys(c for c in (_change(x, host.host) for x in host.changes) if c))
-    # While old code still runs, "fixed" isn't the whole story: a note above says so.
+    changes = list(dict.fromkeys(c for c in (_change(x, host.host) for x in host.changes) if c))
+    # The list of servers is for deciding where to look: the server's own page has the rest.
+    if len(changes) > MAX_CHANGES_SHOWN:
+        more = len(changes) - MAX_CHANGES_SHOWN
+        changes = [*changes[:MAX_CHANGES_SHOWN], f"and {more} more on this server's page"]
+    changes = tuple(changes)
     exposures = tuple(
-        EXPOSURE_WORDS[how].format(pack).replace(", and is fixed now", ", and has a fix installed")
-        if host.stale_code
-        else EXPOSURE_WORDS[how].format(pack)
+        _exposure_words(host, pack, how)
         for pack, how in sorted(host.exposed.items())
         if how in EXPOSURE_WORDS
     )
@@ -603,6 +628,7 @@ THREAT_GROUPS = {
     "not_yet": ("unknown", "Not checked for this threat yet"),
     "doubtful": ("unknown", "No sign of exposure, but its result can't be relied on right now"),
     "fixed": ("elevated", "Were open while it was active, fixed now"),
+    "maybe_fixed": ("elevated", "May have been open while it was active, fixed now"),
     "kept_off": ("removed", "Not checked for this threat, by your settings"),
     "removed": ("removed", "No longer on your list of servers"),
     "clear": ("low", "No sign of exposure"),
@@ -637,7 +663,10 @@ def _stands(host: FleetHost, pack, applies: dict) -> str:
         return "not_covered"
     if status == "fixed" and record.get("share"):
         # Still exposed as far as can be shown: a service on the old code, or no fix time.
-        return "fixed" if record.get("exposed_until") else "old_code"
+        if not record.get("exposed_until"):
+            return "old_code"
+        # With no package history, the fix's time is only "at the latest".
+        return "maybe_fixed" if _only_upper_limit(host, pack.id) else "fixed"
     if known == "fixed":
         return "fixed"
     return "doubtful" if host.doubts else "clear"

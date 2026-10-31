@@ -126,6 +126,23 @@ def test_exposure_lines_alone_do_not_claim_a_sign_was_found():
     assert made.tone == "low" and "sign of" not in made.verdict
 
 
+def test_an_unknown_fix_time_is_not_stated_as_having_been_open():
+    records = {"p1": {"status": "fixed", "fix_time_exact": False}}
+    made = row(analysed("Low", exposed={"p1": "fixed"}, pack_records=records), NOW)
+    assert made.exposures[0].startswith("May have been open")
+
+
+def test_with_part_of_the_package_history_unread_it_is_not_stated_as_having_been_open():
+    made = row(analysed("Low", exposed={"p1": "fixed"}, package_history_incomplete=True), NOW)
+    assert made.exposures[0].startswith("May have been open")
+
+
+def test_a_long_list_of_changes_stays_short_on_the_list_of_servers():
+    lines = tuple(f"h: new high: Finding {n}" for n in range(9))
+    made = row(analysed("Critical", changes=lines), NOW)
+    assert len(made.changes) == 4 and made.changes[3] == "and 6 more on this server's page"
+
+
 def test_a_fix_not_yet_running_is_not_called_fixed():
     made = row(analysed("Low", stale_code=1, exposed={"p1": "fixed"}), NOW)
     assert "fixed now" not in " ".join(made.exposures)

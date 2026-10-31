@@ -327,6 +327,12 @@ def test_not_reading_part_of_a_server_is_a_doubt_on_every_check(home, monkeypatc
     assert any("couldn't be read" in d for d in item.doubts)
 
 
+def test_a_package_history_mid_write_is_not_part_of_the_server_unread():
+    gap = "package_history incomplete: package_history_pending: /var/lib/dnf/history.sqlite-wal"
+    assert not fleet_module._reduces_coverage(gap)
+    assert fleet_module._reduces_coverage("package_history incomplete: cut short")
+
+
 def test_threat_signs_and_old_code_are_counted_while_in_effect(home, monkeypatch):
     analysed(home, "b1", 10, CLEAN)
     findings = [

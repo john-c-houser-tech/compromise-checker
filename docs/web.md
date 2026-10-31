@@ -20,6 +20,19 @@ collection's fingerprints and chain of custody. Pages show what is stored, and i
 check's details isn't stored they say so. Text from a server is boxed apart, since an intruder
 could have written it.
 
+Each server's page, and the evidence behind it, from a demo fleet of throwaway servers attacked on
+purpose. These are real results from this tool, with addresses replaced:
+
+![A server's page](screenshots/host.png)
+
+![The evidence behind its findings](screenshots/evidence.png)
+
+![Known threats](screenshots/threats.png)
+
+To take them again: `tests/integration/demo_fleet.py` makes the fleet (about 3 cents of Linode time),
+and `tests/integration/screenshots.py` photographs it. Every page is scrubbed of public addresses on
+its way to the browser, and the run stops if any survive.
+
 ## Where it listens
 
 By default, on this machine only (`127.0.0.1:8088`). Anyone with an account on this machine

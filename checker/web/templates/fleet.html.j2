@@ -1,25 +1,67 @@
 {% extends "base.html.j2" %}
+{% block title %}Your servers: {{ product_name() }}{% endblock %}
 {% block main %}
-<h1>Your servers</h1>
-<p class="note">The percentage is an estimate, not proof. No findings doesn't mean a server is clean.</p>
-{% for problem in problems %}<p class="error">A threat pack couldn't be used: {{ problem }}</p>{% endfor %}
-{% if not hosts %}<p>No servers yet.</p>{% endif %}
-{% for host in hosts %}
-<section class="host">
-  <h2>{{ host.host }}</h2>
-  {% if host.state == "unreadable" %}
-  <p class="error">{{ unreadable_words[host.unreadable_why or "internal"] }}</p>
-  {% if host.last_readable_band %}<p>The last readable analysis said {{ host.last_readable_band }}.</p>{% endif %}
-  {% elif host.state == "analysed" %}
-  <p>{{ host.band or "No score" }}{% if host.probability is not none %} {{ host.probability | percent }}{% endif %}. Collected {{ host.collected_at }}.</p>
-  {% else %}
-  <p>{{ {"not_analysed": "Collected, not analysed yet.", "no_evidence": "Nothing collected yet.", "collections_failed": "No collection has worked yet.", "purged": "All its evidence was purged, so nothing is known now."}.get(host.state, "") }}</p>
-  {% endif %}
-  <ul>
-  {% for doubt in host.doubts %}<li>{{ doubt }}</li>{% endfor %}
-  {% for pack, how in host.exposed.items() %}<li>Threat pack {{ pack }}: {{ how }}</li>{% endfor %}
-  {% for line in host.changes %}<li>{{ line }}</li>{% endfor %}
-  </ul>
-</section>
+<div class="answer tone-{{ headline_tone }}">
+  <h1>{{ headline }}</h1>
+  <p>This is an estimate from what each server's logs and settings show, not proof either way. A
+  server with no warnings can still have been broken into.</p>
+</div>
+{% if threat_problem %}
+<p class="error" role="alert">A threat update couldn't be used, so a new threat may not be covered. Ask whoever runs this tool to look at its log.</p>
+{% endif %}
+{% if not total %}
+<p>Add your first server to check it. For now that's done from the command line, with <code>checker hosts add</code>.</p>
+{% else %}
+{% if groups or tones | length > 1 or group or tone %}
+<nav class="filters" aria-label="Filter servers">
+  <a href="{{ url('fleet') }}"{% if not group and not tone %} aria-current="true"{% endif %}>All {{ total }}</a>
+  {% for value, name in tones %}
+  <a href="?show={{ value }}" class="tone-{{ value }}"{% if tone == value %} aria-current="true"{% endif %}>{{ name }}</a>
+  {% endfor %}
+  {% for value in groups %}
+  <a href="?group={{ value | urlencode }}"{% if group == value %} aria-current="true"{% endif %}>Group: {{ value }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+{% if not rows %}<p>No servers match this filter.</p>{% endif %}
+<ol class="fleet" role="list">
+{% for row in rows %}
+  <li class="server tone-{{ row.tone }}">
+    <div class="who">
+      <h2>{{ row.host.host }}</h2>
+      {% if row.host.group %}<p>{{ row.host.group }}</p>{% endif %}
+      {% if row.checked %}<p>{{ row.checked }}</p>{% endif %}
+    </div>
+    <div class="what">
+      <p class="verdict">{{ row.verdict }}</p>
+      {% if row.action %}<p class="action">{{ row.action }}</p>{% endif %}
+      {% if row.changes %}
+      <p class="new">New since the last check:</p>
+      <ul>{% for change in row.changes %}<li>{{ change }}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if row.notes or row.exposures %}
+      <ul class="notes">
+        {% for note in row.notes %}<li>{{ note }}</li>{% endfor %}
+        {% for exposure in row.exposures %}<li>{{ exposure }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    <div class="chance">
+      {% if row.host.probability is not none and row.host.state == "analysed" %}
+      <p><strong>{{ row.host.probability | percent }}</strong> estimated chance of a break-in</p>
+      <svg viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+        <rect class="zone-low" x="0" y="3" width="10" height="4"/>
+        <rect class="zone-elevated" x="10" y="3" width="40" height="4"/>
+        <rect class="zone-high" x="50" y="3" width="40" height="4"/>
+        <rect class="zone-critical" x="90" y="3" width="10" height="4"/>
+        <line class="mark" x1="{{ '%.1f' | format(row.host.probability * 100) }}" y1="0" x2="{{ '%.1f' | format(row.host.probability * 100) }}" y2="10"/>
+      </svg>
+      {% else %}
+      <p class="none">No estimate</p>
+      {% endif %}
+    </div>
+  </li>
 {% endfor %}
+</ol>
+{% endif %}
 {% endblock %}

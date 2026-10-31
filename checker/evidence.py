@@ -323,7 +323,7 @@ class Config(BaseModel):
     identity_file: str | None = None  # where the matching private key is, if here
     retention_days: int = Field(default=90, ge=1)
     # The fleet view calls a collection older than this old.
-    stale_after_days: int = Field(default=3, ge=1)
+    stale_after_days: int = Field(default=3, ge=1, le=3650)
     # The prior probability of compromise scoring starts from (DESIGN.md
     # §11.2), and per host group; a host's own, in the inventory, wins.
     prior: float = Field(default=0.02, gt=0, lt=1)

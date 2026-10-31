@@ -89,6 +89,10 @@ class FleetHost:
     removed: bool = False
     # The separate hygiene and exposure rating (DESIGN.md §2 principle 9).
     hygiene: str | None = None
+    # In effect now: findings a threat pack raised or weighs (signs of that threat), and
+    # programs still running code from before a threat's fix.
+    threat_signs: int = 0
+    stale_code: int = 0
     # Since the analysis before; `first` when there was none to compare with.
     first: bool = True
     before_unreadable: bool = False
@@ -204,6 +208,8 @@ def _gone(before: dict | None, after: dict, comparable: bool) -> tuple[int, int,
         was = json.loads(key)
         if band not in SERIOUS or any(_same_finding(was, n) for n in now):
             continue
+        if was[0] == "pack.exposure":
+            continue  # being open to a threat was never a sign of a break-in: updating ends it
         if any(_same_finding(was, h) for h in hidden):
             suppressed += 1
         elif comparable:
@@ -215,7 +221,9 @@ def _gone(before: dict | None, after: dict, comparable: bool) -> tuple[int, int,
 
 def _old(started_at: str, now: datetime, stale_after: timedelta) -> bool:
     try:
-        return now - datetime.fromisoformat(started_at) > stale_after
+        age = now - datetime.fromisoformat(started_at)
+        # A date in the future vouches for nothing either.
+        return age > stale_after or age < -timedelta(days=1)
     except (TypeError, ValueError):
         return True
 
@@ -228,24 +236,66 @@ def _gaps(assessment: dict | None) -> list[str]:
     return list(((assessment or {}).get("coverage") or {}).get("gaps") or [])
 
 
+def _reduces_coverage(gap: str) -> bool:
+    """A gap in what the tool set out to read, as opposed to a note about what a host
+    simply doesn't have. A long log cut short is routine on a busy server, so it isn't one."""
+    return gap.startswith(("not collected:", "error in ")) or " incomplete: " in gap
+
+
 def _gap_kind(gap: str) -> str:
     """A gap without its numbers: a clock off by another second isn't a new gap."""
     return re.sub(r"[-+]?\d+", "#", gap)
 
 
+def _in_effect(assessment: dict) -> list[dict]:
+    return [
+        f
+        for f in assessment.get("findings") or []
+        if isinstance(f, dict) and not f.get("suppressed_by")
+    ]
+
+
+def _band_of(assessment: dict | None) -> str | None:
+    band = ((assessment or {}).get("score") or {}).get("band")
+    return band if isinstance(band, str) else None
+
+
+def _probability(value: Any) -> float | None:
+    """A stored probability, only if it is one: anything else mustn't read as a score."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return float(value) if 0 <= value <= 1 else None
+    except OverflowError:
+        return None
+
+
 def _headline(host: str, group, row, after: dict, last_failed, removed: bool) -> FleetHost:
     """What an analysis says outright, whatever can be worked out beyond it."""
     score = after.get("score") or {}
-    probability = score.get("probability")
     return FleetHost(
         host,
         group,
         "analysed",
-        band=score.get("band"),
-        probability=probability if isinstance(probability, (int, float)) else None,
-        counts=dict(after.get("counts") or {}),
+        band=_band_of(after),
+        probability=_probability(score.get("probability")),
+        counts={
+            str(k): n
+            for k, n in dict(after.get("counts") or {}).items()
+            if isinstance(n, int) and not isinstance(n, bool)
+        },
         gaps=len(_gaps(after)),
         hygiene=(score.get("hygiene_and_exposure") or {}).get("band"),
+        threat_signs=sum(
+            1
+            for f in _in_effect(after)
+            if f.get("check") == "pack.detection" or f.get("raised_by_pack")
+        ),
+        stale_code=sum(
+            1
+            for f in _in_effect(after)
+            if f.get("check") == "pack.exposure" and f.get("variant") == "stale_code"
+        ),
         collected_at=row["started_at"],
         analysed_at=after.get("analysed_at"),
         collection_status=row["status"],
@@ -280,7 +330,7 @@ def fleet_host(
             "unreadable",
             last_failed=last_failed,
             unreadable_why=found.newest_unreadable,
-            last_readable_band=((found.after or {}).get("score") or {}).get("band"),
+            last_readable_band=_band_of(found.after),
             removed=removed,
         )
     if found.after is None:
@@ -384,7 +434,10 @@ def _with_details(
     ]
     blind = [g for g in _gaps(after) if g.startswith(_BLIND)]
     doubts += [visible(g, 200) for g in blind]
-    fresh = [g for g in new_gaps if g not in blind]
+    # Part of what's looked at wasn't read, on any check: nothing "new" about it after the first.
+    reduced = [g for g in _gaps(after) if _reduces_coverage(g)]
+    doubts += [f"part of this server couldn't be read: {visible(g, 200)}" for g in reduced]
+    fresh = [g for g in new_gaps if g not in blind and g not in reduced]
     if fresh:
         doubts.append(f"it can see less than before: {visible(fresh[0], 200)}")
     comparable = (
@@ -396,9 +449,10 @@ def _with_details(
         and not memory.get("failed")
         and not new_gaps
         and not blind
+        and not reduced
     )
     resolved, suppressed, not_seen = _gone(before, after, comparable)
-    rescored = (earlier.get("score") or {}).get("band") if earlier else None
+    rescored = _band_of(earlier)
     return replace(
         headline,
         exposed=_known_exposure(store, after, older_than_after, identity),
@@ -407,7 +461,7 @@ def _with_details(
         out_of_date=tuple(reasons),
         first=before is None and not found.before_unreadable and not earlier_why,
         before_unreadable=before is None and (found.before_unreadable or bool(earlier_why)),
-        band_before=before["band"] if before else None,
+        band_before=_band_of(previous) if before else None,
         rescored_from=rescored if rescored != headline.band else None,
         changes=tuple(alerts(host, before, after)) if before else (),
         resolved=resolved,
@@ -507,13 +561,17 @@ def read_fleet(
     path = identity_path or config.identity_file
     if not path:
         raise EvidenceError("no evidence key here")
+    try:
+        identity = load_identity(Path(path))
+    except pyrage.IdentityError as exc:
+        raise EvidenceError("the evidence key can't be read: it isn't a key") from exc
     store = Store(database_file(base), read_only=True)
     try:
         inventory = load_inventory()
         found = in_force_read_only(base, config.packs.trusted_keys)
         hosts = fleet(
             store,
-            load_identity(Path(path)),
+            identity,
             {h.name: h.group for h in inventory.hosts},
             partial(prior_for, config=config, inventory=inventory),
             lambda name: whitelist_for_host(base, name, inventory),

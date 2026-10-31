@@ -304,6 +304,79 @@ def test_a_new_packs_own_note_is_not_seeing_less(home, monkeypatch):
     assert fleet_host(home[1], "web01", identity_of(home), now=SOON).doubts == ()
 
 
+def test_a_new_gap_is_said_once_and_a_gap_in_what_was_read_stays(home, monkeypatch):
+    gaps = {}
+    for n, name in enumerate(("b1", "b2", "b3")):
+        gaps[name] = analysed(home, name, 10 * (n + 1), CLEAN)["coverage"]["gaps"]
+    note = "containers not inventoried: x"
+    patched(monkeypatch, {"b3": {"coverage": {"gaps": [*gaps["b3"], note]}}})
+    assert any(
+        "see less" in d for d in fleet_host(home[1], "web01", identity_of(home), now=SOON).doubts
+    )
+
+
+@pytest.mark.parametrize(
+    "gap", ["sudoers incomplete: cut", "not collected: auth_log", "error in x: boom"]
+)
+def test_not_reading_part_of_a_server_is_a_doubt_on_every_check(home, monkeypatch, gap):
+    gaps = {}
+    for n, name in enumerate(("b1", "b2")):
+        gaps[name] = analysed(home, name, 10 * (n + 1), CLEAN)["coverage"]["gaps"]
+    patched(monkeypatch, {n: {"coverage": {"gaps": [*gaps[n], gap]}} for n in gaps})
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert any("couldn't be read" in d for d in item.doubts)
+
+
+def test_threat_signs_and_old_code_are_counted_while_in_effect(home, monkeypatch):
+    analysed(home, "b1", 10, CLEAN)
+    findings = [
+        {"check": "pack.detection", "variant": "p/x", "band": "medium", "category": "c"},
+        {"check": "web.errors", "raised_by_pack": "p", "band": "low", "category": "c"},
+        {"check": "pack.exposure", "variant": "stale_code", "band": "medium", "category": "e"},
+        {
+            "check": "pack.detection",
+            "variant": "p/y",
+            "band": "low",
+            "suppressed_by": "r",
+            "category": "c",
+        },
+    ]
+    patched(monkeypatch, {"b1": {"findings": findings}})
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.threat_signs == 2 and item.stale_code == 1
+
+
+def test_being_open_to_a_threat_and_updating_is_not_a_finding_gone():
+    gone = _identity_of({"check": "pack.exposure", "variant": "vulnerable", "entities": ["p"]})
+    assert fleet_module._gone({"findings": {gone: "high"}}, {"findings": []}, True) == (0, 0, 0)
+
+
+def test_a_date_in_the_future_vouches_for_nothing():
+    later = (SOON + timedelta(days=400)).isoformat()
+    assert fleet_module._old(later, SOON, STALE_AFTER)
+    assert not fleet_module._old((SOON + timedelta(hours=1)).isoformat(), SOON, STALE_AFTER)
+
+
+@pytest.mark.parametrize(
+    ("value", "kept"),
+    [
+        (0.5, 0.5),
+        (0, 0.0),
+        (1, 1.0),
+        (True, None),
+        (-1, None),
+        (1.5, None),
+        (10**400, None),
+        (float("nan"), None),
+        (float("inf"), None),
+        ("half", None),
+        (None, None),
+    ],
+)
+def test_only_a_real_probability_is_kept(value, kept):
+    assert fleet_module._probability(value) == kept
+
+
 def test_a_gap_differing_only_in_a_number_is_not_new(home):
     analysed(home, "b1", 10, CLEAN)
     analysed(home, "b2", 20, CLEAN)  # a clock offset differs between these
@@ -549,8 +622,10 @@ def test_the_command_passes_the_packs(home, capsys, monkeypatch):
 
 
 def test_the_command_uses_the_stale_after_setting(home, capsys):
-    analysed(home, "b1", 10, CLEAN)
-    set_setting(home[0], "stale_after_days", "100000")
+    analysed(home, "b1", -60 * 24 * 200, CLEAN)  # 200 days before the fixtures' start
+    assert cli.main(["fleet"]) == 0
+    assert "days ago" in capsys.readouterr().out
+    set_setting(home[0], "stale_after_days", "3650")
     assert cli.main(["fleet"]) == 0
     assert "days ago" not in capsys.readouterr().out
 

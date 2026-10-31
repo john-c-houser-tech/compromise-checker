@@ -8,6 +8,7 @@ urlpatterns = [
     path("logout", views.logout_page, name="logout"),
     path("setup/<str:token>", views.setup_page, name="setup"),
     path("style.css", views.stylesheet, name="style"),
+    path("fonts/<str:name>", views.font, name="font"),
 ]
 
 handler400 = "checker.web.views.bad_request"

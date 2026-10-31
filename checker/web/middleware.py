@@ -3,7 +3,7 @@
 from django.http import HttpResponse
 
 CSP = (
-    "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; "
+    "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; form-action 'self'; "
     "base-uri 'none'; frame-ancestors 'none'"
 )
 
@@ -22,7 +22,7 @@ def security_headers(get_response):
         if request.is_secure():
             response["Strict-Transport-Security"] = "max-age=31536000"
         # Evidence must not stay in a browser's or a proxy's cache.
-        if not request.path.startswith("/style"):
+        if not request.path.startswith(("/style", "/fonts/")):
             response["Cache-Control"] = "no-store"
         return response
 

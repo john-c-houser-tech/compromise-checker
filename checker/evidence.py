@@ -292,8 +292,11 @@ class Packs(BaseModel):
     @field_validator("source")
     @classmethod
     def _source(cls, value: str) -> str:
-        if not re.fullmatch(r"https://[^\s?#]+", value):
-            raise ValueError("must be an https:// address, with no spaces, query or fragment")
+        if not re.fullmatch(r"https://[^\s?#@\x00-\x1f\x7f]+", value):
+            raise ValueError(
+                "must be an https:// address, with no spaces, control characters, query,"
+                " fragment or user name"
+            )
         return value if value.endswith("/") else value + "/"
 
     @field_validator("group_apply")

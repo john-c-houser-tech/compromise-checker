@@ -19,16 +19,40 @@ class ReleaseError(Exception):
     """An index that can't be written; the message says why."""
 
 
+def _pack_keys(directory: Path) -> list:
+    """The pack keys the repository's own key list (keys.yaml, checked
+    against the root key) trusts: every pack must be signed by one."""
+    from checker.packs.trust import TrustError, read_key_list
+
+    data, signature = directory / "keys.yaml", directory / "keys.yaml.minisig"
+    if not data.is_file() or not signature.is_file():
+        raise ReleaseError("needs keys.yaml and keys.yaml.minisig: the packs' keys come from it")
+    try:
+        return read_key_list(data.read_bytes(), signature.read_bytes()).trusted()
+    except TrustError as exc:
+        raise ReleaseError(f"keys.yaml: {exc}") from None
+
+
 def write_index(
-    directory: Path, serial: int | None, withdraw: dict[str, str], now: datetime | None = None
+    directory: Path,
+    serial: int | None,
+    withdraw: dict[str, str],
+    now: datetime | None = None,
+    forget: tuple[str, ...] = (),
 ) -> tuple[Path, Index]:
     """Write `directory`/index.yaml; returns it and what it says. The last
-    index there gives the serial to go above and the withdrawals to keep."""
+    index there gives the serial to go above and the withdrawals to keep
+    (`forget` drops one: a site that never pulled while it was withdrawn
+    keeps the pack). Each pack's signature is checked against the pack
+    keys the repository's keys.yaml trusts."""
+    from checker.packs.signing import SignatureError, verify
+
     target = directory / INDEX
+    keys = _pack_keys(directory)
     previous = None
     if target.is_file():
         try:
-            previous = read_index(target.read_bytes()[: 1024 * 1024 + 1])
+            previous = read_index(target.read_bytes()[: MAX_BYTES + 1])
         except PullError as exc:
             raise ReleaseError(f"the index there now: {exc}") from None
     entries = []
@@ -48,17 +72,32 @@ def write_index(
             raise ReleaseError(f"{place.name}/PACK.yaml:\n{exc}") from None
         if pack.id != place.name:
             raise ReleaseError(f"{place.name}/PACK.yaml holds {pack.id}: the folder is its id")
+        try:
+            verify(data, path.with_name("PACK.yaml.minisig").read_bytes(), keys)
+        except SignatureError as exc:
+            raise ReleaseError(
+                f"{place.name}: its signature isn't a pack key's from keys.yaml ({exc})"
+            ) from None
         entries.append(Entry(id=pack.id, version=pack.version,
                              sha256=hashlib.sha256(data).hexdigest()))  # fmt: skip
     if previous is not None:
-        before = {e.id: e.version for e in previous.packs}
+        before = {e.id: e for e in previous.packs}
         for entry in entries:
-            if entry.version < before.get(entry.id, 0):
+            last = before.get(entry.id)
+            if last is not None and entry.version < last.version:
                 raise ReleaseError(
                     f"{entry.id}: version {entry.version} is older than the last index's"
-                    f" ({before[entry.id]}): pulls would never take it"
+                    f" ({last.version}): pulls would never take it"
+                )
+            if last is not None and entry.version == last.version and entry.sha256 != last.sha256:
+                raise ReleaseError(
+                    f"{entry.id}: changed under the same version ({entry.version}): sites that"
+                    " have it would keep the old content; give it a new version"
                 )
     withdrawn = {w.id: w.reason for w in previous.withdrawn} if previous else {}
+    for pack_id in forget:
+        if withdrawn.pop(pack_id, None) is None:
+            raise ReleaseError(f"{pack_id} isn't withdrawn")
     withdrawn |= withdraw
     listed = {e.id for e in entries}
     if listed & set(withdrawn):
@@ -87,13 +126,21 @@ def write_index(
         f"serial: {index.serial}",
         f"issued: {issued.strftime('%Y-%m-%dT%H:%M:%SZ')}",
         "packs:" if index.packs else "packs: []",
-        # Quoted: a hash of digits only (or digits and one e) would read as a number.
-        *(f'  - {{id: {e.id}, version: {e.version}, sha256: "{e.sha256}"}}' for e in index.packs),
+        # Ids and hashes quoted: one like 2026-10-30, 1e5 or null would read as
+        # a date, a number or nothing.
+        *(f'  - {{id: "{e.id}", version: {e.version}, sha256: "{e.sha256}"}}' for e in index.packs),
         "withdrawn:" if index.withdrawn else "withdrawn: []",
-        *(f"  - {{id: {w.id}, reason: {json.dumps(w.reason)}}}" for w in index.withdrawn),
+        *(
+            f'  - {{id: "{w.id}", reason: {json.dumps(w.reason, ensure_ascii=False)}}}'
+            for w in index.withdrawn
+        ),
     ]
     text = "\n".join(lines) + "\n"
-    if read_index(text.encode()) != index:  # what a pull will read is what was meant
+    try:
+        same = read_index(text.encode()) == index  # what a pull will read is what was meant
+    except PullError as exc:
+        raise ReleaseError(f"the index wouldn't read back as written: {exc}") from None
+    if not same:
         raise ReleaseError("the index wouldn't read back as written (a reason's quoting?)")
     target.write_text(text, encoding="utf-8")
     return target, index

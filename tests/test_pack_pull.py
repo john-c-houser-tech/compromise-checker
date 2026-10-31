@@ -65,7 +65,7 @@ class Repository:
 
 def _id_version(text):
     fields = dict(line.split(": ", 1) for line in text.splitlines()[:3] if ": " in line)
-    return fields["id"], int(fields["version"])
+    return fields["id"].strip('"'), int(fields["version"])
 
 
 nouriloop = pytest.fixture(nouriloop_fixture.__wrapped__)
@@ -82,7 +82,8 @@ def run(home, repo, now=NOW):
 
 
 def in_force(home):
-    return [(s.pack.id, s.pack.version) for s in active(home[0], [])[0]]
+    keys = load_config(home[0]).packs.trusted_keys
+    return [(s.pack.id, s.pack.version) for s in active(home[0], keys)[0]]
 
 
 def test_a_pull_takes_the_key_list_then_the_packs_it_signs(home, repo):
@@ -161,12 +162,12 @@ def test_a_revoked_pack_key_takes_its_packs_and_its_index_with_it(nouriloop, hom
     assert run(home, repo).added == [("example-2026-10", 3, "added")]
 
 
-def test_an_older_key_list_at_the_source_is_pointed_out(nouriloop, home, repo):
+def test_an_older_key_list_at_the_source_is_a_problem(nouriloop, home, repo):
     repo.keys(nouriloop, 3, [repo.signer])
     repo.index(1, [GOOD])
     run(home, repo)
     repo.keys(nouriloop, 2, [repo.signer])
-    assert "older than the one in force (3)" in run(home, repo).notes[0]
+    assert "older than the one in force (3)" in run(home, repo).problems[0]
 
 
 def test_an_old_index_is_pointed_out_on_the_pull_and_in_the_list(home, repo, capsys):
@@ -185,11 +186,12 @@ def test_without_a_root_key_nothing_can_be_trusted(home, monkeypatch):
         run(home, repo)
 
 
-def test_a_source_without_a_key_list_keeps_the_one_in_force(home, repo):
+def test_a_source_without_a_key_list_isnt_the_repository(home, repo):
     repo.index(1, [GOOD])
     run(home, repo)
     del repo.files[SOURCE + "keys.yaml"]
-    assert run(home, repo).notes == ["the source has no key list: the one in force is kept"]
+    with pytest.raises(PullError, match="has no keys.yaml"):
+        run(home, repo)
 
 
 @pytest.mark.parametrize(
@@ -299,8 +301,17 @@ def test_a_redirect_away_from_https_is_refused():
 # --- Writing an index -------------------------------------------------------------------------
 
 
-def release(tmp_path, *texts, signer=None):
-    signer = signer or Key()
+@pytest.fixture
+def signer(nouriloop, tmp_path):
+    """A pack key, trusted by the repository's keys.yaml (root-signed)."""
+    key = Key()
+    data, signature = key_list(nouriloop, 1, [key])
+    (tmp_path / "keys.yaml").write_bytes(data)
+    (tmp_path / "keys.yaml.minisig").write_bytes(signature)
+    return key
+
+
+def release(tmp_path, *texts, signer):
     for text in texts:
         pack_id, _ = _id_version(text)
         folder = tmp_path / "packs" / pack_id
@@ -310,8 +321,8 @@ def release(tmp_path, *texts, signer=None):
     return tmp_path
 
 
-def test_an_index_is_written_from_the_packs_and_reads_back(tmp_path):
-    path, index = write_index(release(tmp_path, GOOD), None, {}, NOW)
+def test_an_index_is_written_from_the_packs_and_reads_back(tmp_path, signer):
+    path, index = write_index(release(tmp_path, GOOD, signer=signer), None, {}, NOW)
     assert (index.serial, [(e.id, e.version) for e in index.packs]) == (
         1, [("example-2026-10", 2)])  # fmt: skip
     assert read_index(path.read_bytes()) == index
@@ -333,28 +344,28 @@ def test_an_index_is_written_from_the_packs_and_reads_back(tmp_path):
          "PACK.yaml:"),
     ],
 )  # fmt: skip
-def test_what_stops_an_index_being_written(tmp_path, change, said):
-    release(tmp_path, GOOD)
+def test_what_stops_an_index_being_written(tmp_path, signer, change, said):
+    release(tmp_path, GOOD, signer=signer)
     change(tmp_path)
     with pytest.raises(ReleaseError, match=said):
         write_index(tmp_path, None, {}, NOW)
 
 
-def test_an_index_never_goes_backwards(tmp_path):
-    release(tmp_path, NEWER)
+def test_an_index_never_goes_backwards(tmp_path, signer):
+    release(tmp_path, NEWER, signer=signer)
     write_index(tmp_path, 4, {}, NOW)
     with pytest.raises(ReleaseError, match="must go above the last index's"):
         write_index(tmp_path, 4, {}, NOW)
-    release(tmp_path, GOOD)
+    release(tmp_path, GOOD, signer=signer)
     with pytest.raises(ReleaseError, match="older than the last index's"):
         write_index(tmp_path, None, {}, NOW)
-    release(tmp_path, NEWER)
+    release(tmp_path, NEWER, signer=signer)
     with pytest.raises(ReleaseError, match="withdrawn but still in packs/"):
         write_index(tmp_path, None, {"example-2026-10": "gone"}, NOW)
 
 
-def test_the_index_command(tmp_path, capsys):
-    release(tmp_path, GOOD)
+def test_the_index_command(tmp_path, signer, capsys):
+    release(tmp_path, GOOD, signer=signer)
     assert cli.main(["packs", "index", str(tmp_path), "--withdraw", "old-1=noisy"]) == 0
     out = capsys.readouterr().out
     assert "serial 1, 1 pack(s), 1 withdrawn" in out and "minisign -S -s" in out
@@ -368,3 +379,192 @@ def test_an_organizations_own_key_cant_sign_nouriloops_index(home, repo, tmp_pat
     repo.index(1, [GOOD], signer=ours)
     with pytest.raises(PullError, match="the index's signature"):
         run(home, repo)
+
+
+# --- After review ----------------------------------------------------------------------------
+
+
+def test_a_broken_connection_is_a_pull_error_not_a_crash(monkeypatch):
+    import http.client
+
+    for broken in (http.client.IncompleteRead(b"ab", 10), http.client.BadStatusLine("x")):
+        monkeypatch.setattr(urllib.request, "build_opener", opener_giving(broken))
+        with pytest.raises(PullError, match=type(broken).__name__):
+            fetch(SOURCE + "x", 5)
+
+
+def test_the_real_opener_follows_https_redirects_only():
+    built = pulling.opener()
+    redirects = [h for h in built.handlers if isinstance(h, urllib.request.HTTPRedirectHandler)]
+    assert len(redirects) == 1 and isinstance(redirects[0], pulling._HttpsOnly)
+
+
+def test_a_file_that_trickles_in_is_cut_off(monkeypatch):
+    clock = iter(range(0, 10_000, 100))
+    monkeypatch.setattr(pulling.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(urllib.request, "build_opener", opener_giving(b"x" * 300_000))
+    with pytest.raises(PullError, match="took longer than 120 seconds"):
+        fetch(SOURCE + "x", 400_000)
+
+
+def test_an_organizations_own_pack_id_is_left_alone(home, repo, tmp_path, capsys):
+    from test_pack_trust import pack
+
+    ours = Key()
+    assert cli.main(["packs", "trust", "add", "team", str(ours.pub_file(tmp_path / "k.pub"))]) == 0
+    assert cli.main(["packs", "add", str(pack(tmp_path, ours))]) == 0
+    repo.index(1, [NEWER])  # NouriLoop's index offers the same id
+    done = run(home, repo)
+    assert done.added == [] and done.problems == []
+    assert "your organization's key signs this pack id here" in done.notes[0]
+    repo.index(2, [], withdrawn=["example-2026-10"])
+    assert run(home, repo).withdrawn == []
+    assert in_force(home) == [("example-2026-10", 2)]
+
+
+def test_a_mirror_cant_resign_a_pack_with_an_organization_key(home, repo, tmp_path, capsys):
+    ours = Key()
+    assert cli.main(["packs", "trust", "add", "team", str(ours.pub_file(tmp_path / "k.pub"))]) == 0
+    repo.index(1, [GOOD])
+    repo.files[SOURCE + "packs/example-2026-10/PACK.yaml.minisig"] = ours.sign(GOOD.encode())
+    done = run(home, repo)
+    assert done.added == [] and "not by one of NouriLoop's keys" in done.problems[0]
+    assert read_state(home[0])["packs"] == {}  # nothing recorded for the id
+
+
+def test_an_index_entry_naming_another_pack_writes_nothing(home, repo):
+    other = GOOD.replace("id: example-2026-10", "id: other-2026-10")
+    repo.index(1, [other])
+    index = repo.files[SOURCE + "index.yaml"].replace(b"other-2026-10", b"example-2026-10")
+    repo.put("index.yaml", index)
+    repo.put("packs/example-2026-10/PACK.yaml", other.encode())
+    done = run(home, repo)
+    assert done.added == [] and "holds other-2026-10 version 2" in done.problems[0]
+    assert in_force(home) == [] and read_state(home[0])["packs"] == {}
+
+
+def test_what_a_pull_did_before_it_stopped_is_said(nouriloop, home, repo, monkeypatch, capsys):
+    from checker.settings import change
+
+    repo.index(1, [GOOD])
+    run(home, repo)
+    leaked = repo.signer
+    repo.keys(nouriloop, 2, [Key()], revoked=[leaked])
+    repo.index(2, [GOOD])  # still signed by the leaked key
+    monkeypatch.setattr(pulling, "fetch", repo.get)
+    change(home[0], "packs.source", SOURCE)
+    capsys.readouterr()
+    assert cli.main(["packs", "pull"]) == 1
+    said = capsys.readouterr()
+    assert "Key list serial 2 is in force (was 1)." in said.out
+    assert "Retired example-2026-10-v2.yaml: its signing key is no longer trusted." in said.out
+    assert "nothing more was pulled: the index's signature" in said.err
+
+
+def test_problems_make_the_command_exit_1_and_aren_t_nothing_new(home, repo, monkeypatch, capsys):
+    from checker.settings import change
+
+    repo.index(1, [GOOD])
+    repo.put("packs/example-2026-10/PACK.yaml", b"format: 1\n")
+    monkeypatch.setattr(pulling, "fetch", repo.get)
+    change(home[0], "packs.source", SOURCE)
+    capsys.readouterr()
+    assert cli.main(["packs", "pull"]) == 1
+    said = capsys.readouterr()
+    assert "Nothing new." not in said.out and "doesn't have the hash" in said.err
+
+
+def test_a_pull_that_fails_late_still_raises_the_floor(home, repo, monkeypatch):
+    repo.index(5, [GOOD])
+
+    def failing(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("checker.packs.store.add", failing)
+    with pytest.raises(OSError):
+        run(home, repo)
+    assert read_state(home[0])["index_serial"] == 5
+
+
+def test_two_indexes_under_one_serial_are_refused(home, repo):
+    repo.index(3, [GOOD])
+    run(home, repo)
+    repo.index(3, [NEWER])
+    with pytest.raises(PullError, match="differs from the one accepted before under the same"):
+        run(home, repo)
+
+
+def test_an_index_from_the_future_is_pointed_out(home, repo):
+    repo.index(1, [GOOD], issued=NOW + timedelta(days=3))
+    assert "ahead of this machine's clock" in run(home, repo).notes[0]
+
+
+def test_a_pack_retired_by_hand_stays_retired_whatever_version_comes(home, repo, capsys):
+    repo.index(1, [GOOD])
+    run(home, repo)
+    assert cli.main(["packs", "retire", "example-2026-10", "--reason", "noisy here"]) == 0
+    repo.index(2, [NEWER])
+    done = run(home, repo)
+    assert done.added == [] and "retired here by hand" in done.notes[0]
+    assert in_force(home) == []
+
+
+def test_a_changed_pack_under_an_accepted_version_is_a_problem(home, repo):
+    repo.index(1, [GOOD])
+    run(home, repo)
+    changed = GOOD.replace("Example: a made-up", "Example: a changed")
+    repo.index(2, [changed])
+    assert "isn't the one accepted here under that version" in run(home, repo).problems[0]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['source: "https://evil\\u001b[2J.example/"', "source: https://user:pw@mirror.example/"],
+)
+def test_a_source_with_control_characters_or_credentials_is_refused(text):
+    import yaml
+    from pydantic import ValidationError
+
+    from checker.evidence import Packs
+
+    with pytest.raises(ValidationError, match="user name"):
+        Packs.model_validate(yaml.safe_load(text))
+
+
+def test_a_damaged_last_pull_record_doesnt_break_the_list():
+    assert staleness({"last_pull": {"index_issued": "2026-10-01T00:00:00"}}, NOW) is None
+    assert staleness({"last_pull": {"index_issued": 7}}, NOW) is None
+
+
+def test_ids_that_look_like_other_things_and_any_reason_round_trip(tmp_path, signer):
+    for pack_id in ("2026-10-30", "1e5", "null", "true"):
+        text = GOOD.replace("id: example-2026-10", f'id: "{pack_id}"')
+        release(tmp_path, text, signer=signer)
+    path, index = write_index(tmp_path, None, {"gone-1": 'noisy 🦝 "quoted" \\ back'}, NOW)
+    assert read_index(path.read_bytes()) == index
+    assert {e.id for e in index.packs} >= {"2026-10-30", "1e5", "null", "true"}
+
+
+def test_a_release_needs_every_pack_signed_by_a_pack_key(tmp_path, signer):
+    release(tmp_path, GOOD, signer=Key())
+    with pytest.raises(ReleaseError, match="isn't a pack key's from keys.yaml"):
+        write_index(tmp_path, None, {}, NOW)
+    (tmp_path / "keys.yaml").unlink()
+    with pytest.raises(ReleaseError, match="needs keys.yaml"):
+        write_index(tmp_path, None, {}, NOW)
+
+
+def test_a_release_refuses_a_changed_pack_under_the_same_version(tmp_path, signer):
+    release(tmp_path, GOOD, signer=signer)
+    write_index(tmp_path, None, {}, NOW)
+    release(tmp_path, GOOD.replace("Example: a made-up", "Example: a changed"), signer=signer)
+    with pytest.raises(ReleaseError, match="changed under the same version"):
+        write_index(tmp_path, None, {}, NOW)
+
+
+def test_a_withdrawal_can_be_forgotten(tmp_path, signer):
+    write_index(tmp_path, None, {"old-1": "noisy"}, NOW)
+    _, index = write_index(tmp_path, None, {}, NOW, forget=("old-1",))
+    assert index.withdrawn == []
+    with pytest.raises(ReleaseError, match="isn't withdrawn"):
+        write_index(tmp_path, None, {}, NOW, forget=("old-1",))

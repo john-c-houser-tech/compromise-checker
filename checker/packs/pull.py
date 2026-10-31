@@ -30,17 +30,28 @@ included, with each file's size capped.
 A serial stops an older index being swapped in, not the current one
 being served for ever: so the index is signed again at least monthly,
 and one older than STALE_DAYS is pointed out by the pull and by
-`checker packs list`, with when the last pull was."""
+`checker packs list`, with when the last pull was.
+
+Limits: revocations reach a site only through the source. Someone who
+holds a leaked pack key and controls the source (a mirror, or someone in
+between) can keep serving the old key list with fresh indexes, and the
+staleness check can't tell; the key list on nouriloop.com is the second
+place to compare it with. Signatures carry no context: a pack's
+signature passes as an index's only if the file reads as both, and the
+strict, disjoint formats (extra fields refused) keep that from
+happening."""
 
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ssl
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -53,9 +64,11 @@ DEFAULT_SOURCE = (
     "https://raw.githubusercontent.com/john-c-houser-tech/compromise-checker-packs/main/"
 )
 INDEX = "index.yaml"
-MAX_INDEX_BYTES = 1024 * 1024
+MAX_INDEX_BYTES = MAX_BYTES  # what the YAML reader reads at most
 MAX_KEY_LIST_BYTES = 64 * 1024
-TIMEOUT = 30.0  # seconds, for each file
+TIMEOUT = 30.0  # seconds a socket may wait for each read
+DEADLINE = 120.0  # seconds a whole file may take, however it trickles in
+SKEW_DAYS = 1  # an index issued further ahead of this clock is pointed out
 # An index older than this is pointed out (pull, `packs list`): the index is
 # signed again at least monthly, even with nothing new, so a source that
 # keeps serving the same one (a stale mirror, or someone in between) shows.
@@ -63,7 +76,10 @@ STALE_DAYS = 30
 
 
 class PullError(Exception):
-    """A pull that can't go on; the message says why."""
+    """A pull that can't go on; the message says why, and `pulled` what it
+    did before it stopped."""
+
+    pulled: Any = None
 
 
 class _Strict(BaseModel):
@@ -123,36 +139,51 @@ def pack_path(pack_id: str) -> str:
 
 
 class _HttpsOnly(urllib.request.HTTPRedirectHandler):
+    """The opener's redirect handler, in place of urllib's: HTTPS only."""
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if not newurl.lower().startswith("https://"):
             raise urllib.error.URLError(f"refused a redirect away from HTTPS, to {newurl[:200]}")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetch(url: str, limit: int) -> bytes | None:
-    """A file's bytes over HTTPS (the certificate checked), None if it isn't
-    there (404); at most `limit` bytes, or PullError."""
-    if not url.lower().startswith("https://"):
-        raise PullError(f"only HTTPS is used: {url[:200]}")
-    opener = urllib.request.build_opener(
+def opener() -> urllib.request.OpenerDirector:
+    """HTTPS with the system's certificates, and redirects only to HTTPS."""
+    return urllib.request.build_opener(
         urllib.request.HTTPSHandler(context=ssl.create_default_context()), _HttpsOnly()
     )
+
+
+def fetch(url: str, limit: int) -> bytes | None:
+    """A file's bytes over HTTPS (the certificate checked), None if it isn't
+    there (404); at most `limit` bytes within DEADLINE seconds, or PullError."""
+    if not url.lower().startswith("https://"):
+        raise PullError(f"only HTTPS is used: {url[:200]}")
     request = urllib.request.Request(  # noqa: S310 - https only, checked above
         url, headers={"User-Agent": "compromise-checker"}
     )
+    started = time.monotonic()
     try:
-        with opener.open(request, timeout=TIMEOUT) as response:
-            data = response.read(limit + 1)
+        with opener().open(request, timeout=TIMEOUT) as response:
+            chunks, size = [], 0
+            while size <= limit:
+                if time.monotonic() - started > DEADLINE:
+                    raise PullError(f"{url[:200]}: took longer than {DEADLINE:.0f} seconds")
+                chunk = response.read(min(65536, limit + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
         raise PullError(f"{url[:200]}: the server answered {exc.code}") from None
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        reason = getattr(exc, "reason", exc)
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
+        reason = getattr(exc, "reason", None) or f"{type(exc).__name__}: {exc}"
         raise PullError(f"{url[:200]}: {reason}") from None
-    if len(data) > limit:
+    if size > limit:
         raise PullError(f"{url[:200]}: larger than {limit} bytes")
-    return data
+    return b"".join(chunks)
 
 
 # --- A pull --------------------------------------------------------------------------------
@@ -166,8 +197,11 @@ class Pulled:
     index_issued: str | None = None
     added: list[tuple[str, int, str]] = field(default_factory=list)  # (id, version, outcome)
     withdrawn: list[str] = field(default_factory=list)  # files retired
-    notes: list[str] = field(default_factory=list)
-    problems: list[str] = field(default_factory=list)  # a pack that wasn't added, and why
+    notes: list[str] = field(default_factory=list)  # worth knowing; the pull still did its part
+    problems: list[str] = field(default_factory=list)  # what went wrong; the pull exits 1
+
+    def changed(self) -> bool:
+        return bool(self.added or self.withdrawn or self.key_list or self.retired_by_keys)
 
 
 def _signed_pair(get, source: str, name: str, limit: int) -> tuple[bytes, bytes] | None:
@@ -189,38 +223,53 @@ def pull(
     now: datetime | None = None,
 ) -> Pulled:
     """Pull from `source` (a URL ending in "/"). The caller holds the packs
-    lock. Raises PullError when nothing can be trusted from the source."""
-    from checker.packs.state import read_state, write_state
-    from checker.packs.store import StoreError, add, retire, sweep
-    from checker.packs.trust import NOURILOOP, TrustError, accept_key_list, key_list, trusted_keys
-
+    lock. Raises PullError when the pull can't go on; what it did by then
+    (a key list taken, packs retired) is the error's `pulled`."""
     get = get or fetch  # looked up now, so a test's stand-in is the one used
     done = Pulled()
-    # 1. The key list: a revocation first.
+    try:
+        _pull(home, organization, checks, source, get, now or datetime.now(UTC), done)
+    except PullError as exc:
+        exc.pulled = done
+        raise
+    return done
+
+
+def _pull(home, organization, checks, source, get, now, done: Pulled) -> None:
+    from checker.packs.state import StateError, read_state, write_state
+    from checker.packs.store import StoreError, add, retire, sweep
+    from checker.packs.trust import (
+        NOURILOOP,
+        TrustError,
+        accept_key_list,
+        key_list,
+        read_key_list,
+        trusted_keys,
+    )
+
+    # 1. The key list: a revocation first. The repository always has one.
     pair = _signed_pair(get, source, "keys.yaml", MAX_KEY_LIST_BYTES)
     if pair is None:
-        done.notes.append("the source has no key list: the one in force is kept")
-    else:
-        try:
-            current = key_list(home)
-        except TrustError:
-            current = None
-        try:
-            from checker.packs.trust import read_key_list
-
-            offered = read_key_list(*pair)
-        except TrustError as exc:
-            raise PullError(str(exc)) from None
-        floor = max(read_state(home)["key_list_serial"], current.serial if current else 0)
-        if offered.serial > floor:
-            new, old = accept_key_list(home, *pair)
-            done.key_list = (new.serial, old.serial if old else None)
-            done.retired_by_keys = sweep(home, organization)
-        elif offered.serial < floor:
-            done.notes.append(
-                f"the source's key list (serial {offered.serial}) is older than the one in"
-                f" force ({floor}): it is out of date, or not the real repository's"
-            )
+        raise PullError("the source has no keys.yaml: it isn't the packs repository, or is broken")
+    try:
+        current = key_list(home)
+    except TrustError:
+        current = None
+    try:
+        offered = read_key_list(*pair)
+    except TrustError as exc:
+        raise PullError(str(exc)) from None
+    floor = max(read_state(home)["key_list_serial"], current.serial if current else 0)
+    if offered.serial > floor:
+        new, old = accept_key_list(home, *pair)
+        done.key_list = (new.serial, old.serial if old else None)
+        done.retired_by_keys = sweep(home, organization)
+    elif offered.serial < floor:
+        done.problems.append(
+            f"the source's key list (serial {offered.serial}) is older than the one in force"
+            f" ({floor}): it is out of date, or not the real repository's, and a revocation"
+            " it should carry may be missing"
+        )
     # 2. The index, signed by a NouriLoop pack key.
     pair = _signed_pair(get, source, INDEX, MAX_INDEX_BYTES)
     if pair is None:
@@ -237,56 +286,91 @@ def pull(
     except SignatureError as exc:
         raise PullError(f"the index's signature: {exc}") from None
     index = read_index(pair[0])
+    digest = hashlib.sha256(pair[0]).hexdigest()
     state = read_state(home)
     accepted = state.get("index_serial", 0)
+    if not isinstance(accepted, int) or not isinstance(state.get("index_sha256", ""), str):
+        raise StateError("packs/state.json isn't the tool's: restore it from a backup")
     if index.serial < accepted:
         raise PullError(
             f"the index's serial {index.serial} is lower than one accepted before ({accepted}):"
             " it is out of date, or replayed; nothing was taken from it"
         )
+    if index.serial == accepted and state.get("index_sha256") not in (None, digest):
+        raise PullError(
+            f"this index differs from the one accepted before under the same serial"
+            f" ({accepted}): a new index needs a new serial; nothing was taken from it"
+        )
+    # Recorded at once: whatever fails below, an older index can't come next.
+    state["index_serial"], state["index_sha256"] = index.serial, digest
+    state["last_pull"] = {
+        "at": now.isoformat(timespec="seconds"),
+        "source": source,
+        "index_issued": index.issued.isoformat(),
+    }
+    write_state(home, state)
     done.index_serial, done.index_issued = index.serial, index.issued.isoformat()
-    age = ((now or datetime.now(UTC)) - index.issued).days
+    age = (now - index.issued).days
     if age > STALE_DAYS:
         done.notes.append(
             f"the index was issued {age} days ago: if a newer one was expected, the source"
             " may have stopped updating"
         )
-    # 3. Packs newer than any version accepted here.
+    elif index.issued - now > timedelta(days=SKEW_DAYS):
+        done.notes.append(
+            f"the index says it was issued {index.issued.isoformat()[:16]}, ahead of this"
+            " machine's clock: one of them is wrong"
+        )
+    # 3. Packs newer than any version accepted here, NouriLoop's to give.
     for entry in index.packs:
         record = state["packs"].get(entry.id)
-        if record is not None and entry.version <= record["highest"]:
-            continue  # in force already, or retired by a person, or older
+        if record is not None:
+            if record.get("domain") != NOURILOOP:
+                done.notes.append(
+                    f"{entry.id}: your organization's key signs this pack id here, so"
+                    " NouriLoop's is left alone"
+                )
+                continue
+            if record.get("held"):
+                if entry.version > record["highest"]:
+                    done.notes.append(
+                        f"{entry.id} version {entry.version} is offered, but the pack was"
+                        " retired here by hand: `checker packs add` brings it back"
+                    )
+                continue
+            seen = record.get("seen", {}).get(str(entry.version))
+            if seen is not None and seen != entry.sha256:
+                done.problems.append(
+                    f"{entry.id} version {entry.version}: the index's file isn't the one"
+                    " accepted here under that version (a changed pack needs a new version)"
+                )
+                continue
+            if entry.version <= record["highest"]:
+                continue  # in force already, or older
         try:
             pack = _signed_pair(get, source, pack_path(entry.id), MAX_BYTES)
             if pack is None:
                 raise PullError(f"the index lists {pack_path(entry.id)}, which isn't there")
             if hashlib.sha256(pack[0]).hexdigest() != entry.sha256:
                 raise PullError("its file doesn't have the hash the index gives")
-            stored, outcome = add(home, organization, pack[0], pack[1], checks)
+            stored, outcome = add(
+                home, organization, pack[0], pack[1], checks,
+                domain=NOURILOOP, expect=(entry.id, entry.version),
+            )  # fmt: skip
         except (PullError, StoreError) as exc:
             done.problems.append(f"{entry.id} version {entry.version}: {exc}")
             continue
-        if (stored.pack.id, stored.pack.version) != (entry.id, entry.version):
-            done.problems.append(
-                f"{entry.id} version {entry.version}: the file holds {stored.pack.id} version"
-                f" {stored.pack.version}"
-            )
         done.added.append((stored.pack.id, stored.pack.version, outcome))
-    # 4. Withdrawn packs in force.
+    # 4. Withdrawn packs in force, if they are NouriLoop's.
+    state = read_state(home)
     for gone in index.withdrawn:
+        record = state["packs"].get(gone.id)
+        if record is None or record.get("domain") != NOURILOOP:
+            continue  # not here, or your organization's own
         try:
             done.withdrawn += retire(home, gone.id, f"withdrawn by the packs source: {gone.reason}")
         except StoreError:
             continue  # not in force here
-    state = read_state(home)
-    state["index_serial"] = max(accepted, index.serial)
-    state["last_pull"] = {
-        "at": (now or datetime.now(UTC)).isoformat(timespec="seconds"),
-        "source": source,
-        "index_issued": index.issued.isoformat(),
-    }
-    write_state(home, state)
-    return done
 
 
 def staleness(state: dict[str, Any], now: datetime | None = None) -> str | None:
@@ -297,10 +381,10 @@ def staleness(state: dict[str, Any], now: datetime | None = None) -> str | None:
         return None
     try:
         issued = datetime.fromisoformat(str(last.get("index_issued")))
-        at = str(last.get("at"))[:16]
-    except ValueError:
+        age = ((now or datetime.now(UTC)) - issued).days
+    except (ValueError, TypeError):
         return None
-    age = ((now or datetime.now(UTC)) - issued).days
+    at = str(last.get("at"))[:16]
     said = f"Last pull {at}: index issued {issued.isoformat()[:10]} ({age} days ago)"
     if age > STALE_DAYS:
         said += "; older than expected: the source may have stopped updating"

@@ -1016,6 +1016,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ID=REASON",
         help="withdraw a pack: pulls retire it (repeatable; earlier withdrawals are kept)",
     )
+    indexing.add_argument(
+        "--forget",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="drop an earlier withdrawal from the index (a site that never pulled keeps it)",
+    )
     indexing.set_defaults(handler=cmd_packs_index)
     trusting = pack_commands.add_parser("trust", help="your organization's own pack keys")
     trust_commands = trusting.add_subparsers(dest="trust_command", metavar="ACTION", required=True)
@@ -2176,7 +2183,7 @@ def cmd_packs_retire(args: argparse.Namespace) -> int:
     base = home()
     try:
         with _packs_lock(base):
-            names = retire(base, args.id, f"retired by hand: {args.reason}")
+            names = retire(base, args.id, f"retired by hand: {args.reason}", by_hand=True)
     except (StoreError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
@@ -2256,41 +2263,52 @@ def cmd_packs_pull(args: argparse.Namespace) -> int:
         config = load_config(base)
         source = config.packs.source
         if args.source:
-            source = (
-                type(config.packs)
-                .model_validate(config.packs.model_dump() | {"source": args.source})
-                .source
-            )
-        print(f"Pulling from {source}")
+            try:
+                source = (
+                    type(config.packs)
+                    .model_validate(config.packs.model_dump() | {"source": args.source})
+                    .source
+                )
+            except ValidationError as exc:
+                print(f"checker: --source {exc.errors()[0]['msg'].removeprefix('Value error, ')}",
+                      file=sys.stderr)  # fmt: skip
+                return 2
+        print(f"Pulling from {visible(source, 300)}")
         with _packs_lock(base):
             config = load_config(base)  # inside the lock, as `packs add` reads it
             done = pull(base, config.packs.trusted_keys, load_checks(), source)
-    except ValidationError as exc:
-        print(f"checker: --source {exc.errors()[0]['msg'].removeprefix('Value error, ')}",
-              file=sys.stderr)  # fmt: skip
-        return 2
-    except (EvidenceError, OSError, PullError, StateError, TrustError) as exc:
+    except PullError as exc:
+        if exc.pulled is not None:
+            _print_pulled(exc.pulled)
         print(f"checker: nothing more was pulled: {visible(str(exc), 500)}", file=sys.stderr)
         return 1
+    except (EvidenceError, OSError, StateError, TrustError) as exc:
+        print(f"checker: nothing more was pulled: {visible(str(exc), 500)}", file=sys.stderr)
+        return 1
+    _print_pulled(done)
+    if not (done.changed() or done.problems):
+        print("Nothing new.")
+    return 1 if done.problems else 0
+
+
+def _print_pulled(done) -> None:
     if done.key_list:
         new, old = done.key_list
         print(f"Key list serial {new} is in force" + (f" (was {old})." if old else "."))
     for name in done.retired_by_keys:
         print(f"Retired {name}: its signing key is no longer trusted.")
-    print(f"Index serial {done.index_serial}, issued {(done.index_issued or '')[:16]}.")
+    if done.index_serial is not None:
+        print(f"Index serial {done.index_serial}, issued {(done.index_issued or '')[:16]}.")
     for pack_id, version, outcome in done.added:
         print(f"{visible(pack_id, 80)} version {version}: {outcome}.")
     for name in done.withdrawn:
         print(f"Retired {name}: withdrawn by the source.")
-    if not (done.added or done.withdrawn or done.key_list or done.retired_by_keys):
-        print("Nothing new.")
     for note in done.notes:
-        print(f"Note: {visible(note, 300)}")
+        print(f"checker: note: {visible(note, 300)}", file=sys.stderr)
     for problem in done.problems:
-        print(f"checker: not added: {visible(problem, 500)}", file=sys.stderr)
-    if done.added or done.withdrawn or done.retired_by_keys:
+        print(f"checker: {visible(problem, 500)}", file=sys.stderr)
+    if done.changed():
         print("`checker analyze --all` applies the packs in force to every host's latest bundle.")
-    return 1 if done.problems else 0
 
 
 def cmd_packs_index(args: argparse.Namespace) -> int:
@@ -2303,7 +2321,9 @@ def cmd_packs_index(args: argparse.Namespace) -> int:
             if not equals or not reason.strip():
                 raise ReleaseError(f"--withdraw {item!r}: give ID=REASON")
             withdraw[pack_id.strip()] = reason.strip()
-        path, index = write_index(Path(args.directory), args.serial, withdraw)
+        path, index = write_index(
+            Path(args.directory), args.serial, withdraw, forget=tuple(args.forget)
+        )
     except (ReleaseError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1

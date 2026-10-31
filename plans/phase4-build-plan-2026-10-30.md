@@ -604,6 +604,28 @@ is John's to approve before it is committed. Also:
   point out one older than 30 days, with when the last pull was.
 - Waits for 4.8's keys: the repository's first `keys.yaml` and index, and
   the root public key on nouriloop.com.
+- **After review (4.7; 1 high, 7 medium, 12 low), all fixed:** an HTTP
+  protocol error (a body cut short) crashed the pull; a NouriLoop
+  withdrawal, or index entry, could touch an organization's own pack of
+  the same id (now left alone); a mirror could re-sign NouriLoop's bytes
+  with an organization key and take the id into that domain (a pulled
+  pack must be signed by a NouriLoop key); an index entry naming another
+  pack wrote before it was refused (`add` now checks the expected id and
+  version first); the release writer's ids (`2026-10-30`, `1e5`, `null`)
+  and non-BMP reasons didn't round-trip (all quoted); a missing key list
+  passed quietly (now refused; an older one is a problem, exit 1); what
+  a pull did before failing went unsaid; a changed pack under the same
+  version could be released (refused, and a pull says so); the index
+  serial is recorded as soon as it is checked, with its hash (one serial,
+  one index); a future-dated index is pointed out; a file gets two
+  minutes in all; the source refuses control characters and user
+  names; a damaged last-pull record doesn't break `packs list`; the
+  index cap matches the reader's; withdrawals can be forgotten; a
+  release checks every pack's signature against the repository's
+  keys.yaml; a pack retired by hand stays out of pulls, whatever version
+  is offered, until a person adds it again. Revocations still depend on
+  the source (pull.py's docstring says so; nouriloop.com is the second
+  place to check the key list).
 
 ### 4.8 — The PHP2Shell pack
 

@@ -19,7 +19,9 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 13  # 12: PHP settings, package history; 13: sites' .user.ini, .htaccess
+# 12: PHP settings, package history; 13: sites' .user.ini, .htaccess; 14: nft blocks and
+# comments read whole, fail2ban's banned addresses
+SNAPSHOT_VERSION = 14
 # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers;
 # 11: the folders web servers serve
 
@@ -182,44 +184,87 @@ _MANAGED_CHAIN = re.compile(
     re.IGNORECASE,
 )
 _NFT_TABLE = re.compile(r"^table (\S+ \S+) \{$")
-_NFT_CHAIN = re.compile(r"^(chain|set|map|flowtable|counter|quota) (\S+) \{$")
+_NFT_BLOCK = re.compile(r"^(.+) \{$")
+# fail2ban's banned addresses, as its nftables action names them. Only these:
+# another table's set may be what a rule lets traffic in by.
+_BANNED_SET = re.compile(r"^addr6?-set-[\w-]+$", re.IGNORECASE)
+_BANNED_TABLE = re.compile(r"^f2b-", re.IGNORECASE)
+_MANAGED = "(managed by other software: rules not compared)"
+
+
+def _placed(lines: list[str], literal: bool) -> list[tuple[str, str, str, str]]:
+    """Each line that counts, cleaned, with its table, block and chain. Any
+    line ending in `{` opens a block, known or not (nft's `ct helper`), so
+    the `}` that closes it can't be taken for the table's. Only nft's lines:
+    iptables-save's start with `-` or `:`, whatever they end in."""
+    placed = []
+    table = block = ""
+    depth = 0
+    for line in lines:
+        text = line.strip()
+        if not text or (text.startswith("#") and not literal):
+            continue
+        for pattern, replacement in _VOLATILE:
+            text = pattern.sub(replacement, text)
+        text = " ".join(text.split())
+        if text == "}":
+            depth = max(depth - 1, 0)
+            if depth <= 1:
+                block = ""
+            if depth == 0:
+                table = ""
+            continue
+        if match := _NFT_TABLE.match(text):
+            table, block, depth = match.group(1), "", 1
+        elif text.startswith(("-", ":")):
+            pass
+        elif match := _NFT_BLOCK.match(text):
+            if depth == 1:
+                block = match.group(1)
+            depth += 1
+        elif depth == 0 and re.fullmatch(r"\*\w+", text):  # iptables-save: a table
+            table, block = text[1:], ""
+        chain = block.split(" ", 1)[1] if block.startswith("chain ") else ""
+        if text.startswith(("-A ", "-I ")):  # iptables-save: the chain is in the line
+            chain = text.split()[1]
+        placed.append((table, block, chain, text))
+    return placed
 
 
 def firewall_lines(lines: list[str]) -> list[str]:
     """The loaded rules as comparable lines, each with where it is (an nft
     table and chain or set, an iptables table), so the same rule added to
     another chain is a change; volatile parts, comments and blank lines left
-    out, spaces collapsed; a line repeated in one place numbered."""
+    out, spaces collapsed; a line repeated in one place numbered.
+
+    nft prints a quoted comment as it is, newlines and all, so what follows
+    one can read as a chain or set of its own, and it can't be read back
+    reliably. A line with an unbalanced quote says that has happened: nothing
+    is then summarised or dropped, so whatever it hides shows as a change."""
+    literal = any(line.count('"') % 2 for line in lines)
+    placed = _placed(lines, literal)
+    # A set of fail2ban's that a compared rule uses is compared after all.
+    used = {
+        (table, name)
+        for table, block, chain, text in placed
+        if not (chain and _MANAGED_CHAIN.match(chain)) and not block.startswith("set ")
+        for name in re.findall(r"@([\w.-]+)", text)
+    }
     out: list[str] = []
     seen: dict[str, int] = {}
-    table = block = ""
-    for line in lines:
-        text = line.strip()
-        if not text or text.startswith("#"):
-            continue
-        for pattern, replacement in _VOLATILE:
-            text = pattern.sub(replacement, text)
-        text = " ".join(text.split())
-        if match := _NFT_TABLE.match(text):
-            table, block = match.group(1), ""
-        elif match := _NFT_CHAIN.match(text):
-            block = f"{match.group(1)} {match.group(2)}"
-        elif text.startswith("*"):  # iptables-save: a table
-            table, block = text[1:], ""
-        elif text == "}":
-            if block:
-                block = ""
-            else:
-                table = ""
-            continue
-        chain = block.split(" ", 1)[1] if block.startswith("chain ") else ""
-        if text.startswith(("-A ", "-I ")):  # iptables-save: the chain is in the line
-            chain = text.split()[1]
-        if chain and _MANAGED_CHAIN.match(chain):
-            text = "(managed by other software: rules not compared)"
+    for table, block, chain, text in placed:
+        name = block.split(" ", 1)[1] if block.startswith("set ") else ""
+        banned = (
+            name
+            and _BANNED_SET.match(name)
+            and _BANNED_TABLE.match(table.rsplit(" ", 1)[-1])
+            and (table, name) not in used
+        )
+        if not literal and (banned or (chain and _MANAGED_CHAIN.match(chain))):
+            text = _MANAGED
         where = " / ".join(p for p in (table, block or (f"chain {chain}" if chain else "")) if p)
         key = f"[{where}] {text}" if where else text
-        if text.startswith("(managed") and key in seen:
+        if text == _MANAGED and key in seen:
             continue
         seen[key] = seen.get(key, 0) + 1
         out.append(key if seen[key] == 1 else f"{key} #{seen[key]}")

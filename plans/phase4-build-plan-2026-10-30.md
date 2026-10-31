@@ -705,6 +705,15 @@ is John's to approve before it is committed. Also:
   Four runs, eleven Nanodes: at most about 8 cents if each is billed a whole
   hour; Phase 4 about $0.10 of $10.
 
+- Firewall parsing (found by reviews of a fail2ban fix, 2026-10-31): nft prints
+  comments raw, so its text can't be read back reliably. A line with an
+  unbalanced quote now stops all summarising for that output. Still open: a
+  comment with balanced quotes (settable through `nft -j -f`) can forge a block,
+  and a comment line starting `elements = {` can trigger the collector's
+  large-set reduction. The real fix is collecting `nft -j list ruleset`, a
+  collector change for John to schedule. An accept inside a chain named like a
+  running program's isn't compared, by design.
+
 ### 4.9 — Policy, docs and README
 
 - Policy §11 (threat packs and trust) brought up to date with what was
@@ -714,6 +723,10 @@ is John's to approve before it is committed. Also:
 - DESIGN.md §10 and §11.2 as built; §10.3, §12.1 (role 5) and §18 say
   drafting moved to the pack application; README "Status: Phase 4
   complete".
+- As built (2026-10-30): §10 and §11 in John's approved wording ("kept off
+  any server" rather than "offline": the pack key is on his laptop for
+  signing). `docs/packs.md` written. Phase 4 complete; on nouriloop-prod the
+  pack is in force, and John chose not to rotate secrets for now.
 
 ## Decisions to settle (one at a time)
 

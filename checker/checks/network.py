@@ -516,23 +516,32 @@ CHAIN_OWNERS = (
     ("libvirt_", ("libvirtd", "virtqemud", "virtnetworkd")),
     ("ts-", ("tailscaled",)),
 )
-_MANAGED_KEY = re.compile(r"/ chain (\S+)\] \(managed by other software")
+# A whole key: a managed chain, or fail2ban's set in its table. Anchored, so a
+# rule's comment can't read as one.
+_MANAGED_KEY = re.compile(
+    r"^(?:\S+: )?\[(?:(?:[^\]]* / )?chain (\S+)|\S+ (\S+) / set \S+)\]"
+    r" \(managed by other software: rules not compared\)$"
+)
 
 
 @check(
     "net.managed_chain",
-    "Firewall chains named like Docker's, Kubernetes' or fail2ban's whose owner isn't running",
+    "Firewall chains or sets named like another program's, which isn't running",
 )
 def managed_chains(context: Context) -> list[Finding]:
     """Their rules aren't compared (they change all the time), so the name
     must be earned: the program that writes such chains must be running."""
     running = {_runs(p)[1] for p in _processes(context).values()}
     findings = []
+    said = set()
     for key in context.items("firewall_rules"):
         match = _MANAGED_KEY.search(key)
         if not match:
             continue
-        chain = match.group(1)
+        chain = match.group(1) or match.group(2)
+        if chain in said:  # a table's several sets: once
+            continue
+        said.add(chain)
         owners = next(
             (names for prefix, names in CHAIN_OWNERS if chain.lower().startswith(prefix)), ()
         )
@@ -541,10 +550,10 @@ def managed_chains(context: Context) -> list[Finding]:
         findings.append(
             Finding(
                 "net.managed_chain",
-                "A firewall chain named like another program's, which isn't running",
+                "A firewall chain or table named like another program's, which isn't running",
                 COMPROMISE,
                 "medium",
-                f"{chain}: named like {owners[0]}'s chains, whose rules aren't compared, but"
+                f"{chain}: named like {owners[0]}'s, whose contents aren't compared, but"
                 f" {' or '.join(owners)} isn't running",
                 [],
                 [{"item": ["firewall_rules", key]}],

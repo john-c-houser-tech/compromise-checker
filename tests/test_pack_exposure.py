@@ -397,3 +397,26 @@ def test_a_stale_service_is_said_when_another_package_cant_be_judged():
     old = {"pid": 7, "comm": "php-fpm", "start_time": "2026-10-21T00:00:00+00:00"}
     found = judge(STRICT, ROCKY, listing, [old], NOW)
     assert found.status == "can't judge" and [p["pid"] for p in found.stale] == [7]
+
+
+def test_a_versioned_worker_is_judged_by_its_own_versions_fix():
+    text = GOOD.replace(
+        "binary_names: [php8.3-fpm, libapache2-mod-php8.3]",
+        "binary_names: [php8.3-fpm, php8.4-fpm, libapache2-mod-php8.3]",
+    ).replace('fixed: "8.3.6-0ubuntu0.24.04.6"', 'fixed: "8.3.6-0ubuntu0.24.04.6"', 1)
+    pack = read(text.encode())
+    early, late = datetime(2026, 10, 22, tzinfo=UTC).timestamp(), FIXED_AT
+    listed = {
+        "php8.3-fpm amd64": {"manager": "dpkg", "version": "8.3.6-0ubuntu0.24.04.6",
+                             "installed": early},
+        "php8.4-fpm amd64": {"manager": "dpkg", "version": "8.3.6-0ubuntu0.24.04.7",
+                             "installed": late},
+    }  # fmt: skip
+    between = "2026-10-23T00:00:00+00:00"
+    workers = [{"pid": 1, "comm": "php-fpm8.3", "start_time": between},
+               {"pid": 2, "comm": "php-fpm8.4", "start_time": between},
+               {"pid": 3, "comm": "php-fpm", "start_time": between}]  # fmt: skip
+    found = judge(pack, UBUNTU, listed, workers, NOW)
+    # 8.3's fix came first: its workers are on it. 8.4's aren't. One naming no
+    # version can't be told apart, so the newest fix counts.
+    assert sorted(p["pid"] for p in found.stale) == [2, 3]

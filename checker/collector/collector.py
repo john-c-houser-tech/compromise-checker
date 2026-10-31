@@ -7762,7 +7762,8 @@ _PHP_FPM_LOG = re.compile(r"^php[\d.]*-fpm\.log(?:[-.][\w.-]+)?$")
 # Log directives: nginx's access_log and error_log, Apache's CustomLog,
 # TransferLog and ErrorLog, PHP-FPM's error_log, slowlog and access.log.
 _WEB_LOG_DIRECTIVE = re.compile(
-    r"^\s*(access_log|error_log|CustomLog|TransferLog|ErrorLog|slowlog|access\.log)"
+    r"^\s*(?:php_(?:admin_)?value\[)?"  # a PHP-FPM pool's php_admin_value[error_log]
+    r"(access_log|error_log|CustomLog|TransferLog|ErrorLog|slowlog|access\.log)\]?"
     r"\s*=?\s*\"?([^\"\s;]+)",
     re.IGNORECASE,
 )
@@ -7967,7 +7968,14 @@ def _web_logs(run, module, texts):
     opt-in. The summary is written however this ends."""
     named = _web_log_paths(texts)
     candidates = {}  # path: kind
-    directories = set(WEB_LOG_DIRS) | {p.rsplit("/", 1)[0] for p in named}
+    known = set(WEB_LOG_DIRS)
+    try:  # Remi's Software Collections log under each collection
+        for name in os.listdir(path("/var/opt/remi")):
+            if re.fullmatch(r"php\d+", name):
+                known.add("/var/opt/remi/" + name + "/log/php-fpm")
+    except OSError:
+        pass
+    directories = known | {p.rsplit("/", 1)[0] for p in named}
     for directory in sorted(directories):
         try:
             names = os.listdir(path(directory))
@@ -7976,7 +7984,7 @@ def _web_logs(run, module, texts):
         for name in names:
             absolute = _join(directory, name)
             kind = _named_kind(absolute, named)
-            if kind is None and directory in WEB_LOG_DIRS:
+            if kind is None and directory in known:
                 kind = _web_kind(name)
             if kind:
                 candidates[absolute] = kind

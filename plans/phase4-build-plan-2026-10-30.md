@@ -673,7 +673,17 @@ is John's to approve before it is committed. Also:
   `web.errors`, now named by the pack instead). Known limits: patched
   RHEL EUS and SAP-minor builds read vulnerable, since one pattern can't
   exclude them; mod_php's Apache isn't in stale code, since it would flag
-  every Apache in front of PHP-FPM; PHP 8.6 pre-releases aren't covered.
+  every Apache in front of PHP-FPM; cPanel's and Plesk's own packages read
+  not affected (the remediation says so), as do Ubuntu ESM releases and
+  RHEL 8 only as "not covered". Second check (2 high, 7 medium, low): one
+  log line dated year 1 or 9999 stopped a whole analysis (now no time);
+  `other_builds` didn't reach the package-history path, so an uncovered
+  build removed in the window looked never exposed; a PHP stack trace's
+  lines counted as an unknown format and could blind the log rules; a
+  pool's `php_admin_value[error_log]` and Remi's log folders weren't
+  collected; the pack missed php8.5-litespeed and let third-party Ubuntu
+  builds read fixed. A tool older than this rejects a pack using
+  `other_builds`: the pack ships after the tool.
 
 ### 4.9 — Policy, docs and README
 

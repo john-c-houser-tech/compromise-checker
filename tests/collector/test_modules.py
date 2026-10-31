@@ -5881,6 +5881,20 @@ class PhpIniTests(FixtureRoot):
         self.assertEqual(link["data"]["path"], "/etc/php/8.3/fpm/conf.d/10-opcache.ini")
         self.assertNotIn("/etc/php/8.3/cli/php.ini", sent)
 
+    def test_a_pools_own_error_log_and_remis_are_found(self):
+        pool = b"[www]\nphp_admin_value[error_log] = /srv/logs/www-error.log\n"
+        self.write("etc/php-fpm.d/www.conf", pool)
+        self.write("srv/logs/www-error.log", b"[22-Oct-2026 03:00:00 UTC] PHP Fatal error:  x\n")
+        self.write(
+            "var/opt/remi/php83/log/php-fpm/www-error.log",
+            b"[22-Oct-2026 03:00:00 UTC] PHP Fatal error:  y\n",
+        )
+        self.write("var/opt/remi/not-php/log/php-fpm/www-error.log", b"z\n")
+        sent = sources(collect(self.root, ["web_logs"]))
+        self.assertIn("/srv/logs/www-error.log", sent)
+        self.assertIn("/var/opt/remi/php83/log/php-fpm/www-error.log", sent)
+        self.assertNotIn("/var/opt/remi/not-php/log/php-fpm/www-error.log", sent)
+
     def test_rhel_layout(self):
         self.write("etc/php.ini", b"[PHP]\nexpose_php = Off\n")
         self.write("etc/php.d/20-session.ini", b"session.upload_progress.enabled = Off\n")

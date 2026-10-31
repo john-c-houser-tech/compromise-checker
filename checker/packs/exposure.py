@@ -195,7 +195,8 @@ def judge(
     statuses = {p.status for p in found.packages}
     # A vulnerable version removed in the window was exposed until then,
     # whatever is installed now.
-    removed = _removed(history, entries, manager, start)
+    other_builds = window.other_builds
+    removed = _removed(history, entries, manager, start, other_builds)
     if not statuses and complete:
         if removed is not None:
             # Not installed now, but a vulnerable version was until then.
@@ -217,7 +218,7 @@ def judge(
         return found
     fixed = [p for p in found.packages if p.status == FIXED]
     for package in fixed:
-        _arrival(package, history, earlier or [], entries, manager, history_complete)
+        _arrival(package, history, earlier or [], entries, manager, history_complete, other_builds)
     # Every fixed package's time is needed: one unknown is a fix at an
     # unknown time. A package first installed already fixed, with nothing
     # vulnerable before it, extends no exposure.
@@ -230,7 +231,7 @@ def judge(
         found.removed_at = removed.isoformat()
     found.fixed_at = fixed_at.isoformat() if fixed_at and fixed_at != start else None
     found.fix_time_exact = exact
-    if found.status == FIXED:
+    if fixed and found.status in (FIXED, CANT_JUDGE):
         # Old code: a service started before the newest of these arrived.
         newest = [_time(p.fixed_since) for p in fixed]
         found.stale = _stale(window, processes, max(newest) if None not in newest else None)
@@ -249,14 +250,16 @@ def judge(
     return found
 
 
-def _state(name: str, version: str | None, entries: list, manager: str) -> str:
+def _state(name: str, version: str | None, entries: list, manager: str, other_builds: str) -> str:
     """A version's standing against the pack: VULNERABLE, FIXED, CANT_JUDGE,
-    or "absent" (removed, or not a version any entry covers)."""
+    or "absent" (removed, or not a version any entry covers, unless the pack
+    counts such a build as one it can't judge)."""
     if version is None:
         return "absent"
-    matching = [e for e in entries if name in e.binary_names and _matches(e, version)]
+    named = [e for e in entries if name in e.binary_names]
+    matching = [e for e in named if _matches(e, version)]
     if not matching:
-        return "absent"
+        return CANT_JUDGE if named and other_builds == "cant_judge" else "absent"
     return _judge_one("", name, version, None, matching, manager).status
 
 
@@ -275,7 +278,13 @@ def _uncertain(event: dict[str, Any]) -> bool:
 
 
 def _arrival(
-    package: Judged, history: list, earlier: list, entries: list, manager: str, complete: bool
+    package: Judged,
+    history: list,
+    earlier: list,
+    entries: list,
+    manager: str,
+    complete: bool,
+    other_builds: str,
 ) -> None:
     """When a fixed package's fix arrived. The package history dates it
     exactly: the change into a fixed version after which it stayed fixed
@@ -292,8 +301,8 @@ def _arrival(
     events = _events(history, package.name, arch)
     for event in events:
         fields = event.get("fields") or {}
-        now = _state(package.name, fields.get("version"), entries, manager)
-        before = _state(package.name, fields.get("previous"), entries, manager)
+        now = _state(package.name, fields.get("version"), entries, manager, other_builds)
+        before = _state(package.name, fields.get("previous"), entries, manager, other_builds)
         if now != FIXED:
             since = None
         elif since is None or before in (VULNERABLE, CANT_JUDGE):
@@ -305,7 +314,9 @@ def _arrival(
             complete
             and since.get("type") == "package.install"
             and not (since.get("fields") or {}).get("previous")
-            and not _vulnerable_before(history, earlier, entries, manager, since["time"])
+            and not _vulnerable_before(
+                history, earlier, entries, manager, since["time"], other_builds
+            )
         )
         return
     latest = _time(package.installed)
@@ -313,14 +324,17 @@ def _arrival(
         before = (listing.get(package.key) or {}).get("version")
         # Only this very version: one changed since could have been
         # downgraded and fixed again in between.
-        if before == package.version and _state(package.name, before, entries, manager) == FIXED:
+        if (
+            before == package.version
+            and _state(package.name, before, entries, manager, other_builds) == FIXED
+        ):
             if latest is None or collected < latest:
                 latest = collected
     package.fixed_since = latest.isoformat() if latest else None
 
 
 def _vulnerable_before(
-    history: list, earlier: list, entries: list, manager: str, when: str
+    history: list, earlier: list, entries: list, manager: str, when: str, other_builds: str
 ) -> bool:
     """Whether anything the pack covers was still vulnerable (or couldn't be
     judged) just before `when`: the last change before it, under any name
@@ -342,21 +356,26 @@ def _vulnerable_before(
         if fields.get("version") is None:
             removed_at[name] = at
     for name, version in last.items():
-        if version and _state(name, str(version), entries, manager) in (VULNERABLE, CANT_JUDGE):
+        if version and _state(name, str(version), entries, manager, other_builds) in (
+            VULNERABLE,
+            CANT_JUDGE,
+        ):
             return True
     for collected, listing in earlier:
         if collected >= moment:
             continue
         for key, item in listing.items():
             name = key.split(" ", 1)[0]
-            state = _state(name, str(item.get("version")), entries, manager)
+            state = _state(name, str(item.get("version")), entries, manager, other_builds)
             gone = removed_at.get(name)
             if state in (VULNERABLE, CANT_JUDGE) and not (gone and gone > collected):
                 return True
     return False
 
 
-def _removed(history: list, entries: list, manager: str, start: datetime) -> datetime | None:
+def _removed(
+    history: list, entries: list, manager: str, start: datetime, other_builds: str
+) -> datetime | None:
     """When the last vulnerable version an entry covers was removed in the
     window, if one was (the package history says so)."""
     removed = None
@@ -368,7 +387,10 @@ def _removed(history: list, entries: list, manager: str, start: datetime) -> dat
         ):
             continue
         name, before = fields.get("name"), fields.get("previous")
-        if before and _state(str(name), str(before), entries, manager) in (VULNERABLE, CANT_JUDGE):
+        if before and _state(str(name), str(before), entries, manager, other_builds) in (
+            VULNERABLE,
+            CANT_JUDGE,
+        ):
             when = _time(event.get("time"))
             if when is not None and when > start and (removed is None or when > removed):
                 removed = when

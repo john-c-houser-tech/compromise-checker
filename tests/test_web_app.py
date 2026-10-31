@@ -1327,6 +1327,21 @@ def recorded(status, **extra):
         ),
         ({"pack_records": recorded("fixed", exposed_until="2026-10-23")}, "fixed now"),
         ({"pack_records": recorded("fixed", exposed_until=None)}, "old code"),
+        (
+            {"pack_records": recorded("fixed", exposed_until="2026-10-23", fix_time_exact=False)},
+            "May have been open",
+        ),
+        (
+            {
+                "pack_records": recorded("fixed", exposed_until="2026-10-23"),
+                "package_history_incomplete": True,
+            },
+            "May have been open",
+        ),
+        (
+            {"exposed": {"p1": "fixed"}, "package_history_incomplete": True},
+            "May have been open",
+        ),
         ({"pack_records": recorded("not covered")}, "doesn't cover"),
         ({"pack_records": recorded("unknown release")}, "doesn't cover"),
         ({"packs_applied": {}}, "Not checked for this threat yet"),
@@ -1596,3 +1611,18 @@ def test_findings_carry_the_numbers_the_advisor_uses(web):
     analysed(home, "b1", 10, ROOTED)
     assert ">F-1<" in client.get("/hosts/web01").content.decode()
     assert ">F-1<" in client.get("/hosts/web01/evidence").content.decode()
+
+
+def test_the_screenshots_stop_on_a_real_name():
+    import sys
+    from pathlib import Path
+
+    pytest.importorskip("playwright")
+    sys.path.insert(0, str(Path(__file__).parent / "integration"))
+    import screenshots
+
+    assert screenshots.named("by jch on clauder", {"jch": "operator", "clauder": "controller"}) == (
+        "by operator on controller"
+    )
+    with pytest.raises(ValueError, match="real name"):
+        screenshots.named("li123-45.members.linode.com", {})

@@ -184,7 +184,7 @@ details p, details li { font-size: 0.9375rem; color: var(--quiet); }
 .threat h3 { font-size: 1rem; margin: 1rem 0 0.25rem; }
 .threat ul { margin: 0.25rem 0; padding-inline-start: 1.1rem; }
 .threat .note { margin: 0; }
-.affected { --tone: var(--unknown); border-inline-start: 6px solid var(--tone); padding-inline-start: 0.75rem; margin-top: 0.75rem; }
+.affected { border-inline-start: 6px solid var(--tone); padding-inline-start: 0.75rem; margin-top: 0.75rem; }
 .affected h3 { margin: 0; color: var(--tone); }
 .affected h3 span { font-weight: 400; }
 .from-ai { border: 1px solid var(--unknown); border-radius: 3px; padding: 0.75rem 1rem; margin-top: 0.75rem; max-width: 70ch; }

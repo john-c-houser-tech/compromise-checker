@@ -4,6 +4,7 @@ ratios or the whitelists is committed with the expectations
 `scripts/update_golden.py` rewrites, so the diff shows what moved."""
 
 import importlib.util
+import ipaddress
 import json
 import sys
 from pathlib import Path
@@ -183,3 +184,11 @@ def test_an_export_whose_scrubbing_missed_an_address_fails(home, tmp_path, monke
     with pytest.raises(ValueError, match="survived"):
         golden.export_case(store, "web01", identity, config.recipients, "b1", "t", [], tmp_path)
     assert not (tmp_path / "t.json.gz").exists()
+
+
+def test_a_protected_ipv6_address_in_proc_net_form_fails_the_export():
+    address = "2600:3c00::f03c:91ff:fe00:1234"
+    packed = ipaddress.ip_address(address).packed
+    swapped = "".join(packed[i : i + 4][::-1].hex() for i in range(0, 16, 4))
+    with pytest.raises(ValueError, match="protected"):
+        golden.check_scrubbed(f"socket {swapped.upper()}:0050", [address])

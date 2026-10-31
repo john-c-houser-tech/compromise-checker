@@ -352,7 +352,7 @@ BY_VARIANT = {
         "Ask whoever runs this server whether this version has the fix. If the check saw only part of the package list, run a fresh check.",
     ),
     ("pack.exposure", "was_exposed"): (
-        "This server had a known flaw while attackers were using it. The flawed version isn't installed now, but someone could have got in while it was.",
+        "This server may have had a known flaw while attackers were using it. The flawed version isn't installed now, but someone could have got in then.",
         "Look through this page for signs of a break-in.",
     ),
     ("pack.exposure", "stale_code"): (

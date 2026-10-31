@@ -7176,55 +7176,390 @@ def _tables(connection, names):
     return all(n in found for n in names)
 
 
-def _dnf_history(run, module, since, change):
-    """dnf's history database: each completed package change since `since`."""
+WAL_MAX_BYTES = 128 * 1024 * 1024  # the database and its log together, held in memory
+# A server's own bytes decide what these parse, so each is bounded. All far above a real dnf's.
+PAYLOAD_MAX_BYTES = 1024 * 1024
+TABLE_MAX_BYTES = 128 * 1024 * 1024
+TABLE_MAX_ROWS = 1000000
+RECORD_HEADER_MAX_BYTES = 4096
+SCHEMA_MAX_CHARS = 64 * 1024
+LOG_TIME_SHARE = 0.25  # of the module's remaining time, at most
+
+
+def _wal_sum(data, big_endian, first, second):
+    """SQLite's write-ahead log checksum, carried on from (first, second)."""
+    words = struct.unpack((">" if big_endian else "<") + str(len(data) // 4) + "I", data)
+    for i in range(0, len(words), 2):
+        first = (first + words[i] + second) & 0xFFFFFFFF
+        second = (second + words[i + 1] + first) & 0xFFFFFFFF
+    return first, second
+
+
+def apply_wal(run, main, wal, index=b""):
+    """The database as its write-ahead log says it now is: every committed transaction applied,
+    in memory, stopping at the first frame whose salt or checksum is wrong, as SQLite itself
+    does. None if the log's header isn't sound, or if there are signs of committed transactions
+    past where reading stopped: a later commit frame, or SQLite's shared-memory index (`index`)
+    counting more frames than were found. Then the log can't be said to have been read."""
+    if len(wal) < 32:
+        return None
+    magic, version, page_size, _, salt1, salt2, sum1, sum2 = struct.unpack(">8I", wal[:32])
+    if magic not in (0x377F0682, 0x377F0683) or version != 3007000:
+        return None
+    if page_size < 512 or page_size > 65536 or page_size & (page_size - 1):
+        return None
+    big_endian = bool(magic & 1)
+    running = _wal_sum(wal[:24], big_endian, 0, 0)
+    if running != (sum1, sum2):
+        return None
+    pages, pending, size = {}, {}, None
+    offset, frame_size = 32, 24 + page_size
+    while offset + frame_size <= len(wal):
+        run.check_time()
+        number, commit, frame_salt1, frame_salt2, frame_sum1, frame_sum2 = struct.unpack(
+            ">6I", wal[offset : offset + 24]
+        )
+        if (frame_salt1, frame_salt2) != (salt1, salt2) or not number:
+            break
+        page = wal[offset + 24 : offset + frame_size]
+        checked = _wal_sum(wal[offset : offset + 8], big_endian, *running)
+        checked = _wal_sum(page, big_endian, *checked)
+        if checked != (frame_sum1, frame_sum2):
+            break
+        running = checked
+        pending[number] = page
+        if commit:  # a transaction's last frame: only now does it count
+            pages.update(pending)
+            pending, size = {}, commit
+        offset += frame_size
+    # Frames still to come with this log's salts, one of them a commit: something was missed.
+    for later in range(offset, len(wal) - frame_size + 1, frame_size):
+        run.check_time()
+        commit, frame_salt1, frame_salt2 = struct.unpack(">3I", wal[later + 4 : later + 16])
+        if commit and (frame_salt1, frame_salt2) == (salt1, salt2):
+            return None
+    if len(index) >= 48 and index[32:40] == wal[16:24]:
+        counted = struct.unpack("=I", index[16:20])[0]
+        if counted > (offset - 32) // frame_size:
+            return None
+    if size is None:
+        return main  # nothing committed in the log
+    if size * page_size > WAL_MAX_BYTES:
+        raise ValueError("database size")
+    image = bytearray(main[: size * page_size].ljust(size * page_size, b"\0"))
+    for number, page in pages.items():
+        if number <= size:
+            image[(number - 1) * page_size : number * page_size] = page
+    return bytes(image)
+
+
+def _file_state(absolute):
+    found = os.lstat(path(absolute))
+    return found.st_ino, found.st_size, found.st_mtime_ns
+
+
+def _read_limited(absolute, limit, whole=True):
+    """A file's bytes, through the same safe open as everything else: up to `limit` of them, or
+    if it must be `whole`, None when it's over."""
+    raw, _ = open_regular_file(absolute)
+    with raw:
+        data = raw.read(limit + 1 if whole else limit)
+    return None if whole and len(data) > limit else data
+
+
+def _varint(data, at):
+    value = 0
+    for i in range(9):
+        byte = data[at + i]
+        if i == 8:
+            return (value << 8) | byte, at + 9
+        value = (value << 7) | (byte & 0x7F)
+        if byte < 0x80:
+            return value, at + i + 1
+    raise ValueError("varint")
+
+
+class _SqliteImage:
+    """Just enough of SQLite's file format to read whole tables from bytes in memory, for a
+    database with its write-ahead log applied: SQLite itself can't open memory-only files by
+    name, and Python before 3.11 can't load bytes. The bytes are the server's, so every page
+    number and length is checked, and anything odd raises ValueError or IndexError: the caller
+    then says the log wasn't read."""
+
+    def __init__(self, run, data):
+        if len(data) < 100 or data[:16] != b"SQLite format 3\0":
+            raise ValueError("not a database")
+        size = struct.unpack(">H", data[16:18])[0]
+        self.page_size = 65536 if size == 1 else size
+        if self.page_size < 512 or self.page_size & (self.page_size - 1):
+            raise ValueError("page size")
+        if struct.unpack(">I", data[56:60])[0] != 1:
+            raise ValueError("not UTF-8")
+        self.usable = self.page_size - data[20]
+        if self.usable < 480:
+            raise ValueError("usable size")
+        self.data, self.run = data, run
+        self.budget = TABLE_MAX_BYTES
+
+    def _page(self, number):
+        start = (number - 1) * self.page_size
+        if number < 1 or start + self.page_size > len(self.data):
+            raise ValueError("page number")
+        return self.data[start : start + self.page_size]
+
+    def _payload(self, page, at, size):
+        """A cell's record, following its overflow pages if it has them."""
+        # Rows here are short. Many cells can share one chain, so the total is bounded too.
+        self.budget -= size
+        if size > PAYLOAD_MAX_BYTES or self.budget < 0:
+            raise ValueError("payload too large")
+        usable = self.usable
+        limit = usable - 35
+        if size <= limit:
+            return page[at : at + size]
+        least = (usable - 12) * 32 // 255 - 23
+        local = least + (size - least) % (usable - 4)
+        if local > limit:
+            local = least
+        out = bytearray(page[at : at + local])
+        following = struct.unpack(">I", page[at + local : at + local + 4])[0]
+        seen = set()
+        while len(out) < size:
+            self.run.check_time()
+            if following in seen:
+                raise ValueError("overflow loop")
+            seen.add(following)
+            spill = self._page(following)
+            out += spill[4:usable]
+            following = struct.unpack(">I", spill[:4])[0]
+        return bytes(out[:size])
+
+    def rows(self, root):
+        """(rowid, values) of a table, in rowid order."""
+        stack, seen = [root], set()
+        while stack:
+            self.run.check_time()
+            number = stack.pop()
+            if number in seen:
+                raise ValueError("page loop")
+            seen.add(number)
+            page = self._page(number)
+            head = 100 if number == 1 else 0
+            kind = page[head]
+            count = struct.unpack(">H", page[head + 3 : head + 5])[0]
+            cells = head + (12 if kind == 5 else 8)
+            pointers = [
+                struct.unpack(">H", page[cells + 2 * n : cells + 2 * n + 2])[0]
+                for n in range(count)
+            ]
+            if kind == 5:
+                rightmost = struct.unpack(">I", page[head + 8 : head + 12])[0]
+                children = [struct.unpack(">I", page[p : p + 4])[0] for p in pointers]
+                stack.extend(reversed([*children, rightmost]))
+            elif kind == 13:
+                for pointer in pointers:
+                    self.run.check_time()
+                    size, at = _varint(page, pointer)
+                    rowid, at = _varint(page, at)
+                    if rowid >= 1 << 63:  # a varint is the two's complement of a negative rowid
+                        rowid -= 1 << 64
+                    yield rowid, _record(self._payload(page, at, size))
+            else:
+                raise ValueError("not a table page")
+
+    def table(self, name):
+        """A table's rows as dicts by column name, the integer primary key filled in."""
+        self.budget = TABLE_MAX_BYTES
+        found = [
+            values
+            for _, values in self.rows(1)
+            if len(values) >= 5 and values[0] == "table" and values[1] == name
+        ]
+        if len(found) != 1:
+            raise ValueError("no such table")
+        columns, key = _columns(found[0][4])
+        self.budget = TABLE_MAX_BYTES
+        for count, (rowid, values) in enumerate(self.rows(found[0][3])):
+            if count >= TABLE_MAX_ROWS:
+                raise ValueError("too many rows")
+            row = dict(zip(columns, values))
+            if key is not None:
+                row[key] = rowid
+            yield row
+
+
+def _record(payload):
+    size, at = _varint(payload, 0)
+    if size > RECORD_HEADER_MAX_BYTES:
+        raise ValueError("record header")
+    types = []
+    while at < size:
+        kind, at = _varint(payload, at)
+        types.append(kind)
+    at, values = size, []
+    widths = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 6, 6: 8, 7: 8, 8: 0, 9: 0}
+    for kind in types:
+        width = widths[kind] if kind < 10 else (kind - 12) // 2 if kind >= 12 else None
+        if width is None or at + width > len(payload):
+            raise ValueError("record")
+        raw = payload[at : at + width]
+        at += width
+        if kind == 0:
+            values.append(None)
+        elif kind == 7:
+            values.append(struct.unpack(">d", raw)[0])
+        elif kind in (8, 9):
+            values.append(kind - 8)
+        elif kind < 7:
+            values.append(int.from_bytes(raw, "big", signed=True))
+        else:
+            values.append(raw.decode("utf-8", "replace") if kind % 2 else raw)
+    return values
+
+
+def _columns(sql):
+    """Column names from a CREATE TABLE, and which is the integer primary key."""
+    if not isinstance(sql, str) or "(" not in sql or len(sql) > SCHEMA_MAX_CHARS:
+        raise ValueError("no schema")
+    # dnf's own schema has comments between its columns.
+    sql = re.sub(r"/\*.*?\*/|--[^\n]*", " ", sql, flags=re.DOTALL)
+    body = sql[sql.index("(") + 1 : sql.rindex(")")]
+    parts, depth, current = [], 0, ""
+    for char in body:
+        depth += (char == "(") - (char == ")")
+        if char == "," and not depth:
+            parts.append(current)
+            current = ""
+        else:
+            current += char
+    parts.append(current)
+    columns, key = [], None
+    for part in parts:
+        words = part.split()
+        if words and words[0].upper() == "PRIMARY":
+            raise ValueError("a table-level key: its rowid can't be told")  # not dnf's schema
+        if not words or words[0].upper() in ("FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT"):
+            continue
+        name = words[0].strip('"`[]')
+        columns.append(name)
+        if "INTEGER PRIMARY KEY" in " ".join(words[1:]).upper():
+            key = name
+    return columns, key
+
+
+def _history_from_log(run, since):
+    """Each completed change in dnf's database with its write-ahead log applied, as the query
+    below finds them, oldest first. None if it can't be had whole and unchanging, and then
+    what's recorded says the latest transactions may be missing."""
+    log = DNF_HISTORY + "-wal"
+    try:
+        before = (_file_state(DNF_HISTORY), _file_state(log))
+        wal = _read_limited(log, WAL_MAX_BYTES)
+        main = _read_limited(DNF_HISTORY, WAL_MAX_BYTES)
+        if wal is None or main is None or len(wal) + len(main) > WAL_MAX_BYTES:
+            return None
+        if (_file_state(DNF_HISTORY), _file_state(log)) != before:
+            return None  # written to as we read: the two may not belong together
+        try:
+            index = _read_limited(DNF_HISTORY + "-shm", 4096, whole=False)
+        except (OSError, ValueError):
+            index = b""  # it's optional: only a further check
+        image = apply_wal(run, main, wal, index or b"")
+        del main, wal
+        if image is None:
+            return None
+        database = _SqliteImage(run, image)
+        began = {r.get("id"): r.get("dt_begin") for r in database.table("trans")}
+        fields = ("name", "epoch", "version", "release", "arch")
+        packages = {r.get("item_id"): {f: r.get(f) for f in fields} for r in database.table("rpm")}
+        changes = []
+        for item in database.table("trans_item"):
+            when = began.get(item.get("trans_id"))
+            package = packages.get(item.get("item_id"))
+            if (
+                isinstance(when, (int, float))
+                and when >= since
+                and item.get("state") == 1
+                and item.get("action") in (1, 2, 4, 5, 6, 8, 9)
+                and package is not None
+            ):
+                changes.append(
+                    (
+                        when,
+                        item.get("id"),
+                        item["action"],
+                        package.get("name"),
+                        package.get("epoch"),
+                        package.get("version"),
+                        package.get("release"),
+                        package.get("arch"),
+                    )
+                )
+    except (
+        OSError,
+        ValueError,
+        IndexError,
+        KeyError,
+        TypeError,
+        struct.error,
+        RecursionError,
+        MemoryError,
+    ):
+        return None
+    changes.sort(key=lambda c: (c[0], c[1] if isinstance(c[1], int) else 0))
+    return [(c[0], *c[2:]) for c in changes]
+
+
+def _dnf_changes(run, rows, change):
+    """Each row of dnf's history as one package change."""
+    for began, action, name, epoch, version, release, arch in rows:
+        run.check_time()
+        kind = _DNF_ACTIONS.get(action)
+        if kind is None or not name or not isinstance(name, str):
+            continue
+        if not all(isinstance(v, (str, int, type(None))) for v in (epoch, version, release, arch)):
+            continue
+        if not isinstance(began, (int, float)):
+            continue
+        evr = f"{version}-{release}"
+        evr = f"{epoch}:{evr}" if epoch else evr
+        change(
+            {
+                "manager": "rpm",
+                "time": iso_from_timestamp(began),
+                "action": kind,
+                "name": name,
+                "arch": arch,
+                "previous": evr if kind == "remove" else None,
+                "version": None if kind == "remove" else evr,
+                "source": DNF_HISTORY,
+            }
+        )
+
+
+def _dnf_rows_on_disk(run, module, since):
+    """Each completed change SQLite can read from the database file alone, or None."""
     import sqlite3
 
-    wal = path(DNF_HISTORY) + "-wal"
-    try:
-        pending = os.lstat(wal).st_size
-    except OSError:
-        pending = 0
-    if pending:
-        # Read immutable, the database is read without its write-ahead log:
-        # the latest transactions may only be there.
-        run.stream.record(
-            module, "package_history_pending", {"path": DNF_HISTORY + "-wal", "bytes": pending}
-        )
     connection = sqlite_readonly(run, DNF_HISTORY)
     try:
         if not _tables(connection, ("trans", "trans_item", "rpm")):
             run.stream.record(
                 module, "not_examined", {"path": DNF_HISTORY, "reason": "not dnf's tables"}
             )
-            return
-        rows = connection.execute(
+            return None
+        found = []
+        for row in connection.execute(
             "SELECT t.dt_begin, ti.action, r.name, r.epoch, r.version, r.release, r.arch"
             " FROM trans_item ti JOIN trans t ON t.id = ti.trans_id"
             " JOIN rpm r ON r.item_id = ti.item_id"
             " WHERE t.dt_begin >= ? AND ti.state = 1 AND ti.action IN (1, 2, 4, 5, 6, 8, 9)"
             " ORDER BY t.dt_begin, ti.id",
             (int(since),),
-        )
-        for began, action, name, epoch, version, release, arch in rows:
+        ):
             run.check_time()
-            kind = _DNF_ACTIONS.get(action)
-            if kind is None or not name:
-                continue
-            evr = f"{version}-{release}"
-            evr = f"{epoch}:{evr}" if epoch else evr
-            change(
-                {
-                    "manager": "rpm",
-                    "time": iso_from_timestamp(began),
-                    "action": kind,
-                    "name": name,
-                    "arch": arch,
-                    "previous": evr if kind == "remove" else None,
-                    "version": None if kind == "remove" else evr,
-                    "source": DNF_HISTORY,
-                }
-            )
+            found.append(row)
+        return found
     except sqlite3.OperationalError as exc:
         if run.out_of_time():
             raise ModuleTimeout() from None
@@ -7233,6 +7568,42 @@ def _dnf_history(run, module, since, change):
         run.stream.record(module, "not_examined", {"path": DNF_HISTORY, "reason": str(exc)})
     finally:
         connection.close()
+    return None
+
+
+def _dnf_history(run, module, since, change):
+    """dnf's history database: each completed package change since `since`. Transactions may
+    still be only in its write-ahead log. Those are read too, and what that finds must include
+    everything SQLite finds in the file: otherwise it's said that the newest may be missing."""
+    wal = path(DNF_HISTORY) + "-wal"
+    try:
+        found = os.lstat(wal)
+        # Anything there that isn't a plain file can't be read, whatever size it claims.
+        pending = found.st_size if stat.S_ISREG(found.st_mode) else 1
+    except OSError:
+        pending = 0
+    on_disk = _dnf_rows_on_disk(run, module, since)
+    if on_disk is None:
+        return
+    if pending:
+        # Its bytes are the server's: running out of time here mustn't cost the other checks.
+        deadline = run.deadline
+        run.deadline = min(
+            deadline, time.monotonic() + LOG_TIME_SHARE * max(0.0, deadline - time.monotonic())
+        )
+        try:
+            with_log = _history_from_log(run, int(since))
+        except ModuleTimeout:
+            with_log = None
+        finally:
+            run.deadline = deadline
+        if with_log is not None and set(on_disk) <= set(with_log):
+            on_disk = with_log
+        else:
+            run.stream.record(
+                module, "package_history_pending", {"path": DNF_HISTORY + "-wal", "bytes": pending}
+            )
+    _dnf_changes(run, on_disk, change)
 
 
 def dpkg_packages(run, module):

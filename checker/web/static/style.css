@@ -1,0 +1,15 @@
+body { font: 16px/1.5 system-ui, sans-serif; margin: 0; background: #fff; color: #1a1a1a; }
+header { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; padding: 1rem; border-bottom: 1px solid #ccc; }
+header form { margin-left: auto; }
+main { max-width: 60rem; margin: 0 auto; padding: 1rem; }
+label { display: block; margin: 0.75rem 0; }
+input { display: block; width: 100%; max-width: 24rem; padding: 0.5rem; font: inherit; box-sizing: border-box; }
+button { padding: 0.5rem 1rem; font: inherit; }
+.error { color: #a00; }
+.note { color: #555; }
+@media (prefers-color-scheme: dark) {
+  body { background: #161616; color: #eee; }
+  header { border-color: #444; }
+  .error { color: #f88; }
+  .note { color: #aaa; }
+}

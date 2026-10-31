@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{% block title %}{{ product_name() }}{% endblock %}</title>
+<link rel="stylesheet" href="{{ url('style') }}">
+</head>
+<body>
+<header>
+  <strong>{{ product_name() }}</strong>
+  <span>Find out if your server has been hacked</span>
+  {% if request.user is defined and request.user.is_authenticated %}
+  <form method="post" action="{{ url('logout') }}">{{ csrf_input }}<button>Sign out</button></form>
+  {% endif %}
+</header>
+<main>
+{% block main %}{% endblock %}
+</main>
+</body>
+</html>

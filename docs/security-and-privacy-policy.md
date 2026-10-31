@@ -236,6 +236,14 @@ that may include access tokens, and sometimes secrets typed into commands.
   this machine only, without writing a plain copy. A report written as plain
   HTML on purpose (`--plain`), to hand on, is yours to protect: handle it
   like the evidence.
+- **The web interface.** If you run it, it decrypts evidence in memory for each
+  page, using the same key as the command line, and tells browsers not to keep
+  the pages. So the web server can read everything the tool has stored, and
+  anyone with an account can see every result: treat an account like access to
+  the evidence itself. It keeps accounts with hashed passwords, sessions, and
+  failed logins for 15 minutes (with their usernames and addresses) in its own
+  owner-only file, and never evidence. By default only this machine can reach
+  it, and it won't listen more widely without TLS.
 
 ## 9. The optional AI advisor
 
@@ -383,6 +391,10 @@ new release of the tool.
   anyone can inspect them.
 - Releases and threat packs are signed.
 - Dependencies are kept few and pinned.
+- Text collected from a server is treated as hostile, since a compromised
+  server can write anything into its logs. In reports and the web interface it
+  is escaped and invisible characters are shown, and pages run no scripts except
+  those the tool ships and load nothing from other sites.
 - To report a vulnerability in the tool, see `SECURITY.md`.
 
 ## 13. Your responsibilities

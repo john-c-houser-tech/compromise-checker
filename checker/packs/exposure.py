@@ -128,6 +128,7 @@ def _matches(entry: Any, version: str) -> bool:
 # (a Remi or Sury build that sorts above the vendor's fix is someone else's
 # numbering: "can't judge" unless an entry with a pattern covers it).
 _VENDOR_MARKS = (re.compile(r"ubuntu"), re.compile(r"\.el\d+"))
+_PROGRAM_VERSION = re.compile(r"\d+\.\d+")
 
 
 def _vendor_mark(fixed: str) -> re.Pattern | None:
@@ -232,9 +233,8 @@ def judge(
     found.fixed_at = fixed_at.isoformat() if fixed_at and fixed_at != start else None
     found.fix_time_exact = exact
     if fixed and found.status in (FIXED, CANT_JUDGE):
-        # Old code: a service started before the newest of these arrived.
-        newest = [_time(p.fixed_since) for p in fixed]
-        found.stale = _stale(window, processes, max(newest) if None not in newest else None)
+        # Old code: a service started before its fix arrived (_fix_time).
+        found.stale = _stale(window, processes, fixed)
     if end <= start:
         return found  # the window hasn't opened yet at collection time
     span = (end - start).total_seconds()
@@ -397,7 +397,24 @@ def _removed(
     return removed
 
 
-def _stale(window: Any, processes: list[dict[str, Any]], fixed_at: datetime | None) -> list:
+def _fix_time(names: set[str], fixed: list[Judged]) -> datetime | None:
+    """When the fix a program runs on arrived: the newest of the fixed
+    packages, leaving out only those naming another version than the program
+    does (php-fpm8.3 and php8.4-fpm: 8.4's fix says nothing of 8.3's workers).
+    A library naming no version stays: it may be what carried the fix. With
+    none left, all count, erring toward old code. None when one of those
+    times isn't known."""
+    versions = {v for n in names for v in _PROGRAM_VERSION.findall(n)}
+
+    def may_carry(package: Judged) -> bool:
+        named = set(_PROGRAM_VERSION.findall(package.name))
+        return not versions or not named or bool(named & versions)
+
+    times = [_time(p.fixed_since) for p in [p for p in fixed if may_carry(p)] or fixed]
+    return max(times) if times and None not in times else None
+
+
+def _stale(window: Any, processes: list[dict[str, Any]], fixed: list[Judged]) -> list:
     """Processes matching the pack's stale-code patterns that started before
     the fix was (last) installed, or whose program file was replaced under
     them; with no known install time, only the latter."""
@@ -412,6 +429,7 @@ def _stale(window: Any, processes: list[dict[str, Any]], fixed_at: datetime | No
             continue
         started = _time(process.get("start_time"))
         replaced = bool(process.get("exe_deleted"))
+        fixed_at = _fix_time(names, fixed)
         if replaced or (started is not None and fixed_at is not None and started < fixed_at):
             found.append(process)
     return found

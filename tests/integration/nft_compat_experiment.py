@@ -30,7 +30,7 @@ from checker.inventory import Host
 
 DISTROS = ("ubuntu22.04", "ubuntu24.04", "ubuntu26.04")
 ROUNDS = 5
-LISTINGS = ("nft list ruleset", "iptables-nft-save", "ip6tables-nft-save")
+LISTINGS = ("nft list ruleset", "nft -j list ruleset", "iptables-nft-save", "ip6tables-nft-save")
 
 SETUP = r"""
 set -eu

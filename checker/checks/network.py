@@ -18,6 +18,7 @@ from typing import Any
 
 from checker.checks import COMPROMISE, Context, Finding, check
 from checker.checks.processes import own_processes
+from checker.snapshot import NFT_JSON, NFT_JSON_LOST, NFT_JSON_STARTED, read_without_json
 
 METADATA = {"169.254.169.254", "fd00:ec2::254"}
 # Cloud agents that talk to the metadata service for a living, by the name
@@ -455,7 +456,7 @@ def tunnels(context: Context) -> list[Finding]:
     "net.config",
     "Changes to hosts, resolver, TCP wrappers and the firewall",
     needs_baseline=True,
-    variants=("file", "firewall"),
+    variants=("file", "firewall", "json_lost"),
 )
 def config(context: Context) -> list[Finding]:
     findings = []
@@ -477,10 +478,35 @@ def config(context: Context) -> list[Finding]:
                 )
             )
     rules = context.changes("firewall_rules")
+    if rules.get("nft_json") == NFT_JSON_STARTED:
+        context.gaps.append(
+            "nftables rules read as JSON aren't compared with this baseline, from before they"
+            " were read so (the text listing still is): a new baseline compares both"
+        )
+    elif rules.get("nft_json") == NFT_JSON_LOST:
+        # Growing the ruleset past what's read would take it away: said, not assumed.
+        why = context.snapshot.live.get("nft_json_unread")
+        findings.append(
+            Finding(
+                "net.config",
+                "nftables rules can no longer be read as JSON",
+                COMPROMISE,
+                "medium",
+                "the baseline has them, this collection doesn't: a rule's comment could now"
+                " disguise what follows it in the text listing" + (f" ({why})" if why else ""),
+                [],
+                [],
+                new=not read_without_json(context.previous_snapshot),
+                uncertain=context.uncertain("firewall_rules"),
+                variant="json_lost",
+            )
+        )
     for how in ("added", "removed"):
-        lines = sorted(rules[how])
+        # The text first: it has what JSON leaves out (iptables-nft's arguments).
+        lines = sorted(rules[how], key=lambda k: (k.startswith(f"{NFT_JSON}: "), k))
         if not lines:
             continue
+        as_json = sum(k.startswith(f"{NFT_JSON}: ") for k in lines)
         # One finding per direction: a reloaded ruleset changes many lines.
         # (Chains Docker, Kubernetes and fail2ban manage are summarised in
         # the snapshot, so their churn doesn't reach here.)
@@ -491,7 +517,8 @@ def config(context: Context) -> list[Finding]:
                 f"Firewall rules {how} since the baseline",
                 COMPROMISE,
                 "medium",
-                f"{len(lines)} rule line(s) {how}: {shown}"[:400],
+                f"{len(lines) - as_json or as_json} rule line(s) {how}"
+                f"{f' ({as_json} read as JSON)' if as_json else ''}: {shown}"[:400],
                 [],
                 [context.change_ref("firewall_rules", key, how) for key in lines[:50]],
                 new=any(context.new_since_previous("firewall_rules", k) for k in lines),
@@ -524,6 +551,33 @@ _MANAGED_KEY = re.compile(
 )
 
 
+@check("net.firewall_comment", "Firewall rules a comment may be disguising")
+def firewall_comment(context: Context) -> list[Finding]:
+    """A string with a line break or a quote, or a listing with a chain nft's
+    JSON doesn't have: nothing ordinary rules give, and how a comment passes for
+    structure in `nft list ruleset`. That text is then compared literally."""
+    odd = context.snapshot.live.get("nft_odd_comments")
+    if not odd:
+        return []
+    return [
+        Finding(
+            "net.firewall_comment",
+            "A firewall comment may be disguising rules",
+            COMPROMISE,
+            "medium",
+            f"`nft list ruleset` shows {odd} sign(s) of a comment passing for rules (a line"
+            " break or quote in a string, or a chain, set or table nft's JSON doesn't list):"
+            " read the rules with `nft -j list ruleset` and `iptables-nft-save` instead. The"
+            " text is compared literally while this lasts, so more may show as changed",
+            [],
+            [],
+            new=not (
+                context.previous_snapshot and context.previous_snapshot.live.get("nft_odd_comments")
+            ),
+        )
+    ]
+
+
 @check(
     "net.managed_chain",
     "Firewall chains or sets named like another program's, which isn't running",
@@ -532,6 +586,14 @@ def managed_chains(context: Context) -> list[Finding]:
     """Their rules aren't compared (they change all the time), so the name
     must be earned: the program that writes such chains must be running."""
     running = {_runs(p)[1] for p in _processes(context).values()}
+    rules = context.items("firewall_rules")
+    if any(k.startswith("nft: ") for k in rules) and not any(
+        k.startswith(f"{NFT_JSON}: ") for k in rules
+    ):
+        context.gaps.append(
+            "nftables rules were read only as text (an nft without JSON, a very large ruleset,"
+            " or an older collection): a rule's comment could disguise what follows it"
+        )
     findings = []
     said = set()
     for key in context.items("firewall_rules"):

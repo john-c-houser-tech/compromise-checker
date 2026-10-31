@@ -335,3 +335,100 @@ def test_generic_tools_reaching_the_metadata_address_stay_medium(exe):
     processes = [proc(5, exe.rsplit("/", 1)[-1], exe=exe, cmdline=exe, uids=ROOT)]
     [finding] = found("net.metadata", processes, [sock(["169.254.169.254", 80], [5])])
     assert finding.band == "medium"
+
+
+def rule_check(items, diff=None, live=None):
+    from checker.checks import Context
+    from checker.checks.network import config, managed_chains
+    from checker.snapshot import Section, Snapshot
+
+    snapshot = Snapshot({}, {"firewall_rules": Section(items)}, live or {})
+    context = Context("h", "b", [], snapshot, since_baseline={}, baseline_id="a")
+    context.since_baseline = {"firewall_rules": diff} if diff else {}
+    managed_chains(context)
+    return config(context), context.gaps
+
+
+def test_rules_read_only_as_text_are_said():
+    assert any("only as text" in g for g in rule_check({"nft: [inet t] x": {}})[1])
+    both = {"nft: [inet t] x": {}, "nft-json: [inet t] {}": {}}
+    assert rule_check(both)[1] == []
+
+
+def json_change(how):
+    return {"added": {}, "removed": {}, "changed": {}, "comparable": True, "notes": [],
+            "nft_json": how}  # fmt: skip
+
+
+def test_json_starting_is_a_gap_and_json_lost_a_finding():
+    from checker.snapshot import NFT_JSON_LOST, NFT_JSON_STARTED
+
+    found_now, gaps = rule_check({"nft-json: x": {}, "nft: y": {}}, json_change(NFT_JSON_STARTED))
+    assert not found_now and any("a new baseline compares both" in g for g in gaps)
+    live = {"nft_json_unread": "too long"}
+    found_now, _ = rule_check({"nft: y": {}}, json_change(NFT_JSON_LOST), live)
+    assert [f.variant for f in found_now] == ["json_lost"] and "too long" in found_now[0].summary
+
+
+def test_an_odd_firewall_comment_is_a_finding():
+    from checker.checks import Context
+    from checker.checks.network import firewall_comment
+    from checker.snapshot import Snapshot
+
+    def findings(live):
+        return firewall_comment(Context("h", "b", [], Snapshot({}, {}, live)))
+
+    assert findings({}) == []
+    assert "2 sign(s)" in findings({"nft_odd_comments": 2})[0].summary
+
+
+def test_the_text_comes_first_and_json_is_counted_apart():
+    rules = {"nft-json: a": {}, "nft: b": {}, "nft: c": {}}
+    diff = {"added": rules, "removed": {}, "changed": {}, "comparable": True, "notes": []}
+    found_now, _ = rule_check(rules, diff)
+    assert found_now[0].summary.startswith("2 rule line(s) added (1 read as JSON): nft: b;")
+
+
+def test_losing_json_is_new_unless_the_last_collection_had_lost_it_too():
+    from checker.checks import Context
+    from checker.checks.network import config
+    from checker.snapshot import NFT_JSON_LOST, Section, Snapshot
+
+    def lost(*keys):
+        previous = Snapshot({}, {"firewall_rules": Section({k: {} for k in keys})}, {})
+        context = Context("h", "b", [], Snapshot({}, {}, {}), previous_snapshot=previous)
+        context.since_baseline = {
+            "firewall_rules": {"nft_json": NFT_JSON_LOST, "comparable": True, "added": {},
+                               "removed": {}, "changed": {}, "notes": []}
+        }  # fmt: skip
+        return [f for f in config(context) if f.variant == "json_lost"]
+
+    assert lost("nft: a", "nft-json: a")[0].new
+    assert lost()[0].new  # an empty ruleset, or no network module: not known lost
+    assert not lost("nft: a")[0].new
+
+
+def test_an_odd_comment_is_new_only_when_it_wasnt_there_last_time():
+    from checker.checks import Context
+    from checker.checks.network import firewall_comment
+    from checker.snapshot import Snapshot
+
+    def found(before):
+        previous = Snapshot({}, {}, before)
+        now = Snapshot({}, {}, {"nft_odd_comments": 1})
+        return firewall_comment(Context("h", "b", [], now, previous_snapshot=previous))[0]
+
+    assert found({}).new
+    assert not found({"nft_odd_comments": 2}).new
+
+
+def test_new_since_previous_cant_rule_out_a_json_line_when_json_came_or_went():
+    from checker.checks import Context
+    from checker.snapshot import Snapshot
+
+    context = Context("h", "b", [], Snapshot({}, {}, {}))
+    context.since_previous = {"firewall_rules": {"nft_json": "x", "added": {}}}
+    assert context.new_since_previous("firewall_rules", "nft-json: a")
+    assert not context.new_since_previous("firewall_rules", "nft: a")  # the text still compares
+    context.since_previous = {"firewall_rules": {"added": {}}}
+    assert not context.new_since_previous("firewall_rules", "nft-json: a")

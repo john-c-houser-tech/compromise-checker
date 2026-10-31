@@ -21,8 +21,8 @@ from checker.snapshot import Snapshot
 # and key variants; 7: network checks (8.8); 8: anti-forensics (8.10); 9:
 # software changes (8.11); 10: outgoing mail (8.9); 11: web applications (8.12);
 # 12: containers (8.13); 13: logins at unusual hours (Phase 3, decision 4);
-# 14: threat packs' detections (plan 4.5).
-CHECKS_VERSION = 14
+# 14: threat packs' detections (plan 4.5); 15: nftables read as JSON beside text.
+CHECKS_VERSION = 15
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"
@@ -132,6 +132,8 @@ class Context:
         if self.since_previous is None:
             return True
         diff = self.since_previous.get(section) or {}
+        if key.startswith("nft-json: ") and diff.get("nft_json"):
+            return True  # one of the two had no JSON: can't say it isn't new
         if not diff.get("comparable", True) and not any(
             diff.get(kind) for kind in ("added", "removed", "changed")
         ):

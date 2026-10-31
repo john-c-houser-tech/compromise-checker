@@ -875,7 +875,10 @@ since the previous run.
 
 ## 14. Interfaces
 
-Command line first; a web interface later on top of the same store.
+Command line first; a web interface on top of the same store. The web interface
+(Phase 5) is the product for small organizations and businesses that can't afford
+commercial security products and mostly won't use a command line: everything they
+need is reachable in a browser, in plain words, and easy installation follows it.
 
 ```
 checker init                         # create config, keys, database
@@ -907,6 +910,7 @@ checker purge web01 --before 2026-07-01
 | Encryption | age (pyrage) | Simple, audited, key held by the organization |
 | Signing | minisign | Packs and releases |
 | Reports | Jinja2 → HTML; WeasyPrint → PDF | Self-contained files |
+| Web interface | Django, optional `web` extra | Tested login, sessions, CSRF and roles; the evidence store keeps its own code |
 | AI | Anthropic SDK; optional local model | Structured outputs |
 
 ---
@@ -986,6 +990,9 @@ Lessons that changed this design:
 1. ~~Product name.~~ **Decided 2026-10-25:** "Compromise Checker" stays the working
    title; the final name is chosen before the first public release, with
    trademark, domain, package-name and look-alike checks done for each candidate.
+   **Decided 2026-10-31:** the name is Compromise Checker, and stays configurable.
+   Domain and package-name checks found it free; a trademark search is still to do.
+   Whether it gets its own domain is decided later.
 2. ~~Licence.~~ **Decided 2026-10-25:** AGPL-3.0 for the tool, CC BY 4.0 for
    threat packs. NouriLoop LLC holds the copyright, so a customer who cannot
    accept AGPL can be offered a separate licence; that only stays possible if

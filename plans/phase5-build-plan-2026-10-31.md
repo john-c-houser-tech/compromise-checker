@@ -82,6 +82,10 @@ advisor output, labelled as AI's, as in the report.
 in the README and `docs/`. Getting them onto the NouriLoop site is a separate PR
 there, after John picks them.
 
+Before the shots are taken: John reads `checker/web/finding_words.py`, the advice owners
+will act on and the images will show (only checked against the code so far), and the USPTO
+search on the name is done.
+
 ### Stage 2: other formats
 
 **5.8 PDF.** From the report's HTML with WeasyPrint, as an optional extra because of

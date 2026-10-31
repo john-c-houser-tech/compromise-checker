@@ -1012,3 +1012,147 @@ def test_the_inventory_refuses_a_name_with_a_newline(tmp_path):
 
     with pytest.raises(ValidationError):
         Host(name="web1\n", address="192.0.2.1", user="scanner")
+
+
+# --- The evidence page ----------------------------------------------------------------------
+
+
+def test_the_evidence_page_needs_a_login_and_a_known_name(web):
+    client, home = web
+    analysed(home, "b1", 10, ROOTED)
+    assert client.get("/hosts/web01/evidence").status_code == 302
+    client, _ = signed_in(web)
+    assert client.get("/hosts/web01/evidence").status_code == 200
+    assert client.get("/hosts/nobody/evidence").status_code == 404
+
+
+def test_the_host_page_links_to_its_evidence(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    assert 'href="/hosts/web01/evidence"' in client.get("/hosts/web01").content.decode()
+
+
+def test_the_evidence_page_shows_excerpts_fingerprints_and_custody(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    text = client.get("/hosts/web01/evidence").content.decode()
+    assert "An account other than root has UID 0" in text
+    assert "toor" in text and 'class="from-server"' in text
+    row = home[1].bundle("b1")
+    assert row["plaintext_sha256"] in text and row["ciphertext_sha256"] in text
+    assert "For an investigator" in text
+
+
+def test_the_evidence_page_changes_nothing(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    before = _home_files(home[0])
+    assert client.get("/hosts/web01/evidence").status_code == 200
+    assert _home_files(home[0]) == before
+
+
+def test_details_that_are_not_stored_are_said_and_not_parsed_again(web, monkeypatch):
+    from checker import analysis
+
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    monkeypatch.setattr(analysis, "load_events", lambda *a: None)
+    monkeypatch.setattr(analysis, "load_snapshot", lambda *a: None)
+    before = _home_files(home[0])
+    text = client.get("/hosts/web01/evidence").content.decode()
+    assert "aren&#39;t stored" in text and "An account other than root" in text
+    assert _home_files(home[0]) == before
+
+
+def test_a_missing_snapshot_does_not_lose_excerpts_from_the_logs():
+    from types import SimpleNamespace
+
+    from checker.web.wording import evidence_details
+
+    event = SimpleNamespace(
+        corrected="2027-01-02T12:00:00+00:00",
+        time="",
+        source="auth",
+        line="a line",
+        type="t",
+        fields={},
+    )
+    finding = {"title": "t", "band": "high", "evidence": [{"event": 0}]}
+    details = evidence_details(
+        {"assessment": {"findings": [finding]}, "row": {}, "events": [event], "snapshot": None}
+    )
+    assert details["findings"][0]["excerpts"][0]["text"] == "a line"
+    assert details["timeline"][0]["text"] == "a line"
+
+
+def test_a_host_with_no_result_says_so_on_the_evidence_page(web, tmp_path):
+    from test_schedule import keyed_host
+
+    from checker.inventory import inventory_transaction
+
+    client, _ = signed_in(web)
+    with inventory_transaction() as hosts:
+        hosts.add(keyed_host(tmp_path, name="fresh"))
+    response = client.get("/hosts/fresh/evidence")
+    assert response.status_code == 200 and "no readable result" in response.content.decode()
+
+
+def test_hostile_text_does_nothing_on_the_evidence_page(web):
+    client, home = signed_in(web)
+    records = host_records(
+        accounts=(("root", 0), ("toor", 0)),
+        extra=[
+            rec(
+                "unusual_files",
+                "unusual_file",
+                path=f"/tmp/{HOSTILE}",
+                place="/tmp",
+                type="-",
+                kind="elf",
+                uid=33,
+                mode="0755",
+            )
+        ],
+    )
+    analysed(home, "b1", 10, records)
+    text = client.get("/hosts/web01/evidence").content.decode()
+    assert "<script>alert" not in text and "<img src=x" not in text and BIDI not in text
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"findings": "odd"},
+        {"findings": ["odd", 5]},
+        {"findings": [{"evidence": "x", "band": ["a"], "title": "t", "category": "exposure"}]},
+        {"findings": [{"evidence": [5, "x", {"event": "no"}], "band": "high", "title": "t"}]},
+        {
+            "findings": [
+                {"evidence": [{"item": "bad"}, {"change": 5}], "band": "high", "title": "t"}
+            ]
+        },
+        {"findings": [{"suppressed_by": "rule", "title": "t"}]},
+        {"exposures": "odd"},
+        {"exposures": [5]},
+    ],
+)
+def test_odd_stored_data_never_takes_the_evidence_page_down(web, monkeypatch, fields):
+    from checker import fleet as fleet_module
+
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    real = fleet_module.load_assessment
+
+    def load(store, bundle, identity, which=-1):
+        found = real(store, bundle, identity, which)
+        return {**found, **fields} if found else found
+
+    monkeypatch.setattr(fleet_module, "load_assessment", load)
+    assert client.get("/hosts/web01/evidence").status_code == 200
+
+
+def test_times_are_shown_as_people_read_them():
+    from checker.web.wording import when
+
+    assert when("2026-10-21T07:43:00+00:00") == "21 Oct 2026, 07:43 UTC"
+    assert when("not a time") == "not a time"

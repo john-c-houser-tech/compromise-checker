@@ -648,3 +648,60 @@ def read_host(base: Path, host: str) -> tuple[FleetHost, dict | None] | None:
     finally:
         store.close()
     return item, assessment
+
+
+def read_evidence(base: Path, host: str) -> dict | None:
+    """What a host's latest readable analysis rests on, from what is stored: nothing is
+    parsed or written, so what isn't stored is said to be missing (the next run stores it).
+    None if the tool hasn't heard of the host."""
+    from checker.analysis import load_events, load_snapshot
+    from checker.evidence import Store, database_file
+
+    settings = _settings(base)
+    store = Store(database_file(base), read_only=True)
+    try:
+        groups = {h.name for h in settings.inventory.hosts}
+        try:
+            if host not in groups and host not in store.hosts():
+                return None
+            found = _analyses(store, usable_bundles(store, host), settings.identity)
+            if found.after is None or found.newest_unreadable:
+                return {
+                    "assessment": None,
+                    "row": None,
+                    "events": None,
+                    "snapshot": None,
+                    "baselines": {},
+                    "custody": [],
+                }
+            row, after = found.row, found.after
+            parsed = load_events(store, row, settings.identity)
+            baselines = {}
+            for finding in _in_effect(after):
+                for ref in finding.get("evidence") or []:
+                    change = ref.get("change") if isinstance(ref, dict) else None
+                    against = change[0] if isinstance(change, list) and change else None
+                    if isinstance(against, str) and against not in baselines:
+                        baselines[against] = _snapshot_or_none(store, against, settings.identity)
+            return {
+                "assessment": after,
+                "row": dict(row),
+                "events": parsed.events if parsed else None,
+                "snapshot": load_snapshot(store, row, settings.identity),
+                "baselines": baselines,
+                "custody": [dict(c) for c in store.custody_of(row["id"])],
+            }
+        except sqlite3.Error as exc:
+            raise EvidenceError(store_unreadable(exc)) from exc
+    finally:
+        store.close()
+
+
+def _snapshot_or_none(store, bundle_id: str, identity):
+    """A baseline's snapshot, if it is still stored: purged ones show the current side only."""
+    from checker.analysis import load_snapshot
+
+    try:
+        return load_snapshot(store, store.bundle(bundle_id), identity)
+    except EvidenceError:
+        return None

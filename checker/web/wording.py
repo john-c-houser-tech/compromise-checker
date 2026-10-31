@@ -438,3 +438,87 @@ def _log_reach(reach: object) -> str | None:
             " Logs this short can mean they were cleared."
         )
     return f"Its login logs go back {int(furthest)} days. Anything earlier can't be seen."
+
+
+def evidence_details(stored: dict) -> dict:
+    """The evidence page's contents. Parts that can't be worked out or weren't stored are
+    said to be missing: the rest of the page still shows."""
+    from checker.report import excerpts, timeline_of
+    from checker.snapshot import Snapshot
+
+    empty = {
+        "notes": [],
+        "findings": [],
+        "timeline": [],
+        "suppressed": [],
+        "bundle": None,
+        "custody": [],
+        "collected_at": None,
+    }
+    assessment = stored.get("assessment")
+    if not isinstance(assessment, dict):
+        return {
+            **empty,
+            "notes": ["There's no readable result for this server to show evidence for."],
+        }
+    row = stored.get("row") or {}
+    events = stored.get("events")
+    snapshot = stored.get("snapshot")
+    notes = []
+    if events is None or snapshot is None:
+        notes.append(
+            "Some of this check's details aren't stored, so some excerpts are missing."
+            " The next check stores them again."
+        )
+    findings = assessment.get("findings")
+    findings = [f for f in findings if isinstance(f, dict)] if isinstance(findings, list) else []
+    in_effect = [f for f in findings if not f.get("suppressed_by")]
+    shown = []
+    for finding in sorted(
+        (f for f in in_effect if f.get("band") != "info" or f.get("raised_by_pack")),
+        key=lambda f: _BAND_ORDER.get(f.get("band"), 9) if isinstance(f.get("band"), str) else 9,
+    ):
+        try:
+            found = excerpts(
+                finding, events or [], snapshot or Snapshot({}, {}), stored.get("baselines") or {}
+            )
+        except Exception:  # noqa: BLE001 - one finding's odd data loses its own excerpts only
+            found = []
+        shown.append({**_finding(finding), "excerpts": found})
+    try:
+        timeline = timeline_of(in_effect, events or [], assessment)
+    except Exception:  # noqa: BLE001 - as above
+        timeline, notes = [], [*notes, "The order of events couldn't be worked out."]
+    suppressed = []
+    for finding in findings:
+        by = finding.get("suppressed_by")
+        if by:
+            by = by if isinstance(by, dict) else {}
+            suppressed.append(
+                {
+                    "title": finding.get("title"),
+                    "summary": finding.get("summary"),
+                    "rule": by.get("rule"),
+                    "layer": by.get("layer"),
+                    "owner": by.get("owner"),
+                    "reason": by.get("reason"),
+                }
+            )
+    return {
+        "notes": notes,
+        "findings": shown,
+        "timeline": timeline,
+        "suppressed": suppressed,
+        "bundle": row or None,
+        "custody": stored.get("custody") or [],
+        "collected_at": row.get("started_at"),
+    }
+
+
+def when(moment: object) -> str:
+    """A time as people read it. Anything else is shown as it is."""
+    try:
+        parsed = datetime.fromisoformat(str(moment))
+    except ValueError:
+        return str(moment)
+    return parsed.astimezone(UTC).strftime("%-d %b %Y, %H:%M UTC") if parsed.tzinfo else str(moment)

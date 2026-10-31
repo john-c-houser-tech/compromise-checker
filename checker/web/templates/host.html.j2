@@ -22,6 +22,7 @@
 </div>
 <p class="note">This is an estimate, not proof either way. A finding is a reason to look, and many have innocent explanations. Before changing anything on a server you think was broken into, get advice: what's on it may be evidence.</p>
 <p class="note">Text in a box like <span class="from-server">this</span> comes from the server, and an intruder could have written it. This tool's advice only appears under "What to do".</p>
+{% if sections or suppressed %}<p><a href="{{ url('evidence', name=row.host.host) }}">See the evidence behind these findings</a></p>{% endif %}
 {% for section in sections %}
 <section class="findings">
   <h2>{{ section.title }} <span>({{ section.findings | length }})</span></h2>

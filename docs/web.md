@@ -14,6 +14,12 @@ reads as having no strong signs only if its score is Low and nothing else is wro
 threat, serious problems, warnings from the check before, missing logs or a stale result all
 take that away. It only reads: the evidence store is opened read-only, and pages collect, analyse and change nothing.
 
+Each server has its own page, with what was found in plain words, and an evidence page for
+whoever looks into it: the excerpts behind each finding, what happened in order, and the
+collection's fingerprints and chain of custody. Pages show what is stored, and if part of a
+check's details isn't stored they say so. Text from a server is boxed apart, since an intruder
+could have written it.
+
 ## Where it listens
 
 By default, on this machine only (`127.0.0.1:8088`). Anyone with an account on this machine

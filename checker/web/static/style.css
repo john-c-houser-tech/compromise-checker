@@ -162,6 +162,20 @@ p.from-server { padding: 0.375rem 0.5rem; }
 details summary { cursor: pointer; margin-top: 0.5rem; font-size: 0.9375rem; color: var(--quiet); }
 details p, details li { font-size: 0.9375rem; color: var(--quiet); }
 
+.page-title { font-size: clamp(1.5rem, 1.2rem + 1.5vw, 2.25rem); max-width: none; overflow-wrap: anywhere; }
+.excerpts { list-style: none; padding: 0; margin: 0.5rem 0 0; }
+.excerpts li { margin-top: 0.5rem; }
+.where { font-size: 0.875rem; color: var(--quiet); overflow-wrap: anywhere; }
+.timeline { list-style: none; margin: 0; padding: 0; border-inline-start: 2px solid var(--rule); }
+.timeline li { padding: 0.5rem 0 0.5rem 1rem; }
+.timeline time { font-size: 0.875rem; font-weight: 700; color: var(--quiet); }
+.timeline p { margin: 0.125rem 0 0; }
+.timeline .mark { font-weight: 700; color: var(--unknown); }
+.led-to { font-size: 0.875rem; color: var(--quiet); }
+.facts { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 0.25rem 1rem; font-size: 0.875rem; overflow-wrap: anywhere; }
+.facts dd { margin: 0; }
+.custody { font-size: 0.875rem; padding-inline-start: 1.25rem; }
+
 form label { display: block; margin: 0.75rem 0; font-weight: 700; }
 form input { display: block; width: 100%; max-width: 24rem; padding: 0.5rem; font: inherit; color: inherit; background: var(--sheet); border: 1px solid var(--quiet); border-radius: 3px; }
 main form button { margin-top: 0.5rem; padding: 0.5rem 1.25rem; font: inherit; font-weight: 700; color: var(--on-bar); background: var(--bar); border: 0; border-radius: 3px; cursor: pointer; }
@@ -171,4 +185,5 @@ code { font-size: 0.9em; overflow-wrap: anywhere; }
 @media (max-width: 44rem) {
   .server { grid-template-columns: minmax(0, 1fr); }
   .host-head { grid-template-columns: minmax(0, 1fr); }
+  .facts { grid-template-columns: minmax(0, 1fr); }
 }

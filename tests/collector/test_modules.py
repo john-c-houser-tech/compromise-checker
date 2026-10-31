@@ -4593,7 +4593,7 @@ class NetworkTests(FixtureRoot):
                 "echo TEXT\n"
             ).encode(),
         ).chmod(0o755)
-        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True, exist_ok=True)
         return sources(collect(self.root, ["network"]))
 
     def test_nftables_is_read_as_json_one_object_a_line(self):
@@ -4625,6 +4625,20 @@ class NetworkTests(FixtureRoot):
         self.assertNotIn("192.0.2.7", text)
         self.assertEqual(json.loads(text.splitlines()[0])["set"]["elem"]["count"], 120)
         self.assertIn("198.51.100.1", text)
+
+    def test_a_hash_in_json_doesnt_move_with_traffic(self):
+        def hashes(packets):
+            counted = {"counter": {"packets": packets, "bytes": packets * 60}}
+            elements = [{"elem": {"val": f"192.0.2.{n}", **counted}} for n in range(120)]
+            body = {"family": "inet", "table": "t", "name": "big", "handle": packets}
+            long = {"family": "inet", "table": "t", "chain": "c", "handle": packets,
+                    "expr": [{**counted, "pad": "x" * 2_000_000}]}  # fmt: skip
+            sent = self.nft_json([{"set": {**body, "elem": elements}}, {"rule": long}])
+            [(_, content, _)] = [v for n, v in sent.items() if " -j " in n]
+            big, rule = [json.loads(line) for line in content.decode().splitlines()]
+            return big["set"]["elem"]["sha256"], rule["rule"]["oversized_sha256"]
+
+        self.assertEqual(hashes(1), hashes(900))
 
     def test_a_ruleset_past_the_usual_line_limit_is_still_read_as_json(self):
         # A big blocklist: nft -j gives it all on one line, longer than MAX_LINE.

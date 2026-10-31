@@ -166,6 +166,11 @@
    "status": "ran"
   },
   {
+   "check": "net.firewall_comment",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "net.listener",
    "findings": 3,
    "status": "ran"

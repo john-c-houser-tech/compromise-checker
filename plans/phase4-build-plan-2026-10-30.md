@@ -795,8 +795,17 @@ So both are collected and each is compared with itself: what one misses the othe
 shows. The text keeps comparing with existing baselines, so nothing pauses; the JSON
 side says so as a gap until a new baseline. JSON is read up to 8 MB; past that, or on
 any trouble, only text counts, and losing JSON a baseline had is a finding, since an
-attacker could grow the ruleset to cause it. Limit: rule order isn't in either
-key, and a firewall wholly in iptables-nft rules gets nothing from JSON's side.
+attacker could grow the ruleset to cause it (a real blocklist of about 130,000
+elements can too: the finding says why). The second review showed a comment in a
+managed chain could recreate a changed iptables-nft rule's old lines, seen by
+neither: JSON's data now shows such a comment directly, the text refuses to
+summarise on the same chain twice, and either is a finding, `net.firewall_comment`.
+A fixed list over 50 elements a compared rule uses is compared by its hash.
+
+Limits: rule order isn't in either key; a comment with invalid UTF-8 vanishes from
+JSON (nft's doing), so it reaches the text unseen, though it needs raw netlink to
+hold a quote too; a fixed big list no compared rule uses, or one filled as it runs,
+isn't compared; a set of 50 or fewer filled as it runs churns, as text always did.
 
 ## After Phase 4: the pack application
 

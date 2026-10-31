@@ -7,6 +7,7 @@ import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pyrage
 import pytest
@@ -26,6 +27,8 @@ from checker.snapshot import (
     compare,
     firewall_json_lines,
     firewall_lines,
+    firewall_text_is_odd,
+    nft_json_odd_strings,
     sshd_lines,
     sudoers_lines,
 )
@@ -1387,3 +1390,107 @@ def test_json_said_to_be_unread_leaves_only_the_text():
 def test_an_odd_chain_name_is_never_managed_either():
     rule = {"rule": {"family": "inet", "table": "t", "chain": "f2b q", "expr": [{"accept": None}]}}
     assert "managed by other software" not in firewall_json_lines(nft_objects(rule))[0]
+
+
+def test_the_same_chain_twice_in_a_table_is_read_literally():
+    forged = [
+        "table ip nat {",
+        "\tchain DOCKER {",
+        '\t\tcounter comment "a"',
+        "\t}",
+        "\tchain PREROUTING {",
+        "\t\ttcp dport 8080 dnat to 10.0.0.5",
+        "\t}",
+        "\tchain DOCKER {",
+        "\tq {",
+        '"b"',
+        "\t}",
+        "\tchain PREROUTING {",
+        "\t\ttcp dport 8080 dnat to 6.6.6.6",
+        "\t}",
+        "\t}",
+        "}",
+    ]
+    assert firewall_text_is_odd(forged)
+    out = firewall_lines(forged)
+    assert any("6.6.6.6" in line for line in out)
+    assert not any("managed by other software" in line for line in out)
+    assert not firewall_text_is_odd(["table a b {", "\tchain c {", "\t}", "}",
+                                     "table a d {", "\tchain c {", "\t}", "}"])  # fmt: skip
+
+
+def test_json_shows_an_odd_comment_whatever_the_text_looks_like():
+    def rule(comment):
+        return nft_objects({"rule": {"family": "ip", "table": "nat", "chain": "DOCKER",
+                                     "comment": comment, "expr": []}})  # fmt: skip
+
+    assert nft_json_odd_strings(rule("web")) == 0
+    assert nft_json_odd_strings(rule("a\nb")) == 1
+    assert nft_json_odd_strings(rule('a"b')) == 1
+    assert nft_json_odd_strings(["[MASKED:oversized_line 9 bytes]"]) == 0
+    assert nft_json_odd_strings(rule("[MASKED:private_key]")) == 1
+
+
+def _firewall_sources(builder, text, as_json):
+    for source_id, name, lines in (
+        (1, "/usr/sbin/nft list ruleset", text),
+        (2, "/usr/sbin/nft -j list ruleset", as_json),
+    ):
+        builder._text[source_id] = (("", hashlib.sha256()), lines)
+        start = SimpleNamespace(source_id=source_id, kind="command", name=name, module="network")
+        builder.source_end(start, SimpleNamespace(truncated=False))
+
+
+def test_an_odd_comment_seen_in_json_makes_the_text_literal_and_says_so():
+    text = ["table ip nat {", "\tchain DOCKER {", "\t\ttcp dport 8080 return", "\t}", "}"]
+    rule = {"family": "ip", "table": "nat", "chain": "x", "comment": "a\nb", "expr": []}
+    odd = SnapshotBuilder()
+    _firewall_sources(odd, text, nft_objects({"rule": rule}))
+    assert odd.live["nft_odd_comments"] == 1
+    keys = odd.section("firewall_rules").items
+    assert "nft: [ip nat / chain DOCKER] tcp dport 8080 return" in keys
+    assert not any("managed" in key for key in keys if key.startswith("nft: "))
+
+    plain = SnapshotBuilder()
+    _firewall_sources(plain, text, nft_objects({"rule": {**rule, "comment": "web"}}))
+    assert "nft_odd_comments" not in plain.live
+    assert any("managed" in key for key in plain.section("firewall_rules").items)
+
+
+def test_odd_text_alone_is_said_and_nft_json_that_breaks_reading_leaves_the_text():
+    builder = SnapshotBuilder()
+    _firewall_sources(builder, ["table a b {", '\tchain c { # "', "\t}", "}"], ["{not json"])
+    assert builder.live["nft_odd_comments"] == 1
+    assert builder.live["nft_json_unread"] == "not what nft gives"
+    assert not any(k.startswith("nft-json") for k in builder.section("firewall_rules").items)
+
+
+def test_an_empty_ruleset_is_neither_json_started_nor_lost():
+    from checker.snapshot import Section, Snapshot
+
+    def snap(*keys):
+        return Snapshot({}, {"firewall_rules": Section({k: {} for k in keys})}, {})
+
+    flushed = compare(snap("nft-json: x", "nft: y"), snap())["firewall_rules"]
+    assert "nft_json" not in flushed and len(flushed["removed"]) == 2
+    grown = compare(snap(), snap("nft-json: x", "nft: y"))["firewall_rules"]
+    assert "nft_json" not in grown and len(grown["added"]) == 2
+
+
+def test_a_fixed_big_list_a_compared_rule_uses_is_compared():
+    def rules(sha, flags=(), use=True):
+        body = {"family": "inet", "table": "t", "name": "ok", "flags": list(flags),
+                "elem": {"count": 60, "sha256": sha}}  # fmt: skip
+        rule = {"family": "inet", "table": "t", "chain": "c",
+                "expr": [{"match": {"right": "@ok"}}, {"accept": None}]}  # fmt: skip
+        return firewall_json_lines(nft_objects({"set": body}, *([{"rule": rule}] if use else [])))
+
+    assert rules("aa") != rules("bb")
+    assert rules("aa", ["timeout"]) == rules("bb", ["timeout"])
+    assert rules("aa", use=False) == rules("bb", use=False)
+
+
+def test_a_count_in_the_text_isnt_a_change():
+    assert firewall_lines(["table a b {", "\tset s {", "\t\tsize 1000 # count 3", "\t}", "}"]) == (
+        firewall_lines(["table a b {", "\tset s {", "\t\tsize 1000 # count 9", "\t}", "}"])
+    )

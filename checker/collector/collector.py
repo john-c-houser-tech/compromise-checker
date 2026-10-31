@@ -6576,14 +6576,25 @@ def nft_sets_reduced():
     return transform
 
 
+def _nft_stable(value):
+    """A parsed nft value without what changes while the rules don't, for a hash."""
+    if isinstance(value, list):
+        return [_nft_stable(item) for item in value]
+    if isinstance(value, dict):
+        gone = ("handle", "packets", "bytes", "used", "used_unit", "expires", "last")
+        return {key: _nft_stable(item) for key, item in value.items() if key not in gone}
+    return value
+
+
 def nft_json_lines(run):
     """A transform for `nft -j list ruleset`, one long line of JSON: a list of
     lines, one per object, every string value masked, a set or map with more
     elements than the limit as their count and a SHA-256, and an object too long
     for a line as its name and a SHA-256. Parsed, so a comment is a comment.
     `transform.parsed()` says whether it was read whole. Anything unexpected in
-    it, even running out of memory, leaves this listing unread and the
-    collection going: the text listing has the rules."""
+    it leaves this listing unread and the collection going: the text listing has
+    the rules. (The size limit is what guards memory: no limit on it is set, so
+    on Linux running out would be the kernel's to answer, not this.)"""
     state = {"parsed": False}
 
     def masked_value(value, masker):
@@ -6603,7 +6614,7 @@ def nft_json_lines(run):
         for kind in ("set", "map"):
             body = item.get(kind)
             if isinstance(body, dict) and len(body.get("elem") or ()) > NFT_SET_LIMIT:
-                text = json.dumps(body["elem"], sort_keys=True).encode()
+                text = json.dumps(_nft_stable(body["elem"]), sort_keys=True).encode()
                 body["elem"] = {
                     "count": len(body["elem"]),
                     "sha256": hashlib.sha256(text).hexdigest(),
@@ -6613,7 +6624,8 @@ def nft_json_lines(run):
             return line
         ((kind, body),) = item.items()
         named = {k: body.get(k) for k in ("family", "table", "chain", "name") if k in body}
-        named["oversized_sha256"] = hashlib.sha256(line).hexdigest()
+        stable = json.dumps(_nft_stable(item), sort_keys=True).encode()
+        named["oversized_sha256"] = hashlib.sha256(stable).hexdigest()
         return json.dumps({kind: named}, sort_keys=True).encode() + b"\n"
 
     def transform(line, masker):
@@ -6629,7 +6641,6 @@ def nft_json_lines(run):
         return out
 
     transform.max_line = NFT_JSON_BYTES
-    transform.open = lambda: False
     transform.parsed = lambda: state["parsed"]
     return transform
 

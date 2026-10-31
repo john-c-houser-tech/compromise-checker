@@ -176,6 +176,7 @@ _VOLATILE = (
     (re.compile(r"\bexpires \S+"), ""),
     (re.compile(r"\blast used \S+(?: ago)?"), ""),
     (re.compile(r"\[\d+:\d+\]"), ""),
+    (re.compile(r"# count \d+"), ""),
     (re.compile(r"\[\d+ elements, sha256 [0-9a-f]+\]"), "[a large set: elements not compared]"),
 )
 # Chains other software rewrites all the time (Docker, Kubernetes, CNI
@@ -234,7 +235,42 @@ def _placed(lines: list[str], literal: bool) -> list[tuple[str, str, str, str]]:
     return placed
 
 
-def firewall_lines(lines: list[str]) -> list[str]:
+def firewall_text_is_odd(lines: list[str]) -> bool:
+    """What real nft never prints unless a comment put it there: an unbalanced
+    quote, or a table holding the same chain or set twice (a comment recreating a
+    chain's rules, the real ones hidden after it)."""
+    if any(line.count('"') % 2 for line in lines):
+        return True
+    seen: set[str] = set()
+    for line in lines:
+        text = " ".join(line.split())
+        if _NFT_TABLE.match(text):
+            seen = set()
+        elif text.startswith(("chain ", "set ", "map ")) and text.endswith(" {"):
+            if text in seen:
+                return True
+            seen.add(text)
+    return False
+
+
+def nft_json_odd_strings(lines: list[str]) -> int:
+    """Strings in nft's JSON holding a line break or a quote: nothing an ordinary
+    rule has, and all a comment needs to pass for structure in the text. Masking
+    can take those away, when it withholds a value as a private key."""
+
+    def odd(value: Any) -> int:
+        if isinstance(value, str):
+            return int("\n" in value or '"' in value or "[MASKED:private_key]" in value)
+        if isinstance(value, list):
+            return sum(odd(item) for item in value)
+        if isinstance(value, dict):
+            return sum(odd(item) for item in value.values())
+        return 0
+
+    return sum(odd(json.loads(line)) for line in lines if line.startswith("{"))
+
+
+def firewall_lines(lines: list[str], literal: bool = False) -> list[str]:
     """The loaded rules as comparable lines, each with where it is (an nft
     table and chain or set, an iptables table), so the same rule added to
     another chain is a change; volatile parts, comments and blank lines left
@@ -242,9 +278,10 @@ def firewall_lines(lines: list[str]) -> list[str]:
 
     nft prints a quoted comment as it is, newlines and all, so what follows
     one can read as a chain or set of its own, and it can't be read back
-    reliably. A line with an unbalanced quote says that has happened: nothing
-    is then summarised or dropped, so whatever it hides shows as a change."""
-    literal = any(line.count('"') % 2 for line in lines)
+    reliably. When that shows (firewall_text_is_odd, or `literal`, from what the
+    JSON says), nothing is summarised or dropped, so what it hides shows as a
+    change."""
+    literal = literal or firewall_text_is_odd(lines)
     placed = _placed(lines, literal)
     # A set of fail2ban's that a compared rule uses is compared after all.
     used = {
@@ -330,8 +367,18 @@ def firewall_json_lines(lines: list[str]) -> list[str]:
     }
     seen: dict[str, int] = {}
     for kind, body in objects:
-        steady = _steady(body, kind)
         family, name = body.get("family"), body.get("name")
+        elem = body.get("elem")
+        if (
+            kind in ("set", "map")
+            and isinstance(elem, dict)
+            and (family, body.get("table"), name) in used
+            and not {"dynamic", "timeout"} & set(body.get("flags") or ())
+        ):
+            # A fixed list a compared rule uses (an allow-list, perhaps): its
+            # hash is compared. One filled as it runs would change all the time.
+            body = {**body, "elem": {"elements_sha256": elem.get("sha256")}}
+        steady = _steady(body, kind)
         if kind == "table":
             # Its flags too: `dormant` switches off everything in it.
             where = f"{family} {name}"
@@ -885,6 +932,7 @@ class SnapshotBuilder:
     snapshot; `finish` returns it once the walk is done."""
 
     def __init__(self) -> None:
+        self._nft_text: list[str] = []
         self.sections: dict[str, Section] = {}
         self.manifest_data: Manifest | None = None
         self.trailer_data: Trailer | None = None
@@ -1006,12 +1054,28 @@ class SnapshotBuilder:
             program = words[0].rsplit("/", 1)[-1]
             section = self.section("firewall_rules")
             if program == "nft" and "-j" in words:
-                program, rules = NFT_JSON, firewall_json_lines(lines or [])
                 if cut:  # read in part proves nothing: the text listing has the rules
                     self.live["nft_json_unread"] = "output cut short"
                     return
+                try:
+                    program, rules = NFT_JSON, firewall_json_lines(lines or [])
+                    odd = nft_json_odd_strings(lines or [])
+                except (ValueError, TypeError, RecursionError):
+                    self.live["nft_json_unread"] = "not what nft gives"
+                    return
+                if odd:
+                    # Seen in the data, whatever the text manages to look like.
+                    self.live["nft_odd_comments"] = odd
+                    for key in [k for k in section.items if k.startswith("nft: ")]:
+                        del section.items[key]
+                    for text in firewall_lines(self._nft_text, literal=True):
+                        section.items[f"nft: {text}"] = {"program": "nft"}
             else:
                 rules = firewall_lines(lines or [])
+                if program == "nft":
+                    self._nft_text = lines or []
+                    if firewall_text_is_odd(self._nft_text):
+                        self.live["nft_odd_comments"] = 1
             for text in rules:
                 section.items[f"{program}: {text}"] = {"program": program}
             if cut:
@@ -1609,6 +1673,10 @@ def _has_nft_json(items: dict[str, Any]) -> bool:
     return any(k.startswith(f"{NFT_JSON}: ") for k in items)
 
 
+def _has_nft_text(items: dict[str, Any]) -> bool:
+    return any(k.startswith("nft: ") for k in items)
+
+
 def compare(old: Snapshot, new: Snapshot) -> dict[str, dict[str, Any]]:
     """Per section: items added, removed and changed (field by field), and
     whether the comparison can be trusted. A section incomplete on either
@@ -1640,9 +1708,13 @@ def compare(old: Snapshot, new: Snapshot) -> dict[str, dict[str, Any]]:
         if name == "firewall_rules":
             # The text and JSON readings are compared each with itself. One
             # present on one side only isn't its every rule changing.
+            # (No JSON keys and no text ones is an empty ruleset, not either.)
             before_json, after_json = _has_nft_json(a), _has_nft_json(b)
-            if before_json != after_json:
-                json_change = NFT_JSON_LOST if before_json else NFT_JSON_STARTED
+            if before_json and not after_json and _has_nft_text(b):
+                json_change = NFT_JSON_LOST
+            elif after_json and not before_json and _has_nft_text(a):
+                json_change = NFT_JSON_STARTED
+            if json_change:
                 a = {k: v for k, v in a.items() if not k.startswith(f"{NFT_JSON}: ")}
                 b = {k: v for k, v in b.items() if not k.startswith(f"{NFT_JSON}: ")}
         changed = {}

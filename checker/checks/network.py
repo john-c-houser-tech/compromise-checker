@@ -496,13 +496,20 @@ def config(context: Context) -> list[Finding]:
                 " disguise what follows it in the text listing" + (f" ({why})" if why else ""),
                 [],
                 [],
+                new=bool(
+                    context.since_previous is None
+                    or (context.since_previous.get("firewall_rules") or {}).get("nft_json")
+                ),
+                uncertain=context.uncertain("firewall_rules"),
                 variant="json_lost",
             )
         )
     for how in ("added", "removed"):
-        lines = sorted(rules[how])
+        # The text first: it has what JSON leaves out (iptables-nft's arguments).
+        lines = sorted(rules[how], key=lambda k: (k.startswith(f"{NFT_JSON}: "), k))
         if not lines:
             continue
+        as_json = sum(k.startswith(f"{NFT_JSON}: ") for k in lines)
         # One finding per direction: a reloaded ruleset changes many lines.
         # (Chains Docker, Kubernetes and fail2ban manage are summarised in
         # the snapshot, so their churn doesn't reach here.)
@@ -513,7 +520,8 @@ def config(context: Context) -> list[Finding]:
                 f"Firewall rules {how} since the baseline",
                 COMPROMISE,
                 "medium",
-                f"{len(lines)} rule line(s) {how}: {shown}"[:400],
+                f"{len(lines) - as_json or as_json} rule line(s) {how}"
+                f"{f' ({as_json} read as JSON)' if as_json else ''}: {shown}"[:400],
                 [],
                 [context.change_ref("firewall_rules", key, how) for key in lines[:50]],
                 new=any(context.new_since_previous("firewall_rules", k) for k in lines),
@@ -544,6 +552,28 @@ _MANAGED_KEY = re.compile(
     r"^(?:\S+: )?\[(?:(?:[^\]]* / )?chain (\S+)|\S+ (\S+) / set \S+)\]"
     r" \(managed by other software: rules not compared\)$"
 )
+
+
+@check("net.firewall_comment", "A firewall comment holding line breaks or quotes")
+def firewall_comment(context: Context) -> list[Finding]:
+    """Nothing an ordinary rule has, and how a comment passes for structure in
+    `nft list ruleset`. Those rules are then compared literally."""
+    odd = context.snapshot.live.get("nft_odd_comments")
+    if not odd:
+        return []
+    return [
+        Finding(
+            "net.firewall_comment",
+            "A firewall comment holds line breaks or quotes",
+            COMPROMISE,
+            "medium",
+            f"{odd} string(s) in the nftables rules could disguise what follows them in a"
+            " listing: read them with `nft -j list ruleset`. All nftables rules are compared"
+            " literally while this lasts, so more may show as changed",
+            [],
+            [],
+        )
+    ]
 
 
 @check(

@@ -326,7 +326,7 @@ def test_signing_in_and_out(web):
     account()
     response = client.post("/login", {"username": "jo", "password": PASSWORD})
     assert response.status_code == 302 and client.get("/").status_code == 200
-    client.post("/logout")
+    client.post("/logout", {"from": "a form"})  # a browser's form always has a body
     assert client.get("/").status_code == 302
 
 

@@ -17,12 +17,14 @@ reads: the evidence store is opened read-only, and pages collect, analyse and ch
 By default, on this machine only (`127.0.0.1:8088`). Anyone with an account on this machine
 can reach that address, which is why it asks for a login even there.
 
-- **Behind a proxy on this machine** that provides https:
-  `checker web --public-url https://checker.example`. Only that address is accepted, and
-  cookies are sent only over https. The proxy must not be reachable by other addresses.
-- **From other machines:** `checker web --bind 0.0.0.0:443 --tls-cert CERT --tls-key KEY`. It
-  refuses to listen beyond this machine without TLS, since logins and evidence would cross the
-  network unencrypted.
+- **Behind a proxy on this machine** that provides https (Caddy, nginx):
+  `checker web --public-url https://checker.example`. Only that address is accepted, and cookies
+  are sent only over https. The proxy must add the client's address as the last entry of
+  `X-Forwarded-For`, which Caddy and a normal nginx setup do, and should buffer request bodies.
+- **From other machines, without a proxy:**
+  `checker web --bind 0.0.0.0:443 --tls-cert CERT --tls-key KEY --public-url https://checker.example`.
+  It refuses to listen beyond this machine without TLS, and refuses an http address for another
+  machine, since logins and evidence would cross the network unencrypted.
 
 ## What it keeps
 
@@ -30,13 +32,15 @@ can reach that address, which is why it asks for a login even there.
 logins for the last 15 minutes, with their usernames and addresses. No evidence is ever copied
 there. `keys/web-secret.txt` signs sessions; deleting it signs everyone out. Evidence is decrypted
 in memory for each page, with the same key the command line uses, and pages tell browsers not to
-keep them. It keeps no access log.
+keep them. There is no access log; only errors in the tool itself go to its standard error.
 
 ## How it protects you
 
-- **Passwords:** at least 12 characters, not common, not all digits. Five failed logins for a
-  name from one address, or twenty from one address, stop further tries for 15 minutes, even with
-  the right password.
+- **Passwords:** at least 12 characters, not common, not all digits, not like the username. Five
+  failed logins for a name from one address, or twenty from one address, stop further tries from
+  there for 15 minutes, even with the right password. Without a proxy, everyone on this machine
+  counts as one address, so another local user could lock you out for that long. If you lose your
+  only password, delete `web.db` and start again: the next start gives a new setup link.
 - **Host text is treated as hostile.** A compromised server can put anything in its logs, and that
   text reaches a signed-in browser. Everything printed is escaped, invisible characters are shown,
   and the content security policy allows no scripts at all and nothing from other sites.

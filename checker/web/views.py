@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from django.contrib.auth import authenticate, login, logout
+import ipaddress
+import sys
+from urllib.parse import urlsplit
+
+from django.conf import settings
+from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
-from django.urls import reverse
+from django.urls import Resolver404, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from pydantic import ValidationError as SettingsError
@@ -18,11 +23,30 @@ from checker.evidence import EvidenceError
 from checker.fleet import UNREADABLE, read_fleet, serious
 from checker.inventory import home
 from checker.web import accounts
-from checker.web.app import HERE
+from checker.web.app import HERE, is_local
+
+# Where a login may go on to: not a form's address, which would land on an error.
+VIEWABLE = {"fleet"}
 
 
-def _address(request) -> str:
-    return request.META.get("REMOTE_ADDR", "")
+def client_address(request) -> str:
+    """Whose failed logins these are, for throttling. Behind the proxy on this machine
+    every peer is the proxy, so one person could lock everyone out: there it is the last
+    forwarded address, the one the proxy added itself (earlier ones are whatever the
+    client sent). IPv6 counts by network, since one client can hold a whole /64."""
+    address = request.META.get("REMOTE_ADDR", "")
+    if settings.CHECKER_BEHIND_PROXY and is_local(address):
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "").rpartition(",")[2].strip()
+        address = forwarded or address
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if parsed.version == 4:
+        return str(parsed)
+    if parsed.ipv4_mapped:
+        return str(parsed.ipv4_mapped)
+    return str(ipaddress.ip_network(f"{parsed}/64", strict=False))
 
 
 def _safe_next(request) -> str:
@@ -30,7 +54,11 @@ def _safe_next(request) -> str:
     if url_has_allowed_host_and_scheme(
         wanted, allowed_hosts={request.get_host()}, require_https=request.is_secure()
     ):
-        return wanted
+        try:
+            if resolve(urlsplit(wanted).path).url_name in VIEWABLE:
+                return wanted
+        except Resolver404:
+            pass
     return reverse("fleet")
 
 
@@ -49,18 +77,18 @@ def setup_page(request, token: str) -> HttpResponse:
     errors: list[str] = []
     username = ""
     if request.method == "POST":
-        username = request.POST.get("username", "").strip()
+        username = accounts.normal_name(request.POST.get("username", ""))[:150]
         password = request.POST.get("password", "")
         if not username:
             errors.append("Choose a username.")
         if password != request.POST.get("password2", ""):
             errors.append("The two passwords don't match.")
         try:
-            validate_password(password)
+            validate_password(password, get_user_model()(username=username))
         except ValidationError as exc:
             errors.extend(exc.messages)
         if not errors:
-            user = accounts.create_first_account(token, username[:150], password)
+            user = accounts.create_first_account(token, username, password)
             if user is None:
                 return render(
                     request, "problem.html.j2", {"title": "This link isn't valid"}, status=404
@@ -74,9 +102,9 @@ def setup_page(request, token: str) -> HttpResponse:
 def login_page(request) -> HttpResponse:
     error = None
     if request.method == "POST":
-        username = request.POST.get("username", "")[:150]
+        username = accounts.normal_name(request.POST.get("username", ""))[:150]
         password = request.POST.get("password", "")
-        address = _address(request)
+        address = client_address(request)
         # One message for all of it: a page mustn't say which usernames exist.
         error = "That username and password didn't work."
         if accounts.throttled(username, address):
@@ -108,13 +136,12 @@ def fleet_page(request) -> HttpResponse:
     group = request.GET.get("group") or None
     try:
         hosts, problems = read_fleet(home(), group=group)
-    except (EvidenceError, OSError, SettingsError, YAMLError) as exc:
-        return render(
-            request,
-            "problem.html.j2",
-            {"title": "The results can't be read right now", "detail": str(exc)},
-            status=503,
-        )
+    except EvidenceError as exc:  # the tool's own words, and what to do
+        return _unavailable(request, str(exc))
+    except (OSError, SettingsError, YAMLError) as exc:
+        # Details may quote a settings file, secrets included: only the kind goes to the log.
+        print(f"checker web: can't read the settings: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "A settings file or the evidence key can't be read.")
     return render(
         request,
         "fleet.html.j2",
@@ -128,6 +155,15 @@ def fleet_page(request) -> HttpResponse:
     )
 
 
+def _unavailable(request, detail: str) -> HttpResponse:
+    return render(
+        request,
+        "problem.html.j2",
+        {"title": "The results can't be read right now", "detail": detail},
+        status=503,
+    )
+
+
 def _error(request, title: str, status: int) -> HttpResponse:
     return render(request, "problem.html.j2", {"title": title}, status=status)
 
@@ -138,6 +174,10 @@ def bad_request(request, exception=None) -> HttpResponse:
 
 def forbidden(request, exception=None) -> HttpResponse:
     return _error(request, "That isn't allowed", 403)
+
+
+def csrf_failed(request, reason="") -> HttpResponse:
+    return _error(request, "That form has expired: go back, reload it and try again", 403)
 
 
 def not_found(request, exception=None) -> HttpResponse:

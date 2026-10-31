@@ -60,6 +60,11 @@ def create_first_account(token: str, username: str, password: str):
         return get_user_model().objects.create_user(username=username, password=password)
 
 
+def normal_name(username: str) -> str:
+    """As an account name is stored, so what was typed at setup works at login."""
+    return get_user_model().normalize_username(username.strip())
+
+
 def _recent():
     return LoginAttempt.objects.filter(at__gt=timezone.now() - THROTTLE_WINDOW)
 

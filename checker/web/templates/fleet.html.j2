@@ -13,7 +13,7 @@
   {% elif host.state == "analysed" %}
   <p>{{ host.band or "No score" }}{% if host.probability is not none %} {{ host.probability | percent }}{% endif %}. Collected {{ host.collected_at }}.</p>
   {% else %}
-  <p>{{ {"not_analysed": "Collected, not analysed yet.", "no_evidence": "Nothing collected yet.", "collections_failed": "No collection has worked yet.", "purged": "All its evidence was purged, so nothing is known now."}[host.state] }}</p>
+  <p>{{ {"not_analysed": "Collected, not analysed yet.", "no_evidence": "Nothing collected yet.", "collections_failed": "No collection has worked yet.", "purged": "All its evidence was purged, so nothing is known now."}.get(host.state, "") }}</p>
   {% endif %}
   <ul>
   {% for doubt in host.doubts %}<li>{{ doubt }}</li>{% endfor %}

@@ -137,7 +137,7 @@
   },
   {
    "check": "mail.domains",
-   "findings": 0,
+   "findings": 1,
    "status": "ran"
   },
   {
@@ -147,7 +147,7 @@
   },
   {
    "check": "mail.volume",
-   "findings": 0,
+   "findings": 1,
    "status": "ran"
   },
   {
@@ -1497,6 +1497,409 @@
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "mail.domains",
+   "contribution": 1.3863,
+   "entities": [
+    "domain:d0.invalid",
+    "domain:d1.invalid",
+    "domain:d10.invalid",
+    "domain:d11.invalid",
+    "domain:d12.invalid",
+    "domain:d13.invalid",
+    "domain:d14.invalid",
+    "domain:d15.invalid",
+    "domain:d16.invalid",
+    "domain:d17.invalid",
+    "domain:d18.invalid",
+    "domain:d19.invalid",
+    "domain:d2.invalid",
+    "domain:d20.invalid",
+    "domain:d21.invalid",
+    "domain:d22.invalid",
+    "domain:d23.invalid",
+    "domain:d24.invalid",
+    "domain:d25.invalid",
+    "domain:d26.invalid",
+    "domain:d27.invalid",
+    "domain:d28.invalid",
+    "domain:d29.invalid",
+    "domain:d3.invalid",
+    "domain:d30.invalid",
+    "domain:d31.invalid",
+    "domain:d32.invalid",
+    "domain:d33.invalid",
+    "domain:d34.invalid",
+    "domain:d35.invalid",
+    "domain:d36.invalid",
+    "domain:d37.invalid",
+    "domain:d38.invalid",
+    "domain:d39.invalid",
+    "domain:d4.invalid",
+    "domain:d40.invalid",
+    "domain:d41.invalid",
+    "domain:d42.invalid",
+    "domain:d43.invalid",
+    "domain:d44.invalid",
+    "domain:d45.invalid",
+    "domain:d46.invalid",
+    "domain:d47.invalid",
+    "domain:d48.invalid",
+    "domain:d49.invalid",
+    "domain:d5.invalid",
+    "domain:d50.invalid",
+    "domain:d51.invalid",
+    "domain:d52.invalid",
+    "domain:d53.invalid",
+    "domain:d54.invalid",
+    "domain:d55.invalid",
+    "domain:d56.invalid",
+    "domain:d57.invalid",
+    "domain:d58.invalid",
+    "domain:d59.invalid",
+    "domain:d6.invalid",
+    "domain:d7.invalid",
+    "domain:d8.invalid",
+    "domain:d9.invalid"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 279
+    },
+    {
+     "event": 282
+    },
+    {
+     "event": 289
+    },
+    {
+     "event": 292
+    },
+    {
+     "event": 301
+    },
+    {
+     "event": 307
+    },
+    {
+     "event": 314
+    },
+    {
+     "event": 321
+    },
+    {
+     "event": 328
+    },
+    {
+     "event": 335
+    },
+    {
+     "event": 342
+    },
+    {
+     "event": 349
+    },
+    {
+     "event": 356
+    },
+    {
+     "event": 363
+    },
+    {
+     "event": 370
+    },
+    {
+     "event": 377
+    },
+    {
+     "event": 384
+    },
+    {
+     "event": 391
+    },
+    {
+     "event": 398
+    },
+    {
+     "event": 405
+    },
+    {
+     "event": 412
+    },
+    {
+     "event": 419
+    },
+    {
+     "event": 426
+    },
+    {
+     "event": 433
+    },
+    {
+     "event": 440
+    },
+    {
+     "event": 447
+    },
+    {
+     "event": 454
+    },
+    {
+     "event": 461
+    },
+    {
+     "event": 468
+    },
+    {
+     "event": 475
+    },
+    {
+     "event": 482
+    },
+    {
+     "event": 489
+    },
+    {
+     "event": 496
+    },
+    {
+     "event": 503
+    },
+    {
+     "event": 510
+    },
+    {
+     "event": 517
+    },
+    {
+     "event": 524
+    },
+    {
+     "event": 531
+    },
+    {
+     "event": 538
+    },
+    {
+     "event": 545
+    },
+    {
+     "event": 552
+    },
+    {
+     "event": 559
+    },
+    {
+     "event": 566
+    },
+    {
+     "event": 573
+    },
+    {
+     "event": 580
+    },
+    {
+     "event": 587
+    },
+    {
+     "event": 594
+    },
+    {
+     "event": 601
+    },
+    {
+     "event": 608
+    },
+    {
+     "event": 615
+    }
+   ],
+   "first_seen": "2026-10-29T15:51:08.271240+00:00",
+   "last_seen": "2026-10-29T15:51:09.910451+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "2026-10-29: 60 new domains: d0.invalid, d1.invalid, d10.invalid, d11.invalid, d12.invalid, d13.invalid, d14.invalid, d15.invalid and 52 more",
+   "title": "Mail to many recipient domains never written to before",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "mail.volume",
+   "contribution": 1.3863,
+   "entities": [
+    "host:ubuntu24.04"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 279
+    },
+    {
+     "event": 282
+    },
+    {
+     "event": 289
+    },
+    {
+     "event": 292
+    },
+    {
+     "event": 301
+    },
+    {
+     "event": 307
+    },
+    {
+     "event": 314
+    },
+    {
+     "event": 321
+    },
+    {
+     "event": 328
+    },
+    {
+     "event": 335
+    },
+    {
+     "event": 342
+    },
+    {
+     "event": 349
+    },
+    {
+     "event": 356
+    },
+    {
+     "event": 363
+    },
+    {
+     "event": 370
+    },
+    {
+     "event": 377
+    },
+    {
+     "event": 384
+    },
+    {
+     "event": 391
+    },
+    {
+     "event": 398
+    },
+    {
+     "event": 405
+    },
+    {
+     "event": 412
+    },
+    {
+     "event": 419
+    },
+    {
+     "event": 426
+    },
+    {
+     "event": 433
+    },
+    {
+     "event": 440
+    },
+    {
+     "event": 447
+    },
+    {
+     "event": 454
+    },
+    {
+     "event": 461
+    },
+    {
+     "event": 468
+    },
+    {
+     "event": 475
+    },
+    {
+     "event": 482
+    },
+    {
+     "event": 489
+    },
+    {
+     "event": 496
+    },
+    {
+     "event": 503
+    },
+    {
+     "event": 510
+    },
+    {
+     "event": 517
+    },
+    {
+     "event": 524
+    },
+    {
+     "event": 531
+    },
+    {
+     "event": 538
+    },
+    {
+     "event": 545
+    },
+    {
+     "event": 552
+    },
+    {
+     "event": 559
+    },
+    {
+     "event": 566
+    },
+    {
+     "event": 573
+    },
+    {
+     "event": 580
+    },
+    {
+     "event": 587
+    },
+    {
+     "event": 594
+    },
+    {
+     "event": 601
+    },
+    {
+     "event": 608
+    },
+    {
+     "event": 615
+    }
+   ],
+   "first_seen": "2026-10-29T15:51:08.271240+00:00",
+   "last_seen": "2026-10-29T15:51:12.355241+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "2026-10-29: 150 deliveries attempted; the baseline averaged 1.0 a day",
+   "title": "A sudden jump in outgoing mail",
+   "uncertain": null,
+   "variant": "deliveries"
   },
   {
    "band": "medium",
@@ -3246,7 +3649,7 @@
     "contribution": 4.6052,
     "finding": 0,
     "ratio": 100.0,
-    "share": 0.0536,
+    "share": 0.0519,
     "title": "An account other than root has UID 0"
    },
    {
@@ -3255,7 +3658,7 @@
     "contribution": 4.6052,
     "finding": 1,
     "ratio": 100.0,
-    "share": 0.0536,
+    "share": 0.0519,
     "title": "/etc/ld.so.preload loads a library into every program"
    },
    {
@@ -3264,7 +3667,7 @@
     "contribution": 2.9957,
     "finding": 2,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A new account whose primary group is root-equivalent"
    },
    {
@@ -3273,7 +3676,7 @@
     "contribution": 2.9957,
     "finding": 3,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A container that holds the host since the baseline"
    },
    {
@@ -3282,7 +3685,7 @@
     "contribution": 2.9957,
     "finding": 4,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A new privileged file since the baseline"
    },
    {
@@ -3291,7 +3694,7 @@
     "contribution": 2.9957,
     "finding": 6,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A new script in a web root"
    },
    {
@@ -3300,7 +3703,7 @@
     "contribution": 2.9957,
     "finding": 7,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A shell history file is a link to /dev/null"
    },
    {
@@ -3309,7 +3712,7 @@
     "contribution": 2.9957,
     "finding": 8,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A log was truncated since the previous collection"
    },
    {
@@ -3318,7 +3721,7 @@
     "contribution": 2.9957,
     "finding": 9,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A logging service that ran at the baseline isn't running"
    },
    {
@@ -3327,7 +3730,7 @@
     "contribution": 2.9957,
     "finding": 12,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "AppArmor profiles were unloaded or stopped enforcing"
    },
    {
@@ -3336,7 +3739,7 @@
     "contribution": 2.9957,
     "finding": 13,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A web-server account reached SMB"
    },
    {
@@ -3345,7 +3748,7 @@
     "contribution": 2.9957,
     "finding": 14,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A PAM line was added that runs a program (pam_exec)"
    },
    {
@@ -3354,7 +3757,7 @@
     "contribution": 2.9957,
     "finding": 16,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A process whose program was deleted"
    },
    {
@@ -3363,7 +3766,7 @@
     "contribution": 2.9957,
     "finding": 18,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A shell talking to a network socket (a reverse shell)"
    },
    {
@@ -3372,7 +3775,7 @@
     "contribution": 2.9957,
     "finding": 19,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A new authorized SSH key"
    },
    {
@@ -3381,7 +3784,7 @@
     "contribution": 2.9957,
     "finding": 22,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "An sshd setting was added"
    },
    {
@@ -3390,7 +3793,7 @@
     "contribution": 2.9957,
     "finding": 23,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A new sudo rule without a password (NOPASSWD)"
    },
    {
@@ -3399,7 +3802,7 @@
     "contribution": 2.9957,
     "finding": 25,
     "ratio": 20.0,
-    "share": 0.0349,
+    "share": 0.0338,
     "title": "A web account started a shell running an attacker's command"
    },
    {
@@ -3421,7 +3824,7 @@
     "contribution": 1.6094,
     "finding": null,
     "ratio": 5.0,
-    "share": 0.0187,
+    "share": 0.0181,
     "title": "A new account or key, given privilege, then used to log in (ccadmin)"
    },
    {
@@ -3441,7 +3844,7 @@
     "contribution": 1.6094,
     "finding": null,
     "ratio": 5.0,
-    "share": 0.0187,
+    "share": 0.0181,
     "title": "A script new since the baseline answered requests, then the web account started a shell or tool (www-data)"
    },
    {
@@ -3450,88 +3853,106 @@
     "contribution": 1.3863,
     "finding": 30,
     "ratio": 4.0,
-    "share": 0.0161,
+    "share": 0.0156,
     "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": null,
+    "check": "mail.domains",
+    "contribution": 1.3863,
+    "finding": 34,
+    "ratio": 4.0,
+    "share": 0.0156,
+    "title": "Mail to many recipient domains never written to before"
+   },
+   {
+    "capped": null,
+    "check": "mail.volume",
+    "contribution": 1.3863,
+    "finding": 35,
+    "ratio": 4.0,
+    "share": 0.0156,
+    "title": "A sudden jump in outgoing mail"
    },
    {
     "capped": null,
     "check": "mail.web_user",
     "contribution": 1.3863,
-    "finding": 34,
+    "finding": 36,
     "ratio": 4.0,
-    "share": 0.0161,
+    "share": 0.0156,
     "title": "Mail submitted by a web-server account"
    },
    {
     "capped": null,
     "check": "net.config",
     "contribution": 1.3863,
-    "finding": 35,
+    "finding": 37,
     "ratio": 4.0,
-    "share": 0.0161,
+    "share": 0.0156,
     "title": "A network configuration file was changed"
    },
    {
     "capped": null,
     "check": "net.metadata",
     "contribution": 1.3863,
-    "finding": 37,
+    "finding": 39,
     "ratio": 4.0,
-    "share": 0.0161,
+    "share": 0.0156,
     "title": "A program other than the cloud agent reached the metadata address"
    },
    {
     "capped": null,
     "check": "net.tunnel",
     "contribution": 1.3863,
-    "finding": 38,
+    "finding": 40,
     "ratio": 4.0,
-    "share": 0.0161,
+    "share": 0.0156,
     "title": "An SSH client forwarding ports (a tunnel)"
    },
    {
     "capped": null,
     "check": "persistence.changes",
     "contribution": 1.3863,
-    "finding": 41,
+    "finding": 43,
     "ratio": 4.0,
-    "share": 0.0161,
+    "share": 0.0156,
     "title": "A new cron file"
    },
    {
     "capped": null,
     "check": "software.repository",
     "contribution": 1.3863,
-    "finding": 47,
+    "finding": 49,
     "ratio": 4.0,
-    "share": 0.0161,
+    "share": 0.0156,
     "title": "A package signing key was added"
    },
    {
     "capped": null,
     "check": "software.tools",
     "contribution": 1.3863,
-    "finding": 49,
+    "finding": 51,
     "ratio": 4.0,
-    "share": 0.0161,
+    "share": 0.0156,
     "title": "An attack or tunnelling tool was installed"
    },
    {
     "capped": null,
     "check": "ssh.login",
     "contribution": 1.3863,
-    "finding": 50,
+    "finding": 52,
     "ratio": 4.0,
-    "share": 0.0161,
+    "share": 0.0156,
     "title": "Logins from an address never seen before"
    },
    {
     "capped": null,
     "check": "web.exploit",
     "contribution": 1.3863,
-    "finding": 53,
+    "finding": 55,
     "ratio": 4.0,
-    "share": 0.0161,
+    "share": 0.0156,
     "title": "A traversal attack answered"
    },
    {
@@ -3540,7 +3961,7 @@
     "contribution": 0.6931,
     "finding": 5,
     "ratio": 20.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "A program in a scratch directory"
    },
    {
@@ -3549,7 +3970,7 @@
     "contribution": 0.6931,
     "finding": 15,
     "ratio": 20.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "A new startup file"
    },
    {
@@ -3558,7 +3979,7 @@
     "contribution": 0.6931,
     "finding": 17,
     "ratio": 20.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "A process has code mapped from a scratch or home file"
    },
    {
@@ -3567,79 +3988,79 @@
     "contribution": 0.6931,
     "finding": 24,
     "ratio": 20.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "A script new since the baseline answered requests"
    },
    {
     "capped": "family",
     "check": "net.config",
     "contribution": 0.6931,
-    "finding": 36,
+    "finding": 38,
     "ratio": 4.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "Firewall rules added since the baseline"
    },
    {
     "capped": "family",
     "check": "net.tunnel",
     "contribution": 0.6931,
-    "finding": 39,
+    "finding": 41,
     "ratio": 4.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "An SSH session listening on a port (a remote forward)"
    },
    {
     "capped": "family",
     "check": "software.repository",
     "contribution": 0.6931,
-    "finding": 48,
+    "finding": 50,
     "ratio": 4.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "A package repository was added"
    },
    {
     "capped": null,
     "check": "container.new",
     "contribution": 0.4055,
-    "finding": 60,
+    "finding": 62,
     "ratio": 1.5,
-    "share": 0.0047,
+    "share": 0.0046,
     "title": "A container new since the baseline"
    },
    {
     "capped": null,
     "check": "net.listener",
     "contribution": 0.4055,
-    "finding": 61,
+    "finding": 63,
     "ratio": 1.5,
-    "share": 0.0047,
+    "share": 0.0046,
     "title": "A new listening port"
    },
    {
     "capped": null,
     "check": "net.peer",
     "contribution": 0.4055,
-    "finding": 64,
+    "finding": 66,
     "ratio": 1.5,
-    "share": 0.0047,
+    "share": 0.0046,
     "title": "A new outgoing destination"
    },
    {
     "capped": null,
     "check": "package.changed",
     "contribution": 0.4055,
-    "finding": 65,
+    "finding": 67,
     "ratio": 1.5,
-    "share": 0.0047,
+    "share": 0.0046,
     "title": "The package managers' checksum lists changed since the baseline"
    },
    {
     "capped": null,
     "check": "software.packages",
     "contribution": 0.4055,
-    "finding": 66,
+    "finding": 68,
     "ratio": 1.5,
-    "share": 0.0047,
+    "share": 0.0046,
     "title": "Packages installed since the baseline"
    },
    {
@@ -3648,7 +4069,7 @@
     "contribution": 0.3466,
     "finding": 10,
     "ratio": 20.0,
-    "share": 0.004,
+    "share": 0.0039,
     "title": "A logging or audit service was stopped"
    },
    {
@@ -3657,7 +4078,7 @@
     "contribution": 0.3466,
     "finding": 11,
     "ratio": 20.0,
-    "share": 0.004,
+    "share": 0.0039,
     "title": "The audit daemon stopped, not during a shutdown"
    },
    {
@@ -3666,7 +4087,7 @@
     "contribution": 0.3466,
     "finding": 20,
     "ratio": 20.0,
-    "share": 0.004,
+    "share": 0.0039,
     "title": "A new authorized SSH key"
    },
    {
@@ -3675,7 +4096,7 @@
     "contribution": 0.3466,
     "finding": 21,
     "ratio": 20.0,
-    "share": 0.004,
+    "share": 0.0039,
     "title": "A new authorized SSH key"
    },
    {
@@ -3684,7 +4105,7 @@
     "contribution": 0.3466,
     "finding": 26,
     "ratio": 20.0,
-    "share": 0.004,
+    "share": 0.0039,
     "title": "A web account started a reconnaissance command"
    },
    {
@@ -3693,7 +4114,7 @@
     "contribution": 0.3466,
     "finding": 27,
     "ratio": 20.0,
-    "share": 0.004,
+    "share": 0.0039,
     "title": "A web account started a reconnaissance command"
    },
    {
@@ -3702,7 +4123,7 @@
     "contribution": 0.3466,
     "finding": 28,
     "ratio": 4.0,
-    "share": 0.004,
+    "share": 0.0039,
     "title": "A new account"
    },
    {
@@ -3711,25 +4132,25 @@
     "contribution": 0.3466,
     "finding": 29,
     "ratio": 4.0,
-    "share": 0.004,
+    "share": 0.0039,
     "title": "A new account"
    },
    {
     "capped": "family",
     "check": "net.listener",
     "contribution": 0.3466,
-    "finding": 62,
+    "finding": 64,
     "ratio": 1.5,
-    "share": 0.004,
+    "share": 0.0039,
     "title": "A new listening port"
    },
    {
     "capped": "family",
     "check": "net.listener",
     "contribution": 0.3466,
-    "finding": 63,
+    "finding": 65,
     "ratio": 1.5,
-    "share": 0.004,
+    "share": 0.0039,
     "title": "A new listening port"
    },
    {
@@ -3738,26 +4159,8 @@
     "contribution": 0.3194,
     "finding": 31,
     "ratio": 4.0,
-    "share": 0.0037,
+    "share": 0.0036,
     "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "persistence.changes",
-    "contribution": 0.1386,
-    "finding": 42,
-    "ratio": 4.0,
-    "share": 0.0016,
-    "title": "A new systemd file"
-   },
-   {
-    "capped": "family",
-    "check": "persistence.changes",
-    "contribution": 0.1386,
-    "finding": 43,
-    "ratio": 4.0,
-    "share": 0.0016,
-    "title": "A new systemd file"
    },
    {
     "capped": "family",
@@ -3766,7 +4169,7 @@
     "finding": 44,
     "ratio": 4.0,
     "share": 0.0016,
-    "title": "A new startup file"
+    "title": "A new systemd file"
    },
    {
     "capped": "family",
@@ -3775,7 +4178,7 @@
     "finding": 45,
     "ratio": 4.0,
     "share": 0.0016,
-    "title": "A new startup file"
+    "title": "A new systemd file"
    },
    {
     "capped": "family",
@@ -3788,21 +4191,21 @@
    },
    {
     "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0934,
-    "finding": 56,
-    "ratio": 1.5,
-    "share": 0.0011,
-    "title": "An account or group was changed (from the logs)"
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 47,
+    "ratio": 4.0,
+    "share": 0.0016,
+    "title": "A new startup file"
    },
    {
     "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0934,
-    "finding": 57,
-    "ratio": 1.5,
-    "share": 0.0011,
-    "title": "An account or group was changed (from the logs)"
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 48,
+    "ratio": 4.0,
+    "share": 0.0016,
+    "title": "A new startup file"
    },
    {
     "capped": "family",
@@ -3821,6 +4224,24 @@
     "ratio": 1.5,
     "share": 0.0011,
     "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0934,
+    "finding": 60,
+    "ratio": 1.5,
+    "share": 0.0011,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0934,
+    "finding": 61,
+    "ratio": 1.5,
+    "share": 0.0011,
+    "title": "An account or group was changed (from the logs)"
    }
   ],
   "hygiene_and_exposure": {
@@ -3832,7 +4253,7 @@
     }
    }
   },
-  "log_odds": 82.0634,
+  "log_odds": 84.836,
   "prior": 0.02,
   "prior_source": "golden",
   "probability": 1.0,

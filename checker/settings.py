@@ -194,6 +194,21 @@ def describe(config: Config) -> list[str]:
     return lines + [_notifications(config)]
 
 
+def packs_line(config: Config) -> str:
+    """Which threat packs apply, in words (`checker config show`)."""
+    rules = {"all": "every pack in force", "none": "none"}
+    groups = config.packs.group_apply
+    return (
+        f"Threat packs applied to each host: {rules.get(config.packs.apply, config.packs.apply)}"
+        + (
+            f"; groups' own: {', '.join(f'{g}: {r}' for g, r in sorted(groups.items()))}"
+            if groups
+            else ""
+        )
+        + " (a host's own rule wins: `checker hosts packs HOST`)."
+    )
+
+
 def _notifications(config: Config) -> str:
     if not config.notify_command:
         return "Notifications: none (`checker run` prints which hosts need a look)."
@@ -263,6 +278,12 @@ SETTABLE: dict[str, Setting] = {
         Setting(("retention_days",), int, "days evidence is kept (default 90)"),
         Setting(("prior",), float, "prior probability of compromise (default 0.02)"),
         Setting(
+            ("packs", "apply"),
+            str,
+            "threat packs applied to hosts with no rule of their own or their group's: all"
+            " (default), none, 'only: ID, ...' or 'except: ID, ...'",
+        ),
+        Setting(
             ("notify_command",),
             _optional,
             "a command given a short summary when a scheduled run finds a host worse, or none",
@@ -313,13 +334,31 @@ def message(exc: ValidationError, key: str) -> str:
     return f"{key}: {error['msg'].removeprefix('Value error, ')}"
 
 
+GROUP_APPLY = "packs.group_apply."
+
+
+def _setting(key: str) -> Setting | None:
+    """A key's setting: one of SETTABLE, or a group's pack rule
+    (`packs.group_apply.<group>`, whose value `default` removes it)."""
+    if not key.startswith(GROUP_APPLY):
+        return SETTABLE.get(key)
+    group = key.removeprefix(GROUP_APPLY)  # the configuration checks it is a group name
+    return Setting(
+        ("packs", "group_apply", group),
+        lambda text: None if text.strip() == "default" else text,
+        "the group's threat-pack rule, or default",
+    )
+
+
 def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
     """Set `key` to the value `text` names: validated against the whole
     configuration, recorded, then written. Returns (old, new, config); a
     value equal to the current one changes and records nothing."""
-    setting = SETTABLE.get(key)
+    setting = _setting(key)
     if setting is None:
-        raise EvidenceError(f"no setting {key!r}; settable: {', '.join(SETTABLE)}")
+        raise EvidenceError(
+            f"no setting {key!r}; settable: {', '.join(SETTABLE)}, {GROUP_APPLY}<group>"
+        )
     try:
         value = setting.parse(text)
     except ValueError as exc:
@@ -328,14 +367,17 @@ def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
     with locked(path):
         current = load_config(home)
         data = current.model_dump()
-        old = _get(data, setting.path)
         parent = _get(data, setting.path[:-1])
-        parent[setting.path[-1]] = value
+        old = parent.get(setting.path[-1])
+        if value is None and key.startswith(GROUP_APPLY):
+            parent.pop(setting.path[-1], None)
+        else:
+            parent[setting.path[-1]] = value
         try:
             config = Config.model_validate(data)
         except ValidationError as exc:
             raise EvidenceError(message(exc, key)) from None
-        new = _get(config.model_dump(), setting.path)
+        new = _get(config.model_dump(), setting.path[:-1]).get(setting.path[-1])
         if new == old:
             return old, new, current
         before = path.read_text(encoding="utf-8")
@@ -351,6 +393,65 @@ def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
         finally:
             store.close()
     return old, new, config
+
+
+def remove_host(home: Path, name: str) -> None:
+    """Take a host out of the inventory; its own threat-pack rule, if it
+    had one, is recorded as gone (`hosts.<name>.packs`), so a host added
+    again under the name doesn't lose it unseen."""
+    from checker.inventory import hosts_file, load_inventory, save_inventory
+
+    path = hosts_file(home)
+    with locked(path):
+        inventory = load_inventory(path)
+        rule = inventory.get(name).packs
+        inventory.remove(name)
+        if rule is None:
+            save_inventory(inventory, path)
+            return
+        before = path.read_text(encoding="utf-8")
+        store = Store(database_file(home))
+        try:
+            store.record_config_change(
+                f"hosts.{name}.packs",
+                rule,
+                None,
+                lambda: save_inventory(inventory, path),
+                lambda: atomic_write(path, before),
+            )
+        finally:
+            store.close()
+
+
+def change_host_packs(home: Path, name: str, rule: str | None) -> tuple[Any, Any]:
+    """Set a host's own threat-pack rule in the inventory (None: its
+    group's or the configuration's), recorded like a setting
+    (`hosts.<name>.packs` in `checker config history`): who turned a pack
+    off for a host, and when, stays known. Returns (old, new)."""
+    from checker.inventory import Host, hosts_file, load_inventory, save_inventory
+
+    path = hosts_file(home)
+    with locked(path):
+        inventory = load_inventory(path)
+        host = inventory.get(name)
+        new = Host.model_validate(host.model_dump() | {"packs": rule}).packs
+        old = host.packs
+        if new == old:
+            return old, new
+        host.packs = new
+        before = path.read_text(encoding="utf-8")
+        store = Store(database_file(home))
+        try:
+            store.record_config_change(
+                f"hosts.{name}.packs",
+                old,
+                new,
+                lambda: save_inventory(inventory, path),
+                lambda: atomic_write(path, before),
+            )
+        finally:
+            store.close()
+    return old, new
 
 
 def change_trusted_keys(home: Path, update) -> tuple[Any, Any, Config]:

@@ -1,0 +1,1393 @@
+{
+ "checks": [
+  {
+   "check": "account.changes",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "account.log_changes",
+   "findings": 11,
+   "status": "ran"
+  },
+  {
+   "check": "account.password",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "account.uid0",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "agent.stopped",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "clock.jump",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "container.host_namespace",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "container.new",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "container.privileged",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.backdated",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.deceptive",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.dev",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.privileged",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.scratch",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.unowned",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.web",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "group.privileged",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "history.disabled",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.core_dump",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.errors",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.oom_kill",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.segfault",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.taint",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "logs.cleared",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "logs.journald_config",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "logs.stopped",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mac.disabled",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.domains",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "mail.relay",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.volume",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "mail.web_user",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.config",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "net.directory",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.listener",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "net.managed_chain",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.metadata",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.peer",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "net.promiscuous",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.transfer",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.tunnel",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "pack.detection",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "pack.exposure",
+   "findings": 2,
+   "status": "ran"
+  },
+  {
+   "check": "package.changed",
+   "findings": 9,
+   "status": "ran"
+  },
+  {
+   "check": "pam.changes",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.at_jobs",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.changes",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "persistence.homes",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.ld_preload",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.executable",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.hidden",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.injected",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "process.miner",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.reverse_shell",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "software.global",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "software.packages",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "software.repository",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "software.tools",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "ssh.authorized_keys",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.guessed",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.login",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.login_hours",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "sshd.config",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "sudo.rules",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "system.reboot",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "web.errors",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "web.exploit",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "web.new_script_hit",
+   "status": "this bundle is the baseline"
+  },
+  {
+   "check": "web.noise",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "web.worker_child",
+   "findings": 0,
+   "status": "ran"
+  }
+ ],
+ "exposures": [
+  {
+   "exposed_from": "2026-10-20T00:00:00+00:00",
+   "exposed_until": null,
+   "fix_time_exact": false,
+   "judged": true,
+   "pack": "golden-test-2026-10",
+   "share": 1.0,
+   "status": "vulnerable",
+   "version": 1,
+   "window_end": null,
+   "window_start": "2026-10-20T00:00:00+00:00"
+  }
+ ],
+ "findings": [
+  {
+   "band": "high",
+   "category": "exposure",
+   "check": "pack.exposure",
+   "contribution": 0.0,
+   "entities": [
+    "package:php-fpm",
+    "pack:golden-test-2026-10"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "packages",
+      "php-fpm x86_64"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "php-fpm 8.0.30-8.el9_8.1 is before the fix 8.0.30-8.el9_8.2 (golden-test-2026-10 v1)",
+   "title": "A package is vulnerable to a threat a pack describes",
+   "uncertain": null,
+   "variant": "vulnerable"
+  },
+  {
+   "band": "high",
+   "category": "exposure",
+   "check": "pack.exposure",
+   "contribution": 0.0,
+   "entities": [
+    "setting:session.upload_progress.enabled",
+    "pack:golden-test-2026-10"
+   ],
+   "entities_complete": true,
+   "evidence": [],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "session.upload_progress.enabled should be off (upload-progress-off, golden-test-2026-10 v1): /etc/php.ini: on (PHP's default: set in no file)",
+   "title": "A threat pack's mitigation isn't in place",
+   "uncertain": null,
+   "variant": "mitigation_missing"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:proofuser"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 182
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:04.190724+00:00",
+   "last_seen": "2026-10-29T15:50:04.190724+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "created: proofuser UID 1001",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host rocky9",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates proofuser to give the persistence modules something to find.",
+    "rule": "proof-proofuser-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:scanner"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 177
+    }
+   ],
+   "first_seen": "2026-10-29T15:49:58.688284+00:00",
+   "last_seen": "2026-10-29T15:49:58.688284+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "created: scanner UID 1000",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host rocky9",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up.",
+    "rule": "proof-scanner-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.at_jobs",
+   "contribution": 0.0,
+   "entities": [
+    "path:/var/spool/at/a0000101c80f0e"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "cron",
+      "/var/spool/at/a0000101c80f0e"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "/var/spool/at/a0000101c80f0e (owner UID 0)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host rocky9",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof queues an at job for the persistence modules to find.",
+    "rule": "proof-at-job-redhat"
+   },
+   "title": "A queued at job",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "ssh.login",
+   "contribution": 0.0,
+   "entities": [
+    "account:root",
+    "address:203.0.113.9"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 156
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:12.165995+00:00",
+   "last_seen": "2026-10-29T15:48:12.165995+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "root from 203.0.113.9 (publickey)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host rocky9",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof logs in as root to set the server up.",
+    "rule": "proof-root-login"
+   },
+   "title": "A direct root login over SSH",
+   "uncertain": null,
+   "variant": "root_login"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.4055,
+   "entities": [
+    "account:apache"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 203
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:21.162406+00:00",
+   "last_seen": "2026-10-29T15:50:21.162406+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: apache UID 48",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0866,
+   "entities": [
+    "group:apache"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 202
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:21.133481+00:00",
+   "last_seen": "2026-10-29T15:50:21.133481+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: group apache",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0866,
+   "entities": [
+    "group:nginx"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 200
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:20.923949+00:00",
+   "last_seen": "2026-10-29T15:50:20.923949+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: group nginx",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0866,
+   "entities": [
+    "group:postdrop"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 185
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:07.828370+00:00",
+   "last_seen": "2026-10-29T15:50:07.828370+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: group postdrop",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0866,
+   "entities": [
+    "group:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 183
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:07.655834+00:00",
+   "last_seen": "2026-10-29T15:50:07.655834+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: group postfix",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0866,
+   "entities": [
+    "account:nginx"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 201
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:20.950401+00:00",
+   "last_seen": "2026-10-29T15:50:20.950401+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: nginx UID 995",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0866,
+   "entities": [
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 184
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:07.715077+00:00",
+   "last_seen": "2026-10-29T15:50:07.715077+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: postfix UID 89",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0866,
+   "entities": [
+    "account:postfix",
+    "group:mail"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 186
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:07.898118+00:00",
+   "last_seen": "2026-10-29T15:50:07.898118+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "member added: postfix group mail",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_member_added"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0866,
+   "entities": [
+    "account:postfix",
+    "group:mail"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 187
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:07.898313+00:00",
+   "last_seen": "2026-10-29T15:50:07.898313+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "member added: postfix group mail",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_member_added"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:firewalld",
+    "pid:624",
+    "exe:/usr/bin/python3.9"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      624
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:03.610000+00:00",
+   "last_seen": "2026-10-29T15:48:03.610000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "firewalld (pid 624): /memfd:libffi (deleted)",
+   "suppressed_by": {
+    "file": "checker/profiles/base.yaml",
+    "layer": "profile base",
+    "owner": "Compromise Checker defaults",
+    "reason": "firewalld (RHEL, Rocky, Alma) runs on Python, whose ctypes has libffi make its closures in memory-only files. Only the libffi kind, only firewalld on the system's Python: another Python process with such a file stays a (low) finding, and code from a deleted or scratch file always does.",
+    "rule": "base-firewalld-libffi"
+   },
+   "title": "A process has libffi code mapped from memory only",
+   "uncertain": null,
+   "variant": "libffi"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "persistence.homes",
+   "contribution": 0.0,
+   "entities": [
+    "path:/home/proofuser/.config/systemd/user/proof.service"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "systemd",
+      "/home/proofuser/.config/systemd/user/proof.service"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/home/proofuser/.config/systemd/user/proof.service",
+   "title": "A user's own systemd unit",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "web.exploit",
+   "contribution": 0.0,
+   "entities": [
+    "address:127.0.0.0/24"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 214
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:23.031689+00:00",
+   "last_seen": "2026-10-29T15:50:23.031689+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "127.0.0.0/24: 1 request (status 404), e.g. /x?f=[MASKED:exploit:traversal]",
+   "title": "A traversal attack refused",
+   "uncertain": null,
+   "variant": "refused"
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/NetworkManager/NetworkManager.conf",
+    "package:NetworkManager"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/NetworkManager/NetworkManager.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/NetworkManager/NetworkManager.conf (NetworkManager): changed",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/nsswitch.conf",
+    "package:glibc"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/nsswitch.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/nsswitch.conf (glibc): mode",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/fingerprint-auth",
+    "package:pam"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/fingerprint-auth"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/fingerprint-auth (pam): mode, unreadable",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/password-auth",
+    "package:pam"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/password-auth"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/password-auth (pam): mode, unreadable",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/postlogin",
+    "package:pam"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/postlogin"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/postlogin (pam): mode, unreadable",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/smartcard-auth",
+    "package:pam"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/smartcard-auth"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/smartcard-auth (pam): mode, unreadable",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/system-auth",
+    "package:pam"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/system-auth"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/system-auth (pam): mode, unreadable",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/shadow",
+    "package:setup"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/shadow"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/shadow (setup): mode",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/ssh/sshd_config",
+    "package:openssh-server"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/ssh/sshd_config"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/ssh/sshd_config (openssh-server): changed",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  }
+ ],
+ "gaps": [
+  "login hours not judged for 1 account: fewer than 10 logins or 21 days of history"
+ ],
+ "score": {
+  "band": "Elevated",
+  "chains": [],
+  "contributors": [
+   {
+    "capped": null,
+    "check": "account.log_changes",
+    "contribution": 0.4055,
+    "finding": 6,
+    "ratio": 1.5,
+    "share": 0.3691,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0866,
+    "finding": 7,
+    "ratio": 1.5,
+    "share": 0.0789,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0866,
+    "finding": 8,
+    "ratio": 1.5,
+    "share": 0.0789,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0866,
+    "finding": 9,
+    "ratio": 1.5,
+    "share": 0.0789,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0866,
+    "finding": 10,
+    "ratio": 1.5,
+    "share": 0.0789,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0866,
+    "finding": 11,
+    "ratio": 1.5,
+    "share": 0.0789,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0866,
+    "finding": 12,
+    "ratio": 1.5,
+    "share": 0.0789,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0866,
+    "finding": 13,
+    "ratio": 1.5,
+    "share": 0.0789,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0866,
+    "finding": 14,
+    "ratio": 1.5,
+    "share": 0.0789,
+    "title": "An account or group was changed (from the logs)"
+   }
+  ],
+  "hygiene_and_exposure": {
+   "band": "high",
+   "counts": {
+    "exposure": {
+     "high": 2
+    },
+    "hygiene": {
+     "info": 9
+    }
+   }
+  },
+  "log_odds": -1.1838,
+  "prior": 0.02,
+  "prior_source": "golden",
+  "probability": 0.2344,
+  "raised_by": [
+   {
+    "log_raise": 1.6094379124341003,
+    "pack": "golden-test-2026-10",
+    "ratio": 5.0,
+    "share": 1.0,
+    "status": "vulnerable",
+    "version": 1
+   }
+  ],
+  "raised_prior": 0.0926,
+  "version": 3
+ },
+ "whitelist": {
+  "as_of": "2026-10-28",
+  "disabled": [],
+  "expired": [],
+  "hash": "8a2fbcf41e2c8722935e4677d3fce816173ae0763895a6b1471a0cee6d92aa67",
+  "maintenance": 0,
+  "matched": {
+   "host rocky9/proof-at-job-redhat": 1,
+   "host rocky9/proof-proofuser-account": 1,
+   "host rocky9/proof-root-login": 1,
+   "host rocky9/proof-scanner-account": 1,
+   "profile base/base-firewalld-libffi": 1
+  },
+  "rules": [
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-docker-group",
+    "layer": "host rocky9",
+    "match": {
+     "check": "account.log_changes",
+     "group": "docker",
+     "variant": "group_created"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu, which creates the docker group."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-docker-dnsmasq-account",
+    "layer": "host rocky9",
+    "match": {
+     "account": "dnsmasq",
+     "check": "account.log_changes",
+     "variant": "created"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account)."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-at-job-redhat",
+    "layer": "host rocky9",
+    "match": {
+     "check": "persistence.at_jobs",
+     "path": "/var/spool/at/*"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof queues an at job for the persistence modules to find."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-at-job-debian",
+    "layer": "host rocky9",
+    "match": {
+     "check": "persistence.at_jobs",
+     "path": "/var/spool/cron/atjobs/*"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof queues an at job for the persistence modules to find."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-root-login",
+    "layer": "host rocky9",
+    "match": {
+     "account": "root",
+     "check": "ssh.login",
+     "variant": "root_login"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof logs in as root to set the server up."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-proofuser-account",
+    "layer": "host rocky9",
+    "match": {
+     "account": "proofuser",
+     "check": "account.log_changes"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates proofuser to give the persistence modules something to find."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-scanner-account",
+    "layer": "host rocky9",
+    "match": {
+     "account": "scanner",
+     "check": "account.log_changes"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-efi-tree-mode",
+    "layer": "profile base",
+    "match": {
+     "check": "package.changed",
+     "package": "efi-filesystem",
+     "path": "/boot/efi/**"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "The same, for the directories under /boot/efi."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-efi-directory-mode",
+    "layer": "profile base",
+    "match": {
+     "check": "package.changed",
+     "package": "efi-filesystem",
+     "path": "/boot/efi"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "AlmaLinux 10 mounts /boot/efi with wider permissions than its efi-filesystem package records (0755 against 0700)."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-php-fpm-opcache",
+    "layer": "profile base",
+    "match": {
+     "check": "process.injected",
+     "exe": "/usr/sbin/php-fpm*",
+     "variant": "shared"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "PHP's opcache keeps its JIT code in shared memory, which /proc's maps show as \"/dev/zero (deleted)\". Only the shared-memory kind, only PHP-FPM as installed by the system: a memory-only file, a deleted file or a scratch file mapped into PHP-FPM still shows. Code a script maps the same way (PHP's FFI) looks the same and is let through too."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-firewalld-libffi",
+    "layer": "profile base",
+    "match": {
+     "check": "process.injected",
+     "exe": "/usr/bin/python3*",
+     "program": "firewalld",
+     "variant": "libffi"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "firewalld (RHEL, Rocky, Alma) runs on Python, whose ctypes has libffi make its closures in memory-only files. Only the libffi kind, only firewalld on the system's Python: another Python process with such a file stays a (low) finding, and code from a deleted or scratch file always does."
+   }
+  ],
+  "suppressed": 5,
+  "windows": []
+ }
+}

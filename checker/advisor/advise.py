@@ -75,6 +75,7 @@ def advise(
     home: Path | None = None,
     planned: Planned | None = None,
     clients: dict | None = None,
+    packs: tuple[list, list[str]] = ([], []),
 ) -> Advice:
     """Ask the advisor about a host's current assessment. `confirm` is
     asked (with the estimate) when a run would cost more than the limit or
@@ -92,7 +93,7 @@ def advise(
             " (`checker advise HOST --show` shows what it would send)"
         )
     built, known, which = case_for_host(
-        store, host, identity, config.recipients, inventory, prior, whitelist, bundle_id
+        store, host, identity, config.recipients, inventory, prior, whitelist, bundle_id, packs
     )
     if planned is not None:
         chosen, _ = model_for(config.advisor, role, which["band"], which["report"].assessment)
@@ -359,16 +360,25 @@ class Planned:
     priced: Estimate | None
     prior: Any
     whitelist: Any
+    packs: Any = ([], [])  # the host's threat packs, as estimated (choice.for_host)
 
 
 def plan(
-    store, host: str, identity, config: Config, inventory, prior, whitelist, role: str
+    store,
+    host: str,
+    identity,
+    config: Config,
+    inventory,
+    prior,
+    whitelist,
+    role: str,
+    packs: tuple[list, list[str]] = ([], []),
 ) -> Planned:
     """The model a host's request would go to and its estimate: the case is
     built and redacted as `advise` will, and nothing is sent."""
     advisor = config.advisor
     built, known, which = case_for_host(
-        store, host, identity, config.recipients, inventory, prior, whitelist
+        store, host, identity, config.recipients, inventory, prior, whitelist, packs=packs
     )
     model, triaged = model_for(advisor, role, which["band"], which["report"].assessment)
     advisor = advisor.model_copy(update={"model": model})
@@ -377,7 +387,7 @@ def plan(
     line, priced = cost_line(advisor, tokens_in(json.dumps(request.body, ensure_ascii=False)))
     return Planned(
         host, which["bundle_id"], which["assessed_at"], model, triaged, line, priced, prior,
-        whitelist,
+        whitelist, packs,
     )  # fmt: skip
 
 

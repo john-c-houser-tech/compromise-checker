@@ -27,7 +27,7 @@ from typing import Any
 import yaml
 
 from checker.analysis import load_events, parse_bundle, snapshot_of, store_parsed
-from checker.assess import evaluate
+from checker.assess import evaluate, exposure_records
 from checker.baseline import changes, usable_bundles
 from checker.checks import Context
 from checker.events import Event
@@ -36,6 +36,7 @@ from checker.snapshot import Snapshot, compare
 from checker.whitelist import Layer, build
 
 CASES = Path(__file__).resolve().parent.parent / "golden"
+TEST_PACK = CASES / "test-pack.yaml"
 CASE_FORMAT = 1
 PRIOR = (0.02, "golden")
 # Whitelist expiry is judged on this day, so the expectations don't change
@@ -232,9 +233,17 @@ def load_case(path: Path) -> dict[str, Any]:
     return case
 
 
-def run_case(case: dict[str, Any]) -> dict[str, Any]:
-    """What `analyze` would make of the case's bundle: the same comparisons
-    and context, through the same `evaluate`."""
+def golden_pack():
+    """The made-up threat pack the cases are also analysed with (plan 4.6)."""
+    from checker.packs.format import read
+
+    return read(TEST_PACK.read_bytes())
+
+
+def run_case(case: dict[str, Any], packs: list[Any] = ()) -> dict[str, Any]:
+    """What `analyze` would make of the case's bundle, with these threat
+    packs in force: the same comparisons and context, through the same
+    `evaluate`."""
     target, previous, baseline = case["target"], case["previous"], case["baseline"]
     snapshots = {k: Snapshot.from_dict(v) for k, v in case["snapshots"].items()}
     events = {k: [Event(**e) for e in v] for k, v in case["events"].items()}
@@ -259,6 +268,10 @@ def run_case(case: dict[str, Any]) -> dict[str, Any]:
         previous_time=case["started"][previous] if previous else None,
         no_baseline=no_baseline,
         previous_snapshot=snapshots[previous] if previous else None,
+        baseline_time=case["started"][baseline] if since_baseline is not None else None,
+        baseline_snapshot=snapshots[baseline] if since_baseline is not None else None,
+        packs=list(packs),
+        collected_at=case["started"][target],
     )
     whitelist = build(
         [
@@ -267,17 +280,27 @@ def run_case(case: dict[str, Any]) -> dict[str, Any]:
         ]
     )
     findings, ran, scored, applied = evaluate(context, PRIOR, whitelist, TODAY)
-    return {"findings": findings, "checks": ran, "score": scored, "whitelist": applied}
+    result = {"findings": findings, "checks": ran, "score": scored, "whitelist": applied}
+    if packs:
+        result["gaps"] = context.gaps  # what the packs couldn't judge is part of what they say
+        result["exposures"] = exposure_records(context.exposures)
+    return result
 
 
 def expected_path(case_path: Path) -> Path:
     return case_path.with_name(case_path.name.removesuffix(".json.gz") + ".expected.json")
 
 
+def pack_expected_path(case_path: Path) -> Path:
+    return case_path.with_name(case_path.name.removesuffix(".json.gz") + ".pack.expected.json")
+
+
 def write_expected(case_path: Path) -> dict[str, Any]:
     case = load_case(case_path)
     result = run_case(case)
     expected_path(case_path).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
+    with_pack = run_case(case, [golden_pack()])
+    pack_expected_path(case_path).write_text(json.dumps(with_pack, indent=1, sort_keys=True) + "\n")
     for mode in ADVISOR_MODES:
         advisor_path(case_path, mode).write_text(advisor_text(case, result, mode))
     return result
@@ -312,7 +335,7 @@ def cases() -> list[Path]:
 
 def orphans() -> list[Path]:
     """Expectations whose case is gone."""
-    have = {expected_path(p) for p in cases()}
+    have = {expected_path(p) for p in cases()} | {pack_expected_path(p) for p in cases()}
     have |= {advisor_path(p, mode) for p in cases() for mode in ADVISOR_MODES}
     stored = [*CASES.glob("*.expected.json"), *CASES.glob("*.advisor-*.json")]
     return [p for p in sorted(stored) if p not in have]

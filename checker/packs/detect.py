@@ -36,6 +36,7 @@ from checker.packs.format import Detection, EventRule, Match, Pack, SnapshotRule
 MAX_TEXT = 65536  # a value longer than this is matched on its start only
 MAX_LIST = 100  # of a list value's elements, the first this many are matched
 MAX_FINDINGS = 20  # per detection; more groups are a coverage gap
+MAX_GROUP = 200  # characters of a by-field's value named in a finding's entities
 MAX_EVIDENCE = 50
 MAX_KEYS = 10  # items named in one snapshot finding
 # Matching work for one analysis, in characters looked at (str.find's
@@ -343,16 +344,23 @@ def _events(context: Context, pack: Pack, detection: Detection, rule: EventRule,
         where = f" from {group}" if rule.by is not None else ""
         how = f" within {rule.count.within}" if rule.count.within else ""
         address = rule.by in ("network", "client", "address") and group != "unknown"
+        # The group is what the finding is about: named, so the same
+        # group's finding is the same one in the next analysis, whatever
+        # its counts (checker.schedule). Never cut short: a whitelist rule
+        # would judge the part kept, not the value; one too long to name
+        # leaves the finding listed in part.
+        whole = rule.by is not None and len(group) <= MAX_GROUP
+        named = [f"address:{group}" if address else f"{rule.by}:{group}"] if whole else []
         findings.append(
             _finding(
                 pack,
                 detection,
                 f"{len(best)} matching events{how}{where} ({len(found)} in all)",
-                entities=[f"pack:{pack.id}", *([f"address:{group}"] if address else [])],
+                entities=[f"pack:{pack.id}", *named],
                 evidence=[{"event": i} for _, i, _ in best[:MAX_EVIDENCE]],
                 first_seen=first,
                 last_seen=last,
-                entities_complete=rule.by is None or address,
+                entities_complete=rule.by is None or whole,
             )
         )
     return findings

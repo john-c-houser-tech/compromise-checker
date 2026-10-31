@@ -298,10 +298,40 @@ which the collector doesn't read (plan 2.5).
 | `software.tools` | an attack or tunnelling tool installed as a package (nmap, masscan, ncat, proxychains, chisel, hydra, sqlmap, impacket…: `attack_tool`, medium); a compiler (gcc, clang, Go, Rust: `compiler`, low). A tool unpacked from an archive or installed with pip isn't a package and isn't seen here (`files.unowned`, `software.global` may) | | yes |
 | `software.global` | Python packages installed system-wide by hand (in `/usr/local/lib*/python3*`) or Node packages installed with `npm -g` (not the `npm` and `corepack` Node.js ships) | low | yes |
 
-### Threat packs (plan 4.3–4.5)
+### Threat packs (plan 4.3–4.6)
 
 Checks over the threat packs in force (`checker packs`): each pack's
 exposure is judged once per analysis (`checker/packs/exposure.py`).
+`checker analyze`, `checker report` and `checker run` apply every pack in
+force, on every host analysed; each assessment records the packs it
+applied (id and version: a version's content can't change once accepted),
+and a pack in force that couldn't be used is a coverage gap. A pack added
+or retired applies to evidence already collected at the next analysis:
+`checker analyze --all` analyses every host's latest bundle again, and a
+report analyses a host again when the packs in force differ from those
+its stored analysis applied, or why one isn't applied changed. An
+analysis also keeps each pack's exposure (status, share of the window,
+from and until), for the report's timeline and a run's "needs a look".
+
+**Which packs apply to a host.** A rule says it: `all` (the default),
+`none`, `only: ID, ...` or `except: ID, ...`. A host's own rule wins
+(`checker hosts packs HOST RULE`; `default` clears it), then its group's
+(`checker config set packs.group_apply.GROUP RULE`; `default` clears
+it), then the configuration's (`checker config set packs.apply RULE`).
+`checker hosts packs HOST` says which rule is in force and which packs
+it applies or holds back, and points out a pack it names that isn't in
+force (a typo, or one not added yet); `checker config show` gives the
+configuration's and groups' rules, and points out a group no host is in.
+Each change made with these commands is recorded with who made it and
+when (`checker config history`: `hosts.HOST.packs`, also when a host
+with its own rule is removed, `packs.group_apply.GROUP`, `packs.apply`);
+an edit made to `hosts.yaml` or `config.yaml` by hand is not. A pack held
+back from a host is a coverage gap in its analysis ("held back by the
+host's setting"), not a problem: nothing it would find is looked for
+there, and its exposure doesn't raise that host's prior. A pack named in
+a rule needn't be in force yet. `checker analyze` and `checker report`
+say a pack that can't be used on stderr and in the gaps and still exit
+0; `checker run` counts it as a failure (see docs/scheduling.md).
 
 | Check | Finds | Band | Baseline |
 |---|---|---|---|

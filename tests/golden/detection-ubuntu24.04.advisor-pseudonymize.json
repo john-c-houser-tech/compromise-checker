@@ -888,6 +888,167 @@
   },
   {
    "id": "F-35",
+   "check": "mail.domains",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "Mail to many recipient domains never written to before",
+   "from_host": {
+    "summary": "2026-10-29: 60 new domains: d0.invalid, d1.invalid, d10.invalid, d11.invalid, d12.invalid, d13.invalid, d14.invalid, d15.invalid and 52 more",
+    "entities": [
+     "domain:d0.invalid",
+     "domain:d1.invalid",
+     "domain:d10.invalid",
+     "domain:d11.invalid",
+     "domain:d12.invalid",
+     "domain:d13.invalid",
+     "domain:d14.invalid",
+     "domain:d15.invalid",
+     "domain:d16.invalid",
+     "domain:d17.invalid",
+     "domain:d18.invalid",
+     "domain:d19.invalid",
+     "domain:d2.invalid",
+     "domain:d20.invalid",
+     "domain:d21.invalid",
+     "domain:d22.invalid",
+     "domain:d23.invalid",
+     "domain:d24.invalid",
+     "domain:d25.invalid",
+     "domain:d26.invalid",
+     "domain:d27.invalid",
+     "domain:d28.invalid",
+     "domain:d29.invalid",
+     "domain:d3.invalid",
+     "domain:d30.invalid",
+     "domain:d31.invalid",
+     "domain:d32.invalid",
+     "domain:d33.invalid",
+     "domain:d34.invalid",
+     "domain:d35.invalid",
+     "domain:d36.invalid",
+     "domain:d37.invalid",
+     "domain:d38.invalid",
+     "domain:d39.invalid",
+     "domain:d4.invalid",
+     "domain:d40.invalid",
+     "domain:d41.invalid",
+     "domain:d42.invalid",
+     "domain:d43.invalid",
+     "domain:d44.invalid",
+     "domain:d45.invalid",
+     "domain:d46.invalid",
+     "domain:d47.invalid",
+     "domain:d48.invalid",
+     "domain:d49.invalid",
+     "domain:d5.invalid",
+     "domain:d50.invalid",
+     "domain:d51.invalid",
+     "domain:d52.invalid",
+     "domain:d53.invalid",
+     "domain:d54.invalid",
+     "domain:d55.invalid",
+     "domain:d56.invalid",
+     "domain:d57.invalid",
+     "domain:d58.invalid",
+     "domain:d59.invalid",
+     "domain:d6.invalid",
+     "domain:d7.invalid",
+     "domain:d8.invalid",
+     "domain:d9.invalid"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:08",
+      "where": "mail_journal",
+      "text": "25DEE40394: to=<EMAIL-1-0000>, relay=none, delay=0.09, delays=0.04/0.02/0/0.03, dsn=5.0.0, status=bounced (d1.invalid)"
+     },
+     {
+      "when": "2026-10-29T15:51:08",
+      "where": "mail_journal",
+      "text": "2CE2A40395: to=<EMAIL-2-0000>, relay=none, delay=0.06, delays=0.01/0.04/0/0.01, dsn=5.0.0, status=bounced (d2.invalid)"
+     },
+     {
+      "when": "2026-10-29T15:51:08",
+      "where": "mail_journal",
+      "text": "3C7F6406FF: to=<EMAIL-3-0000>, relay=none, delay=0.09, delays=0.04/0.01/0/0.05, dsn=5.0.0, status=bounced (d3.invalid)"
+     },
+     {
+      "when": "2026-10-29T15:51:08",
+      "where": "mail_journal",
+      "text": "4CE54406FD: to=<EMAIL-4-0000>, relay=none, delay=0.04, delays=0.03/0.01/0/0.01, dsn=5.0.0, status=bounced (d4.invalid)"
+     },
+     {
+      "when": "2026-10-29T15:51:08",
+      "where": "mail_journal",
+      "text": "5A0C1406FD: to=<EMAIL-5-0000>, relay=none, delay=0.03, delays=0.03/0/0/0, dsn=5.0.0, status=bounced (d5.invalid)"
+     },
+     {
+      "text": "… and 45 more"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:08.271240+00:00",
+    "last_seen": "2026-10-29T15:51:09.910451+00:00"
+   }
+  },
+  {
+   "id": "F-36",
+   "check": "mail.volume",
+   "variant": "deliveries",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "A sudden jump in outgoing mail",
+   "from_host": {
+    "summary": "2026-10-29: 150 deliveries attempted; the baseline averaged 1.0 a day",
+    "entities": [
+     "host:HOST-1-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:08",
+      "where": "mail_journal",
+      "text": "25DEE40394: to=<EMAIL-1-0000>, relay=none, delay=0.09, delays=0.04/0.02/0/0.03, dsn=5.0.0, status=bounced (d1.invalid)"
+     },
+     {
+      "when": "2026-10-29T15:51:08",
+      "where": "mail_journal",
+      "text": "2CE2A40395: to=<EMAIL-2-0000>, relay=none, delay=0.06, delays=0.01/0.04/0/0.01, dsn=5.0.0, status=bounced (d2.invalid)"
+     },
+     {
+      "when": "2026-10-29T15:51:08",
+      "where": "mail_journal",
+      "text": "3C7F6406FF: to=<EMAIL-3-0000>, relay=none, delay=0.09, delays=0.04/0.01/0/0.05, dsn=5.0.0, status=bounced (d3.invalid)"
+     },
+     {
+      "when": "2026-10-29T15:51:08",
+      "where": "mail_journal",
+      "text": "4CE54406FD: to=<EMAIL-4-0000>, relay=none, delay=0.04, delays=0.03/0.01/0/0.01, dsn=5.0.0, status=bounced (d4.invalid)"
+     },
+     {
+      "when": "2026-10-29T15:51:08",
+      "where": "mail_journal",
+      "text": "5A0C1406FD: to=<EMAIL-5-0000>, relay=none, delay=0.03, delays=0.03/0/0/0, dsn=5.0.0, status=bounced (d5.invalid)"
+     },
+     {
+      "text": "… and 45 more"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:08.271240+00:00",
+    "last_seen": "2026-10-29T15:51:12.355241+00:00"
+   }
+  },
+  {
+   "id": "F-37",
    "check": "mail.web_user",
    "variant": null,
    "band": "medium",
@@ -938,7 +1099,7 @@
    }
   },
   {
-   "id": "F-36",
+   "id": "F-38",
    "check": "net.config",
    "variant": "file",
    "band": "medium",
@@ -965,7 +1126,7 @@
    }
   },
   {
-   "id": "F-38",
+   "id": "F-40",
    "check": "net.metadata",
    "variant": null,
    "band": "medium",
@@ -996,7 +1157,7 @@
    }
   },
   {
-   "id": "F-39",
+   "id": "F-41",
    "check": "net.tunnel",
    "variant": null,
    "band": "medium",
@@ -1026,7 +1187,7 @@
    }
   },
   {
-   "id": "F-42",
+   "id": "F-44",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1053,7 +1214,7 @@
    }
   },
   {
-   "id": "F-48",
+   "id": "F-50",
    "check": "software.repository",
    "variant": "key",
    "band": "medium",
@@ -1080,7 +1241,7 @@
    }
   },
   {
-   "id": "F-50",
+   "id": "F-52",
    "check": "software.tools",
    "variant": "attack_tool",
    "band": "medium",
@@ -1107,7 +1268,7 @@
    }
   },
   {
-   "id": "F-51",
+   "id": "F-53",
    "check": "ssh.login",
    "variant": "new_address",
    "band": "medium",
@@ -1136,7 +1297,7 @@
    }
   },
   {
-   "id": "F-54",
+   "id": "F-56",
    "check": "web.exploit",
    "variant": "answered",
    "band": "medium",
@@ -1164,7 +1325,7 @@
    }
   },
   {
-   "id": "F-37",
+   "id": "F-39",
    "check": "net.config",
    "variant": "firewall",
    "band": "medium",
@@ -1189,7 +1350,7 @@
    }
   },
   {
-   "id": "F-40",
+   "id": "F-42",
    "check": "net.tunnel",
    "variant": null,
    "band": "medium",
@@ -1217,7 +1378,7 @@
    }
   },
   {
-   "id": "F-49",
+   "id": "F-51",
    "check": "software.repository",
    "variant": "repository",
    "band": "medium",
@@ -1326,7 +1487,7 @@
    }
   },
   {
-   "id": "F-43",
+   "id": "F-45",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1353,7 +1514,7 @@
    }
   },
   {
-   "id": "F-44",
+   "id": "F-46",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1380,7 +1541,7 @@
    }
   },
   {
-   "id": "F-45",
+   "id": "F-47",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1407,7 +1568,7 @@
    }
   },
   {
-   "id": "F-46",
+   "id": "F-48",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1434,7 +1595,7 @@
    }
   },
   {
-   "id": "F-47",
+   "id": "F-49",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1461,7 +1622,7 @@
    }
   },
   {
-   "id": "F-61",
+   "id": "F-63",
    "check": "container.new",
    "variant": "new",
    "band": "low",
@@ -1489,7 +1650,7 @@
    }
   },
   {
-   "id": "F-62",
+   "id": "F-64",
    "check": "net.listener",
    "variant": null,
    "band": "low",
@@ -1518,7 +1679,7 @@
    }
   },
   {
-   "id": "F-65",
+   "id": "F-67",
    "check": "net.peer",
    "variant": "new_destination",
    "band": "low",
@@ -1546,7 +1707,7 @@
    }
   },
   {
-   "id": "F-66",
+   "id": "F-68",
    "check": "package.changed",
    "variant": null,
    "band": "low",
@@ -1590,7 +1751,7 @@
    }
   },
   {
-   "id": "F-67",
+   "id": "F-69",
    "check": "software.packages",
    "variant": "installed",
    "band": "low",
@@ -1641,7 +1802,7 @@
    }
   },
   {
-   "id": "F-63",
+   "id": "F-65",
    "check": "net.listener",
    "variant": null,
    "band": "low",
@@ -1670,7 +1831,7 @@
    }
   },
   {
-   "id": "F-64",
+   "id": "F-66",
    "check": "net.listener",
    "variant": null,
    "band": "low",
@@ -1699,7 +1860,7 @@
    }
   },
   {
-   "id": "F-57",
+   "id": "F-59",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "low",
@@ -1727,7 +1888,7 @@
    }
   },
   {
-   "id": "F-58",
+   "id": "F-60",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "low",
@@ -1755,7 +1916,7 @@
    }
   },
   {
-   "id": "F-59",
+   "id": "F-61",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "low",
@@ -1783,7 +1944,7 @@
    }
   },
   {
-   "id": "F-60",
+   "id": "F-62",
    "check": "account.log_changes",
    "variant": "created",
    "band": "low",
@@ -1811,7 +1972,7 @@
    }
   },
   {
-   "id": "F-68",
+   "id": "F-70",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -1840,7 +2001,7 @@
    }
   },
   {
-   "id": "F-69",
+   "id": "F-71",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -1869,7 +2030,7 @@
    }
   },
   {
-   "id": "F-70",
+   "id": "F-72",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -1898,7 +2059,7 @@
    }
   },
   {
-   "id": "F-71",
+   "id": "F-73",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -1927,7 +2088,7 @@
    }
   },
   {
-   "id": "F-72",
+   "id": "F-74",
    "check": "files.unowned",
    "variant": null,
    "band": "info",
@@ -1954,7 +2115,7 @@
    }
   },
   {
-   "id": "F-73",
+   "id": "F-75",
    "check": "persistence.homes",
    "variant": null,
    "band": "info",
@@ -1981,7 +2142,7 @@
    }
   },
   {
-   "id": "F-74",
+   "id": "F-76",
    "check": "web.exploit",
    "variant": "refused",
    "band": "info",
@@ -2009,7 +2170,7 @@
    }
   },
   {
-   "id": "F-75",
+   "id": "F-77",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2037,7 +2198,7 @@
    }
   },
   {
-   "id": "F-76",
+   "id": "F-78",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2065,7 +2226,7 @@
    }
   },
   {
-   "id": "F-77",
+   "id": "F-79",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2093,7 +2254,7 @@
    }
   },
   {
-   "id": "F-78",
+   "id": "F-80",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2121,7 +2282,7 @@
    }
   },
   {
-   "id": "F-79",
+   "id": "F-81",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2149,7 +2310,7 @@
    }
   },
   {
-   "id": "F-80",
+   "id": "F-82",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2233,7 +2394,7 @@
    }
   },
   {
-   "id": "F-41",
+   "id": "F-43",
    "check": "persistence.at_jobs",
    "variant": null,
    "band": "medium",
@@ -2260,7 +2421,7 @@
    }
   },
   {
-   "id": "F-52",
+   "id": "F-54",
    "check": "ssh.login",
    "variant": "root_login",
    "band": "medium",
@@ -2289,7 +2450,7 @@
    }
   },
   {
-   "id": "F-53",
+   "id": "F-55",
    "check": "ssh.login",
    "variant": "root_login",
    "band": "medium",
@@ -2318,7 +2479,7 @@
    }
   },
   {
-   "id": "F-55",
+   "id": "F-57",
    "check": "account.log_changes",
    "variant": "created",
    "band": "low",
@@ -2346,7 +2507,7 @@
    }
   },
   {
-   "id": "F-56",
+   "id": "F-58",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "low",

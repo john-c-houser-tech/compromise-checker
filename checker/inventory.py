@@ -59,6 +59,10 @@ class Host(BaseModel):
     # This host's prior probability of compromise, if not its group's or
     # the configuration's (DESIGN.md §11.2).
     prior: float | None = Field(default=None, gt=0, lt=1)
+    # Which threat packs in force apply to it, if not its group's or the
+    # configuration's rule (checker.packs.choice): all, none, only: <ids>
+    # or except: <ids>.
+    packs: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -74,6 +78,13 @@ class Host(BaseModel):
         if not re.fullmatch(r"[A-Za-z0-9/._-]+", value):
             raise ValueError("a plain interpreter name or path")
         return value
+
+    @field_validator("packs")
+    @classmethod
+    def _valid_packs(cls, value: str | None) -> str | None:
+        from checker.packs.choice import normal
+
+        return None if value is None else normal(value)
 
     @field_validator("web_roots")
     @classmethod

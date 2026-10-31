@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 import pyrage
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pyrage import x25519
 
 from checker.files import atomic_write, locked
@@ -266,10 +266,31 @@ class TrustedKey(BaseModel):
             raise ValueError(str(exc)) from None
 
 
+def _pack_rule(value: str) -> str:
+    from checker.packs.choice import normal
+
+    return normal(value)
+
+
+PackRule = Annotated[str, AfterValidator(_pack_rule)]
+
+
 class Packs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     trusted_keys: list[TrustedKey] = Field(default=[], max_length=20)
+    # Which packs in force apply (checker.packs.choice): to every host, and
+    # per group; a host's own, in the inventory, wins.
+    apply: PackRule = "all"
+    group_apply: dict[str, PackRule] = {}
+
+    @field_validator("group_apply")
+    @classmethod
+    def _groups(cls, value: dict[str, str]) -> dict[str, str]:
+        for group in value:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}", group):
+                raise ValueError(f"not a group name: {group!r}")
+        return value
 
     @model_validator(mode="after")
     def _unique(self) -> "Packs":

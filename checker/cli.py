@@ -47,17 +47,20 @@ from checker.evidence import (
 from checker.inventory import Host, home, hosts_file, inventory_transaction, load_inventory
 from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
-from checker.report import write_report
+from checker.report import visible, write_report
 from checker.scoring import percent
 from checker.settings import (
     EXEC_RECORDS,
     HOME_TEXT,
     SETTABLE,
     advisor_question,
+    change_host_packs,
     describe,
     key_source_words,
+    packs_line,
     recipient,
     recipients,
+    remove_host,
     value_of,
 )
 from checker.settings import change as change_setting
@@ -104,17 +107,59 @@ def cmd_hosts_list(args: argparse.Namespace) -> int:
         return 0
     for host in hosts:
         group = f"  [{host.group}]" if host.group else ""
+        packs = f"  packs: {host.packs}" if host.packs else ""
         print(
             f"{host.name:20} {host.user}@{host.address}:{host.port}"
-            f"  auth={host.auth} sudo={host.sudo}{group}"
+            f"  auth={host.auth} sudo={host.sudo}{group}{packs}"
         )
+    return 0
+
+
+def cmd_hosts_packs(args: argparse.Namespace) -> int:
+    """Show which threat packs apply to a host, or set its own rule
+    (recorded: `checker config history`)."""
+    from checker.packs.choice import choose, rule_for
+    from checker.packs.choice import parse as parse_rule
+    from checker.packs.store import in_force
+    from checker.report import visible
+
+    base = home()
+    try:
+        config = load_config(base)
+        if args.rule is not None:
+            rule = None if args.rule.strip() == "default" else args.rule
+            old, new = change_host_packs(base, args.name, rule)
+            if old != new:
+                print(f"{args.name}: packs: {old or 'default'} -> {new or 'default'} (recorded).")
+        inventory = load_inventory(hosts_file(base))
+        inventory.get(args.name)
+    except KeyError as exc:
+        print(f"checker: {exc.args[0]}", file=sys.stderr)
+        return 2
+    except ValidationError as exc:
+        print(f"checker: {exc.errors()[0]['msg'].removeprefix('Value error, ')}", file=sys.stderr)
+        return 2
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    rule, source = rule_for(args.name, config, inventory)
+    print(f"{args.name}: packs: {rule} ({source} setting)")
+    packs, problems = in_force(base, config.packs.trusted_keys)
+    applied, _ = choose(packs, rule, source)
+    for pack in packs:
+        state = "applied" if pack in applied else "held back"
+        print(f"  {state}: {pack.id} v{pack.version}")
+    named = set(parse_rule(rule)[1]) - {p.id for p in packs}
+    for pack_id in sorted(named):
+        print(f"  note: no pack {pack_id} is in force (yet): check its spelling")
+    for problem in problems:
+        print(f"checker: not usable: {visible(problem, 300)}", file=sys.stderr)
     return 0
 
 
 def cmd_hosts_remove(args: argparse.Namespace) -> int:
     try:
-        with inventory_transaction() as inventory:
-            inventory.remove(args.name)
+        remove_host(home(), args.name)
     except KeyError as exc:
         print(f"checker: {exc.args[0]}", file=sys.stderr)
         return 2
@@ -234,6 +279,13 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     for line in describe(config):
         print(line)
     print(f"Retention: {config.retention_days} days. Prior: {percent(config.prior)}.")
+    print(packs_line(config))
+    try:
+        groups = {h.group for h in load_inventory().hosts}
+    except (ValidationError, ValueError):
+        groups = set(config.packs.group_apply)  # the inventory's trouble is said elsewhere
+    for group in sorted(set(config.packs.group_apply) - groups):
+        print(f"  note: no host is in group {group}, whose pack rule is set")
     print("Settable with `checker config set KEY VALUE`:")
     for key, setting in SETTABLE.items():
         print(f"  {key} = {json.dumps(value_of(config, key))}    ({setting.help})")
@@ -710,6 +762,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add.set_defaults(handler=cmd_hosts_add)
 
+    choosing = hosts_commands.add_parser(
+        "packs", help="show which threat packs apply to a host, or set its rule"
+    )
+    choosing.add_argument("name")
+    choosing.add_argument(
+        "rule",
+        nargs="?",
+        help="all, none, 'only: ID, ...', 'except: ID, ...', or default (its group's or the"
+        " configuration's)",
+    )
+    choosing.set_defaults(handler=cmd_hosts_packs)
+
     hosts_commands.add_parser("list", help="list hosts").set_defaults(handler=cmd_hosts_list)
 
     remove = hosts_commands.add_parser("remove", help="remove a host")
@@ -797,7 +861,9 @@ def build_parser() -> argparse.ArgumentParser:
             " '-' goes after '--': checker config set KEY -- VALUE."
         ),
     )
-    setting.add_argument("key", choices=list(SETTABLE), metavar="KEY", help=", ".join(SETTABLE))
+    setting.add_argument(
+        "key", metavar="KEY", help=", ".join(SETTABLE) + ", packs.group_apply.GROUP"
+    )
     setting.add_argument("value")
     setting.set_defaults(handler=cmd_config_set)
     config_commands.add_parser(
@@ -1086,11 +1152,12 @@ def _advise_all(args, base, store, config, inventory, identity) -> int:
     if not hosts:
         raise EvidenceError("no host has a usable bundle yet: collect first")
     status, planned = 0, []
+    packs_for, _ = _packs_in_force(base, config, inventory)
     for host in hosts:
         try:
             planned.append(
                 plan(store, host, identity, config, inventory, prior_for(host, config, inventory),
-                     _whitelist_for(base, host, inventory), args.role)
+                     _whitelist_for(base, host, inventory), args.role, packs_for(host))
             )  # fmt: skip
         except KeyboardInterrupt:
             print("checker: interrupted while estimating; nothing was sent", file=sys.stderr)
@@ -1148,7 +1215,7 @@ def _advise_all(args, base, store, config, inventory, identity) -> int:
             advice = advise(
                 store, item.host, identity, config, inventory, item.prior, item.whitelist,
                 role=args.role, client=client, say=lambda line: None, home=base,
-                planned=item, clients=clients,
+                planned=item, clients=clients, packs=item.packs,
             )  # fmt: skip
             _print_advice(advice, args.role)
         except KeyboardInterrupt:
@@ -1322,10 +1389,11 @@ def cmd_advise(args: argparse.Namespace) -> int:
         identity = _identity(args, base)
         if args.all:
             return _advise_all(args, base, store, config, inventory, identity)
+        packs = _packs_in_force(base, config, inventory)[0](args.host)
         if args.show:
             built, known, _ = case_for_host(
                 store, args.host, identity, config.recipients, inventory, prior, whitelist,
-                args.bundle,
+                args.bundle, packs,
             )  # fmt: skip
             mode = args.redaction or config.advisor.redaction
             payload, pseudonyms = redact(built, mode, known)
@@ -1373,7 +1441,7 @@ def cmd_advise(args: argparse.Namespace) -> int:
 
         advice = advise(
             store, args.host, identity, config, inventory, prior, whitelist,
-            role=args.role, bundle_id=args.bundle, confirm=confirm, home=base,
+            role=args.role, bundle_id=args.bundle, confirm=confirm, home=base, packs=packs,
         )  # fmt: skip
     except (EvidenceError, OSError, AdvisorError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -1411,6 +1479,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         inventory = _inventory_for_priors()
         whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
         config = load_config(base)
+        packs_for, _ = _packs_in_force(base, config, inventory)
         path = write_report(
             store,
             hosts,
@@ -1423,6 +1492,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             whitelists.get,
             config.advisor.enabled,
             args.plain,
+            packs_for,
         )
     except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -1470,6 +1540,21 @@ def _open_report(args: argparse.Namespace, base: Path) -> int:
     return 0
 
 
+def _packs_in_force(base: Path, config, inventory):
+    """Which threat packs each host's analysis applies (read once, each
+    one that can't be used said on stderr: it is a gap in each analysis
+    too): a function from a host's name to (packs, why any isn't
+    applied), and the problems."""
+    from checker.packs.choice import for_host
+    from checker.packs.store import in_force
+    from checker.report import visible
+
+    found = in_force(base, config.packs.trusted_keys)
+    for problem in found[1]:
+        print(f"checker: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)
+    return partial(for_host, config=config, inventory=inventory, found=found), found[1]
+
+
 def cmd_analyze(args: argparse.Namespace) -> int:
     """Run the checks and list the findings, most serious first, with
     what the collection couldn't see."""
@@ -1491,17 +1576,17 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             hosts = [args.host]
         # All of them before any analysis: one broken file stops the run.
         whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
+        packs_for, _ = _packs_in_force(base, config, inventory)
         for number, host in enumerate(hosts):
             if number:
                 print()
             try:
                 prior = prior_for(host, config, inventory)
-                _print_assessment(
-                    analyze(
-                        store, host, identity, recipients, args.bundle, prior, whitelists[host]
-                    ),
-                    args,
-                )
+                assessment = analyze(
+                    store, host, identity, recipients, args.bundle, prior, whitelists[host],
+                    *packs_for(host),
+                )  # fmt: skip
+                _print_assessment(assessment, args)
             except EvidenceError as exc:
                 print(f"checker: {host}: {exc}", file=sys.stderr)
                 status = 1
@@ -1543,8 +1628,18 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
         rest = len(scored["contributors"]) - 5
         if rest > 0:
             print(f"           and {rest} more")
+        if scored.get("raised_prior") is not None:
+            exposed = ", ".join(
+                f"{r['pack']} v{r['version']} ({round(r['share'] * 100)}% of its window)"
+                for r in scored["raised_by"]
+            )
+            raised = percent(scored["raised_prior"])
+            print(f"           prior raised to {raised}: exposed to {exposed}")
         rating = scored["hygiene_and_exposure"]
         print(f"Hygiene    rated separately: {rating['band']}")
+    applied_packs = assessment.get("packs") or []
+    if applied_packs:
+        print("Packs      " + ", ".join(f"{p['id']} v{p['version']}" for p in applied_packs))
     suppressed = [f for f in findings if f.get("suppressed_by")]
     findings = [f for f in findings if not f.get("suppressed_by")]
     applied = assessment.get("whitelist")
@@ -1595,7 +1690,7 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
     for name, reach in coverage["log_reach"].items():
         print(f"  {name:15} {reach['from'][:16]} to {reach['to'][:16]} ({reach['days']} days)")
     for gap in coverage["gaps"]:
-        print(f"  gap: {gap[:200]}")
+        print(f"  gap: {visible(gap, 200)}")
     for c in assessment["checks"]:
         if c["status"].startswith("failed"):
             print(f"  check {c['check']} {c['status']}")
@@ -2059,6 +2154,7 @@ def cmd_packs_retire(args: argparse.Namespace) -> int:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     print(f"Retired: {', '.join(names)} (kept in packs/retired/).")
+    print("`checker analyze --all` analyses every host's latest bundle without it.")
     return 0
 
 

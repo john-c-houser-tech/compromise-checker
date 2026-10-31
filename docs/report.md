@@ -121,15 +121,26 @@ reports folder that show a purged bundle; a report written elsewhere with
 
 ## The fleet at a glance
 
-`checker fleet [--group GROUP]` lists every host, most worrying first: Critical and
-High, then hosts with no result to go on, then Elevated and Low. For each host it
-shows the band and probability, threat packs it was exposed to, coverage gaps, a last
-collection that failed, and what changed since the analysis before: a higher band, new
-serious findings, and how many serious findings have gone.
+`checker fleet [--group GROUP]` lists every host, most worrying first:
 
-It reads what is stored, and collects, analyses and writes nothing. So it says when a
-result may not be what a report would say now (older checks, other packs, another
-whitelist or starting probability, a newer collection not analysed yet), and keeps
-showing the older result until it is analysed, so a known problem doesn't disappear.
-An analysis that can't be read, or doesn't match its recorded hash, is shown as that,
-not replaced by an older one.
+1. hosts whose stored analysis can't be read, or doesn't match its recorded hash;
+2. Critical, then High;
+3. hosts with no result to go on, and Elevated or Low results with nothing recent behind
+   them: the last collection failed, the collection was partial, a newer one isn't
+   analysed yet, or it is more than 8 days old;
+4. Elevated, then Low.
+
+For each host it shows the band and probability, threat packs it was exposed to, coverage
+gaps, and what changed since the analysis before. High and critical findings that went away
+are told apart: no longer found, now suppressed by a whitelist, or not seen in a partial
+collection, which says nothing either way. An exposure known before stays listed when a
+later listing can't judge it, and is marked as such.
+
+It reads what is stored, and collects, analyses and writes nothing: the database is opened
+read-only, and it doesn't adopt a newer key list or retire packs, which is left to runs. So
+it says when a result may not be what a report would say now (older checks, other packs,
+another whitelist or starting probability), and keeps showing the older result until it is
+analysed, so a known problem doesn't disappear.
+
+A host's whole evidence being purged is said only while it is in the inventory. A host
+removed from the inventory stays listed while it has bundles, under any group filter.

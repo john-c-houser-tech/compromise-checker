@@ -2,17 +2,26 @@
 of date, from what is stored, with nothing written."""
 
 import hashlib
+import sqlite3
+from datetime import timedelta
 
+import pytest
+from test_purge import add as add_to_evidence
 from test_schedule import CLEAN, ROOTED, keyed_host
-from test_snapshot import add_bundle
+from test_snapshot import START, add_bundle
 
 from checker import cli
-from checker.assess import analyze
-from checker.evidence import load_identity
-from checker.fleet import fleet, fleet_host, sort_key
+from checker import fleet as fleet_module
+from checker.assess import analyze, events_of, load_assessment
+from checker.evidence import EvidenceError, Store, load_identity
+from checker.fleet import STALE_AFTER, FleetHost, fleet, fleet_host, sort_key
 from checker.inventory import inventory_transaction
+from checker.packs.trust import shipped_newer
+from checker.report import host_report, out_of_date, reassess, whitelist_hash
+from checker.scoring import DEFAULT_PRIOR
 
 BIDI = chr(0x202E)
+SOON = START + timedelta(minutes=30)
 
 
 def identity_of(home):
@@ -39,7 +48,7 @@ def test_collected_but_not_analysed_says_so(home):
 def test_most_worrying_first_and_unknown_never_sinks(home):
     analysed(home, "a", 10, ROOTED, host="rooted")
     analysed(home, "b", 10, CLEAN, host="clean")
-    names = [h.host for h in fleet(home[1], identity_of(home), {"never": None})]
+    names = [h.host for h in fleet(home[1], identity_of(home), {"never": None}, now=SOON)]
     assert names == ["rooted", "never", "clean"]
 
 
@@ -57,12 +66,6 @@ def test_what_changed_since_the_analysis_before(home):
     assert any("new critical" in line for line in item.changes)
 
 
-def test_findings_gone_are_counted(home):
-    analysed(home, "b1", 10, ROOTED)
-    analysed(home, "b2", 20, CLEAN)
-    assert fleet_host(home[1], "web01", identity_of(home)).gone >= 1
-
-
 def test_a_newer_unanalysed_collection_keeps_the_old_result_and_says_so(home):
     analysed(home, "b1", 10, ROOTED)
     add_bundle(home, "b2", 20, CLEAN)
@@ -71,49 +74,298 @@ def test_a_newer_unanalysed_collection_keeps_the_old_result_and_says_so(home):
     assert item.band == "High" and "newer collection" in item.out_of_date[0]
 
 
-def test_a_failed_last_collection_shows_beside_the_result(home):
+def test_a_failed_last_collection_shows_and_a_low_result_is_not_trusted(home):
     analysed(home, "b1", 10, CLEAN)
     add_bundle(home, "b2", 20, CLEAN, status="failed")
-    item = fleet_host(home[1], "web01", identity_of(home))
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
     assert item.last_failed[0] == "failed" and item.band == "Low"
+    assert item.doubts == ("its last collection was failed",)
+
+
+def test_a_result_with_nothing_recent_behind_it_is_not_reassuring(home):
+    analysed(home, "good", 10, CLEAN, host="fresh")
+    analysed(home, "old", 10, CLEAN, host="stale")
+    fresh = fleet_host(home[1], "fresh", identity_of(home), now=SOON)
+    assert fresh.doubts == ()
+    later = SOON + STALE_AFTER
+    stale = fleet_host(home[1], "stale", identity_of(home), now=later)
+    assert "days ago" in stale.doubts[0]
+    assert sort_key(stale)[0] < sort_key(fresh)[0]  # above a Low anyone can vouch for
+
+
+def test_doubt_never_moves_a_serious_result_down(home):
+    analysed(home, "b1", 10, ROOTED)
+    add_bundle(home, "b2", 20, CLEAN, status="failed")
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.band == "High" and sort_key(item)[0] == 1
+
+
+def test_the_order_has_elevated_between_unknown_and_low():
+    known = [FleetHost("c", band=b) for b in ("Low", "Elevated", "High", "Critical")]
+    known.append(FleetHost("u"))
+    assert [i.band for i in sorted(known, key=sort_key)] == [
+        "Critical",
+        "High",
+        None,
+        "Elevated",
+        "Low",
+    ]
+
+
+def test_a_tampered_latest_analysis_comes_first_and_says_what_it_last_said(home):
+    analysed(home, "b1", 10, ROOTED)
+    analysed(home, "b2", 20, CLEAN)
+    analysed(home, "z", 10, ROOTED, host="another")
+    analysed(home, "z2", 20, ROOTED, host="another")
+    with open(home[1].assessments("b2")[-1]["path"], "ab") as f:
+        f.write(b"x")
+    hosts = fleet(home[1], identity_of(home), {}, now=SOON)
+    assert hosts[0].host == "web01"
+    assert hosts[0].state == "unreadable" and hosts[0].band is None
+    assert hosts[0].last_readable_band == "High"  # never shown as current
+
+
+def test_an_older_analysis_unreadable_leaves_the_latest_alone(home):
+    analysed(home, "b1", 10, CLEAN)
+    analysed(home, "b2", 20, ROOTED)
+    with open(home[1].assessments("b1")[-1]["path"], "ab") as f:
+        f.write(b"x")
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.state == "analysed" and item.before_unreadable and not item.first
     assert item.out_of_date == ()
 
 
-def test_a_tampered_analysis_is_said_not_replaced_by_an_older_one(home):
+def test_a_known_exposure_stays_when_a_later_listing_cannot_judge_it(home, monkeypatch):
+    analysed(home, "b1", 10, CLEAN)
+    analysed(home, "b2", 20, CLEAN)
+    real = fleet_module.load_assessment
+
+    def load(store, bundle, identity, which=-1):
+        found = real(store, bundle, identity, which)
+        pack = {"pack": "p1", "version": 1, "status": "vulnerable", "share": 1, "judged": True}
+        if bundle == "b2":
+            pack.update(status="can't judge", judged=False, share=0)
+        return {**found, "exposures": [pack]}
+
+    monkeypatch.setattr(fleet_module, "load_assessment", load)
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.exposed == {"p1": "vulnerable"} and item.unjudged == ("p1",)
+
+
+def test_findings_missing_from_a_partial_collection_are_not_called_gone(home):
+    analysed(home, "b1", 10, ROOTED)
+    add_bundle(home, "b2", 20, CLEAN, status="partial")
+    analyze(home[1], "web01", identity_of(home), home[3].recipients, "b2")
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.collection_status == "partial" and item.resolved == 0 and item.not_seen >= 1
+    assert "this collection was partial" in item.doubts
+
+
+def test_findings_missing_from_a_whole_collection_are_resolved(home):
     analysed(home, "b1", 10, ROOTED)
     analysed(home, "b2", 20, CLEAN)
-    with open(home[1].assessments("b2")[-1]["path"], "ab") as f:
-        f.write(b"x")
-    item = fleet_host(home[1], "web01", identity_of(home))
-    assert item.state == "unreadable" and item.band is None
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.resolved >= 1 and item.not_seen == 0 and item.suppressed == 0
 
 
-def test_out_of_date_reasons_match_what_the_report_acts_on(home, monkeypatch):
-    analysed(home, "b1", 10, CLEAN)
-    monkeypatch.setattr("checker.report.current_versions", lambda: {"checks": -1})
-    item = fleet_host(home[1], "web01", identity_of(home))
-    assert any("older version" in r for r in item.out_of_date)
+def test_a_finding_now_suppressed_is_not_called_resolved():
+    before = {"findings": {"k": "critical"}}
+    finding = {"check": "c", "title": "t", "suppressed_by": "rule"}
+    key = fleet_module._identity_of(finding)
+    assert fleet_module._gone({"findings": {key: "critical"}}, {"findings": [finding]}, True) == (
+        0,
+        1,
+        0,
+    )
+    assert fleet_module._gone(before, {"findings": []}, True) == (1, 0, 0)
 
 
-def test_another_prior_is_out_of_date(home):
-    analysed(home, "b1", 10, CLEAN)
-    item = fleet_host(home[1], "web01", identity_of(home), prior_for=lambda _: (0.5, "host"))
-    assert any("starting probability" in r for r in item.out_of_date)
-
-
-def test_looking_writes_nothing(home):
+def test_rescoring_one_collection_is_not_a_first_analysis(home):
     analysed(home, "b1", 10, ROOTED)
-    db = home[0] / "checker.db"
-    counts = _table_counts(home[1])
-    before = hashlib.sha256(db.read_bytes()).hexdigest()
-    fleet(home[1], identity_of(home), {"web01": None}, prior_for=lambda _: (0.5, "host"))
-    assert _table_counts(home[1]) == counts
-    assert hashlib.sha256(db.read_bytes()).hexdigest() == before
+    earlier = load_assessment(home[1], "b1", identity_of(home))
+    reassess(
+        home[1],
+        home[1].bundle("b1"),
+        home[3].recipients,
+        earlier,
+        (0.0001, "host"),
+        None,
+        events_of(home[1], home[1].bundle("b1"), identity_of(home), home[3].recipients),
+    )
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert not item.first and item.band_before == "High"
+    assert item.band != "High" and item.rescored_from == "High"
 
 
-def _table_counts(store):
-    names = [r[0] for r in store._db.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-    return {n: store._db.execute(f"SELECT count(*) FROM {n}").fetchone()[0] for n in names}  # noqa: S608
+def test_one_hosts_broken_whitelist_leaves_the_fleet_listed(home):
+    analysed(home, "a", 10, ROOTED, host="rooted")
+    analysed(home, "b", 10, CLEAN, host="clean")
+
+    def whitelist(name):
+        if name == "clean":
+            raise EvidenceError("bad yaml")
+
+    hosts = fleet(home[1], identity_of(home), {}, whitelist_for=whitelist, now=SOON)
+    assert [h.host for h in hosts] == ["rooted", "clean"]
+    assert "its whitelist can't be read" in hosts[1].out_of_date
+    assert hosts[1].band == "Low"
+
+
+def test_any_other_trouble_with_one_host_is_loud_not_fatal(home, monkeypatch):
+    analysed(home, "a", 10, ROOTED, host="rooted")
+    analysed(home, "b", 10, CLEAN, host="odd")
+    monkeypatch.setattr(fleet_module, "out_of_date", _boom_on_low(fleet_module.out_of_date))
+    hosts = fleet(home[1], identity_of(home), {}, now=SOON)
+    assert hosts[0].host == "odd" and hosts[0].state == "unreadable"
+
+
+def _boom_on_low(real):
+    def check(assessment, *args, **kwargs):
+        if assessment["host"] == "odd":
+            raise TypeError("odd stored data")
+        return real(assessment, *args, **kwargs)
+
+    return check
+
+
+def test_only_failed_collections_are_not_called_nothing_collected(home):
+    add_bundle(home, "b1", 10, CLEAN, status="failed")
+    item = fleet_host(home[1], "web01", identity_of(home))
+    assert item.state == "collections_failed" and item.last_failed[0] == "failed"
+
+
+def test_a_host_whose_evidence_was_purged_says_so(home):
+    add_to_evidence(home, "b1", 40)
+    home[1].record_baseline("web01", "b1", "first", None)
+    assert cli.cmd_purge(cli.build_parser().parse_args(["purge", "web01"]), lambda _: "purge") == 0
+    assert not home[1].bundles("web01")
+    assert fleet_host(home[1], "web01", identity_of(home)).state == "purged"
+
+
+def test_a_group_filter_does_not_hide_a_host_no_longer_in_the_inventory(home):
+    analysed(home, "b", 10, ROOTED, host="removed")
+    names = [h.host for h in fleet(home[1], identity_of(home), {"a": "x", "b": "y"}, group="x")]
+    assert sorted(names) == ["a", "removed"]
+
+
+@pytest.mark.parametrize(
+    ("change", "kwargs"),
+    [("versions", {}), ("prior", {}), ("problems", {"pack_problems": ["gone"]})],
+)
+def test_what_the_fleet_calls_out_of_date_is_what_the_report_redoes(
+    home, monkeypatch, change, kwargs
+):
+    analysed(home, "b1", 10, CLEAN)
+    prior = (0.5, "host") if change == "prior" else (DEFAULT_PRIOR, "default")
+    if change == "versions":
+        monkeypatch.setattr("checker.report.current_versions", lambda: {"checks": -1})
+    assessment = load_assessment(home[1], "b1", identity_of(home))
+    analyse, rescore = out_of_date(assessment, prior, None, None, kwargs.get("pack_problems"))
+    assert analyse or rescore
+    before = len(home[1].assessments("b1"))
+    if change == "versions":
+        monkeypatch.undo()  # the analysis it starts records the real versions
+        monkeypatch.setattr("checker.report.current_versions", lambda: {"checks": -1})
+    host_report(
+        home[1],
+        "web01",
+        identity_of(home),
+        home[3].recipients,
+        None,
+        prior,
+        None,
+        None,
+        kwargs.get("pack_problems"),
+    )
+    assert len(home[1].assessments("b1")) == before + 1
+
+
+class _Whitelist:
+    def __init__(self, digest="d", expired=()):
+        self._digest, self._expired = digest, list(expired)
+
+    def digest(self):
+        return self._digest
+
+    def expired(self):
+        return self._expired
+
+
+def test_a_whitelist_changed_or_expired_means_scoring_again(home):
+    analysed(home, "b1", 10, CLEAN)
+    assessment = load_assessment(home[1], "b1", identity_of(home))
+    assert out_of_date(assessment, None, _Whitelist(), check_packs=False) == (
+        [],
+        ["the whitelist has changed"],
+    )
+    assessment["whitelist"] = {"digest": "d", "hash": "d", "expired": []}
+    with_hash = whitelist_hash(assessment)
+    assert out_of_date(assessment, None, _Whitelist(with_hash, ["rule"]), check_packs=False) == (
+        [],
+        ["a whitelist rule has expired"],
+    )
+
+
+def _tree(base):
+    return {
+        str(p.relative_to(base)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(base.rglob("*"))
+        if p.is_file()
+    }
+
+
+def test_the_command_writes_nothing_anywhere_in_the_home(home, capsys):
+    analysed(home, "b1", 10, ROOTED)
+    assert shipped_newer(home[0])  # a fresh home: a run would adopt the key list now
+    before = _tree(home[0])
+    assert cli.main(["fleet"]) == 0
+    assert _tree(home[0]) == before
+    assert not (home[0] / "packs" / "state.json").exists()
+
+
+def test_the_command_does_not_upgrade_an_old_database(home, capsys):
+    analysed(home, "b1", 10, ROOTED)
+    home[1]._db.execute("ALTER TABLE advice DROP COLUMN endpoint")
+    home[1]._db.commit()
+    before = _tree(home[0])
+    assert cli.main(["fleet"]) == 0
+    assert _tree(home[0]) == before
+
+
+def test_the_command_on_a_home_not_set_up_creates_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path / "new"))
+    assert cli.main(["fleet"]) == 1
+    assert "not set up yet" in capsys.readouterr().err
+    assert not (tmp_path / "new").exists() or not list((tmp_path / "new").rglob("*"))
+
+
+def test_the_read_only_store_refuses_a_write(home):
+    store = Store(home[0] / "checker.db", read_only=True)
+    with pytest.raises(sqlite3.OperationalError):
+        store._db.execute("DELETE FROM bundles")
+    store.close()
+
+
+def test_hostile_titles_and_pack_names_reach_the_terminal_visible(home, capsys, monkeypatch):
+    analysed(home, "b1", 10, CLEAN)
+    hostile = "evil" + BIDI + chr(27) + "[31m"
+
+    def fake(*args, **kwargs):
+        return [
+            FleetHost(
+                hostile,
+                state="analysed",
+                band="High",
+                probability=0.6,
+                exposed={hostile: "vulnerable"},
+                unjudged=(hostile,),
+            )
+        ]
+
+    monkeypatch.setattr(fleet_module, "fleet", fake)
+    assert cli.main(["fleet"]) == 0
+    out = capsys.readouterr().out
+    assert BIDI not in out and chr(27) not in out
 
 
 def test_the_order_handles_a_band_it_does_not_know(home):

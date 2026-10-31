@@ -330,7 +330,9 @@ def host_report(
         raise EvidenceError(f"bundle {row['id']} is {row['status']}: nothing to report")
     assessment = load_assessment(store, row["id"], identity)
     analyse, rescore = (
-        out_of_date(assessment, prior, whitelist, packs, pack_problems) if assessment else ([], [])
+        out_of_date(assessment, prior, whitelist, packs, pack_problems)
+        if assessment is not None
+        else ([], [])
     )
     if assessment is None or analyse:
         assessment = analyze(

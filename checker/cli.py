@@ -1547,21 +1547,29 @@ def cmd_fleet(args: argparse.Namespace) -> int:
     """Every host at a glance, from what is stored: it collects, analyses
     and writes nothing."""
     from checker.fleet import fleet
+    from checker.packs.choice import for_host
+    from checker.packs.store import in_force_read_only
     from checker.report import visible
 
     base = home()
-    store = Store(database_file(base))
+    try:
+        config = load_config(base)
+        store = Store(database_file(base), read_only=True)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
     try:
         inventory = _inventory_for_priors()
-        config = load_config(base)
-        packs_for, _ = _packs_in_force(base, config, inventory)
+        found = in_force_read_only(base, config.packs.trusted_keys)
+        for problem in found[1]:
+            print(f"checker: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)
         hosts = fleet(
             store,
             _identity(args, base),
             {h.name: h.group for h in inventory.hosts},
             partial(prior_for, config=config, inventory=inventory),
             lambda name: _whitelist_for(base, name, inventory),
-            packs_for,
+            partial(for_host, config=config, inventory=inventory, found=found),
             args.group,
         )
     except (EvidenceError, OSError) as exc:
@@ -1575,30 +1583,49 @@ def cmd_fleet(args: argparse.Namespace) -> int:
     words = {
         "not_analysed": "collected, not analysed yet",
         "no_evidence": "nothing collected yet",
-        "unreadable": "its analysis can't be read",
+        "collections_failed": "no collection has worked yet",
+        "purged": "all its evidence was purged, so nothing is known now",
+        "unreadable": "its analysis can't be read: check the store hasn't been tampered with",
     }
     for item in hosts:
         name = visible(item.host, 80)
-        if item.state == "analysed":
-            shown = f"{item.probability:.1%}" if item.probability is not None else "?"
-            print(f"{name}  {item.band} {shown}  collected {item.collected_at}")
-        else:
+        if item.state != "analysed":
             print(f"{name}  {words[item.state]}")
+        elif item.probability is None:
+            print(f"{name}  no score  collected {item.collected_at}")
+        else:
+            print(f"{name}  {item.band} {item.probability:.1%}  collected {item.collected_at}")
+        if item.last_readable_band:
+            print(f"  the last readable analysis said {item.last_readable_band}")
+        for doubt in item.doubts:
+            print(f"  can't be relied on: {doubt}")
         if item.exposed:
             packs = ", ".join(f"{visible(p, 80)} ({s})" for p, s in sorted(item.exposed.items()))
             print(f"  threat packs: {packs}")
+        if item.unjudged:
+            print(f"  can't tell now: {', '.join(visible(p, 80) for p in item.unjudged)}")
         if item.gaps:
             print(f"  coverage gaps: {item.gaps}")
         if item.last_failed:
             print(f"  last collection {item.last_failed[0]} at {item.last_failed[1]}")
         for reason in item.out_of_date:
             print(f"  out of date: {reason}")
+        if item.before_unreadable:
+            print("  the analysis before can't be read, so changes can't be shown")
         if item.band_before and item.band_before != item.band:
             print(f"  was {item.band_before} at the analysis before")
+        if item.rescored_from:
+            print(f"  this collection was {item.rescored_from} before it was scored again")
         for line in item.changes:
-            print(f"  new: {line.partition(': ')[2]}")
-        if item.gone:
-            print(f"  gone: {item.gone} high or critical finding(s) since the analysis before")
+            print(f"  {line.partition(': ')[2]}")
+        if item.resolved:
+            print(f"  no longer found: {item.resolved} high or critical finding(s)")
+        if item.suppressed:
+            print(f"  now suppressed by a whitelist: {item.suppressed} high or critical finding(s)")
+        if item.not_seen:
+            print(
+                f"  not seen in a partial collection: {item.not_seen} high or critical finding(s)"
+            )
     return 0
 
 

@@ -1005,7 +1005,14 @@ def who_and_where() -> tuple[str, str]:
 
 
 class Store:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, read_only: bool = False) -> None:
+        if read_only:
+            # For looking: no schema, no upgrade, no file created; a write is an error.
+            if not path.exists():
+                raise EvidenceError(f"not set up yet: run `checker init` (no {path})")
+            self._db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+            self._db.row_factory = sqlite3.Row
+            return
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fresh = not path.exists()
         self._db = sqlite3.connect(path)

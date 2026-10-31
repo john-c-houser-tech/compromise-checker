@@ -131,6 +131,18 @@ def in_force(home: Path, organization: list[Any]) -> tuple[list[Pack], list[str]
     return [s.pack for s in usable], [*said, *problems]
 
 
+def in_force_read_only(home: Path, organization: list[Any]) -> tuple[list[Pack], list[str]]:
+    """The same for someone only looking: it adopts nothing and retires
+    nothing, takes no lock, and so can't use up the notice a run gives when a
+    pack is retired. A pack whose key a newer shipped list revokes shows as a
+    problem, since that list already counts when keys are read."""
+    try:
+        usable, problems = active(home, organization)
+    except Exception as exc:  # noqa: BLE001 - said, not hidden
+        return [], [f"the packs couldn't be read: {type(exc).__name__}: {exc}"]
+    return [s.pack for s in usable], problems
+
+
 def retired(home: Path) -> list[tuple[str, int, str]]:
     """(id, version, why) for each retired pack."""
     found = []

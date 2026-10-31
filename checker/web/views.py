@@ -18,7 +18,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from checker.evidence import EvidenceError
-from checker.fleet import read_fleet
+from checker.fleet import read_fleet, read_host
 from checker.inventory import home
 from checker.report import visible
 from checker.web import accounts, wording
@@ -187,6 +187,26 @@ def fleet_page(request) -> HttpResponse:
             "tone": tone,
             "tones": [(t, wording.TONE_NAMES[t]) for t in tones],
         },
+    )
+
+
+@login_required
+@require_GET
+def host_page(request, name: str) -> HttpResponse:
+    try:
+        found = read_host(home(), name)
+    except EvidenceError as exc:
+        return _unavailable(request, str(exc))
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't read the results: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "A settings file or the evidence key can't be read.")
+    if found is None:
+        return not_found(request)
+    host, assessment = found
+    return render(
+        request,
+        "host.html.j2",
+        {"row": wording.row(host), **wording.host_details(assessment)},
     )
 
 

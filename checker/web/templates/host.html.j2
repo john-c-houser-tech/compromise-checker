@@ -1,0 +1,61 @@
+{% extends "base.html.j2" %}
+{% from "parts.html.j2" import scale, notes %}
+{% block title %}{{ row.host.host }}: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('fleet') }}">All servers</a></p>
+<div class="host-head tone-{{ row.tone }}">
+  <div>
+    <h1>{{ row.host.host }}</h1>
+    <p class="verdict">{{ row.verdict }}</p>
+    {% if row.action %}<p class="action">{{ row.action }}</p>{% endif %}
+    {% if row.checked %}<p class="note">{{ row.checked }}</p>{% endif %}
+    {{ notes(row) }}
+  </div>
+  <div class="chance">
+    {% if row.host.probability is not none and row.host.state == "analysed" %}
+    <p><strong>{{ row.host.probability | percent }}</strong> estimated chance of a break-in</p>
+    {{ scale(row.host.probability) }}
+    {% else %}
+    <p class="none">No estimate</p>
+    {% endif %}
+  </div>
+</div>
+<p class="note">This is an estimate, not proof either way. A finding is a reason to look, and many have innocent explanations. Before changing anything on a server you think was broken into, get advice: what's on it may be evidence.</p>
+{% for section in sections %}
+<section class="findings">
+  <h2>{{ section.title }} <span>({{ section.findings | length }})</span></h2>
+  {% for f in section.findings %}
+  <article class="finding band-{{ f.band_class }}">
+    <h3>{{ f.meaning }}</h3>
+    <p class="band">{{ f.band_words }}{% if f.new %}, new since the last check{% endif %}</p>
+    <p class="found"><strong>What it found:</strong> {{ f.summary }}</p>
+    {% if f.uncertain %}<p>This may be wrong: {{ f.uncertain }}</p>{% endif %}
+    <p><strong>What to do:</strong> {{ f.todo }}</p>
+  </article>
+  {% endfor %}
+  {% if section.minor %}
+  <details class="minor">
+    <summary>{{ section.minor | length }} for information</summary>
+    <ul>{% for f in section.minor %}<li>{{ f.title }}: {{ f.summary }}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+</section>
+{% endfor %}
+{% if nothing_found %}
+<p>No findings on this check. That doesn't prove nothing happened: see what the check couldn't see, below.</p>
+{% endif %}
+{% if suppressed %}
+<section class="findings">
+  <h2>Hidden by your list of accepted activity <span>({{ suppressed | length }})</span></h2>
+  <p class="note">You or someone with access decided these are expected. If that's not right, they shouldn't be hidden.</p>
+  <ul>{% for f in suppressed %}<li>{{ f.title }}: {{ f.summary }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+{% if gaps or reach %}
+<section class="findings">
+  <h2>What the check couldn't see</h2>
+  {% if reach %}<p class="note">Its logs go back {{ reach }} days. Anything earlier can't be seen.</p>{% endif %}
+  {% if gaps %}<ul>{% for gap in gaps %}<li>{{ gap }}</li>{% endfor %}</ul>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

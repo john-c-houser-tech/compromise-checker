@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from checker.fleet import UNREADABLE, FleetHost, serious, sort_key
 from checker.report import OLDER_CHECKS
 from checker.schedule import SERIOUS
+from checker.web.finding_words import BAND_WORDS, SECTIONS, gap_words, words_for
 
 # How worrying each band is, for colour and for what the page leads with.
 VERDICTS = {
@@ -334,3 +335,63 @@ def headline(rows: list[Row]) -> tuple[str, str]:
 
 def rows_for(hosts: list[FleetHost], now: datetime | None = None) -> list[Row]:
     return [row(h, now) for h in sorted(hosts, key=sort_key)]
+
+
+def host_details(assessment: dict | None) -> dict:
+    """A host page's findings in plain words, most serious first and split as the report
+    splits them. Odd stored data leaves things out of the sections, never the page down."""
+    empty = {"sections": [], "suppressed": [], "gaps": [], "reach": None, "nothing_found": False}
+    if not isinstance(assessment, dict):
+        return empty
+    findings = assessment.get("findings")
+    findings = [f for f in findings if isinstance(f, dict)] if isinstance(findings, list) else []
+    sections = []
+    for category, title in SECTIONS.items():
+        here = [f for f in findings if f.get("category") == category and not f.get("suppressed_by")]
+        shown = [_finding(f) for f in here if f.get("band") != "info"]
+        shown.sort(key=lambda f: _BAND_ORDER.get(f["band_class"], 9))
+        minor = [f for f in here if f.get("band") == "info"]
+        if shown or minor:
+            sections.append({"title": title, "findings": shown, "minor": minor})
+    coverage = assessment.get("coverage")
+    coverage = coverage if isinstance(coverage, dict) else {}
+    gaps = coverage.get("gaps")
+    return {
+        "sections": sections,
+        "suppressed": [f for f in findings if f.get("suppressed_by")],
+        "gaps": list(dict.fromkeys(gap_words(g) for g in gaps)) if isinstance(gaps, list) else [],
+        "reach": _log_reach(coverage.get("log_reach")),
+        "nothing_found": not sections,
+    }
+
+
+_BAND_ORDER = {band: n for n, band in enumerate(BAND_WORDS)}
+
+
+def _finding(finding: dict) -> dict:
+    meaning, todo = words_for(finding.get("check"), finding.get("variant"))
+    band = finding.get("band")
+    known = isinstance(band, str) and band in BAND_WORDS
+    return {
+        "meaning": meaning,
+        "todo": todo,
+        "band_class": band if known else "medium",
+        "band_words": BAND_WORDS[band] if known else "Worth a look",
+        "new": bool(finding.get("new")),
+        "title": finding.get("title"),
+        "summary": finding.get("summary"),
+        "uncertain": finding.get("uncertain"),
+    }
+
+
+def _log_reach(reach: object) -> int | None:
+    """How many days the login logs go back, from whichever reaches furthest."""
+    if not isinstance(reach, dict):
+        return None
+    days = [
+        r.get("days")
+        for name, r in reach.items()
+        if name in ("auth_log", "auth_journal") and isinstance(r, dict)
+    ]
+    days = [d for d in days if isinstance(d, (int, float)) and not isinstance(d, bool)]
+    return int(max(days)) if days else None

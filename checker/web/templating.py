@@ -20,6 +20,6 @@ def environment(**options) -> Environment:
     env = Environment(**options)  # noqa: S701 - autoescape is set just above
     env.filters["visible"] = visible
     env.filters["percent"] = percent
-    env.globals["url"] = reverse
+    env.globals["url"] = lambda view, **kwargs: reverse(view, kwargs=kwargs or None)
     env.globals["product_name"] = product_name
     return env

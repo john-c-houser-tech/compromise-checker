@@ -322,6 +322,8 @@ class Config(BaseModel):
     recipients: list[str]  # age public keys bundles are encrypted to
     identity_file: str | None = None  # where the matching private key is, if here
     retention_days: int = Field(default=90, ge=1)
+    # The fleet view calls a collection older than this old.
+    stale_after_days: int = Field(default=3, ge=1)
     # The prior probability of compromise scoring starts from (DESIGN.md
     # §11.2), and per host group; a host's own, in the inventory, wins.
     prior: float = Field(default=0.02, gt=0, lt=1)
@@ -1004,8 +1006,36 @@ def who_and_where() -> tuple[str, str]:
     return getpass.getuser(), socket.gethostname()
 
 
+def store_unreadable(exc: sqlite3.Error) -> str:
+    """Why a store opened only for looking can't answer, and what to do. Looking
+    can't repair it, since recovery and upgrades both have to write."""
+    text = str(exc)
+    if "readonly" in text:
+        return (
+            "an earlier run was interrupted and the store needs recovering:"
+            " `checker bundle list` recovers it"
+        )
+    if "locked" in text:
+        return "the store is busy with another run: try again shortly"
+    if "no such table" in text or "no such column" in text:
+        return "the store is from an older version: `checker bundle list` upgrades it"
+    return f"the store can't be read, and may be damaged: {text}"
+
+
 class Store:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, read_only: bool = False) -> None:
+        if read_only:
+            # For looking: no schema, no upgrade, no file created; a write is an error.
+            if not path.exists():
+                raise EvidenceError(f"not set up yet: run `checker init` (no {path})")
+            try:
+                self._db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+                self._db.row_factory = sqlite3.Row
+                for table in ("bundles", "assessments", "baselines", "purges"):
+                    self._db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()  # noqa: S608
+            except sqlite3.Error as exc:
+                raise EvidenceError(store_unreadable(exc)) from exc
+            return
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fresh = not path.exists()
         self._db = sqlite3.connect(path)

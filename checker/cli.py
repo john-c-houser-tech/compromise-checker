@@ -11,6 +11,7 @@ from functools import partial
 from pathlib import Path
 
 import pyrage
+import yaml
 from pydantic import ValidationError
 
 from checker import __version__
@@ -943,6 +944,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reporting.add_argument("--identity", help="the evidence private key file")
     reporting.set_defaults(handler=cmd_report)
+
+    fleet_view = commands.add_parser(
+        "fleet", help="every host's latest result, most worrying first, and what changed"
+    )
+    fleet_view.add_argument("--group", help="only this group's hosts")
+    fleet_view.add_argument("--identity", help="the evidence private key file")
+    fleet_view.set_defaults(handler=cmd_fleet)
     changed = commands.add_parser(
         "changes", help="what changed on a host since its previous bundle and its baseline"
     )
@@ -1533,6 +1541,107 @@ def cmd_report(args: argparse.Namespace) -> int:
         )
     else:
         print(f"Encrypted to the evidence key. To read it: checker report --open {path}")
+    return 0
+
+
+def cmd_fleet(args: argparse.Namespace) -> int:
+    """Every host at a glance, from what is stored: it collects, analyses
+    and writes nothing."""
+    from checker.fleet import UNREADABLE, fleet, serious
+    from checker.packs.choice import for_host
+    from checker.packs.store import in_force_read_only
+    from checker.report import visible
+
+    unreadable_settings = (EvidenceError, OSError, ValidationError, yaml.YAMLError)
+    base = home()
+    try:
+        config = load_config(base)
+        store = Store(database_file(base), read_only=True)
+    except unreadable_settings as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    try:
+        inventory = _inventory_for_priors()
+        found = in_force_read_only(base, config.packs.trusted_keys)
+        for problem in found[1]:
+            print(f"checker: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)
+        hosts = fleet(
+            store,
+            _identity(args, base),
+            {h.name: h.group for h in inventory.hosts},
+            partial(prior_for, config=config, inventory=inventory),
+            lambda name: _whitelist_for(base, name, inventory),
+            partial(for_host, config=config, inventory=inventory, found=found),
+            args.group,
+            stale_after=timedelta(days=config.stale_after_days),
+        )
+    except unreadable_settings as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    if not hosts:
+        print(f"No hosts in group {visible(args.group, 80)}." if args.group else "No hosts yet.")
+        return 0
+    words = {
+        "not_analysed": "collected, not analysed yet",
+        "no_evidence": "nothing collected yet",
+        "collections_failed": "no collection has worked yet",
+        "purged": "all its evidence was purged, so nothing is known now",
+    }
+    for item in hosts:
+        name = visible(item.host, 80)
+        if item.state == "unreadable":
+            print(f"{name}  {UNREADABLE[item.unreadable_why or 'internal']}")
+        elif item.state != "analysed":
+            print(f"{name}  {words[item.state]}")
+        else:
+            score = visible(item.band or "no score", 20)
+            shown = f" {item.probability:.1%}" if item.probability is not None else ""
+            print(f"{name}  {score}{shown}  collected {item.collected_at}")
+        if item.removed:
+            print(f"  no longer in the inventory; `checker purge {name}` removes its evidence")
+        if item.last_readable_band:
+            print(f"  the last readable analysis said {visible(item.last_readable_band, 20)}")
+        # Under a serious result, a doubt mustn't read as a reason to ignore it.
+        label = (
+            "may have changed since" if item.band in ("High", "Critical") else "can't be relied on"
+        )
+        for doubt in item.doubts:
+            print(f"  {label}: {doubt}")
+        if serious(item):
+            print(f"  high or critical findings: {serious(item)}")
+        if item.hygiene and item.hygiene != "none":
+            print(f"  hygiene and exposure: {visible(item.hygiene, 40)}")
+        if item.exposed:
+            packs = ", ".join(f"{visible(p, 80)} ({s})" for p, s in sorted(item.exposed.items()))
+            print(f"  threat packs: {packs}")
+        if item.unjudged:
+            print(f"  can't tell now: {', '.join(visible(p, 80) for p in item.unjudged)}")
+        if item.gaps:
+            print(f"  coverage gaps: {item.gaps}")
+        if item.last_failed:
+            print(f"  last collection {item.last_failed[0]} at {item.last_failed[1]}")
+        for reason in item.out_of_date:
+            if reason not in item.doubts:
+                print(f"  out of date: {reason}")
+        if item.before_unreadable:
+            print("  the analysis before can't be read, so changes can't be shown")
+        if item.rescored_from:
+            print(f"  this collection was {item.rescored_from} before it was scored again")
+        elif item.band_before and item.band_before != item.band:
+            print(f"  was {item.band_before} at the analysis before")
+        for line in item.changes:
+            print(f"  {line.partition(': ')[2]}")
+        if item.resolved:
+            print(f"  no longer found: {item.resolved} high or critical finding(s)")
+        if item.suppressed:
+            print(f"  now suppressed by a whitelist: {item.suppressed} high or critical finding(s)")
+        if item.not_seen:
+            print(
+                f"  not seen, which says nothing either way: {item.not_seen} high or critical"
+                " finding(s)"
+            )
     return 0
 
 

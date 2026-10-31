@@ -1,0 +1,488 @@
+"""The fleet at a glance (DESIGN.md §13): each host's latest analysis, what
+changed since the one before, and how far it can be relied on. Read from
+what is stored: nothing here collects, analyses or writes, so looking can't
+change what the report would say. The web interface reads through this."""
+
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import pyrage
+
+from checker.assess import load_assessment
+from checker.baseline import usable_bundles
+from checker.evidence import EvidenceError, store_unreadable
+from checker.report import OLDER_CHECKS, out_of_date, visible
+from checker.schedule import BANDS, SERIOUS, _exposed, _identity_of, alerts, remembered
+
+# A collection older than this is said to be old unless the settings say
+# otherwise (stale_after_days): a daily check, and time for a bad weekend.
+STALE_AFTER = timedelta(days=3)
+# How far back to look for what an unjudged exposure last was.
+_EXPOSURE_LOOKBACK = 30
+
+# Most worrying first. An analysis that can't be read comes before everything:
+# the tool's own store may have been tampered with. A host nobody can vouch for
+# comes after High and Critical, which are known problems, and before Elevated
+# and Low, which are known to be less so: it must not sink to the bottom.
+_UNREADABLE, _UNKNOWN = -1, 2
+_ORDER = {"Critical": 0, "High": 1, "Elevated": 3, "Low": 4}
+
+# With these it can't see logins or the system's own log at all, whatever an
+# earlier analysis saw: wiped logs look like this, and from the second day on
+# there is nothing "new" about them. So they are always a doubt.
+_BLIND = ("no authentication log events", "no system journal events")
+
+_NOT_HIDING = ("pack ", "threat pack ", "login hours not judged")
+
+# Why an analysis can't be read, in words for whoever is looking.
+UNREADABLE = {
+    "mismatch": "its stored analysis doesn't match its recorded hash: it may have been"
+    " tampered with",
+    "missing": "its stored analysis file is missing",
+    "key": "its stored analysis can't be decrypted with this evidence key",
+    "damaged": "its stored analysis is damaged",
+    "internal": "its stored data couldn't be worked out: this may be a bug in the tool",
+}
+
+
+@dataclass(frozen=True)
+class FleetHost:
+    host: str
+    group: str | None = None
+    # analysed: there is an analysis to show (see `doubts`, `out_of_date`);
+    # not_analysed: evidence is stored, with no analysis of it;
+    # no_evidence: nothing has been collected;
+    # collections_failed: collections were tried, and none was usable;
+    # purged: all its evidence was purged, so nothing is known now;
+    # unreadable: its stored analysis can't be read or doesn't match its hash.
+    state: str = "no_evidence"
+    band: str | None = None
+    probability: float | None = None
+    counts: dict[str, int] = field(default_factory=dict)
+    # Each threat pack the host was exposed to, with how, and the packs whose
+    # exposure this analysis couldn't judge (one known before stays in `exposed`).
+    exposed: dict[str, str] = field(default_factory=dict)
+    unjudged: tuple[str, ...] = ()
+    gaps: int = 0
+    collected_at: str | None = None
+    analysed_at: str | None = None
+    collection_status: str | None = None
+    # The last collection, when it wasn't usable: its status and when.
+    last_failed: tuple[str, str] | None = None
+    # Why a reassuring result may be wrong: nothing recent stands behind it.
+    doubts: tuple[str, ...] = ()
+    # Why the analysis shown may not be what the report would say now.
+    out_of_date: tuple[str, ...] = ()
+    # With an unreadable analysis: why, and what the last readable one said,
+    # never shown as current.
+    unreadable_why: str | None = None
+    last_readable_band: str | None = None
+    # No longer in the inventory, so no longer collected.
+    removed: bool = False
+    # The separate hygiene and exposure rating (DESIGN.md §2 principle 9).
+    hygiene: str | None = None
+    # Since the analysis before; `first` when there was none to compare with.
+    first: bool = True
+    before_unreadable: bool = False
+    band_before: str | None = None
+    # The same collection scored with another band (a whitelist or prior changed).
+    rescored_from: str | None = None
+    changes: tuple[str, ...] = ()
+    # High and critical findings in effect before that aren't now: no longer
+    # found in a whole collection, now suppressed by a whitelist, or not found
+    # in a collection that was only partial, which says nothing either way.
+    resolved: int = 0
+    suppressed: int = 0
+    not_seen: int = 0
+
+
+@dataclass
+class _Found:
+    """The newest analysis readable, the one before it, and what got in the way."""
+
+    row: Any = None
+    after: dict | None = None
+    before: dict | None = None
+    before_row: Any = None
+    newest_unreadable: str | None = None
+    before_unreadable: bool = False
+
+
+def _load(store, bundle_id: str, identity, which: int = -1) -> tuple[dict | None, str | None]:
+    """An analysis, or why it can't be read. A store that can't answer isn't
+    one host's problem: that goes up to fleet()."""
+    try:
+        return load_assessment(store, bundle_id, identity, which), None
+    except sqlite3.Error:
+        raise
+    except EvidenceError:
+        return None, "mismatch"
+    except OSError:
+        return None, "missing"
+    except pyrage.DecryptError:
+        return None, "key"
+    except Exception:  # noqa: BLE001 - gzip, JSON: damaged, whatever the detail
+        return None, "damaged"
+
+
+def _analyses(store, usable: list, identity) -> _Found:
+    found = _Found()
+    for row in reversed(usable):
+        assessment, why = _load(store, row["id"], identity)
+        if why:
+            if found.after is not None:
+                found.before_unreadable = True
+                return found
+            found.newest_unreadable = found.newest_unreadable or why
+            continue
+        if assessment is None:
+            continue
+        if found.after is None:
+            found.row, found.after = row, assessment
+            if found.newest_unreadable:
+                return found  # only to say what it said
+        else:
+            found.before, found.before_row = assessment, row
+            return found
+    return found
+
+
+def _known_exposure(store, assessment: dict, older: list, identity) -> dict[str, str]:
+    """The packs a host was exposed to: this analysis's, and for one it couldn't
+    judge, the latest older analysis that could. So disturbing a package listing,
+    however many times, doesn't clear a known exposure."""
+    exposed, unjudged = _exposed(assessment)
+    for row in list(reversed(older))[:_EXPOSURE_LOOKBACK]:
+        if not unjudged:
+            break
+        earlier, _ = _load(store, row["id"], identity)
+        if earlier is None:
+            continue
+        then, unjudged_then = _exposed(earlier)
+        for pack in unjudged - unjudged_then:
+            if pack in then:
+                exposed[pack] = then[pack]
+        unjudged &= unjudged_then
+    return exposed
+
+
+def _same_finding(one: list, other: list) -> bool:
+    """Two identities (schedule._identity_of) of one finding: the same check and
+    variant, and the same entities or some in common. A group listed in part
+    (its identity has a fourth part, the summary) keeps only some of its members,
+    so a new member can push a listed one out: it is the same finding still."""
+    if one[:2] != other[:2]:
+        return False
+    if len(one) > 3 or len(other) > 3 or one[2] == other[2]:
+        return True
+    return (
+        isinstance(one[2], list)
+        and isinstance(other[2], list)
+        and bool(set(one[2]) & set(other[2]))
+    )
+
+
+def _gone(before: dict | None, after: dict, comparable: bool) -> tuple[int, int, int]:
+    """(resolved, suppressed, not seen) of what was serious before. Resolved only
+    if the two analyses can be compared: otherwise a finding's absence says
+    nothing about the host."""
+    if not before:
+        return 0, 0, 0
+    findings = after.get("findings") or []
+    now = [json.loads(_identity_of(f)) for f in findings if not f.get("suppressed_by")]
+    hidden = [json.loads(_identity_of(f)) for f in findings if f.get("suppressed_by")]
+    resolved = suppressed = not_seen = 0
+    for key, band in (before.get("findings") or {}).items():
+        was = json.loads(key)
+        if band not in SERIOUS or any(_same_finding(was, n) for n in now):
+            continue
+        if any(_same_finding(was, h) for h in hidden):
+            suppressed += 1
+        elif comparable:
+            resolved += 1
+        else:
+            not_seen += 1
+    return resolved, suppressed, not_seen
+
+
+def _old(started_at: str, now: datetime, stale_after: timedelta) -> bool:
+    try:
+        return now - datetime.fromisoformat(started_at) > stale_after
+    except (TypeError, ValueError):
+        return True
+
+
+def _purged(store) -> set[str]:
+    return {host for row in store.purges() for host in json.loads(row["baselines"])}
+
+
+def _gaps(assessment: dict | None) -> list[str]:
+    return list(((assessment or {}).get("coverage") or {}).get("gaps") or [])
+
+
+def _gap_kind(gap: str) -> str:
+    """A gap without its numbers: a clock off by another second isn't a new gap."""
+    return re.sub(r"[-+]?\d+", "#", gap)
+
+
+def _headline(host: str, group, row, after: dict, last_failed, removed: bool) -> FleetHost:
+    """What an analysis says outright, whatever can be worked out beyond it."""
+    score = after.get("score") or {}
+    probability = score.get("probability")
+    return FleetHost(
+        host,
+        group,
+        "analysed",
+        band=score.get("band"),
+        probability=probability if isinstance(probability, (int, float)) else None,
+        counts=dict(after.get("counts") or {}),
+        gaps=len(_gaps(after)),
+        hygiene=(score.get("hygiene_and_exposure") or {}).get("band"),
+        collected_at=row["started_at"],
+        analysed_at=after.get("analysed_at"),
+        collection_status=row["status"],
+        last_failed=last_failed,
+        removed=removed,
+    )
+
+
+def fleet_host(
+    store,
+    host: str,
+    identity,
+    group: str | None = None,
+    prior_for: Callable[[str], tuple[float, str]] | None = None,
+    whitelist_for: Callable[[str], Any] | None = None,
+    packs_for: Callable[[str], tuple[list, list[str]]] | None = None,
+    now: datetime | None = None,
+    stale_after: timedelta = STALE_AFTER,
+    removed: bool = False,
+) -> FleetHost:
+    now = now or datetime.now(UTC)
+    rows = store.bundles(host)
+    usable = usable_bundles(store, host)
+    last_failed = None
+    if rows and (not usable or rows[-1]["id"] != usable[-1]["id"]):
+        last_failed = (rows[-1]["status"], rows[-1]["started_at"])
+    found = _analyses(store, usable, identity)
+    if found.newest_unreadable:
+        return FleetHost(
+            host,
+            group,
+            "unreadable",
+            last_failed=last_failed,
+            unreadable_why=found.newest_unreadable,
+            last_readable_band=((found.after or {}).get("score") or {}).get("band"),
+            removed=removed,
+        )
+    if found.after is None:
+        if usable:
+            state = "not_analysed"
+        elif rows:
+            state = "collections_failed"
+        else:
+            state = "purged" if host in _purged(store) else "no_evidence"
+        return FleetHost(
+            host,
+            group,
+            state,
+            collected_at=usable[-1]["started_at"] if usable else None,
+            last_failed=last_failed,
+            removed=removed,
+        )
+    headline = _headline(host, group, found.row, found.after, last_failed, removed)
+    try:
+        return _with_details(
+            store,
+            headline,
+            found,
+            usable,
+            identity,
+            prior_for,
+            whitelist_for,
+            packs_for,
+            now,
+            stale_after,
+        )
+    except sqlite3.Error:
+        raise
+    except Exception:  # noqa: BLE001 - the band it read must not be lost to odd stored data
+        return replace(headline, doubts=("part of its analysis couldn't be worked out",))
+
+
+def _with_details(
+    store, headline, found, usable, identity, prior_for, whitelist_for, packs_for, now, stale_after
+) -> FleetHost:
+    host, row, after = headline.host, found.row, found.after
+    reasons: list[str] = []
+    whitelist = None
+    # A removed host has no group or settings of its own now, so comparing with
+    # them would call it out of date until it is purged.
+    check_whitelist = whitelist_for is not None and not headline.removed
+    if check_whitelist:
+        try:
+            whitelist = whitelist_for(host)
+        except Exception:  # noqa: BLE001 - one broken file mustn't hide the others' results
+            check_whitelist = False
+            reasons.append("its whitelist can't be read")
+    packs, problems = packs_for(host) if packs_for else (None, None)
+    analyse, rescore = out_of_date(
+        after,
+        prior_for(host) if prior_for and not headline.removed else None,
+        whitelist,
+        packs,
+        problems,
+        check_packs=packs_for is not None,
+        check_whitelist=check_whitelist,
+    )
+    reasons += [*analyse, *rescore]
+    # A whitelist rule expiring, say, can turn this Low into a High in the report.
+    # Only a newer tool's checks stay out: an upgrade shouldn't alarm the whole fleet.
+    doubts = [reason for reason in reasons if reason != OLDER_CHECKS]
+    if row["id"] != usable[-1]["id"]:
+        reasons.insert(0, "a newer collection hasn't been analysed")
+        doubts.append("a newer collection hasn't been analysed")
+    if headline.last_failed:
+        doubts.append(f"its last collection was {headline.last_failed[0]}")
+    if row["status"] != "complete":
+        modules = [g for g in _gaps(after) if g.startswith("module ")][:3]
+        named = f" ({visible('; '.join(modules), 200)})" if modules else ""
+        doubts.append(f"this collection was {row['status']}{named}")
+    if not headline.removed and _old(row["started_at"], now, stale_after):
+        doubts.append(f"collected more than {stale_after.days} days ago")
+    memory = remembered(after) or {}
+    if memory.get("failed"):
+        doubts.append(f"checks that couldn't run: {visible(', '.join(memory['failed']), 200)}")
+
+    earlier, earlier_why = (None, None)
+    if len(store.assessments(row["id"])) > 1:
+        earlier, earlier_why = _load(store, row["id"], identity, which=-2)
+    previous = found.before or earlier
+    older_than_after = [r for r in usable if r["started_at"] < row["started_at"]]
+    before = None
+    if previous is not None:
+        before = remembered(previous)
+        if found.before is not None:
+            older = [r for r in usable if r["started_at"] < found.before_row["started_at"]]
+        else:
+            older = older_than_after
+        before["exposed"] = _known_exposure(store, previous, older, identity)
+    known = {_gap_kind(g) for g in _gaps(previous)}
+    # Notes on what a pack or a check chose not to judge aren't the host hiding anything.
+    new_gaps = [
+        g
+        for g in _gaps(after)
+        if previous and _gap_kind(g) not in known and not g.startswith(_NOT_HIDING)
+    ]
+    blind = [g for g in _gaps(after) if g.startswith(_BLIND)]
+    doubts += [visible(g, 200) for g in blind]
+    fresh = [g for g in new_gaps if g not in blind]
+    if fresh:
+        doubts.append(f"it can see less than before: {visible(fresh[0], 200)}")
+    comparable = (
+        row["status"] == "complete"
+        and found.before is not None
+        and found.before.get("versions") == after.get("versions")
+        and found.before.get("packs") == after.get("packs")
+        and found.before.get("packs_not_applied") == after.get("packs_not_applied")
+        and not memory.get("failed")
+        and not new_gaps
+        and not blind
+    )
+    resolved, suppressed, not_seen = _gone(before, after, comparable)
+    rescored = (earlier.get("score") or {}).get("band") if earlier else None
+    return replace(
+        headline,
+        exposed=_known_exposure(store, after, older_than_after, identity),
+        unjudged=tuple(sorted(_exposed(after)[1])),
+        doubts=tuple(doubts),
+        out_of_date=tuple(reasons),
+        first=before is None and not found.before_unreadable and not earlier_why,
+        before_unreadable=before is None and (found.before_unreadable or bool(earlier_why)),
+        band_before=before["band"] if before else None,
+        rescored_from=rescored if rescored != headline.band else None,
+        changes=tuple(alerts(host, before, after)) if before else (),
+        resolved=resolved,
+        suppressed=suppressed,
+        not_seen=not_seen,
+    )
+
+
+def serious(item: FleetHost) -> int:
+    """High and critical findings in effect, of any category."""
+    return sum(n for key, n in item.counts.items() if key.rpartition("/")[2] in SERIOUS)
+
+
+def sort_key(item: FleetHost) -> tuple:
+    if item.state == "unreadable":
+        rank = _UNREADABLE
+    elif item.band not in BANDS:
+        rank = _UNKNOWN
+    elif item.doubts and _ORDER[item.band] > _UNKNOWN:
+        rank = _UNKNOWN  # reassuring, with nothing recent behind it
+    else:
+        rank = _ORDER[item.band]
+    # Hygiene and exposure don't move the band, so a low score can hide serious
+    # findings: those come first among the less worrying hosts.
+    return (rank, -serious(item) if rank >= _UNKNOWN else 0, -(item.probability or 0), item.host)
+
+
+def fleet(
+    store,
+    identity,
+    groups: dict[str, str | None],
+    prior_for=None,
+    whitelist_for=None,
+    packs_for=None,
+    group: str | None = None,
+    now: datetime | None = None,
+    stale_after: timedelta = STALE_AFTER,
+) -> list[FleetHost]:
+    """Every host in the inventory or the store, most worrying first.
+    `groups` is the inventory's name → group. A host no longer in the
+    inventory has no group, so it shows under any filter: a removed host's
+    bad result shouldn't be filtered out of sight. A store that can't answer,
+    or a key that opens nothing, is an EvidenceError: it isn't about any one
+    host, and calling each one tampered with would be wrong."""
+
+    def one(name: str) -> FleetHost:
+        try:
+            return fleet_host(
+                store,
+                name,
+                identity,
+                groups.get(name),
+                prior_for,
+                whitelist_for,
+                packs_for,
+                now,
+                stale_after,
+                removed=bool(groups) and name not in groups,
+            )
+        except sqlite3.Error:
+            raise
+        except Exception:  # noqa: BLE001 - one host's odd data mustn't blank the fleet
+            return FleetHost(name, groups.get(name), "unreadable", unreadable_why="internal")
+
+    try:
+        names = set(groups) | set(store.hosts())
+        hosts = [one(n) for n in names if group is None or n not in groups or groups[n] == group]
+    except sqlite3.Error as exc:
+        raise EvidenceError(store_unreadable(exc)) from exc
+    unreadable = [h for h in hosts if h.state == "unreadable"]
+    if (
+        unreadable
+        and all(h.unreadable_why == "key" for h in unreadable)
+        and not any(h.state == "analysed" for h in hosts)
+    ):
+        raise EvidenceError(
+            "no stored analysis can be decrypted with this evidence key: is it the right one?"
+        )
+    return sorted(hosts, key=sort_key)

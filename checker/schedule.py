@@ -35,12 +35,12 @@ from typing import Any
 
 import asyncssh
 
-BANDS = ("Low", "Medium", "High", "Critical")
+BANDS = ("Low", "Elevated", "High", "Critical")
 FINDING_BANDS = ("info", "low", "medium", "high", "critical")
 SERIOUS = ("high", "critical")
 # The run's exit status: 1 when anything failed (the band is in the log and
 # the summary), else the worst band analysed, so a timer's log shows it.
-EXIT_BAND = {"Low": 0, "Medium": 10, "High": 11, "Critical": 12}
+EXIT_BAND = {"Low": 0, "Elevated": 10, "High": 11, "Critical": 12}
 EXIT_FAILED = 1
 EXIT_SETUP = 2  # nothing was collected: no evidence key, unreadable settings
 EXIT_BUSY = 3  # another run holds the lock

@@ -81,7 +81,7 @@ runs doesn't change what the next run compares with.
 | 1 | something failed: a host not collected (or only in part) or not analysed, the report, the purge, the notify command, or the run itself; the bands are in the log |
 | 2 | nothing was collected: no evidence key, or unreadable settings or inventory |
 | 3 | another run is in progress |
-| 10, 11, 12 | every step worked, and the worst host is Medium, High or Critical |
+| 10, 11, 12 | every step worked, and the worst host is Elevated, High or Critical |
 
 The systemd timer counts 10 to 12 as success, so a failed unit means
 something in the run went wrong.

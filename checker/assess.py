@@ -459,12 +459,14 @@ def store_assessment(store: Store, row: Any, recipients: list[str], assessment: 
     return target
 
 
-def load_assessment(store: Store, bundle_id: str, identity: x25519.Identity) -> dict | None:
-    """The latest stored assessment of a bundle."""
+def load_assessment(
+    store: Store, bundle_id: str, identity: x25519.Identity, which: int = -1
+) -> dict | None:
+    """The latest stored assessment of a bundle (or another, by position)."""
     rows = store.assessments(bundle_id)
     if not rows:
         return None
-    row = rows[-1]
+    row = rows[which]
     cipher = Path(row["path"]).read_bytes()
     if hashlib.sha256(cipher).hexdigest() != row["ciphertext_sha256"]:
         raise EvidenceError(f"the stored assessment of {bundle_id} doesn't match its recorded hash")

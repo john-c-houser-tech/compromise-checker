@@ -261,6 +261,53 @@ def whitelist_hash(assessment: dict) -> str | None:
     return (assessment.get("whitelist") or {}).get("hash")
 
 
+OLDER_CHECKS = "analysed by an older version of the checks"
+
+
+def out_of_date(
+    assessment: dict,
+    prior: tuple[float, str] | None,
+    whitelist: Whitelist | None = None,
+    packs: list | None = None,
+    pack_problems: list[str] | None = None,
+    check_packs: bool = True,
+    check_whitelist: bool = True,
+) -> tuple[list[str], list[str]]:
+    """Why a stored assessment isn't what a report would say now: what means
+    analysing again, and what means only scoring again. The report acts on
+    these and the fleet view shows them, so the two can't disagree. A prior
+    of None, or a check turned off, isn't compared."""
+    analyse, rescore = [], []
+    # Its evidence points into one parse of the bundle (event numbers,
+    # snapshot keys): any newer parser or checks means analysing again.
+    if assessment.get("versions") != current_versions():
+        analyse.append(OLDER_CHECKS)
+    # So do other packs: what they judge and detect isn't in the findings.
+    if check_packs and (
+        assessment.get("packs", []) != packs_applied(packs)
+        or assessment.get("packs_not_applied", []) != list(pack_problems or [])
+    ):
+        analyse.append("the threat packs in force have changed")
+    if analyse:  # analysing again settles the rest; an old format has none of it
+        return analyse, rescore
+    if (
+        prior is not None
+        and (
+            assessment["score"]["prior"],
+            assessment["score"]["prior_source"],
+        )
+        != prior
+    ):
+        rescore.append("the host's starting probability has changed")
+    if check_whitelist:
+        if whitelist_hash(assessment) != (whitelist.digest() if whitelist else None):
+            rescore.append("the whitelist has changed")
+        # A rule that has expired since the assessment stops suppressing.
+        elif whitelist and whitelist.expired() != assessment["whitelist"].get("expired"):
+            rescore.append("a whitelist rule has expired")
+    return analyse, rescore
+
+
 def host_report(
     store: Store,
     host: str,
@@ -285,24 +332,16 @@ def host_report(
     if row["status"] not in USABLE:
         raise EvidenceError(f"bundle {row['id']} is {row['status']}: nothing to report")
     assessment = load_assessment(store, row["id"], identity)
-    # Its evidence points into one parse of the bundle (event numbers,
-    # snapshot keys): any newer parser or checks means analysing again.
-    # So do other packs: what they judge and detect isn't in the findings.
-    if (
-        assessment is None
-        or assessment.get("versions") != current_versions()
-        or assessment.get("packs", []) != packs_applied(packs)
-        or assessment.get("packs_not_applied", []) != list(pack_problems or [])
-    ):
+    analyse, rescore = (
+        out_of_date(assessment, prior, whitelist, packs, pack_problems)
+        if assessment is not None
+        else ([], [])
+    )
+    if assessment is None or analyse:
         assessment = analyze(
             store, host, identity, recipients, row["id"], prior, whitelist, packs, pack_problems
         )
-    elif (
-        (assessment["score"]["prior"], assessment["score"]["prior_source"]) != prior
-        or whitelist_hash(assessment) != (whitelist.digest() if whitelist else None)
-        # A rule that has expired since the assessment stops suppressing.
-        or (whitelist and whitelist.expired() != assessment["whitelist"].get("expired"))
-    ):
+    elif rescore:
         parsed = load_events(store, row, identity)
         events = parsed.events if parsed else events_of(store, row, identity, recipients)
         assessment = reassess(store, row, recipients, assessment, prior, whitelist, events)

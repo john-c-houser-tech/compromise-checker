@@ -307,7 +307,7 @@ def test_what_counts_as_worse():
     before = analysis("High", root)
     assert worse(before, analysis("High", root)) == []
     assert worse(before, analysis("Critical", root)) == ["h: High to Critical (50.0%)"]
-    assert worse(analysis("High"), analysis("Medium")) == []  # better isn't news
+    assert worse(analysis("High"), analysis("Elevated")) == []  # better isn't news
     other = finding("account.uid0", "critical", entities=("account:y",))
     assert worse(before, analysis("High", root, other)) == ["h: new critical: account.uid0 title"]
     # Suppressed, or below high: not news.
@@ -321,8 +321,8 @@ def test_what_counts_as_worse():
 
 
 def test_a_finding_that_grew_serious_is_news():
-    before = analysis("Medium", finding("net.listener", "medium"))
-    assert worse(before, analysis("Medium", finding("net.listener", "high"))) == [
+    before = analysis("Elevated", finding("net.listener", "medium"))
+    assert worse(before, analysis("Elevated", finding("net.listener", "high"))) == [
         "h: now high (was medium): net.listener title"
     ]
 
@@ -539,3 +539,14 @@ def test_a_run_purges_only_hosts_in_the_inventory(fleet):
     assert store.bundles("web01") == [] and len(store.bundles("paused")) == 1
     assert result.run_alerts == ["web01: all its evidence had expired and was purged"]
     assert any("1 expired bundle(s) of hosts not in the inventory are kept" in s for s in said)
+
+
+def test_the_bands_are_the_ones_scoring_gives():
+    from checker.scoring import PROBABILITY_BANDS
+
+    assert set(schedule.BANDS) == {name for _, name in PROBABILITY_BANDS} == set(schedule.EXIT_BAND)
+
+
+def test_rising_to_elevated_is_news():
+    (line,) = schedule.alerts("web01", {"band": "Low"}, {"score": {"band": "Elevated"}})
+    assert line == "web01: Low to Elevated"

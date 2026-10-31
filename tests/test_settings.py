@@ -215,7 +215,7 @@ def test_every_setting_round_trips(base, key, text, value):
 
 def test_the_table_lists_every_setting_tested():
     # advisor.api is tested with base_url, which it needs (test_advisor_endpoints).
-    assert len(SETTABLE) == 23
+    assert len(SETTABLE) == 24
 
 
 @pytest.mark.parametrize(
@@ -224,6 +224,7 @@ def test_the_table_lists_every_setting_tested():
         ("home_text", "some", "'off', 'privileged' or 'all'"),
         ("web_access_logs", "maybe", "must be on or off"),
         ("retention_days", "0", "greater than or equal to 1"),
+        ("stale_after_days", "0", "greater than or equal to 1"),
         ("prior", "1.5", "less than 1"),
         ("packs.apply", "some", "not a pack rule"),
         ("packs.source", "http://mirror.example.org/", "must be an https:// address"),

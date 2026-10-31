@@ -427,6 +427,86 @@ is John's to approve before it is committed. Also:
   logs off, a log format without request sizes) are listed as coverage
   gaps, not silently skipped.
 
+### 4.5 — Detections (as built)
+
+- **The language** (`checker/packs/format.py`): a detection is one of
+  - `check` (+ optional `variant`): a core check, its compromise findings
+    raised to the pack's ratio (at most 100, the critical band's) while
+    the host was exposed, never lowered, marked `raised_by`;
+  - `events`: up to five matchers (an event type, exact or a prefix
+    ending in "."; up to eight fields), `count: {at_least, within}` (a
+    span up to 7 days, or the whole time exposed), optional `by` (a
+    field counted apart per value);
+  - `snapshot`: a section, optional `key` and field matchers, `state`
+    present / absent / added / changed / removed.
+  Values are matched as text: `equals`, `prefix`, or `glob` (`*`, `?`,
+  at most ten stars; a linear matcher, no regular expressions). A list
+  value matches if any element does. A pack's own detection needs a
+  title and weighs at most 20 (the high band's ratio): a pack can't
+  outweigh the core checks. `needs` names data from a fixed list
+  (`web_access_log`, `web_error_log`, `process_starts`,
+  `request_content_type`), judged from the collection.
+- **When they count** (`checker/packs/detect.py`): only while the host
+  was exposed — from `exposed_from` to `exposed_until` (or still), as
+  4.3/4.4b judge it. A host the pack doesn't affect, or fixed before the
+  window, gets nothing from its detections. A raised core finding with
+  no time of its own (what the host shows now) counts while the host is
+  still exposed.
+- **Findings**: `pack.detection`, variant `pack-id/detection-id`, band
+  from the ratio, the ratio on the finding (`likelihood_ratio`), which
+  scoring uses before the band's. One check, so the family cap holds all
+  the packs' own detections to a doubling beyond the strongest.
+  CHECKS_VERSION 14, SCORING_VERSION 3 (no golden score moved).
+- **Gaps, not silence**: a need the collection lacks, a referenced check
+  that didn't run, a section not collected, an absence in a section not
+  collected whole, a change with no baseline. `request_content_type` is
+  in no log format the tool reads: DESIGN.md §10.2's multipart-POST
+  detection is always a gap until a log format carries it.
+- **Ratio caps: 100 for a core check's findings, 20 for a pack's own
+  rule.** John confirmed them (2026-10-30), within D1's "capped so a pack
+  can't outweigh the core checks".
+- **When a detection counts** (a side note John relayed, 2026-10-30; John
+  said build it): first built as only while the host ran a vulnerable
+  version, which on a patched host like prod (fixed after about 2.5
+  days) covers only those days, though an intruder who got in may stay.
+  Now each detection says: `counts: while_exposed` (to the fix or the
+  window's end: an attack attempt, harmless once fixed) or
+  `since_exposed` (from its exposure to the collection, fix or not;
+  the default, so leaving it out can't hide an intruder). PHP2Shell's
+  crash and memory-limit bursts are `while_exposed`; worker children and
+  new scripts `since_exposed`.
+- **After review (4.5; 3 high, 9 medium, 8 low), fixed:**
+  - a pack could name `pack.detection` and lift every pack's own
+    detections past their cap: a pack can't name a pack check;
+  - a pack's snapshot finding naming several paths joined unrelated
+    core findings into one group, cutting them (a score went down):
+    `pack.detection` findings never group;
+  - a careless glob on long values cost minutes (one star is the worst
+    case): segments are now matched with str.find, each leftmost, the
+    work counted against a budget per analysis (past it: a gap); events
+    are indexed by type once;
+  - rules over web requests, web errors and program starts need those
+    logs whether they say so or not (judged in part when only some
+    matchers are blind); `every_web_request` names what's never there
+    (only some requests become events); logs mostly in a format not
+    recognised count as missing;
+  - snapshot rules follow when they count; `while_exposed` ends at the
+    window's end; a can't-judge with no package found (a listing in
+    part) turns nothing on; a pack can't read the sections exposure is
+    judged from (`packages`, `package_history`, `php_settings`,
+    `web_config`, `host`);
+  - whitelist rules for `pack.detection` name the pack and may name one
+    detection (`pack-id/detection-id`); store and `packs check` refuse
+    variants and sections this version doesn't have; a raised finding
+    never weighs less than its check says now; the report says which pack
+    raised a finding; untimed matches and too many groups are gaps; gaps
+    are said once; a failing reference is a gap, not a failed analysis;
+    a check detection can't carry a title.
+  - M7, decided by John (2026-10-30): a raise is at most one band up
+    (low to 4, medium to 20, high to 100), so a pack can't turn a check's
+    everyday noise (a login from a new address) into a critical score;
+    PHP2Shell's `web.worker_child` (high) can still reach 100.
+
 ### 4.6 — Applying packs to stored evidence
 
 - `checker analyze` applies every active pack; an analysis records which

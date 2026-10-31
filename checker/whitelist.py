@@ -42,6 +42,7 @@ from checker.correlate import EVENT_TYPES, MAX_WITHIN, WRITERS, correlated, pars
 
 PROFILES = Path(__file__).parent / "profiles"
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
+_PACK_PART = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")  # a pack's or detection's id
 # Entity kinds matched exactly: Finding.entities are "<kind>:<value>".
 EXACT_FIELDS = (
     "account", "group", "key", "module", "package", "program", "container", "image", "pack"
@@ -139,7 +140,7 @@ class Match(BaseModel):
     # survives version bumps). They narrow a rule only together.
     container: str | None = None
     image: str | None = None
-    pack: str | None = None  # a threat pack's id (pack.exposure findings)
+    pack: str | None = None  # a threat pack's id (pack.exposure, pack.detection findings)
     correlated_with: Correlation | None = None
 
     @field_validator("address")
@@ -173,8 +174,8 @@ class Match(BaseModel):
     @model_validator(mode="after")
     def _names_the_pack(self) -> Match:
         # A rule for one pack's findings mustn't hide every later pack's.
-        if self.check == "pack.exposure" and self.pack is None:
-            raise ValueError("a rule for pack.exposure must name the pack (pack: its id)")
+        if self.check in ("pack.exposure", "pack.detection") and self.pack is None:
+            raise ValueError(f"a rule for {self.check} must name the pack (pack: its id)")
         return self
 
     @model_validator(mode="after")
@@ -183,7 +184,15 @@ class Match(BaseModel):
         if self.check not in checks:
             raise ValueError(f"no check {self.check!r}")
         variants = checks[self.check].variants
-        if self.variant is not None and self.variant not in variants:
+        if self.check == "pack.detection" and self.variant is not None:
+            # One pack detection: "pack-id/detection-id", of the pack named.
+            pack, _, detection = self.variant.partition("/")
+            if not (_PACK_PART.fullmatch(pack) and _PACK_PART.fullmatch(detection)):
+                raise ValueError(f"a pack.detection variant is pack-id/detection-id, not"
+                                 f" {self.variant!r}")  # fmt: skip
+            if self.pack is not None and pack != self.pack:
+                raise ValueError(f"variant {self.variant!r} is another pack's than {self.pack!r}")
+        elif self.variant is not None and self.variant not in variants:
             known = ", ".join(variants) if variants else "none"
             raise ValueError(
                 f"{self.check} has no variant {self.variant!r} (its variants: {known})"

@@ -107,6 +107,7 @@ policy §9).</p>
 <span class="tag mono">{{ f.check }}</span></div>
 <div class="mono">{{ f.summary|visible(400) }}</div>
 {% if f.uncertain %}<div class="muted">Uncertain: {{ f.uncertain|visible(300) }}</div>{% endif %}
+{% if f.raised_by_pack and not f.maintenance %}<div class="muted">Weighted by threat pack <span class="mono">{{ f.raised_by_pack|visible(160) }}</span>: odds times {{ "%g"|format(f.likelihood_ratio) }} while its threat counts.</div>{% endif %}
 {% if f.maintenance %}<div class="muted">In maintenance window <span class="mono">{{ f.maintenance.window|visible(80) }}</span> ({{ f.maintenance.layer|visible(80) }}: {{ f.maintenance.reason|visible(200) }}); {{ f.maintenance.band }} outside it.</div>{% endif %}
 {% if f.first_seen %}<div class="muted">Seen {{ f.first_seen[:19] }}{% if f.last_seen and f.last_seen != f.first_seen %} to {{ f.last_seen[:19] }}{% endif %} (controller clock, UTC)</div>{% endif %}
 {% if f.excerpts %}

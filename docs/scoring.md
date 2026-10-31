@@ -35,6 +35,20 @@ none: Phase 2's calibration (plan 2.10) needed none, since fixing the checks
 themselves (below) put every clean image in Low. Any later one gets its
 reason recorded here.
 
+A threat pack's detections (plan 4.5) carry their own ratio, which comes
+before the band's: a pack's own rule up to 20 (the high band's), and a
+core check's finding the pack names, while its detection counts, raised
+to the pack's ratio up to 100 (the critical band's), at most one band
+above its own (low to medium's 4, medium to high's 20, high to
+critical's 100), and never lowered.
+Each such finding records the ratio (`likelihood_ratio`), and a raised one
+the pack (`raised_by_pack`); a raised finding never weighs less than its
+check's own ratio (band or override) at the time it is scored. All of the
+packs' own detections are one check, `pack.detection`, so together they
+add at most a doubling beyond the strongest, and they never join a group:
+a pack's finding naming several paths mustn't merge core findings about
+them and cut them.
+
 ## Rules
 
 - **Only compromise indicators count.** Hygiene and exposure findings get

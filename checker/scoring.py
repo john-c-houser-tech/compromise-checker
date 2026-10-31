@@ -18,7 +18,7 @@ import math
 from collections import defaultdict
 from typing import Any
 
-SCORING_VERSION = 2  # 2: chains
+SCORING_VERSION = 3  # 2: chains; 3: threat packs' ratios (plan 4.5)
 
 DEFAULT_PRIOR = 0.02  # DESIGN.md §11.2
 
@@ -62,10 +62,17 @@ def ratio(finding: dict[str, Any]) -> float:
         # Planned work lowered its band: the band's ratio, whatever the
         # check's override says.
         return BAND_RATIOS[finding["band"]]
+    own = BAND_RATIOS[finding["band"]]
     for key in ((finding["check"], finding.get("variant")), (finding["check"], None)):
         if key in OVERRIDES:
-            return OVERRIDES[key]
-    return BAND_RATIOS[finding["band"]]
+            own = OVERRIDES[key]
+            break
+    if finding.get("likelihood_ratio"):
+        # A threat pack's (checker/packs/detect.py): its own detection's, or
+        # a core finding's it raised, never below what the check says now.
+        pack = float(finding["likelihood_ratio"])
+        return max(pack, own) if finding.get("raised_by_pack") else pack
+    return own
 
 
 def logit(p: float) -> float:
@@ -227,6 +234,10 @@ def _groups(findings: list[dict[str, Any]], counted: list[int]) -> list[list[int
 
     holder: dict[str, int] = {}
     for i in counted:
+        if findings[i]["check"] == "pack.detection":
+            # A pack's finding can name many paths: it mustn't join core
+            # findings about them into one group (and cut them).
+            continue
         for entity in findings[i].get("entities") or []:
             if entity.startswith(GROUPING_ENTITIES):
                 if entity in holder:

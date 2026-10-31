@@ -517,23 +517,47 @@ is John's to approve before it is committed. Also:
   "needs a look" item in `checker run`.
 - Golden tests: the golden cases analysed with and without a test pack.
 - As built (2026-10-30): `checker.packs.store.in_force` reads the packs in
-  force for `analyze`, `report` and `run` (once per run, so every host is
-  analysed with the same ones); one that can't be used is said (stderr,
-  or a run problem, which fails the run, and a "needs a look" line) and is
-  a coverage gap in each analysis. A report analyses a host again when
-  the packs differ from its stored analysis's. `checker analyze` prints
-  the packs applied and the prior's raise. A run's "needs a look" gains a
-  host newly exposed to a pack's threat (once per pack id, so a pack
-  added between runs that finds a host exposed is said once) and any
-  `pack.detection` new or more serious, whatever its band. Golden: each
+  force for `analyze`, `report`, `run` and `advise` (once per command or
+  run, so every host is analysed with the same ones); one that can't be
+  used is said (stderr, or a run problem, which fails the run, told when
+  it starts or changes) and is a coverage gap in each analysis. A report
+  (and the advisor's case) analyses a host again when the packs, or why
+  any isn't applied, differ from its stored analysis's. Each analysis
+  keeps its packs' exposures (`exposures`): the report's timeline marks
+  each pack's window and the host's exposure in it (the timeline item
+  deferred from 4.3). `checker analyze` prints the packs applied and the
+  prior's raise. A run's "needs a look" gains a host newly or more
+  exposed to a pack's threat (per pack id and status; an exposure that
+  couldn't be judged at all is neither news nor forgotten) and any pack
+  detection new or more serious, whatever its band (a pack's own, whose
+  group is now in its entities so its identity survives new counts and
+  pack versions, or a core finding a pack newly weighs). Golden: each
   case also against `tests/golden/test-pack.yaml` (never signed or added
-  to a home), `*.pack.expected.json`; the fresh cases go from 6% to 23% on
-  exposure alone. The harness now passes the baseline's time and snapshot
-  as `analyze` does, which moved detection-ubuntu24.04's plain
-  expectation (two mail findings it lacked; Rocky's already had them).
-- No per-host gate: a pack in force applies to every host, prod included
-  (a side note relayed 2026-10-30). Test packs stay in test homes; the
-  first pack in the real home is 4.8's, added with John's OK.
+  to a home), `*.pack.expected.json`; the fresh cases go from 6% to 23%
+  on exposure alone. The harness now passes the baseline's time and
+  snapshot as `analyze` does, which moved both detection cases' plain
+  expectations by the same two mail findings (mail.domains, mail.volume)
+  and their advisor requests; it still passes no scanner account and
+  doesn't model a baseline newer than the bundle.
+- **Per-host switch, decided by John (2026-10-30):** large organizations
+  will want control over where a pack applies, so a rule (`all`, `none`,
+  `only: IDs`, `except: IDs`) per host (inventory, `checker hosts packs`),
+  per group (`packs.group_apply`) and for all (`packs.apply`, default
+  `all`), host first, as with the prior (`checker/packs/choice.py`). A
+  held-back pack is a coverage gap, not a problem. Changes made with the
+  commands are recorded in `checker config history` (a side note relayed
+  the same day: who turned a pack off for a host must stay known); hand
+  edits aren't. Test packs stay in test homes; the first pack in the real
+  home is 4.8's, added with John's OK.
+- **After review (4.6; 2 high, 3 medium, 5 low), all fixed:** the advisor
+  re-analysed without the packs (assessments flip-flopped); a by-field
+  detection's identity changed with its counts (a new alert most runs);
+  a partial listing's can't-judge re-alerted each time it recurred; a
+  core finding a pack weighs never alerted; a worsening exposure was
+  silent; a change in why a pack isn't applied didn't re-analyse; gaps
+  printed unescaped and the run's pack alert repeated daily; the plan's
+  golden note was wrong (both detection cases moved); tests asserted
+  loosely.
 
 ### 4.7 — Distribution
 

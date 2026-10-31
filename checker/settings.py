@@ -194,6 +194,21 @@ def describe(config: Config) -> list[str]:
     return lines + [_notifications(config)]
 
 
+def packs_line(config: Config) -> str:
+    """Which threat packs apply, in words (`checker config show`)."""
+    rules = {"all": "every pack in force", "none": "none"}
+    groups = config.packs.group_apply
+    return (
+        f"Threat packs applied to each host: {rules.get(config.packs.apply, config.packs.apply)}"
+        + (
+            f"; groups' own: {', '.join(f'{g}: {r}' for g, r in sorted(groups.items()))}"
+            if groups
+            else ""
+        )
+        + " (a host's own rule wins: `checker hosts packs HOST`)."
+    )
+
+
 def _notifications(config: Config) -> str:
     if not config.notify_command:
         return "Notifications: none (`checker run` prints which hosts need a look)."
@@ -262,6 +277,12 @@ SETTABLE: dict[str, Setting] = {
         Setting(("exec_records",), str, "web, privileged or all"),
         Setting(("retention_days",), int, "days evidence is kept (default 90)"),
         Setting(("prior",), float, "prior probability of compromise (default 0.02)"),
+        Setting(
+            ("packs", "apply"),
+            str,
+            "threat packs applied to hosts with no rule of their own or their group's: all"
+            " (default), none, 'only: ID, ...' or 'except: ID, ...'",
+        ),
         Setting(
             ("notify_command",),
             _optional,
@@ -351,6 +372,37 @@ def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
         finally:
             store.close()
     return old, new, config
+
+
+def change_host_packs(home: Path, name: str, rule: str | None) -> tuple[Any, Any]:
+    """Set a host's own threat-pack rule in the inventory (None: its
+    group's or the configuration's), recorded like a setting
+    (`hosts.<name>.packs` in `checker config history`): who turned a pack
+    off for a host, and when, stays known. Returns (old, new)."""
+    from checker.inventory import Host, hosts_file, load_inventory, save_inventory
+
+    path = hosts_file(home)
+    with locked(path):
+        inventory = load_inventory(path)
+        host = inventory.get(name)
+        new = Host.model_validate(host.model_dump() | {"packs": rule}).packs
+        old = host.packs
+        if new == old:
+            return old, new
+        host.packs = new
+        before = path.read_text(encoding="utf-8")
+        store = Store(database_file(home))
+        try:
+            store.record_config_change(
+                f"hosts.{name}.packs",
+                old,
+                new,
+                lambda: save_inventory(inventory, path),
+                lambda: atomic_write(path, before),
+            )
+        finally:
+            store.close()
+    return old, new
 
 
 def change_trusted_keys(home: Path, update) -> tuple[Any, Any, Config]:

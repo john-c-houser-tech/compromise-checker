@@ -30,7 +30,9 @@ first.
     §2 principle 9);
   - a timeline of the logged events behind the findings (past 300, the
     first 100 and the last 200, with a note of how many are left out:
-    the earliest are often the first signs);
+    the earliest are often the first signs), with each threat pack's
+    window and the host's exposure in it marked (from, and until, "at the
+    latest" where only the fix's last install time is known);
   - its coverage: each log's reach, the gaps, and the checks that didn't run.
   
   Each finding shows up to five excerpts of its evidence: the log line, the

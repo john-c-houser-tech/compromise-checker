@@ -27,7 +27,7 @@ from typing import Any
 import yaml
 
 from checker.analysis import load_events, parse_bundle, snapshot_of, store_parsed
-from checker.assess import evaluate
+from checker.assess import evaluate, exposure_records
 from checker.baseline import changes, usable_bundles
 from checker.checks import Context
 from checker.events import Event
@@ -283,6 +283,7 @@ def run_case(case: dict[str, Any], packs: list[Any] = ()) -> dict[str, Any]:
     result = {"findings": findings, "checks": ran, "score": scored, "whitelist": applied}
     if packs:
         result["gaps"] = context.gaps  # what the packs couldn't judge is part of what they say
+        result["exposures"] = exposure_records(context.exposures)
     return result
 
 

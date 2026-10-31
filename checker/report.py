@@ -291,6 +291,7 @@ def host_report(
         assessment is None
         or assessment.get("versions") != current_versions()
         or assessment.get("packs", []) != packs_applied(packs)
+        or assessment.get("packs_not_applied", []) != list(pack_problems or [])
     ):
         assessment = analyze(
             store, host, identity, recipients, row["id"], prior, whitelist, packs, pack_problems
@@ -371,10 +372,38 @@ def host_report(
             "type": "",
             "text": f"… {len(ordered) - len(head) - len(tail)} events not shown …",
             "findings": [],
+            "after": head[-1]["when"],  # where it goes among the threat packs' marks
         }
         ordered = [*head, gap, *tail]
-    report.timeline = ordered
+    report.timeline = sorted(
+        [*ordered, *exposure_marks(assessment)], key=lambda e: e.get("after", e["when"])
+    )
     return report
+
+
+def exposure_marks(assessment: dict) -> list[dict]:
+    """The timeline's marks for each threat pack's window and the host's
+    exposure in it (the assessment's `exposures`, checker.assess)."""
+    marks = []
+
+    def mark(when, text):
+        if when:
+            marks.append({"when": when, "type": "threat pack", "text": text, "findings": []})
+
+    for item in assessment.get("exposures") or []:
+        named = f"{visible(item.get('pack'), 80)} v{visible(item.get('version'), 10)}"
+        if not item.get("share"):
+            continue  # never exposed: the window says nothing about this host
+        mark(item.get("window_start"), f"{named}: the threat's window opens")
+        mark(item.get("window_end"), f"{named}: the threat's window closes")
+        if not item.get("judged", True):
+            continue  # counted as exposed for want of a full listing: no dates of its own
+        mark(item.get("exposed_from"), f"{named}: the host is exposed from here")
+        until = item.get("exposed_until")
+        if until and until != item.get("window_end"):
+            exact = item.get("fix_time_exact")
+            mark(until, f"{named}: exposed until here" + ("" if exact else " at the latest"))
+    return marks
 
 
 def render(
@@ -415,13 +444,13 @@ def write_report(
     whitelists: Callable[[str], Whitelist | None] | None = None,
     advisor_enabled: bool = False,
     plain: bool = False,
-    packs: list | None = None,
-    pack_problems: list[str] | None = None,
+    packs: Callable[[str], tuple[list, list[str]]] | None = None,
 ) -> Path:
     """Write the report, encrypted to the evidence key (`report-….html.age`;
     read_report() reads it) unless `plain`, owner-only either way, and add
     a `reported` entry, with the hash of the file as written, to each
-    bundle's custody."""
+    bundle's custody. `packs` gives a host's threat packs and why any
+    isn't applied (checker.packs.choice.for_host)."""
     if output is not None and not plain and not output.name.endswith(".html.age"):
         raise EvidenceError(
             f"an encrypted report's name ends in .html.age ({output.name}); --plain writes"
@@ -431,9 +460,9 @@ def write_report(
         raise EvidenceError(f"a plain report's name can't end in .age ({output.name})")
     priors = priors or (lambda _: (DEFAULT_PRIOR, "default"))
     whitelists = whitelists or (lambda _: None)
-    in_force = (packs, pack_problems)
+    packs = packs or (lambda _: ([], []))
     reports = [
-        host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h), *in_force)
+        host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h), *packs(h))
         for h in hosts
     ]
     html = render(reports, who_and_where(), advisor_enabled)

@@ -327,6 +327,20 @@
    "status": "ran"
   }
  ],
+ "exposures": [
+  {
+   "exposed_from": "2026-10-20T00:00:00+00:00",
+   "exposed_until": null,
+   "fix_time_exact": false,
+   "judged": true,
+   "pack": "golden-test-2026-10",
+   "share": 1.0,
+   "status": "vulnerable",
+   "version": 1,
+   "window_end": null,
+   "window_start": "2026-10-20T00:00:00+00:00"
+  }
+ ],
  "findings": [
   {
    "band": "high",

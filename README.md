@@ -96,8 +96,9 @@ What works today:
   every change so far; read the advisor's API key from its source to check
   it works, without sending anything. A key pasted into a `command:`
   source is refused.
-- `checker hosts add|list|remove` and `checker trust` — the inventory
-  (`--web-root DIR`, repeatable, sets a host's own web roots), and
+- `checker hosts add|list|remove|packs` and `checker trust` — the inventory
+  (`--web-root DIR`, repeatable, sets a host's own web roots; `hosts packs
+  HOST [RULE]` shows or sets which threat packs apply to it), and
   verified SSH host keys (no way to switch verification off).
 - `checker collect` — logs in (key, agent or password; sudo with or without a
   password, or root), runs the collector read-only, and stores the result as

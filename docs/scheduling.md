@@ -39,15 +39,23 @@ still going (a slow host, a timer firing twice) stops at once.
   from Low);
 - a high or critical finding is in effect that wasn't at the last run, or
   was less serious then (a rule that expired counts);
-- a threat pack's detection (`pack.detection`) is in effect that wasn't
-  at the last run, whatever its band;
-- a host is exposed to a threat pack's threat (vulnerable now, can't be
-  judged, or exposed while the threat was active and fixed since) that it
-  wasn't exposed to at the last run: so a pack added since the last run
-  (`checker packs add`) that finds a host exposed needs a look, once;
+- a threat pack's detection is in effect that wasn't at the last run, or
+  is more serious now, whatever its band: the pack's own (`pack.detection`;
+  the same group's, with other counts or under a newer version of the
+  pack, is the same one), or a core finding a pack newly weighs;
+- a host is exposed to a threat pack's threat that it wasn't at the last
+  run, or more so (exposed while the threat was active and fixed since,
+  then can't be judged, then vulnerable now): so a pack added since the
+  last run (`checker packs add`) that finds a host exposed needs a look,
+  once, and a new version of a pack only if it finds the host worse off.
+  A pack whose exposure couldn't be judged at all (the package listing
+  collected in part, none of its packages seen) is a gap: not news, and
+  what the last run knew of it is kept;
 - a threat pack in force couldn't be used (its file or signature no
   longer checks out, `checker packs list` says why): the run analyses
-  without it, records the gap in each analysis, and counts as failed;
+  without it, records the gap in each analysis, and counts as failed for
+  as long as it lasts; it is told when it starts or changes. A pack held
+  back from a host by its rule (docs/checks.md) is neither;
 - a check failed that didn't at the last run;
 - a host wasn't collected (it would have needed a prompt, or the
   collection failed), was collected only in part, or couldn't be analysed;

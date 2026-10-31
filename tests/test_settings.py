@@ -178,6 +178,7 @@ def test_older_configuration_files_get_the_advisor_off(base):
         ("retention_days", "30", 30),
         ("notify_command", "/usr/local/bin/tell-ops", "/usr/local/bin/tell-ops"),
         ("prior", "0.05", 0.05),
+        ("packs.apply", "only:php2shell-2026-10 ,x-1", "only: php2shell-2026-10, x-1"),
         ("advisor.enabled", "on", True),
         ("advisor.model", "claude-sonnet-5-5", "claude-sonnet-5-5"),
         ("advisor.triage_model", "claude-haiku-5-5", "claude-haiku-5-5"),
@@ -213,7 +214,7 @@ def test_every_setting_round_trips(base, key, text, value):
 
 def test_the_table_lists_every_setting_tested():
     # advisor.api is tested with base_url, which it needs (test_advisor_endpoints).
-    assert len(SETTABLE) == 21
+    assert len(SETTABLE) == 22
 
 
 @pytest.mark.parametrize(
@@ -223,6 +224,8 @@ def test_the_table_lists_every_setting_tested():
         ("web_access_logs", "maybe", "must be on or off"),
         ("retention_days", "0", "greater than or equal to 1"),
         ("prior", "1.5", "less than 1"),
+        ("packs.apply", "some", "not a pack rule"),
+        ("packs.apply", "only: Bad_Id", "not a pack id"),
         ("advisor.effort", "extreme", "'low', 'medium', 'high', 'xhigh' or 'max'"),
         ("advisor.api_key_source", "sk-ant-abc", "must be env, keyring, none or command:<command>"),
         ("advisor.api_key_source", "command:", "needs a command after it"),

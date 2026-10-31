@@ -259,6 +259,30 @@ def packs_applied(packs: list[Any] | None) -> list[dict[str, Any]]:
     return [{"id": p.id, "version": p.version} for p in packs or []]
 
 
+def exposure_records(exposures: list[Any]) -> list[dict[str, Any]]:
+    """Each pack's exposure as an assessment keeps it (for the report's
+    timeline and a run's "needs a look"); `judged` is False for one that
+    rests only on a package listing collected in part, with none of the
+    pack's packages seen: a gap, counted as exposed for the prior only."""
+    from checker.packs.exposure import CANT_JUDGE
+
+    return [
+        {
+            "pack": e.pack_id,
+            "version": e.pack_version,
+            "status": e.status,
+            "share": round(e.share, 4),
+            "window_start": e.window_start or None,
+            "window_end": e.window_end,
+            "exposed_from": e.exposed_from,
+            "exposed_until": e.exposed_until,
+            "fix_time_exact": e.fix_time_exact,
+            "judged": not (e.status == CANT_JUDGE and not e.packages and not e.removed_at),
+        }
+        for e in exposures
+    ]
+
+
 def analyze(
     store: Store,
     host: str,
@@ -373,6 +397,8 @@ def analyze(
         "whitelist": applied,
         # The threat packs applied, so the analysis can be reproduced.
         "packs": packs_applied(packs),
+        "packs_not_applied": list(pack_problems or []),
+        "exposures": exposure_records(context.exposures),
         "findings": found_dicts,
         "checks": ran,
         "coverage": coverage(row, identity, parsed.events, parsed.summary, snapshot),

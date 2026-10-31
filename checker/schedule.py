@@ -29,6 +29,7 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -154,11 +155,16 @@ def unattended_password(host, timeout: float = KEYRING_SECONDS) -> str:
 def _identity_of(finding: dict[str, Any]) -> str:
     """The same finding in two analyses: its check, its kind and what it is
     about (a process's id left out: it changes when the process restarts).
-    For a group listed only in part, its summary too, so a new member shows."""
+    For a group listed only in part, its summary too, so a new member shows
+    (a threat pack's detection's without its closing "(pack vN, …)": a new
+    version of the pack is the same detection)."""
     entities = sorted(e for e in finding.get("entities") or [] if not e.startswith("pid:"))
     key = [finding.get("check"), finding.get("variant"), entities or finding.get("title")]
     if not finding.get("entities_complete", True):
-        key.append(finding.get("summary"))
+        summary = str(finding.get("summary") or "")
+        if finding.get("check") == "pack.detection":
+            summary = summary.rpartition(" (")[0] or summary
+        key.append(summary)
     return json.dumps(key)
 
 
@@ -166,20 +172,54 @@ def _band(assessment: dict[str, Any] | None) -> str | None:
     return ((assessment or {}).get("score") or {}).get("band")
 
 
-def remembered(assessment: dict[str, Any] | None) -> dict[str, Any] | None:
+# A pack's exposure, from least to most to look at (checker.packs.exposure's
+# statuses), and how the summary says it.
+EXPOSED = {
+    "fixed": "exposed while the threat was active, fixed since",
+    "can't judge": "can't be judged, so counted as exposed",
+    "vulnerable": "vulnerable now",
+}
+_EXPOSURE_RANK = list(EXPOSED)
+
+
+def _exposed(assessment: dict[str, Any]) -> tuple[dict[str, str], set[str]]:
+    """The packs a host was exposed to, with each one's status, and the
+    packs whose exposure couldn't be judged at all (a package listing
+    collected in part, none of the pack's packages seen): those are gaps,
+    neither news nor a reason to forget what was known."""
+    if "exposures" not in assessment:  # analysed before exposures were kept
+        return {str(r.get("pack")): str(r.get("status")) for r in _raised_by(assessment)}, set()
+    exposed, unjudged = {}, set()
+    for item in assessment.get("exposures") or []:
+        if not isinstance(item, dict):
+            continue
+        if not item.get("judged", True):
+            unjudged.add(str(item.get("pack")))
+        elif item.get("share") and item.get("status") in EXPOSED:
+            exposed[str(item.get("pack"))] = item["status"]
+    return exposed, unjudged
+
+
+def remembered(
+    assessment: dict[str, Any] | None, before: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
     """What a later run compares with: the band, each finding in effect
-    with its band, the checks that failed, and the threat packs the host
-    was exposed to."""
+    with its band, those a threat pack weighs, the checks that failed, and
+    the packs the host was exposed to, with how (one the analysis couldn't
+    judge keeps what `before` knew of it)."""
     if assessment is None:
         return None
+    exposed, unjudged = _exposed(assessment)
+    known = _exposure_memory(before)
+    for pack in unjudged:
+        if pack in known:
+            exposed[pack] = known[pack]
+    in_effect = [f for f in assessment.get("findings") or [] if not f.get("suppressed_by")]
     return {
         "band": _band(assessment),
-        "exposed": sorted(str(r.get("pack")) for r in _raised_by(assessment)),
-        "findings": {
-            _identity_of(f): f.get("band")
-            for f in assessment.get("findings") or []
-            if not f.get("suppressed_by")
-        },
+        "exposed": exposed,
+        "findings": {_identity_of(f): f.get("band") for f in in_effect},
+        "weighed": sorted(_identity_of(f) for f in in_effect if f.get("raised_by_pack")),
         "failed": sorted(
             str(c.get("check"))
             for c in assessment.get("checks") or []
@@ -188,19 +228,18 @@ def remembered(assessment: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _exposure_memory(before: dict[str, Any] | None) -> dict[str, str]:
+    known = (before or {}).get("exposed") or {}
+    if isinstance(known, list):  # an earlier form: ids only
+        return {str(p): "vulnerable" for p in known}
+    return {str(k): str(v) for k, v in known.items()} if isinstance(known, dict) else {}
+
+
 def _raised_by(assessment: dict[str, Any]) -> list[dict[str, Any]]:
     """The packs whose exposure raised the prior (checker.assess._exposures)."""
     return [
         r for r in (assessment.get("score") or {}).get("raised_by") or [] if isinstance(r, dict)
     ]
-
-
-# How the summary says a pack's exposure (checker.packs.exposure's statuses).
-EXPOSED = {
-    "vulnerable": "vulnerable now",
-    "can't judge": "can't be judged, so counted as exposed",
-    "fixed": "exposed while the threat was active, fixed since",
-}
 
 
 def _rank(band: Any) -> int:
@@ -211,9 +250,11 @@ def alerts(host: str, before: dict | None, after: dict) -> list[str]:
     """What needs a look on a host analysed now, against what it looked like
     (remembered()): the band rose (a first analysis counts from Low), a
     high or critical finding is new or newly that serious, a threat pack's
-    detection is new whatever its band, the host is newly found exposed to
-    a pack's threat (a pack added since finds it was), a check newly
-    failed. In the tool's own words and the packs': no text from the host."""
+    detection is new or more serious whatever its band (its own, or a
+    core finding it newly weighs), the host is newly exposed to a pack's
+    threat or more so (a pack added since finds it was; fixed, then can't
+    judge, then vulnerable), a check newly failed. In the tool's own words
+    and the packs': no text from the host."""
     from checker.report import visible
 
     lines = []
@@ -223,27 +264,39 @@ def alerts(host: str, before: dict | None, after: dict) -> list[str]:
         probability = (after.get("score") or {}).get("probability")
         shown = f" ({probability:.1%})" if isinstance(probability, (int, float)) else ""
         lines.append(f"{host}: {old} to {new}{shown}")
-    exposed_before = set((before or {}).get("exposed") or [])
-    for item in _raised_by(after):
-        if str(item.get("pack")) not in exposed_before:
-            how = EXPOSED.get(item.get("status"), "exposed")
+    known = _exposure_memory(before)
+    listed = [e for e in after.get("exposures") or [] if isinstance(e, dict)]
+    versions = {str(e.get("pack")): e.get("version") for e in listed or _raised_by(after)}
+    for pack, status in sorted(_exposed(after)[0].items()):
+        was = known.get(pack)
+        if was is None or _EXPOSURE_RANK.index(status) > _EXPOSURE_RANK.index(
+            was if was in EXPOSED else "fixed"
+        ):
             lines.append(
-                f"{host}: exposed to threat pack {visible(item.get('pack'), 80)}"
-                f" v{visible(item.get('version'), 10)} ({how})"
+                f"{host}: exposed to threat pack {visible(pack, 80)}"
+                f" v{visible(versions.get(pack), 10)} ({EXPOSED[status]})"
             )
     seen = (before or {}).get("findings") or {}
+    weighed = set((before or {}).get("weighed") or [])
     for finding in after.get("findings") or []:
-        detection = finding.get("check") == "pack.detection"
+        by_pack = finding.get("raised_by_pack")
+        detection = finding.get("check") == "pack.detection" or bool(by_pack)
         if finding.get("suppressed_by") or (finding.get("band") not in SERIOUS and not detection):
             continue
-        was = seen.get(_identity_of(finding))
+        identity = _identity_of(finding)
+        was = seen.get(identity)
+        title = visible(finding.get("title"), 200)
+        if finding.get("check") == "pack.detection":
+            title += (
+                f" (threat pack {visible(str(finding.get('variant') or '').partition('/')[0], 80)})"
+            )
+        elif by_pack:
+            title += f" (weighed by threat pack {visible(by_pack, 120)})"
         if _rank(finding["band"]) > _rank(was):
             what = f"new {finding['band']}" if was is None else f"now {finding['band']} (was {was})"
-            title = visible(finding.get("title"), 200)
-            if detection:
-                pack = str(finding.get("variant") or "").partition("/")[0]
-                title += f" (threat pack {visible(pack, 80)})"
             lines.append(f"{host}: {what}: {title}")
+        elif by_pack and identity not in weighed:
+            lines.append(f"{host}: newly weighed by a threat pack: {title}")
     failed_before = set((before or {}).get("failed") or [])
     for check in (remembered(after) or {}).get("failed") or []:
         if check not in failed_before:
@@ -392,6 +445,7 @@ def run(
     from checker.collect import collect_hosts
     from checker.credentials import password_for
     from checker.evidence import Store, database_file
+    from checker.packs.choice import for_host
     from checker.packs.store import in_force
     from checker.report import visible, write_report
     from checker.whitelist import for_host as whitelist_for_host
@@ -407,12 +461,18 @@ def run(
             if isinstance(line, str)
         ]
         store = Store(database_file(base))
+        pack_problems: list[str] = []
         try:
-            # Read once for the run: every host is analysed with the same packs.
-            packs, pack_problems = in_force(base, config.packs.trusted_keys)
+            # Read once for the run: every host is analysed with the packs
+            # read then, those its rule applies (checker.packs.choice).
+            found = in_force(base, config.packs.trusted_keys)
+            packs_for = partial(for_host, config=config, inventory=inventory, found=found)
+            pack_problems = found[1]
             for problem in pack_problems:
                 result.problems.append(f"threat pack not applied: {visible(problem, 300)}")
-            if pack_problems:
+            # Told when it starts or changes, not every run while it lasts
+            # (the run's log and exit status still say it).
+            if pack_problems and set(pack_problems) != set(state.get("pack_problems") or []):
                 result.run_alerts.append(
                     f"{len(pack_problems)} threat pack(s) not applied (`checker packs list`)"
                 )
@@ -472,8 +532,7 @@ def run(
                         outcome.bundle_id,
                         prior_for(host.name, config, inventory),
                         whitelist_for_host(base, host.name, inventory),
-                        packs,
-                        pack_problems,
+                        *packs_for(host.name),
                     )
                 except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'
                     item.problem = f"not analysed ({type(exc).__name__}: {visible(str(exc), 300)})"
@@ -483,7 +542,7 @@ def run(
                 item.band = _band(assessment)
                 item.probability = (assessment.get("score") or {}).get("probability")
                 item.alerts += alerts(host.name, before.get(host.name), assessment)
-                seen[host.name] = remembered(assessment)
+                seen[host.name] = remembered(assessment, before.get(host.name))
                 if outcome.status != "complete" or outcome.error:
                     item.problem = f"collected in part ({outcome.status})" + (
                         f": {visible(outcome.error, 300)}" if outcome.error else ""
@@ -500,8 +559,7 @@ def run(
                         priors=lambda name: prior_for(name, config, inventory),
                         whitelists=lambda name: _whitelist_or_none(base, name, inventory),
                         advisor_enabled=config.advisor.enabled,
-                        packs=packs,
-                        pack_problems=pack_problems,
+                        packs=packs_for,
                     )
                 except Exception as exc:  # noqa: BLE001 - the purge and the notice still happen
                     result.problems.append(
@@ -518,7 +576,11 @@ def run(
             if result.notified:
                 pending = result.alerting  # sent with the next run's
         try:
-            save_state(base, {"hosts": seen, "pending": pending}, config.recipients)
+            save_state(
+                base,
+                {"hosts": seen, "pending": pending, "pack_problems": pack_problems},
+                config.recipients,
+            )
         except OSError as exc:
             result.problems.append(f"the run's state couldn't be kept ({exc})")
     return result

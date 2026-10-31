@@ -67,6 +67,8 @@ header :focus-visible { outline-color: var(--on-bar); }
 header strong { font-size: 1.125rem; }
 header span { opacity: 0.8; }
 header form { margin-left: auto; }
+header nav { display: flex; gap: 1rem; }
+header nav a { text-underline-offset: 3px; }
 header button { background: none; color: inherit; border: 1px solid currentcolor; padding: 0.25rem 0.75rem; border-radius: 3px; }
 
 main { max-width: 70rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
@@ -153,6 +155,7 @@ h1 { font-size: clamp(1.75rem, 1.2rem + 2.6vw, 3rem); line-height: 1.12; letter-
   overflow-wrap: anywhere;
 }
 p.from-server { padding: 0.375rem 0.5rem; }
+.number { font-weight: 400; color: var(--quiet); }
 .raised { font-weight: 700; color: var(--critical); }
 .finding .band { font-size: 0.875rem; font-weight: 700; }
 .band-critical .band { color: var(--critical); }
@@ -175,6 +178,20 @@ details p, details li { font-size: 0.9375rem; color: var(--quiet); }
 .facts { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 0.25rem 1rem; font-size: 0.875rem; overflow-wrap: anywhere; }
 .facts dd { margin: 0; }
 .custody { font-size: 0.875rem; padding-inline-start: 1.25rem; }
+
+.threat { background: var(--sheet); padding: 1.25rem 1rem; margin-top: 1.5rem; border-top: 2px solid var(--ink); overflow-wrap: anywhere; }
+.threat h2 { font-size: 1.375rem; line-height: 1.25; margin: 0 0 0.25rem; }
+.threat h3 { font-size: 1rem; margin: 1rem 0 0.25rem; }
+.threat ul { margin: 0.25rem 0; padding-inline-start: 1.1rem; }
+.threat .note { margin: 0; }
+.affected { --tone: var(--unknown); border-inline-start: 6px solid var(--tone); padding-inline-start: 0.75rem; margin-top: 0.75rem; }
+.affected h3 { margin: 0; color: var(--tone); }
+.affected h3 span { font-weight: 400; }
+.from-ai { border: 1px solid var(--unknown); border-radius: 3px; padding: 0.75rem 1rem; margin-top: 0.75rem; max-width: 70ch; }
+.from-ai h3 { font-size: 1rem; margin: 0.75rem 0 0.25rem; }
+.from-ai h4 { font-size: 0.9375rem; margin: 0.75rem 0 0.25rem; }
+.from-ai p:first-child, .from-ai h3:first-child { margin-top: 0; }
+.from-ai code { display: inline-block; overflow-wrap: anywhere; }
 
 form label { display: block; margin: 0.75rem 0; font-weight: 700; }
 form input { display: block; width: 100%; max-width: 24rem; padding: 0.5rem; font: inherit; color: inherit; background: var(--sheet); border: 1px solid var(--quiet); border-radius: 3px; }

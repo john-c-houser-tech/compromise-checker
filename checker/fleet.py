@@ -93,6 +93,10 @@ class FleetHost:
     # programs still running code from before a threat's fix.
     threat_signs: int = 0
     stale_code: int = 0
+    # What its analysis recorded about each threat pack, as recorded (pack id: status, share,
+    # judged, exposed_until), and which pack versions it applied.
+    pack_records: dict[str, dict] = field(default_factory=dict)
+    packs_applied: dict[str, int] = field(default_factory=dict)
     # Since the analysis before; `first` when there was none to compare with.
     first: bool = True
     before_unreadable: bool = False
@@ -256,6 +260,25 @@ def _in_effect(assessment: dict) -> list[dict]:
     return [f for f in findings if isinstance(f, dict) and not f.get("suppressed_by")]
 
 
+def _exposed_safely(assessment: dict) -> tuple[dict[str, str], set[str]]:
+    try:
+        return _exposed(assessment)
+    except Exception:  # noqa: BLE001 - odd stored data: the raw records still say what they say
+        return {}, set()
+
+
+def _pack_records(assessment: dict) -> dict[str, dict]:
+    records = assessment.get("exposures")
+    records = records if isinstance(records, list) else []
+    return {str(r.get("pack")): r for r in records if isinstance(r, dict)}
+
+
+def _packs_applied(assessment: dict) -> dict[str, int]:
+    applied = assessment.get("packs")
+    applied = applied if isinstance(applied, list) else []
+    return {str(p.get("id")): p.get("version") for p in applied if isinstance(p, dict)}
+
+
 def _band_of(assessment: dict | None) -> str | None:
     band = ((assessment or {}).get("score") or {}).get("band")
     return band if isinstance(band, str) else None
@@ -287,6 +310,11 @@ def _headline(host: str, group, row, after: dict, last_failed, removed: bool) ->
         },
         gaps=len(_gaps(after)),
         hygiene=(score.get("hygiene_and_exposure") or {}).get("band"),
+        pack_records=_pack_records(after),
+        packs_applied=_packs_applied(after),
+        # So far as this analysis says: _with_details adds what earlier ones knew.
+        exposed=_exposed_safely(after)[0],
+        unjudged=tuple(sorted(_exposed_safely(after)[1])),
         threat_signs=sum(
             1
             for f in _in_effect(after)
@@ -611,8 +639,23 @@ def read_fleet(
     return hosts, settings.found[1]
 
 
-def read_host(base: Path, host: str) -> tuple[FleetHost, dict | None] | None:
-    """One host's line in the fleet and its latest readable analysis, or None if neither
+def _stored_advice(store, host: str, identity, found: _Found) -> dict:
+    """What the AI advisor last said about this host, as stored. Nothing asks it anything."""
+    from checker.advisor.advise import latest_advice
+
+    if found.row is None or found.after is None:
+        return {}
+    try:
+        return latest_advice(store, host, identity, found.row["id"], found.after.get("analysed_at"))
+    except sqlite3.Error:
+        raise
+    except Exception:  # noqa: BLE001 - advice is extra: the findings still show, and say so
+        return {"unreadable": True}
+
+
+def read_host(base: Path, host: str) -> tuple | None:
+    """One host's line in the fleet, its latest readable analysis, what the AI advisor said
+    and whether it's on; or None if neither
     the inventory nor the store has heard of it: a name from a URL goes no further."""
     from checker.evidence import Store, database_file
 
@@ -640,13 +683,31 @@ def read_host(base: Path, host: str) -> tuple[FleetHost, dict | None] | None:
             except Exception:  # noqa: BLE001 - as in fleet(): loud, and the page still loads
                 item = FleetHost(host, groups.get(host), "unreadable", unreadable_why="internal")
             assessment = None
+            advice: dict = {}
             if item.state == "analysed":
-                assessment = _analyses(store, usable_bundles(store, host), settings.identity).after
+                found = _analyses(store, usable_bundles(store, host), settings.identity)
+                assessment = found.after
+                advice = _stored_advice(store, host, settings.identity, found)
         except sqlite3.Error as exc:
             raise EvidenceError(store_unreadable(exc)) from exc
     finally:
         store.close()
-    return item, assessment
+    return item, assessment, advice, settings.config.advisor.enabled
+
+
+def read_threats(base: Path) -> dict:
+    """The threat packs in force, each with how it touches each host, from what is stored."""
+    from checker.packs.store import retired
+
+    hosts, problems = read_fleet(base)
+    settings = _settings(base)
+    return {
+        "packs": settings.found[0],
+        "hosts": hosts,
+        "applies": {h.host: {p.id for p in settings.packs_for(h.host)[0]} for h in hosts},
+        "problems": problems,
+        "retired": retired(base),
+    }
 
 
 def read_evidence(base: Path, host: str) -> dict | None:

@@ -12,7 +12,7 @@
   {% for f in findings %}
   <article class="finding band-{{ f.band_class }}" id="finding-{{ loop.index }}">
     <h3>{{ f.title }}</h3>
-    <p class="band">{{ f.band_words }}</p>
+    <p class="band">{{ f.band_words }}{% if f.number %} <span class="number">F-{{ f.number }}</span>{% endif %}</p>
     {% if f.excerpts %}
     <ul class="excerpts">
       {% for e in f.excerpts %}

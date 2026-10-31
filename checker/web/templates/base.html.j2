@@ -12,6 +12,10 @@
   <strong>{{ product_name() }}</strong>
   <span>Find out if your server has been hacked</span>
   {% if request.user is defined and request.user.is_authenticated %}
+  <nav aria-label="Main">
+    <a href="{{ url('fleet') }}">Servers</a>
+    <a href="{{ url('threats') }}">Known threats</a>
+  </nav>
   <form method="post" action="{{ url('logout') }}">{{ csrf_input }}<button>Sign out</button></form>
   {% endif %}
 </header>

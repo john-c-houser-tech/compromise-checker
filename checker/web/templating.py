@@ -2,7 +2,7 @@
 invisible characters shown, whether or not the template asked. Host text can't opt out."""
 
 from django.urls import NoReverseMatch, reverse
-from jinja2 import Environment
+from jinja2 import Environment, Undefined
 
 from checker.product import product_name
 from checker.report import _finalize, visible
@@ -21,6 +21,8 @@ def host_url(name: str) -> str | None:
 def _finalize_page(value):
     """The report's rule, plus Django's own safe markup (the CSRF field). Text from a
     host is a plain string, which has no __html__, so it can't pass as markup."""
+    if isinstance(value, Undefined):
+        return ""
     return value if hasattr(value, "__html__") else _finalize(value)
 
 

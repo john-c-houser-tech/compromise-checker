@@ -21,7 +21,7 @@
   </div>
 </div>
 <p class="note">This is an estimate, not proof either way. A finding is a reason to look, and many have innocent explanations. Before changing anything on a server you think was broken into, get advice: what's on it may be evidence.</p>
-<p class="note">Text in a box like <span class="from-server">this</span> comes from the server, and an intruder could have written it. This tool's advice only appears under "What to do".</p>
+<p class="note">Text in a box like <span class="from-server">this</span> comes from the server, and an intruder could have written it. This tool's advice only appears under "What to do", and the AI advisor's words, if any, have their own labelled section.</p>
 {% if sections or suppressed %}<p><a href="{{ url('evidence', name=row.host.host) }}">See the evidence behind these findings</a></p>{% endif %}
 {% for section in sections %}
 <section class="findings">
@@ -29,10 +29,10 @@
   {% for f in section.findings %}
   <article class="finding band-{{ f.band_class }}">
     <h3>{{ f.meaning }}</h3>
-    <p class="band">{{ f.band_words }}{% if f.new %}, new since the last check{% endif %}</p>
+    <p class="band">{{ f.band_words }}{% if f.new %}, new since the last check{% endif %}{% if f.number %} <span class="number">F-{{ f.number }}</span>{% endif %}</p>
     {% if f.raised_by %}<p class="raised">A known threat makes this more serious: {{ f.raised_by }}.</p>{% endif %}
     <p>{{ f.title }}</p>
-    <p class="from-server">{{ f.summary }}</p>
+    <p class="from-server">{{ f.summary | visible(400) }}</p>
     {% if f.uncertain %}<p>The check only saw part of this, so it may be wrong. Details:</p><p class="from-server">{{ f.uncertain }}</p>{% endif %}
     <p><strong>What to do:</strong> {{ f.todo }}</p>
   </article>
@@ -47,6 +47,43 @@
 {% endfor %}
 {% if caveat %}
 <p>{{ caveat }}</p>
+{% endif %}
+{% if row.exposures %}<p><a href="{{ url('threats') }}">What to do about these known threats</a></p>{% endif %}
+{% if advice_unreadable %}<p class="error">What the AI advisor said can't be read.</p>{% endif %}
+{% if explain or remediation or nothing_came %}
+<section class="findings ai">
+  <h2>What the AI advisor said</h2>
+  <p class="note">This is advice from an AI model, not a finding. It doesn't change the estimate above. It read what the server's logs say, and an intruder can write things into logs to mislead it, so weigh it against what you know.</p>
+  {% for x in nothing_came %}<p class="error">A newer request for the {{ x.name }} came to nothing ({{ x.at | when }}): {{ x.note | visible(400) }}.</p>{% endfor %}
+  {% if explain %}
+  <div class="from-ai">
+    {% if explain.meta.stale %}<p class="error">This is about an older check, not the one shown here.</p>{% endif %}
+    {% if explain.meta.warning %}<p class="error">{{ explain.meta.warning | visible(600) }}</p>{% endif %}
+    <p><strong>{{ explain.verdict | visible(80) }}.</strong> {{ explain.summary | visible(2000) }}</p>
+    {% if explain.important %}<h3>Most important</h3><ul>{% for p in explain.important %}<li>{{ p.finding | visible(20) }}: {{ p.why | visible(1000) }}</li>{% endfor %}</ul>{% endif %}
+    {% if explain.innocent %}<h3>Possible innocent explanations</h3><ul>{% for p in explain.innocent %}<li>{{ p.finding | visible(20) }}: {{ p.explanation | visible(1000) }}</li>{% endfor %}</ul>{% endif %}
+    {% if explain.settle %}<h3>What would settle it</h3><ul>{% for q in explain.settle %}<li>{{ q | visible(1000) }}</li>{% endfor %}</ul>{% endif %}
+    <p class="note">{{ explain.meta.model }}, {{ explain.meta.at | when }}.{% if explain.meta.declined_by %} Declined first by {{ explain.meta.declined_by | join(", ") }}.{% endif %}{% if explain.meta.redaction %} Redaction: {{ explain.meta.redaction }}.{% endif %}{% if explain.meta.local %} A local model: read it with more care.{% endif %} "F-" numbers are the findings above.</p>
+  </div>
+  {% endif %}
+  {% if remediation %}
+  <div class="from-ai">
+    <h3>Suggested steps: {{ remediation.urgency }}</h3>
+    {% if remediation.meta.stale %}<p class="error">This is about an older check, not the one shown here.</p>{% endif %}
+    {% if remediation.meta.warning %}<p class="error">{{ remediation.meta.warning | visible(600) }}</p>{% endif %}
+    <p>{{ remediation.summary | visible(2000) }}</p>
+    <p class="note">Nothing here has been run. Have someone who knows this server read each command before using it.</p>
+    {% for stage in remediation.stages %}
+    <h4>{{ stage.title }}</h4>
+    <ol>{% for s in stage.steps %}<li><code>{{ s.action | visible(1000) }}</code>{% if s.destructive %} <strong>This destroys evidence.</strong>{% endif %}<br>Why: {{ s.why | visible(600) }}<br>Risk: {{ s.risk | visible(400) }}</li>{% endfor %}</ol>
+    {% endfor %}
+    {% if remediation.tell %}<h4>Who to tell</h4><ul>{% for x in remediation.tell %}<li>{{ x.role | visible(120) }}: {{ x.what | visible(400) }} ({{ x.when | visible(120) }})</li>{% endfor %}</ul>{% endif %}
+    <p class="note">{{ remediation.meta.model }}, {{ remediation.meta.at | when }}.{% if remediation.meta.declined_by %} Declined first by {{ remediation.meta.declined_by | join(", ") }}.{% endif %}{% if remediation.meta.redaction %} Redaction: {{ remediation.meta.redaction }}.{% endif %}{% if remediation.meta.local %} A local model: read it with more care.{% endif %}</p>
+  </div>
+  {% endif %}
+</section>
+{% elif advisor_off %}
+<p class="note">The AI advisor is off. It can explain these findings in more detail if your organization turns it on.</p>
 {% endif %}
 {% if suppressed %}
 <section class="findings">

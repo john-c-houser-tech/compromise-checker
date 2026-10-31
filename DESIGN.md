@@ -642,6 +642,11 @@ of an advisory. A pack contains:
 
 ### 10.2 Example: PHP2Shell (first pack)
 
+The design's sketch, below; the pack as published is in
+[compromise-checker-packs](https://github.com/john-c-houser-tech/compromise-checker-packs),
+and [docs/packs.md](docs/packs.md) describes the format as built. It differs: a
+detection on content types is left out, since no log format gives them.
+
 ```yaml
 id: php2shell-2026-10
 title: "PHP2Shell — PHP remote code execution (CVE-2026-109618, CVE-2026-109619)"
@@ -678,8 +683,8 @@ references:
 
 ### 10.3 Lifecycle
 
-Draft (the AI advisor can draft one from advisories) → human review →
-signed release → operators pull it → it applies to stored evidence at once,
+Draft (drafting moved out of this tool, to a separate pack application) →
+human review → signed release → operators pull it → it applies to stored evidence at once,
 so the fleet can be checked against a new threat without a new collection
 where the evidence already exists. Packs are retired, not deleted, so old
 reports remain reproducible.
@@ -692,8 +697,8 @@ reports remain reproducible.
   across by hand, since verification works offline.
 - **Who signs:** two NouriLoop LLC minisign keys. The root key signs only
   the list of trusted pack keys; a pack key signs releases, and can be
-  replaced without a release of the tool. The private keys stay offline
-  (password manager plus an offline backup), never on a server or in CI. The
+  replaced without a release of the tool. The private keys stay off any
+  server and out of CI (password manager plus an offline backup). The
   root public key ships inside the tool and is also published on
   nouriloop.com, so it can be checked from two independent places.
 - **Contributions:** outside contributors open pull requests; NouriLoop LLC
@@ -734,7 +739,9 @@ Default LR bands (calibrated over time, section 11.5):
 
 The default prior is low (2%) and configurable. Threat packs raise it for
 hosts that were exposed during an active exploitation window, in proportion
-to the pack's stated confidence and the length of exposure.
+to the pack's stated confidence and the length of exposure: its stated ratio
+scaled by the share of the window exposed, in log-odds, all packs together at
+most a ratio of 10.
 
 ### 11.3 Avoiding double counting, and rewarding real chains
 
@@ -786,9 +793,8 @@ each release.
 4. **Remediation** — for findings above a threshold: containment, evidence
    preservation, eradication, recovery, and what to tell whom, scaled to the
    finding.
-5. **Threat-pack drafting** — from advisories supplied by the operator, a
-   draft pack for human review. Built in Phase 4 with the pack format
-   (decided 2026-10-29).
+5. ~~Threat-pack drafting.~~ Moved out of this tool, to a separate pack
+   application (decided 2026-10-30): the advisor keeps the four roles above.
 
 ### 12.2 Interface
 
@@ -938,7 +944,7 @@ Lessons that changed this design:
 | 1 | Parsers for both families, snapshots and baselines, core checks 8.1–8.7, HTML report |
 | 2 | Whitelist layers and tooling, scoring and calibration harness, checks 8.8–8.13 |
 | 3 | AI advisor (roles 1–4), redaction modes |
-| 4 | Threat packs: format, signing, PHP2Shell pack, pack drafting (advisor role 5) |
+| 4 | Threat packs: format, signing, distribution, PHP2Shell pack (drafting moved to a separate pack application) |
 | 5 | Fleet view, PDF/JSON, PostgreSQL, web interface |
 
 ---
@@ -960,5 +966,5 @@ Lessons that changed this design:
 5. ~~RHEL rebuilds.~~ **Decided 2026-10-25:** RHEL, Rocky Linux and AlmaLinux
    tested and supported; Oracle Linux best effort; CentOS Stream not claimed.
 6. ~~Threat-pack publishing and signing.~~ **Decided 2026-10-25:** separate public
-   packs repository, one offline NouriLoop LLC signing key, optional
-   organization keys for private packs (section 10.4).
+   packs repository, NouriLoop LLC signing keys kept off any server (two
+   since 2026-10-30, section 10.4), optional organization keys for private packs.

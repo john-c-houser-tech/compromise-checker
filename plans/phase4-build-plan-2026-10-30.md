@@ -714,6 +714,10 @@ is John's to approve before it is committed. Also:
 - DESIGN.md §10 and §11.2 as built; §10.3, §12.1 (role 5) and §18 say
   drafting moved to the pack application; README "Status: Phase 4
   complete".
+- As built (2026-10-30): §10 and §11 in John's approved wording ("kept off
+  any server" rather than "offline": the pack key is on his laptop for
+  signing). `docs/packs.md` written. Phase 4 complete; on nouriloop-prod the
+  pack is in force, and John chose not to rotate secrets for now.
 
 ## Decisions to settle (one at a time)
 

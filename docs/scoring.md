@@ -126,8 +126,8 @@ default (DESIGN.md §11.2). Set it in `config.yaml` as `prior:`, per host
 group in `group_priors:` (`{web: 0.05}`), or per host with
 `checker hosts add --prior`. A host's own wins over its group's, which
 wins over the configuration's. The assessment records the prior and where
-it came from. Threat packs (Phase 4) will raise it for hosts exposed during
-an exploitation window.
+it came from. Threat packs raise it for hosts exposed during an exploitation
+window ([packs](packs.md)).
 
 ## Bands
 

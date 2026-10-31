@@ -12,8 +12,9 @@ is written to the server.
 compares each host with its baseline, runs the checks, scores the host and
 writes the report; the optional AI advisor explains an analysis, proposes
 whitelist rules, suggests better coverage and advises on remediation
-([advisor](docs/advisor.md)). Threat packs come in Phase 4 (see
-[DESIGN.md §18](DESIGN.md)).
+([advisor](docs/advisor.md)); signed threat packs teach it about new threats
+without a release of the tool ([packs](docs/packs.md)). Phases 0 to 4 are
+complete (see [DESIGN.md §18](DESIGN.md)).
 
 What works today:
 
@@ -96,6 +97,8 @@ What works today:
   every change so far; read the advisor's API key from its source to check
   it works, without sending anything. A key pasted into a `command:`
   source is refused.
+- `checker packs pull|list|show|add|retire|check|keys|trust|index` — signed threat
+  packs ([packs](docs/packs.md)); nothing is downloaded unless you pull.
 - `checker hosts add|list|remove|packs` and `checker trust` — the inventory
   (`--web-root DIR`, repeatable, sets a host's own web roots; `hosts packs
   HOST [RULE]` shows or sets which threat packs apply to it), and
@@ -215,8 +218,9 @@ analyses of throwaway servers; after a deliberate change to checks or scoring,
 
 ## Licence
 
-AGPL-3.0 (see [LICENSE](LICENSE)). Threat packs, when they exist, are
-published separately under CC BY 4.0.
+AGPL-3.0 (see [LICENSE](LICENSE)). Threat packs are published separately, in
+[compromise-checker-packs](https://github.com/john-c-houser-tech/compromise-checker-packs),
+under CC BY 4.0.
 
 Provided as is, without warranty. Findings are estimates, and a clean report
 is not proof that a server is clean; see section 14 of the

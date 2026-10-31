@@ -336,17 +336,46 @@ Nothing, unless you choose one of these:
   sends it is your choice.
 
 The tool has no telemetry, usage reporting or licence check, and it never
-contacts NouriLoop LLC. Updates to threat packs (section 11) are downloaded
-only when an operator asks.
+contacts NouriLoop LLC on its own. Threat packs (section 11) are downloaded
+only when an operator runs `checker packs pull`, over HTTPS, from NouriLoop's
+public repository on GitHub or from a mirror you name. That request carries
+what any web request does, such as your address, and none of your evidence.
 
 ## 11. Threat packs and trust
 
-Threat packs teach the tool about specific new threats. They are published in
-a separate public repository and signed with NouriLoop LLC's signing key,
-which is kept offline. The tool refuses any pack whose signature it cannot
-verify. Your organization can also sign its own private packs with its own
-key and tell the tool to trust that key; those packs are trusted only by your
-installation.
+Threat packs teach the tool about specific new threats: which package versions
+are vulnerable, which settings help, and which signs of attack to look for. A
+pack is data, never code. It runs nothing on your servers and doesn't change
+what the collector reads; it is applied on your own machine, to evidence
+already collected.
+
+**Signing.** Packs are published in a separate public repository and signed by
+hand. NouriLoop LLC has two keys, both kept off any server: a root key, which
+signs only the list of trusted pack keys, and a pack key, which signs packs. A
+pack key that leaks or is lost can be replaced by a new list, without a new
+release of the tool. The tool refuses any pack whose signature it cannot
+verify, an older version of a pack it has already accepted, and changed content
+under an old version number. Your organization can also sign its own private
+packs with its own key and tell the tool to trust that key; those packs are
+trusted only by your installation.
+
+**What a pack changes.** A host found exposed to a pack's threat starts from a
+higher probability of compromise, in proportion to how long it was exposed;
+exposure alone is never treated as a sign of compromise. A pack can also add
+findings of its own, and give more weight to the tool's built-in findings,
+within fixed limits.
+
+**Which servers.** Every pack in force applies to every server unless you say
+otherwise. You can keep packs off a server, a group or all servers. Changes made
+with the tool's commands are recorded, with who made them and when; edits made
+to its files by hand are not. An analysis says which packs it applied, and which
+it held back and why.
+
+**Staying current.** The index of packs is signed again at least monthly, and
+the tool warns when the copy it finds is more than 30 days old. It cannot tell
+you about a pack it has not been able to download, so a site that never pulls
+gets no new packs. A key's revocation also reaches you only through a pull or a
+new release of the tool.
 
 ## 12. Security of the tool itself
 

@@ -7177,6 +7177,13 @@ def _tables(connection, names):
 
 
 WAL_MAX_BYTES = 128 * 1024 * 1024  # the database and its log together, held in memory
+# A server's own bytes decide what these parse, so each is bounded. All far above a real dnf's.
+PAYLOAD_MAX_BYTES = 1024 * 1024
+TABLE_MAX_BYTES = 128 * 1024 * 1024
+TABLE_MAX_ROWS = 1000000
+RECORD_HEADER_MAX_BYTES = 4096
+SCHEMA_MAX_CHARS = 64 * 1024
+LOG_TIME_SHARE = 0.25  # of the module's remaining time, at most
 
 
 def _wal_sum(data, big_endian, first, second):
@@ -7188,10 +7195,12 @@ def _wal_sum(data, big_endian, first, second):
     return first, second
 
 
-def apply_wal(run, main, wal):
+def apply_wal(run, main, wal, index=b""):
     """The database as its write-ahead log says it now is: every committed transaction applied,
     in memory, stopping at the first frame whose salt or checksum is wrong, as SQLite itself
-    does. None if the log's header isn't sound, so it can't be read at all."""
+    does. None if the log's header isn't sound, or if there are signs of committed transactions
+    past where reading stopped: a later commit frame, or SQLite's shared-memory index (`index`)
+    counting more frames than were found. Then the log can't be said to have been read."""
     if len(wal) < 32:
         return None
     magic, version, page_size, _, salt1, salt2, sum1, sum2 = struct.unpack(">8I", wal[:32])
@@ -7213,17 +7222,30 @@ def apply_wal(run, main, wal):
         if (frame_salt1, frame_salt2) != (salt1, salt2) or not number:
             break
         page = wal[offset + 24 : offset + frame_size]
-        running = _wal_sum(wal[offset : offset + 8], big_endian, *running)
-        running = _wal_sum(page, big_endian, *running)
-        if running != (frame_sum1, frame_sum2):
+        checked = _wal_sum(wal[offset : offset + 8], big_endian, *running)
+        checked = _wal_sum(page, big_endian, *checked)
+        if checked != (frame_sum1, frame_sum2):
             break
+        running = checked
         pending[number] = page
         if commit:  # a transaction's last frame: only now does it count
             pages.update(pending)
             pending, size = {}, commit
         offset += frame_size
+    # Frames still to come with this log's salts, one of them a commit: something was missed.
+    for later in range(offset, len(wal) - frame_size + 1, frame_size):
+        run.check_time()
+        commit, frame_salt1, frame_salt2 = struct.unpack(">3I", wal[later + 4 : later + 16])
+        if commit and (frame_salt1, frame_salt2) == (salt1, salt2):
+            return None
+    if len(index) >= 48 and index[32:40] == wal[16:24]:
+        counted = struct.unpack("=I", index[16:20])[0]
+        if counted > (offset - 32) // frame_size:
+            return None
     if size is None:
         return main  # nothing committed in the log
+    if size * page_size > WAL_MAX_BYTES:
+        raise ValueError("database size")
     image = bytearray(main[: size * page_size].ljust(size * page_size, b"\0"))
     for number, page in pages.items():
         if number <= size:
@@ -7236,12 +7258,13 @@ def _file_state(absolute):
     return found.st_ino, found.st_size, found.st_mtime_ns
 
 
-def _read_limited(absolute, limit):
-    """A file's bytes, through the same safe open as everything else; None if over the limit."""
+def _read_limited(absolute, limit, whole=True):
+    """A file's bytes, through the same safe open as everything else: up to `limit` of them, or
+    if it must be `whole`, None when it's over."""
     raw, _ = open_regular_file(absolute)
     with raw:
-        data = raw.read(limit + 1)
-    return None if len(data) > limit else data
+        data = raw.read(limit + 1 if whole else limit)
+    return None if whole and len(data) > limit else data
 
 
 def _varint(data, at):
@@ -7273,7 +7296,10 @@ class _SqliteImage:
         if struct.unpack(">I", data[56:60])[0] != 1:
             raise ValueError("not UTF-8")
         self.usable = self.page_size - data[20]
+        if self.usable < 480:
+            raise ValueError("usable size")
         self.data, self.run = data, run
+        self.budget = 0
 
     def _page(self, number):
         start = (number - 1) * self.page_size
@@ -7283,6 +7309,10 @@ class _SqliteImage:
 
     def _payload(self, page, at, size):
         """A cell's record, following its overflow pages if it has them."""
+        # Rows here are short. Many cells can share one chain, so the total is bounded too.
+        self.budget -= size
+        if size > PAYLOAD_MAX_BYTES or self.budget < 0:
+            raise ValueError("payload too large")
         usable = self.usable
         limit = usable - 35
         if size <= limit:
@@ -7295,6 +7325,7 @@ class _SqliteImage:
         following = struct.unpack(">I", page[at + local : at + local + 4])[0]
         seen = set()
         while len(out) < size:
+            self.run.check_time()
             if following in seen:
                 raise ValueError("overflow loop")
             seen.add(following)
@@ -7327,14 +7358,18 @@ class _SqliteImage:
                 stack.extend(reversed([*children, rightmost]))
             elif kind == 13:
                 for pointer in pointers:
+                    self.run.check_time()
                     size, at = _varint(page, pointer)
                     rowid, at = _varint(page, at)
+                    if rowid >= 1 << 63:  # a varint is the two's complement of a negative rowid
+                        rowid -= 1 << 64
                     yield rowid, _record(self._payload(page, at, size))
             else:
                 raise ValueError("not a table page")
 
     def table(self, name):
         """A table's rows as dicts by column name, the integer primary key filled in."""
+        self.budget = TABLE_MAX_BYTES
         found = [
             values
             for _, values in self.rows(1)
@@ -7343,7 +7378,10 @@ class _SqliteImage:
         if len(found) != 1:
             raise ValueError("no such table")
         columns, key = _columns(found[0][4])
-        for rowid, values in self.rows(found[0][3]):
+        self.budget = TABLE_MAX_BYTES
+        for count, (rowid, values) in enumerate(self.rows(found[0][3])):
+            if count >= TABLE_MAX_ROWS:
+                raise ValueError("too many rows")
             row = dict(zip(columns, values))
             if key is not None:
                 row[key] = rowid
@@ -7352,6 +7390,8 @@ class _SqliteImage:
 
 def _record(payload):
     size, at = _varint(payload, 0)
+    if size > RECORD_HEADER_MAX_BYTES:
+        raise ValueError("record header")
     types = []
     while at < size:
         kind, at = _varint(payload, at)
@@ -7364,8 +7404,10 @@ def _record(payload):
             raise ValueError("record")
         raw = payload[at : at + width]
         at += width
-        if kind in (0, 7):
-            values.append(None)  # no real numbers are read here
+        if kind == 0:
+            values.append(None)
+        elif kind == 7:
+            values.append(struct.unpack(">d", raw)[0])
         elif kind in (8, 9):
             values.append(kind - 8)
         elif kind < 7:
@@ -7377,7 +7419,7 @@ def _record(payload):
 
 def _columns(sql):
     """Column names from a CREATE TABLE, and which is the integer primary key."""
-    if not isinstance(sql, str) or "(" not in sql:
+    if not isinstance(sql, str) or "(" not in sql or len(sql) > SCHEMA_MAX_CHARS:
         raise ValueError("no schema")
     # dnf's own schema has comments between its columns.
     sql = re.sub(r"/\*.*?\*/|--[^\n]*", " ", sql, flags=re.DOTALL)
@@ -7394,7 +7436,9 @@ def _columns(sql):
     columns, key = [], None
     for part in parts:
         words = part.split()
-        if not words or words[0].upper() in ("PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT"):
+        if words and words[0].upper() == "PRIMARY":
+            raise ValueError("a table-level key: its rowid can't be told")  # not dnf's schema
+        if not words or words[0].upper() in ("FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT"):
             continue
         name = words[0].strip('"`[]')
         columns.append(name)
@@ -7416,18 +7460,24 @@ def _history_from_log(run, since):
             return None
         if (_file_state(DNF_HISTORY), _file_state(log)) != before:
             return None  # written to as we read: the two may not belong together
-        image = apply_wal(run, main, wal)
+        try:
+            index = _read_limited(DNF_HISTORY + "-shm", 4096, whole=False)
+        except (OSError, ValueError):
+            index = b""  # it's optional: only a further check
+        image = apply_wal(run, main, wal, index or b"")
+        del main, wal
         if image is None:
             return None
         database = _SqliteImage(run, image)
         began = {r.get("id"): r.get("dt_begin") for r in database.table("trans")}
-        packages = {r.get("item_id"): r for r in database.table("rpm")}
+        fields = ("name", "epoch", "version", "release", "arch")
+        packages = {r.get("item_id"): {f: r.get(f) for f in fields} for r in database.table("rpm")}
         changes = []
         for item in database.table("trans_item"):
             when = began.get(item.get("trans_id"))
             package = packages.get(item.get("item_id"))
             if (
-                isinstance(when, int)
+                isinstance(when, (int, float))
                 and when >= since
                 and item.get("state") == 1
                 and item.get("action") in (1, 2, 4, 5, 6, 8, 9)
@@ -7445,7 +7495,16 @@ def _history_from_log(run, since):
                         package.get("arch"),
                     )
                 )
-    except (OSError, ValueError, IndexError, KeyError, TypeError, struct.error, RecursionError):
+    except (
+        OSError,
+        ValueError,
+        IndexError,
+        KeyError,
+        TypeError,
+        struct.error,
+        RecursionError,
+        MemoryError,
+    ):
         return None
     changes.sort(key=lambda c: (c[0], c[1] if isinstance(c[1], int) else 0))
     return [(c[0], *c[2:]) for c in changes]
@@ -7456,7 +7515,11 @@ def _dnf_changes(run, rows, change):
     for began, action, name, epoch, version, release, arch in rows:
         run.check_time()
         kind = _DNF_ACTIONS.get(action)
-        if kind is None or not name:
+        if kind is None or not name or not isinstance(name, str):
+            continue
+        if not all(isinstance(v, (str, int, type(None))) for v in (epoch, version, release, arch)):
+            continue
+        if not isinstance(began, (int, float)):
             continue
         evr = f"{version}-{release}"
         evr = f"{epoch}:{evr}" if epoch else evr
@@ -7514,14 +7577,26 @@ def _dnf_history(run, module, since, change):
     everything SQLite finds in the file: otherwise it's said that the newest may be missing."""
     wal = path(DNF_HISTORY) + "-wal"
     try:
-        pending = os.lstat(wal).st_size
+        found = os.lstat(wal)
+        # Anything there that isn't a plain file can't be read, whatever size it claims.
+        pending = found.st_size if stat.S_ISREG(found.st_mode) else 1
     except OSError:
         pending = 0
     on_disk = _dnf_rows_on_disk(run, module, since)
     if on_disk is None:
         return
     if pending:
-        with_log = _history_from_log(run, int(since))
+        # Its bytes are the server's: running out of time here mustn't cost the other checks.
+        deadline = run.deadline
+        run.deadline = min(
+            deadline, time.monotonic() + LOG_TIME_SHARE * max(0.0, deadline - time.monotonic())
+        )
+        try:
+            with_log = _history_from_log(run, int(since))
+        except ModuleTimeout:
+            with_log = None
+        finally:
+            run.deadline = deadline
         if with_log is not None and set(on_disk) <= set(with_log):
             on_disk = with_log
         else:

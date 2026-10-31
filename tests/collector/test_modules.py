@@ -6159,16 +6159,24 @@ class PackageHistoryReviewTests(FixtureRoot):
         self.assertEqual(sorted(p.name for p in db.parent.iterdir()), before)
 
     def test_a_torn_last_transaction_is_left_out_and_the_earlier_ones_kept(self):
-        _, wal = self.wal_db((10, "php-fpm"), (11, "php-cli"))
+        db, wal = self.wal_db((10, "php-fpm"), (11, "php-cli"))
+        Path(str(db) + "-shm").unlink()  # no index to say how many frames there should be
         data = wal.read_bytes()
-        keep = len(data) - 200
-        Path(str(wal)).write_bytes(data[:keep])
+        wal.write_bytes(data[: len(data) - 200])
         records = collect(self.root, ["software"])
         self.assertEqual(named(records, "package_history_pending"), [])
         self.assertEqual(self.history_names(records), ["php-fpm"])
 
-    def test_a_frame_that_fails_its_checksum_ends_the_log(self):
+    def test_a_log_shorter_than_its_live_index_is_said(self):
         _, wal = self.wal_db((10, "php-fpm"), (11, "php-cli"))
+        data = wal.read_bytes()
+        wal.write_bytes(data[: len(data) - 200])
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_pending")), 1)
+
+    def test_a_last_frame_that_fails_its_checksum_ends_the_log(self):
+        db, wal = self.wal_db((10, "php-fpm"), (11, "php-cli"))
+        Path(str(db) + "-shm").unlink()
         data = bytearray(wal.read_bytes())
         data[-100] ^= 0xFF
         wal.write_bytes(bytes(data))
@@ -6272,12 +6280,112 @@ class PackageHistoryReviewTests(FixtureRoot):
         run = types.SimpleNamespace(
             check_time=lambda: None,
             out_of_time=lambda: False,
+            deadline=time.monotonic() + 60,
             stream=types.SimpleNamespace(record=lambda m, n, d: seen.append(n)),
         )
         changes = []
         collector._dnf_history(run, "software", 0, changes.append)
         self.assertIn("package_history_pending", seen)
         self.assertEqual([c["name"] for c in changes], ["php-fpm"])
+
+    def test_a_bad_frame_before_a_later_commit_is_said(self):
+        """Stopping there would silently miss the later transaction."""
+        _, wal = self.wal_db((10, "php-fpm"), (11, "php-cli"), (12, "php-common"))
+        data = bytearray(wal.read_bytes())
+        page_size = struct.unpack(">I", data[8:12])[0]
+        data[32 + (24 + page_size) + 30] ^= 0xFF  # inside the log's second frame
+        wal.write_bytes(bytes(data))
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_pending")), 1)
+
+    def test_a_log_shorter_than_its_index_says_is_said(self):
+        collector = load_collector(self.root)
+        run = types.SimpleNamespace(check_time=lambda: None)
+        db, wal = self.wal_db((10, "php-fpm"))
+        data = wal.read_bytes()
+        index = bytearray(48)
+        index[16:20] = struct.pack("=I", 999)
+        index[32:40] = data[16:24]
+        self.assertIsNone(collector.apply_wal(run, db.read_bytes(), data, bytes(index)))
+        index[32:40] = b"otherlog"  # an index left from another log says nothing
+        self.assertIsNotNone(collector.apply_wal(run, db.read_bytes(), data, bytes(index)))
+
+    def test_a_log_claiming_a_huge_database_is_refused_without_allocating_it(self):
+        collector = load_collector(self.root)
+        run = types.SimpleNamespace(check_time=lambda: None)
+        page = bytes(512)
+        header = struct.pack(">6I", 0x377F0682, 3007000, 512, 0, 1, 2)
+        first, second = collector._wal_sum(header, False, 0, 0)
+        header += struct.pack(">2I", first, second)
+        frame = struct.pack(">2I", 1, 0x7FFFFFFF)
+        first, second = collector._wal_sum(frame, False, first, second)
+        first, second = collector._wal_sum(page, False, first, second)
+        wal = header + frame + struct.pack(">4I", 1, 2, first, second) + page
+        with self.assertRaises(ValueError):
+            collector.apply_wal(run, b"", wal)
+
+    def test_odd_bytes_are_refused_before_they_cost_anything(self):
+        collector = load_collector(self.root)
+        with self.assertRaises(ValueError):
+            collector._columns("CREATE TABLE t (" + "/*" * 40000)
+        with self.assertRaises(ValueError):
+            collector._columns("CREATE TABLE t (id INTEGER, PRIMARY KEY(id))")
+        with self.assertRaises(ValueError):
+            collector._record(b"\x83\xff\x7f" + bytes(10))
+
+    def test_a_real_number_is_a_number(self):
+        collector = load_collector(self.root)
+        payload = bytes([2, 7]) + struct.pack(">d", 1.5)
+        self.assertEqual(collector._record(payload), [1.5])
+
+    def test_a_negative_rowid_is_negative(self):
+        import sqlite3
+
+        db = Path(self.root, "n.sqlite")
+        connection = sqlite3.connect(db)
+        connection.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        connection.execute("INSERT INTO t VALUES (-5, 'x')")
+        connection.commit()
+        connection.close()
+        collector = load_collector(self.root)
+        run = types.SimpleNamespace(check_time=lambda: None)
+        rows = list(collector._SqliteImage(run, db.read_bytes()).table("t"))
+        self.assertEqual(rows, [{"id": -5, "name": "x"}])
+
+    def test_a_log_that_isnt_a_plain_file_is_said(self):
+        db = self.dnf_db([], [(1, int(NOW))])
+        os.mkfifo(str(db) + "-wal")
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_pending")), 1)
+
+    def test_running_out_of_time_on_the_log_costs_only_the_log(self):
+        self.wal_db((10, "php-fpm"))
+        collector = load_collector(self.root)
+
+        def too_slow(run, since):
+            raise collector.ModuleTimeout()
+
+        collector._history_from_log = too_slow
+        seen, changes = [], []
+        run = types.SimpleNamespace(
+            check_time=lambda: None,
+            out_of_time=lambda: False,
+            deadline=time.monotonic() + 60,
+            stream=types.SimpleNamespace(record=lambda m, n, d: seen.append(n)),
+        )
+        collector._dnf_history(run, "software", 0, changes.append)
+        self.assertIn("package_history_pending", seen)
+
+    def test_a_blob_for_a_package_name_loses_only_that_row(self):
+        collector = load_collector(self.root)
+        run = types.SimpleNamespace(check_time=lambda: None)
+        found = []
+        rows = [
+            (1, 1, b"blob", 0, "1", "1", "x"),
+            (2, 1, "php", 0, "1", "1", "x"),
+        ]
+        collector._dnf_changes(run, rows, found.append)
+        self.assertEqual([c["name"] for c in found], ["php"])
 
     def test_a_crafted_database_is_refused_and_not_followed(self):
         collector = load_collector(self.root)

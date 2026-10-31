@@ -860,7 +860,9 @@ packages installed system-wide by hand.
   in memory, checked by SQLite's own checksums, and read by a small bounded
   reader, with nothing written. What that finds must include everything
   SQLite finds in the file; otherwise, or if the files change meanwhile,
-  `package_history_pending` says the newest changes may be missing. Every SQLite
+  `package_history_pending` says the newest changes may be missing. So does any
+  sign of a commit past where reading stopped. SQLite's own open of the file
+  can update its access time, as with rpm's database. Every SQLite
   read of a server's database (this and rpm's) keeps its sorts in memory
   (none spills to a file), runs no functions from the database's schema,
   and checks the deadline while SQLite works;

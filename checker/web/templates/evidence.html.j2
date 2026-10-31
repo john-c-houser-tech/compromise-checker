@@ -16,14 +16,25 @@
     {% if f.excerpts %}
     <ul class="excerpts">
       {% for e in f.excerpts %}
-      <li>{% if e.when or e.where %}<span class="where">{{ e.when }} {{ e.where }}</span>{% endif %}<p class="from-server">{{ e.text }}</p></li>
+      <li>
+        {% if e.when %}<span class="where">{{ e.when }}</span>{% endif %}
+        {% if e.where %}<span class="{{ 'from-server' if e.from_server else 'where' }}">{{ e.where }}</span>{% endif %}
+        {% if e.where or e.when %}<p class="from-server">{{ e.text }}</p>{% else %}<p class="note">{{ e.text }}</p>{% endif %}
+      </li>
       {% endfor %}
     </ul>
-    {% else %}
-    <p class="note">No excerpt is stored for this one.</p>
     {% endif %}
+    {% if f.missing or not f.excerpts %}<p class="note">Some or all of this finding's evidence couldn't be shown.</p>{% endif %}
   </article>
   {% endfor %}
+</section>
+{% endif %}
+{% if information %}
+<section class="findings">
+  <details>
+    <summary>{{ information | length }} for information, with no excerpts here</summary>
+    <ul>{% for f in information %}<li>{{ f.title }}</li>{% endfor %}</ul>
+  </details>
 </section>
 {% endif %}
 {% if timeline %}
@@ -59,7 +70,8 @@
 <section class="findings">
   <h2>For an investigator</h2>
   <details>
-    <summary>This collection's fingerprints and who has handled it</summary>
+    <summary>This collection's fingerprints and record of custody</summary>
+    <p class="note">The record shows what the command line did. Views of this page aren't in it.</p>
     {% if bundle %}
     <dl class="facts">
       <dt>Collection</dt><dd>{{ bundle.id }}</dd>

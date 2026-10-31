@@ -1065,22 +1065,8 @@ def test_details_that_are_not_stored_are_said_and_not_parsed_again(web, monkeypa
 
 
 def test_a_missing_snapshot_does_not_lose_excerpts_from_the_logs():
-    from types import SimpleNamespace
-
-    from checker.web.wording import evidence_details
-
-    event = SimpleNamespace(
-        corrected="2027-01-02T12:00:00+00:00",
-        time="",
-        source="auth",
-        line="a line",
-        type="t",
-        fields={},
-    )
     finding = {"title": "t", "band": "high", "evidence": [{"event": 0}]}
-    details = evidence_details(
-        {"assessment": {"findings": [finding]}, "row": {}, "events": [event], "snapshot": None}
-    )
+    details = details_for(finding, [log_event()], snapshot=False)
     assert details["findings"][0]["excerpts"][0]["text"] == "a line"
     assert details["timeline"][0]["text"] == "a line"
 
@@ -1156,3 +1142,105 @@ def test_times_are_shown_as_people_read_them():
 
     assert when("2026-10-21T07:43:00+00:00") == "21 Oct 2026, 07:43 UTC"
     assert when("not a time") == "not a time"
+
+
+def details_for(finding, events=(), snapshot=True, baselines=None, **assessment):
+    from checker.report import current_versions
+    from checker.snapshot import Snapshot
+    from checker.web.wording import evidence_details
+
+    return evidence_details(
+        {
+            "assessment": {"findings": [finding], "versions": current_versions(), **assessment},
+            "row": {},
+            "events": list(events),
+            "snapshot": Snapshot({}, {}) if snapshot else None,
+            "baselines": baselines or {},
+        }
+    )
+
+
+def log_event(**extra):
+    from types import SimpleNamespace
+
+    fields = {
+        "corrected": "2027-01-02T12:00:00+00:00",
+        "time": "",
+        "source": "web_logs:<b>x",
+        "line": "a line",
+        "type": "t",
+        "fields": {},
+    }
+    return SimpleNamespace(**{**fields, **extra})
+
+
+def test_an_older_analysis_never_shows_another_parses_lines():
+    finding = {"title": "t", "band": "high", "evidence": [{"event": 0}]}
+    details = details_for(finding, [log_event(line="an unrelated line")], versions={"checks": 0})
+    assert any("older version" in n for n in details["notes"])
+    assert details["findings"][0]["excerpts"] == [] and details["timeline"] == []
+
+
+def test_a_reference_past_the_end_is_said_and_not_counted_as_more():
+    finding = {"title": "t", "band": "high", "evidence": [{"event": 0}, {"event": 99}]}
+    shown = details_for(finding, [log_event()])["findings"][0]
+    assert shown["missing"] is True and len(shown["excerpts"]) == 1
+
+
+def test_a_gone_baseline_is_said():
+    finding = {"title": "t", "band": "high", "evidence": []}
+    details = details_for(finding, [log_event()], baselines={"old": None})
+    assert any("may show as blank" in n for n in details["notes"])
+
+
+def test_an_empty_order_of_events_says_why():
+    finding = {"title": "t", "band": "high", "evidence": [{"event": 0}]}
+    details = details_for(finding, [log_event(corrected="")])
+    assert any("no usable time" in n for n in details["notes"])
+
+
+def test_information_findings_are_listed():
+    details = details_for({"title": "minor", "band": "info", "evidence": []})
+    assert [f["title"] for f in details["information"]] == ["minor"] and details["findings"] == []
+
+
+def test_a_logs_name_is_boxed_as_the_servers(web, monkeypatch):
+    client, _ = signed_in(web)
+    finding = {"title": "t", "band": "high", "category": "exposure", "evidence": [{"event": 0}]}
+
+    def stored(*a):
+        from checker.report import current_versions
+        from checker.snapshot import Snapshot
+
+        return {
+            "assessment": {"findings": [finding], "versions": current_versions()},
+            "row": {},
+            "events": [log_event(source="web_logs:Reviewed, safe")],
+            "snapshot": Snapshot({}, {}),
+            "baselines": {},
+            "custody": [],
+        }
+
+    monkeypatch.setattr("checker.web.views.read_evidence", stored)
+    text = client.get("/hosts/x/evidence").content.decode()
+    assert '<span class="from-server">web_logs:Reviewed, safe</span>' in text
+
+
+def test_a_time_out_of_range_is_shown_as_it_is():
+    from checker.web.wording import when
+
+    assert when("0001-01-01T00:00:00+14:00") == "0001-01-01T00:00:00+14:00"
+
+
+def test_odd_findings_do_not_blame_the_settings(web, monkeypatch):
+    from checker import fleet as fleet_module
+
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    real = fleet_module.load_assessment
+
+    def load(store, bundle, identity, which=-1):
+        return {**real(store, bundle, identity, which), "findings": 5}
+
+    monkeypatch.setattr(fleet_module, "load_assessment", load)
+    assert client.get("/hosts/web01/evidence").status_code == 200

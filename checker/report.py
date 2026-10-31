@@ -151,7 +151,8 @@ class HostReport:
 def excerpts(
     finding: dict, events, snapshot: Snapshot, baselines: dict[str, Snapshot]
 ) -> list[dict]:
-    """What each piece of a finding's evidence says, briefly."""
+    """What each piece of a finding's evidence says, briefly. A log excerpt's `where` is the
+    log's name, which the host chose: a page that boxes server text should box that too."""
     shown = []
     for ref in finding.get("evidence", [])[:MAX_EVIDENCE]:
         if "event" in ref and 0 <= ref["event"] < len(events):

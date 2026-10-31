@@ -101,7 +101,8 @@ on top of something already proved safe.
 
 **5.10 Action groundwork.** A separate write path: POST only, CSRF tokens, a fresh
 confirmation for anything that changes what later findings mean, and each action in
-an append-only record.
+an append-only record. Who viewed which evidence pages goes in it too, since the command
+line records views in the chain of custody and pages, being read-only, can't.
 
 **5.11 Run.** Start a collection or analysis, and watch it. The server needs SSH
 credentials for this, which the viewing pages never touch: agent and password prompts

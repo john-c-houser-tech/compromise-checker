@@ -93,6 +93,10 @@ class FleetHost:
     # programs still running code from before a threat's fix.
     threat_signs: int = 0
     stale_code: int = 0
+    # What its analysis recorded about each threat pack, as recorded (pack id: status, share,
+    # judged, exposed_until), and which pack versions it applied.
+    pack_records: dict[str, dict] = field(default_factory=dict)
+    packs_applied: dict[str, int] = field(default_factory=dict)
     # Since the analysis before; `first` when there was none to compare with.
     first: bool = True
     before_unreadable: bool = False
@@ -256,6 +260,25 @@ def _in_effect(assessment: dict) -> list[dict]:
     return [f for f in findings if isinstance(f, dict) and not f.get("suppressed_by")]
 
 
+def _exposed_safely(assessment: dict) -> tuple[dict[str, str], set[str]]:
+    try:
+        return _exposed(assessment)
+    except Exception:  # noqa: BLE001 - odd stored data: the raw records still say what they say
+        return {}, set()
+
+
+def _pack_records(assessment: dict) -> dict[str, dict]:
+    records = assessment.get("exposures")
+    records = records if isinstance(records, list) else []
+    return {str(r.get("pack")): r for r in records if isinstance(r, dict)}
+
+
+def _packs_applied(assessment: dict) -> dict[str, int]:
+    applied = assessment.get("packs")
+    applied = applied if isinstance(applied, list) else []
+    return {str(p.get("id")): p.get("version") for p in applied if isinstance(p, dict)}
+
+
 def _band_of(assessment: dict | None) -> str | None:
     band = ((assessment or {}).get("score") or {}).get("band")
     return band if isinstance(band, str) else None
@@ -287,6 +310,11 @@ def _headline(host: str, group, row, after: dict, last_failed, removed: bool) ->
         },
         gaps=len(_gaps(after)),
         hygiene=(score.get("hygiene_and_exposure") or {}).get("band"),
+        pack_records=_pack_records(after),
+        packs_applied=_packs_applied(after),
+        # So far as this analysis says: _with_details adds what earlier ones knew.
+        exposed=_exposed_safely(after)[0],
+        unjudged=tuple(sorted(_exposed_safely(after)[1])),
         threat_signs=sum(
             1
             for f in _in_effect(after)
@@ -621,8 +649,8 @@ def _stored_advice(store, host: str, identity, found: _Found) -> dict:
         return latest_advice(store, host, identity, found.row["id"], found.after.get("analysed_at"))
     except sqlite3.Error:
         raise
-    except Exception:  # noqa: BLE001 - advice is extra: the findings still show
-        return {}
+    except Exception:  # noqa: BLE001 - advice is extra: the findings still show, and say so
+        return {"unreadable": True}
 
 
 def read_host(base: Path, host: str) -> tuple | None:

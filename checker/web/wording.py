@@ -357,7 +357,12 @@ def host_details(assessment: dict | None) -> dict:
 
 def _host_details(assessment: dict) -> dict:
     findings = assessment.get("findings")
-    findings = [f for f in findings if isinstance(f, dict)] if isinstance(findings, list) else []
+    findings = (
+        _numbered([f if isinstance(f, dict) else {} for f in findings])
+        if isinstance(findings, list)
+        else []
+    )
+    findings = [f for f in findings if len(f) > 1]
     in_effect = [f for f in findings if not f.get("suppressed_by")]
     hidden = [_finding(f) for f in findings if f.get("suppressed_by")]
     # Anything in a category not known here still shows, under its own heading.
@@ -398,6 +403,12 @@ def _host_details(assessment: dict) -> dict:
 _BAND_ORDER = {band: n for n, band in enumerate(BAND_WORDS)}
 
 
+def _numbered(findings: list[dict]) -> list[dict]:
+    """Each finding with its number in the analysis: how the report and the AI advisor name
+    them ("F-3"), so a reader can follow one to the other."""
+    return [{**f, "number": n} for n, f in enumerate(findings, 1)]
+
+
 def _finding(finding: dict) -> dict:
     meaning, todo = words_for(finding.get("check"), finding.get("variant"), finding.get("title"))
     band = finding.get("band")
@@ -413,6 +424,7 @@ def _finding(finding: dict) -> dict:
         "summary": finding.get("summary"),
         "uncertain": finding.get("uncertain"),
         "raised_by": raised,
+        "number": finding.get("number"),
         "lowered": bool(finding.get("maintenance")),
     }
 
@@ -485,7 +497,12 @@ def evidence_details(stored: dict) -> dict:
             " values may show as blank when they weren't."
         )
     findings = assessment.get("findings")
-    findings = [f for f in findings if isinstance(f, dict)] if isinstance(findings, list) else []
+    findings = (
+        _numbered([f if isinstance(f, dict) else {} for f in findings])
+        if isinstance(findings, list)
+        else []
+    )
+    findings = [f for f in findings if len(f) > 1]
     in_effect = [f for f in findings if not f.get("suppressed_by")]
     listed = [f for f in in_effect if f.get("band") != "info" or f.get("raised_by_pack")]
     listed.sort(
@@ -562,6 +579,8 @@ def _with_excerpts(finding, events, snapshot, baselines, excerpts, snapshot_type
 
 def when(moment: object) -> str:
     """A time as people read it. Anything else is shown as it is."""
+    if moment is None:
+        return ""
     try:
         parsed = datetime.fromisoformat(str(moment))
         return (
@@ -573,46 +592,81 @@ def when(moment: object) -> str:
         return str(moment)
 
 
-THREAT_GROUPS = (
-    ("vulnerable", "critical", "Open to this threat now"),
-    ("can't judge", "unknown", "May be open: the check can't tell"),
-    ("fixed", "elevated", "Were open while it was active, fixed now"),
-)
+# Each way a server can stand towards a threat: its colour and what to call it, worst first.
+THREAT_GROUPS = {
+    "vulnerable": ("critical", "Open to this threat now"),
+    "cant_judge": ("unknown", "May be open: the check can't tell"),
+    "old_code": ("high", "Fix installed, but old code may still be running"),
+    "partial": ("unknown", "Can't tell: the check saw only part of the software list"),
+    "unreadable": ("critical", "Its result can't be read"),
+    "not_covered": ("unknown", "This threat update doesn't cover this kind of server"),
+    "not_yet": ("unknown", "Not checked for this threat yet"),
+    "doubtful": ("unknown", "No sign of exposure, but its result can't be relied on right now"),
+    "fixed": ("elevated", "Were open while it was active, fixed now"),
+    "kept_off": ("removed", "Not checked for this threat, by your settings"),
+    "removed": ("removed", "No longer on your list of servers"),
+    "clear": ("low", "No sign of exposure"),
+}
+
+
+def _stands(host: FleetHost, pack, applies: dict) -> str:
+    """How one server stands towards one threat. "Clear" has to be earned, as green does:
+    an analysis that applied this version of this pack and found nothing, with no doubts."""
+    if host.removed:
+        return "removed"
+    if host.state == "unreadable":
+        return "unreadable"
+    if host.state != "analysed":
+        return "not_yet"
+    if pack.id not in applies.get(host.host, ()):
+        return "kept_off"
+    if host.packs_applied.get(pack.id) != pack.version:
+        return "not_yet"
+    record = host.pack_records.get(pack.id) or {}
+    status = record.get("status")
+    known = host.exposed.get(pack.id)  # what an earlier analysis could judge, if this one can't
+    if status == "vulnerable" or known == "vulnerable":
+        return "vulnerable"
+    if status == "can't judge" and record.get("judged", True):
+        return "cant_judge"
+    if status == "can't judge":
+        return "cant_judge" if known == "can't judge" else "partial"
+    if known == "can't judge":
+        return "cant_judge"
+    if status in ("not covered", "unknown release"):
+        return "not_covered"
+    if status == "fixed" and record.get("share"):
+        # Still exposed as far as can be shown: a service on the old code, or no fix time.
+        return "fixed" if record.get("exposed_until") else "old_code"
+    if known == "fixed":
+        return "fixed"
+    return "doubtful" if host.doubts else "clear"
 
 
 def threat_details(stored: dict) -> dict:
     """Each threat with the servers it touches, worst first. A server is only ever "no sign
     of exposure": that's about this threat's versions, nothing more."""
+    order = list(THREAT_GROUPS)
     threats = []
-    hosts = stored["hosts"]
-    applies = stored["applies"]
     for pack in stored["packs"]:
-        groups = []
-        for status, tone, title in THREAT_GROUPS:
-            named = sorted(h.host for h in hosts if h.exposed.get(pack.id) == status)
-            if named:
-                groups.append({"tone": tone, "title": title, "hosts": named})
-        told = {name for group in groups for name in group["hosts"]}
-        unjudged = sorted(h.host for h in hosts if pack.id in h.unjudged and h.host not in told)
-        kept_off = sorted(h.host for h in hosts if pack.id not in applies.get(h.host, ()))
-        unchecked = sorted(
-            h.host for h in hosts if h.state != "analysed" and h.host not in kept_off
-        )
-        told |= {*unjudged, *kept_off, *unchecked}
-        clear = sorted(h.host for h in hosts if h.host not in told)
-        for named, tone, title in (
-            (unjudged, "unknown", "Can't tell: the check saw only part of the software list"),
-            (unchecked, "unknown", "Not checked yet"),
-            (kept_off, "removed", "Not checked for this threat, by your settings"),
-            (clear, "low", "No sign of exposure"),
-        ):
-            if named:
-                groups.append({"tone": tone, "title": title, "hosts": named})
+        by_group: dict[str, list[str]] = {}
+        for host in stored["hosts"]:
+            by_group.setdefault(_stands(host, pack, stored["applies"]), []).append(host.host)
+        groups = [
+            {
+                "key": key,
+                "tone": THREAT_GROUPS[key][0],
+                "title": THREAT_GROUPS[key][1],
+                "hosts": sorted(by_group[key]),
+            }
+            for key in order
+            if key in by_group
+        ]
         threats.append(
             {
                 "id": pack.id,
                 "title": pack.title,
-                "published": pack.published,
+                "published": str(pack.published),
                 "cves": pack.cves,
                 "groups": groups,
                 "remediation": pack.remediation,
@@ -620,8 +674,7 @@ def threat_details(stored: dict) -> dict:
                 "references": pack.references,
             }
         )
-    worst = {"critical": 0, "unknown": 1, "elevated": 2, "removed": 3, "low": 4}
-    threats.sort(key=lambda t: min((worst[g["tone"]] for g in t["groups"]), default=9))
+    threats.sort(key=lambda t: min((order.index(g["key"]) for g in t["groups"]), default=99))
     return {
         "threats": threats,
         "threat_problem": bool(stored["problems"]),
@@ -635,19 +688,33 @@ def _list_of_dicts(value: object) -> list[dict]:
 
 def advice_details(advice: dict, enabled: bool) -> dict:
     """What the AI advisor said, for the host page. Its words are labelled as its own and
-    never move the verdict. Proposals to change settings wait for the page that acts on them."""
-    out = {"explain": None, "remediation": None, "advisor_off": not enabled and not advice}
+    never move the verdict. A newer request that came to nothing is said, so older advice
+    doesn't pass for the latest. Proposals to change settings wait for the page that acts."""
+    out = {
+        "explain": None,
+        "remediation": None,
+        "nothing_came": [],
+        "advice_unreadable": bool(advice.get("unreadable")),
+        "advisor_off": not enabled and not advice,
+    }
     try:
+        for role, name in (("explain", "explanation"), ("remediation", "suggested steps")):
+            later = (advice.get(role) or {}).get("later")
+            if isinstance(later, dict):
+                out["nothing_came"].append(
+                    {"name": name, "at": later.get("at"), "note": later.get("note")}
+                )
         explain = (advice.get("explain") or {}).get("answered")
         if explain and isinstance(explain.get("answer"), dict):
             answer = explain["answer"]
+            settle = answer.get("what_would_settle_it")
             out["explain"] = {
                 "meta": _advice_meta(explain),
                 "verdict": answer.get("verdict"),
                 "summary": answer.get("summary"),
                 "important": _list_of_dicts(answer.get("most_important")),
                 "innocent": _list_of_dicts(answer.get("innocent_explanations")),
-                "settle": [str(q) for q in answer.get("what_would_settle_it") or []],
+                "settle": [str(q) for q in settle] if isinstance(settle, list) else [],
             }
         steps = (advice.get("remediation") or {}).get("answered")
         if steps and isinstance(steps.get("answer"), dict):
@@ -666,17 +733,21 @@ def advice_details(advice: dict, enabled: bool) -> dict:
                     )
                     if _list_of_dicts(answer.get(key))
                 ],
+                "tell": _list_of_dicts(answer.get("tell")),
             }
-    except Exception:  # noqa: BLE001 - advice is extra: the findings still show
-        return {"explain": None, "remediation": None, "advisor_off": False}
+    except Exception:  # noqa: BLE001 - advice is extra: the findings still show, and say so
+        return {**out, "explain": None, "remediation": None, "advice_unreadable": True}
     return out
 
 
 def _advice_meta(record: dict) -> dict:
+    declined = record.get("declined_by")
     return {
         "at": record.get("at"),
         "model": record.get("model_answered") or record.get("model_asked"),
         "stale": bool(record.get("stale")),
         "warning": record.get("warning"),
         "local": bool(record.get("local")),
+        "declined_by": declined if isinstance(declined, list) else [],
+        "redaction": record.get("redaction"),
     }

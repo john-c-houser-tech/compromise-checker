@@ -22,7 +22,7 @@ from checker.snapshot import Snapshot
 # software changes (8.11); 10: outgoing mail (8.9); 11: web applications (8.12);
 # 12: containers (8.13); 13: logins at unusual hours (Phase 3, decision 4);
 # 14: threat packs' detections (plan 4.5); 15: nftables read as JSON beside text.
-CHECKS_VERSION = 15
+CHECKS_VERSION = 16
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"

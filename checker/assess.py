@@ -195,6 +195,16 @@ def evaluate(
     return found, ran, scored, applied
 
 
+def _history_whole(section: Any) -> bool:
+    """Whether the package history can say what came before a change in it. A write-ahead log
+    still pending holds only the newest transactions: it can't hide anything older than a change
+    the database does show. A change only in that log isn't seen, and then the installed version
+    doesn't match the last one seen, so nothing is taken as a first install."""
+    return section.complete or all(
+        str(gap).startswith("package_history_pending") for gap in section.gaps
+    )
+
+
 def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
     """Each pack's exposure, judged once (for the pack check, on the
     context) and what together they add to the prior (DESIGN.md §11.2)."""
@@ -228,7 +238,7 @@ def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
         if collected is not None and snap is not None and "packages" in snap.sections:
             earlier.append((collected, snap.sections["packages"].items))
     whole = context.snapshot.sections.get("package_history")
-    history_complete = whole is not None and whole.complete
+    history_complete = whole is not None and _history_whole(whole)
     php = context.snapshot.sections.get("php_settings")
     php_complete = php is not None and php.complete
     context.exposures = []

@@ -27,7 +27,7 @@ packs; the key list doesn't touch them.
     pack_keys:
       - {name: pack key 2026-12, public_key: RWQ...}
     revoked:
-      - {key_id: 0123456789ABCDEF, since: 2026-12-01, reason: lost}
+      - {key_id: "0123456789ABCDEF", since: 2026-12-01, reason: lost}  # quoted: may be all digits
 """
 
 from __future__ import annotations

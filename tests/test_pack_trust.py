@@ -107,7 +107,7 @@ def key_list(root, serial, trusted=(), revoked=()):
     lines = [f"format: 1\nserial: {serial}\nissued: 2026-11-0{min(serial, 9)}\npack_keys:"]
     lines += [f"  - {{name: pack key {i}, public_key: {k.line}}}" for i, k in enumerate(trusted)]
     lines += ["revoked:"] + [
-        f"  - {{key_id: {k.key_id}, since: 2026-11-01, reason: leaked}}" for k in revoked
+        f'  - {{key_id: "{k.key_id}", since: 2026-11-01, reason: leaked}}' for k in revoked
     ]
     data = ("\n".join(lines) + "\n").replace("pack_keys:\nrevoked:", "pack_keys: []\nrevoked:")
     if not revoked:

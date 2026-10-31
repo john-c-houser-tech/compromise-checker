@@ -255,6 +255,26 @@ def test_weak_transfer_signs():
     ]
 
 
+def test_a_set_in_a_table_named_like_fail2bans_needs_it_running():
+    rules = {
+        "nft: [inet f2b-table / set addr-set-sshd] (managed by other software: rules not"
+        " compared)": {},
+    }
+    rules[
+        "nft: [inet f2b-table / set addr6-set-sshd] (managed by other software: rules not compared)"
+    ] = {}  # a table's several sets: said once
+    results = found("net.managed_chain", [], [], firewall_rules=rules)
+    assert [f.summary.split(":")[0] for f in results] == ["f2b-table"]
+
+
+def test_a_rules_comment_cant_read_as_a_managed_chain():
+    rules = {'nft: [inet filter / chain c] accept comment "[a f2b-x / set c] (managed by other'
+             ' software: rules not compared)"': {}}  # fmt: skip
+    assert found("net.managed_chain", [], [], firewall_rules=rules) == []
+    ending = {"nft: accept [a f2b-x / set c] (managed by other software: rules not compared)": {}}
+    assert found("net.managed_chain", [], [], firewall_rules=ending) == []
+
+
 def test_a_managed_looking_chain_whose_owner_isnt_running():
     rules = {
         "nft: [ip filter / chain DOCKER] (managed by other software: rules not compared)": {},

@@ -39,6 +39,8 @@ _ORDER = {"Critical": 0, "High": 1, "Elevated": 3, "Low": 4}
 # there is nothing "new" about them. So they are always a doubt.
 _BLIND = ("no authentication log events", "no system journal events")
 
+_NOT_HIDING = ("pack ", "threat pack ", "login hours not judged")
+
 # Why an analysis can't be read, in words for whoever is looking.
 UNREADABLE = {
     "mismatch": "its stored analysis doesn't match its recorded hash: it may have been"
@@ -373,11 +375,11 @@ def _with_details(
             older = older_than_after
         before["exposed"] = _known_exposure(store, previous, older, identity)
     known = {_gap_kind(g) for g in _gaps(previous)}
-    # A pack's own note about what it couldn't judge isn't the host hiding anything.
+    # Notes on what a pack or a check chose not to judge aren't the host hiding anything.
     new_gaps = [
         g
         for g in _gaps(after)
-        if previous and _gap_kind(g) not in known and not g.startswith(("pack ", "threat pack "))
+        if previous and _gap_kind(g) not in known and not g.startswith(_NOT_HIDING)
     ]
     blind = [g for g in _gaps(after) if g.startswith(_BLIND)]
     doubts += [visible(g, 200) for g in blind]

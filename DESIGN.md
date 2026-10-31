@@ -690,9 +690,11 @@ reports remain reproducible.
   `compromise-checker-packs`), released on its own schedule under CC BY 4.0.
   Operators fetch with `checker packs pull`; air-gapped sites copy the files
   across by hand, since verification works offline.
-- **Who signs:** one NouriLoop LLC minisign key. The private key stays
-  offline (password manager plus an offline backup), never on a server or in
-  CI. The public key ships inside the tool and is also published on
+- **Who signs:** two NouriLoop LLC minisign keys. The root key signs only
+  the list of trusted pack keys; a pack key signs releases, and can be
+  replaced without a release of the tool. The private keys stay offline
+  (password manager plus an offline backup), never on a server or in CI. The
+  root public key ships inside the tool and is also published on
   nouriloop.com, so it can be checked from two independent places.
 - **Contributions:** outside contributors open pull requests; NouriLoop LLC
   reviews and signs releases. One chain of trust for version 1.

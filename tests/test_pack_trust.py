@@ -165,7 +165,7 @@ def test_a_key_list_that_contradicts_itself_is_refused(nouriloop, home):
 
 def test_without_a_root_key_no_key_list_is_trusted(home, monkeypatch):
     monkeypatch.setattr(trust, "ROOT_KEYS", ())
-    with pytest.raises(trust.TrustError, match="no NouriLoop root key yet"):
+    with pytest.raises(trust.TrustError, match="no NouriLoop root key"):
         trust.accept_key_list(home[0], b"format: 1\n", b"")
 
 
@@ -261,8 +261,9 @@ def test_no_signature_no_pack(ours, tmp_path, capsys):
 
 def test_with_no_trusted_key_nothing_is_added(home, tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(trust, "ROOT_KEYS", ())
+    monkeypatch.setattr(trust, "SHIPPED", tmp_path / "none")
     assert cli.main(["packs", "add", str(pack(tmp_path, Key()))]) == 1
-    assert "no key is trusted to sign packs yet" in capsys.readouterr().err
+    assert "no key is trusted to sign packs:" in capsys.readouterr().err
 
 
 def test_a_pack_naming_an_unknown_check_is_refused(ours, tmp_path, capsys):
@@ -292,7 +293,7 @@ def test_a_revoked_pack_key_retires_its_packs(nouriloop, home, tmp_path, capsys)
     (tmp_path / "keys.yaml.minisig").write_bytes(sig)
     assert cli.main(["packs", "keys", "add", str(keys)]) == 0
     assert cli.main(["packs", "add", str(pack(tmp_path, leaked))]) == 0
-    assert "NouriLoop pack key pack key 0" in capsys.readouterr().out
+    assert "NouriLoop pack key 0" in capsys.readouterr().out
     data, sig = key_list(nouriloop, 2, [fresh], revoked=[leaked])
     keys.write_bytes(data)
     (tmp_path / "keys.yaml.minisig").write_bytes(sig)
@@ -479,3 +480,84 @@ def test_an_oversized_kept_pack_isnt_read(ours, home, tmp_path):
     (home[0] / "packs" / "active" / "example-2026-10-v2.yaml").write_bytes(b"#" * (MAX_BYTES + 10))
     usable, problems = active(home[0], load_config(home[0]).packs.trusted_keys)
     assert usable == [] and "larger than a pack may be" in problems[0]
+
+
+# --- The keys shipped ------------------------------------------------------------------------
+
+
+def test_the_shipped_key_list_is_signed_by_the_shipped_root_key():
+    """NouriLoop's own: changing either key is a deliberate, visible change."""
+    assert [k.key_id for k in trust.root_keys()] == ["93AB05572B87296E"]
+    data = (trust.SHIPPED / "keys.yaml").read_bytes()
+    listed = trust.read_key_list(data, (trust.SHIPPED / "keys.yaml.minisig").read_bytes())
+    assert listed.serial == 1 and listed.revoked == []
+    assert [k.key_id for k in listed.trusted()] == ["97CF7C2D514024F0"]
+
+
+def test_a_fresh_home_trusts_the_shipped_pack_key_and_nothing_else(home):
+    keys, problem = trust.trusted_keys(home[0], [])
+    assert problem is None
+    assert [(k.key.key_id, k.domain) for k in keys] == [("97CF7C2D514024F0", trust.NOURILOOP)]
+
+
+# --- A list that ships with the tool ------------------------------------------------------------
+
+
+def ship(serial_list):
+    trust.SHIPPED.mkdir(exist_ok=True)
+    (trust.SHIPPED / "keys.yaml").write_bytes(serial_list[0])
+    (trust.SHIPPED / "keys.yaml.minisig").write_bytes(serial_list[1])
+
+
+def test_going_back_to_an_older_tool_cant_bring_a_revoked_key_back(nouriloop, home, tmp_path):
+    from checker.packs.state import read_state
+    from checker.packs.store import in_force
+
+    base = home[0]
+    leaked, fresh = Key(), Key()
+    ship(key_list(nouriloop, 1, [leaked]))
+    assert cli.main(["packs", "add", str(pack(tmp_path, leaked))]) == 0
+    assert read_state(base)["key_list_serial"] == 1
+    # The tool is updated: its list revokes the key. The next analysis takes it in.
+    ship(key_list(nouriloop, 2, [fresh], revoked=[leaked]))
+    packs, problems = in_force(base, [])
+    assert packs == []
+    assert problems == ["example-2026-10-v2.yaml: retired, its signing key is no longer trusted"]
+    assert read_state(base)["key_list_serial"] == 2
+    assert in_force(base, []) == ([], [])  # said once
+    # The older tool again: serial 2 is kept, and stands.
+    ship(key_list(nouriloop, 1, [leaked]))
+    assert trust.key_list(base).serial == 2
+    assert [k.key.key_id for k in trust.trusted_keys(base, [])[0]] == [fresh.key_id]
+
+
+def test_a_shipped_list_no_newer_is_left_alone_and_a_damaged_one_named(nouriloop, home):
+    base = home[0]
+    ship(key_list(nouriloop, 1, [Key()]))
+    assert trust.adopt_shipped(base).serial == 1
+    assert trust.adopt_shipped(base) is None
+    (trust.SHIPPED / "keys.yaml.minisig").write_bytes(Key().sign(b"x"))
+    assert trust.key_list(base).serial == 1  # the kept copy stands
+    assert not trust.shipped_newer(base)
+    import shutil
+
+    shutil.rmtree(base / "packs" / "keylists")
+    state = base / "packs" / "state.json"
+    state.unlink()
+    with pytest.raises(trust.TrustError, match="the key list shipped with the tool"):
+        trust.key_list(base)
+
+
+def test_the_same_list_again_is_already_in_force(nouriloop, home, tmp_path, capsys):
+    files = key_list(nouriloop, 1, [Key()])
+    ship(files)
+    path = tmp_path / "keys.yaml"
+    path.write_bytes(files[0])
+    (tmp_path / "keys.yaml.minisig").write_bytes(files[1])
+    assert cli.main(["packs", "keys", "add", str(path)]) == 0
+    assert "serial 1 is already in force" in capsys.readouterr().out
+    other = key_list(nouriloop, 1, [Key()])
+    path.write_bytes(other[0])
+    (tmp_path / "keys.yaml.minisig").write_bytes(other[1])
+    assert cli.main(["packs", "keys", "add", str(path)]) == 1
+    assert "isn't newer" in capsys.readouterr().err

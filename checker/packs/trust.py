@@ -13,7 +13,10 @@ an old list can't be replayed to bring a revoked key back. A kept list
 that is damaged or missing makes no NouriLoop key trusted, rather than
 falling back to an older one.
 A copy of the current list ships in the tool; a newer one comes from
-`checker packs pull`, or `checker packs keys add` for air-gapped sites.
+`checker packs pull`, or `checker packs keys add` for air-gapped sites. A
+shipped list newer than any accepted here is accepted like one of those,
+the first time the tool sees it (adopt_shipped), so going back to an older
+version of the tool can't bring a key back that a newer one revoked.
 
 An organization's own keys (config `packs.trusted_keys`) sign its private
 packs; the key list doesn't touch them.
@@ -42,10 +45,9 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationErr
 from checker.packs.format import PackError, load, problems
 from checker.packs.signing import PublicKey, SignatureError, public_key, verify
 
-# NouriLoop LLC's root key: none until John makes it (plan 4.8, D5). Until
-# then no NouriLoop pack is trusted, only an organization's own.
-ROOT_KEYS: tuple[str, ...] = ()
-SHIPPED = Path(__file__).parent / "keys"  # keys.yaml and keys.yaml.minisig, from 4.8
+# NouriLoop LLC's root key (key id 93AB05572B87296E), also on nouriloop.com.
+ROOT_KEYS: tuple[str, ...] = ("RWRuKYcrVwWrk/3tRXnYG4bvYQFjvzl7qbGBZfVwvqTOuoP0scPHE16r",)
+SHIPPED = Path(__file__).parent / "keys"  # keys.yaml and keys.yaml.minisig
 KEY_LIST = "keys.yaml"
 
 
@@ -110,7 +112,7 @@ def read_key_list(data: bytes, signature: bytes) -> KeyList:
     """A key list, its signature checked against the root keys first."""
     roots = root_keys()
     if not roots:
-        raise TrustError("this version of the tool has no NouriLoop root key yet")
+        raise TrustError("this version of the tool has no NouriLoop root key")
     try:
         verify(data, signature, roots)
     except SignatureError as exc:
@@ -148,6 +150,40 @@ def _kept(home: Path) -> tuple[int, Path] | None:
     return (max(serials), folder / str(max(serials))) if serials else None
 
 
+def _shipped() -> KeyList | None:
+    pair = _pair(SHIPPED) if SHIPPED.is_dir() else None
+    return read_key_list(*pair) if pair is not None else None
+
+
+def _floor(home: Path) -> int:
+    """The highest serial accepted here (never counting the shipped list)."""
+    from checker.packs.state import read_state
+
+    found = _kept(home)
+    return max(read_state(home)["key_list_serial"], found[0] if found else 0)
+
+
+def shipped_newer(home: Path) -> bool:
+    """Whether the tool ships a list newer than any accepted here; False
+    when it can't be read (key_list says why)."""
+    try:
+        shipped = _shipped()
+    except (TrustError, OSError):
+        return False
+    return shipped is not None and shipped.serial > _floor(home)
+
+
+def adopt_shipped(home: Path) -> KeyList | None:
+    """Accept the shipped list if it is newer than any accepted here, which
+    raises the floor. The caller holds the packs lock, and sweeps."""
+    if not shipped_newer(home):
+        return None
+    data, signature = _pair(SHIPPED)
+    new = read_key_list(data, signature)
+    _keep(home, new, data, signature)
+    return new
+
+
 def key_list(home: Path) -> KeyList | None:
     """The key list in force: the kept one or the shipped one, whichever
     has the higher serial. A kept list that fails its checks, or one that
@@ -171,10 +207,12 @@ def key_list(home: Path) -> KeyList | None:
             f"key list {recorded} was accepted here but isn't kept any more: add it again"
             " (`checker packs keys add`)"
         )
-    shipped = None
-    pair = _pair(SHIPPED) if SHIPPED.is_dir() else None
-    if pair is not None:
-        shipped = read_key_list(*pair)
+    try:
+        shipped = _shipped()
+    except TrustError as exc:
+        if kept is None:
+            raise TrustError(f"the key list shipped with the tool ({SHIPPED}): {exc}") from None
+        shipped = None  # a good kept list stands; a bad kept one failed above
     candidates = [k for k in (kept, shipped) if k is not None]
     return max(candidates, key=lambda k: k.serial) if candidates else None
 
@@ -182,7 +220,7 @@ def key_list(home: Path) -> KeyList | None:
 def accept_key_list(home: Path, data: bytes, signature: bytes) -> tuple[KeyList, KeyList | None]:
     """Make a newer key list the one in force: (new, old). The caller holds
     the packs lock."""
-    from checker.packs.state import read_state, write_state
+    from checker.packs.state import read_state
 
     new = read_key_list(data, signature)
     state = read_state(home)
@@ -196,6 +234,14 @@ def accept_key_list(home: Path, data: bytes, signature: bytes) -> tuple[KeyList,
             f"the key list's serial {new.serial} isn't newer than the one accepted ({floor}):"
             " an older list can't bring a revoked key back"
         )
+    _keep(home, new, data, signature)
+    return new, old
+
+
+def _keep(home: Path, new: KeyList, data: bytes, signature: bytes) -> None:
+    from checker.packs.state import read_state, write_state
+
+    state = read_state(home)
     folder = home / "packs" / "keylists"
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     staging = Path(tempfile.mkdtemp(dir=folder, prefix=".new-"))
@@ -210,7 +256,6 @@ def accept_key_list(home: Path, data: bytes, signature: bytes) -> tuple[KeyList,
         raise
     state["key_list_serial"] = new.serial
     write_state(home, state)
-    return new, old
 
 
 def _write(path: Path, data: bytes) -> None:
@@ -251,7 +296,7 @@ def trusted_keys(home: Path, organization: list[Any]) -> tuple[list[Trusted], st
     if listed is not None:
         for entry in listed.pack_keys:
             found.append(
-                Trusted(public_key(entry.public_key), f"NouriLoop pack key {entry.name}", NOURILOOP)
+                Trusted(public_key(entry.public_key), f"NouriLoop {entry.name}", NOURILOOP)
             )
     roots = {k.raw for k in root_keys()}
     for entry in organization:

@@ -35,8 +35,8 @@ and one older than STALE_DAYS is pointed out by the pull and by
 Limits: revocations reach a site only through the source. Someone who
 holds a leaked pack key and controls the source (a mirror, or someone in
 between) can keep serving the old key list with fresh indexes, and the
-staleness check can't tell; the key list on nouriloop.com is the second
-place to compare it with. Signatures carry no context: a pack's
+staleness check can't tell; only looking at the repository itself, by
+another route, shows a newer list. Signatures carry no context: a pack's
 signature passes as an index's only if the file reads as both, and the
 strict, disjoint formats (extra fields refused) keep that from
 happening."""
@@ -242,7 +242,7 @@ def pull(
 
 def _pull(home, organization, checks, source, get, now, done: Pulled) -> None:
     from checker.packs.state import StateError, read_state, write_state
-    from checker.packs.store import StoreError, add, retire, sweep
+    from checker.packs.store import StoreError, add, adopt, retire, sweep
     from checker.packs.trust import (
         NOURILOOP,
         TrustError,
@@ -252,7 +252,9 @@ def _pull(home, organization, checks, source, get, now, done: Pulled) -> None:
         trusted_keys,
     )
 
-    # 1. The key list: a revocation first. The repository always has one.
+    # 1. The key list: a revocation first, whichever way it came. The
+    # repository always has one.
+    done.retired_by_keys += adopt(home, organization)
     pair = _signed_pair(get, source, "keys.yaml", MAX_KEY_LIST_BYTES)
     if pair is None:
         raise PullError("the source has no keys.yaml: it isn't the packs repository, or is broken")
@@ -268,7 +270,7 @@ def _pull(home, organization, checks, source, get, now, done: Pulled) -> None:
     if offered.serial > floor:
         new, old = accept_key_list(home, *pair)
         done.key_list = (new.serial, old.serial if old else None)
-        done.retired_by_keys = sweep(home, organization)
+        done.retired_by_keys += sweep(home, organization)
     elif offered.serial < floor:
         done.problems.append(
             f"the source's key list (serial {offered.serial}) is older than the one in force"
@@ -283,7 +285,7 @@ def _pull(home, organization, checks, source, get, now, done: Pulled) -> None:
     ours = [k.key for k in keys if k.domain == NOURILOOP]
     if not ours:
         raise PullError(
-            "no NouriLoop pack key is trusted yet, so the index can't be checked"
+            "no NouriLoop pack key is trusted, so the index can't be checked"
             + (f" ({problem})" if problem else "")
         )
     try:

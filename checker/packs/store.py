@@ -21,10 +21,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from checker.files import locked
 from checker.packs.format import MAX_BYTES, Pack, PackError, read
 from checker.packs.signing import MAX_SIGNATURE_BYTES, SignatureError, verify
 from checker.packs.state import read_state, write_state
-from checker.packs.trust import Trusted, trusted_keys
+from checker.packs.trust import Trusted, adopt_shipped, shipped_newer, trusted_keys
 
 _ACTIVE = re.compile(r"(?P<id>[a-z0-9][a-z0-9-]{0,62})-v(?P<version>[1-9][0-9]{0,4})\.yaml")
 _RETIRED = re.compile(
@@ -107,15 +108,27 @@ def active(home: Path, organization: list[Any]) -> tuple[list[Stored], list[str]
     return list(usable.values()), problems
 
 
+def adopt(home: Path, organization: list[Any]) -> list[str]:
+    """A shipped key list newer than any accepted here goes in force (the
+    tool was updated), and the packs of any key it revokes are retired:
+    their names. The caller holds the packs lock."""
+    return sweep(home, organization) if adopt_shipped(home) is not None else []
+
+
 def in_force(home: Path, organization: list[Any]) -> tuple[list[Pack], list[str]]:
     """The packs an analysis applies (plan 4.6), and why any kept one isn't
     applied. Never raises: trouble reading the packs is a reason given, so
     the analysis goes on and says what it left out."""
     try:
+        retired = []
+        if shipped_newer(home):  # the lock only then: a pull may hold it for minutes
+            with locked(home / "packs" / "state"):
+                retired = adopt(home, organization)
         usable, problems = active(home, organization)
     except Exception as exc:  # noqa: BLE001 - said, not hidden; the analysis goes on
         return [], [f"the packs couldn't be read: {type(exc).__name__}: {exc}"]
-    return [s.pack for s in usable], problems
+    said = [f"{name}: retired, its signing key is no longer trusted" for name in retired]
+    return [s.pack for s in usable], [*said, *problems]
 
 
 def retired(home: Path) -> list[tuple[str, int, str]]:
@@ -174,11 +187,12 @@ def add(
     pack id and version (a pull's index entry). Nothing is written unless
     every check passes. The caller holds the packs lock. Returns it and
     what happened. A pack a person retired is in force again once added."""
+    adopt(home, organization)
     keys, problem = trusted_keys(home, organization)
     if not keys:
         raise StoreError(
-            "no key is trusted to sign packs yet: NouriLoop's arrive with the first key"
-            " list; an organization adds its own with `checker packs trust add`"
+            "no key is trusted to sign packs: NouriLoop's key list isn't usable here, and an"
+            " organization adds its own with `checker packs trust add`"
             + (f" ({problem})" if problem else "")
         )
     try:

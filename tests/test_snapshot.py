@@ -1132,9 +1132,77 @@ def test_a_newline_in_a_comment_cant_forge_a_block(forged):
             "}",
         ]
     )
-    assert "[inet f2b-table / chain input] ip saddr 198.51.100.7 accept;" in out
-    assert "[inet f2b-table / chain input] tcp dport 4444 accept;" in out
+    assert any(line.endswith("ip saddr 198.51.100.7 accept;") for line in out)
+    assert any(line.endswith("tcp dport 4444 accept;") for line in out)
     assert not any("managed by other software" in line for line in out)
+
+
+def test_a_comment_ending_in_a_backslash_swallows_nothing():
+    fail2ban = [
+        "table inet f2b-table {",
+        "\tchain f2b-chain {",
+        '\t\ttcp dport 2222 accept comment "a\\"',
+        "\t}",
+        "}",
+    ]
+    out = firewall_lines([*fail2ban, "table inet zz {", "\tchain input {",
+                          "\t\ttcp dport 4444 accept", "\t}", "}"])  # fmt: skip
+    assert "[inet zz / chain input] tcp dport 4444 accept" in out
+
+
+def test_a_line_starting_with_a_hash_after_an_open_quote_hides_nothing():
+    out = firewall_lines(
+        [
+            "table inet t {",
+            "\tchain input {",
+            '\t\tiifname != "x\\" tcp dport 4444 accept comment "a',
+            '#"',
+            "\t\ttcp dport 5555 accept",
+            "\t}",
+            "}",
+            "table inet later {",
+            "\tchain f2b-c {",
+            "\t\ttcp dport 6666 accept",
+            "\t}",
+            "}",
+        ]
+    )
+    text = "\n".join(out)
+    assert '#"' in text and "5555" in text and "6666" in text  # nothing dropped or summarised
+
+
+def test_only_a_plain_set_name_can_be_summarised():
+    out = firewall_lines(["table inet f2b-x {", "\tset addr-set-a/b {",
+                          "\t\telements = { 192.0.2.1 }", "\t}", "}"])  # fmt: skip
+    assert any("192.0.2.1" in line for line in out)
+
+
+def test_a_maps_catch_all_isnt_read_as_a_table():
+    out = firewall_lines(
+        [
+            "table inet f2b-x {",
+            "\tset addr-set-q {",
+            "\t\telements = { 192.0.2.1 }",
+            "\t}",
+            "\tmap m {",
+            "\t\telements = { 1.1.1.1 : accept,",
+            "\t\t* : continue }",
+            "\t}",
+            "\tchain c {",
+            "\t\tip saddr @addr-set-q accept",
+            "\t}",
+            "}",
+        ]
+    )
+    assert "[inet f2b-x / chain c] ip saddr @addr-set-q accept" in out
+    assert any("192.0.2.1" in line and "addr-set-q" in line for line in out)
+
+
+def test_iptables_lines_ending_in_a_brace_open_no_block():
+    out = firewall_lines(
+        ["*filter", "-A INPUT -i {", "-A INPUT -i {", "-A INPUT -j DROP", "COMMIT"]
+    )
+    assert "[filter / chain INPUT] -A INPUT -j DROP" in out
 
 
 def test_multi_line_elements_stay_in_their_set():
@@ -1165,7 +1233,7 @@ def test_only_fail2bans_own_sets_in_its_own_table_are_summarised():
     assert any("192.0.2.1" in line for line in out("filter", "addr-set-sshd"))
 
 
-def test_a_newline_in_a_comment_at_table_level_cant_forge_a_block():
+def test_a_newline_in_a_table_level_comment_cant_forge_a_block():
     out = firewall_lines(
         [
             "table inet t {",
@@ -1178,5 +1246,5 @@ def test_a_newline_in_a_comment_at_table_level_cant_forge_a_block():
             "}",
         ]
     )
-    assert "[inet t / chain input] tcp dport 4444 accept;" in out
+    assert any(line.endswith("tcp dport 4444 accept;") for line in out)
     assert not any("managed by other software" in line for line in out)

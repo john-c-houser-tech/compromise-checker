@@ -1003,3 +1003,18 @@ def test_the_collector_s_own_sudo_listing_is_its_own():
     listing = listings()
     mark_own_session(listing, SESSION, sudo_lookup=True)
     assert not any(e.own_session for e in listing)
+
+
+def test_the_attack_names_are_the_collectors():
+    """A host can write a marker into its own log, and the name reaches a finding's title."""
+    import re
+    from pathlib import Path
+
+    import checker.events as events
+
+    source = (Path(events.__file__).parent / "collector" / "collector.py").read_text()
+    start = source.index("WEB_EXPLOITS = (")
+    named = set(
+        re.findall(r'\n\s*\(\s*"([a-z0-9_]+)"', source[start : source.index("\n)\n", start)])
+    )
+    assert named == set(events.WEB_ATTACK_NAMES)

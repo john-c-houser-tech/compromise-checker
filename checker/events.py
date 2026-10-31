@@ -791,6 +791,9 @@ WEB_PATH_ATTACKS = (
     ("shellshock", re.compile(r"\(\s*\)\s*\{\s*:?\s*;?\s*\}\s*;")),
     ("nul", re.compile(r"%00|\x00")),
 )
+WEB_ATTACK_NAMES = frozenset(
+    ["jndi", "nul", "php_code", "php_wrapper", "shell", "shellshock", "sql", "traversal"]
+)  # the collector's WEB_EXPLOITS
 _WEB_MARKER = re.compile(r"\[MASKED:exploit:(\w+)\]")
 WEB_NETWORKS = 2000  # source networks counted per bundle
 
@@ -858,7 +861,9 @@ class WebLogs:
         status = int(found["status"])
         # Markers count only where the collector puts them: the request and
         # the referrer (a user agent could carry a fake one).
-        attacks = set(_WEB_MARKER.findall(found["request"] + " " + (found["referrer"] or "")))
+        marked = _WEB_MARKER.findall(found["request"] + " " + (found["referrer"] or ""))
+        # A host can write a marker into its own log, and the name reaches a finding's title.
+        attacks = {name if name in WEB_ATTACK_NAMES else "unrecognised" for name in marked}
         path = target.split("?", 1)[0]
         agent = found["agent"] or ""
         agent_attacks = set()

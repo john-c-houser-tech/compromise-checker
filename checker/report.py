@@ -151,7 +151,8 @@ class HostReport:
 def excerpts(
     finding: dict, events, snapshot: Snapshot, baselines: dict[str, Snapshot]
 ) -> list[dict]:
-    """What each piece of a finding's evidence says, briefly."""
+    """What each piece of a finding's evidence says, briefly. A log excerpt's `where` is the
+    log's name, which the host chose: a page that boxes server text should box that too."""
     shown = []
     for ref in finding.get("evidence", [])[:MAX_EVIDENCE]:
         if "event" in ref and 0 <= ref["event"] < len(events):
@@ -373,7 +374,7 @@ def host_report(
     from checker.advisor.advise import latest_advice
 
     report.advice = latest_advice(store, host, identity, row["id"], assessment.get("analysed_at"))
-    timeline = {}
+    in_effect = []
     for number, finding in enumerate(assessment["findings"], 1):
         finding = dict(
             finding, number=number, excerpts=excerpts(finding, events, snapshot, baselines)
@@ -384,6 +385,18 @@ def host_report(
         report.findings.setdefault(finding["category"], []).append(finding)
         counts = report.counts.setdefault(finding["category"], dict.fromkeys(BANDS, 0))
         counts[finding["band"]] += 1
+        in_effect.append(finding)
+    order = {band: i for i, band in enumerate(BANDS)}
+    for listed in report.findings.values():
+        listed.sort(key=lambda f: order[f["band"]])  # a maintenance window moves a band
+    report.timeline = timeline_of(in_effect, events, assessment)
+    return report
+
+
+def timeline_of(findings: list[dict], events: list, assessment: dict) -> list[dict]:
+    """The logged events behind these findings, in order, with each threat pack's window."""
+    timeline: dict[int, dict] = {}
+    for finding in findings:
         for ref in finding.get("evidence", []):
             index = ref.get("event")
             if isinstance(index, int) and 0 <= index < len(events) and events[index].corrected:
@@ -400,9 +413,6 @@ def host_report(
                 )
                 if finding["title"] not in entry["findings"]:
                     entry["findings"].append(finding["title"])
-    order = {band: i for i, band in enumerate(BANDS)}
-    for listed in report.findings.values():
-        listed.sort(key=lambda f: order[f["band"]])  # a maintenance window moves a band
     ordered = sorted(timeline.values(), key=lambda e: e["when"])
     if len(ordered) > MAX_TIMELINE:
         # The earliest events are often the first signs: keep both ends.
@@ -415,10 +425,7 @@ def host_report(
             "after": head[-1]["when"],  # where it goes among the threat packs' marks
         }
         ordered = [*head, gap, *tail]
-    report.timeline = sorted(
-        [*ordered, *exposure_marks(assessment)], key=lambda e: e.get("after", e["when"])
-    )
-    return report
+    return sorted([*ordered, *exposure_marks(assessment)], key=lambda e: e.get("after", e["when"]))
 
 
 def exposure_marks(assessment: dict) -> list[dict]:

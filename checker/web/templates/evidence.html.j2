@@ -1,0 +1,91 @@
+{% extends "base.html.j2" %}
+{% block title %}Evidence for {{ host }}: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ host_url(host) }}">Back to {{ host }}</a></p>
+<h1 class="page-title">The evidence for {{ host }}</h1>
+<p class="note">This is what the findings are based on, for whoever looks into them. Text in a box like <span class="from-server">this</span> comes from the server, and an intruder could have written it. Secrets were masked on the server before anything left it. These results describe weaknesses an attacker could use, so take care where you share them.</p>
+{% if collected_at %}<p class="note">From the check collected {{ collected_at | when }}.</p>{% endif %}
+{% for note in notes %}<p class="error" role="alert">{{ note }}</p>{% endfor %}
+{% if findings %}
+<section class="findings">
+  <h2>What each finding is based on</h2>
+  {% for f in findings %}
+  <article class="finding band-{{ f.band_class }}" id="finding-{{ loop.index }}">
+    <h3>{{ f.title }}</h3>
+    <p class="band">{{ f.band_words }}</p>
+    {% if f.excerpts %}
+    <ul class="excerpts">
+      {% for e in f.excerpts %}
+      <li>
+        {% if e.when %}<span class="where">{{ e.when }}</span>{% endif %}
+        {% if e.where %}<span class="{{ 'from-server' if e.from_server else 'where' }}">{{ e.where }}</span>{% endif %}
+        {% if e.where or e.when %}<p class="from-server">{{ e.text }}</p>{% else %}<p class="note">{{ e.text }}</p>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if f.missing or not f.excerpts %}<p class="note">Some or all of this finding's evidence couldn't be shown.</p>{% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+{% if information %}
+<section class="findings">
+  <details>
+    <summary>{{ information | length }} for information, with no excerpts here</summary>
+    <ul>{% for f in information %}<li>{{ f.title }}</li>{% endfor %}</ul>
+  </details>
+</section>
+{% endif %}
+{% if timeline %}
+<section class="findings">
+  <h2>What happened, in order</h2>
+  <p class="note">Times are the server's, corrected for its clock where that could be measured. A server that was broken into can have false logs.</p>
+  <ol class="timeline">
+    {% for e in timeline %}
+    <li class="{{ 'mark' if e.type == 'threat pack' else '' }}">
+      {% if e.when %}<time>{{ e.when | when }}</time>{% endif %}
+      {% if e.type == "threat pack" or not e.when %}
+      <p>{{ e.text }}</p>
+      {% else %}
+      <p class="from-server">{{ e.text }}</p>
+      {% if e.findings %}<p class="led-to">{{ e.findings | join("; ") }}</p>{% endif %}
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
+{% if suppressed %}
+<section class="findings">
+  <h2>Hidden by your list of accepted activity</h2>
+  <ul>
+    {% for s in suppressed %}
+    <li>{{ s.title }} <span class="from-server">{{ s.summary }}</span> Rule {{ s.rule }} in {{ s.layer }}, by {{ s.owner }}: {{ s.reason }}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% if custody or bundle %}
+<section class="findings">
+  <h2>For an investigator</h2>
+  <details>
+    <summary>This collection's fingerprints and record of custody</summary>
+    <p class="note">The record shows what the command line did. Views of this page aren't in it.</p>
+    {% if bundle %}
+    <dl class="facts">
+      <dt>Collection</dt><dd>{{ bundle.id }}</dd>
+      <dt>Status</dt><dd>{{ bundle.status }}</dd>
+      <dt>SHA-256 of the contents</dt><dd>{{ bundle.plaintext_sha256 }}</dd>
+      <dt>SHA-256 of the encrypted file</dt><dd>{{ bundle.ciphertext_sha256 }}</dd>
+    </dl>
+    {% endif %}
+    {% if custody %}
+    <ol class="custody">
+      {% for c in custody %}<li>{{ c.at | when }}: {{ c.action }}, by {{ c.operator }} on {{ c.controller }}</li>{% endfor %}
+    </ol>
+    {% endif %}
+  </details>
+</section>
+{% endif %}
+{% endblock %}

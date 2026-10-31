@@ -7,6 +7,7 @@ from jinja2 import Environment
 from checker.product import product_name
 from checker.report import _finalize, visible
 from checker.scoring import percent
+from checker.web.wording import when
 
 
 def host_url(name: str) -> str | None:
@@ -28,6 +29,7 @@ def environment(**options) -> Environment:
     env = Environment(**options)  # noqa: S701 - autoescape is set just above
     env.filters["visible"] = visible
     env.filters["percent"] = percent
+    env.filters["when"] = when
     env.globals["url"] = lambda view, **kwargs: reverse(view, kwargs=kwargs or None)
     env.globals["product_name"] = product_name
     env.globals["host_url"] = host_url

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from checker.fleet import UNREADABLE, FleetHost, serious, sort_key
-from checker.report import OLDER_CHECKS
+from checker.report import OLDER_CHECKS, visible
 from checker.schedule import SERIOUS
 from checker.web.finding_words import BAND_WORDS, SECTIONS, gap_words, words_for
 
@@ -438,3 +438,136 @@ def _log_reach(reach: object) -> str | None:
             " Logs this short can mean they were cleared."
         )
     return f"Its login logs go back {int(furthest)} days. Anything earlier can't be seen."
+
+
+def evidence_details(stored: dict) -> dict:
+    """The evidence page's contents. Parts that can't be worked out or weren't stored are
+    said to be missing: the rest of the page still shows."""
+    from checker.report import current_versions, excerpts, timeline_of
+    from checker.snapshot import Snapshot
+
+    empty = {
+        "notes": [],
+        "findings": [],
+        "information": [],
+        "timeline": [],
+        "suppressed": [],
+        "bundle": None,
+        "custody": [],
+        "collected_at": None,
+    }
+    assessment = stored.get("assessment")
+    if not isinstance(assessment, dict):
+        return {
+            **empty,
+            "notes": ["There's no readable result for this server to show evidence for."],
+        }
+    row = stored.get("row") or {}
+    events = stored.get("events")
+    snapshot = stored.get("snapshot")
+    baselines = stored.get("baselines") or {}
+    notes = []
+    if assessment.get("versions") != current_versions():
+        # Its evidence points into one parse: another parse's line 12 is a different line.
+        events, snapshot, baselines = None, None, {}
+        notes.append(
+            "This result was worked out by an older version of this tool, so its excerpts and"
+            " order of events can't be matched up. The next check shows them."
+        )
+    elif events is None or snapshot is None:
+        notes.append(
+            "Some of this check's details aren't stored or can't be read, so some excerpts are"
+            " missing. The next check stores them again."
+        )
+    if any(found is None for found in baselines.values()):
+        notes.append(
+            'An earlier check these findings compare with is gone or can\'t be read, so "before"'
+            " values may show as blank when they weren't."
+        )
+    findings = assessment.get("findings")
+    findings = [f for f in findings if isinstance(f, dict)] if isinstance(findings, list) else []
+    in_effect = [f for f in findings if not f.get("suppressed_by")]
+    listed = [f for f in in_effect if f.get("band") != "info" or f.get("raised_by_pack")]
+    listed.sort(
+        key=lambda f: _BAND_ORDER.get(f.get("band"), 9) if isinstance(f.get("band"), str) else 9
+    )
+    shown = []
+    for finding in listed:
+        shown.append(_with_excerpts(finding, events or [], snapshot, baselines, excerpts, Snapshot))
+    try:
+        timeline = timeline_of(in_effect, events or [], assessment)
+    except Exception:  # noqa: BLE001 - as above
+        timeline, notes = [], [*notes, "The order of events couldn't be worked out."]
+    if (
+        events
+        and any(_event_refs(f) for f in in_effect)
+        and not any(e.get("type") != "threat pack" for e in timeline)
+    ):
+        notes.append("The order of events can't be shown: those log lines have no usable time.")
+    suppressed = []
+    for finding in findings:
+        by = finding.get("suppressed_by")
+        if by:
+            by = by if isinstance(by, dict) else {}
+            suppressed.append(
+                {
+                    "title": finding.get("title"),
+                    "summary": finding.get("summary"),
+                    "rule": by.get("rule"),
+                    "layer": by.get("layer"),
+                    "owner": by.get("owner"),
+                    "reason": by.get("reason"),
+                }
+            )
+    return {
+        "notes": notes,
+        "findings": shown,
+        "information": [f for f in in_effect if f not in listed],
+        "timeline": timeline,
+        "suppressed": suppressed,
+        "bundle": row or None,
+        "custody": stored.get("custody") or [],
+        "collected_at": row.get("started_at"),
+    }
+
+
+def _event_refs(finding: dict) -> list[int]:
+    refs = finding.get("evidence")
+    refs = refs if isinstance(refs, list) else []
+    return [r["event"] for r in refs if isinstance(r, dict) and isinstance(r.get("event"), int)]
+
+
+def _with_excerpts(finding, events, snapshot, baselines, excerpts, snapshot_type) -> dict:
+    """A finding's excerpts. "and N more" counts only what could really be shown, and a
+    reference that leads nowhere is said, so nothing reads as more evidence than there is."""
+    try:
+        found = excerpts(finding, events, snapshot or snapshot_type({}, {}), baselines)
+    except Exception:  # noqa: BLE001 - one finding's odd data loses its own excerpts only
+        return {**_finding(finding), "excerpts": [], "missing": True}
+    real = [e for e in found if e.get("where") or e.get("when")]
+    sources = {str(visible(e.source, 80)) for e in events}
+    real = [{**e, "from_server": str(e.get("where")) in sources} for e in real]
+    refs = finding.get("evidence")
+    refs = [r for r in refs if isinstance(r, dict)] if isinstance(refs, list) else []
+    lost = sum(
+        1
+        for r in refs
+        if "event" in r and not (isinstance(r["event"], int) and 0 <= r["event"] < len(events))
+    )
+    beyond = len(refs) - lost - len(real)
+    if beyond > 0:
+        real.append({"where": "", "when": "", "text": f"… and {beyond} more"})
+    return {**_finding(finding), "excerpts": real, "missing": lost > 0 or snapshot is None}
+
+
+def when(moment: object) -> str:
+    """A time as people read it. Anything else is shown as it is."""
+    try:
+        parsed = datetime.fromisoformat(str(moment))
+        return (
+            parsed.astimezone(UTC).strftime("%-d %b %Y, %H:%M UTC")
+            if parsed.tzinfo
+            else str(moment)
+        )
+    except (ValueError, OverflowError):
+        return str(moment)

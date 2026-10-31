@@ -250,11 +250,10 @@ def _gap_kind(gap: str) -> str:
 
 
 def _in_effect(assessment: dict) -> list[dict]:
-    return [
-        f
-        for f in assessment.get("findings") or []
-        if isinstance(f, dict) and not f.get("suppressed_by")
-    ]
+    findings = assessment.get("findings")
+    if not isinstance(findings, list):
+        return []
+    return [f for f in findings if isinstance(f, dict) and not f.get("suppressed_by")]
 
 
 def _band_of(assessment: dict | None) -> str | None:
@@ -648,3 +647,64 @@ def read_host(base: Path, host: str) -> tuple[FleetHost, dict | None] | None:
     finally:
         store.close()
     return item, assessment
+
+
+def read_evidence(base: Path, host: str) -> dict | None:
+    """What a host's latest readable analysis rests on, from what is stored: nothing is
+    parsed or written, so what isn't stored is said to be missing (the next run stores it).
+    None if the tool hasn't heard of the host."""
+    from checker.analysis import load_events
+    from checker.evidence import Store, database_file
+
+    settings = _settings(base)
+    store = Store(database_file(base), read_only=True)
+    try:
+        groups = {h.name for h in settings.inventory.hosts}
+        try:
+            if host not in groups and host not in store.hosts():
+                return None
+            found = _analyses(store, usable_bundles(store, host), settings.identity)
+            if found.after is None or found.newest_unreadable:
+                return {
+                    "assessment": None,
+                    "row": None,
+                    "events": None,
+                    "snapshot": None,
+                    "baselines": {},
+                    "custody": [],
+                }
+            row, after = found.row, found.after
+            try:
+                parsed = load_events(store, row, settings.identity)
+            except EvidenceError:
+                parsed = None  # damaged: said on the page, like details not stored
+            baselines = {}
+            for finding in _in_effect(after):
+                refs = finding.get("evidence")
+                for ref in refs if isinstance(refs, list) else []:
+                    change = ref.get("change") if isinstance(ref, dict) else None
+                    against = change[0] if isinstance(change, list) and change else None
+                    if isinstance(against, str) and against not in baselines:
+                        baselines[against] = _snapshot_or_none(store, against, settings.identity)
+            return {
+                "assessment": after,
+                "row": dict(row),
+                "events": parsed.events if parsed else None,
+                "snapshot": _snapshot_or_none(store, row["id"], settings.identity),
+                "baselines": baselines,
+                "custody": [dict(c) for c in store.custody_of(row["id"])],
+            }
+        except sqlite3.Error as exc:
+            raise EvidenceError(store_unreadable(exc)) from exc
+    finally:
+        store.close()
+
+
+def _snapshot_or_none(store, bundle_id: str, identity):
+    """A collection's snapshot, if it is still stored and sound: otherwise the page says so."""
+    from checker.analysis import load_snapshot
+
+    try:
+        return load_snapshot(store, store.bundle(bundle_id), identity)
+    except EvidenceError:
+        return None

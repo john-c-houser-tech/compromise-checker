@@ -516,7 +516,8 @@ CHAIN_OWNERS = (
     ("libvirt_", ("libvirtd", "virtqemud", "virtnetworkd")),
     ("ts-", ("tailscaled",)),
 )
-_MANAGED_KEY = re.compile(r"/ chain (\S+)\] \(managed by other software")
+# A managed chain, or a set in a table named like a managed one.
+_MANAGED_KEY = re.compile(r"(?:/ chain (\S+)|\[\S+ (\S+) / set \S+)\] \(managed by other software")
 
 
 @check(
@@ -532,7 +533,7 @@ def managed_chains(context: Context) -> list[Finding]:
         match = _MANAGED_KEY.search(key)
         if not match:
             continue
-        chain = match.group(1)
+        chain = match.group(1) or match.group(2)
         owners = next(
             (names for prefix, names in CHAIN_OWNERS if chain.lower().startswith(prefix)), ()
         )

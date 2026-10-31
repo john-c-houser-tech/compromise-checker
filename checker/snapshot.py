@@ -19,7 +19,8 @@ from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-SNAPSHOT_VERSION = 13  # 12: PHP settings, package history; 13: sites' .user.ini, .htaccess
+# 12: PHP settings, package history; 13: sites' .user.ini, .htaccess; 14: managed nft sets
+SNAPSHOT_VERSION = 14
 # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers;
 # 11: the folders web servers serve
 
@@ -174,8 +175,8 @@ _VOLATILE = (
     (re.compile(r"\[\d+:\d+\]"), ""),
     (re.compile(r"\[\d+ elements, sha256 [0-9a-f]+\]"), "[a large set: elements not compared]"),
 )
-# Chains other software rewrites all the time (Docker, Kubernetes, CNI
-# plugins, fail2ban): one line saying they're there, not their rules.
+# Chains and sets other software rewrites all the time (Docker, Kubernetes,
+# CNI plugins, fail2ban): one line saying they're there, not their rules.
 # DOCKER-USER is where administrators put their own rules: compared.
 _MANAGED_CHAIN = re.compile(
     r"^(?!DOCKER-USER$)(?:DOCKER|KUBE-|cali-|CILIUM|f2b-|FLANNEL|CNI-|LIBVIRT_|ts-)",
@@ -215,7 +216,11 @@ def firewall_lines(lines: list[str]) -> list[str]:
         chain = block.split(" ", 1)[1] if block.startswith("chain ") else ""
         if text.startswith(("-A ", "-I ")):  # iptables-save: the chain is in the line
             chain = text.split()[1]
-        if chain and _MANAGED_CHAIN.match(chain):
+        # A set in a table such software owns (fail2ban's banned addresses, in
+        # table inet f2b-table). Its chains are judged by their own names, so a
+        # rule hidden in that table under another name is still compared.
+        managed_set = block.startswith("set ") and _MANAGED_CHAIN.match(table.rsplit(" ", 1)[-1])
+        if managed_set or (chain and _MANAGED_CHAIN.match(chain)):
             text = "(managed by other software: rules not compared)"
         where = " / ".join(p for p in (table, block or (f"chain {chain}" if chain else "")) if p)
         key = f"[{where}] {text}" if where else text

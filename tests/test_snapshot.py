@@ -1032,3 +1032,40 @@ def test_web_served_folders_reach_the_snapshot_and_a_cut_file_leaves_them_incomp
     taken = snapshot_of_records(host_records(extra=cut), tmp_path)
     assert not taken.sections["web_served"].complete
     assert not taken.sections["web_config"].complete
+
+
+def test_fail2bans_banned_addresses_in_its_own_nft_table_arent_compared():
+    from checker.snapshot import firewall_lines
+
+    def rules(banned):
+        return firewall_lines(
+            [
+                "table inet f2b-table {",
+                "\tset addr-set-sshd {",
+                "\t\ttype ipv4_addr",
+                f"\t\telements = {{ {banned} }}",
+                "\t}",
+                "\tchain f2b-chain {",
+                "\t\tip saddr @addr-set-sshd reject",
+                "\t}",
+                "\tchain hidden {",
+                "\t\tip saddr 203.0.113.9 accept",
+                "\t}",
+                "}",
+                "table inet filter {",
+                "\tset mine {",
+                f"\t\telements = {{ {banned} }}",
+                "\t}",
+                "}",
+            ]
+        )
+
+    first, second = rules("192.0.2.1"), rules("192.0.2.2")
+    assert (
+        "[inet f2b-table / set addr-set-sshd] (managed by other software: rules not compared)"
+        in first
+    )
+    assert not any("192.0.2.1" in line and "f2b" in line for line in first)
+    # A rule hidden in that table under another name, and a set of one's own, still show.
+    assert "[inet f2b-table / chain hidden] ip saddr 203.0.113.9 accept" in first
+    assert set(first) - set(second) == {"[inet filter / set mine] elements = { 192.0.2.1 }"}

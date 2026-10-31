@@ -686,19 +686,24 @@ is John's to approve before it is committed. Also:
   read, because the collector refuses files outside its system locations
   and widening that boundary is John's to decide. A tool older than this rejects a pack using
   `other_builds`: the pack ships after the tool.
-- **Proof PASS (2026-10-30), `tests/integration/php2shell_proof.py`, 54 of 54
+- **Proof PASS (2026-10-30), `tests/integration/php2shell_proof.py`, 63 of 63
   checks:** Ubuntu 24.04's own PHP 8.3, Sury's PHP 8.4 on Ubuntu 24.04 beside
   Ubuntu's 8.3, and Rocky 9's 8.0, each taken through vulnerable (a pinned
   older vendor build), the setting off, log lines in the shapes described
   (no exploit run), fixed with workers left running, then restarted. It
   found one tool bug: on a host with two PHP versions, one version's workers
   read as old code after the other's fix, for as long as they ran; a
-  versioned program is now judged by its own version's package. Ubuntu
+  program is no longer judged by a package naming another version. Ubuntu
   24.04's needrestart would restart workers during an upgrade by itself, so
-  the proof suspends it. Not proved on servers: the core `web.worker_child`
-  and `web.new_script_hit` raises (unit and golden tests only), Remi,
-  AlmaLinux, RHEL itself and PHP's real crash lines. Three runs, about two
-  cents; Phase 4 about $0.04 of $10.
+  the proof suspends it. Not proved on servers: the core `web.worker_child`,
+  `web.new_script_hit` and `web.errors` raises (unit and golden tests
+  only), Remi, AlmaLinux, RHEL itself, PHP's real crash lines, and the
+  nginx-shaped memory line a default Ubuntu pool writes (parser test only).
+  Remi's Collections side by side keep the two-version flaw, erring toward
+  old code: their program names no version. A mod_php Apache left running
+  isn't detected, and the pack's remediation says so.
+  Four runs, eleven Nanodes: at most about 8 cents if each is billed a whole
+  hour; Phase 4 about $0.10 of $10.
 
 ### 4.9 — Policy, docs and README
 

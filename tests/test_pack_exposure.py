@@ -15,6 +15,7 @@ from checker.packs.exposure import (
     NOT_COVERED,
     UNKNOWN_RELEASE,
     VULNERABLE,
+    Judged,
     judge,
     prior_raise,
     release_of,
@@ -403,7 +404,7 @@ def test_a_versioned_worker_is_judged_by_its_own_versions_fix():
     text = GOOD.replace(
         "binary_names: [php8.3-fpm, libapache2-mod-php8.3]",
         "binary_names: [php8.3-fpm, php8.4-fpm, libapache2-mod-php8.3]",
-    ).replace('fixed: "8.3.6-0ubuntu0.24.04.6"', 'fixed: "8.3.6-0ubuntu0.24.04.6"', 1)
+    )
     pack = read(text.encode())
     early, late = datetime(2026, 10, 22, tzinfo=UTC).timestamp(), FIXED_AT
     listed = {
@@ -420,3 +421,29 @@ def test_a_versioned_worker_is_judged_by_its_own_versions_fix():
     # 8.3's fix came first: its workers are on it. 8.4's aren't. One naming no
     # version can't be told apart, so the newest fix counts.
     assert sorted(p["pid"] for p in found.stale) == [2, 3]
+
+
+def judged(name, when):
+    return Judged(f"{name} x", name, "1", None, "fixed", "1", fixed_since=when)
+
+
+def test_only_a_package_naming_another_version_is_left_out_of_a_programs_fix():
+    from checker.packs.exposure import _fix_time
+
+    early, late = "2026-10-21T00:00:00+00:00", "2026-10-25T00:00:00+00:00"
+    at = datetime.fromisoformat
+    # A library naming no version may be what carried the fix.
+    both = [judged("python3.11", early), judged("libexpat1", late)]
+    assert _fix_time({"python3.11"}, both) == at(late)
+    # Whole version numbers: 8.1 isn't 8.10.
+    apart = [judged("php8.1-fpm", early), judged("php8.10-fpm", late)]
+    assert _fix_time({"php-fpm8.1"}, apart) == at(early)
+    # No package of its version, or a program naming none: the newest counts.
+    other = [judged("php8.3-fpm", early), judged("php8.4-fpm", late)]
+    assert _fix_time({"php-fpm8.5"}, other) == at(late)
+    assert _fix_time({"php-fpm"}, other) == at(late)
+    # A dotless name can't be told apart, so it stays.
+    remi = [judged("php83-php-fpm", late), judged("php8.3-fpm", early)]
+    assert _fix_time({"php-fpm8.3"}, remi) == at(late)
+    # An unknown time among those that count: unknown.
+    assert _fix_time({"php-fpm"}, [judged("php8.3-fpm", None), judged("php8.4-fpm", late)]) is None

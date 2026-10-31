@@ -13,19 +13,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import shlex
 import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import asyncssh
 import detection_proof as detection
 import readonly_proof as proof
 
+from checker.analysis import snapshot_of
 from checker.assess import analyze
 from checker.evidence import Store, database_file, initialise, load_config, load_identity
 from checker.inventory import Host
+from checker.packs.exposure import judge
 from checker.packs.format import read
 
 PPA = "https://launchpad.net/~ondrej/+archive/ubuntu/php/+files"
@@ -60,6 +64,8 @@ class Scenario:
     log: str  # the PHP-FPM log the crash lines go in
     memory_log: str  # where memory errors go
     memory_line: str  # one, with {when}
+    worker: str  # the program the fix must catch as old code
+    other_worker: str | None = None  # one the fix doesn't concern, left running
 
 
 def ubuntu_fix(branch: str) -> str:
@@ -91,6 +97,7 @@ SCENARIOS = {
         "/var/log/php8.3-fpm.log",
         "/var/log/php8.3-fpm.log",
         FPM_MEMORY,
+        "php-fpm8.3",
     ),
     "ubuntu-sury": Scenario(
         "ubuntu-sury",
@@ -108,6 +115,8 @@ SCENARIOS = {
         "/var/log/php8.4-fpm.log",
         "/var/log/php8.4-fpm.log",
         FPM_MEMORY,
+        "php-fpm8.4",
+        "php-fpm8.3",
     ),
     "rocky-own": Scenario(
         "rocky-own",
@@ -124,6 +133,7 @@ SCENARIOS = {
         # PHP's own error log, which RHEL's pools default to.
         "[{when} UTC] PHP Fatal error:  Allowed memory size of 134217728 bytes exhausted"
         " (tried to allocate 20480 bytes) in /var/www/html/index.php on line 3",
+        "php-fpm",
     ),
 }
 
@@ -150,7 +160,7 @@ class Result:
     error: str | None = None
 
 
-def facts(assessment: dict) -> dict:
+def facts(assessment: dict, snapshot, pack) -> dict:
     exposure = next(e for e in assessment["exposures"] if e["pack"] == "php2shell-2026-10")
     variants = {f.get("variant") for f in assessment["findings"] if f["check"] == "pack.exposure"}
     detections = {
@@ -165,7 +175,25 @@ def facts(assessment: dict) -> dict:
         "gaps": assessment["coverage"]["gaps"],
         "score": assessment["score"],
         "said": [f["summary"] for f in assessment["findings"] if f["check"] == "pack.exposure"],
+        "stale": sorted(
+            e.removeprefix("program:")
+            for f in assessment["findings"]
+            if f.get("variant") == "stale_code"
+            for e in f["entities"]
+            if e.startswith("program:")
+        ),
+        "running": sorted({str(p.get("comm")) for p in snapshot.live.get("processes", [])}),
+        "by_time": by_time(snapshot, pack),
     }
+
+
+def by_time(snapshot, pack) -> list[str]:
+    """The programs that read as old code by when they started alone: the
+    replaced-file sign, which comes first in a real analysis, taken away."""
+    packages = snapshot.sections["packages"].items
+    processes = [p | {"exe_deleted": False} for p in snapshot.live.get("processes", [])]
+    found = judge(pack, snapshot.sections["host"].items, packages, processes, datetime.now(UTC))
+    return sorted({str(p.get("comm")) for p in found.stale})
 
 
 def expect(result: Result, stage: str, claims: list[tuple[str, bool]], seen: dict) -> None:
@@ -184,7 +212,7 @@ def expect(result: Result, stage: str, claims: list[tuple[str, bool]], seen: dic
         result.failed.append(f"{stage}: saw {summary}")
 
 
-async def prove(api, scenario: Scenario, pack, region: str, keep: bool, work: Path) -> Result:
+async def prove(api, scenario: Scenario, pack, region: str, work: Path) -> Result:
     result = Result(scenario.name)
     root_key = asyncssh.generate_private_key("ssh-ed25519")
     scanner_key = asyncssh.generate_private_key("ssh-ed25519")
@@ -228,7 +256,7 @@ async def prove(api, scenario: Scenario, pack, region: str, keep: bool, work: Pa
             )  # fmt: skip
 
             async def shell(script: str) -> None:
-                done = await conn.run("bash -seu", input=script, timeout=900)
+                done = await conn.run(f"bash -eu -c {shlex.quote(script)}", timeout=900)
                 if done.exit_status != 0:
                     raise RuntimeError(f"on the server: {done.stderr[-600:]}")
 
@@ -244,13 +272,14 @@ async def prove(api, scenario: Scenario, pack, region: str, keep: bool, work: Pa
                 await detection.collect(home, config, scanner, known)
                 store = Store(database_file(home))
                 try:
-                    return facts(
-                        analyze(
-                            store, scenario.name, load_identity(Path(config.identity_file)),
-                            load_config(home).recipients, packs=[pack],
-                            whitelist=proof.proof_whitelist(home, scenario.name),
-                        )
+                    identity = load_identity(Path(config.identity_file))
+                    recipients = load_config(home).recipients
+                    assessment = analyze(
+                        store, scenario.name, identity, recipients, packs=[pack],
+                        whitelist=proof.proof_whitelist(home, scenario.name),
                     )  # fmt: skip
+                    row = store.bundle(assessment["bundle_id"])
+                    return facts(assessment, snapshot_of(store, row, identity, recipients), pack)
                 finally:
                     store.close()
 
@@ -292,6 +321,13 @@ async def prove(api, scenario: Scenario, pack, region: str, keep: bool, work: Pa
                 ("no longer vulnerable", "vulnerable" not in seen["variants"]),
                 ("the old workers are a finding", "stale_code" in seen["variants"]),
                 ("still counted as exposed", seen["exposure"]["exposed_until"] is None),
+                ("the fixed version's workers are named", scenario.worker in seen["stale"]),
+                ("they read old by their start time too", scenario.worker in seen["by_time"]),
+                *([("the other version's workers aren't",
+                    scenario.other_worker not in seen["stale"] + seen["by_time"]),
+                   ("the other version's workers are running",
+                    scenario.other_worker in seen["running"])]
+                  if scenario.other_worker else []),
             ], seen)  # fmt: skip
 
             await shell(scenario.restart_fixed + "\n")
@@ -301,18 +337,18 @@ async def prove(api, scenario: Scenario, pack, region: str, keep: bool, work: Pa
                 ("the old workers are gone", "stale_code" not in seen["variants"]),
                 ("the exposure has an end", seen["exposure"]["exposed_until"] is not None),
                 ("was exposed is said", "was_exposed" in seen["variants"]),
+                *([("the other version's workers still run, not flagged",
+                    scenario.other_worker in seen["running"])]
+                  if scenario.other_worker else []),
             ], seen)  # fmt: skip
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
     finally:
-        if keep:
-            print(f"{scenario.name}: --keep: leaving {label} running (id {node['id']})")
-        else:
-            try:
-                await asyncio.to_thread(api.delete, node["id"])
-                print(f"{scenario.name}: deleted {label}")
-            except Exception as exc:  # the end-of-run sweep tries again
-                print(f"{scenario.name}: could not delete {label}: {exc}")
+        try:
+            await asyncio.to_thread(api.delete, node["id"])
+            print(f"{scenario.name}: deleted {label}")
+        except Exception as exc:  # the end-of-run sweep tries again
+            print(f"{scenario.name}: could not delete {label}: {exc}")
     return result
 
 
@@ -321,7 +357,6 @@ async def main() -> int:
     parser.add_argument("--pack", type=Path, required=True)
     parser.add_argument("--scenario", nargs="+", default=list(SCENARIOS), choices=list(SCENARIOS))
     parser.add_argument("--region", default="us-sea")
-    parser.add_argument("--keep", action="store_true", help="don't delete the servers")
     args = parser.parse_args()
     pack = read(args.pack.read_bytes())
     proof._cancel_on_sigterm()
@@ -330,12 +365,15 @@ async def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="cc-php2shell-") as work:
             results = await asyncio.gather(
-                *(prove(api, SCENARIOS[n], pack, args.region, args.keep, Path(work))
+                *(prove(api, SCENARIOS[n], pack, args.region, Path(work))
                   for n in args.scenario)
             )  # fmt: skip
     finally:
-        if not args.keep:
-            await asyncio.to_thread(proof.sweep_run, api)
+        await asyncio.to_thread(proof.sweep_run, api)
+    left = [n["label"] for n in await asyncio.to_thread(api.tagged)
+            if n["label"].startswith(f"{proof.LABEL_PREFIX}{proof.RUN}-")]  # fmt: skip
+    if left:
+        print(f"SERVERS LEFT RUNNING, delete them by hand: {', '.join(left)}")
     ok = True
     print()
     for r in results:
@@ -348,7 +386,7 @@ async def main() -> int:
             print(f"  ok      {line}")
         for line in r.failed:
             print(f"  FAILED  {line}")
-    return 0 if ok else 1
+    return 0 if ok and not left else 1
 
 
 if __name__ == "__main__":

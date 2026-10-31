@@ -233,7 +233,7 @@ def judge(
     found.fixed_at = fixed_at.isoformat() if fixed_at and fixed_at != start else None
     found.fix_time_exact = exact
     if fixed and found.status in (FIXED, CANT_JUDGE):
-        # Old code: a service started before the newest of these arrived.
+        # Old code: a service started before its fix arrived (_fix_time).
         found.stale = _stale(window, processes, fixed)
     if end <= start:
         return found  # the window hasn't opened yet at collection time
@@ -399,12 +399,18 @@ def _removed(
 
 def _fix_time(names: set[str], fixed: list[Judged]) -> datetime | None:
     """When the fix a program runs on arrived: the newest of the fixed
-    packages, or of its own version's where the program names one
-    (php-fpm8.3 and php8.3-fpm: 8.4's fix says nothing of 8.3's workers).
-    None when one of those times isn't known."""
+    packages, leaving out only those naming another version than the program
+    does (php-fpm8.3 and php8.4-fpm: 8.4's fix says nothing of 8.3's workers).
+    A library naming no version stays: it may be what carried the fix. With
+    none left, all count, erring toward old code. None when one of those
+    times isn't known."""
     versions = {v for n in names for v in _PROGRAM_VERSION.findall(n)}
-    own = [p for p in fixed if any(v in p.name for v in versions)]
-    times = [_time(p.fixed_since) for p in own or fixed]
+
+    def may_carry(package: Judged) -> bool:
+        named = set(_PROGRAM_VERSION.findall(package.name))
+        return not versions or not named or bool(named & versions)
+
+    times = [_time(p.fixed_since) for p in [p for p in fixed if may_carry(p)] or fixed]
     return max(times) if times and None not in times else None
 
 

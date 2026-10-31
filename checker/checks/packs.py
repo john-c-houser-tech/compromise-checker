@@ -215,7 +215,7 @@ def _stale(item, named: str, pack: str) -> Finding:
     how = (
         ": its program file was replaced under it"
         if replaced
-        else " started before its package's current version was installed: it runs older code"
+        else " started before the fixed package's current version was installed: it runs older code"
         " than installed, from before the fix unless the fix came earlier"
     )
     return Finding(

@@ -422,3 +422,77 @@ def test_open_from_the_command_line(home, monkeypatch, capsys):
 
     monkeypatch.setattr(report, "view", interrupted)
     assert cli.main(["report", "--open", str(plain)]) == 130
+
+
+def report_args(home, **extra):
+    base, store, identity, config = home
+    return (store, ["web01"], identity, config.recipients, base / "reports"), extra
+
+
+def test_a_pdf_report_is_a_pdf_encrypted_unless_plain(home):
+    pytest.importorskip("weasyprint")
+    add_bundle(home, "b1", 10, host_records())
+    args, _ = report_args(home)
+    path = write_report(*args, kind="pdf")
+    assert path.name.endswith(".pdf.age") and not path.read_bytes().startswith(b"%PDF")
+    plain = write_report(*args, kind="pdf", plain=True)
+    assert plain.name.endswith(".pdf") and plain.read_bytes().startswith(b"%PDF")
+    assert plain.stat().st_mode & 0o077 == 0
+    custody = home[1].custody_of("b1")
+    assert sum(1 for c in custody if c["action"] == "reported") == 2
+
+
+def test_a_pdf_fetches_nothing_even_if_its_html_asks(tmp_path, monkeypatch):
+    pytest.importorskip("weasyprint")
+    from weasyprint.urls import URLFetcher
+
+    from checker.report import pdf_from_html
+
+    fetched = []
+    real = URLFetcher.__call__
+
+    def spy(self, url):
+        fetched.append(url)
+        return real(self, url)
+
+    monkeypatch.setattr(URLFetcher, "__call__", spy)
+    secret = tmp_path / "secret.png"
+    secret.write_bytes(b"not for the report")
+    data = pdf_from_html(
+        f'<img src="{secret.as_uri()}"><img src="https://evil.example/x.png">'
+        '<link rel=stylesheet href="https://evil.example/x.css">'
+    )
+    assert data.startswith(b"%PDF") and b"not for the report" not in data
+    assert fetched  # asked, and refused
+
+
+def test_a_pdf_with_hostile_text_is_still_a_pdf(home):
+    pytest.importorskip("weasyprint")
+    add_bundle(home, "b1", 10, records_with_hostile_names())
+    args, _ = report_args(home)
+    assert write_report(*args, kind="pdf", plain=True).read_bytes().startswith(b"%PDF")
+
+
+def test_pdf_output_names_are_checked(home):
+    args, _ = report_args(home)
+    with pytest.raises(EvidenceError, match=r"\.pdf\.age"):
+        write_report(*args, output=home[0] / "x.html.age", kind="pdf")
+
+
+def test_the_command_writes_a_pdf_and_open_refuses_the_format(home, capsys):
+    pytest.importorskip("weasyprint")
+    add_bundle(home, "b1", 10, host_records())
+    assert cli.main(["report", "web01", "--format", "pdf"]) == 0
+    assert "age -d" in capsys.readouterr().out
+    assert cli.main(["report", "--open", "--format", "pdf"]) == 2
+    capsys.readouterr()
+
+
+def test_without_the_pdf_extra_it_says_what_to_install(monkeypatch):
+    import sys
+
+    from checker.report import pdf_from_html
+
+    monkeypatch.setitem(sys.modules, "weasyprint", None)
+    with pytest.raises(EvidenceError, match="checker\\[pdf\\]"):
+        pdf_from_html("<p>x</p>")

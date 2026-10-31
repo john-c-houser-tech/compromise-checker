@@ -942,6 +942,9 @@ def build_parser() -> argparse.ArgumentParser:
     reporting.add_argument(
         "--plain", action="store_true", help="write plain HTML, not encrypted (to hand it on)"
     )
+    reporting.add_argument(
+        "--format", choices=("html", "pdf"), default="html", help="html (the default) or pdf"
+    )
     reporting.add_argument("--identity", help="the evidence private key file")
     reporting.set_defaults(handler=cmd_report)
 
@@ -1533,6 +1536,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             config.advisor.enabled,
             args.plain,
             packs_for,
+            args.format,
         )
     except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -1542,9 +1546,15 @@ def cmd_report(args: argparse.Namespace) -> int:
     print(f"Report written to {path}")
     if args.plain:
         print(
-            "Warning: it is plain HTML, not encrypted, and confidential: it describes weaknesses"
+            f"Warning: it is a plain {args.format.upper()}, not encrypted, and confidential:"
+            " it describes weaknesses"
             " an attacker could use. Keep it out of backups and synced folders, and delete it"
             " when it has been read."
+        )
+    elif args.format == "pdf":
+        print(
+            f"Encrypted to the evidence key. To read it: age -d -i KEY {path}. To send it to"
+            " someone, write it with --plain and send it securely."
         )
     else:
         print(f"Encrypted to the evidence key. To read it: checker report --open {path}")
@@ -1655,7 +1665,8 @@ def _open_report(args: argparse.Namespace, base: Path) -> int:
     from checker.report import latest_report, view
 
     clashing = [f for f, given in (("--plain", args.plain), ("--output", args.output),
-                                   ("--bundle", args.bundle)) if given]  # fmt: skip
+                                   ("--bundle", args.bundle),
+                                   ("--format pdf", args.format == "pdf")) if given]  # fmt: skip
     if clashing:
         print(f"checker: --open shows a report; {', '.join(clashing)} write one", file=sys.stderr)
         return 2

@@ -119,6 +119,13 @@ them when they have been read. `checker purge` deletes the reports in the
 reports folder that show a purged bundle; a report written elsewhere with
 `--output` is yours to delete ([retention](retention.md)).
 
+## PDF
+
+`checker report HOST --format pdf`, for sending. It needs `pip install 'checker[pdf]'` and the Pango
+libraries. It holds what the HTML report holds, with "Confidential" on every page. It's encrypted to
+the evidence key like any report, or with `--plain` written as a plain PDF to hand on, and that copy
+is yours to protect. Nothing is fetched while it's made, from any network or file.
+
 ## The fleet at a glance
 
 `checker fleet [--group GROUP]` lists every host, most worrying first:

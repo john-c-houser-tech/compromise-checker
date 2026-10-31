@@ -493,16 +493,17 @@ def write_report(
     advisor_enabled: bool = False,
     plain: bool = False,
     packs: Callable[[str], tuple[list, list[str]]] | None = None,
+    kind: str = "html",
 ) -> Path:
-    """Write the report, encrypted to the evidence key (`report-….html.age`;
-    read_report() reads it) unless `plain`, owner-only either way, and add
-    a `reported` entry, with the hash of the file as written, to each
+    """Write the report as HTML or PDF (`kind`), encrypted to the evidence key
+    (`report-….html.age`; read_report() reads the HTML) unless `plain`, owner-only either
+    way, and add a `reported` entry, with the hash of the file as written, to each
     bundle's custody. `packs` gives a host's threat packs and why any
     isn't applied (checker.packs.choice.for_host)."""
-    if output is not None and not plain and not output.name.endswith(".html.age"):
+    if output is not None and not plain and not output.name.endswith(f".{kind}.age"):
         raise EvidenceError(
-            f"an encrypted report's name ends in .html.age ({output.name}); --plain writes"
-            " plain HTML"
+            f"an encrypted report's name ends in .{kind}.age ({output.name}); --plain writes"
+            f" a plain {kind.upper()}"
         )
     if output is not None and plain and output.suffix == ".age":
         raise EvidenceError(f"a plain report's name can't end in .age ({output.name})")
@@ -519,8 +520,10 @@ def write_report(
         directory.chmod(0o700)  # also when it was already there
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         name = hosts[0] if len(hosts) == 1 else f"{len(hosts)}-hosts"
-        output = directory / (f"report-{name}-{stamp}.html" + ("" if plain else ".age"))
+        output = directory / (f"report-{name}-{stamp}.{kind}" + ("" if plain else ".age"))
     data = html.encode("utf-8", "backslashreplace")  # never fails on stray text
+    if kind == "pdf":
+        data = pdf_from_html(html)
     if not plain:
         data = pyrage.encrypt(data, [x25519.Recipient.from_str(r) for r in recipients])
     # Written whole beside its place (mkstemp makes it owner-only) and then
@@ -543,6 +546,26 @@ def write_report(
             report.row["id"], "reported", {"report_sha256": digest, "encrypted": not plain}
         )
     return output
+
+
+def pdf_from_html(html: str) -> bytes:
+    """The report as a PDF, for sending. Needs the `pdf` extra's WeasyPrint. A report is
+    self-contained, and its text may be a compromised host's: rendering it fetches nothing,
+    from any network or any file."""
+    try:
+        from weasyprint import HTML
+        from weasyprint.urls import URLFetcher
+    except (ImportError, OSError) as exc:  # OSError: its native libraries aren't there
+        raise EvidenceError(
+            "PDF reports need: pip install 'checker[pdf]', and the Pango libraries"
+            f" ({type(exc).__name__})"
+        ) from None
+
+    class NoFetching(URLFetcher):
+        def fetch(self, url, headers=None):
+            raise ValueError(f"a report fetches nothing: {url[:80]}")
+
+    return HTML(string=html, url_fetcher=NoFetching()).write_pdf()
 
 
 def read_report(path: Path, identity: x25519.Identity | None) -> str:

@@ -783,6 +783,36 @@ is John's to approve before it is committed. Also:
 John has made it). 4.3 needs D2 and D3; 4.4 needs D4; 4.5 needs D1; 4.7
 needs D6; 4.8 needs D5 and D7. 4.9 last.
 
+## After Phase 4: reading nftables as JSON
+
+Decided by John (2026-10-31, option B after review). nft prints comments raw, so
+text can't be read back reliably: a comment can forge a block or set off the
+large-set reduction. But JSON alone was worse: a review on real nft showed it drops
+iptables-nft rules' arguments (ufw, Docker: a changed DNAT target compares equal;
+on 22.04 even the name is gone), and parsing took 12 to 20 times its size in memory.
+
+So both are collected and each is compared with itself: what one misses the other
+shows. The text keeps comparing with existing baselines, so nothing pauses; the JSON
+side says so as a gap until a new baseline. JSON is read up to 8 MB; past that, or on
+any trouble, only text counts, and losing JSON a baseline had is a finding, since an
+attacker could grow the ruleset to cause it (a real blocklist of about 130,000
+elements can too: the finding says why). The second review showed a comment in a
+managed chain could recreate a changed iptables-nft rule's old lines, seen by
+neither, and the third that scanning the JSON's strings doesn't stop it: a word
+_VOLATILE removes defeats a duplicate check, and a comment in an object too big to
+send, a big set's element, an xt argument or invalid UTF-8 never reaches the scan.
+So the text's structure is checked against the JSON's: any table, chain, set or map
+the text has that JSON doesn't list raises `net.firewall_comment` and compares the
+text literally. A comment can't forge JSON's list, and without a forged header it
+can't give a line another chain's place. Text with no JSON to check against only
+has its own checks (a quote out of balance, a header twice), with `json_lost` saying
+so. A fixed list over 50 elements a compared rule uses is compared by its hash, so
+refreshing one (a cron job) shows as a change, as it would at 50 or fewer.
+
+Limits: rule order isn't in either key; a chain removed between the two listings
+raises the finding once; a big list no compared rule uses, or one filled as it runs,
+isn't compared; a set of 50 or fewer filled as it runs churns, as text always did.
+
 ## After Phase 4: the pack application
 
 John's idea (2026-10-30): a separate application, in the packs repository

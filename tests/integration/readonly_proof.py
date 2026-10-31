@@ -930,6 +930,14 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
                     and any(s.startswith("/usr/sbin/nft") for s in result.sources)
                 )
             )
+            # Both listings ran wherever nftables is loaded: neither is enough alone.
+            and (
+                not (result.firewall_loaded or {}).get("nf_tables")
+                or (
+                    any(s.startswith("/usr/sbin/nft list") for s in result.sources)
+                    and any(s.startswith("/usr/sbin/nft -j") for s in result.sources)
+                )
+            )
         )
     except Exception as exc:  # report it; the server is still deleted below
         result.error = f"{type(exc).__name__}: {exc}"
@@ -1189,6 +1197,17 @@ def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path,
         f"{name}: {'; '.join(s.gaps[:2])}" for name, s in sections.items() if not s.complete
     ]
     problems = result.snapshot
+    # nftables read both ways, each key form present whenever the other is.
+    live = parsed.snapshot.live
+    if live.get("nft_json_unread"):
+        problems.append(f"nft -j list ruleset wasn't read: {live['nft_json_unread']}")
+    rule_keys = sections["firewall_rules"].items if "firewall_rules" in sections else {}
+    as_text = any(k.startswith("nft: ") for k in rule_keys)
+    as_json = any(k.startswith("nft-json: ") for k in rule_keys)
+    if as_text != as_json:
+        problems.append(f"nftables rules read one way only: text {as_text}, JSON {as_json}")
+    if live.get("nft_odd_comments"):
+        problems.append("an ordinary server's nftables rules read as holding an odd comment")
     for name in COMPLETE_SECTIONS:
         if name not in sections:
             problems.append(f"no {name} section")

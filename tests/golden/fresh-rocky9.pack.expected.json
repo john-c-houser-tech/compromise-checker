@@ -157,6 +157,11 @@
    "status": "ran"
   },
   {
+   "check": "net.firewall_comment",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
    "check": "net.listener",
    "status": "this bundle is the baseline"
   },
@@ -1105,6 +1110,7 @@
   }
  ],
  "gaps": [
+  "nftables rules were read only as text (an nft without JSON, a very large ruleset, or an older collection): a rule's comment could disguise what follows it",
   "login hours not judged for 1 account: fewer than 10 logins or 21 days of history"
  ],
  "score": {

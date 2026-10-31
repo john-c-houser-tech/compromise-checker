@@ -4570,7 +4570,10 @@ class NetworkTests(FixtureRoot):
         self.write("usr/sbin/nft", FAKE_NFT).chmod(0o755)
         Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
         records = collect(self.root, ["network"])
-        [(start, content, end)] = [v for n, v in sources(records).items() if "nft" in n]
+        # This nft gives text however it's asked: the text listing follows.
+        [(start, content, end)] = [
+            v for n, v in sources(records).items() if "nft" in n and " -j " not in n
+        ]
         self.assertEqual(start["meta"]["argv"], ["/usr/sbin/nft", "list", "ruleset"])
         text = content.decode()
         self.assertIn("elements = { [120 elements, sha256 ", text)
@@ -4579,6 +4582,162 @@ class NetworkTests(FixtureRoot):
         self.assertIn("counter packets 12 bytes 3456 accept", text)
         trailer = records[-1]
         self.assertEqual(trailer["modules"]["network"]["status"], "ok")
+
+    def nft_json(self, body):
+        """An nft that answers -j with `body` (objects), text otherwise."""
+        listing = json.dumps({"nftables": body}).replace("'", "'\\''")
+        self.write(
+            "usr/sbin/nft",
+            (
+                f"""#!/bin/sh\n[ "$1" = -j ] && {{ printf '%s\\n' '{listing}'; exit 0; }}\n"""
+                "echo TEXT\n"
+            ).encode(),
+        ).chmod(0o755)
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True, exist_ok=True)
+        return sources(collect(self.root, ["network"]))
+
+    def test_nftables_is_read_as_json_one_object_a_line(self):
+        rule = {
+            "family": "inet",
+            "table": "t",
+            "chain": "c",
+            "handle": 3,
+            "expr": [{"accept": None}],
+        }
+        sent = self.nft_json([{"metainfo": {"version": "1"}}, {"rule": rule}])
+        [(start, content, _)] = [v for n, v in sent.items() if " -j " in n]
+        self.assertEqual(start["meta"]["argv"], ["/usr/sbin/nft", "-j", "list", "ruleset"])
+        lines = content.decode().splitlines()
+        self.assertEqual(json.loads(lines[1]), {"rule": rule})
+        self.assertNotIn("TEXT", content.decode())
+        # And the text listing, which has what JSON leaves out.
+        [(text, plain, _)] = [v for n, v in sent.items() if "nft" in n and " -j " not in n]
+        self.assertEqual(text["meta"]["argv"], ["/usr/sbin/nft", "list", "ruleset"])
+        self.assertIn(b"TEXT", plain)
+
+    def test_a_big_set_in_json_is_its_count_and_hash(self):
+        elements = [f"192.0.2.{n}" for n in range(120)]
+        body = {"family": "inet", "table": "t", "name": "big", "elem": elements}
+        small = {"family": "inet", "table": "t", "name": "small", "elem": ["198.51.100.1"]}
+        sent = self.nft_json([{"set": body}, {"set": small}])
+        [(_, content, _)] = [v for n, v in sent.items() if " -j " in n]
+        text = content.decode()
+        self.assertNotIn("192.0.2.7", text)
+        self.assertEqual(json.loads(text.splitlines()[0])["set"]["elem"]["count"], 120)
+        self.assertIn("198.51.100.1", text)
+
+    def test_a_hash_in_json_doesnt_move_with_traffic(self):
+        def hashes(packets):
+            counted = {"counter": {"packets": packets, "bytes": packets * 60}}
+            elements = [{"elem": {"val": f"192.0.2.{n}", **counted}} for n in range(120)]
+            body = {"family": "inet", "table": "t", "name": "big", "handle": packets}
+            long = {"family": "inet", "table": "t", "chain": "c", "handle": packets,
+                    "expr": [{**counted, "pad": "x" * 2_000_000}]}  # fmt: skip
+            sent = self.nft_json([{"set": {**body, "elem": elements}}, {"rule": long}])
+            [(_, content, _)] = [v for n, v in sent.items() if " -j " in n]
+            big, rule = [json.loads(line) for line in content.decode().splitlines()]
+            return big["set"]["elem"]["sha256"], rule["rule"]["oversized_sha256"]
+
+        self.assertEqual(hashes(1), hashes(900))
+
+    def test_a_big_sets_hash_doesnt_move_with_its_order(self):
+        def digest(elements):
+            body = {"family": "inet", "table": "t", "name": "big", "elem": elements}
+            sent = self.nft_json([{"set": body}])
+            [(_, content, _)] = [v for n, v in sent.items() if " -j " in n]
+            return json.loads(content.decode().splitlines()[0])["set"]["elem"]["sha256"]
+
+        elements = [f"192.0.2.{n}" for n in range(120)]
+        self.assertEqual(digest(elements), digest(elements[::-1]))
+        self.assertNotEqual(digest(elements), digest(elements[1:] + ["192.0.2.200"]))
+
+    def test_a_ruleset_past_the_usual_line_limit_is_still_read_as_json(self):
+        # A big blocklist: nft -j gives it all on one line, longer than MAX_LINE.
+        elements = [f"10.{a}.{b}.{c}" for a in range(2) for b in range(256) for c in range(256)]
+        body = {"family": "inet", "table": "t", "name": "big", "elem": elements}
+        sent = self.nft_json([{"set": body}])
+        [(_, content, _)] = [v for n, v in sent.items() if " -j " in n]
+        self.assertEqual(json.loads(content.decode())["set"]["elem"]["count"], len(elements))
+
+    def test_too_long_for_the_json_limit_leaves_the_text_and_says_so(self):
+        filler = {"family": "inet", "table": "t", "chain": "c", "expr": ["x" * 1024]}
+        self.nft_json([{"rule": filler}] * 9000)
+        records = collect(self.root, ["network"])
+        self.assertIn("longer", named(records, "nft_json_unread")[0]["data"]["reason"])
+        text = [v for n, v in sources(records).items() if "nft" in n and " -j " not in n]
+        self.assertIn(b"TEXT", text[0][1])
+
+    def test_many_rules_leave_as_many_lines_never_one_huge_chunk(self):
+        rule = {"family": "inet", "table": "t", "chain": "c", "expr": ["x" * 512]}
+        sent = self.nft_json([{"rule": rule}] * 1000)
+        [(_, content, _)] = [v for n, v in sent.items() if " -j " in n]
+        self.assertEqual(len(content.splitlines()), 1000)
+
+    def test_one_object_too_long_for_a_line_is_its_name_and_hash(self):
+        rule = {"family": "inet", "table": "t", "chain": "c",
+                "expr": [{"match": {"right": {"set": ["w" * 512] * 2500}}}]}  # fmt: skip
+        sent = self.nft_json([{"rule": rule}])
+        [(_, content, _)] = [v for n, v in sent.items() if " -j " in n]
+        said = json.loads(content.decode())["rule"]
+        self.assertEqual(said["chain"], "c")
+        self.assertEqual(len(said["oversized_sha256"]), 64)
+
+    def test_a_comment_opening_a_key_block_doesnt_blank_what_follows(self):
+        chain = {"family": "inet", "table": "t", "name": "c", "hook": "input",
+                 "comment": "-----BEGIN PRIVATE KEY-----", "policy": "drop"}  # fmt: skip
+        sent = self.nft_json([{"chain": chain}])
+        [(_, content, _)] = [v for n, v in sent.items() if " -j " in n]
+        said = json.loads(content.decode())["chain"]
+        self.assertEqual((said["hook"], said["policy"], said["name"]), ("input", "drop", "c"))
+
+    def test_json_that_breaks_the_reading_leaves_the_collection_whole(self):
+        # Valid JSON, but not what nft gives: the bundle must still be readable.
+        self.nft_json([{"set": {"elem": 5}}, 7])
+        records = collect(self.root, ["network"])
+        self.assertTrue(named(records, "nft_json_unread"))
+        self.assertEqual(records[-1]["modules"]["network"]["status"], "ok")
+
+    def test_json_with_a_failing_exit_isnt_trusted(self):
+        listing = json.dumps({"nftables": [{"metainfo": {}}]})
+        self.write(
+            "usr/sbin/nft",
+            (f"""#!/bin/sh\n[ "$1" = -j ] && {{ printf '%s\\n' '{listing}'; exit 1; }}\n"""
+             "echo TEXT\n").encode(),
+        ).chmod(0o755)  # fmt: skip
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        self.assertTrue(named(collect(self.root, ["network"]), "nft_json_unread"))
+
+    def test_no_nft_is_said_once(self):
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        records = collect(self.root, ["network"])
+        unavailable = [r for r in named(records, "command_unavailable")
+                       if r["data"]["command"] == "nft"]  # fmt: skip
+        self.assertEqual(len(unavailable), 1)
+
+    def test_a_comment_cant_set_off_the_big_set_reduction_or_keep_a_secret(self):
+        comment = "elements = { password=hunter2secret"
+        rule = {"family": "inet", "table": "t", "chain": "c", "comment": comment,
+                "expr": [{"match": {"right": {"set": list(range(2000, 2060))}}}]}  # fmt: skip
+        sent = self.nft_json([{"rule": rule}])
+        [(_, content, end)] = [v for n, v in sent.items() if " -j " in n]
+        said = json.loads(content.decode())["rule"]
+        self.assertEqual(said["expr"], rule["expr"])  # the ports aren't reduced
+        self.assertNotIn("hunter2secret", said["comment"])
+        self.assertTrue(end["masked"])
+
+    def test_an_nft_without_json_is_read_as_text(self):
+        self.write(
+            "usr/sbin/nft",
+            b"#!/bin/sh\n"
+            b"""[ "$1" = -j ] && { echo 'Error: JSON not compiled-in' >&2; exit 1; }\n"""
+            b"echo 'table inet t {'\necho '}'\n",
+        ).chmod(0o755)
+        Path(self.root, "sys/module/nf_tables").mkdir(parents=True)
+        records = collect(self.root, ["network"])
+        said = [v for n, v in sources(records).items() if "nft" in n and " -j " not in n]
+        self.assertIn(b"table inet t", said[0][1])
+        self.assertFalse(named(records, "command_failed"))
+        self.assertTrue(named(records, "nft_json_unread"))
 
     def test_legacy_iptables_only_when_its_tables_exist(self):
         self.write("usr/sbin/iptables-legacy-save", b"#!/bin/sh\necho '*filter'\n").chmod(0o755)

@@ -6174,14 +6174,15 @@ class PackageHistoryReviewTests(FixtureRoot):
         records = collect(self.root, ["software"])
         self.assertEqual(len(named(records, "package_history_pending")), 1)
 
-    def test_a_last_frame_that_fails_its_checksum_ends_the_log(self):
+    def test_a_damaged_commit_frame_counts_the_log_as_unread(self):
+        """It may have been a real commit: reading on as if it weren't could miss a change."""
         db, wal = self.wal_db((10, "php-fpm"), (11, "php-cli"))
         Path(str(db) + "-shm").unlink()
         data = bytearray(wal.read_bytes())
         data[-100] ^= 0xFF
         wal.write_bytes(bytes(data))
         records = collect(self.root, ["software"])
-        self.assertEqual(self.history_names(records), ["php-fpm"])
+        self.assertEqual(len(named(records, "package_history_pending")), 1)
 
     def test_the_plain_reader_finds_what_sqlite_finds(self):
         """Long names on overflow pages, enough rows for interior pages, epochs, nulls."""

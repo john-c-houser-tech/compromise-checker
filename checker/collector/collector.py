@@ -7299,7 +7299,7 @@ class _SqliteImage:
         if self.usable < 480:
             raise ValueError("usable size")
         self.data, self.run = data, run
-        self.budget = 0
+        self.budget = TABLE_MAX_BYTES
 
     def _page(self, number):
         start = (number - 1) * self.page_size

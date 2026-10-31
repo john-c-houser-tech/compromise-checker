@@ -846,6 +846,7 @@ packages installed system-wide by hand.
   not only when a package was last updated): dpkg's log
   (`/var/log/dpkg.log` and its rotated copies, `.gz` read here) or dnf's
   history database (`/var/lib/dnf/history.sqlite`, opened immutable like
+  Its write-ahead log (`history.sqlite-wal`) holds the newest transactions and often stays on disk after dnf exits, so it's read too: committed transactions are applied in memory, checked by SQLite's own checksums, and read by a small bounded reader. Nothing is written. What that finds must include everything SQLite finds in the file; otherwise, or if the files change meanwhile, `package_history_pending` says the newest may be missing.
   rpm's), going back 400 days or the look-back window if longer, the
   newest 20,000 changes: each install, upgrade, downgrade, reinstall,
   obsoleting or removal with its time, package name, architecture and

@@ -846,7 +846,6 @@ packages installed system-wide by hand.
   not only when a package was last updated): dpkg's log
   (`/var/log/dpkg.log` and its rotated copies, `.gz` read here) or dnf's
   history database (`/var/lib/dnf/history.sqlite`, opened immutable like
-  Its write-ahead log (`history.sqlite-wal`) holds the newest transactions and often stays on disk after dnf exits, so it's read too: committed transactions are applied in memory, checked by SQLite's own checksums, and read by a small bounded reader. Nothing is written. What that finds must include everything SQLite finds in the file; otherwise, or if the files change meanwhile, `package_history_pending` says the newest may be missing.
   rpm's), going back 400 days or the look-back window if longer, the
   newest 20,000 changes: each install, upgrade, downgrade, reinstall,
   obsoleting or removal with its time, package name, architecture and
@@ -855,8 +854,13 @@ packages installed system-wide by hand.
   compression this collector opens. The log's lines are parsed on the
   server and nothing else of them is sent; dpkg's times are the host's
   local time (read in its zone), dnf's are UTC. `package_history_absent`
-  says there was none to read; `package_history_pending`, that dnf's
-  write-ahead log holds changes an immutable read can't see. Every SQLite
+  says there was none to read. dnf's write-ahead log
+  (`history.sqlite-wal`) holds its newest transactions and often stays on
+  disk after dnf exits, so it's read too: committed transactions are applied
+  in memory, checked by SQLite's own checksums, and read by a small bounded
+  reader, with nothing written. What that finds must include everything
+  SQLite finds in the file; otherwise, or if the files change meanwhile,
+  `package_history_pending` says the newest changes may be missing. Every SQLite
   read of a server's database (this and rpm's) keeps its sorts in memory
   (none spills to a file), runs no functions from the database's schema,
   and checks the deadline while SQLite works;

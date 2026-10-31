@@ -20,7 +20,14 @@ from checker.evidence import (
     EvidenceError,
     open_text,
 )
-from checker.snapshot import FULL, SnapshotBuilder, compare, sshd_lines, sudoers_lines
+from checker.snapshot import (
+    FULL,
+    SnapshotBuilder,
+    compare,
+    firewall_lines,
+    sshd_lines,
+    sudoers_lines,
+)
 
 START = datetime(2027, 1, 2, 12, 0, tzinfo=UTC)
 ALL_MODULES = sorted(FULL)  # a full collection
@@ -687,7 +694,7 @@ def command_source(source_id, module, argv, text):
 
 
 def test_network_sections(tmp_path):
-    from checker.snapshot import firewall_lines, remote_network
+    from checker.snapshot import remote_network
 
     records = host_records(
         extra=[
@@ -1034,38 +1041,142 @@ def test_web_served_folders_reach_the_snapshot_and_a_cut_file_leaves_them_incomp
     assert not taken.sections["web_config"].complete
 
 
-def test_fail2bans_banned_addresses_in_its_own_nft_table_arent_compared():
-    from checker.snapshot import firewall_lines
+def nft_rules(banned):
+    return firewall_lines(
+        [
+            "table inet f2b-table {",
+            "\tset addr-set-sshd {",
+            "\t\ttype ipv4_addr",
+            f"\t\telements = {{ {banned} }}",
+            "\t}",
+            "\tset addr6-set-sshd {",
+            f"\t\telements = {{ {banned}:: }}",
+            "\t}",
+            "\tchain f2b-chain {",
+            "\t\tip saddr @addr-set-sshd reject",
+            "\t}",
+            "\tchain hidden {",
+            "\t\tip saddr 203.0.113.9 accept",
+            "\t}",
+            "}",
+            "table inet filter {",
+            "\tset mine {",
+            f"\t\telements = {{ {banned} }}",
+            "\t}",
+            "}",
+        ]
+    )
 
-    def rules(banned):
+
+def test_fail2bans_banned_addresses_in_its_own_table_arent_compared():
+    first, second = nft_rules("192.0.2.1"), nft_rules("192.0.2.2")
+    managed = "(managed by other software: rules not compared)"
+    assert f"[inet f2b-table / set addr-set-sshd] {managed}" in first
+    assert f"[inet f2b-table / set addr6-set-sshd] {managed}" in first
+    # A rule hidden in that table under another name, and a set of one's own, still show.
+    assert "[inet f2b-table / chain hidden] ip saddr 203.0.113.9 accept" in first
+    assert set(first) - set(second) == {"[inet filter / set mine] elements = { 192.0.2.1 }"}
+
+
+def test_a_set_a_compared_rule_lets_traffic_in_by_is_compared():
+    def rules(address, table="f2b-table", name="addr-set-ok"):
         return firewall_lines(
             [
-                "table inet f2b-table {",
-                "\tset addr-set-sshd {",
-                "\t\ttype ipv4_addr",
-                f"\t\telements = {{ {banned} }}",
+                f"table inet {table} {{",
+                f"\tset {name} {{",
+                f"\t\telements = {{ {address} }}",
                 "\t}",
-                "\tchain f2b-chain {",
-                "\t\tip saddr @addr-set-sshd reject",
-                "\t}",
-                "\tchain hidden {",
-                "\t\tip saddr 203.0.113.9 accept",
-                "\t}",
-                "}",
-                "table inet filter {",
-                "\tset mine {",
-                f"\t\telements = {{ {banned} }}",
+                "\tchain in {",
+                f"\t\tip saddr @{name} accept",
                 "\t}",
                 "}",
             ]
         )
 
-    first, second = rules("192.0.2.1"), rules("192.0.2.2")
-    assert (
-        "[inet f2b-table / set addr-set-sshd] (managed by other software: rules not compared)"
-        in first
+    assert "[inet f2b-table / set addr-set-ok] elements = { 192.0.2.1 }" in rules("192.0.2.1")
+    # A table merely named like Docker's or Tailscale's: its sets are compared.
+    for table in ("docker-allow", "ts-x", "dockerhosts"):
+        assert rules("192.0.2.1", table, "ok") != rules("203.0.113.6", table, "ok")
+
+
+def test_a_block_the_parser_doesnt_know_doesnt_end_the_table():
+    out = firewall_lines(
+        [
+            "table inet t {",
+            '\tct helper h { type "ftp" protocol tcp; l3proto ip; }',
+            "\tct helper g {",
+            '\t\ttype "ftp" protocol tcp',
+            "\t}",
+            "\tchain f2b-x {",
+            "\t\ttcp dport 4444 accept",
+            "\t}",
+            "}",
+        ]
     )
-    assert not any("192.0.2.1" in line and "f2b" in line for line in first)
-    # A rule hidden in that table under another name, and a set of one's own, still show.
-    assert "[inet f2b-table / chain hidden] ip saddr 203.0.113.9 accept" in first
-    assert set(first) - set(second) == {"[inet filter / set mine] elements = { 192.0.2.1 }"}
+    assert "[inet t / chain f2b-x] (managed by other software: rules not compared)" in out
+    assert not any(line.startswith("[chain") for line in out)
+
+
+@pytest.mark.parametrize("forged", ["set z {", "chain f2b-z {"])
+def test_a_newline_in_a_comment_cant_forge_a_block(forged):
+    out = firewall_lines(
+        [
+            "table inet f2b-table {",
+            "\tchain input {",
+            '\t\ttcp dport 22 accept comment "a',
+            forged,
+            '";',
+            "\t\tip saddr 198.51.100.7 accept;",
+            "\t\ttcp dport 4444 accept;",
+            "\t}",
+            "}",
+        ]
+    )
+    assert "[inet f2b-table / chain input] ip saddr 198.51.100.7 accept;" in out
+    assert "[inet f2b-table / chain input] tcp dport 4444 accept;" in out
+    assert not any("managed by other software" in line for line in out)
+
+
+def test_multi_line_elements_stay_in_their_set():
+    out = firewall_lines(
+        [
+            "table inet filter {",
+            "\tset mine {",
+            "\t\telements = { 192.0.2.1,",
+            "\t\t192.0.2.2 }",
+            "\t}",
+            "\tchain c {",
+            "\t\taccept",
+            "\t}",
+            "}",
+        ]
+    )
+    assert "[inet filter / set mine] 192.0.2.2 }" in out
+    assert "[inet filter / chain c] accept" in out
+
+
+def test_only_fail2bans_own_sets_in_its_own_table_are_summarised():
+    def out(table, name):
+        return firewall_lines([f"table inet {table} {{", f"\tset {name} {{",
+                               "\t\telements = { 192.0.2.1 }", "\t}", "}"])  # fmt: skip
+
+    assert not any("192.0.2.1" in line for line in out("f2b-table", "addr-set-sshd"))
+    assert any("192.0.2.1" in line for line in out("f2b-table", "other"))
+    assert any("192.0.2.1" in line for line in out("filter", "addr-set-sshd"))
+
+
+def test_a_newline_in_a_comment_at_table_level_cant_forge_a_block():
+    out = firewall_lines(
+        [
+            "table inet t {",
+            '\tcomment "a',
+            "chain f2b-z {",
+            '";',
+            "\tchain input {",
+            "\t\ttcp dport 4444 accept;",
+            "\t}",
+            "}",
+        ]
+    )
+    assert "[inet t / chain input] tcp dport 4444 accept;" in out
+    assert not any("managed by other software" in line for line in out)

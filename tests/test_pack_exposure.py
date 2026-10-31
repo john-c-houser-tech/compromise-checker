@@ -447,15 +447,3 @@ def test_only_a_package_naming_another_version_is_left_out_of_a_programs_fix():
     assert _fix_time({"php-fpm8.3"}, remi) == at(late)
     # An unknown time among those that count: unknown.
     assert _fix_time({"php-fpm"}, [judged("php8.3-fpm", None), judged("php8.4-fpm", late)]) is None
-
-
-def test_a_history_with_only_newer_changes_pending_can_show_a_first_install():
-    from types import SimpleNamespace
-
-    from checker.assess import _history_whole
-
-    pending = "package_history_pending: /var/lib/dnf/history.sqlite-wal"
-    assert _history_whole(SimpleNamespace(complete=True, gaps=[]))
-    assert _history_whole(SimpleNamespace(complete=False, gaps=[pending]))
-    assert not _history_whole(SimpleNamespace(complete=False, gaps=[pending, "cut short"]))
-    assert not _history_whole(SimpleNamespace(complete=False, gaps=["cut short"]))

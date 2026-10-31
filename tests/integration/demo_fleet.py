@@ -144,7 +144,10 @@ async def member_run(
             if script:
                 for name, value in keys.items():
                     script = script.replace(name, value)
-                await conn.run("bash -s", input=script, timeout=900)
+                done = await conn.run("bash -s", input=script, timeout=900)
+                for line in str(done.stderr).splitlines():
+                    if line.startswith("ATTACK FAILED"):
+                        print(f"{member.name}: {line}")
                 print(f"{member.name}: behaviours done")
         if member.role in ("attacked", "small"):
             account = "deploy2"

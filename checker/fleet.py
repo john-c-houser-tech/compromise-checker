@@ -248,8 +248,11 @@ def _gaps(assessment: dict | None) -> list[str]:
 def _reduces_coverage(gap: str) -> bool:
     """A gap in what the tool set out to read, as opposed to a note about what a host
     simply doesn't have. A long log cut short is routine on a busy server, so it isn't one."""
-    if "package_history_pending" in gap:
-        return False  # the package manager's history was mid-write: routine right after an install
+    # The package manager's history mid-write is routine right after an install. A section's
+    # gap can list several reasons: only that one, alone, is let off.
+    reasons = gap.partition(" incomplete: ")[2].split("; ")
+    if reasons and all(r.startswith("package_history_pending") for r in reasons):
+        return False
     return gap.startswith(("not collected:", "error in ")) or " incomplete: " in gap
 
 

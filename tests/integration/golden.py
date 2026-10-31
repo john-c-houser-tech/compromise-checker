@@ -169,12 +169,16 @@ def _dashed(address: str) -> str:
 
 
 def _hex_forms(address: str) -> list[str]:
-    """How /proc/net writes an IPv4 address (both byte orders)."""
+    """How /proc/net writes an address: IPv4 as one word, IPv6 as four, each byte-swapped."""
     try:
-        packed = ipaddress.ip_address(address).packed
+        parsed = ipaddress.ip_address(address)
     except ValueError:
         return []
-    return [packed.hex().upper(), packed[::-1].hex().upper()] if len(packed) == 4 else []
+    packed = parsed.packed
+    if parsed.version == 4:
+        return [packed.hex(), packed[::-1].hex()]
+    words = [packed[i : i + 4] for i in range(0, 16, 4)]
+    return [packed.hex(), "".join(w[::-1].hex() for w in words)]
 
 
 def scrub(text: str, protect: list[str]) -> str:

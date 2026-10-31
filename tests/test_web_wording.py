@@ -137,6 +137,13 @@ def test_with_part_of_the_package_history_unread_it_is_not_stated_as_having_been
     assert made.exposures[0].startswith("May have been open")
 
 
+def test_an_unknown_fix_time_with_old_code_running_stays_hedged():
+    records = {"p1": {"status": "fixed", "fix_time_exact": False}}
+    host = analysed("Low", stale_code=1, exposed={"p1": "fixed"}, pack_records=records)
+    words = row(host, NOW).exposures[0]
+    assert words.startswith("May have been open") and "has a fix installed" in words
+
+
 def test_a_long_list_of_changes_stays_short_on_the_list_of_servers():
     lines = tuple(f"h: new high: Finding {n}" for n in range(9))
     made = row(analysed("Critical", changes=lines), NOW)

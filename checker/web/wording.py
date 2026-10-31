@@ -248,18 +248,12 @@ def _only_upper_limit(host: FleetHost, pack: str) -> bool:
 
 
 def _exposure_words(host: FleetHost, pack: str, how: str) -> str:
-    words = EXPOSURE_WORDS[how].format(pack)
     if how != "fixed":
-        return words
+        return EXPOSURE_WORDS[how].format(pack)
+    start = "May have been open" if _only_upper_limit(host, pack) else "Was open"
     # While old code still runs, "fixed" isn't the whole story: a note above says so.
-    if host.stale_code:
-        return words.replace(", and is fixed now", ", and has a fix installed")
-    # With no package history, when the fix arrived is only a latest time.
-    if _only_upper_limit(host, pack):
-        return (
-            f"May have been open to a known threat while it was active, and is fixed now: {pack}."
-        )
-    return words
+    end = "has a fix installed" if host.stale_code else "is fixed now"
+    return f"{start} to a known threat while it was active, and {end}: {pack}."
 
 
 def _row(host: FleetHost, now: datetime) -> Row:
@@ -668,7 +662,7 @@ def _stands(host: FleetHost, pack, applies: dict) -> str:
         # With no package history, the fix's time is only "at the latest".
         return "maybe_fixed" if _only_upper_limit(host, pack.id) else "fixed"
     if known == "fixed":
-        return "fixed"
+        return "maybe_fixed" if _only_upper_limit(host, pack.id) else "fixed"
     return "doubtful" if host.doubts else "clear"
 
 

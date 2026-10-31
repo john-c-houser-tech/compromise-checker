@@ -1324,10 +1324,12 @@ def report(results: list[Result]) -> bool:
 
 
 def _cancel_on_sigterm() -> None:
-    """Treat SIGTERM like Ctrl-C: cancel the running task, so every cleanup
-    (deleting servers, finishing a creation already sent) runs before the
-    event loop stops."""
-    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, asyncio.current_task().cancel)
+    """Treat SIGTERM, and a closed terminal, like Ctrl-C: cancel the running task, so every
+    cleanup (deleting servers, finishing a creation already sent) runs before the event loop
+    stops."""
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        loop.add_signal_handler(sig, asyncio.current_task().cancel)
 
 
 async def main() -> int:

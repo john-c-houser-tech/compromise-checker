@@ -11,9 +11,13 @@ survives. Each page says it's a demo fleet. Needs the `shots` extra and a Chromi
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
+import re
 import secrets
+import shutil
+import socket
 import sys
 import threading
 from pathlib import Path
@@ -31,10 +35,29 @@ PAGES = (
     ("evidence", "/hosts/shop-web-1/evidence", 1280, "light", False),
     ("threats", "/threats", 1280, "light", True),
 )
+# Who and where this ran, and what the proofs call things: none belongs in a picture.
+NAMES = {
+    getpass.getuser(): "operator",
+    socket.gethostname(): "controller",
+    "proofuser": "appuser",
+    "/var/www/proof": "/var/www/shop",
+}
+FORBIDDEN = re.compile(r"linode|\bli\d+-\d+\b", re.IGNORECASE)
 BANNER = (
     '<p class="note">Demo fleet: throwaway servers, attacked on purpose. Real results from'
     " this tool. Addresses replaced.</p>"
 )
+
+
+def named(text: str, names: dict[str, str]) -> str:
+    """The scrubber knows addresses. This machine's user and name, and the proofs' scaffolding,
+    are replaced here, and the run stops if anything that points at a real machine is left."""
+    for old, new in names.items():
+        text = re.sub(rf"\b{re.escape(old)}\b", new, text)
+    left = [old for old in names if re.search(rf"\b{re.escape(old)}\b", text)]
+    if left or FORBIDDEN.search(text):
+        raise ValueError("a real name survived scrubbing")
+    return text
 
 
 def scrubbing(wsgi, protect: list[str], pages: list[str]):
@@ -51,8 +74,10 @@ def scrubbing(wsgi, protect: list[str], pages: list[str]):
         headers = held["headers"]
         if any(k.lower() == "content-type" and "text/html" in v for k, v in headers):
             text = body.decode()
-            text = golden.scrub(text, protect)
+            text = named(golden.scrub(text, protect), NAMES)
             golden.check_scrubbed(text, protect)
+            if text and "<main>" not in text:  # a redirect has no body to label
+                raise ValueError("no place for the demo fleet's label")
             text = text.replace("<main>", f"<main>\n{BANNER}", 1)
             pages.append(environ["PATH_INFO"])
             body = text.encode()
@@ -97,7 +122,8 @@ def main() -> int:
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_port}"
-    args.out.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(args.out, ignore_errors=True)  # nothing left from a run that stopped
+    args.out.mkdir(parents=True)
     with sync_playwright() as play:
         browser = play.chromium.launch(executable_path=args.chromium, args=["--no-sandbox"])
         for name, path, width, scheme, whole in PAGES:

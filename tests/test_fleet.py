@@ -331,6 +331,8 @@ def test_a_package_history_mid_write_is_not_part_of_the_server_unread():
     gap = "package_history incomplete: package_history_pending: /var/lib/dnf/history.sqlite-wal"
     assert not fleet_module._reduces_coverage(gap)
     assert fleet_module._reduces_coverage("package_history incomplete: cut short")
+    mixed = "package_history incomplete: package_history_pending: x; source: cut off"
+    assert fleet_module._reduces_coverage(mixed)
 
 
 def test_threat_signs_and_old_code_are_counted_while_in_effect(home, monkeypatch):

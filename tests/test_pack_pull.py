@@ -322,14 +322,14 @@ def release(tmp_path, *texts, signer):
 
 
 def test_an_index_is_written_from_the_packs_and_reads_back(tmp_path, signer):
-    path, index = write_index(release(tmp_path, GOOD, signer=signer), None, {}, NOW)
+    path, index, _ = write_index(release(tmp_path, GOOD, signer=signer), None, {}, NOW)
     assert (index.serial, [(e.id, e.version) for e in index.packs]) == (
         1, [("example-2026-10", 2)])  # fmt: skip
     assert read_index(path.read_bytes()) == index
     assert index.packs[0].sha256 == hashlib.sha256(GOOD.encode()).hexdigest()
-    _, again = write_index(tmp_path, None, {"old-2026-01": 'too noisy: "x"'}, NOW)
+    _, again, _ = write_index(tmp_path, None, {"old-2026-01": 'too noisy: "x"'}, NOW)
     assert again.serial == 2 and again.withdrawn[0].reason == 'too noisy: "x"'
-    _, third = write_index(tmp_path, None, {}, NOW)
+    _, third, _ = write_index(tmp_path, None, {}, NOW)
     assert third.serial == 3 and [w.id for w in third.withdrawn] == ["old-2026-01"]
 
 
@@ -540,7 +540,7 @@ def test_ids_that_look_like_other_things_and_any_reason_round_trip(tmp_path, sig
     for pack_id in ("2026-10-30", "1e5", "null", "true"):
         text = GOOD.replace("id: example-2026-10", f'id: "{pack_id}"')
         release(tmp_path, text, signer=signer)
-    path, index = write_index(tmp_path, None, {"gone-1": 'noisy 🦝 "quoted" \\ back'}, NOW)
+    path, index, _ = write_index(tmp_path, None, {"gone-1": 'noisy 🦝 "quoted" \\ back'}, NOW)
     assert read_index(path.read_bytes()) == index
     assert {e.id for e in index.packs} >= {"2026-10-30", "1e5", "null", "true"}
 
@@ -564,7 +564,133 @@ def test_a_release_refuses_a_changed_pack_under_the_same_version(tmp_path, signe
 
 def test_a_withdrawal_can_be_forgotten(tmp_path, signer):
     write_index(tmp_path, None, {"old-1": "noisy"}, NOW)
-    _, index = write_index(tmp_path, None, {}, NOW, forget=("old-1",))
+    _, index, _ = write_index(tmp_path, None, {}, NOW, forget=("old-1",))
     assert index.withdrawn == []
     with pytest.raises(ReleaseError, match="isn't withdrawn"):
         write_index(tmp_path, None, {}, NOW, forget=("old-1",))
+
+
+# --- After the second review ---------------------------------------------------------------
+
+
+def test_a_server_sending_a_byte_at_a_time_is_cut_off_at_the_deadline(monkeypatch):
+    import http.client
+    import socket
+    import threading
+    import time
+
+    ours, theirs = socket.socketpair()
+    ours.settimeout(1.0)
+    stop = threading.Event()
+
+    def trickle():
+        theirs.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")
+        while not stop.is_set():
+            try:
+                theirs.sendall(b"x")
+            except OSError:
+                return
+            time.sleep(0.05)
+
+    threading.Thread(target=trickle, daemon=True).start()
+    response = http.client.HTTPResponse(ours)
+    response.begin()
+
+    class Opener:
+        def open(self, request, timeout):
+            return response
+
+    monkeypatch.setattr(pulling, "opener", lambda: Opener())
+    monkeypatch.setattr(pulling, "DEADLINE", 0.3)
+    started = time.monotonic()
+    try:
+        with pytest.raises(PullError, match="took longer than"):
+            fetch(SOURCE + "x", 2000)
+        assert time.monotonic() - started < 1.5
+    finally:
+        stop.set()
+        theirs.close()
+
+
+def test_what_a_pull_did_is_said_whatever_stops_it(nouriloop, home, repo, monkeypatch, capsys):
+    from checker.settings import change
+
+    repo.keys(nouriloop, 2, [repo.signer])
+    repo.index(1, [GOOD])
+
+    def full(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("checker.packs.store.add", full)
+    monkeypatch.setattr(pulling, "fetch", repo.get)
+    change(home[0], "packs.source", SOURCE)
+    capsys.readouterr()
+    assert cli.main(["packs", "pull"]) == 1
+    said = capsys.readouterr()
+    assert "Key list serial 2 is in force." in said.out and "disk full" in said.err
+
+
+def test_a_pack_out_of_use_can_still_be_held_back_from_pulls(home, repo, capsys):
+    repo.index(1, [GOOD])
+    run(home, repo)
+    repo.index(2, [], withdrawn=["example-2026-10"])
+    run(home, repo)
+    assert cli.main(["packs", "retire", "example-2026-10", "--reason", "keep it out"]) == 0
+    assert "pulls leave it out until it is added again" in capsys.readouterr().out
+    repo.index(3, [NEWER])
+    assert run(home, repo).added == []
+    assert cli.main(["packs", "retire", "never-seen", "--reason", "x"]) == 1
+
+
+def test_an_index_ahead_of_the_clock_is_said_in_the_list_too(home, repo):
+    repo.index(1, [GOOD], issued=NOW + timedelta(days=400))
+    run(home, repo)
+    assert "ahead of this machine's clock" in staleness(read_state(home[0]), NOW)
+
+
+def test_a_pack_in_force_with_no_record_isnt_replaced_on_a_guess(home, repo):
+    from checker.packs.state import write_state
+
+    repo.index(1, [GOOD])
+    run(home, repo)
+    state = read_state(home[0])
+    state["packs"] = {}  # lost: an older backup restored
+    write_state(home[0], state)
+    repo.index(2, [GOOD.replace("Example: a made-up", "Example: a changed")])
+    done = run(home, repo)
+    assert done.added == [] and "has no record of" in done.problems[0]
+
+
+def test_a_source_in_anything_but_ascii_is_refused():
+    from pydantic import ValidationError
+
+    from checker.evidence import Packs
+
+    with pytest.raises(ValidationError, match="plain ASCII"):
+        Packs(source="https://mirror" + chr(0x202E) + ".example/")
+
+
+def test_a_relisted_pack_must_go_above_the_version_withdrawn(tmp_path, signer):
+    release(tmp_path, GOOD, signer=signer)
+    write_index(tmp_path, None, {}, NOW)
+    import shutil
+
+    shutil.rmtree(tmp_path / "packs" / "example-2026-10")
+    _, index, _ = write_index(tmp_path, None, {"example-2026-10": "wrong"}, NOW)
+    assert index.withdrawn[0].version == 2
+    release(tmp_path, GOOD, signer=signer)
+    with pytest.raises(ReleaseError, match="version 2 was withdrawn"):
+        write_index(tmp_path, None, {}, NOW, forget=("example-2026-10",))
+    release(tmp_path, NEWER, signer=signer)
+    _, index, _ = write_index(tmp_path, None, {}, NOW, forget=("example-2026-10",))
+    assert [e.version for e in index.packs] == [3] and index.withdrawn == []
+
+
+def test_a_pack_dropped_without_a_withdrawal_is_pointed_out(tmp_path, signer):
+    import shutil
+
+    release(tmp_path, GOOD, signer=signer)
+    write_index(tmp_path, None, {}, NOW)
+    shutil.rmtree(tmp_path / "packs" / "example-2026-10")
+    _, _, warnings = write_index(tmp_path, None, {}, NOW)
+    assert "neither in packs/ nor withdrawn" in warnings[0]

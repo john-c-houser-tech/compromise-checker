@@ -98,6 +98,7 @@ class Entry(_Strict):
 class Withdrawn(_Strict):
     id: str = Field(pattern=_ID)
     reason: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]+$")
+    version: int | None = Field(default=None, ge=1, le=99999)  # the last one listed, if any
 
 
 class Index(_Strict):
@@ -169,7 +170,10 @@ def fetch(url: str, limit: int) -> bytes | None:
             while size <= limit:
                 if time.monotonic() - started > DEADLINE:
                     raise PullError(f"{url[:200]}: took longer than {DEADLINE:.0f} seconds")
-                chunk = response.read(min(65536, limit + 1 - size))
+                # read1: what one read of the socket gives, so a server
+                # sending a byte at a time can't hold the loop past the
+                # deadline by more than one socket timeout.
+                chunk = response.read1(min(65536, limit + 1 - size))
                 if not chunk:
                     break
                 chunks.append(chunk)
@@ -224,12 +228,13 @@ def pull(
 ) -> Pulled:
     """Pull from `source` (a URL ending in "/"). The caller holds the packs
     lock. Raises PullError when the pull can't go on; what it did by then
-    (a key list taken, packs retired) is the error's `pulled`."""
+    (a key list taken, packs retired or added) is the error's `pulled`,
+    whatever the error."""
     get = get or fetch  # looked up now, so a test's stand-in is the one used
     done = Pulled()
     try:
         _pull(home, organization, checks, source, get, now or datetime.now(UTC), done)
-    except PullError as exc:
+    except Exception as exc:  # whatever stopped it, what it did is said
         exc.pulled = done
         raise
     return done
@@ -388,4 +393,9 @@ def staleness(state: dict[str, Any], now: datetime | None = None) -> str | None:
     said = f"Last pull {at}: index issued {issued.isoformat()[:10]} ({age} days ago)"
     if age > STALE_DAYS:
         said += "; older than expected: the source may have stopped updating"
+    elif age < -SKEW_DAYS:
+        said = (
+            f"Last pull {at}: the index says it was issued {issued.isoformat()[:10]}, ahead of"
+            " this machine's clock: one of them is wrong, and its age can't be judged"
+        )
     return said

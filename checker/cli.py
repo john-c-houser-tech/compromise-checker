@@ -2187,7 +2187,10 @@ def cmd_packs_retire(args: argparse.Namespace) -> int:
     except (StoreError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
-    print(f"Retired: {', '.join(names)} (kept in packs/retired/).")
+    if not names:
+        print(f"{args.id} isn't in force; pulls leave it out until it is added again.")
+        return 0
+    print(f"Retired: {', '.join(names)} (kept in packs/retired/; pulls leave it out).")
     print("`checker analyze --all` analyses every host's latest bundle without it.")
     return 0
 
@@ -2283,6 +2286,8 @@ def cmd_packs_pull(args: argparse.Namespace) -> int:
         print(f"checker: nothing more was pulled: {visible(str(exc), 500)}", file=sys.stderr)
         return 1
     except (EvidenceError, OSError, StateError, TrustError) as exc:
+        if getattr(exc, "pulled", None) is not None:
+            _print_pulled(exc.pulled)
         print(f"checker: nothing more was pulled: {visible(str(exc), 500)}", file=sys.stderr)
         return 1
     _print_pulled(done)
@@ -2321,9 +2326,11 @@ def cmd_packs_index(args: argparse.Namespace) -> int:
             if not equals or not reason.strip():
                 raise ReleaseError(f"--withdraw {item!r}: give ID=REASON")
             withdraw[pack_id.strip()] = reason.strip()
-        path, index = write_index(
+        path, index, warnings = write_index(
             Path(args.directory), args.serial, withdraw, forget=tuple(args.forget)
         )
+        for warning in warnings:
+            print(f"checker: note: {warning}", file=sys.stderr)
     except (ReleaseError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1

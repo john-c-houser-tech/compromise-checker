@@ -626,6 +626,16 @@ is John's to approve before it is committed. Also:
   is offered, until a person adds it again. Revocations still depend on
   the source (pull.py's docstring says so; nouriloop.com is the second
   place to check the key list).
+- **Second review (the fixes; 2 medium, 6 low), all fixed:** the per-file
+  deadline didn't hold against a server sending a byte at a time (now
+  read1, tested with a real socket); what a pull did went unsaid when it
+  stopped on anything but a PullError; a person couldn't hold back a pack
+  already out of use, and the hold was written after the move; `packs
+  list` didn't flag a future-dated index; a pack in force with no record
+  (state lost) could be overwritten; the source took non-ASCII; the
+  release writer dropped a pack without a word, and let one withdrawn be
+  relisted at a version sites already had (a withdrawal now keeps the
+  version it covered).
 
 ### 4.8 — The PHP2Shell pack
 

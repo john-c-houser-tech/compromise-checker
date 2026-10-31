@@ -227,6 +227,13 @@ def add(
     path = target / name
     if path.is_file() and path.read_bytes() == data:
         return Stored(pack, path, signer, digest), "already in force"
+    if record is None and any(n["id"] == pack.id for n, _ in _files(target, _ACTIVE)):
+        # The state that would say whose it is was lost (a restore from an
+        # older backup): nothing in force is replaced on a guess.
+        raise StoreError(
+            f"a {pack.id} is in force that this home has no record of: `checker packs retire"
+            f" {pack.id}` first, if this one is to replace it"
+        )
     older = [p for named, p in _files(target, _ACTIVE) if named["id"] == pack.id and p != path]
     _write(path.with_name(name + ".minisig"), signature)
     _write(path, data)
@@ -250,18 +257,19 @@ def retire(home: Path, pack_id: str, why: str, by_hand: bool = False) -> list[st
     """Take a pack out of use, every version in force; returns their names.
     One retired `by_hand` is held back from pulls, whatever version they
     offer, until a person adds it again (`checker packs add`)."""
+    held = False
+    if by_hand:  # first, so a crash part way leaves it held, never pulled back
+        state = read_state(home)
+        if pack_id in state["packs"]:
+            state["packs"][pack_id]["held"] = held = True
+            write_state(home, state)
     done = []
     for named, path in _files(home / "packs" / "active", _ACTIVE):
         if named["id"] == pack_id:
             _retire(home, path, why)
             done.append(path.name)
-    if not done:
-        raise StoreError(f"no pack {pack_id!r} is in force")
-    if by_hand:
-        state = read_state(home)
-        if pack_id in state["packs"]:
-            state["packs"][pack_id]["held"] = True
-            write_state(home, state)
+    if not done and not held:
+        raise StoreError(f"no pack {pack_id!r} is in force, or was ever accepted here")
     return done
 
 

@@ -39,8 +39,9 @@ def write_index(
     withdraw: dict[str, str],
     now: datetime | None = None,
     forget: tuple[str, ...] = (),
-) -> tuple[Path, Index]:
-    """Write `directory`/index.yaml; returns it and what it says. The last
+) -> tuple[Path, Index, list[str]]:
+    """Write `directory`/index.yaml; returns it, what it says, and what to
+    look at (a pack the last index listed that is now gone). The last
     index there gives the serial to go above and the withdrawals to keep
     (`forget` drops one: a site that never pulled while it was withdrawn
     keeps the pack). Each pack's signature is checked against the pack
@@ -94,12 +95,29 @@ def write_index(
                     f"{entry.id}: changed under the same version ({entry.version}): sites that"
                     " have it would keep the old content; give it a new version"
                 )
-    withdrawn = {w.id: w.reason for w in previous.withdrawn} if previous else {}
+    was_listed = {e.id: e.version for e in previous.packs} if previous else {}
+    withdrawn = {w.id: w for w in previous.withdrawn} if previous else {}
+    forgotten = {}
     for pack_id in forget:
-        if withdrawn.pop(pack_id, None) is None:
+        if pack_id not in withdrawn:
             raise ReleaseError(f"{pack_id} isn't withdrawn")
-    withdrawn |= withdraw
+        forgotten[pack_id] = withdrawn.pop(pack_id)
+    for entry in entries:
+        gone = forgotten.get(entry.id)
+        if gone is not None and gone.version is not None and entry.version <= gone.version:
+            raise ReleaseError(
+                f"{entry.id}: listed again at version {entry.version}, but version"
+                f" {gone.version} was withdrawn: sites that had it would never take this one;"
+                " give it a newer version"
+            )
+    for pack_id, reason in withdraw.items():
+        withdrawn[pack_id] = Withdrawn(id=pack_id, reason=reason, version=was_listed.get(pack_id))
     listed = {e.id for e in entries}
+    warnings = [
+        f"{pack_id}: the last index listed it, and it is neither in packs/ nor withdrawn:"
+        " sites keep it as it is; withdraw it if it should go"
+        for pack_id in sorted(set(was_listed) - listed - set(withdrawn))
+    ]
     if listed & set(withdrawn):
         raise ReleaseError(
             f"withdrawn but still in packs/: {', '.join(sorted(listed & set(withdrawn)))}"
@@ -115,7 +133,7 @@ def write_index(
             serial=serial,
             issued=issued,
             packs=entries,
-            withdrawn=[Withdrawn(id=k, reason=v) for k, v in sorted(withdrawn.items())],
+            withdrawn=[withdrawn[k] for k in sorted(withdrawn)],
         )
     except ValueError as exc:
         raise ReleaseError(str(exc)) from None
@@ -131,7 +149,9 @@ def write_index(
         *(f'  - {{id: "{e.id}", version: {e.version}, sha256: "{e.sha256}"}}' for e in index.packs),
         "withdrawn:" if index.withdrawn else "withdrawn: []",
         *(
-            f'  - {{id: "{w.id}", reason: {json.dumps(w.reason, ensure_ascii=False)}}}'
+            f'  - {{id: "{w.id}", reason: {json.dumps(w.reason, ensure_ascii=False)}'
+            + (f", version: {w.version}" if w.version is not None else "")
+            + "}"
             for w in index.withdrawn
         ),
     ]
@@ -143,4 +163,4 @@ def write_index(
     if not same:
         raise ReleaseError("the index wouldn't read back as written (a reason's quoting?)")
     target.write_text(text, encoding="utf-8")
-    return target, index
+    return target, index, warnings

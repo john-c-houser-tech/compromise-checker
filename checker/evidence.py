@@ -292,10 +292,10 @@ class Packs(BaseModel):
     @field_validator("source")
     @classmethod
     def _source(cls, value: str) -> str:
-        if not re.fullmatch(r"https://[^\s?#@\x00-\x1f\x7f]+", value):
+        if not value.isascii() or not re.fullmatch(r"https://[^\s?#@\x00-\x1f\x7f]+", value):
             raise ValueError(
-                "must be an https:// address, with no spaces, control characters, query,"
-                " fragment or user name"
+                "must be an https:// address in plain ASCII, with no spaces, control"
+                " characters, query, fragment or user name"
             )
         return value if value.endswith("/") else value + "/"
 

@@ -4,6 +4,7 @@ from checker.web import views
 
 urlpatterns = [
     path("", views.fleet_page, name="fleet"),
+    path("hosts/<path:name>", views.host_page, name="host"),
     path("login", views.login_page, name="login"),
     path("logout", views.logout_page, name="logout"),
     path("setup/<str:token>", views.setup_page, name="setup"),

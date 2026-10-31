@@ -1,4 +1,5 @@
 {% extends "base.html.j2" %}
+{% from "parts.html.j2" import scale, notes %}
 {% block title %}Your servers: {{ product_name() }}{% endblock %}
 {% block main %}
 <div class="answer tone-{{ headline_tone }}">
@@ -28,7 +29,8 @@
 {% for row in rows %}
   <li class="server tone-{{ row.tone }}">
     <div class="who">
-      <h2>{{ row.host.host }}</h2>
+      {% set link = host_url(row.host.host) %}
+      <h2>{% if link %}<a href="{{ link }}">{{ row.host.host }}</a>{% else %}{{ row.host.host }}{% endif %}</h2>
       {% if row.host.group %}<p>{{ row.host.group }}</p>{% endif %}
       {% if row.checked %}<p>{{ row.checked }}</p>{% endif %}
     </div>
@@ -39,23 +41,12 @@
       <p class="new">New since the last check:</p>
       <ul>{% for change in row.changes %}<li>{{ change }}</li>{% endfor %}</ul>
       {% endif %}
-      {% if row.notes or row.exposures %}
-      <ul class="notes">
-        {% for note in row.notes %}<li>{{ note }}</li>{% endfor %}
-        {% for exposure in row.exposures %}<li>{{ exposure }}</li>{% endfor %}
-      </ul>
-      {% endif %}
+      {{ notes(row) }}
     </div>
     <div class="chance">
       {% if row.host.probability is not none and row.host.state == "analysed" %}
       <p><strong>{{ row.host.probability | percent }}</strong> estimated chance of a break-in</p>
-      <svg viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-        <rect class="zone-low" x="0" y="3" width="10" height="4"/>
-        <rect class="zone-elevated" x="10" y="3" width="40" height="4"/>
-        <rect class="zone-high" x="50" y="3" width="40" height="4"/>
-        <rect class="zone-critical" x="90" y="3" width="10" height="4"/>
-        <line class="mark" x1="{{ '%.1f' | format(row.host.probability * 100) }}" y1="0" x2="{{ '%.1f' | format(row.host.probability * 100) }}" y2="10"/>
-      </svg>
+      {{ scale(row.host.probability) }}
       {% else %}
       <p class="none">No estimate</p>
       {% endif %}

@@ -233,7 +233,9 @@ def _purged(store) -> set[str]:
 
 
 def _gaps(assessment: dict | None) -> list[str]:
-    return list(((assessment or {}).get("coverage") or {}).get("gaps") or [])
+    coverage = (assessment or {}).get("coverage")
+    gaps = coverage.get("gaps") if isinstance(coverage, dict) else None
+    return [str(g) for g in gaps] if isinstance(gaps, list) else []
 
 
 def _reduces_coverage(gap: str) -> bool:
@@ -543,15 +545,22 @@ def fleet(
     return sorted(hosts, key=sort_key)
 
 
-def read_fleet(
-    base: Path, identity_path: str | None = None, group: str | None = None
-) -> tuple[list[FleetHost], list[str]]:
-    """The fleet from a home's settings, and why any threat pack isn't applied. Opens
-    the store read-only; the command and the web interface both come through here."""
+@dataclass(frozen=True)
+class _Settings:
+    config: Any
+    inventory: Any
+    identity: Any
+    found: tuple
+    prior_for: Callable
+    whitelist_for: Callable
+    packs_for: Callable
+
+
+def _settings(base: Path, identity_path: str | None = None) -> _Settings:
     from functools import partial
 
     from checker.assess import prior_for
-    from checker.evidence import Store, database_file, load_config, load_identity
+    from checker.evidence import load_config, load_identity
     from checker.inventory import load_inventory
     from checker.packs.choice import for_host
     from checker.packs.store import in_force_read_only
@@ -565,20 +574,77 @@ def read_fleet(
         identity = load_identity(Path(path))
     except pyrage.IdentityError as exc:
         raise EvidenceError("the evidence key can't be read: it isn't a key") from exc
+    inventory = load_inventory()
+    found = in_force_read_only(base, config.packs.trusted_keys)
+    return _Settings(
+        config,
+        inventory,
+        identity,
+        found,
+        partial(prior_for, config=config, inventory=inventory),
+        lambda name: whitelist_for_host(base, name, inventory),
+        partial(for_host, config=config, inventory=inventory, found=found),
+    )
+
+
+def read_fleet(
+    base: Path, identity_path: str | None = None, group: str | None = None
+) -> tuple[list[FleetHost], list[str]]:
+    """The fleet from a home's settings, and why any threat pack isn't applied. Opens
+    the store read-only; the command and the web interface both come through here."""
+    from checker.evidence import Store, database_file
+
+    settings = _settings(base, identity_path)
     store = Store(database_file(base), read_only=True)
     try:
-        inventory = load_inventory()
-        found = in_force_read_only(base, config.packs.trusted_keys)
         hosts = fleet(
             store,
-            identity,
-            {h.name: h.group for h in inventory.hosts},
-            partial(prior_for, config=config, inventory=inventory),
-            lambda name: whitelist_for_host(base, name, inventory),
-            partial(for_host, config=config, inventory=inventory, found=found),
+            settings.identity,
+            {h.name: h.group for h in settings.inventory.hosts},
+            settings.prior_for,
+            settings.whitelist_for,
+            settings.packs_for,
             group,
-            stale_after=timedelta(days=config.stale_after_days),
+            stale_after=timedelta(days=settings.config.stale_after_days),
         )
     finally:
         store.close()
-    return hosts, found[1]
+    return hosts, settings.found[1]
+
+
+def read_host(base: Path, host: str) -> tuple[FleetHost, dict | None] | None:
+    """One host's line in the fleet and its latest readable analysis, or None if neither
+    the inventory nor the store has heard of it: a name from a URL goes no further."""
+    from checker.evidence import Store, database_file
+
+    settings = _settings(base)
+    store = Store(database_file(base), read_only=True)
+    try:
+        groups = {h.name: h.group for h in settings.inventory.hosts}
+        try:
+            if host not in groups and host not in store.hosts():
+                return None
+            try:
+                item = fleet_host(
+                    store,
+                    host,
+                    settings.identity,
+                    groups.get(host),
+                    settings.prior_for,
+                    settings.whitelist_for,
+                    settings.packs_for,
+                    stale_after=timedelta(days=settings.config.stale_after_days),
+                    removed=bool(groups) and host not in groups,
+                )
+            except sqlite3.Error:
+                raise
+            except Exception:  # noqa: BLE001 - as in fleet(): loud, and the page still loads
+                item = FleetHost(host, groups.get(host), "unreadable", unreadable_why="internal")
+            assessment = None
+            if item.state == "analysed":
+                assessment = _analyses(store, usable_bundles(store, host), settings.identity).after
+        except sqlite3.Error as exc:
+            raise EvidenceError(store_unreadable(exc)) from exc
+    finally:
+        store.close()
+    return item, assessment

@@ -1,12 +1,20 @@
 """Pages use Jinja2, with the report's rule: every printed value is escaped and has its
 invisible characters shown, whether or not the template asked. Host text can't opt out."""
 
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 from jinja2 import Environment
 
 from checker.product import product_name
 from checker.report import _finalize, visible
 from checker.scoring import percent
+
+
+def host_url(name: str) -> str | None:
+    """A host's page, or None for a name no URL can hold: it mustn't take down the list."""
+    try:
+        return reverse("host", kwargs={"name": name})
+    except NoReverseMatch:
+        return None
 
 
 def _finalize_page(value):
@@ -20,6 +28,7 @@ def environment(**options) -> Environment:
     env = Environment(**options)  # noqa: S701 - autoescape is set just above
     env.filters["visible"] = visible
     env.filters["percent"] = percent
-    env.globals["url"] = reverse
+    env.globals["url"] = lambda view, **kwargs: reverse(view, kwargs=kwargs or None)
     env.globals["product_name"] = product_name
+    env.globals["host_url"] = host_url
     return env

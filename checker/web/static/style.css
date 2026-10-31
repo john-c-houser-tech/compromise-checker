@@ -119,6 +119,49 @@ h1 { font-size: clamp(1.75rem, 1.2rem + 2.6vw, 3rem); line-height: 1.12; letter-
 .zone-critical { fill: var(--critical); }
 .mark { stroke: var(--ink); stroke-width: 3; vector-effect: non-scaling-stroke; }
 
+.back { margin: 0 0 1rem; }
+.note { color: var(--quiet); max-width: 62ch; }
+.who h2 a { text-underline-offset: 3px; }
+.host-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(11rem, 15rem);
+  gap: 1rem 2rem;
+  padding: 1.25rem 1rem;
+  border-inline-start: 6px solid var(--tone);
+  background: var(--sheet);
+  margin-bottom: 1rem;
+}
+.host-head.tone-critical, .host-head.tone-high { background: color-mix(in srgb, var(--tone) var(--wash), var(--sheet)); }
+.host-head h1 { font-size: clamp(1.5rem, 1.2rem + 1.5vw, 2.25rem); margin: 0 0 0.5rem; max-width: none; overflow-wrap: anywhere; }
+.host-head .note { margin: 0.25rem 0 0; font-size: 0.875rem; }
+.host-head ul { margin: 0.5rem 0 0; padding-inline-start: 1.1rem; font-size: 0.9375rem; overflow-wrap: anywhere; }
+.findings { margin-top: 2.5rem; overflow-wrap: anywhere; }
+.findings h2 { font-size: 1.375rem; margin: 0 0 0.75rem; padding-bottom: 0.25rem; border-bottom: 2px solid var(--ink); }
+.findings h2 span { font-weight: 400; color: var(--quiet); }
+.findings ul { padding-inline-start: 1.1rem; }
+.finding { padding: 1rem 0; border-bottom: 1px solid var(--rule); max-width: 70ch; }
+.finding h3 { font-size: 1.0625rem; line-height: 1.35; margin: 0; }
+.finding p { margin: 0.375rem 0 0; }
+/* Text from the server, which an intruder could have written: never in the tool's own voice. */
+.from-server {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  font-size: 0.875rem;
+  background: color-mix(in srgb, var(--quiet) 12%, transparent);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.125rem 0.375rem;
+  overflow-wrap: anywhere;
+}
+p.from-server { padding: 0.375rem 0.5rem; }
+.raised { font-weight: 700; color: var(--critical); }
+.finding .band { font-size: 0.875rem; font-weight: 700; }
+.band-critical .band { color: var(--critical); }
+.band-high .band { color: var(--high); }
+.band-medium .band { color: var(--elevated); }
+.band-low .band { color: var(--quiet); }
+details summary { cursor: pointer; margin-top: 0.5rem; font-size: 0.9375rem; color: var(--quiet); }
+details p, details li { font-size: 0.9375rem; color: var(--quiet); }
+
 form label { display: block; margin: 0.75rem 0; font-weight: 700; }
 form input { display: block; width: 100%; max-width: 24rem; padding: 0.5rem; font: inherit; color: inherit; background: var(--sheet); border: 1px solid var(--quiet); border-radius: 3px; }
 main form button { margin-top: 0.5rem; padding: 0.5rem 1.25rem; font: inherit; font-weight: 700; color: var(--on-bar); background: var(--bar); border: 0; border-radius: 3px; cursor: pointer; }
@@ -127,4 +170,5 @@ code { font-size: 0.9em; overflow-wrap: anywhere; }
 
 @media (max-width: 44rem) {
   .server { grid-template-columns: minmax(0, 1fr); }
+  .host-head { grid-template-columns: minmax(0, 1fr); }
 }

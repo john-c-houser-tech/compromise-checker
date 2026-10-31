@@ -7,6 +7,7 @@ learns to report belongs there, not in a note beside a reassuring result."""
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from datetime import UTC, datetime
 from checker.fleet import UNREADABLE, FleetHost, serious, sort_key
 from checker.report import OLDER_CHECKS
 from checker.schedule import SERIOUS
+from checker.web.finding_words import BAND_WORDS, SECTIONS, gap_words, words_for
 
 # How worrying each band is, for colour and for what the page leads with.
 VERDICTS = {
@@ -159,7 +161,12 @@ def _cautions(host: FleetHost) -> tuple[list[_Caution], list[str]]:
             )
         )
     if host.stale_code:
-        cautions.append(_Caution("Still running code from before a fix", "Restart its services."))
+        cautions.append(
+            _Caution(
+                "Still running code from before a fix",
+                "Restart its services, unless a break-in is suspected: then get advice first.",
+            )
+        )
         notes.append(
             "A fix is installed, but something on this server is still running the old code."
         )
@@ -334,3 +341,100 @@ def headline(rows: list[Row]) -> tuple[str, str]:
 
 def rows_for(hosts: list[FleetHost], now: datetime | None = None) -> list[Row]:
     return [row(h, now) for h in sorted(hosts, key=sort_key)]
+
+
+def host_details(assessment: dict | None) -> dict:
+    """A host page's findings in plain words, most serious first and split as the report
+    splits them. Odd stored data leaves things out of the sections, never the page down."""
+    empty = {"sections": [], "suppressed": [], "gaps": [], "reach": None, "caveat": None}
+    if not isinstance(assessment, dict):
+        return empty
+    try:
+        return _host_details(assessment)
+    except Exception:  # noqa: BLE001 - as for a row: the verdict above still shows
+        return {**empty, "caveat": "Part of this result couldn't be worked out."}
+
+
+def _host_details(assessment: dict) -> dict:
+    findings = assessment.get("findings")
+    findings = [f for f in findings if isinstance(f, dict)] if isinstance(findings, list) else []
+    in_effect = [f for f in findings if not f.get("suppressed_by")]
+    hidden = [_finding(f) for f in findings if f.get("suppressed_by")]
+    # Anything in a category not known here still shows, under its own heading.
+    titles = [*SECTIONS.items(), (None, "Other findings")]
+    sections = []
+    for category, title in titles:
+        here = [
+            f
+            for f in in_effect
+            if (f.get("category") == category if category else f.get("category") not in SECTIONS)
+        ]
+        # A threat pack raising one means it's no longer for information only.
+        folded = [
+            _finding(f) for f in here if f.get("band") == "info" and not f.get("raised_by_pack")
+        ]
+        shown = [_finding(f) for f in here if f.get("band") != "info" or f.get("raised_by_pack")]
+        shown.sort(key=lambda f: (not f["raised_by"], _BAND_ORDER.get(f["band_class"], 9)))
+        if shown or folded:
+            sections.append({"title": title, "findings": shown, "minor": folded})
+    coverage = assessment.get("coverage")
+    coverage = coverage if isinstance(coverage, dict) else {}
+    gaps = coverage.get("gaps")
+    if not any(section["findings"] for section in sections):
+        caveat = "No warnings on this check. That doesn't prove nothing happened."
+        if hidden:
+            caveat = f"No warnings in effect: {len(hidden)} hidden by your list, below."
+    else:
+        caveat = None
+    return {
+        "sections": sections,
+        "suppressed": hidden,
+        "gaps": list(dict.fromkeys(gap_words(g) for g in gaps)) if isinstance(gaps, list) else [],
+        "reach": _log_reach(coverage.get("log_reach")),
+        "caveat": caveat,
+    }
+
+
+_BAND_ORDER = {band: n for n, band in enumerate(BAND_WORDS)}
+
+
+def _finding(finding: dict) -> dict:
+    meaning, todo = words_for(finding.get("check"), finding.get("variant"), finding.get("title"))
+    band = finding.get("band")
+    known = isinstance(band, str) and band in BAND_WORDS
+    raised = finding.get("raised_by_pack")
+    return {
+        "meaning": meaning,
+        "todo": todo,
+        "band_class": band if known else "medium",
+        "band_words": BAND_WORDS[band] if known else "Worth a look",
+        "new": bool(finding.get("new")),
+        "title": finding.get("title"),
+        "summary": finding.get("summary"),
+        "uncertain": finding.get("uncertain"),
+        "raised_by": raised,
+        "lowered": bool(finding.get("maintenance")),
+    }
+
+
+def _log_reach(reach: object) -> str | None:
+    """How far back the login logs go, said plainly: the shorter it is, the more it matters.
+    The dates come from the logs themselves, so this says what they show, nothing more."""
+    if not isinstance(reach, dict):
+        return None
+    days = [
+        r.get("days")
+        for name, r in reach.items()
+        if name in ("auth_log", "auth_journal") and isinstance(r, dict)
+    ]
+    days = [d for d in days if isinstance(d, (int, float)) and not isinstance(d, bool)]
+    days = [d for d in days if math.isfinite(d)]
+    if not days:
+        return None
+    furthest = max(days)
+    if furthest < 1:
+        return (
+            "Its login logs go back less than a day, so anything earlier can't be seen."
+            " Logs this short can mean they were cleared."
+        )
+    return f"Its login logs go back {int(furthest)} days. Anything earlier can't be seen."

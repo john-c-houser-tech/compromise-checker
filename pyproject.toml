@@ -60,5 +60,6 @@ per-file-target-version = { "checker/collector/*.py" = "py39", "tests/collector/
 select = ["E", "F", "W", "I", "UP", "B", "S"]
 
 [tool.ruff.lint.per-file-ignores]
+"checker/web/finding_words.py" = ["E501"]  # sentences for people, kept whole so they can be read
 "checker/checks/*.py" = ["S108"]  # /tmp and the like are places on the target, matched as data
 "tests/**" = ["S101", "S104", "S105", "S106", "S108", "S603", "S604"]  # asserts; addresses, made-up passwords, /tmp paths and shells as data; own commands

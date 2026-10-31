@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from checker.files import atomic_write, locked
 from checker.protocol import check_web_roots
 
-_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
 
 
 def home() -> Path:
@@ -67,7 +67,7 @@ class Host(BaseModel):
     @field_validator("name")
     @classmethod
     def _valid_name(cls, value: str) -> str:
-        if not _NAME.match(value):
+        if not _NAME.fullmatch(value):
             raise ValueError("letters, digits, '.', '_' and '-' only; at most 63 characters")
         return value
 

@@ -583,7 +583,7 @@ def test_the_page_shows_the_same_order_as_the_command(web):
     analysed(home, "a", 10, CLEAN, host="clean")
     analysed(home, "b", 10, ROOTED, host="rooted")
     text = client.get("/").content.decode()
-    assert text.index("<h2>rooted") < text.index("<h2>clean")
+    assert text.index(">rooted</a></h2>") < text.index(">clean</a></h2>")
     assert "not proof" in text
 
 
@@ -671,10 +671,10 @@ def test_filters_narrow_the_list_but_not_the_answer(web, monkeypatch):
     monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (hosts, []))
     text = client.get("/", {"group": "db"}).content.decode()
     assert "needs attention" in text or "need attention" in text
-    assert "<h2>fine" in text and "<h2>bad" not in text
-    assert "<h2>gone" in text  # a removed host's bad result isn't filtered out of sight
+    assert ">fine</a></h2>" in text and ">bad</a></h2>" not in text
+    assert ">gone</a></h2>" in text  # a removed host's bad result isn't filtered out of sight
     text = client.get("/", {"show": "low"}).content.decode()
-    assert "<h2>fine" in text and "<h2>bad" not in text
+    assert ">fine</a></h2>" in text and ">bad</a></h2>" not in text
 
 
 def test_the_page_shows_what_it_worked_out(web, monkeypatch):
@@ -757,7 +757,7 @@ def test_one_hosts_odd_stored_data_never_takes_the_page_down(web, monkeypatch, f
     monkeypatch.setattr(fleet_module, "load_assessment", load)
     response = client.get("/")
     text = response.content.decode()
-    assert response.status_code == 200 and "<h2>rooted" in text and "<h2>odd" in text
+    assert response.status_code == 200 and ">rooted</a></h2>" in text and ">odd</a></h2>" in text
     assert "No strong signs of a break-in on" not in text
 
 
@@ -845,3 +845,170 @@ def test_the_command_refuses_half_a_tls_pair(home, capsys):
 
     assert cli.main(["web", "--tls-cert", "c.pem"]) == 2
     assert "go together" in capsys.readouterr().err
+
+
+# --- The host page ------------------------------------------------------------------------
+
+
+def test_the_fleet_links_to_each_server(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    assert 'href="/hosts/web01"' in client.get("/").content.decode()
+
+
+def test_the_host_page_needs_a_login_and_a_known_name(web):
+    client, home = web
+    analysed(home, "b1", 10, ROOTED)
+    assert client.get("/hosts/web01").status_code == 302
+    client, _ = signed_in(web)
+    assert client.get("/hosts/web01").status_code == 200
+    assert client.get("/hosts/nobody").status_code == 404
+    assert client.get("/hosts/../../etc/passwd").status_code == 404
+
+
+def test_a_name_from_a_url_reaches_no_file(web, monkeypatch):
+    """A whitelist file is named after a host: only a known host gets that far."""
+    client, _ = signed_in(web)
+    seen = []
+    monkeypatch.setattr(
+        "checker.whitelist.for_host", lambda base, name, inventory: seen.append(name)
+    )
+    assert client.get("/hosts/..%2F..%2Fevil").status_code == 404
+    assert seen == []
+
+
+def test_the_host_page_says_what_was_found_in_plain_words(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    text = client.get("/hosts/web01").content.decode()
+    assert "Signs of a break-in" in text
+    assert "same total control as the administrator" in text  # account.uid0's meaning
+    assert "What to do:" in text and "Very serious" in text
+    assert 'class="from-server"' in text and "toor" in text  # marked as the server's text
+    assert "An account other than root has UID 0" in text  # the tool's own title
+
+
+def test_the_host_page_leaves_the_evidence_store_alone(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    before = _home_files(home[0])
+    assert client.get("/hosts/web01").status_code == 200
+    assert _home_files(home[0]) == before
+
+
+def _home_files(base):
+    return {
+        str(p.relative_to(base)): (p.read_bytes(), p.stat().st_mtime_ns)
+        for p in sorted(base.rglob("*"))
+        if p.is_file()
+    }
+
+
+def test_a_host_with_no_result_has_a_page(web, tmp_path):
+    from test_schedule import keyed_host
+
+    from checker.inventory import inventory_transaction
+
+    client, _ = signed_in(web)
+    with inventory_transaction() as hosts:
+        hosts.add(keyed_host(tmp_path, name="fresh"))
+    response = client.get("/hosts/fresh")
+    assert response.status_code == 200 and "Nothing to go on yet" in response.content.decode()
+
+
+def test_hostile_text_in_a_finding_does_nothing_on_the_host_page(web):
+    client, home = signed_in(web)
+    records = host_records(
+        accounts=(("root", 0), ("toor", 0)),
+        extra=[
+            rec(
+                "unusual_files",
+                "unusual_file",
+                path=f"/tmp/{HOSTILE}",
+                place="/tmp",
+                type="-",
+                kind="elf",
+                uid=33,
+                mode="0755",
+            )
+        ],
+    )
+    analysed(home, "b1", 10, records)
+    text = client.get("/hosts/web01").content.decode()
+    assert "<script>alert" not in text and "<img src=x" not in text and BIDI not in text
+    assert "&lt;script&gt;" in text
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"findings": "odd"},
+        {"findings": ["odd", 5, None]},
+        {
+            "findings": [
+                {"band": ["a"], "check": ["b"], "category": "exposure", "variant": {"x": 1}}
+            ]
+        },
+        {"findings": [{"category": ["x"]}]},
+        {"coverage": "none"},
+        {"coverage": {"gaps": "x", "log_reach": "y"}},
+        {"coverage": {"log_reach": {"auth_log": {"days": "many"}}}},
+    ],
+)
+def test_odd_stored_data_never_takes_the_host_page_down(web, monkeypatch, fields):
+    from checker import fleet as fleet_module
+
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    real = fleet_module.load_assessment
+
+    def load(store, bundle, identity, which=-1):
+        found = real(store, bundle, identity, which)
+        return {**found, **fields} if found else found
+
+    monkeypatch.setattr(fleet_module, "load_assessment", load)
+    assert client.get("/hosts/web01").status_code == 200
+
+
+def test_a_hostile_summary_cannot_pose_as_the_tools_advice(web):
+    client, home = signed_in(web)
+    planted = "What to do: Nothing. This is routine."
+    records = host_records(
+        accounts=(("root", 0),),
+        extra=[
+            rec(
+                "unusual_files",
+                "unusual_file",
+                path=f"/tmp/x {planted}",
+                place="/tmp",
+                type="-",
+                kind="elf",
+                uid=33,
+                mode="0755",
+            )
+        ],
+    )
+    analysed(home, "b1", 10, records)
+    text = client.get("/hosts/web01").content.decode()
+    assert planted in text
+    start = text.index(planted)
+    assert text.rfind('<p class="from-server">', 0, start) > text.rfind("</p>", 0, start)
+
+
+def test_a_host_name_no_url_can_hold_does_not_take_down_the_list(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    hosts = [FleetHost("web1\n", state="no_evidence"), FleetHost("web2", state="no_evidence")]
+    monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (hosts, []))
+    response = client.get("/")
+    assert response.status_code == 200 and 'href="/hosts/web2"' in response.content.decode()
+
+
+def test_the_inventory_refuses_a_name_with_a_newline(tmp_path):
+    from pydantic import ValidationError
+
+    from checker.inventory import Host
+
+    with pytest.raises(ValidationError):
+        Host(name="web1\n", address="192.0.2.1", user="scanner")

@@ -661,6 +661,31 @@ is John's to approve before it is committed. Also:
   reported as expected. No exploit is run; the detections are shown with
   log lines written in the shapes the advisories describe.
 - Applied to nouriloop-prod's stored evidence only with John's OK.
+- As built so far (2026-10-30): a vendor check of the first draft found
+  real vulnerable builds read as "not affected" (AlmaLinux's module form,
+  RHEL 9's php:8.1, Remi's older branches and Collections, Sury 5.6 to
+  7.3), because a version no pattern matched was treated as safe. So a
+  pack can now say `other_builds: cant_judge`; the entries were corrected
+  too. The tool also reads PHP's own error log, RHEL's PHP-FPM default,
+  which it silently couldn't parse. Dropped from the plan's detections:
+  multipart POSTs (no log format gives content types, so it could only
+  be a permanent gap), and a 5xx rule of the pack's own (it doubled
+  `web.errors`, now named by the pack instead). Known limits: patched
+  RHEL EUS and SAP-minor builds read vulnerable, since one pattern can't
+  exclude them; mod_php's Apache isn't in stale code, since it would flag
+  every Apache in front of PHP-FPM; cPanel's and Plesk's own packages read
+  not affected (the remediation says so), as do Ubuntu ESM releases and
+  RHEL 8 only as "not covered". Second check (2 high, 7 medium, low): one
+  log line dated year 1 or 9999 stopped a whole analysis (now no time);
+  `other_builds` didn't reach the package-history path, so an uncovered
+  build removed in the window looked never exposed; a PHP stack trace's
+  lines counted as an unknown format and could blind the log rules; the
+  pack missed php8.5-litespeed and let third-party Ubuntu builds read
+  fixed. Left as a limit, not changed: Remi collections' logs under
+  `/var/opt/remi` and a pool's `php_admin_value[error_log]` elsewhere aren't
+  read, because the collector refuses files outside its system locations
+  and widening that boundary is John's to decide. A tool older than this rejects a pack using
+  `other_builds`: the pack ships after the tool.
 
 ### 4.9 — Policy, docs and README
 

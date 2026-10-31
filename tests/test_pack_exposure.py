@@ -337,3 +337,63 @@ def test_a_rule_for_pack_findings_must_name_the_pack():
 def test_a_release_not_covered_names_the_os(home):
     found = judge(PACK, {"os": {"id": "centos", "version_id": "9"}}, {}, [], NOW)
     assert found.status == UNKNOWN_RELEASE and found.release == "centos"
+
+
+def test_a_build_no_entry_matches_is_safe_only_if_the_pack_says_so():
+    text = GOOD.replace(
+        "binary_names: [php8.3-fpm, libapache2-mod-php8.3]\n",
+        'binary_names: [php8.3-fpm, libapache2-mod-php8.3]\n      versions: "8.3.6-*"\n',
+    )
+    listed = {"php8.3-fpm amd64": {"manager": "dpkg", "version": "8.3.99-custom"}}
+    plain = judge(read(text.encode()), UBUNTU, listed, [], NOW)
+    assert plain.status == "not affected"
+    strict = read(
+        text.replace("  stale_code:", "  other_builds: cant_judge\n  stale_code:").encode()
+    )
+    found = judge(strict, UBUNTU, listed, [], NOW)
+    assert found.status == "can't judge" and "doesn't cover" in found.packages[0].why
+    # A package no entry names is still not this pack's.
+    other = {"nginx amd64": {"manager": "dpkg", "version": "1.0-1"}}
+    assert judge(strict, UBUNTU, other, [], NOW).status == "not affected"
+
+
+STRICT = read(
+    GOOD.replace(
+        "binary_names: [php-fpm]\n", 'binary_names: [php-fpm]\n      versions: "8.3.*.el9_*"\n'
+    )
+    .replace("  stale_code:", "  other_builds: cant_judge\n  stale_code:")
+    .encode()
+)
+ROCKY = {"os": {"id": "rocky", "version_id": "9.8"}}
+UNCOVERED, COVERED = "8.3.30-1.foo.el9", "8.3.15-1.el9_6"
+
+
+def removal(name, previous, when):
+    return {"time": when, "type": "package.remove",
+            "fields": {"name": name, "previous": previous, "version": None}}  # fmt: skip
+
+
+def test_an_uncovered_build_removed_in_the_window_was_exposed_until_then():
+    history = [removal("php-fpm", UNCOVERED, "2026-10-25T00:00:00+00:00")]
+    found = judge(STRICT, ROCKY, {}, [], NOW, True, history, [], True)
+    assert found.status == "fixed" and found.removed_at and found.share > 0
+
+
+def test_an_uncovered_build_earlier_means_a_fixed_install_isnt_fresh():
+    listing = {"php-fpm x86_64": {"manager": "rpm", "version": COVERED, "installed": FIXED_AT}}
+    earlier = [(datetime(2026, 10, 22, tzinfo=UTC),
+                {"php-fpm x86_64": {"manager": "rpm", "version": UNCOVERED}})]  # fmt: skip
+    installed = {"time": "2026-10-25T00:00:00+00:00", "type": "package.install",
+                 "fields": {"name": "php-fpm", "version": COVERED, "previous": None}}  # fmt: skip
+    found = judge(STRICT, ROCKY, listing, [], NOW, True, [installed], earlier, True)
+    assert found.packages[0].fresh is False and found.share > 0
+
+
+def test_a_stale_service_is_said_when_another_package_cant_be_judged():
+    listing = {
+        "php-fpm x86_64": {"manager": "rpm", "version": COVERED, "installed": FIXED_AT},
+        "php-fpm i686": {"manager": "rpm", "version": UNCOVERED},
+    }
+    old = {"pid": 7, "comm": "php-fpm", "start_time": "2026-10-21T00:00:00+00:00"}
+    found = judge(STRICT, ROCKY, listing, [old], NOW)
+    assert found.status == "can't judge" and [p["pid"] for p in found.stale] == [7]

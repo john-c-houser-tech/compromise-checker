@@ -27,6 +27,33 @@ def test_each_case_still_gives_its_expected_assessment(path):
 
 
 @pytest.mark.parametrize("path", golden.cases(), ids=lambda p: p.name.removesuffix(".json.gz"))
+def test_each_case_with_the_test_pack_still_gives_its_expected_assessment(path):
+    """The same cases with a made-up threat pack in force (plan 4.6):
+    exposure raises the prior, its detections fire on the compromised ones."""
+    expected = json.loads(golden.pack_expected_path(path).read_text())
+    actual = golden.run_case(golden.load_case(path), [golden.golden_pack()])
+    actual = json.loads(json.dumps(actual, sort_keys=True))
+    assert actual["score"] == expected["score"], "the score moved: run scripts/update_golden.py"
+    assert actual == expected, "findings moved: run scripts/update_golden.py and review the diff"
+
+
+def test_the_test_pack_does_what_it_is_there_for():
+    for path in golden.cases():
+        result = json.loads(golden.pack_expected_path(path).read_text())
+        plain = json.loads(golden.expected_path(path).read_text())
+        assert result["score"]["raised_by"][0]["pack"] == "golden-test-2026-10", path.name
+        assert result["score"]["raised_prior"] > plain["score"]["prior"]
+        mine = {f["variant"] for f in result["findings"] if f["check"] == "pack.detection"}
+        raised = [f for f in result["findings"] if f.get("raised_by_pack")]
+        if path.name.startswith("detection-"):
+            assert mine == {"golden-test-2026-10/shell-probe", "golden-test-2026-10/shell-script"}
+            assert raised and all(f["check"] == "web.worker_child" for f in raised)
+        else:
+            assert not mine and not raised
+            assert result["score"]["probability"] > plain["score"]["probability"]
+
+
+@pytest.mark.parametrize("path", golden.cases(), ids=lambda p: p.name.removesuffix(".json.gz"))
 @pytest.mark.parametrize("mode", golden.ADVISOR_MODES)
 def test_each_case_still_gives_its_advisor_request(path, mode):
     """What the advisor would be sent (PR 3.1) is pinned like the findings."""

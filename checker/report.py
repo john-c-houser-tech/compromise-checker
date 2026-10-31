@@ -33,7 +33,14 @@ from pyrage import x25519
 
 from checker import __version__
 from checker.analysis import load_events, snapshot_of
-from checker.assess import analyze, count, events_of, load_assessment, store_assessment
+from checker.assess import (
+    analyze,
+    count,
+    events_of,
+    load_assessment,
+    packs_applied,
+    store_assessment,
+)
 from checker.baseline import USABLE, usable_bundles
 from checker.checks import BANDS, CATEGORIES, CHECKS_VERSION
 from checker.correlate import find_chains
@@ -261,10 +268,13 @@ def host_report(
     bundle_id=None,
     prior: tuple[float, str] = (DEFAULT_PRIOR, "default"),
     whitelist: Whitelist | None = None,
+    packs: list | None = None,
+    pack_problems: list[str] | None = None,
 ) -> HostReport:
     """A host's latest (or a given) bundle, analysed with the current
-    checks, whitelist and prior: analysed again if its stored assessment is
-    missing or older, reassessed if only the whitelist or prior changed."""
+    checks, whitelist, prior and threat packs: analysed again if its stored
+    assessment is missing or older or applied other packs, reassessed if
+    only the whitelist or prior changed."""
     rows = usable_bundles(store, host)
     if bundle_id is None and not rows:
         raise EvidenceError(f"no usable bundle for {host}")
@@ -276,8 +286,15 @@ def host_report(
     assessment = load_assessment(store, row["id"], identity)
     # Its evidence points into one parse of the bundle (event numbers,
     # snapshot keys): any newer parser or checks means analysing again.
-    if assessment is None or assessment.get("versions") != current_versions():
-        assessment = analyze(store, host, identity, recipients, row["id"], prior, whitelist)
+    # So do other packs: what they judge and detect isn't in the findings.
+    if (
+        assessment is None
+        or assessment.get("versions") != current_versions()
+        or assessment.get("packs", []) != packs_applied(packs)
+    ):
+        assessment = analyze(
+            store, host, identity, recipients, row["id"], prior, whitelist, packs, pack_problems
+        )
     elif (
         (assessment["score"]["prior"], assessment["score"]["prior_source"]) != prior
         or whitelist_hash(assessment) != (whitelist.digest() if whitelist else None)
@@ -398,6 +415,8 @@ def write_report(
     whitelists: Callable[[str], Whitelist | None] | None = None,
     advisor_enabled: bool = False,
     plain: bool = False,
+    packs: list | None = None,
+    pack_problems: list[str] | None = None,
 ) -> Path:
     """Write the report, encrypted to the evidence key (`report-….html.age`;
     read_report() reads it) unless `plain`, owner-only either way, and add
@@ -412,8 +431,9 @@ def write_report(
         raise EvidenceError(f"a plain report's name can't end in .age ({output.name})")
     priors = priors or (lambda _: (DEFAULT_PRIOR, "default"))
     whitelists = whitelists or (lambda _: None)
+    in_force = (packs, pack_problems)
     reports = [
-        host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h))
+        host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h), *in_force)
         for h in hosts
     ]
     html = render(reports, who_and_where(), advisor_enabled)

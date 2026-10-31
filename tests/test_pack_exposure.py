@@ -191,7 +191,7 @@ def test_the_report_says_the_prior_was_raised_and_keeps_it_when_reassessed(home)
 
     def report(prior):
         path = write_report(store, ["web01"], identity, config.recipients, base / "reports",
-                            priors=lambda host: prior)  # fmt: skip
+                            priors=lambda host: prior, packs=[PACK])  # fmt: skip
         return read_report(path, identity)
 
     html = report((0.02, "default"))

@@ -1,0 +1,4584 @@
+{
+ "checks": [
+  {
+   "check": "account.changes",
+   "findings": 3,
+   "status": "ran"
+  },
+  {
+   "check": "account.log_changes",
+   "findings": 10,
+   "status": "ran"
+  },
+  {
+   "check": "account.password",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "account.uid0",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "agent.stopped",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "clock.jump",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "container.host_namespace",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "container.new",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "container.privileged",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "files.backdated",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.deceptive",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.dev",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "files.privileged",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "files.scratch",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "files.unowned",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "files.web",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "group.privileged",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "history.disabled",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.core_dump",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.errors",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.oom_kill",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.segfault",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "kernel.taint",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "logs.cleared",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "logs.journald_config",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "logs.stopped",
+   "findings": 3,
+   "status": "ran"
+  },
+  {
+   "check": "mac.disabled",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "mail.domains",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "mail.relay",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "mail.volume",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "mail.web_user",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "net.config",
+   "findings": 2,
+   "status": "ran"
+  },
+  {
+   "check": "net.directory",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "net.listener",
+   "findings": 3,
+   "status": "ran"
+  },
+  {
+   "check": "net.managed_chain",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.metadata",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "net.peer",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "net.promiscuous",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.transfer",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "net.tunnel",
+   "findings": 2,
+   "status": "ran"
+  },
+  {
+   "check": "pack.detection",
+   "findings": 2,
+   "status": "ran"
+  },
+  {
+   "check": "pack.exposure",
+   "findings": 2,
+   "status": "ran"
+  },
+  {
+   "check": "package.changed",
+   "findings": 7,
+   "status": "ran"
+  },
+  {
+   "check": "pam.changes",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.at_jobs",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.changes",
+   "findings": 7,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.homes",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "persistence.ld_preload",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "process.executable",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "process.hidden",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.injected",
+   "findings": 5,
+   "status": "ran"
+  },
+  {
+   "check": "process.miner",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "process.reverse_shell",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "software.global",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "software.packages",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "software.repository",
+   "findings": 2,
+   "status": "ran"
+  },
+  {
+   "check": "software.tools",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.authorized_keys",
+   "findings": 3,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.guessed",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.login",
+   "findings": 3,
+   "status": "ran"
+  },
+  {
+   "check": "ssh.login_hours",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "sshd.config",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "sudo.rules",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "system.reboot",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "web.errors",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "web.exploit",
+   "findings": 2,
+   "status": "ran"
+  },
+  {
+   "check": "web.new_script_hit",
+   "findings": 1,
+   "status": "ran"
+  },
+  {
+   "check": "web.noise",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "web.worker_child",
+   "findings": 3,
+   "status": "ran"
+  }
+ ],
+ "findings": [
+  {
+   "band": "critical",
+   "category": "compromise indicator",
+   "check": "account.uid0",
+   "contribution": 4.6052,
+   "entities": [
+    "account:cc-toor"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "accounts",
+      "cc-toor"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 100.0,
+   "summary": "cc-toor has UID 0: it is root under another name",
+   "title": "An account other than root has UID 0",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "critical",
+   "category": "compromise indicator",
+   "check": "persistence.ld_preload",
+   "contribution": 4.6052,
+   "entities": [
+    "path:/etc/ld.so.preload"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "startup",
+      "/etc/ld.so.preload"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 100.0,
+   "summary": "/etc/ld.so.preload (32 bytes)",
+   "title": "/etc/ld.so.preload loads a library into every program",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "account.changes",
+   "contribution": 2.9957,
+   "entities": [
+    "account:cc-toor",
+    "group:root"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "accounts",
+      "cc-toor",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "cc-toor: primary group root (GID 0)",
+   "title": "A new account whose primary group is root-equivalent",
+   "uncertain": null,
+   "variant": "root_group"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "container.privileged",
+   "contribution": 2.9957,
+   "entities": [
+    "container:docker: cc-priv",
+    "image:docker.io/library/alpine"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "containers",
+      "docker: cc-priv",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "docker: cc-priv: mounts /, privileged; image docker.io/library/alpine:latest (running)",
+   "title": "A container that holds the host since the baseline",
+   "uncertain": null,
+   "variant": "new"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "files.privileged",
+   "contribution": 2.9957,
+   "entities": [
+    "path:/tmp/.cc-sh"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "unusual_files",
+      "/tmp/.cc-sh",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "/tmp/.cc-sh: set-user-ID, owner UID 0",
+   "title": "A new privileged file since the baseline",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "files.scratch",
+   "contribution": 0.6931,
+   "entities": [
+    "path:/tmp/.cc-sh"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "unusual_files",
+      "/tmp/.cc-sh"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "/tmp/.cc-sh (owner UID 0)",
+   "title": "A program in a scratch directory",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "files.web",
+   "contribution": 2.9957,
+   "entities": [
+    "path:/var/www/html/cc-shell.php"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "web_files",
+      "/var/www/html/cc-shell.php",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "/var/www/html/cc-shell.php (SHA-256 47d73aad164dc1b3\u2026)",
+   "title": "A new script in a web root",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "history.disabled",
+   "contribution": 2.9957,
+   "entities": [
+    "path:/root/.bash_history"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "shell_history",
+      "/root/.bash_history"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "/root/.bash_history",
+   "title": "A shell history file is a link to /dev/null",
+   "uncertain": null,
+   "variant": "link"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "logs.cleared",
+   "contribution": 2.9957,
+   "entities": [
+    "path:/var/log/wtmp"
+   ],
+   "entities_complete": true,
+   "evidence": [],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "/var/log/wtmp: 2304 bytes \u2192 0 bytes, same inode",
+   "title": "A log was truncated since the previous collection",
+   "uncertain": null,
+   "variant": "truncated"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "logs.stopped",
+   "contribution": 2.9957,
+   "entities": [
+    "program:auditd"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "service: auditd",
+      "removed"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "auditd",
+   "title": "A logging service that ran at the baseline isn't running",
+   "uncertain": null,
+   "variant": "not_running"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "logs.stopped",
+   "contribution": 0.3466,
+   "entities": [],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 260
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:59.421744+00:00",
+   "last_seen": "2026-10-29T15:50:59.421744+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "auditd.service - Security Auditing Service (stopped) at 2026-10-29T15:50:59.421744+00:00, not during a shutdown and not started again",
+   "title": "A logging or audit service was stopped",
+   "uncertain": null,
+   "variant": "unit"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "logs.stopped",
+   "contribution": 0.3466,
+   "entities": [],
+   "entities_complete": true,
+   "evidence": [],
+   "first_seen": "2026-10-29T15:50:59+00:00",
+   "last_seen": "2026-10-29T15:50:59+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "type=DAEMON_END msg=audit(1793289059.347:1010): op=terminate auid=0 uid=0 ses=4294967295 pid=1 subj=unconfined res=success\u001dAUID=\"root\" UID=\"root\"",
+   "title": "The audit daemon stopped, not during a shutdown",
+   "uncertain": null,
+   "variant": "audit_daemon"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "mac.disabled",
+   "contribution": 2.9957,
+   "entities": [],
+   "entities_complete": false,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: /usr/bin/man",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: /usr/lib/snapd/snap-confine",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: /usr/sbin/haveged",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: lsb_release",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: man_filter",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: man_groff",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: nvidia_modprobe",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: nvidia_modprobe//kmod",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: plasmashell",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: plasmashell//QtWebEngineProcess",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: rsyslogd",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: tcpdump",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: transmission-cli",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: transmission-daemon",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: transmission-gtk",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: transmission-qt",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: ubuntu_pro_apt_news",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: ubuntu_pro_esm_cache",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: ubuntu_pro_esm_cache//apt_methods",
+      "removed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "logging",
+      "apparmor: ubuntu_pro_esm_cache//apt_methods_gpgv",
+      "removed"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "28 unloaded, 0 no longer enforcing: /usr/bin/man, /usr/lib/snapd/snap-confine, /usr/sbin/haveged, lsb_release, man_filter and 23 more",
+   "title": "AppArmor profiles were unloaded or stopped enforcing",
+   "uncertain": null,
+   "variant": "apparmor"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "net.directory",
+   "contribution": 2.9957,
+   "entities": [
+    "address:127.0.0.1",
+    "account:www-data",
+    "pid:11433",
+    "program:sleep",
+    "exe:/usr/bin/sleep"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      11433
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:53.500000+00:00",
+   "last_seen": "2026-10-29T15:50:53.500000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "sleep (pid 11433, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
+   "title": "A web-server account reached SMB",
+   "uncertain": null,
+   "variant": "smb_winrm"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "pam.changes",
+   "contribution": 2.9957,
+   "entities": [
+    "path:/etc/pam.d/sshd",
+    "module:pam_exec.so"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "pam_rules",
+      "/etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "/etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true",
+   "title": "A PAM line was added that runs a program (pam_exec)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "persistence.changes",
+   "contribution": 0.6931,
+   "entities": [
+    "path:/etc/ld.so.preload"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "startup",
+      "/etc/ld.so.preload",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "/etc/ld.so.preload",
+   "title": "A new startup file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "process.executable",
+   "contribution": 2.9957,
+   "entities": [
+    "program:cc-sleep",
+    "pid:11399",
+    "exe:/root/cc-sleep (deleted)"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      11399
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:50.360000+00:00",
+   "last_seen": "2026-10-29T15:50:50.360000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "cc-sleep (pid 11399): /root/cc-sleep (deleted)",
+   "title": "A process whose program was deleted",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "process.injected",
+   "contribution": 0.6931,
+   "entities": [
+    "program:cc-sleep",
+    "pid:11399",
+    "exe:/root/cc-sleep (deleted)"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      11399
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:50.360000+00:00",
+   "last_seen": "2026-10-29T15:50:50.360000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "cc-sleep (pid 11399): /root/cc-sleep (deleted)",
+   "title": "A process has code mapped from a scratch or home file",
+   "uncertain": null,
+   "variant": "scratch"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "process.reverse_shell",
+   "contribution": 2.9957,
+   "entities": [
+    "program:bash",
+    "pid:11411",
+    "exe:/usr/bin/bash"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      11411
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:51.920000+00:00",
+   "last_seen": "2026-10-29T15:50:51.920000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "bash (pid 11411): stdin is tcp to 127.0.0.1:4444",
+   "title": "A shell talking to a network socket (a reverse shell)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "ssh.authorized_keys",
+   "contribution": 2.9957,
+   "entities": [
+    "account:ccadmin",
+    "key:SHA256:CzSF3yQ8jnMXDq9ydawYdkYBkcMrHZJ+x4ESWdEZ/Pw"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "authorized_keys",
+      "ccadmin SHA256:CzSF3yQ8jnMXDq9ydawYdkYBkcMrHZJ+x4ESWdEZ/Pw /home/ccadmin/.ssh/authorized_keys",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "ccadmin: ssh-ed25519 SHA256:CzSF3yQ8jnMXDq9ydawYdkYBkcMrHZJ+x4ESWdEZ/Pw in /home/ccadmin/.ssh/authorized_keys",
+   "title": "A new authorized SSH key",
+   "uncertain": null,
+   "variant": "new_key"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "ssh.authorized_keys",
+   "contribution": 0.3466,
+   "entities": [
+    "account:root",
+    "key:SHA256:1B2dCxpFRIz9uBl2sBsY6ucFmtnNlieRDHSAbuNtkAU"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "authorized_keys",
+      "root SHA256:1B2dCxpFRIz9uBl2sBsY6ucFmtnNlieRDHSAbuNtkAU /root/.ssh/authorized_keys",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "root: ssh-ed25519 SHA256:1B2dCxpFRIz9uBl2sBsY6ucFmtnNlieRDHSAbuNtkAU in /root/.ssh/authorized_keys",
+   "title": "A new authorized SSH key",
+   "uncertain": null,
+   "variant": "new_key"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "ssh.authorized_keys",
+   "contribution": 0.3466,
+   "entities": [
+    "account:root",
+    "key:SHA256:FFeWqwtNvmOseYH0Yw5G2aTo4cAjEc02kQgBxlIMix0"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "authorized_keys",
+      "root SHA256:FFeWqwtNvmOseYH0Yw5G2aTo4cAjEc02kQgBxlIMix0 /root/.ssh/authorized_keys",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "root: ssh-ed25519 SHA256:FFeWqwtNvmOseYH0Yw5G2aTo4cAjEc02kQgBxlIMix0 in /root/.ssh/authorized_keys",
+   "title": "A new authorized SSH key",
+   "uncertain": null,
+   "variant": "new_key"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "sshd.config",
+   "contribution": 2.9957,
+   "entities": [
+    "path:/etc/ssh/sshd_config.d/00-cc-proof.conf"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "sshd_config",
+      "/etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "/etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes",
+   "title": "An sshd setting was added",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "sudo.rules",
+   "contribution": 2.9957,
+   "entities": [
+    "path:/etc/sudoers.d/cc-admin",
+    "account:ccadmin"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "sudo_rules",
+      "/etc/sudoers.d/cc-admin: ccadmin ALL=(ALL) NOPASSWD: ALL",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "/etc/sudoers.d/cc-admin: ccadmin ALL=(ALL) NOPASSWD: ALL",
+   "title": "A new sudo rule without a password (NOPASSWD)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "web.new_script_hit",
+   "contribution": 0.6931,
+   "entities": [
+    "path:/var/www/html/cc-shell.php",
+    "account:www-data"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 244
+    },
+    {
+     "event": 245
+    },
+    {
+     "event": 246
+    },
+    {
+     "event": 247
+    },
+    {
+     "event": 248
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "web_files",
+      "/var/www/html/cc-shell.php",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:56.040451+00:00",
+   "last_seen": "2026-10-29T15:50:56.040451+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "/var/www/html/cc-shell.php: 5 requests answered, from 127.0.0.0/24",
+   "title": "A script new since the baseline answered requests",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "web.worker_child",
+   "contribution": 4.6052,
+   "entities": [
+    "account:www-data",
+    "program:dash"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 254
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:56.040451+00:00",
+   "last_seen": "2026-10-29T15:50:56.040451+00:00",
+   "likelihood_ratio": 100.0,
+   "new": true,
+   "raised_by_pack": "golden-test-2026-10 v1 (worker-child)",
+   "ratio": 100.0,
+   "summary": "www-data ran dash 1 time, e.g. sh -c id",
+   "title": "A web account started a shell running an attacker's command",
+   "uncertain": null,
+   "variant": "history"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "web.worker_child",
+   "contribution": 0.3466,
+   "entities": [
+    "account:www-data",
+    "program:id"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 250
+    },
+    {
+     "event": 255
+    },
+    {
+     "event": 257
+    },
+    {
+     "event": 259
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:56.040451+00:00",
+   "last_seen": "2026-10-29T15:50:56.040451+00:00",
+   "likelihood_ratio": 100.0,
+   "new": true,
+   "raised_by_pack": "golden-test-2026-10 v1 (worker-child)",
+   "ratio": 100.0,
+   "summary": "www-data ran id 4 times, e.g. id",
+   "title": "A web account started a reconnaissance command",
+   "uncertain": null,
+   "variant": "history"
+  },
+  {
+   "band": "high",
+   "category": "compromise indicator",
+   "check": "web.worker_child",
+   "contribution": 0.3466,
+   "entities": [
+    "account:www-data",
+    "program:uname"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 252
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:56.040451+00:00",
+   "last_seen": "2026-10-29T15:50:56.040451+00:00",
+   "likelihood_ratio": 100.0,
+   "new": true,
+   "raised_by_pack": "golden-test-2026-10 v1 (worker-child)",
+   "ratio": 100.0,
+   "summary": "www-data ran uname 1 time, e.g. uname -a",
+   "title": "A web account started a reconnaissance command",
+   "uncertain": null,
+   "variant": "history"
+  },
+  {
+   "band": "high",
+   "category": "exposure",
+   "check": "pack.exposure",
+   "contribution": 0.0,
+   "entities": [
+    "package:php8.3-fpm",
+    "pack:golden-test-2026-10"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "packages",
+      "php8.3-fpm amd64"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "php8.3-fpm 8.3.6-0ubuntu0.24.04.13 is before the fix 8.3.6-0ubuntu0.24.04.14 (golden-test-2026-10 v1)",
+   "title": "A package is vulnerable to a threat a pack describes",
+   "uncertain": null,
+   "variant": "vulnerable"
+  },
+  {
+   "band": "high",
+   "category": "exposure",
+   "check": "pack.exposure",
+   "contribution": 0.0,
+   "entities": [
+    "setting:session.upload_progress.enabled",
+    "pack:golden-test-2026-10"
+   ],
+   "entities_complete": true,
+   "evidence": [],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 20.0,
+   "summary": "session.upload_progress.enabled should be off (upload-progress-off, golden-test-2026-10 v1): /etc/php/8.3/fpm/php.ini: on (PHP's default: set in no file)",
+   "title": "A threat pack's mitigation isn't in place",
+   "uncertain": null,
+   "variant": "mitigation_missing"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.changes",
+   "contribution": 0.3466,
+   "entities": [
+    "account:cc-toor"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "accounts",
+      "cc-toor",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "cc-toor (UID 0, shell /bin/bash)",
+   "title": "A new account",
+   "uncertain": null,
+   "variant": "new"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.changes",
+   "contribution": 0.3466,
+   "entities": [
+    "account:ccadmin"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "accounts",
+      "ccadmin",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "ccadmin (UID 1002, shell /bin/bash)",
+   "title": "A new account",
+   "uncertain": null,
+   "variant": "new"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 1.3863,
+   "entities": [
+    "account:cc-toor"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 232
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:50.791329+00:00",
+   "last_seen": "2026-10-29T15:50:50.791329+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "created: cc-toor UID 0",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.3194,
+   "entities": [
+    "account:ccadmin"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 1317
+    }
+   ],
+   "first_seen": "2026-10-29T15:51:42.370137+00:00",
+   "last_seen": "2026-10-29T15:51:42.370137+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "created: ccadmin UID 1002",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:proofuser"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 166
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:54.065430+00:00",
+   "last_seen": "2026-10-29T15:48:54.065430+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "created: proofuser UID 1001",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates proofuser to give the persistence modules something to find.",
+    "rule": "proof-proofuser-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:scanner"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 163
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:47.415601+00:00",
+   "last_seen": "2026-10-29T15:48:47.415601+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "created: scanner UID 1000",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up.",
+    "rule": "proof-scanner-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "mail.domains",
+   "contribution": 1.3863,
+   "entities": [
+    "domain:d0.invalid",
+    "domain:d1.invalid",
+    "domain:d10.invalid",
+    "domain:d11.invalid",
+    "domain:d12.invalid",
+    "domain:d13.invalid",
+    "domain:d14.invalid",
+    "domain:d15.invalid",
+    "domain:d16.invalid",
+    "domain:d17.invalid",
+    "domain:d18.invalid",
+    "domain:d19.invalid",
+    "domain:d2.invalid",
+    "domain:d20.invalid",
+    "domain:d21.invalid",
+    "domain:d22.invalid",
+    "domain:d23.invalid",
+    "domain:d24.invalid",
+    "domain:d25.invalid",
+    "domain:d26.invalid",
+    "domain:d27.invalid",
+    "domain:d28.invalid",
+    "domain:d29.invalid",
+    "domain:d3.invalid",
+    "domain:d30.invalid",
+    "domain:d31.invalid",
+    "domain:d32.invalid",
+    "domain:d33.invalid",
+    "domain:d34.invalid",
+    "domain:d35.invalid",
+    "domain:d36.invalid",
+    "domain:d37.invalid",
+    "domain:d38.invalid",
+    "domain:d39.invalid",
+    "domain:d4.invalid",
+    "domain:d40.invalid",
+    "domain:d41.invalid",
+    "domain:d42.invalid",
+    "domain:d43.invalid",
+    "domain:d44.invalid",
+    "domain:d45.invalid",
+    "domain:d46.invalid",
+    "domain:d47.invalid",
+    "domain:d48.invalid",
+    "domain:d49.invalid",
+    "domain:d5.invalid",
+    "domain:d50.invalid",
+    "domain:d51.invalid",
+    "domain:d52.invalid",
+    "domain:d53.invalid",
+    "domain:d54.invalid",
+    "domain:d55.invalid",
+    "domain:d56.invalid",
+    "domain:d57.invalid",
+    "domain:d58.invalid",
+    "domain:d59.invalid",
+    "domain:d6.invalid",
+    "domain:d7.invalid",
+    "domain:d8.invalid",
+    "domain:d9.invalid"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 279
+    },
+    {
+     "event": 282
+    },
+    {
+     "event": 289
+    },
+    {
+     "event": 292
+    },
+    {
+     "event": 301
+    },
+    {
+     "event": 307
+    },
+    {
+     "event": 314
+    },
+    {
+     "event": 321
+    },
+    {
+     "event": 328
+    },
+    {
+     "event": 335
+    },
+    {
+     "event": 342
+    },
+    {
+     "event": 349
+    },
+    {
+     "event": 356
+    },
+    {
+     "event": 363
+    },
+    {
+     "event": 370
+    },
+    {
+     "event": 377
+    },
+    {
+     "event": 384
+    },
+    {
+     "event": 391
+    },
+    {
+     "event": 398
+    },
+    {
+     "event": 405
+    },
+    {
+     "event": 412
+    },
+    {
+     "event": 419
+    },
+    {
+     "event": 426
+    },
+    {
+     "event": 433
+    },
+    {
+     "event": 440
+    },
+    {
+     "event": 447
+    },
+    {
+     "event": 454
+    },
+    {
+     "event": 461
+    },
+    {
+     "event": 468
+    },
+    {
+     "event": 475
+    },
+    {
+     "event": 482
+    },
+    {
+     "event": 489
+    },
+    {
+     "event": 496
+    },
+    {
+     "event": 503
+    },
+    {
+     "event": 510
+    },
+    {
+     "event": 517
+    },
+    {
+     "event": 524
+    },
+    {
+     "event": 531
+    },
+    {
+     "event": 538
+    },
+    {
+     "event": 545
+    },
+    {
+     "event": 552
+    },
+    {
+     "event": 559
+    },
+    {
+     "event": 566
+    },
+    {
+     "event": 573
+    },
+    {
+     "event": 580
+    },
+    {
+     "event": 587
+    },
+    {
+     "event": 594
+    },
+    {
+     "event": 601
+    },
+    {
+     "event": 608
+    },
+    {
+     "event": 615
+    }
+   ],
+   "first_seen": "2026-10-29T15:51:08.271240+00:00",
+   "last_seen": "2026-10-29T15:51:09.910451+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "2026-10-29: 60 new domains: d0.invalid, d1.invalid, d10.invalid, d11.invalid, d12.invalid, d13.invalid, d14.invalid, d15.invalid and 52 more",
+   "title": "Mail to many recipient domains never written to before",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "mail.volume",
+   "contribution": 1.3863,
+   "entities": [
+    "host:ubuntu24.04"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 279
+    },
+    {
+     "event": 282
+    },
+    {
+     "event": 289
+    },
+    {
+     "event": 292
+    },
+    {
+     "event": 301
+    },
+    {
+     "event": 307
+    },
+    {
+     "event": 314
+    },
+    {
+     "event": 321
+    },
+    {
+     "event": 328
+    },
+    {
+     "event": 335
+    },
+    {
+     "event": 342
+    },
+    {
+     "event": 349
+    },
+    {
+     "event": 356
+    },
+    {
+     "event": 363
+    },
+    {
+     "event": 370
+    },
+    {
+     "event": 377
+    },
+    {
+     "event": 384
+    },
+    {
+     "event": 391
+    },
+    {
+     "event": 398
+    },
+    {
+     "event": 405
+    },
+    {
+     "event": 412
+    },
+    {
+     "event": 419
+    },
+    {
+     "event": 426
+    },
+    {
+     "event": 433
+    },
+    {
+     "event": 440
+    },
+    {
+     "event": 447
+    },
+    {
+     "event": 454
+    },
+    {
+     "event": 461
+    },
+    {
+     "event": 468
+    },
+    {
+     "event": 475
+    },
+    {
+     "event": 482
+    },
+    {
+     "event": 489
+    },
+    {
+     "event": 496
+    },
+    {
+     "event": 503
+    },
+    {
+     "event": 510
+    },
+    {
+     "event": 517
+    },
+    {
+     "event": 524
+    },
+    {
+     "event": 531
+    },
+    {
+     "event": 538
+    },
+    {
+     "event": 545
+    },
+    {
+     "event": 552
+    },
+    {
+     "event": 559
+    },
+    {
+     "event": 566
+    },
+    {
+     "event": 573
+    },
+    {
+     "event": 580
+    },
+    {
+     "event": 587
+    },
+    {
+     "event": 594
+    },
+    {
+     "event": 601
+    },
+    {
+     "event": 608
+    },
+    {
+     "event": 615
+    }
+   ],
+   "first_seen": "2026-10-29T15:51:08.271240+00:00",
+   "last_seen": "2026-10-29T15:51:12.355241+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "2026-10-29: 150 deliveries attempted; the baseline averaged 1.0 a day",
+   "title": "A sudden jump in outgoing mail",
+   "uncertain": null,
+   "variant": "deliveries"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "mail.web_user",
+   "contribution": 1.3863,
+   "entities": [
+    "account:www-data"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 273
+    },
+    {
+     "event": 274
+    },
+    {
+     "event": 283
+    },
+    {
+     "event": 288
+    },
+    {
+     "event": 296
+    },
+    {
+     "event": 304
+    },
+    {
+     "event": 311
+    },
+    {
+     "event": 318
+    },
+    {
+     "event": 325
+    },
+    {
+     "event": 332
+    },
+    {
+     "event": 339
+    },
+    {
+     "event": 346
+    },
+    {
+     "event": 353
+    },
+    {
+     "event": 360
+    },
+    {
+     "event": 367
+    },
+    {
+     "event": 374
+    },
+    {
+     "event": 381
+    },
+    {
+     "event": 388
+    },
+    {
+     "event": 395
+    },
+    {
+     "event": 402
+    },
+    {
+     "event": 409
+    },
+    {
+     "event": 416
+    },
+    {
+     "event": 423
+    },
+    {
+     "event": 430
+    },
+    {
+     "event": 437
+    },
+    {
+     "event": 444
+    },
+    {
+     "event": 451
+    },
+    {
+     "event": 458
+    },
+    {
+     "event": 465
+    },
+    {
+     "event": 472
+    },
+    {
+     "event": 479
+    },
+    {
+     "event": 486
+    },
+    {
+     "event": 493
+    },
+    {
+     "event": 500
+    },
+    {
+     "event": 507
+    },
+    {
+     "event": 514
+    },
+    {
+     "event": 521
+    },
+    {
+     "event": 528
+    },
+    {
+     "event": 535
+    },
+    {
+     "event": 542
+    },
+    {
+     "event": 549
+    },
+    {
+     "event": 556
+    },
+    {
+     "event": 563
+    },
+    {
+     "event": 570
+    },
+    {
+     "event": 577
+    },
+    {
+     "event": 584
+    },
+    {
+     "event": 591
+    },
+    {
+     "event": 598
+    },
+    {
+     "event": 605
+    },
+    {
+     "event": 612
+    }
+   ],
+   "first_seen": "2026-10-29T15:51:08.198104+00:00",
+   "last_seen": "2026-10-29T15:51:12.349824+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "www-data: 150 messages",
+   "title": "Mail submitted by a web-server account",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "net.config",
+   "contribution": 1.3863,
+   "entities": [
+    "path:/etc/hosts"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "network_files",
+      "/etc/hosts",
+      "changed"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "/etc/hosts",
+   "title": "A network configuration file was changed",
+   "uncertain": null,
+   "variant": "file"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "net.config",
+   "contribution": 0.6931,
+   "entities": [],
+   "entities_complete": false,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "firewall_rules",
+      "nft: [ip raw / chain PREROUTING] ip daddr 172.17.0.3 iifname != \"docker0\" counter drop",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "1 rule line(s) added: nft: [ip raw / chain PREROUTING] ip daddr 172.17.0.3 iifname != \"docker0\" counter drop",
+   "title": "Firewall rules added since the baseline",
+   "uncertain": null,
+   "variant": "firewall"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "net.metadata",
+   "contribution": 1.3863,
+   "entities": [
+    "address:169.254.169.254",
+    "account:root",
+    "pid:11422",
+    "program:sleep",
+    "exe:/usr/bin/sleep"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      11422
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:52.960000+00:00",
+   "last_seen": "2026-10-29T15:50:52.960000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "sleep (pid 11422, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
+   "title": "A program other than the cloud agent reached the metadata address",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "net.tunnel",
+   "contribution": 1.3863,
+   "entities": [
+    "pid:11438",
+    "program:ssh",
+    "account:root",
+    "exe:/usr/bin/ssh"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      11438
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:53.750000+00:00",
+   "last_seen": "2026-10-29T15:50:53.750000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "ssh (pid 11438, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
+   "title": "An SSH client forwarding ports (a tunnel)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "net.tunnel",
+   "contribution": 0.6931,
+   "entities": [
+    "pid:11436",
+    "program:sshd"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      11436
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:53.530000+00:00",
+   "last_seen": "2026-10-29T15:50:53.530000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "sshd session (pid 11436) listening on 127.0.0.1 port 2222",
+   "title": "An SSH session listening on a port (a remote forward)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "pack.detection",
+   "contribution": 2.0794,
+   "entities": [
+    "pack:golden-test-2026-10"
+   ],
+   "entities_complete": false,
+   "evidence": [
+    {
+     "event": 250
+    },
+    {
+     "event": 252
+    },
+    {
+     "event": 255
+    },
+    {
+     "event": 257
+    },
+    {
+     "event": 259
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:56.040451+00:00",
+   "last_seen": "2026-10-29T15:50:56.040451+00:00",
+   "likelihood_ratio": 8.0,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 8.0,
+   "summary": "5 matching events within 1m from 33 (5 in all) (golden-test-2026-10 v1, since the host was exposed)",
+   "title": "A web account probing the host",
+   "uncertain": null,
+   "variant": "golden-test-2026-10/shell-probe"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "pack.detection",
+   "contribution": 0.6931,
+   "entities": [
+    "pack:golden-test-2026-10",
+    "path:/var/www/html/cc-shell.php"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "web_files",
+      "/var/www/html/cc-shell.php"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": 4.0,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "web_files present: /var/www/html/cc-shell.php (golden-test-2026-10 v1, since the host was exposed)",
+   "title": "A web shell's name in a web root",
+   "uncertain": null,
+   "variant": "golden-test-2026-10/shell-script"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.at_jobs",
+   "contribution": 0.0,
+   "entities": [
+    "path:/var/spool/cron/atjobs/a0000101c80f0c"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "cron",
+      "/var/spool/cron/atjobs/a0000101c80f0c"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "/var/spool/cron/atjobs/a0000101c80f0c (owner UID 0)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof queues an at job for the persistence modules to find.",
+    "rule": "proof-at-job-debian"
+   },
+   "title": "A queued at job",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.changes",
+   "contribution": 1.3863,
+   "entities": [
+    "path:/etc/cron.d/cc-proof"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "cron",
+      "/etc/cron.d/cc-proof",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "/etc/cron.d/cc-proof",
+   "title": "A new cron file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.changes",
+   "contribution": 0.1386,
+   "entities": [
+    "path:/etc/systemd/system/cc-proof.service"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "systemd",
+      "/etc/systemd/system/cc-proof.service",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "/etc/systemd/system/cc-proof.service",
+   "title": "A new systemd file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.changes",
+   "contribution": 0.1386,
+   "entities": [
+    "path:/etc/systemd/system/cc-proof.timer"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "systemd",
+      "/etc/systemd/system/cc-proof.timer",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "/etc/systemd/system/cc-proof.timer",
+   "title": "A new systemd file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.changes",
+   "contribution": 0.1386,
+   "entities": [
+    "path:/home/ccadmin/.bash_logout"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "startup",
+      "/home/ccadmin/.bash_logout",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "/home/ccadmin/.bash_logout",
+   "title": "A new startup file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.changes",
+   "contribution": 0.1386,
+   "entities": [
+    "path:/home/ccadmin/.bashrc"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "startup",
+      "/home/ccadmin/.bashrc",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "/home/ccadmin/.bashrc",
+   "title": "A new startup file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "persistence.changes",
+   "contribution": 0.1386,
+   "entities": [
+    "path:/home/ccadmin/.profile"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "startup",
+      "/home/ccadmin/.profile",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "/home/ccadmin/.profile",
+   "title": "A new startup file",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "software.repository",
+   "contribution": 1.3863,
+   "entities": [
+    "path:/etc/apt/keyrings/cc-proof.gpg"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "software_files",
+      "/etc/apt/keyrings/cc-proof.gpg",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "/etc/apt/keyrings/cc-proof.gpg",
+   "title": "A package signing key was added",
+   "uncertain": null,
+   "variant": "key"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "software.repository",
+   "contribution": 0.6931,
+   "entities": [
+    "path:/etc/apt/sources.list.d/cc-proof.list"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "software_files",
+      "/etc/apt/sources.list.d/cc-proof.list",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "/etc/apt/sources.list.d/cc-proof.list",
+   "title": "A package repository was added",
+   "uncertain": null,
+   "variant": "repository"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "software.tools",
+   "contribution": 1.3863,
+   "entities": [
+    "package:nmap"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "packages",
+      "nmap amd64",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:51:04.587984+00:00",
+   "last_seen": "2026-10-29T15:51:04.587984+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "nmap 7.94+git20230807.3be01efb1+dfsg-3build2",
+   "title": "An attack or tunnelling tool was installed",
+   "uncertain": null,
+   "variant": "attack_tool"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "ssh.login",
+   "contribution": 1.3863,
+   "entities": [
+    "address:127.0.0.1",
+    "account:root"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 240
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:54.218144+00:00",
+   "last_seen": "2026-10-29T15:50:54.218144+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "127.0.0.1: 1 login(s) as root",
+   "title": "Logins from an address never seen before",
+   "uncertain": null,
+   "variant": "new_address"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "ssh.login",
+   "contribution": 0.0,
+   "entities": [
+    "account:root",
+    "address:127.0.0.1"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 240
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:54.218144+00:00",
+   "last_seen": "2026-10-29T15:50:54.218144+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "root from 127.0.0.1 (publickey)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof logs in as root to set the server up.",
+    "rule": "proof-root-login"
+   },
+   "title": "A direct root login over SSH",
+   "uncertain": null,
+   "variant": "root_login"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "ssh.login",
+   "contribution": 0.0,
+   "entities": [
+    "account:root",
+    "address:203.0.113.11"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 122
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:00.033385+00:00",
+   "last_seen": "2026-10-29T15:48:00.033385+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "root from 203.0.113.11 (publickey)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof logs in as root to set the server up.",
+    "rule": "proof-root-login"
+   },
+   "title": "A direct root login over SSH",
+   "uncertain": null,
+   "variant": "root_login"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "web.exploit",
+   "contribution": 1.3863,
+   "entities": [
+    "address:127.0.0.0/24"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 248
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:56.040451+00:00",
+   "last_seen": "2026-10-29T15:50:56.040451+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "127.0.0.0/24: 1 request (status 200), e.g. /cc-shell.php?c=[MASKED:value]&f=[MASKED:exploit:traversal]",
+   "title": "A traversal attack answered",
+   "uncertain": null,
+   "variant": "answered"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:dnsmasq"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 153
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:38.236615+00:00",
+   "last_seen": "2026-10-29T15:48:38.236615+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: dnsmasq UID 999",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account).",
+    "rule": "proof-docker-dnsmasq-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "group:docker"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 158
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:40.005823+00:00",
+   "last_seen": "2026-10-29T15:48:40.005823+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: group docker",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu, which creates the docker group.",
+    "rule": "proof-docker-group"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0934,
+   "entities": [
+    "group:postdrop"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 170
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:58.565010+00:00",
+   "last_seen": "2026-10-29T15:48:58.565010+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: group postdrop",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0934,
+   "entities": [
+    "group:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 168
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:58.364098+00:00",
+   "last_seen": "2026-10-29T15:48:58.364098+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: group postfix",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0934,
+   "entities": [
+    "group:ssl-cert"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 167
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:56.083224+00:00",
+   "last_seen": "2026-10-29T15:48:56.083224+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: group ssl-cert",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0934,
+   "entities": [
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 169
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:58.435284+00:00",
+   "last_seen": "2026-10-29T15:48:58.435284+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "created: postfix UID 110",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "container.new",
+   "contribution": 0.4055,
+   "entities": [
+    "container:docker: cc-priv",
+    "image:docker.io/library/alpine"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "containers",
+      "docker: cc-priv",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "docker: cc-priv: image docker.io/library/alpine:latest (running)",
+   "title": "A container new since the baseline",
+   "uncertain": null,
+   "variant": "new"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "net.listener",
+   "contribution": 0.4055,
+   "entities": [
+    "program:sshd",
+    "address:127.0.0.1",
+    "account:root"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "listeners",
+      "tcp 127.0.0.1:2222 netns=net:[4026531840]",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "tcp 127.0.0.1:2222 netns=net:[4026531840]: sshd",
+   "title": "A new listening port",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "net.listener",
+   "contribution": 0.3466,
+   "entities": [
+    "program:python3",
+    "address:127.0.0.1",
+    "account:root"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "listeners",
+      "tcp 127.0.0.1:4444 netns=net:[4026531840]",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "tcp 127.0.0.1:4444 netns=net:[4026531840]: python3",
+   "title": "A new listening port",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "net.listener",
+   "contribution": 0.3466,
+   "entities": [
+    "program:python3",
+    "address:127.0.0.1",
+    "account:root"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "listeners",
+      "tcp 127.0.0.1:445 netns=net:[4026531840]",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "tcp 127.0.0.1:445 netns=net:[4026531840]: python3",
+   "title": "A new listening port",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "net.peer",
+   "contribution": 0.4055,
+   "entities": [
+    "program:dockerd",
+    "address:203.0.113.2"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "peers",
+      "dockerd 203.0.113.2/24 port 443",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "dockerd 203.0.113.2/24 port 443 (open at collection)",
+   "title": "A new outgoing destination",
+   "uncertain": null,
+   "variant": "new_destination"
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "package.changed",
+   "contribution": 0.4055,
+   "entities": [],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.postinst",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.preinst",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.prerm",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.shlibs",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.triggers",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.shlibs",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.symbols",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.triggers",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.shlibs",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.symbols",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.triggers",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libssh2-1t64:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libssh2-1t64:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libssh2-1t64:amd64.shlibs",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info",
+      "changed"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/status",
+      "changed"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "30 list file(s): expected after package installs and updates; a rewrite to hide a replaced file would show here too",
+   "title": "The package managers' checksum lists changed since the baseline",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "low",
+   "category": "compromise indicator",
+   "check": "software.packages",
+   "contribution": 0.4055,
+   "entities": [
+    "package:libblas3",
+    "package:liblinear4",
+    "package:liblua5.4-0",
+    "package:libssh2-1t64",
+    "package:nmap-common",
+    "package:nmap"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "packages",
+      "libblas3 amd64",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "packages",
+      "liblinear4 amd64",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "packages",
+      "liblua5.4-0 amd64",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "packages",
+      "libssh2-1t64 amd64",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "packages",
+      "nmap-common all",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "packages",
+      "nmap amd64",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:51:03.906981+00:00",
+   "last_seen": "2026-10-29T15:51:04.587984+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "6: libblas3, liblinear4, liblua5.4-0, libssh2-1t64, nmap-common, nmap",
+   "title": "Packages installed since the baseline",
+   "uncertain": null,
+   "variant": "installed"
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:(sd-pam)",
+    "pid:814",
+    "exe:/usr/lib/systemd/systemd-executor"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      814
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:00.520000+00:00",
+   "last_seen": "2026-10-29T15:48:00.520000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "(sd-pam) (pid 814): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": "replaced"
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:dbus-daemon",
+    "pid:664",
+    "exe:/usr/bin/dbus-daemon"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      664
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:47:58.160000+00:00",
+   "last_seen": "2026-10-29T15:47:58.160000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "dbus-daemon (pid 664): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": "replaced"
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:systemd",
+    "pid:813",
+    "exe:/usr/lib/systemd/systemd"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      813
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:00.490000+00:00",
+   "last_seen": "2026-10-29T15:48:00.490000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "systemd (pid 813): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": "replaced"
+  },
+  {
+   "band": "low",
+   "category": "hygiene",
+   "check": "process.injected",
+   "contribution": 0.0,
+   "entities": [
+    "program:systemd-logind",
+    "pid:673",
+    "exe:/usr/lib/systemd/systemd-logind"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "live": [
+      "processes",
+      673
+     ]
+    }
+   ],
+   "first_seen": "2026-10-29T15:47:58.460000+00:00",
+   "last_seen": "2026-10-29T15:47:58.460000+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.5,
+   "summary": "systemd-logind (pid 673): /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0 (deleted)",
+   "title": "A process still uses replaced system libraries (restart it after the update)",
+   "uncertain": null,
+   "variant": "replaced"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "files.unowned",
+   "contribution": 0.0,
+   "entities": [
+    "path:/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "unowned_executables",
+      "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache (SHA-256 c22c46421f20ce55\u2026)",
+   "title": "An executable no package installed (made by a package after install)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "persistence.homes",
+   "contribution": 0.0,
+   "entities": [
+    "path:/home/proofuser/.config/systemd/user/proof.service"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "systemd",
+      "/home/proofuser/.config/systemd/user/proof.service"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/home/proofuser/.config/systemd/user/proof.service",
+   "title": "A user's own systemd unit",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "web.exploit",
+   "contribution": 0.0,
+   "entities": [
+    "address:127.0.0.0/24"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 205
+    }
+   ],
+   "first_seen": "2026-10-29T15:49:38.040451+00:00",
+   "last_seen": "2026-10-29T15:49:38.040451+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "127.0.0.0/24: 1 request (status 404), e.g. /x?f=[MASKED:exploit:traversal]",
+   "title": "A traversal attack refused",
+   "uncertain": null,
+   "variant": "refused"
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf",
+    "package:modemmanager"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/dbus-1/system.d/org.freedesktop.ModemManager1.conf (modemmanager): missing",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf",
+    "package:packagekit"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/dbus-1/system.d/org.freedesktop.PackageKit.conf (packagekit): missing",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/init/thermald.conf",
+    "package:thermald"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/init/thermald.conf"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/init/thermald.conf (thermald): missing",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/nginx/sites-available/default",
+    "package:nginx-common"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/nginx/sites-available/default"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/nginx/sites-available/default (nginx-common): changed",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/pam.d/sshd",
+    "package:openssh-server"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/pam.d/sshd"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/pam.d/sshd (openssh-server): changed",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "hygiene",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [
+    "path:/etc/thermald/thermal-cpu-cdev-order.xml",
+    "package:thermald"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "item": [
+      "package_changes",
+      "/etc/thermald/thermal-cpu-cdev-order.xml"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "/etc/thermald/thermal-cpu-cdev-order.xml (thermald): changed",
+   "title": "A package's configuration file was edited",
+   "uncertain": null,
+   "variant": null
+  }
+ ],
+ "gaps": [
+  "login hours not judged for 2 accounts: fewer than 10 logins or 21 days of history"
+ ],
+ "score": {
+  "band": "Critical",
+  "chains": [
+   {
+    "account": "ccadmin",
+    "chain": "new-account-escalated-used",
+    "events": [
+     1319
+    ],
+    "findings": [
+     19,
+     23
+    ],
+    "ratio": 5.0,
+    "title": "A new account or key, given privilege, then used to log in"
+   },
+   {
+    "account": "www-data",
+    "chain": "web-shell-used",
+    "events": [],
+    "findings": [
+     24,
+     25
+    ],
+    "ratio": 5.0,
+    "title": "A script new since the baseline answered requests, then the web account started a shell or tool"
+   }
+  ],
+  "contributors": [
+   {
+    "capped": null,
+    "check": "account.uid0",
+    "contribution": 4.6052,
+    "finding": 0,
+    "ratio": 100.0,
+    "share": 0.0495,
+    "title": "An account other than root has UID 0"
+   },
+   {
+    "capped": null,
+    "check": "persistence.ld_preload",
+    "contribution": 4.6052,
+    "finding": 1,
+    "ratio": 100.0,
+    "share": 0.0495,
+    "title": "/etc/ld.so.preload loads a library into every program"
+   },
+   {
+    "capped": null,
+    "check": "web.worker_child",
+    "contribution": 4.6052,
+    "finding": 25,
+    "ratio": 100.0,
+    "share": 0.0495,
+    "title": "A web account started a shell running an attacker's command"
+   },
+   {
+    "capped": null,
+    "check": "account.changes",
+    "contribution": 2.9957,
+    "finding": 2,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A new account whose primary group is root-equivalent"
+   },
+   {
+    "capped": null,
+    "check": "container.privileged",
+    "contribution": 2.9957,
+    "finding": 3,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A container that holds the host since the baseline"
+   },
+   {
+    "capped": null,
+    "check": "files.privileged",
+    "contribution": 2.9957,
+    "finding": 4,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A new privileged file since the baseline"
+   },
+   {
+    "capped": null,
+    "check": "files.web",
+    "contribution": 2.9957,
+    "finding": 6,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A new script in a web root"
+   },
+   {
+    "capped": null,
+    "check": "history.disabled",
+    "contribution": 2.9957,
+    "finding": 7,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A shell history file is a link to /dev/null"
+   },
+   {
+    "capped": null,
+    "check": "logs.cleared",
+    "contribution": 2.9957,
+    "finding": 8,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A log was truncated since the previous collection"
+   },
+   {
+    "capped": null,
+    "check": "logs.stopped",
+    "contribution": 2.9957,
+    "finding": 9,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A logging service that ran at the baseline isn't running"
+   },
+   {
+    "capped": null,
+    "check": "mac.disabled",
+    "contribution": 2.9957,
+    "finding": 12,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "AppArmor profiles were unloaded or stopped enforcing"
+   },
+   {
+    "capped": null,
+    "check": "net.directory",
+    "contribution": 2.9957,
+    "finding": 13,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A web-server account reached SMB"
+   },
+   {
+    "capped": null,
+    "check": "pam.changes",
+    "contribution": 2.9957,
+    "finding": 14,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A PAM line was added that runs a program (pam_exec)"
+   },
+   {
+    "capped": null,
+    "check": "process.executable",
+    "contribution": 2.9957,
+    "finding": 16,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A process whose program was deleted"
+   },
+   {
+    "capped": null,
+    "check": "process.reverse_shell",
+    "contribution": 2.9957,
+    "finding": 18,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A shell talking to a network socket (a reverse shell)"
+   },
+   {
+    "capped": null,
+    "check": "ssh.authorized_keys",
+    "contribution": 2.9957,
+    "finding": 19,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A new authorized SSH key"
+   },
+   {
+    "capped": null,
+    "check": "sshd.config",
+    "contribution": 2.9957,
+    "finding": 22,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "An sshd setting was added"
+   },
+   {
+    "capped": null,
+    "check": "sudo.rules",
+    "contribution": 2.9957,
+    "finding": 23,
+    "ratio": 20.0,
+    "share": 0.0322,
+    "title": "A new sudo rule without a password (NOPASSWD)"
+   },
+   {
+    "capped": null,
+    "check": "pack.detection",
+    "contribution": 2.0794,
+    "finding": 44,
+    "ratio": 8.0,
+    "share": 0.0223,
+    "title": "A web account probing the host"
+   },
+   {
+    "capped": null,
+    "chain": {
+     "account": "ccadmin",
+     "chain": "new-account-escalated-used",
+     "events": [
+      1319
+     ],
+     "findings": [
+      19,
+      23
+     ],
+     "ratio": 5.0,
+     "title": "A new account or key, given privilege, then used to log in"
+    },
+    "check": "chain:new-account-escalated-used",
+    "contribution": 1.6094,
+    "finding": null,
+    "ratio": 5.0,
+    "share": 0.0173,
+    "title": "A new account or key, given privilege, then used to log in (ccadmin)"
+   },
+   {
+    "capped": null,
+    "chain": {
+     "account": "www-data",
+     "chain": "web-shell-used",
+     "events": [],
+     "findings": [
+      24,
+      25
+     ],
+     "ratio": 5.0,
+     "title": "A script new since the baseline answered requests, then the web account started a shell or tool"
+    },
+    "check": "chain:web-shell-used",
+    "contribution": 1.6094,
+    "finding": null,
+    "ratio": 5.0,
+    "share": 0.0173,
+    "title": "A script new since the baseline answered requests, then the web account started a shell or tool (www-data)"
+   },
+   {
+    "capped": null,
+    "check": "account.log_changes",
+    "contribution": 1.3863,
+    "finding": 32,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": null,
+    "check": "mail.domains",
+    "contribution": 1.3863,
+    "finding": 36,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "Mail to many recipient domains never written to before"
+   },
+   {
+    "capped": null,
+    "check": "mail.volume",
+    "contribution": 1.3863,
+    "finding": 37,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "A sudden jump in outgoing mail"
+   },
+   {
+    "capped": null,
+    "check": "mail.web_user",
+    "contribution": 1.3863,
+    "finding": 38,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "Mail submitted by a web-server account"
+   },
+   {
+    "capped": null,
+    "check": "net.config",
+    "contribution": 1.3863,
+    "finding": 39,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "A network configuration file was changed"
+   },
+   {
+    "capped": null,
+    "check": "net.metadata",
+    "contribution": 1.3863,
+    "finding": 41,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "A program other than the cloud agent reached the metadata address"
+   },
+   {
+    "capped": null,
+    "check": "net.tunnel",
+    "contribution": 1.3863,
+    "finding": 42,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "An SSH client forwarding ports (a tunnel)"
+   },
+   {
+    "capped": null,
+    "check": "persistence.changes",
+    "contribution": 1.3863,
+    "finding": 47,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "A new cron file"
+   },
+   {
+    "capped": null,
+    "check": "software.repository",
+    "contribution": 1.3863,
+    "finding": 53,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "A package signing key was added"
+   },
+   {
+    "capped": null,
+    "check": "software.tools",
+    "contribution": 1.3863,
+    "finding": 55,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "An attack or tunnelling tool was installed"
+   },
+   {
+    "capped": null,
+    "check": "ssh.login",
+    "contribution": 1.3863,
+    "finding": 56,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "Logins from an address never seen before"
+   },
+   {
+    "capped": null,
+    "check": "web.exploit",
+    "contribution": 1.3863,
+    "finding": 59,
+    "ratio": 4.0,
+    "share": 0.0149,
+    "title": "A traversal attack answered"
+   },
+   {
+    "capped": "group",
+    "check": "files.scratch",
+    "contribution": 0.6931,
+    "finding": 5,
+    "ratio": 20.0,
+    "share": 0.0074,
+    "title": "A program in a scratch directory"
+   },
+   {
+    "capped": "group",
+    "check": "persistence.changes",
+    "contribution": 0.6931,
+    "finding": 15,
+    "ratio": 20.0,
+    "share": 0.0074,
+    "title": "A new startup file"
+   },
+   {
+    "capped": "group",
+    "check": "process.injected",
+    "contribution": 0.6931,
+    "finding": 17,
+    "ratio": 20.0,
+    "share": 0.0074,
+    "title": "A process has code mapped from a scratch or home file"
+   },
+   {
+    "capped": "group",
+    "check": "web.new_script_hit",
+    "contribution": 0.6931,
+    "finding": 24,
+    "ratio": 20.0,
+    "share": 0.0074,
+    "title": "A script new since the baseline answered requests"
+   },
+   {
+    "capped": "family",
+    "check": "net.config",
+    "contribution": 0.6931,
+    "finding": 40,
+    "ratio": 4.0,
+    "share": 0.0074,
+    "title": "Firewall rules added since the baseline"
+   },
+   {
+    "capped": "family",
+    "check": "net.tunnel",
+    "contribution": 0.6931,
+    "finding": 43,
+    "ratio": 4.0,
+    "share": 0.0074,
+    "title": "An SSH session listening on a port (a remote forward)"
+   },
+   {
+    "capped": "family",
+    "check": "pack.detection",
+    "contribution": 0.6931,
+    "finding": 45,
+    "ratio": 4.0,
+    "share": 0.0074,
+    "title": "A web shell's name in a web root"
+   },
+   {
+    "capped": "family",
+    "check": "software.repository",
+    "contribution": 0.6931,
+    "finding": 54,
+    "ratio": 4.0,
+    "share": 0.0074,
+    "title": "A package repository was added"
+   },
+   {
+    "capped": null,
+    "check": "container.new",
+    "contribution": 0.4055,
+    "finding": 66,
+    "ratio": 1.5,
+    "share": 0.0044,
+    "title": "A container new since the baseline"
+   },
+   {
+    "capped": null,
+    "check": "net.listener",
+    "contribution": 0.4055,
+    "finding": 67,
+    "ratio": 1.5,
+    "share": 0.0044,
+    "title": "A new listening port"
+   },
+   {
+    "capped": null,
+    "check": "net.peer",
+    "contribution": 0.4055,
+    "finding": 70,
+    "ratio": 1.5,
+    "share": 0.0044,
+    "title": "A new outgoing destination"
+   },
+   {
+    "capped": null,
+    "check": "package.changed",
+    "contribution": 0.4055,
+    "finding": 71,
+    "ratio": 1.5,
+    "share": 0.0044,
+    "title": "The package managers' checksum lists changed since the baseline"
+   },
+   {
+    "capped": null,
+    "check": "software.packages",
+    "contribution": 0.4055,
+    "finding": 72,
+    "ratio": 1.5,
+    "share": 0.0044,
+    "title": "Packages installed since the baseline"
+   },
+   {
+    "capped": "family",
+    "check": "logs.stopped",
+    "contribution": 0.3466,
+    "finding": 10,
+    "ratio": 20.0,
+    "share": 0.0037,
+    "title": "A logging or audit service was stopped"
+   },
+   {
+    "capped": "family",
+    "check": "logs.stopped",
+    "contribution": 0.3466,
+    "finding": 11,
+    "ratio": 20.0,
+    "share": 0.0037,
+    "title": "The audit daemon stopped, not during a shutdown"
+   },
+   {
+    "capped": "family",
+    "check": "ssh.authorized_keys",
+    "contribution": 0.3466,
+    "finding": 20,
+    "ratio": 20.0,
+    "share": 0.0037,
+    "title": "A new authorized SSH key"
+   },
+   {
+    "capped": "family",
+    "check": "ssh.authorized_keys",
+    "contribution": 0.3466,
+    "finding": 21,
+    "ratio": 20.0,
+    "share": 0.0037,
+    "title": "A new authorized SSH key"
+   },
+   {
+    "capped": "family",
+    "check": "web.worker_child",
+    "contribution": 0.3466,
+    "finding": 26,
+    "ratio": 100.0,
+    "share": 0.0037,
+    "title": "A web account started a reconnaissance command"
+   },
+   {
+    "capped": "family",
+    "check": "web.worker_child",
+    "contribution": 0.3466,
+    "finding": 27,
+    "ratio": 100.0,
+    "share": 0.0037,
+    "title": "A web account started a reconnaissance command"
+   },
+   {
+    "capped": "family",
+    "check": "account.changes",
+    "contribution": 0.3466,
+    "finding": 30,
+    "ratio": 4.0,
+    "share": 0.0037,
+    "title": "A new account"
+   },
+   {
+    "capped": "family",
+    "check": "account.changes",
+    "contribution": 0.3466,
+    "finding": 31,
+    "ratio": 4.0,
+    "share": 0.0037,
+    "title": "A new account"
+   },
+   {
+    "capped": "family",
+    "check": "net.listener",
+    "contribution": 0.3466,
+    "finding": 68,
+    "ratio": 1.5,
+    "share": 0.0037,
+    "title": "A new listening port"
+   },
+   {
+    "capped": "family",
+    "check": "net.listener",
+    "contribution": 0.3466,
+    "finding": 69,
+    "ratio": 1.5,
+    "share": 0.0037,
+    "title": "A new listening port"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.3194,
+    "finding": 33,
+    "ratio": 4.0,
+    "share": 0.0034,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 48,
+    "ratio": 4.0,
+    "share": 0.0015,
+    "title": "A new systemd file"
+   },
+   {
+    "capped": "family",
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 49,
+    "ratio": 4.0,
+    "share": 0.0015,
+    "title": "A new systemd file"
+   },
+   {
+    "capped": "family",
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 50,
+    "ratio": 4.0,
+    "share": 0.0015,
+    "title": "A new startup file"
+   },
+   {
+    "capped": "family",
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 51,
+    "ratio": 4.0,
+    "share": 0.0015,
+    "title": "A new startup file"
+   },
+   {
+    "capped": "family",
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 52,
+    "ratio": 4.0,
+    "share": 0.0015,
+    "title": "A new startup file"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0934,
+    "finding": 62,
+    "ratio": 1.5,
+    "share": 0.001,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0934,
+    "finding": 63,
+    "ratio": 1.5,
+    "share": 0.001,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0934,
+    "finding": 64,
+    "ratio": 1.5,
+    "share": 0.001,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0934,
+    "finding": 65,
+    "ratio": 1.5,
+    "share": 0.001,
+    "title": "An account or group was changed (from the logs)"
+   }
+  ],
+  "hygiene_and_exposure": {
+   "band": "high",
+   "counts": {
+    "exposure": {
+     "high": 2
+    },
+    "hygiene": {
+     "info": 6,
+     "low": 4
+    }
+   }
+  },
+  "log_odds": 90.8275,
+  "prior": 0.02,
+  "prior_source": "golden",
+  "probability": 1.0,
+  "raised_by": [
+   {
+    "log_raise": 1.6094379124341003,
+    "pack": "golden-test-2026-10",
+    "ratio": 5.0,
+    "share": 1.0,
+    "status": "vulnerable",
+    "version": 1
+   }
+  ],
+  "raised_prior": 0.0926,
+  "version": 3
+ },
+ "whitelist": {
+  "as_of": "2026-10-28",
+  "disabled": [],
+  "expired": [],
+  "hash": "493363e2a1fe616a867da3e74d3d3a137933c95a909e74c1e2f3e4ec2d0e75a1",
+  "maintenance": 0,
+  "matched": {
+   "host ubuntu24.04/proof-at-job-debian": 1,
+   "host ubuntu24.04/proof-docker-dnsmasq-account": 1,
+   "host ubuntu24.04/proof-docker-group": 1,
+   "host ubuntu24.04/proof-proofuser-account": 1,
+   "host ubuntu24.04/proof-root-login": 2,
+   "host ubuntu24.04/proof-scanner-account": 1
+  },
+  "rules": [
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-docker-group",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "check": "account.log_changes",
+     "group": "docker",
+     "variant": "group_created"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu, which creates the docker group."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-docker-dnsmasq-account",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "account": "dnsmasq",
+     "check": "account.log_changes",
+     "variant": "created"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account)."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-at-job-redhat",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "check": "persistence.at_jobs",
+     "path": "/var/spool/at/*"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof queues an at job for the persistence modules to find."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-at-job-debian",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "check": "persistence.at_jobs",
+     "path": "/var/spool/cron/atjobs/*"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof queues an at job for the persistence modules to find."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-root-login",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "account": "root",
+     "check": "ssh.login",
+     "variant": "root_login"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof logs in as root to set the server up."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-proofuser-account",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "account": "proofuser",
+     "check": "account.log_changes"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates proofuser to give the persistence modules something to find."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "tests/integration/proof-whitelist.yaml",
+    "id": "proof-scanner-account",
+    "layer": "host ubuntu24.04",
+    "match": {
+     "account": "scanner",
+     "check": "account.log_changes"
+    },
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-efi-tree-mode",
+    "layer": "profile base",
+    "match": {
+     "check": "package.changed",
+     "package": "efi-filesystem",
+     "path": "/boot/efi/**"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "The same, for the directories under /boot/efi."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-efi-directory-mode",
+    "layer": "profile base",
+    "match": {
+     "check": "package.changed",
+     "package": "efi-filesystem",
+     "path": "/boot/efi"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "AlmaLinux 10 mounts /boot/efi with wider permissions than its efi-filesystem package records (0755 against 0700)."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-php-fpm-opcache",
+    "layer": "profile base",
+    "match": {
+     "check": "process.injected",
+     "exe": "/usr/sbin/php-fpm*",
+     "variant": "shared"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "PHP's opcache keeps its JIT code in shared memory, which /proc's maps show as \"/dev/zero (deleted)\". Only the shared-memory kind, only PHP-FPM as installed by the system: a memory-only file, a deleted file or a scratch file mapped into PHP-FPM still shows. Code a script maps the same way (PHP's FFI) looks the same and is let through too."
+   },
+   {
+    "broad": false,
+    "expires": "never",
+    "file": "checker/profiles/base.yaml",
+    "id": "base-firewalld-libffi",
+    "layer": "profile base",
+    "match": {
+     "check": "process.injected",
+     "exe": "/usr/bin/python3*",
+     "program": "firewalld",
+     "variant": "libffi"
+    },
+    "owner": "Compromise Checker defaults",
+    "reason": "firewalld (RHEL, Rocky, Alma) runs on Python, whose ctypes has libffi make its closures in memory-only files. Only the libffi kind, only firewalld on the system's Python: another Python process with such a file stays a (low) finding, and code from a deleted or scratch file always does."
+   }
+  ],
+  "suppressed": 7,
+  "windows": []
+ }
+}

@@ -516,6 +516,24 @@ is John's to approve before it is committed. Also:
 - A newly added pack that finds a host exposed or a detection firing is a
   "needs a look" item in `checker run`.
 - Golden tests: the golden cases analysed with and without a test pack.
+- As built (2026-10-30): `checker.packs.store.in_force` reads the packs in
+  force for `analyze`, `report` and `run` (once per run, so every host is
+  analysed with the same ones); one that can't be used is said (stderr,
+  or a run problem, which fails the run, and a "needs a look" line) and is
+  a coverage gap in each analysis. A report analyses a host again when
+  the packs differ from its stored analysis's. `checker analyze` prints
+  the packs applied and the prior's raise. A run's "needs a look" gains a
+  host newly exposed to a pack's threat (once per pack id, so a pack
+  added between runs that finds a host exposed is said once) and any
+  `pack.detection` new or more serious, whatever its band. Golden: each
+  case also against `tests/golden/test-pack.yaml` (never signed or added
+  to a home), `*.pack.expected.json`; the fresh cases go from 6% to 23% on
+  exposure alone. The harness now passes the baseline's time and snapshot
+  as `analyze` does, which moved detection-ubuntu24.04's plain
+  expectation (two mail findings it lacked; Rocky's already had them).
+- No per-host gate: a pack in force applies to every host, prod included
+  (a side note relayed 2026-10-30). Test packs stay in test homes; the
+  first pack in the real home is 4.8's, added with John's OK.
 
 ### 4.7 — Distribution
 

@@ -253,6 +253,12 @@ def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
     return raised, raised_by
 
 
+def packs_applied(packs: list[Any] | None) -> list[dict[str, Any]]:
+    """The threat packs an analysis applied, as it records them: id and
+    version (a version's content is pinned once accepted, plan 4.2)."""
+    return [{"id": p.id, "version": p.version} for p in packs or []]
+
+
 def analyze(
     store: Store,
     host: str,
@@ -262,10 +268,13 @@ def analyze(
     prior: tuple[float, str] = (DEFAULT_PRIOR, "default"),
     whitelist: Whitelist | None = None,
     packs: list[Any] | None = None,
+    pack_problems: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run every check on a host's bundle (by default its latest), score
     the findings from `prior` (value, source) and store the assessment;
-    returns it."""
+    returns it. `packs` are the threat packs in force, `pack_problems` why
+    any kept one isn't among them (checker.packs.store.in_force): coverage
+    gaps, since what they would have found isn't looked for."""
     found = changes(store, host, identity, recipients, bundle_id)
     row = store.bundle(found.bundle_id)
     snapshot = snapshot_of(store, row, identity, recipients)
@@ -363,12 +372,14 @@ def analyze(
         "score": scored,
         "whitelist": applied,
         # The threat packs applied, so the analysis can be reproduced.
-        "packs": [{"id": p.id, "version": p.version} for p in packs or []],
+        "packs": packs_applied(packs),
         "findings": found_dicts,
         "checks": ran,
         "coverage": coverage(row, identity, parsed.events, parsed.summary, snapshot),
     }
-    assessment["coverage"]["gaps"] += context.gaps
+    assessment["coverage"]["gaps"] += [
+        f"threat pack not applied: {problem}" for problem in pack_problems or []
+    ] + context.gaps
     store_assessment(store, row, recipients, assessment)
     return assessment
 

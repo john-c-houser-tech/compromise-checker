@@ -1411,6 +1411,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         inventory = _inventory_for_priors()
         whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
         config = load_config(base)
+        packs, pack_problems = _packs_in_force(base, config)
         path = write_report(
             store,
             hosts,
@@ -1423,6 +1424,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             whitelists.get,
             config.advisor.enabled,
             args.plain,
+            packs,
+            pack_problems,
         )
     except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -1470,6 +1473,18 @@ def _open_report(args: argparse.Namespace, base: Path) -> int:
     return 0
 
 
+def _packs_in_force(base: Path, config) -> tuple[list, list[str]]:
+    """The threat packs an analysis applies, each one that can't be used
+    said on stderr (it is a gap in the analysis too)."""
+    from checker.packs.store import in_force
+    from checker.report import visible
+
+    packs, problems = in_force(base, config.packs.trusted_keys)
+    for problem in problems:
+        print(f"checker: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)
+    return packs, problems
+
+
 def cmd_analyze(args: argparse.Namespace) -> int:
     """Run the checks and list the findings, most serious first, with
     what the collection couldn't see."""
@@ -1491,17 +1506,17 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             hosts = [args.host]
         # All of them before any analysis: one broken file stops the run.
         whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
+        packs, pack_problems = _packs_in_force(base, config)
         for number, host in enumerate(hosts):
             if number:
                 print()
             try:
                 prior = prior_for(host, config, inventory)
-                _print_assessment(
-                    analyze(
-                        store, host, identity, recipients, args.bundle, prior, whitelists[host]
-                    ),
-                    args,
-                )
+                assessment = analyze(
+                    store, host, identity, recipients, args.bundle, prior, whitelists[host],
+                    packs, pack_problems,
+                )  # fmt: skip
+                _print_assessment(assessment, args)
             except EvidenceError as exc:
                 print(f"checker: {host}: {exc}", file=sys.stderr)
                 status = 1
@@ -1543,8 +1558,18 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
         rest = len(scored["contributors"]) - 5
         if rest > 0:
             print(f"           and {rest} more")
+        if scored.get("raised_prior") is not None:
+            exposed = ", ".join(
+                f"{r['pack']} v{r['version']} ({round(r['share'] * 100)}% of its window)"
+                for r in scored["raised_by"]
+            )
+            raised = percent(scored["raised_prior"])
+            print(f"           prior raised to {raised}: exposed to {exposed}")
         rating = scored["hygiene_and_exposure"]
         print(f"Hygiene    rated separately: {rating['band']}")
+    applied_packs = assessment.get("packs") or []
+    if applied_packs:
+        print("Packs      " + ", ".join(f"{p['id']} v{p['version']}" for p in applied_packs))
     suppressed = [f for f in findings if f.get("suppressed_by")]
     findings = [f for f in findings if not f.get("suppressed_by")]
     applied = assessment.get("whitelist")
@@ -2059,6 +2084,7 @@ def cmd_packs_retire(args: argparse.Namespace) -> int:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     print(f"Retired: {', '.join(names)} (kept in packs/retired/).")
+    print("`checker analyze --all` analyses every host's latest bundle without it.")
     return 0
 
 

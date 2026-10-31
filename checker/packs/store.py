@@ -107,6 +107,17 @@ def active(home: Path, organization: list[Any]) -> tuple[list[Stored], list[str]
     return list(usable.values()), problems
 
 
+def in_force(home: Path, organization: list[Any]) -> tuple[list[Pack], list[str]]:
+    """The packs an analysis applies (plan 4.6), and why any kept one isn't
+    applied. Never raises: trouble reading the packs is a reason given, so
+    the analysis goes on and says what it left out."""
+    try:
+        usable, problems = active(home, organization)
+    except Exception as exc:  # noqa: BLE001 - said, not hidden; the analysis goes on
+        return [], [f"the packs couldn't be read: {type(exc).__name__}: {exc}"]
+    return [s.pack for s in usable], problems
+
+
 def retired(home: Path) -> list[tuple[str, int, str]]:
     """(id, version, why) for each retired pack."""
     found = []

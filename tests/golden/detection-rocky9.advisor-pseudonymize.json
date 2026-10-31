@@ -942,6 +942,167 @@
   },
   {
    "id": "F-38",
+   "check": "mail.domains",
+   "variant": null,
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "Mail to many recipient domains never written to before",
+   "from_host": {
+    "summary": "2026-10-29: 60 new domains: d0.invalid, d1.invalid, d10.invalid, d11.invalid, d12.invalid, d13.invalid, d14.invalid, d15.invalid and 52 more",
+    "entities": [
+     "domain:d0.invalid",
+     "domain:d1.invalid",
+     "domain:d10.invalid",
+     "domain:d11.invalid",
+     "domain:d12.invalid",
+     "domain:d13.invalid",
+     "domain:d14.invalid",
+     "domain:d15.invalid",
+     "domain:d16.invalid",
+     "domain:d17.invalid",
+     "domain:d18.invalid",
+     "domain:d19.invalid",
+     "domain:d2.invalid",
+     "domain:d20.invalid",
+     "domain:d21.invalid",
+     "domain:d22.invalid",
+     "domain:d23.invalid",
+     "domain:d24.invalid",
+     "domain:d25.invalid",
+     "domain:d26.invalid",
+     "domain:d27.invalid",
+     "domain:d28.invalid",
+     "domain:d29.invalid",
+     "domain:d3.invalid",
+     "domain:d30.invalid",
+     "domain:d31.invalid",
+     "domain:d32.invalid",
+     "domain:d33.invalid",
+     "domain:d34.invalid",
+     "domain:d35.invalid",
+     "domain:d36.invalid",
+     "domain:d37.invalid",
+     "domain:d38.invalid",
+     "domain:d39.invalid",
+     "domain:d4.invalid",
+     "domain:d40.invalid",
+     "domain:d41.invalid",
+     "domain:d42.invalid",
+     "domain:d43.invalid",
+     "domain:d44.invalid",
+     "domain:d45.invalid",
+     "domain:d46.invalid",
+     "domain:d47.invalid",
+     "domain:d48.invalid",
+     "domain:d49.invalid",
+     "domain:d5.invalid",
+     "domain:d50.invalid",
+     "domain:d51.invalid",
+     "domain:d52.invalid",
+     "domain:d53.invalid",
+     "domain:d54.invalid",
+     "domain:d55.invalid",
+     "domain:d56.invalid",
+     "domain:d57.invalid",
+     "domain:d58.invalid",
+     "domain:d59.invalid",
+     "domain:d6.invalid",
+     "domain:d7.invalid",
+     "domain:d8.invalid",
+     "domain:d9.invalid"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "66F6940EF6: to=<EMAIL-1-0000>, relay=none, delay=0.02, delays=0.01/0/0.01/0, dsn=5.4.4, status=bounced (Host or domain name not found. Name service error for name=d1.invalid type=AAAA: Host not found)"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "745D640EF7: to=<EMAIL-2-0000>, relay=none, delay=0.13, delays=0.01/0/0.12/0, dsn=5.4.4, status=bounced (Host or domain name not found. Name service error for name=d2.invalid type=AAAA: Host not found)"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "830AF40EF8: to=<EMAIL-3-0000>, relay=none, delay=0.12, delays=0.01/0.06/0.06/0, dsn=5.4.4, status=bounced (Host or domain name not found. Name service error for name=d3.invalid type=AAAA: Host not found)"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "91EF440EF6: to=<EMAIL-4-0000>, relay=none, delay=0.07, delays=0/0.01/0.06/0, dsn=5.4.4, status=bounced (Host or domain name not found. Name service error for name=d4.invalid type=AAAA: Host not found)"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "A02BD40EF9: to=<EMAIL-5-0000>, relay=none, delay=0.1, delays=0.01/0/0.09/0, dsn=5.4.4, status=bounced (Host or domain name not found. Name service error for name=d5.invalid type=AAAA: Host not found)"
+     },
+     {
+      "text": "… and 45 more"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:30.482080+00:00",
+    "last_seen": "2026-10-29T15:51:33.169583+00:00"
+   }
+  },
+  {
+   "id": "F-39",
+   "check": "mail.volume",
+   "variant": "deliveries",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 1.3863,
+   "suppressed_by": null,
+   "title": "A sudden jump in outgoing mail",
+   "from_host": {
+    "summary": "2026-10-29: 150 deliveries attempted; the baseline averaged 1.0 a day",
+    "entities": [
+     "host:HOST-1-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "66F6940EF6: to=<EMAIL-1-0000>, relay=none, delay=0.02, delays=0.01/0/0.01/0, dsn=5.4.4, status=bounced (Host or domain name not found. Name service error for name=d1.invalid type=AAAA: Host not found)"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "745D640EF7: to=<EMAIL-2-0000>, relay=none, delay=0.13, delays=0.01/0/0.12/0, dsn=5.4.4, status=bounced (Host or domain name not found. Name service error for name=d2.invalid type=AAAA: Host not found)"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "830AF40EF8: to=<EMAIL-3-0000>, relay=none, delay=0.12, delays=0.01/0.06/0.06/0, dsn=5.4.4, status=bounced (Host or domain name not found. Name service error for name=d3.invalid type=AAAA: Host not found)"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "91EF440EF6: to=<EMAIL-4-0000>, relay=none, delay=0.07, delays=0/0.01/0.06/0, dsn=5.4.4, status=bounced (Host or domain name not found. Name service error for name=d4.invalid type=AAAA: Host not found)"
+     },
+     {
+      "when": "2026-10-29T15:51:30",
+      "where": "mail_journal",
+      "text": "A02BD40EF9: to=<EMAIL-5-0000>, relay=none, delay=0.1, delays=0.01/0/0.09/0, dsn=5.4.4, status=bounced (Host or domain name not found. Name service error for name=d5.invalid type=AAAA: Host not found)"
+     },
+     {
+      "text": "… and 45 more"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:30.482080+00:00",
+    "last_seen": "2026-10-29T15:51:36.469720+00:00"
+   }
+  },
+  {
+   "id": "F-40",
    "check": "mail.web_user",
    "variant": null,
    "band": "medium",
@@ -992,7 +1153,7 @@
    }
   },
   {
-   "id": "F-39",
+   "id": "F-41",
    "check": "net.config",
    "variant": "file",
    "band": "medium",
@@ -1019,7 +1180,7 @@
    }
   },
   {
-   "id": "F-40",
+   "id": "F-42",
    "check": "net.metadata",
    "variant": null,
    "band": "medium",
@@ -1050,7 +1211,7 @@
    }
   },
   {
-   "id": "F-41",
+   "id": "F-43",
    "check": "net.tunnel",
    "variant": null,
    "band": "medium",
@@ -1080,7 +1241,7 @@
    }
   },
   {
-   "id": "F-44",
+   "id": "F-46",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1107,7 +1268,7 @@
    }
   },
   {
-   "id": "F-50",
+   "id": "F-52",
    "check": "software.repository",
    "variant": "key",
    "band": "medium",
@@ -1134,7 +1295,7 @@
    }
   },
   {
-   "id": "F-52",
+   "id": "F-54",
    "check": "software.tools",
    "variant": "attack_tool",
    "band": "medium",
@@ -1161,7 +1322,7 @@
    }
   },
   {
-   "id": "F-54",
+   "id": "F-56",
    "check": "ssh.login",
    "variant": "new_address",
    "band": "medium",
@@ -1190,7 +1351,7 @@
    }
   },
   {
-   "id": "F-57",
+   "id": "F-59",
    "check": "web.exploit",
    "variant": "answered",
    "band": "medium",
@@ -1218,7 +1379,7 @@
    }
   },
   {
-   "id": "F-42",
+   "id": "F-44",
    "check": "net.tunnel",
    "variant": null,
    "band": "medium",
@@ -1246,7 +1407,7 @@
    }
   },
   {
-   "id": "F-51",
+   "id": "F-53",
    "check": "software.repository",
    "variant": "repository",
    "band": "medium",
@@ -1273,7 +1434,7 @@
    }
   },
   {
-   "id": "F-53",
+   "id": "F-55",
    "check": "software.tools",
    "variant": "attack_tool",
    "band": "medium",
@@ -1409,7 +1570,7 @@
    }
   },
   {
-   "id": "F-45",
+   "id": "F-47",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1436,7 +1597,7 @@
    }
   },
   {
-   "id": "F-46",
+   "id": "F-48",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1463,7 +1624,7 @@
    }
   },
   {
-   "id": "F-47",
+   "id": "F-49",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1490,7 +1651,7 @@
    }
   },
   {
-   "id": "F-48",
+   "id": "F-50",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1517,7 +1678,7 @@
    }
   },
   {
-   "id": "F-49",
+   "id": "F-51",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1544,7 +1705,7 @@
    }
   },
   {
-   "id": "F-68",
+   "id": "F-70",
    "check": "container.new",
    "variant": "new",
    "band": "low",
@@ -1572,7 +1733,7 @@
    }
   },
   {
-   "id": "F-69",
+   "id": "F-71",
    "check": "net.listener",
    "variant": null,
    "band": "low",
@@ -1601,7 +1762,7 @@
    }
   },
   {
-   "id": "F-73",
+   "id": "F-75",
    "check": "package.changed",
    "variant": null,
    "band": "low",
@@ -1634,7 +1795,7 @@
    }
   },
   {
-   "id": "F-75",
+   "id": "F-77",
    "check": "software.packages",
    "variant": "installed",
    "band": "low",
@@ -1676,7 +1837,7 @@
    }
   },
   {
-   "id": "F-70",
+   "id": "F-72",
    "check": "net.listener",
    "variant": null,
    "band": "low",
@@ -1705,7 +1866,7 @@
    }
   },
   {
-   "id": "F-71",
+   "id": "F-73",
    "check": "net.listener",
    "variant": null,
    "band": "low",
@@ -1734,7 +1895,7 @@
    }
   },
   {
-   "id": "F-72",
+   "id": "F-74",
    "check": "net.listener",
    "variant": null,
    "band": "low",
@@ -1763,7 +1924,7 @@
    }
   },
   {
-   "id": "F-58",
+   "id": "F-60",
    "check": "account.log_changes",
    "variant": "created",
    "band": "low",
@@ -1791,7 +1952,7 @@
    }
   },
   {
-   "id": "F-59",
+   "id": "F-61",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "low",
@@ -1819,7 +1980,7 @@
    }
   },
   {
-   "id": "F-60",
+   "id": "F-62",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "low",
@@ -1847,7 +2008,7 @@
    }
   },
   {
-   "id": "F-61",
+   "id": "F-63",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "low",
@@ -1875,7 +2036,7 @@
    }
   },
   {
-   "id": "F-62",
+   "id": "F-64",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "low",
@@ -1903,7 +2064,7 @@
    }
   },
   {
-   "id": "F-63",
+   "id": "F-65",
    "check": "account.log_changes",
    "variant": "created",
    "band": "low",
@@ -1931,7 +2092,7 @@
    }
   },
   {
-   "id": "F-64",
+   "id": "F-66",
    "check": "account.log_changes",
    "variant": "created",
    "band": "low",
@@ -1959,7 +2120,7 @@
    }
   },
   {
-   "id": "F-65",
+   "id": "F-67",
    "check": "account.log_changes",
    "variant": "created",
    "band": "low",
@@ -1987,7 +2148,7 @@
    }
   },
   {
-   "id": "F-66",
+   "id": "F-68",
    "check": "account.log_changes",
    "variant": "group_member_added",
    "band": "low",
@@ -2016,7 +2177,7 @@
    }
   },
   {
-   "id": "F-67",
+   "id": "F-69",
    "check": "account.log_changes",
    "variant": "group_member_added",
    "band": "low",
@@ -2045,7 +2206,7 @@
    }
   },
   {
-   "id": "F-76",
+   "id": "F-78",
    "check": "persistence.homes",
    "variant": null,
    "band": "info",
@@ -2072,7 +2233,7 @@
    }
   },
   {
-   "id": "F-77",
+   "id": "F-79",
    "check": "web.exploit",
    "variant": "refused",
    "band": "info",
@@ -2100,7 +2261,7 @@
    }
   },
   {
-   "id": "F-78",
+   "id": "F-80",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2128,7 +2289,7 @@
    }
   },
   {
-   "id": "F-79",
+   "id": "F-81",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2156,7 +2317,7 @@
    }
   },
   {
-   "id": "F-80",
+   "id": "F-82",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2184,7 +2345,7 @@
    }
   },
   {
-   "id": "F-81",
+   "id": "F-83",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2212,7 +2373,7 @@
    }
   },
   {
-   "id": "F-82",
+   "id": "F-84",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2240,7 +2401,7 @@
    }
   },
   {
-   "id": "F-83",
+   "id": "F-85",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2268,7 +2429,7 @@
    }
   },
   {
-   "id": "F-84",
+   "id": "F-86",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2296,7 +2457,7 @@
    }
   },
   {
-   "id": "F-85",
+   "id": "F-87",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2324,7 +2485,7 @@
    }
   },
   {
-   "id": "F-86",
+   "id": "F-88",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2352,7 +2513,7 @@
    }
   },
   {
-   "id": "F-87",
+   "id": "F-89",
    "check": "package.changed",
    "variant": null,
    "band": "info",
@@ -2436,7 +2597,7 @@
    }
   },
   {
-   "id": "F-43",
+   "id": "F-45",
    "check": "persistence.at_jobs",
    "variant": null,
    "band": "medium",
@@ -2463,7 +2624,7 @@
    }
   },
   {
-   "id": "F-55",
+   "id": "F-57",
    "check": "ssh.login",
    "variant": "root_login",
    "band": "medium",
@@ -2492,7 +2653,7 @@
    }
   },
   {
-   "id": "F-56",
+   "id": "F-58",
    "check": "ssh.login",
    "variant": "root_login",
    "band": "medium",
@@ -2521,7 +2682,7 @@
    }
   },
   {
-   "id": "F-74",
+   "id": "F-76",
    "check": "process.injected",
    "variant": "libffi",
    "band": "low",

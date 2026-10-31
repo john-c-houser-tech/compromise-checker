@@ -24,6 +24,7 @@ from checker.snapshot import (
     FULL,
     SnapshotBuilder,
     compare,
+    firewall_json_lines,
     firewall_lines,
     sshd_lines,
     sudoers_lines,
@@ -1248,3 +1249,90 @@ def test_a_newline_in_a_table_level_comment_cant_forge_a_block():
     )
     assert any(line.endswith("tcp dport 4444 accept;") for line in out)
     assert not any("managed by other software" in line for line in out)
+
+
+# --- nftables as JSON -----------------------------------------------------------------------
+
+
+def nft_objects(*items):
+    return [json.dumps(item, sort_keys=True) for item in items]
+
+
+F2B_SET = {"set": {"family": "inet", "table": "f2b-table", "name": "addr-set-sshd", "handle": 2,
+                   "type": "ipv4_addr", "elem": ["192.0.2.1"]}}  # fmt: skip
+F2B_RULE = {"rule": {"family": "inet", "table": "f2b-table", "chain": "f2b-chain",
+                     "expr": [{"match": {"right": "@addr-set-sshd"}}]}}  # fmt: skip
+
+
+def test_json_rules_read_in_the_same_form_as_text():
+    out = firewall_json_lines(nft_objects(
+        {"metainfo": {"version": "1.1.7"}},
+        {"table": {"family": "inet", "name": "filter", "handle": 1}},
+        {"chain": {"family": "inet", "table": "filter", "name": "input", "handle": 1,
+                   "hook": "input", "policy": "drop"}},
+        {"rule": {"family": "inet", "table": "filter", "chain": "input", "handle": 4,
+                  "comment": "web", "expr": [{"accept": None}]}},
+    ))  # fmt: skip
+    assert out[0] == "[inet filter] table"
+    assert out[1].startswith('[inet filter / chain input] {"hook": "input"')
+    assert out[2] == '[inet filter / chain input] {"comment": "web", "expr": [{"accept": null}]}'
+    assert not any("1.1.7" in line or "handle" in line for line in out)
+
+
+def test_counters_and_timers_dont_read_as_changes():
+    def rule(packets):
+        return firewall_json_lines(nft_objects({"rule": {
+            "family": "inet", "table": "t", "chain": "c", "handle": packets,
+            "expr": [{"counter": {"packets": packets, "bytes": packets}}, {"accept": None}],
+        }}))  # fmt: skip
+
+    assert rule(1) == rule(2)
+    big = {"set": {"family": "inet", "table": "t", "name": "b",
+                   "elem": {"count": 120, "sha256": "ab"}}}  # fmt: skip
+    assert "[a large set: elements not compared]" in firewall_json_lines(nft_objects(big))[0]
+
+
+def test_a_comment_in_json_cant_forge_anything():
+    comment = "a\n}\nchain f2b-x {\ncomment"
+    out = firewall_json_lines(nft_objects({"rule": {
+        "family": "inet", "table": "v", "chain": "input", "comment": comment,
+        "expr": [{"match": {"right": 4444}}, {"accept": None}],
+    }}))  # fmt: skip
+    assert len(out) == 1 and out[0].startswith("[inet v / chain input] ")
+    assert "4444" in out[0] and "managed by other software" not in out[0]
+
+
+def test_json_fail2bans_set_is_summarised_unless_a_compared_rule_uses_it():
+    managed = "(managed by other software: rules not compared)"
+    out = firewall_json_lines(nft_objects(F2B_SET, F2B_RULE))
+    assert f"[inet f2b-table / set addr-set-sshd] {managed}" in out
+    assert f"[inet f2b-table / chain f2b-chain] {managed}" in out
+    assert not any("192.0.2.1" in line for line in out)
+    uses = [{"match": {"right": "@addr-set-sshd"}}, {"accept": None}]
+    accept = {"rule": {"family": "inet", "table": "f2b-table", "chain": "hidden", "expr": uses}}
+    out = firewall_json_lines(nft_objects(F2B_SET, accept))
+    assert any("192.0.2.1" in line for line in out)
+    other = {"set": {"family": "inet", "table": "filter", "name": "addr-set-sshd", "elem": ["x"]}}
+    assert '"elem": ["x"]' in firewall_json_lines(nft_objects(other))[0]
+
+
+def test_a_line_not_json_is_kept_and_compared():
+    assert firewall_json_lines(["[MASKED:oversized_line 9 bytes]"]) == [
+        "[not read] [MASKED:oversized_line 9 bytes]"
+    ]
+
+
+def test_text_and_json_rules_arent_compared_with_each_other_and_say_so():
+    from checker.snapshot import NFT_FORMAT_NOTE, Section, Snapshot
+
+    def snap(*keys):
+        return Snapshot({}, {"firewall_rules": Section({k: {} for k in keys})}, {})
+
+    old = snap("nft: [inet t / chain c] accept", "iptables-legacy-save: [filter] -A X")
+    new = snap("nft-json: [inet t / chain c] {}", "iptables-legacy-save: [filter] -A Y")
+    diff = compare(old, new)["firewall_rules"]
+    assert diff["notes"] == [NFT_FORMAT_NOTE] and not diff["comparable"]
+    assert list(diff["added"]) == ["iptables-legacy-save: [filter] -A Y"]
+    assert list(diff["removed"]) == ["iptables-legacy-save: [filter] -A X"]
+    same = compare(snap("nft-json: a"), snap("nft-json: b"))["firewall_rules"]
+    assert same["comparable"] and list(same["added"]) == ["nft-json: b"]

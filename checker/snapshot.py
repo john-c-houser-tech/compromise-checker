@@ -12,16 +12,18 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import re
 import shlex
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-# 12: PHP settings, package history; 13: sites' .user.ini, .htaccess; 14: nft blocks and
-# comments read whole, fail2ban's banned addresses
-SNAPSHOT_VERSION = 14
+# 12: PHP settings, package history; 13: sites' .user.ini, .htaccess; 14: nft blocks read
+# whole, fail2ban's banned addresses; 15: nft's JSON
+SNAPSHOT_VERSION = 15
 # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers;
 # 11: the folders web servers serve
 
@@ -265,6 +267,88 @@ def firewall_lines(lines: list[str]) -> list[str]:
         where = " / ".join(p for p in (table, block or (f"chain {chain}" if chain else "")) if p)
         key = f"[{where}] {text}" if where else text
         if text == _MANAGED and key in seen:
+            continue
+        seen[key] = seen.get(key, 0) + 1
+        out.append(key if seen[key] == 1 else f"{key} #{seen[key]}")
+    return out
+
+
+def _steady(value: Any) -> Any:
+    """A parsed nft object without what changes while the rules don't:
+    counters, quotas used, timeouts running down, a big set's elements."""
+    if isinstance(value, list):
+        return [_steady(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if set(value) == {"count", "sha256"}:
+        return "[a large set: elements not compared]"
+    gone = {"handle", "expires", "used", "packets", "bytes"}
+    return {key: _steady(item) for key, item in value.items() if key not in gone}
+
+
+def _set_uses(value: Any) -> Iterator[str]:
+    """The sets a rule names: strings "@name", wherever they are."""
+    if isinstance(value, str):
+        if value.startswith("@"):
+            yield value[1:]
+    elif isinstance(value, list):
+        for item in value:
+            yield from _set_uses(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _set_uses(item)
+
+
+def firewall_json_lines(lines: list[str]) -> list[str]:
+    """`nft -j`'s objects, one a line, as comparable lines in the same form as
+    firewall_lines: where each is, then what it says. Read as data, so nothing
+    in a comment can pass for a chain or a set. A line that isn't an object is
+    kept as it is, compared."""
+    objects: list[tuple[str, dict[str, Any]]] = []
+    out: list[str] = []
+    for line in lines:
+        try:
+            parsed = json.loads(line)
+            ((kind, body),) = parsed.items()
+            if not isinstance(body, dict):
+                raise ValueError
+        except (ValueError, AttributeError):
+            if line.strip():
+                out.append(f"[not read] {line.strip()}")
+            continue
+        if kind != "metainfo":
+            objects.append((kind, body))
+    used = {
+        (body.get("family"), body.get("table"), name)
+        for kind, body in objects
+        if kind == "rule" and not _MANAGED_CHAIN.match(str(body.get("chain")))
+        for name in _set_uses(body.get("expr"))
+    }
+    seen: dict[str, int] = {}
+    for kind, body in objects:
+        steady = _steady(body)
+        family, name = body.get("family"), body.get("name")
+        if kind == "table":
+            where, what = f"{family} {name}", "table"
+        else:
+            table = f"{family} {body.get('table')}"
+            chain = body.get("chain") if kind == "rule" else name
+            where = f"{table} / {'chain' if kind in ('rule', 'chain') else kind} {chain}"
+            what = {
+                k: v for k, v in steady.items() if k not in ("family", "table", "name", "chain")
+            }
+            what = json.dumps(what, sort_keys=True)
+            managed = kind in ("rule", "chain") and _MANAGED_CHAIN.match(str(chain))
+            banned = (
+                kind == "set"
+                and _BANNED_SET.match(str(name))
+                and _BANNED_TABLE.match(str(body.get("table")))
+                and (family, body.get("table"), name) not in used
+            )
+            if managed or banned:
+                what = _MANAGED
+        key = f"[{where}] {what}"
+        if what == _MANAGED and key in seen:
             continue
         seen[key] = seen.get(key, 0) + 1
         out.append(key if seen[key] == 1 else f"{key} #{seen[key]}")
@@ -903,9 +987,14 @@ class SnapshotBuilder:
             return
         (_, digest), lines = held
         if start.kind == "command":
-            program = (start.name.split(" ", 1)[0]).rsplit("/", 1)[-1]
+            words = start.name.split(" ")
+            program = words[0].rsplit("/", 1)[-1]
             section = self.section("firewall_rules")
-            for text in firewall_lines(lines or []):
+            if program == "nft" and "-j" in words:
+                program, rules = NFT_JSON, firewall_json_lines(lines or [])
+            else:
+                rules = firewall_lines(lines or [])
+            for text in rules:
                 section.items[f"{program}: {text}"] = {"program": program}
             if cut:
                 self._module_gap("network", f"{program} output cut short", "source", {})
@@ -1487,6 +1576,20 @@ def exim_settings(path: str, lines: list[str]) -> list[tuple[str, str]]:
 # --- Comparing two ---------------------------------------------------------------------------
 
 
+NFT_JSON = "nft-json"  # the program's name in a rule's key, read as JSON
+NFT_FORMAT_NOTE = (
+    "nftables rules were read as text in one collection and as JSON in the other, so they"
+    " aren't compared: a new baseline (`checker baseline accept`) compares them again"
+)
+
+
+def _nft_read_differently(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    def forms(items: dict[str, Any]) -> set[str]:
+        return {p for k in items for p in ("nft", NFT_JSON) if k.startswith(f"{p}: ")}
+
+    return len(forms(a) | forms(b)) == 2 and forms(a) != forms(b)
+
+
 def compare(old: Snapshot, new: Snapshot) -> dict[str, dict[str, Any]]:
     """Per section: items added, removed and changed (field by field), and
     whether the comparison can be trusted. A section incomplete on either
@@ -1514,6 +1617,11 @@ def compare(old: Snapshot, new: Snapshot) -> dict[str, dict[str, Any]]:
         if masking_changed and name in _MASKED:
             notes.append("masking changed between the two; text may differ without a change")
         a, b = before.items, after.items
+        if name == "firewall_rules" and _nft_read_differently(a, b):
+            # Every line would read as changed, none of them having changed.
+            notes.append(NFT_FORMAT_NOTE)
+            a = {k: v for k, v in a.items() if not k.startswith(("nft: ", f"{NFT_JSON}: "))}
+            b = {k: v for k, v in b.items() if not k.startswith(("nft: ", f"{NFT_JSON}: "))}
         changed = {}
         for key in sorted(set(a) & set(b)):
             fields = {

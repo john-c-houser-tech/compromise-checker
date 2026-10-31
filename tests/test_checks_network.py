@@ -335,3 +335,26 @@ def test_generic_tools_reaching_the_metadata_address_stay_medium(exe):
     processes = [proc(5, exe.rsplit("/", 1)[-1], exe=exe, cmdline=exe, uids=ROOT)]
     [finding] = found("net.metadata", processes, [sock(["169.254.169.254", 80], [5])])
     assert finding.band == "medium"
+
+
+def rule_gaps(items, diff=None):
+    from checker.checks import Context
+    from checker.checks.network import config, managed_chains
+    from checker.snapshot import Section, Snapshot
+
+    snapshot = Snapshot({}, {"firewall_rules": Section(items)}, {})
+    context = Context("h", "b", [], snapshot, since_baseline={}, baseline_id="a")
+    context.since_baseline = {"firewall_rules": diff} if diff else {}
+    managed_chains(context)
+    config(context)
+    return context.gaps
+
+
+def test_rules_read_as_text_or_uncompared_are_said():
+    from checker.snapshot import NFT_FORMAT_NOTE
+
+    assert any("read as text" in g for g in rule_gaps({"nft: [inet t] x": {}}))
+    assert rule_gaps({"nft-json: [inet t] table": {}}) == []
+    diff = {"added": {}, "removed": {}, "changed": {}, "comparable": False,
+            "notes": [NFT_FORMAT_NOTE]}  # fmt: skip
+    assert rule_gaps({"nft-json: [inet t] table": {}}, diff) == [NFT_FORMAT_NOTE]

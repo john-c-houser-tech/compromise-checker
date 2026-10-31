@@ -799,8 +799,12 @@ summarising; these two remain, and both need root on the server.
   a comment can't trigger it.
 - **Older hosts:** an nft built without JSON, or one that refuses `-j`, falls back
   to the text path, and the analysis says so as a coverage note.
-- **Stored baselines:** text and JSON lines differ, so the first comparison across
-  the change must say "not comparable" once, not report every rule as changed.
+- **Stored baselines:** text and JSON lines differ, so a comparison across the
+  change says "not comparable", not every rule as changed. Against a baseline
+  from before the change that lasts until a new one is accepted: new or removed
+  nftables rules aren't flagged until then, and each analysis says so as a gap.
+  So after this reaches a host, collect, review the findings, then `checker
+  baseline accept` soon (a side note John relayed, 2026-10-31).
 - **Prove it:** `-j` must load no kernel module and write nothing (the
   `nft_compat` experiment's care applies), on the read-only proof's seven images:
   one OK for the Linode spend. Golden cases re-exported, and every firewall key

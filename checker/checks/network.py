@@ -18,6 +18,7 @@ from typing import Any
 
 from checker.checks import COMPROMISE, Context, Finding, check
 from checker.checks.processes import own_processes
+from checker.snapshot import NFT_FORMAT_NOTE
 
 METADATA = {"169.254.169.254", "fd00:ec2::254"}
 # Cloud agents that talk to the metadata service for a living, by the name
@@ -477,6 +478,8 @@ def config(context: Context) -> list[Finding]:
                 )
             )
     rules = context.changes("firewall_rules")
+    if NFT_FORMAT_NOTE in rules["notes"]:
+        context.gaps.append(NFT_FORMAT_NOTE)
     for how in ("added", "removed"):
         lines = sorted(rules[how])
         if not lines:
@@ -532,6 +535,11 @@ def managed_chains(context: Context) -> list[Finding]:
     """Their rules aren't compared (they change all the time), so the name
     must be earned: the program that writes such chains must be running."""
     running = {_runs(p)[1] for p in _processes(context).values()}
+    if any(key.startswith("nft: ") for key in context.items("firewall_rules")):
+        context.gaps.append(
+            "nftables rules were read as text (a nft with no JSON, or an older collection): a"
+            " rule's comment could disguise what follows it"
+        )
     findings = []
     said = set()
     for key in context.items("firewall_rules"):

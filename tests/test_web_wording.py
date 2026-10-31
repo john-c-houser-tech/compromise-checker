@@ -70,13 +70,16 @@ def test_no_result_never_reads_as_fine(state):
 
 CAUTIONS = [
     ({"exposed": {"p": "vulnerable"}}, "Open to a known threat", "Update"),
-    ({"exposed": {"p": "can't judge"}}, "Open to a known threat", "Update"),
+    ({"exposed": {"p": "can't judge"}}, "May be open", "which version"),
+    ({"stale_code": 1}, "before a fix", "Restart"),
     ({"unjudged": ("p",)}, "Can't tell", "fresh check"),
     ({"counts": {"hygiene/high": 4}}, "Serious problems", "Look into"),
     ({"counts": {"exposure/critical": 1}}, "Serious problems", "Look into"),
     ({"counts": {"compromise indicator/high": 1}}, "Serious problems", "Look into"),
     ({"hygiene": "critical"}, "Serious problems", "Look into"),
-    ({"changes": ("h: new medium: Webshell seen (threat pack p)",)}, "known threat", "today"),
+    ({"threat_signs": 1}, "sign of a known threat", "today"),
+    ({"band_before": "Elevated"}, "there were last time", "what changed"),
+    ({"doubts": ("part of this server couldn't be read: x",)}, "don't rely", "Ask"),
     ({"band_before": "High"}, "there were last time", "what changed"),
     ({"band_before": "Critical"}, "there were last time", "what changed"),
     ({"rescored_from": "Critical"}, "there were last time", "what changed"),
@@ -111,6 +114,22 @@ def test_a_plain_low_result_is_the_only_green_one():
 def test_a_fixed_exposure_alone_or_any_caution_leaves_serious_results_serious(fields):
     made = row(analysed("Critical", **fields), NOW)
     assert made.tone == "critical" and made.verdict == "Strong signs of a break-in"
+
+
+def test_log_tampering_is_only_mentioned_for_logs():
+    assert "covers their tracks" not in plain_doubt("it can see less than before: clock is off")
+
+
+def test_exposure_lines_alone_do_not_claim_a_sign_was_found():
+    line = "h: exposed to threat pack p1 v1 (exposed while the threat was active, fixed since)"
+    made = row(analysed("Low", changes=(line,), exposed={"p1": "fixed"}), NOW)
+    assert made.tone == "low" and "sign of" not in made.verdict
+
+
+def test_a_fix_not_yet_running_is_not_called_fixed():
+    made = row(analysed("Low", stale_code=1, exposed={"p1": "fixed"}), NOW)
+    assert "fixed now" not in " ".join(made.exposures)
+    assert "fix installed" in made.exposures[0]
 
 
 def test_a_fixed_exposure_does_not_block_green_but_is_said():
@@ -203,7 +222,8 @@ def test_the_last_readable_result_is_not_shown_as_the_current_one():
         ("a newer collection hasn't been analysed", "newer check"),
         ("collected more than 3 days ago", "checked recently"),
         ("checks that couldn't run: a", "couldn't run"),
-        ("it can see less than before: x", "covers their tracks"),
+        ("it can see less than before: no mail log", "covers their tracks"),
+        ("it can see less than before: the clock is off", "can see less"),
         ("no authentication log events: y", "logins"),
         ("no system journal events: y", "own log"),
         ("the whitelist has changed", "Settings have changed"),

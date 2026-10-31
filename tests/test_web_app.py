@@ -761,6 +761,16 @@ def test_one_hosts_odd_stored_data_never_takes_the_page_down(web, monkeypatch, f
     assert "No strong signs of a break-in on" not in text
 
 
+def test_a_bad_key_or_unreadable_hosts_file_is_a_plain_page(web):
+    client, home = signed_in(web)
+    (home[0] / "hosts.yaml").write_bytes(b"\xff\xfe not text")
+    assert client.get("/").status_code == 503
+    (home[0] / "hosts.yaml").unlink()
+    (home[0] / "keys" / "evidence-identity.txt").write_text("AGE-SECRET-KEY-NOTAKEY\n")
+    response = client.get("/")
+    assert response.status_code == 503 and "isn&#39;t a key" in response.content.decode()
+
+
 def test_the_fonts_are_served_by_name_only(web):
     client, _ = web
     good = client.get("/fonts/atkinson-hyperlegible-latin-400-normal.woff2")

@@ -27,8 +27,6 @@ from checker.schedule import BANDS, SERIOUS, _exposed, _identity_of, alerts, rem
 STALE_AFTER = timedelta(days=3)
 # How far back to look for what an unjudged exposure last was.
 _EXPOSURE_LOOKBACK = 30
-# How far back to look for what it could see before: about a week of daily checks.
-_GAP_LOOKBACK = 7
 
 # Most worrying first. An analysis that can't be read comes before everything:
 # the tool's own store may have been tampered with. A host nobody can vouch for
@@ -91,6 +89,10 @@ class FleetHost:
     removed: bool = False
     # The separate hygiene and exposure rating (DESIGN.md §2 principle 9).
     hygiene: str | None = None
+    # In effect now: findings a threat pack raised or weighs (signs of that threat), and
+    # programs still running code from before a threat's fix.
+    threat_signs: int = 0
+    stale_code: int = 0
     # Since the analysis before; `first` when there was none to compare with.
     first: bool = True
     before_unreadable: bool = False
@@ -206,6 +208,8 @@ def _gone(before: dict | None, after: dict, comparable: bool) -> tuple[int, int,
         was = json.loads(key)
         if band not in SERIOUS or any(_same_finding(was, n) for n in now):
             continue
+        if was[0] == "pack.exposure":
+            continue  # being open to a threat was never a sign of a break-in: updating ends it
         if any(_same_finding(was, h) for h in hidden):
             suppressed += 1
         elif comparable:
@@ -232,23 +236,23 @@ def _gaps(assessment: dict | None) -> list[str]:
     return list(((assessment or {}).get("coverage") or {}).get("gaps") or [])
 
 
-def _recent_gaps(store, previous: dict | None, older: list, identity) -> list[set[str]]:
-    """The kinds of gap in each of the last few readable analyses, newest first."""
-    if previous is None:
-        return []
-    found = [{_gap_kind(g) for g in _gaps(previous)}]
-    for row in list(reversed(older))[:_GAP_LOOKBACK]:
-        if row["id"] == previous.get("bundle_id"):
-            continue
-        earlier, _ = _load(store, row["id"], identity)
-        if earlier is not None:
-            found.append({_gap_kind(g) for g in _gaps(earlier)})
-    return found
+def _reduces_coverage(gap: str) -> bool:
+    """A gap in what the tool set out to read, as opposed to a note about what a host
+    simply doesn't have. A long log cut short is routine on a busy server, so it isn't one."""
+    return gap.startswith(("not collected:", "error in ")) or " incomplete: " in gap
 
 
 def _gap_kind(gap: str) -> str:
     """A gap without its numbers: a clock off by another second isn't a new gap."""
     return re.sub(r"[-+]?\d+", "#", gap)
+
+
+def _in_effect(assessment: dict) -> list[dict]:
+    return [
+        f
+        for f in assessment.get("findings") or []
+        if isinstance(f, dict) and not f.get("suppressed_by")
+    ]
 
 
 def _band_of(assessment: dict | None) -> str | None:
@@ -282,6 +286,16 @@ def _headline(host: str, group, row, after: dict, last_failed, removed: bool) ->
         },
         gaps=len(_gaps(after)),
         hygiene=(score.get("hygiene_and_exposure") or {}).get("band"),
+        threat_signs=sum(
+            1
+            for f in _in_effect(after)
+            if f.get("check") == "pack.detection" or f.get("raised_by_pack")
+        ),
+        stale_code=sum(
+            1
+            for f in _in_effect(after)
+            if f.get("check") == "pack.exposure" and f.get("variant") == "stale_code"
+        ),
         collected_at=row["started_at"],
         analysed_at=after.get("analysed_at"),
         collection_status=row["status"],
@@ -411,10 +425,7 @@ def _with_details(
         else:
             older = older_than_after
         before["exposed"] = _known_exposure(store, previous, older, identity)
-    # Against each recent analysis, not only the last: blindness that lasts a second day
-    # is still blindness, and a gap every recent analysis shares is how this host is.
-    recent = _recent_gaps(store, previous, older_than_after, identity)
-    known = set.intersection(*recent) if recent else set()
+    known = {_gap_kind(g) for g in _gaps(previous)}
     # Notes on what a pack or a check chose not to judge aren't the host hiding anything.
     new_gaps = [
         g
@@ -423,7 +434,10 @@ def _with_details(
     ]
     blind = [g for g in _gaps(after) if g.startswith(_BLIND)]
     doubts += [visible(g, 200) for g in blind]
-    fresh = [g for g in new_gaps if g not in blind]
+    # Part of what's looked at wasn't read, on any check: nothing "new" about it after the first.
+    reduced = [g for g in _gaps(after) if _reduces_coverage(g)]
+    doubts += [f"part of this server couldn't be read: {visible(g, 200)}" for g in reduced]
+    fresh = [g for g in new_gaps if g not in blind and g not in reduced]
     if fresh:
         doubts.append(f"it can see less than before: {visible(fresh[0], 200)}")
     comparable = (
@@ -435,6 +449,7 @@ def _with_details(
         and not memory.get("failed")
         and not new_gaps
         and not blind
+        and not reduced
     )
     resolved, suppressed, not_seen = _gone(before, after, comparable)
     rescored = _band_of(earlier)
@@ -546,13 +561,17 @@ def read_fleet(
     path = identity_path or config.identity_file
     if not path:
         raise EvidenceError("no evidence key here")
+    try:
+        identity = load_identity(Path(path))
+    except pyrage.IdentityError as exc:
+        raise EvidenceError("the evidence key can't be read: it isn't a key") from exc
     store = Store(database_file(base), read_only=True)
     try:
         inventory = load_inventory()
         found = in_force_read_only(base, config.packs.trusted_keys)
         hosts = fleet(
             store,
-            load_identity(Path(path)),
+            identity,
             {h.name: h.group for h in inventory.hosts},
             partial(prior_for, config=config, inventory=inventory),
             lambda name: whitelist_for_host(base, name, inventory),

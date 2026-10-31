@@ -53,7 +53,8 @@ DOUBTS = (
     ("a newer collection", "A newer check hasn't been worked out yet.", True),
     ("collected more than", "This server hasn't been checked recently.", True),
     ("checks that couldn't run", "Some of the checks couldn't run.", False),
-    ("it can see less than before", f"The check can see less than before.{LOGS_MISSING}", False),
+    ("it can see less than before", "The check can see less of this server than before.", False),
+    ("part of this server", "Part of this server couldn't be read.", False),
     ("no authentication log events", f"No record of logins can be seen.{LOGS_MISSING}", False),
     ("no system journal events", f"The system's own log can't be seen.{LOGS_MISSING}", False),
     ("the whitelist", SETTINGS_CHANGED, True),
@@ -99,6 +100,8 @@ class _Caution:
 def _doubt(doubt: str) -> tuple[str, bool]:
     for start, words, by_time in DOUBTS:
         if doubt.startswith(start):
+            if start == "it can see less than before" and re.search("log|journal", doubt):
+                words += LOGS_MISSING  # only where it is logs that went missing
             return words, by_time
     return doubt, False
 
@@ -146,9 +149,20 @@ def _cautions(host: FleetHost) -> tuple[list[_Caution], list[str]]:
     cautions: list[_Caution] = []
     notes: list[str] = []
     exposed = host.exposed
-    open_now = sorted(p for p, how in exposed.items() if how in ("vulnerable", "can't judge"))
-    if open_now:
+    if "vulnerable" in exposed.values():
         cautions.append(_Caution("Open to a known threat", "Update this server."))
+    if "can't judge" in exposed.values():
+        cautions.append(
+            _Caution(
+                "May be open to a known threat",
+                "Ask whoever runs this server which version it runs.",
+            )
+        )
+    if host.stale_code:
+        cautions.append(_Caution("Still running code from before a fix", "Restart its services."))
+        notes.append(
+            "A fix is installed, but something on this server is still running the old code."
+        )
     if host.unjudged:
         notes.append(
             f"The check couldn't tell whether this server is open to: {', '.join(host.unjudged)}."
@@ -163,9 +177,10 @@ def _cautions(host: FleetHost) -> tuple[list[_Caution], list[str]]:
                 "Serious problems found, even though the estimate is low", "Look into this soon."
             )
         )
-    if any("threat pack" in line for line in host.changes):
+    if host.threat_signs:
         cautions.append(_Caution("A sign of a known threat was found", "Look into this today."))
-    earlier = host.band_before in ("High", "Critical") or host.rescored_from in ("High", "Critical")
+    worse = ("Elevated", "High", "Critical")
+    earlier = host.band_before in worse or host.rescored_from in worse
     if earlier or host.not_seen or host.suppressed or host.resolved:
         cautions.append(
             _Caution("No strong signs now, but there were last time", "Find out what changed.")
@@ -254,8 +269,11 @@ def _row(host: FleetHost, now: datetime) -> Row:
     if OLDER_CHECKS in host.out_of_date:
         notes.append("Worked out by an older version of this tool.")
     changes = tuple(dict.fromkeys(c for c in (_change(x, host.host) for x in host.changes) if c))
+    # While old code still runs, "fixed" isn't the whole story: a note above says so.
     exposures = tuple(
-        EXPOSURE_WORDS[how].format(pack)
+        EXPOSURE_WORDS[how].format(pack).replace(", and is fixed now", ", and has a fix installed")
+        if host.stale_code
+        else EXPOSURE_WORDS[how].format(pack)
         for pack, how in sorted(host.exposed.items())
         if how in EXPOSURE_WORDS
     )

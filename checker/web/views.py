@@ -16,8 +16,6 @@ from django.shortcuts import render
 from django.urls import Resolver404, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
-from pydantic import ValidationError as SettingsError
-from yaml import YAMLError
 
 from checker.evidence import EvidenceError
 from checker.fleet import read_fleet
@@ -157,9 +155,9 @@ def fleet_page(request) -> HttpResponse:
         hosts, problems = read_fleet(home())
     except EvidenceError as exc:  # the tool's own words, and what to do
         return _unavailable(request, str(exc))
-    except (OSError, SettingsError, YAMLError) as exc:
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
         # Details may quote a settings file, secrets included: only the kind goes to the log.
-        print(f"checker web: can't read the settings: {type(exc).__name__}", file=sys.stderr)
+        print(f"checker web: can't read the results: {type(exc).__name__}", file=sys.stderr)
         return _unavailable(request, "A settings file or the evidence key can't be read.")
     for problem in problems:
         print(f"checker web: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)

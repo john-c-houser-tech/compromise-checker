@@ -7379,6 +7379,8 @@ def _columns(sql):
     """Column names from a CREATE TABLE, and which is the integer primary key."""
     if not isinstance(sql, str) or "(" not in sql:
         raise ValueError("no schema")
+    # dnf's own schema has comments between its columns.
+    sql = re.sub(r"/\*.*?\*/|--[^\n]*", " ", sql, flags=re.DOTALL)
     body = sql[sql.index("(") + 1 : sql.rindex(")")]
     parts, depth, current = [], 0, ""
     for char in body:
@@ -7472,41 +7474,29 @@ def _dnf_changes(run, rows, change):
         )
 
 
-def _dnf_history(run, module, since, change):
-    """dnf's history database: each completed package change since `since`."""
+def _dnf_rows_on_disk(run, module, since):
+    """Each completed change SQLite can read from the database file alone, or None."""
     import sqlite3
 
-    wal = path(DNF_HISTORY) + "-wal"
-    try:
-        pending = os.lstat(wal).st_size
-    except OSError:
-        pending = 0
-    if pending:
-        rows = _history_from_log(run, int(since))
-        if rows is not None:
-            _dnf_changes(run, rows, change)
-            return
-        # Read immutable, the database is read without its write-ahead log:
-        # the latest transactions may only be there.
-        run.stream.record(
-            module, "package_history_pending", {"path": DNF_HISTORY + "-wal", "bytes": pending}
-        )
     connection = sqlite_readonly(run, DNF_HISTORY)
     try:
         if not _tables(connection, ("trans", "trans_item", "rpm")):
             run.stream.record(
                 module, "not_examined", {"path": DNF_HISTORY, "reason": "not dnf's tables"}
             )
-            return
-        rows = connection.execute(
+            return None
+        found = []
+        for row in connection.execute(
             "SELECT t.dt_begin, ti.action, r.name, r.epoch, r.version, r.release, r.arch"
             " FROM trans_item ti JOIN trans t ON t.id = ti.trans_id"
             " JOIN rpm r ON r.item_id = ti.item_id"
             " WHERE t.dt_begin >= ? AND ti.state = 1 AND ti.action IN (1, 2, 4, 5, 6, 8, 9)"
             " ORDER BY t.dt_begin, ti.id",
             (int(since),),
-        )
-        _dnf_changes(run, rows, change)
+        ):
+            run.check_time()
+            found.append(row)
+        return found
     except sqlite3.OperationalError as exc:
         if run.out_of_time():
             raise ModuleTimeout() from None
@@ -7515,6 +7505,30 @@ def _dnf_history(run, module, since, change):
         run.stream.record(module, "not_examined", {"path": DNF_HISTORY, "reason": str(exc)})
     finally:
         connection.close()
+    return None
+
+
+def _dnf_history(run, module, since, change):
+    """dnf's history database: each completed package change since `since`. Transactions may
+    still be only in its write-ahead log. Those are read too, and what that finds must include
+    everything SQLite finds in the file: otherwise it's said that the newest may be missing."""
+    wal = path(DNF_HISTORY) + "-wal"
+    try:
+        pending = os.lstat(wal).st_size
+    except OSError:
+        pending = 0
+    on_disk = _dnf_rows_on_disk(run, module, since)
+    if on_disk is None:
+        return
+    if pending:
+        with_log = _history_from_log(run, int(since))
+        if with_log is not None and set(on_disk) <= set(with_log):
+            on_disk = with_log
+        else:
+            run.stream.record(
+                module, "package_history_pending", {"path": DNF_HISTORY + "-wal", "bytes": pending}
+            )
+    _dnf_changes(run, on_disk, change)
 
 
 def dpkg_packages(run, module):

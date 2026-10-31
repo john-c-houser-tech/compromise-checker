@@ -6211,6 +6211,74 @@ class PackageHistoryReviewTests(FixtureRoot):
         found = load_collector(self.root)._history_from_log(run, 0)
         self.assertEqual(found, expected)
 
+    def test_the_plain_reader_reads_dnfs_real_schema(self):
+        """Comments between the columns, and rpm with no integer key: as on a real server."""
+        import sqlite3
+
+        db = Path(self.root, "var/lib/dnf/history.sqlite")
+        db.parent.mkdir(parents=True, exist_ok=True)
+        writer = sqlite3.connect(db)
+        self.addCleanup(writer.close)
+        writer.executescript(
+            """CREATE TABLE trans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dt_begin INTEGER NOT NULL,      /* (unix timestamp) date, and time */
+        dt_end INTEGER,                 /* (unix timestamp) */
+        releasever TEXT NOT NULL        -- var: $releasever, here
+    );
+    CREATE TABLE trans_item (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trans_id INTEGER REFERENCES trans(id),
+        item_id INTEGER REFERENCES item(id),
+        action INTEGER NOT NULL,        /* (enum) */
+        reason INTEGER NOT NULL,        /* (enum) */
+        state INTEGER NOT NULL          /* (enum) */
+    );
+    CREATE TABLE rpm (
+        item_id INTEGER UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        epoch INTEGER NOT NULL,         /* empty epoch is stored as 0 */
+        version TEXT NOT NULL,
+        release TEXT NOT NULL,
+        arch TEXT NOT NULL,
+        FOREIGN KEY(item_id) REFERENCES item(id),
+        CONSTRAINT rpm_unique_nevra UNIQUE (name, epoch, version, release, arch)
+    );"""
+        )
+        writer.execute("INSERT INTO trans VALUES (1, ?, 0, '9')", (int(NOW),))
+        writer.commit()
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO trans_item VALUES (1, 1, 7, 1, 2, 1)")
+        writer.execute("INSERT INTO rpm VALUES (7, 'php-fpm', 0, '8.0', '1.el9', 'x86_64')")
+        writer.commit()
+        records = collect(self.root, ["software"])
+        self.assertEqual(named(records, "package_history_pending"), [])
+        self.assertEqual(self.history_names(records), ["php-fpm"])
+
+    def test_a_reader_that_finds_less_than_sqlite_is_not_believed(self):
+        db, _ = self.wal_db()
+        import sqlite3
+
+        writer = sqlite3.connect(db)
+        self.addCleanup(writer.close)
+        writer.execute("INSERT INTO trans_item VALUES (9, 1, 9, 1, 1)")
+        writer.execute("INSERT INTO rpm VALUES (9, 'php-fpm', 0, '1.0', '1.el9', 'x86_64')")
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        collector = load_collector(self.root)
+        collector._history_from_log = lambda run, since: []
+        seen = []
+        run = types.SimpleNamespace(
+            check_time=lambda: None,
+            out_of_time=lambda: False,
+            stream=types.SimpleNamespace(record=lambda m, n, d: seen.append(n)),
+        )
+        changes = []
+        collector._dnf_history(run, "software", 0, changes.append)
+        self.assertIn("package_history_pending", seen)
+        self.assertEqual([c["name"] for c in changes], ["php-fpm"])
+
     def test_a_crafted_database_is_refused_and_not_followed(self):
         collector = load_collector(self.root)
         run = types.SimpleNamespace(check_time=lambda: None)

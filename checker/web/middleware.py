@@ -14,7 +14,9 @@ def security_headers(get_response):
         response["Content-Security-Policy"] = CSP
         response["X-Content-Type-Options"] = "nosniff"
         response["X-Frame-Options"] = "DENY"
-        response["Referrer-Policy"] = "no-referrer"
+        # Other sites never see an address here. Not no-referrer: browsers would then send
+        # "Origin: null" with forms, and the CSRF check would rightly refuse every one.
+        response["Referrer-Policy"] = "same-origin"
         response["Cross-Origin-Opener-Policy"] = "same-origin"
         response["Cross-Origin-Resource-Policy"] = "same-origin"
         if request.is_secure():

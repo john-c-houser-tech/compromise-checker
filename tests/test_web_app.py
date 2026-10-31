@@ -546,7 +546,7 @@ def test_every_page_carries_the_headers(web, path):
     assert "frame-ancestors 'none'" in policy
     assert response["Cache-Control"] == "no-store"
     assert response["X-Content-Type-Options"] == "nosniff"
-    assert response["Referrer-Policy"] == "no-referrer"
+    assert response["Referrer-Policy"] == "same-origin"
 
 
 def test_pages_load_nothing_from_elsewhere_and_have_no_inline_script(web):

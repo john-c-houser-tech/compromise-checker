@@ -118,3 +118,18 @@ not encrypted: keep them out of backups and synced folders, and delete
 them when they have been read. `checker purge` deletes the reports in the
 reports folder that show a purged bundle; a report written elsewhere with
 `--output` is yours to delete ([retention](retention.md)).
+
+## The fleet at a glance
+
+`checker fleet [--group GROUP]` lists every host, most worrying first: Critical and
+High, then hosts with no result to go on, then Elevated and Low. For each host it
+shows the band and probability, threat packs it was exposed to, coverage gaps, a last
+collection that failed, and what changed since the analysis before: a higher band, new
+serious findings, and how many serious findings have gone.
+
+It reads what is stored, and collects, analyses and writes nothing. So it says when a
+result may not be what a report would say now (older checks, other packs, another
+whitelist or starting probability, a newer collection not analysed yet), and keeps
+showing the older result until it is analysed, so a known problem doesn't disappear.
+An analysis that can't be read, or doesn't match its recorded hash, is shown as that,
+not replaced by an older one.

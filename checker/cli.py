@@ -943,6 +943,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reporting.add_argument("--identity", help="the evidence private key file")
     reporting.set_defaults(handler=cmd_report)
+
+    fleet_view = commands.add_parser(
+        "fleet", help="every host's latest result, most worrying first, and what changed"
+    )
+    fleet_view.add_argument("--group", help="only this group's hosts")
+    fleet_view.add_argument("--identity", help="the evidence private key file")
+    fleet_view.set_defaults(handler=cmd_fleet)
     changed = commands.add_parser(
         "changes", help="what changed on a host since its previous bundle and its baseline"
     )
@@ -1533,6 +1540,65 @@ def cmd_report(args: argparse.Namespace) -> int:
         )
     else:
         print(f"Encrypted to the evidence key. To read it: checker report --open {path}")
+    return 0
+
+
+def cmd_fleet(args: argparse.Namespace) -> int:
+    """Every host at a glance, from what is stored: it collects, analyses
+    and writes nothing."""
+    from checker.fleet import fleet
+    from checker.report import visible
+
+    base = home()
+    store = Store(database_file(base))
+    try:
+        inventory = _inventory_for_priors()
+        config = load_config(base)
+        packs_for, _ = _packs_in_force(base, config, inventory)
+        hosts = fleet(
+            store,
+            _identity(args, base),
+            {h.name: h.group for h in inventory.hosts},
+            partial(prior_for, config=config, inventory=inventory),
+            lambda name: _whitelist_for(base, name, inventory),
+            packs_for,
+            args.group,
+        )
+    except (EvidenceError, OSError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    if not hosts:
+        print(f"No hosts in group {visible(args.group, 80)}." if args.group else "No hosts yet.")
+        return 0
+    words = {
+        "not_analysed": "collected, not analysed yet",
+        "no_evidence": "nothing collected yet",
+        "unreadable": "its analysis can't be read",
+    }
+    for item in hosts:
+        name = visible(item.host, 80)
+        if item.state == "analysed":
+            shown = f"{item.probability:.1%}" if item.probability is not None else "?"
+            print(f"{name}  {item.band} {shown}  collected {item.collected_at}")
+        else:
+            print(f"{name}  {words[item.state]}")
+        if item.exposed:
+            packs = ", ".join(f"{visible(p, 80)} ({s})" for p, s in sorted(item.exposed.items()))
+            print(f"  threat packs: {packs}")
+        if item.gaps:
+            print(f"  coverage gaps: {item.gaps}")
+        if item.last_failed:
+            print(f"  last collection {item.last_failed[0]} at {item.last_failed[1]}")
+        for reason in item.out_of_date:
+            print(f"  out of date: {reason}")
+        if item.band_before and item.band_before != item.band:
+            print(f"  was {item.band_before} at the analysis before")
+        for line in item.changes:
+            print(f"  new: {line.partition(': ')[2]}")
+        if item.gone:
+            print(f"  gone: {item.gone} high or critical finding(s) since the analysis before")
     return 0
 
 

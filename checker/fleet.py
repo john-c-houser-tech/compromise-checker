@@ -11,6 +11,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pyrage
@@ -486,3 +487,40 @@ def fleet(
             "no stored analysis can be decrypted with this evidence key: is it the right one?"
         )
     return sorted(hosts, key=sort_key)
+
+
+def read_fleet(
+    base: Path, identity_path: str | None = None, group: str | None = None
+) -> tuple[list[FleetHost], list[str]]:
+    """The fleet from a home's settings, and why any threat pack isn't applied. Opens
+    the store read-only; the command and the web interface both come through here."""
+    from functools import partial
+
+    from checker.assess import prior_for
+    from checker.evidence import Store, database_file, load_config, load_identity
+    from checker.inventory import load_inventory
+    from checker.packs.choice import for_host
+    from checker.packs.store import in_force_read_only
+    from checker.whitelist import for_host as whitelist_for_host
+
+    config = load_config(base)
+    path = identity_path or config.identity_file
+    if not path:
+        raise EvidenceError("no evidence key here")
+    store = Store(database_file(base), read_only=True)
+    try:
+        inventory = load_inventory()
+        found = in_force_read_only(base, config.packs.trusted_keys)
+        hosts = fleet(
+            store,
+            load_identity(Path(path)),
+            {h.name: h.group for h in inventory.hosts},
+            partial(prior_for, config=config, inventory=inventory),
+            lambda name: whitelist_for_host(base, name, inventory),
+            partial(for_host, config=config, inventory=inventory, found=found),
+            group,
+            stale_after=timedelta(days=config.stale_after_days),
+        )
+    finally:
+        store.close()
+    return hosts, found[1]

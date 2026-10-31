@@ -1,0 +1,25 @@
+{% extends "base.html.j2" %}
+{% block main %}
+<h1>Your servers</h1>
+<p class="note">The percentage is an estimate, not proof. No findings doesn't mean a server is clean.</p>
+{% for problem in problems %}<p class="error">A threat pack couldn't be used: {{ problem }}</p>{% endfor %}
+{% if not hosts %}<p>No servers yet.</p>{% endif %}
+{% for host in hosts %}
+<section class="host">
+  <h2>{{ host.host }}</h2>
+  {% if host.state == "unreadable" %}
+  <p class="error">{{ unreadable_words[host.unreadable_why or "internal"] }}</p>
+  {% if host.last_readable_band %}<p>The last readable analysis said {{ host.last_readable_band }}.</p>{% endif %}
+  {% elif host.state == "analysed" %}
+  <p>{{ host.band or "No score" }}{% if host.probability is not none %} {{ host.probability | percent }}{% endif %}. Collected {{ host.collected_at }}.</p>
+  {% else %}
+  <p>{{ {"not_analysed": "Collected, not analysed yet.", "no_evidence": "Nothing collected yet.", "collections_failed": "No collection has worked yet.", "purged": "All its evidence was purged, so nothing is known now."}[host.state] }}</p>
+  {% endif %}
+  <ul>
+  {% for doubt in host.doubts %}<li>{{ doubt }}</li>{% endfor %}
+  {% for pack, how in host.exposed.items() %}<li>Threat pack {{ pack }}: {{ how }}</li>{% endfor %}
+  {% for line in host.changes %}<li>{{ line }}</li>{% endfor %}
+  </ul>
+</section>
+{% endfor %}
+{% endblock %}

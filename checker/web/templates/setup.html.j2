@@ -1,0 +1,14 @@
+{% extends "base.html.j2" %}
+{% block main %}
+<h1>Create your account</h1>
+<p>This is the account you'll use to see your servers' results. Use a long password, at least
+12 characters, that you don't use anywhere else: these results describe weaknesses an attacker could use.</p>
+{% for error in errors %}<p class="error" role="alert">{{ error }}</p>{% endfor %}
+<form method="post">
+  {{ csrf_input }}
+  <label>Username <input name="username" value="{{ username }}" autocomplete="username" required autofocus></label>
+  <label>Password <input name="password" type="password" autocomplete="new-password" required></label>
+  <label>Password again <input name="password2" type="password" autocomplete="new-password" required></label>
+  <button>Create account</button>
+</form>
+{% endblock %}

@@ -21,7 +21,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9", "pytest-asyncio>=1.3", "ruff>=0.14", "anthropic>=2.3"]
+dev = ["pytest>=9", "pytest-asyncio>=1.3", "ruff>=0.14", "anthropic>=2.3", "Django>=5.2.17,<6", "gunicorn>=23"]
+# The web interface (Phase 5).
+web = ["Django>=5.2.17,<6", "gunicorn>=23"]
 # The optional AI advisor (policy §9).
 advisor = ["anthropic>=2.3"]
 # Passwords from the OS keyring instead of a prompt (--password-source keyring).
@@ -40,6 +42,7 @@ include = ["checker*"]
 # The collector is shipped as a data file and streamed to targets as text;
 # the controller never imports it (DESIGN.md §5.1).
 checker = ["collector/collector.py", "templates/*.html.j2", "profiles/*.yaml"]
+"checker.web" = ["templates/*.html.j2", "static/*.css"]
 # NouriLoop's key list, signed by the root key (plan 4.8).
 "checker.packs" = ["keys/keys.yaml", "keys/keys.yaml.minisig"]
 

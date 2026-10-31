@@ -951,6 +951,13 @@ def build_parser() -> argparse.ArgumentParser:
     fleet_view.add_argument("--group", help="only this group's hosts")
     fleet_view.add_argument("--identity", help="the evidence private key file")
     fleet_view.set_defaults(handler=cmd_fleet)
+
+    web = commands.add_parser("web", help="run the web interface (needs the `web` extra)")
+    web.add_argument("--bind", default="127.0.0.1:8088", help="address and port to listen on")
+    web.add_argument("--public-url", help="the address people use, behind a proxy")
+    web.add_argument("--tls-cert", help="certificate file, to serve https directly")
+    web.add_argument("--tls-key", help="its private key file")
+    web.set_defaults(handler=cmd_web)
     changed = commands.add_parser(
         "changes", help="what changed on a host since its previous bundle and its baseline"
     )
@@ -1547,39 +1554,16 @@ def cmd_report(args: argparse.Namespace) -> int:
 def cmd_fleet(args: argparse.Namespace) -> int:
     """Every host at a glance, from what is stored: it collects, analyses
     and writes nothing."""
-    from checker.fleet import UNREADABLE, fleet, serious
-    from checker.packs.choice import for_host
-    from checker.packs.store import in_force_read_only
+    from checker.fleet import UNREADABLE, read_fleet, serious
     from checker.report import visible
 
-    unreadable_settings = (EvidenceError, OSError, ValidationError, yaml.YAMLError)
-    base = home()
     try:
-        config = load_config(base)
-        store = Store(database_file(base), read_only=True)
-    except unreadable_settings as exc:
+        hosts, problems = read_fleet(home(), args.identity, args.group)
+    except (EvidenceError, OSError, ValidationError, ValueError, yaml.YAMLError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
-    try:
-        inventory = _inventory_for_priors()
-        found = in_force_read_only(base, config.packs.trusted_keys)
-        for problem in found[1]:
-            print(f"checker: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)
-        hosts = fleet(
-            store,
-            _identity(args, base),
-            {h.name: h.group for h in inventory.hosts},
-            partial(prior_for, config=config, inventory=inventory),
-            lambda name: _whitelist_for(base, name, inventory),
-            partial(for_host, config=config, inventory=inventory, found=found),
-            args.group,
-            stale_after=timedelta(days=config.stale_after_days),
-        )
-    except unreadable_settings as exc:
-        print(f"checker: {exc}", file=sys.stderr)
-        return 1
-    finally:
-        store.close()
+    for problem in problems:
+        print(f"checker: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)
     if not hosts:
         print(f"No hosts in group {visible(args.group, 80)}." if args.group else "No hosts yet.")
         return 0
@@ -1643,6 +1627,28 @@ def cmd_fleet(args: argparse.Namespace) -> int:
                 " finding(s)"
             )
     return 0
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    """The web interface, until interrupted."""
+    try:
+        from checker.web.app import serve
+    except ImportError:
+        print(
+            "checker: the web interface needs: pip install 'checker[web]'",
+            file=sys.stderr,
+        )
+        return 2
+    base = home()
+    try:
+        load_config(base)
+    except (EvidenceError, ValidationError, yaml.YAMLError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    if bool(args.tls_cert) != bool(args.tls_key):
+        print("checker: --tls-cert and --tls-key go together", file=sys.stderr)
+        return 2
+    return serve(base, args.bind, args.public_url, args.tls_cert, args.tls_key)
 
 
 def _open_report(args: argparse.Namespace, base: Path) -> int:

@@ -264,7 +264,7 @@ def test_checker_advise_without_a_key(enabled, capsys, monkeypatch):
 
 
 def test_the_report_shows_the_advice_labelled(enabled):
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config = enabled
     fallback = {
@@ -276,7 +276,9 @@ def test_the_report_shows_the_advice_labelled(enabled):
         enabled,
         Provider(lambda body: answer_message(body, model="claude-opus-4-8", before=[fallback])),
     )
-    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
     assert "AI advisor (advice, not findings)" in html
     assert "declined by claude-opus-5-5; answered by claude-opus-4-8" in html
     assert "redaction pseudonymize" in html and "Verdict: strong signs of compromise." in html
@@ -481,7 +483,7 @@ def test_the_terminal_gets_the_models_words_escaped(enabled, capsys, monkeypatch
 
 
 def test_the_report_keeps_the_last_good_answer_and_marks_old_ones_stale(enabled):
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config = enabled
     run(enabled, Provider())
@@ -491,12 +493,16 @@ def test_the_report_keeps_the_last_good_answer_and_marks_old_ones_stale(enabled)
         )
     )
     run(enabled, declined)
-    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
     section = html.split("AI advisor (advice")[1].split("</div>")[0]
     assert "Verdict: strong signs of compromise." in section
     assert "A later request" in section and "(cyber)" in section
     add_bundle(enabled, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))))
-    html = write_report(store, ["web01"], identity, config.recipients, base / "reports").read_text()
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
     assert "stale: it read another collection or assessment" in html
 
 
@@ -623,3 +629,80 @@ def test_advisor_requests_are_never_retried_automatically():
     from checker.advisor.client import make_client
 
     assert make_client(KEY).max_retries == 0
+
+
+# --- Text in the case that addresses an AI ---------------------------------------------------
+
+
+def test_an_answer_to_a_case_whose_text_addresses_an_ai_carries_a_warning(
+    enabled, capsys, monkeypatch
+):
+    """The answer is still shown, in the terminal and the report, with a
+    warning naming where the text was; here the uid-0 finding's own words
+    are set as what counts as addressing an AI."""
+    import checker.advisor.proposals as proposals
+    from checker.report import read_report, write_report
+
+    base, store, identity, config = enabled
+    monkeypatch.setattr(proposals, "ADDRESSED", re.compile(r"root under another name"))
+    advice = run(enabled, Provider())
+    assert advice.status == "answered" and advice.answer["verdict"]
+    assert advice.warning.startswith("text in the case (F-") and "addresses an AI" in advice.warning
+    (row,) = store.advice("b1")
+    record = latest_advice(store, "web01", identity, "b1", row["assessed_at"])["explain"]
+    assert record["answered"]["warning"] == advice.warning
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
+    assert "<strong>Warning: text in the case (F-" in html
+    cli._print_advice(advice, "explain")
+    assert "Warning: text in the case (F-" in capsys.readouterr().out
+
+
+def test_an_ordinary_case_carries_no_warning(enabled, capsys):
+    base, store, identity, config = enabled
+    advice = run(enabled, Provider())
+    assert advice.warning == ""
+    cli._print_advice(advice, "explain")
+    assert "Warning" not in capsys.readouterr().out
+    from checker.report import read_report, write_report
+
+    html = read_report(
+        write_report(store, ["web01"], identity, config.recipients, base / "reports"), identity
+    )
+    assert "Warning:" not in html
+
+
+def test_a_steering_check_that_fails_keeps_the_answer_with_a_warning(enabled, monkeypatch):
+    import checker.advisor.proposals as proposals
+
+    def broken(payload):
+        raise ValueError("odd")
+
+    monkeypatch.setattr(proposals, "steering", broken)
+    advice = run(enabled, Provider())
+    assert advice.status == "answered" and advice.answer["verdict"]
+    assert advice.warning.startswith("the case's text couldn't be checked")
+
+
+def test_the_warning_names_the_place_with_its_real_name(monkeypatch):
+    import checker.advisor.proposals as proposals
+
+    class Names:
+        def restore(self, text):
+            return text.replace("HOST-1-7f3a", "web01")
+
+    monkeypatch.setattr(proposals, "steering", lambda payload: "whitelist rule HOST-1-7f3a-db")
+    where, warning = advise_module._steered({}, Names())
+    assert where == "whitelist rule web01-db"
+    # A rule's reason is usually the organization's own: not put down to an intruder.
+    assert warning.startswith("the reason or match of whitelist rule web01-db reads like words")
+    assert "intruder steering" not in warning
+
+
+def test_an_answer_set_aside_carries_no_warning(enabled, monkeypatch):
+    import checker.advisor.proposals as proposals
+
+    monkeypatch.setattr(proposals, "ADDRESSED", re.compile(r"root under another name"))
+    advice = run(enabled, Provider(lambda body: answer_message(body, finding="F-999")))
+    assert advice.status == "invalid" and advice.warning == ""

@@ -47,17 +47,20 @@ from checker.evidence import (
 from checker.inventory import Host, home, hosts_file, inventory_transaction, load_inventory
 from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
-from checker.report import write_report
+from checker.report import visible, write_report
 from checker.scoring import percent
 from checker.settings import (
     EXEC_RECORDS,
     HOME_TEXT,
     SETTABLE,
     advisor_question,
+    change_host_packs,
     describe,
     key_source_words,
+    packs_line,
     recipient,
     recipients,
+    remove_host,
     value_of,
 )
 from checker.settings import change as change_setting
@@ -104,17 +107,59 @@ def cmd_hosts_list(args: argparse.Namespace) -> int:
         return 0
     for host in hosts:
         group = f"  [{host.group}]" if host.group else ""
+        packs = f"  packs: {host.packs}" if host.packs else ""
         print(
             f"{host.name:20} {host.user}@{host.address}:{host.port}"
-            f"  auth={host.auth} sudo={host.sudo}{group}"
+            f"  auth={host.auth} sudo={host.sudo}{group}{packs}"
         )
+    return 0
+
+
+def cmd_hosts_packs(args: argparse.Namespace) -> int:
+    """Show which threat packs apply to a host, or set its own rule
+    (recorded: `checker config history`)."""
+    from checker.packs.choice import choose, rule_for
+    from checker.packs.choice import parse as parse_rule
+    from checker.packs.store import in_force
+    from checker.report import visible
+
+    base = home()
+    try:
+        config = load_config(base)
+        if args.rule is not None:
+            rule = None if args.rule.strip() == "default" else args.rule
+            old, new = change_host_packs(base, args.name, rule)
+            if old != new:
+                print(f"{args.name}: packs: {old or 'default'} -> {new or 'default'} (recorded).")
+        inventory = load_inventory(hosts_file(base))
+        inventory.get(args.name)
+    except KeyError as exc:
+        print(f"checker: {exc.args[0]}", file=sys.stderr)
+        return 2
+    except ValidationError as exc:
+        print(f"checker: {exc.errors()[0]['msg'].removeprefix('Value error, ')}", file=sys.stderr)
+        return 2
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    rule, source = rule_for(args.name, config, inventory)
+    print(f"{args.name}: packs: {rule} ({source} setting)")
+    packs, problems = in_force(base, config.packs.trusted_keys)
+    applied, _ = choose(packs, rule, source)
+    for pack in packs:
+        state = "applied" if pack in applied else "held back"
+        print(f"  {state}: {pack.id} v{pack.version}")
+    named = set(parse_rule(rule)[1]) - {p.id for p in packs}
+    for pack_id in sorted(named):
+        print(f"  note: no pack {pack_id} is in force (yet): check its spelling")
+    for problem in problems:
+        print(f"checker: not usable: {visible(problem, 300)}", file=sys.stderr)
     return 0
 
 
 def cmd_hosts_remove(args: argparse.Namespace) -> int:
     try:
-        with inventory_transaction() as inventory:
-            inventory.remove(args.name)
+        remove_host(home(), args.name)
     except KeyError as exc:
         print(f"checker: {exc.args[0]}", file=sys.stderr)
         return 2
@@ -234,6 +279,13 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     for line in describe(config):
         print(line)
     print(f"Retention: {config.retention_days} days. Prior: {percent(config.prior)}.")
+    print(packs_line(config))
+    try:
+        groups = {h.group for h in load_inventory().hosts}
+    except (ValidationError, ValueError):
+        groups = set(config.packs.group_apply)  # the inventory's trouble is said elsewhere
+    for group in sorted(set(config.packs.group_apply) - groups):
+        print(f"  note: no host is in group {group}, whose pack rule is set")
     print("Settable with `checker config set KEY VALUE`:")
     for key, setting in SETTABLE.items():
         print(f"  {key} = {json.dumps(value_of(config, key))}    ({setting.help})")
@@ -710,6 +762,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add.set_defaults(handler=cmd_hosts_add)
 
+    choosing = hosts_commands.add_parser(
+        "packs", help="show which threat packs apply to a host, or set its rule"
+    )
+    choosing.add_argument("name")
+    choosing.add_argument(
+        "rule",
+        nargs="?",
+        help="all, none, 'only: ID, ...', 'except: ID, ...', or default (its group's or the"
+        " configuration's)",
+    )
+    choosing.set_defaults(handler=cmd_hosts_packs)
+
     hosts_commands.add_parser("list", help="list hosts").set_defaults(handler=cmd_hosts_list)
 
     remove = hosts_commands.add_parser("remove", help="remove a host")
@@ -797,7 +861,9 @@ def build_parser() -> argparse.ArgumentParser:
             " '-' goes after '--': checker config set KEY -- VALUE."
         ),
     )
-    setting.add_argument("key", choices=list(SETTABLE), metavar="KEY", help=", ".join(SETTABLE))
+    setting.add_argument(
+        "key", metavar="KEY", help=", ".join(SETTABLE) + ", packs.group_apply.GROUP"
+    )
     setting.add_argument("value")
     setting.set_defaults(handler=cmd_config_set)
     config_commands.add_parser(
@@ -861,8 +927,20 @@ def build_parser() -> argparse.ArgumentParser:
     chosen = reporting.add_mutually_exclusive_group(required=True)
     chosen.add_argument("host", nargs="?")
     chosen.add_argument("--all", action="store_true", help="every host with a usable bundle")
+    chosen.add_argument(
+        "--open",
+        nargs="?",
+        const="",
+        metavar="FILE",
+        help="show a report in the browser (default: the newest), served from memory",
+    )
     reporting.add_argument("--bundle", help="this bundle rather than the host's latest")
-    reporting.add_argument("--output", help="the file to write (default: reports/ in the home)")
+    reporting.add_argument(
+        "--output", help="the file to write (default: reports/ in the home; ends in .age)"
+    )
+    reporting.add_argument(
+        "--plain", action="store_true", help="write plain HTML, not encrypted (to hand it on)"
+    )
     reporting.add_argument("--identity", help="the evidence private key file")
     reporting.set_defaults(handler=cmd_report)
     changed = commands.add_parser(
@@ -889,6 +967,75 @@ def build_parser() -> argparse.ArgumentParser:
     accepting.add_argument("--bundle", help="this bundle rather than the host's latest")
     accepting.add_argument("--identity", help="the evidence private key file")
     accepting.set_defaults(handler=cmd_baseline_accept)
+    packing = commands.add_parser("packs", help="threat packs (DESIGN.md §10)")
+    pack_commands = packing.add_subparsers(dest="packs_command", metavar="ACTION", required=True)
+    checking_pack = pack_commands.add_parser(
+        "check", help="validate a pack file, without trusting or adding it"
+    )
+    checking_pack.add_argument("file", help="the pack's YAML file")
+    checking_pack.set_defaults(handler=cmd_packs_check)
+    adding_pack = pack_commands.add_parser(
+        "add", help="check a pack's signature and content, and put it in force"
+    )
+    adding_pack.add_argument("file", help="the pack's YAML file")
+    adding_pack.add_argument("--signature", help="its minisign signature (default: FILE.minisig)")
+    adding_pack.set_defaults(handler=cmd_packs_add)
+    listing_packs = pack_commands.add_parser("list", help="the packs in force, and retired ones")
+    listing_packs.add_argument("--retired", action="store_true", help="also the retired ones")
+    listing_packs.set_defaults(handler=cmd_packs_list)
+    showing_pack = pack_commands.add_parser("show", help="what a pack in force says")
+    showing_pack.add_argument("id", help="the pack's id")
+    showing_pack.set_defaults(handler=cmd_packs_show)
+    retiring_pack = pack_commands.add_parser("retire", help="take a pack out of use (it is kept)")
+    retiring_pack.add_argument("id", help="the pack's id")
+    retiring_pack.add_argument("--reason", required=True, help="why, for the record")
+    retiring_pack.set_defaults(handler=cmd_packs_retire)
+    keying = pack_commands.add_parser("keys", help="the keys trusted to sign packs")
+    key_commands = keying.add_subparsers(dest="keys_command", metavar="ACTION")
+    keying.set_defaults(handler=cmd_packs_keys)
+    adding_keys = key_commands.add_parser(
+        "add", help="put a newer NouriLoop key list in force (air-gapped sites)"
+    )
+    adding_keys.add_argument("file", help="keys.yaml")
+    adding_keys.add_argument("--signature", help="its signature (default: FILE.minisig)")
+    adding_keys.set_defaults(handler=cmd_packs_keys_add)
+    pulling = pack_commands.add_parser(
+        "pull", help="download new packs and a newer key list, verified before they are kept"
+    )
+    pulling.add_argument("--source", help="this https:// address instead of packs.source")
+    pulling.set_defaults(handler=cmd_packs_pull)
+    indexing = pack_commands.add_parser(
+        "index", help="write a packs repository's index.yaml, for signing by hand (maintainers)"
+    )
+    indexing.add_argument("directory", help="the repository, with packs/<id>/PACK.yaml")
+    indexing.add_argument("--serial", type=int, help="its serial (default: the last one's + 1)")
+    indexing.add_argument(
+        "--withdraw",
+        action="append",
+        default=[],
+        metavar="ID=REASON",
+        help="withdraw a pack: pulls retire it (repeatable; earlier withdrawals are kept)",
+    )
+    indexing.add_argument(
+        "--forget",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="drop an earlier withdrawal from the index (a site that never pulled keeps it)",
+    )
+    indexing.set_defaults(handler=cmd_packs_index)
+    trusting = pack_commands.add_parser("trust", help="your organization's own pack keys")
+    trust_commands = trusting.add_subparsers(dest="trust_command", metavar="ACTION", required=True)
+    trust_add = trust_commands.add_parser("add", help="trust a key for your private packs")
+    trust_add.add_argument("name", help="a name for it")
+    trust_add.add_argument("key", help="its minisign public key file (.pub)")
+    trust_add.set_defaults(handler=cmd_packs_trust_add)
+    trust_remove = trust_commands.add_parser(
+        "remove", help="stop trusting a key; packs it signed are retired"
+    )
+    trust_remove.add_argument("name")
+    trust_remove.set_defaults(handler=cmd_packs_trust_remove)
+
     whitelisting = commands.add_parser("whitelist", help="check the whitelist files")
     whitelist_commands = whitelisting.add_subparsers(
         dest="whitelist_command", metavar="ACTION", required=True
@@ -975,6 +1122,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     purging.add_argument("--yes", action="store_true", help="don't ask before deleting")
     purging.set_defaults(handler=cmd_purge)
+
+    running = commands.add_parser(
+        "run", help="collect, analyze, report and purge what has expired, in one pass"
+    )
+    chosen_hosts = running.add_mutually_exclusive_group(required=True)
+    chosen_hosts.add_argument("names", nargs="*", default=[], help="host names")
+    chosen_hosts.add_argument("--group", help="every host in this group")
+    chosen_hosts.add_argument("--all", action="store_true", help="every host in the inventory")
+    running.add_argument(
+        "--unattended",
+        action="store_true",
+        help="ask nothing: refuse hosts that would need a prompt, before collecting",
+    )
+    running.add_argument("--days", type=int, default=30, help="look-back window (default 30)")
+    running.add_argument("--parallel", type=int, default=5, help="hosts at a time (default 5)")
+    running.add_argument("--identity", help="the evidence private key file")
+    running.set_defaults(handler=cmd_run)
+
+    scheduling = commands.add_parser("schedule", help="run `checker run --all` daily, on a timer")
+    schedule_commands = scheduling.add_subparsers(
+        dest="schedule_command", metavar="ACTION", required=True
+    )
+    install = schedule_commands.add_parser(
+        "install", help="write and start the timer (systemd on Linux, launchd on macOS)"
+    )
+    install.add_argument("--at", default="03:00", help="time of day, HH:MM (default 03:00)")
+    install.set_defaults(handler=cmd_schedule_install)
+    schedule_commands.add_parser("remove", help="stop and delete the timer").set_defaults(
+        handler=cmd_schedule_remove
+    )
+    schedule_commands.add_parser("show", help="whether the timer is installed").set_defaults(
+        handler=cmd_schedule_show
+    )
     return parser
 
 
@@ -997,11 +1177,12 @@ def _advise_all(args, base, store, config, inventory, identity) -> int:
     if not hosts:
         raise EvidenceError("no host has a usable bundle yet: collect first")
     status, planned = 0, []
+    packs_for, _ = _packs_in_force(base, config, inventory)
     for host in hosts:
         try:
             planned.append(
                 plan(store, host, identity, config, inventory, prior_for(host, config, inventory),
-                     _whitelist_for(base, host, inventory), args.role)
+                     _whitelist_for(base, host, inventory), args.role, packs_for(host))
             )  # fmt: skip
         except KeyboardInterrupt:
             print("checker: interrupted while estimating; nothing was sent", file=sys.stderr)
@@ -1059,7 +1240,7 @@ def _advise_all(args, base, store, config, inventory, identity) -> int:
             advice = advise(
                 store, item.host, identity, config, inventory, item.prior, item.whitelist,
                 role=args.role, client=client, say=lambda line: None, home=base,
-                planned=item, clients=clients,
+                planned=item, clients=clients, packs=item.packs,
             )  # fmt: skip
             _print_advice(advice, args.role)
         except KeyboardInterrupt:
@@ -1097,6 +1278,8 @@ def _print_advice(advice, role: str) -> None:
         print(line + ".")
     if advice.note:
         print(shown(advice.note[0].upper() + advice.note[1:]) + ".")
+    if advice.warning:
+        print(f"Warning: {shown(advice.warning)}.")
     answer = advice.answer
     if not answer:
         return
@@ -1231,10 +1414,11 @@ def cmd_advise(args: argparse.Namespace) -> int:
         identity = _identity(args, base)
         if args.all:
             return _advise_all(args, base, store, config, inventory, identity)
+        packs = _packs_in_force(base, config, inventory)[0](args.host)
         if args.show:
             built, known, _ = case_for_host(
                 store, args.host, identity, config.recipients, inventory, prior, whitelist,
-                args.bundle,
+                args.bundle, packs,
             )  # fmt: skip
             mode = args.redaction or config.advisor.redaction
             payload, pseudonyms = redact(built, mode, known)
@@ -1282,7 +1466,7 @@ def cmd_advise(args: argparse.Namespace) -> int:
 
         advice = advise(
             store, args.host, identity, config, inventory, prior, whitelist,
-            role=args.role, bundle_id=args.bundle, confirm=confirm, home=base,
+            role=args.role, bundle_id=args.bundle, confirm=confirm, home=base, packs=packs,
         )  # fmt: skip
     except (EvidenceError, OSError, AdvisorError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -1302,8 +1486,11 @@ def cmd_advise(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    """Write the HTML report: owner-only, confidential (policy §8)."""
+    """Write the HTML report: owner-only, encrypted unless --plain,
+    confidential (policy §8); or, with --open, show one."""
     base = home()
+    if args.open is not None:
+        return _open_report(args, base)
     store = Store(database_file(base))
     try:
         if args.all:
@@ -1317,6 +1504,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         inventory = _inventory_for_priors()
         whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
         config = load_config(base)
+        packs_for, _ = _packs_in_force(base, config, inventory)
         path = write_report(
             store,
             hosts,
@@ -1328,6 +1516,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             partial(prior_for, config=config, inventory=inventory),
             whitelists.get,
             config.advisor.enabled,
+            args.plain,
+            packs_for,
         )
     except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -1335,11 +1525,59 @@ def cmd_report(args: argparse.Namespace) -> int:
     finally:
         store.close()
     print(f"Report written to {path}")
-    print(
-        "It is confidential: it describes weaknesses an attacker could use."
-        " Handle it like the evidence."
-    )
+    if args.plain:
+        print(
+            "Warning: it is plain HTML, not encrypted, and confidential: it describes weaknesses"
+            " an attacker could use. Keep it out of backups and synced folders, and delete it"
+            " when it has been read."
+        )
+    else:
+        print(f"Encrypted to the evidence key. To read it: checker report --open {path}")
     return 0
+
+
+def _open_report(args: argparse.Namespace, base: Path) -> int:
+    from checker.report import latest_report, view
+
+    clashing = [f for f, given in (("--plain", args.plain), ("--output", args.output),
+                                   ("--bundle", args.bundle)) if given]  # fmt: skip
+    if clashing:
+        print(f"checker: --open shows a report; {', '.join(clashing)} write one", file=sys.stderr)
+        return 2
+    try:
+        path = Path(args.open) if args.open else latest_report(base / "reports")
+        if path is None:
+            raise EvidenceError("no report yet: `checker report HOST` writes one")
+        if not path.name.endswith((".html", ".html.age")):
+            raise EvidenceError(f"not a report (its name ends in .html.age or .html): {path}")
+        if not path.is_file():
+            raise EvidenceError(
+                f"no such report: {path} (to write one for a host: checker report HOST)"
+            )
+        view(path, _identity(args, base) if path.suffix == ".age" else None)
+    except (EvidenceError, OSError, UnicodeDecodeError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\nStopped.")
+        return 130
+    print("Stopped.")
+    return 0
+
+
+def _packs_in_force(base: Path, config, inventory):
+    """Which threat packs each host's analysis applies (read once, each
+    one that can't be used said on stderr: it is a gap in each analysis
+    too): a function from a host's name to (packs, why any isn't
+    applied), and the problems."""
+    from checker.packs.choice import for_host
+    from checker.packs.store import in_force
+    from checker.report import visible
+
+    found = in_force(base, config.packs.trusted_keys)
+    for problem in found[1]:
+        print(f"checker: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)
+    return partial(for_host, config=config, inventory=inventory, found=found), found[1]
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
@@ -1363,17 +1601,17 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             hosts = [args.host]
         # All of them before any analysis: one broken file stops the run.
         whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
+        packs_for, _ = _packs_in_force(base, config, inventory)
         for number, host in enumerate(hosts):
             if number:
                 print()
             try:
                 prior = prior_for(host, config, inventory)
-                _print_assessment(
-                    analyze(
-                        store, host, identity, recipients, args.bundle, prior, whitelists[host]
-                    ),
-                    args,
-                )
+                assessment = analyze(
+                    store, host, identity, recipients, args.bundle, prior, whitelists[host],
+                    *packs_for(host),
+                )  # fmt: skip
+                _print_assessment(assessment, args)
             except EvidenceError as exc:
                 print(f"checker: {host}: {exc}", file=sys.stderr)
                 status = 1
@@ -1415,8 +1653,18 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
         rest = len(scored["contributors"]) - 5
         if rest > 0:
             print(f"           and {rest} more")
+        if scored.get("raised_prior") is not None:
+            exposed = ", ".join(
+                f"{r['pack']} v{r['version']} ({round(r['share'] * 100)}% of its window)"
+                for r in scored["raised_by"]
+            )
+            raised = percent(scored["raised_prior"])
+            print(f"           prior raised to {raised}: exposed to {exposed}")
         rating = scored["hygiene_and_exposure"]
         print(f"Hygiene    rated separately: {rating['band']}")
+    applied_packs = assessment.get("packs") or []
+    if applied_packs:
+        print("Packs      " + ", ".join(f"{p['id']} v{p['version']}" for p in applied_packs))
     suppressed = [f for f in findings if f.get("suppressed_by")]
     findings = [f for f in findings if not f.get("suppressed_by")]
     applied = assessment.get("whitelist")
@@ -1467,7 +1715,7 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
     for name, reach in coverage["log_reach"].items():
         print(f"  {name:15} {reach['from'][:16]} to {reach['to'][:16]} ({reach['days']} days)")
     for gap in coverage["gaps"]:
-        print(f"  gap: {gap[:200]}")
+        print(f"  gap: {visible(gap, 200)}")
     for c in assessment["checks"]:
         if c["status"].startswith("failed"):
             print(f"  check {c['check']} {c['status']}")
@@ -1758,6 +2006,559 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
             file=sys.stderr,
         )
     return 1 if outcome.failed else 0
+
+
+def _read_untrusted(name: str, limit: int) -> bytes:
+    """A file someone else wrote: only a regular file, no more than `limit`
+    bytes (one byte more, so "too large" can be told)."""
+    import os
+    import stat
+
+    fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError(0, "not a regular file")
+        return handle.read(limit + 1)
+
+
+def cmd_packs_check(args: argparse.Namespace) -> int:
+    """Validate a pack as the tool would read it: its format, then that
+    its detections name checks this version of the tool has. The file is
+    untrusted: only a regular file is read, no more than a pack may hold,
+    and its text is shown with hidden characters escaped."""
+    from checker.checks import load_checks
+    from checker.packs.format import MAX_BYTES, PackError, read
+    from checker.report import visible
+
+    try:
+        data = _read_untrusted(args.file, MAX_BYTES)
+    except OSError as exc:
+        print(f"checker: {args.file}: {exc.strerror or exc}", file=sys.stderr)
+        return 1
+    try:
+        pack = read(data)
+    except PackError as exc:
+        print(f"checker: {args.file} isn't a valid pack:", file=sys.stderr)
+        for line in str(exc).splitlines():
+            print(f"  {visible(line, 1000)}", file=sys.stderr)
+        return 1
+    from checker.packs.detect import reference_problems
+
+    unknown = reference_problems(pack, load_checks())
+    if unknown:
+        print(
+            f"checker: {args.file}: detections name what this version doesn't have: "
+            + "; ".join(unknown),
+            file=sys.stderr,
+        )
+        return 1
+    releases = ", ".join(dict.fromkeys(p.release for p in pack.exposure.packages))
+    print(f"Valid: {pack.id} version {pack.version} ({visible(pack.title, 200)}), for {releases}.")
+    print("Checked only: nothing was trusted or added (adding a pack checks its signature).")
+    return 0
+
+
+def _packs_lock(base: Path):
+    from checker.files import locked
+
+    return locked(base / "packs" / "state")
+
+
+def cmd_packs_add(args: argparse.Namespace) -> int:
+    from checker.checks import load_checks
+    from checker.packs.format import MAX_BYTES
+    from checker.packs.signing import MAX_SIGNATURE_BYTES
+    from checker.packs.state import StateError
+    from checker.packs.store import StoreError, add
+    from checker.report import visible
+
+    base = home()
+    try:
+        data = _read_untrusted(args.file, MAX_BYTES)
+        signature = _read_untrusted(args.signature or f"{args.file}.minisig", MAX_SIGNATURE_BYTES)
+        with _packs_lock(base):
+            config = load_config(base)  # inside the lock: a key removed meanwhile counts
+            stored, outcome = add(base, config.packs.trusted_keys, data, signature, load_checks())
+    except (EvidenceError, OSError, StateError) as exc:
+        print(f"checker: {exc.strerror if isinstance(exc, OSError) and exc.strerror else exc}",
+              file=sys.stderr)  # fmt: skip
+        return 1
+    except StoreError as exc:
+        print(f"checker: {args.file} wasn't added:", file=sys.stderr)
+        for line in str(exc).splitlines():
+            print(f"  {visible(line, 1000)}", file=sys.stderr)
+        return 1
+    pack = stored.pack
+    print(
+        f"{pack.id} version {pack.version} ({visible(pack.title, 200)}): {outcome}."
+        f" Signed by {stored.signed_by.who} ({stored.signed_by.key.key_id})."
+    )
+    if outcome != "already in force":
+        print("`checker analyze --all` applies it to every host's latest bundle.")
+    return 0
+
+
+def cmd_packs_list(args: argparse.Namespace) -> int:
+    from checker.packs.store import active, retired
+    from checker.report import visible
+
+    base = home()
+    try:
+        config = load_config(base)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    usable, problems = active(base, config.packs.trusted_keys)
+    if not usable:
+        print("No pack is in force.")
+    for stored in usable:
+        pack = stored.pack
+        print(
+            f"{pack.id:28} v{pack.version:<4} {pack.published}  {visible(pack.title, 80)}"
+            f"  (signed by {stored.signed_by.who})"
+        )
+    for problem in problems:
+        print(f"checker: not used: {visible(problem, 300)}", file=sys.stderr)
+    from checker.packs.pull import staleness
+    from checker.packs.state import StateError, read_state
+
+    try:
+        pulled = staleness(read_state(base))
+    except StateError:
+        pulled = None
+    if pulled:
+        print(pulled)
+    if args.retired:
+        for pack_id, version, why in retired(base):
+            print(f"retired: {pack_id} v{version}: {visible(why, 300)}")
+    return 1 if problems else 0
+
+
+def cmd_packs_show(args: argparse.Namespace) -> int:
+    from checker.packs.store import active
+    from checker.report import visible
+
+    base = home()
+    try:
+        config = load_config(base)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    usable, _ = active(base, config.packs.trusted_keys)
+    found = [s for s in usable if s.pack.id == args.id]
+    if not found:
+        print(f"checker: no pack {args.id!r} is in force", file=sys.stderr)
+        return 1
+    stored = found[0]
+    pack = stored.pack
+    exposure = pack.exposure
+    print(f"{pack.id} version {pack.version}, published {pack.published}")
+    print(f"  {visible(pack.title, 200)}")
+    signer = stored.signed_by
+    print(f"  Signed by {signer.who} ({signer.key.key_id}); sha256 {stored.sha256}")
+    if pack.cves:
+        print(f"  CVEs: {', '.join(pack.cves)}")
+    window = exposure.window_end.isoformat() if exposure.window_end else "still active"
+    print(f"  Exposure window: {exposure.window_start.isoformat()} to {window}")
+    print(f"  A host exposed through it: odds of compromise times {exposure.likelihood_ratio:g}")
+    for entry in exposure.packages:
+        which = f" (installed versions {entry.versions})" if entry.versions else ""
+        fixed = entry.fixed or "no fix yet"
+        print(f"  {entry.release}: {', '.join(entry.binary_names)}{which}: fixed in {fixed}")
+    for mitigation in pack.mitigations:
+        expect = visible(mitigation.expect, 100)
+        print(f"  Mitigation {mitigation.id}: {mitigation.setting.name} = {expect}")
+    for detection in pack.detections:
+        ratio = f"{detection.likelihood_ratio:g}"
+        what = detection.check or visible(detection.title or "", 200)
+        kind = "" if detection.check else (" (events)" if detection.events else " (snapshot)")
+        when = detection.counts.replace("_", " ")
+        print(f"  Detection {detection.id}: {what}{kind} (LR {ratio}, {when})")
+    return 0
+
+
+def cmd_packs_retire(args: argparse.Namespace) -> int:
+    from checker.packs.store import StoreError, retire
+
+    base = home()
+    try:
+        with _packs_lock(base):
+            names = retire(base, args.id, f"retired by hand: {args.reason}", by_hand=True)
+    except (StoreError, OSError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    if not names:
+        print(f"{args.id} isn't in force; pulls leave it out until it is added again.")
+        return 0
+    print(f"Retired: {', '.join(names)} (kept in packs/retired/; pulls leave it out).")
+    print("`checker analyze --all` analyses every host's latest bundle without it.")
+    return 0
+
+
+def cmd_packs_keys(args: argparse.Namespace) -> int:
+    from checker.packs.state import StateError
+    from checker.packs.trust import TrustError, key_list
+
+    base = home()
+    try:
+        config = load_config(base)
+    except EvidenceError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    try:
+        listed = key_list(base)
+    except (TrustError, StateError) as exc:
+        print(f"checker: no NouriLoop key is trusted now: {exc}", file=sys.stderr)
+        listed = None
+    if listed is None:
+        print("NouriLoop keys: no key list in force.")
+    else:
+        print(f"NouriLoop key list: serial {listed.serial}, issued {listed.issued}.")
+        for entry in listed.pack_keys:
+            from checker.packs.signing import public_key
+
+            print(f"  trusted: {entry.name} ({public_key(entry.public_key).key_id})")
+        for gone in listed.revoked:
+            print(f"  revoked: {gone.key_id} since {gone.since}: {gone.reason}")
+    if config.packs.trusted_keys:
+        from checker.packs.signing import public_key
+
+        print("Your organization's keys:")
+        for entry in config.packs.trusted_keys:
+            print(f"  {entry.name} ({public_key(entry.public_key).key_id})")
+    return 0
+
+
+def cmd_packs_keys_add(args: argparse.Namespace) -> int:
+    from checker.packs.signing import MAX_SIGNATURE_BYTES
+    from checker.packs.state import StateError
+    from checker.packs.store import adopt, sweep
+    from checker.packs.trust import TrustError, accept_key_list, key_list, read_key_list
+
+    base = home()
+    try:
+        data = _read_untrusted(args.file, 64 * 1024)
+        signature = _read_untrusted(args.signature or f"{args.file}.minisig", MAX_SIGNATURE_BYTES)
+        with _packs_lock(base):
+            config = load_config(base)
+            retired = adopt(base, config.packs.trusted_keys)
+            if read_key_list(data, signature) == key_list(base):
+                print(f"Key list serial {key_list(base).serial} is already in force.")
+                return 0
+            new, old = accept_key_list(base, data, signature)
+            retired += sweep(base, config.packs.trusted_keys)
+    except (EvidenceError, OSError, TrustError, StateError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    print(f"Key list serial {new.serial} is in force" + (f" (was {old.serial})." if old else "."))
+    for name in retired:
+        print(f"Retired {name}: its signing key is no longer trusted.")
+    return 0
+
+
+def cmd_packs_pull(args: argparse.Namespace) -> int:
+    """Download and verify, then say what changed."""
+    from checker.checks import load_checks
+    from checker.packs.pull import PullError, pull
+    from checker.packs.state import StateError
+    from checker.packs.trust import TrustError
+
+    base = home()
+    try:
+        config = load_config(base)
+        source = config.packs.source
+        if args.source:
+            try:
+                source = (
+                    type(config.packs)
+                    .model_validate(config.packs.model_dump() | {"source": args.source})
+                    .source
+                )
+            except ValidationError as exc:
+                print(f"checker: --source {exc.errors()[0]['msg'].removeprefix('Value error, ')}",
+                      file=sys.stderr)  # fmt: skip
+                return 2
+        print(f"Pulling from {visible(source, 300)}")
+        with _packs_lock(base):
+            config = load_config(base)  # inside the lock, as `packs add` reads it
+            done = pull(base, config.packs.trusted_keys, load_checks(), source)
+    except PullError as exc:
+        if exc.pulled is not None:
+            _print_pulled(exc.pulled)
+        print(f"checker: nothing more was pulled: {visible(str(exc), 500)}", file=sys.stderr)
+        return 1
+    except (EvidenceError, OSError, StateError, TrustError) as exc:
+        if getattr(exc, "pulled", None) is not None:
+            _print_pulled(exc.pulled)
+        print(f"checker: nothing more was pulled: {visible(str(exc), 500)}", file=sys.stderr)
+        return 1
+    _print_pulled(done)
+    if not (done.changed() or done.problems):
+        print("Nothing new.")
+    return 1 if done.problems else 0
+
+
+def _print_pulled(done) -> None:
+    if done.key_list:
+        new, old = done.key_list
+        print(f"Key list serial {new} is in force" + (f" (was {old})." if old else "."))
+    for name in done.retired_by_keys:
+        print(f"Retired {name}: its signing key is no longer trusted.")
+    if done.index_serial is not None:
+        print(f"Index serial {done.index_serial}, issued {(done.index_issued or '')[:16]}.")
+    for pack_id, version, outcome in done.added:
+        print(f"{visible(pack_id, 80)} version {version}: {outcome}.")
+    for name in done.withdrawn:
+        print(f"Retired {name}: withdrawn by the source.")
+    for note in done.notes:
+        print(f"checker: note: {visible(note, 300)}", file=sys.stderr)
+    for problem in done.problems:
+        print(f"checker: {visible(problem, 500)}", file=sys.stderr)
+    if done.changed():
+        print("`checker analyze --all` applies the packs in force to every host's latest bundle.")
+
+
+def cmd_packs_index(args: argparse.Namespace) -> int:
+    from checker.packs.release import ReleaseError, write_index
+
+    try:
+        withdraw = {}
+        for item in args.withdraw:
+            pack_id, equals, reason = item.partition("=")
+            if not equals or not reason.strip():
+                raise ReleaseError(f"--withdraw {item!r}: give ID=REASON")
+            withdraw[pack_id.strip()] = reason.strip()
+        path, index, warnings = write_index(
+            Path(args.directory), args.serial, withdraw, forget=tuple(args.forget)
+        )
+        for warning in warnings:
+            print(f"checker: note: {warning}", file=sys.stderr)
+    except (ReleaseError, OSError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    print(f"Wrote {path}: serial {index.serial}, {len(index.packs)} pack(s),"
+          f" {len(index.withdrawn)} withdrawn.")  # fmt: skip
+    print(f"Sign it with the pack key: minisign -S -s <pack key> -m {path}")
+    return 0
+
+
+def cmd_packs_trust_add(args: argparse.Namespace) -> int:
+    from checker.packs.signing import SignatureError, public_key
+    from checker.packs.state import StateError
+    from checker.packs.trust import TrustError, check_organization_key
+    from checker.settings import change_trusted_keys
+
+    base = home()
+
+    def added(current: list) -> list:
+        from checker.evidence import TrustedKey
+
+        check_organization_key(base, key, [TrustedKey(**k) for k in current])
+        return [*current, {"name": args.name, "public_key": key.text}]
+
+    try:
+        key = public_key(_read_untrusted(args.key, 4096).decode("ascii", "replace"))
+        with _packs_lock(base):
+            change_trusted_keys(base, added)
+    except (EvidenceError, OSError, SignatureError, TrustError, StateError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    print(f"Trusted for your packs: {args.name} ({key.key_id}). Recorded (checker config history).")
+    return 0
+
+
+def cmd_packs_trust_remove(args: argparse.Namespace) -> int:
+    from checker.packs.state import StateError
+    from checker.packs.store import sweep
+    from checker.settings import change_trusted_keys
+
+    base = home()
+
+    def removed(current: list) -> list:
+        kept = [k for k in current if k["name"] != args.name]
+        if len(kept) == len(current):
+            raise EvidenceError(f"no trusted key is named {args.name!r}")
+        return kept
+
+    try:
+        with _packs_lock(base):
+            _, _, config = change_trusted_keys(base, removed)
+            retired = sweep(base, config.packs.trusted_keys)
+    except (EvidenceError, OSError, StateError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    print(f"No longer trusted: {args.name}. Recorded (checker config history).")
+    for name in retired:
+        print(f"Retired {name}: it was signed with that key.")
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """One pass, as a timer starts it: collect, analyze, report, purge what
+    has expired, and alert on hosts that got worse (checker.schedule)."""
+    import yaml
+
+    from checker import schedule
+
+    base = home()
+    try:
+        config = load_config(base)
+        inventory = _inventory_for_priors()
+        hosts = _select_hosts(args)
+        identity = _identity(args, base)
+    except (EvidenceError, KeyError, ValidationError, yaml.YAMLError) as exc:
+        print(f"checker: {exc.args[0] if isinstance(exc, KeyError) else exc}", file=sys.stderr)
+        return schedule.EXIT_SETUP
+    if not hosts:
+        print("checker: no hosts selected", file=sys.stderr)
+        return schedule.EXIT_SETUP
+    try:
+        result = schedule.run(
+            base, config, hosts, identity, inventory,
+            unattended=args.unattended, days=args.days, parallel=args.parallel,
+        )  # fmt: skip
+    except schedule.Busy as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return schedule.EXIT_BUSY
+    except Exception as exc:  # noqa: BLE001 - unforeseen: say so, and tell someone
+        print(f"checker: the run stopped: {type(exc).__name__}: {exc}", file=sys.stderr)
+        failed = schedule.notify_crash(config, exc)
+        if failed:
+            print(f"checker: the notify command failed too: {failed}", file=sys.stderr)
+        return schedule.EXIT_FAILED
+    for item in result.hosts:
+        band = item.band or "-"
+        shown = f" ({percent(item.probability)})" if item.probability is not None else ""
+        print(f"{item.host:20} {item.collected:12} {band}{shown}")
+        if item.problem:
+            print(f"checker: {item.host}: {item.problem}", file=sys.stderr)
+    for problem in result.problems:
+        print(f"checker: {problem}", file=sys.stderr)
+    if result.report:
+        print(f"Report written to {result.report}")
+    if result.alerting:
+        print("\nNeeds a look:")
+        for line in result.alerting:
+            print(f"  {line}")
+        if not config.notify_command:
+            print("(No notify_command is set, so no one else was told.)")
+        elif result.notified:
+            print(
+                f"checker: the notify command failed: {result.notified}; these are sent again"
+                " with the next run's",
+                file=sys.stderr,
+            )
+        else:
+            print("The notify command was given the summary.")
+    return result.exit_status()
+
+
+def cmd_schedule_install(
+    args: argparse.Namespace, pause: Callable[[float], None] | None = None
+) -> int:
+    import getpass
+    import os
+    import subprocess
+    import time
+
+    from checker import schedule
+
+    pause = pause or time.sleep
+    base = home()
+    try:
+        load_config(base)
+        at = schedule.parse_time(args.at)
+        hosts = load_inventory().hosts
+    except (EvidenceError, ValueError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 2
+    env = schedule.timer_environment(base, hosts)
+    unsafe = schedule.systemd_unsafe(env) if sys.platform != "darwin" else []
+    if unsafe:
+        print(
+            "checker: a systemd unit can't hold these paths (quotes, backslashes, $, ` or"
+            " control characters): " + ", ".join(repr(w) for w in unsafe),
+            file=sys.stderr,
+        )
+        return 2
+    problems = schedule.unattended_problems(hosts)
+    for problem in problems:
+        print(f"Warning: {problem}")
+    if problems:
+        print("Until that changes, each scheduled run leaves those hosts out and says so.")
+    if "SSH_AUTH_SOCK" in env:
+        print(
+            f"It uses the SSH agent at {env['SSH_AUTH_SOCK']}: its key must be unlocked when"
+            " the run starts, or the run waits for a passphrase no one types."
+        )
+    if sys.platform == "darwin" and os.environ.get("SSH_CONNECTION"):
+        print("A launchd agent runs while you are logged in at the Mac (not over SSH).")
+    where = schedule.placement(sys.platform, at, env, base, Path.home())
+    for path, content in where.files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        print(f"Wrote {path}")
+    if sys.platform == "darwin":
+        (base / "logs").mkdir(exist_ok=True, mode=0o700)
+        subprocess.run(where.stop[0], capture_output=True, check=False)  # noqa: S603 - a reload
+    for command in where.start:
+        # launchd may still be unloading the old agent: a few tries, a second apart.
+        for _ in range(5 if sys.platform == "darwin" else 1):
+            done = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+            if done.returncode == 0:
+                break
+            pause(1.0)
+        if done.returncode != 0:
+            print(
+                f"checker: `{' '.join(command)}` failed: {(done.stderr or '').strip()}",
+                file=sys.stderr,
+            )
+            return 1
+    print(
+        f"`checker run --all --unattended` will run every day at {args.at} (this machine's time)."
+    )
+    print(f"Its output: {where.logs}")
+    if sys.platform != "darwin" and schedule.lingering(getpass.getuser()) is False:
+        print(
+            "It runs only while you are logged in. To run it at night with no one logged"
+            f" in: sudo loginctl enable-linger {getpass.getuser()}"
+        )
+    return 0
+
+
+def cmd_schedule_remove(args: argparse.Namespace) -> int:
+    import subprocess
+
+    from checker import schedule
+
+    where = schedule.placement(sys.platform, (3, 0), {}, home(), Path.home())
+    present = [path for path in where.files if path.exists()]
+    if not present:
+        print("No timer is installed.")
+        return 0
+    stop, *after = where.stop  # stopped while its files are there; reloaded once they're gone
+    subprocess.run(stop, capture_output=True, check=False)  # noqa: S603
+    for path in present:
+        path.unlink()
+        print(f"Deleted {path}")
+    for command in after:
+        subprocess.run(command, capture_output=True, check=False)  # noqa: S603
+    print("Scheduled runs stopped.")
+    return 0
+
+
+def cmd_schedule_show(args: argparse.Namespace) -> int:
+    from checker import schedule
+
+    where = schedule.placement(sys.platform, (3, 0), {}, home(), Path.home())
+    present = [path for path in where.files if path.exists()]
+    if not present:
+        print("No timer is installed: `checker schedule install --at HH:MM` adds one.")
+        return 0
+    for path in present:
+        print(f"Installed: {path}")
+    print(f"Output of past runs: {where.logs}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

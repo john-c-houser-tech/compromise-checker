@@ -1,0 +1,240 @@
+"""What packs read from the evidence, as the controller reads it (plan
+4.4): PHP's settings into the snapshot, package history into events."""
+
+from test_snapshot import host_records, rec, snapshot_of_records, text_source
+
+from checker.events import EventBuilder
+from checker.protocol import Record
+from checker.snapshot import php_settings
+
+
+def record(module, kind, /, **data):
+    return Record(type="record", module=module, name=kind, data=data)
+
+
+# --- PHP's settings ----------------------------------------------------------------------------
+
+
+def test_ini_directives_with_their_sections():
+    lines = ["[PHP]", "engine = On", "[Session]", 'session.save_path = "/var/lib/php/sessions"',
+             "session.upload_progress.enabled = Off ; trailing comment"]  # fmt: skip
+    found = dict(php_settings("/etc/php/8.3/fpm/php.ini", lines))
+    upload = found["/etc/php/8.3/fpm/php.ini: session.upload_progress.enabled"]
+    assert upload == {"path": "/etc/php/8.3/fpm/php.ini", "kind": "ini",
+                      "name": "session.upload_progress.enabled", "value": "Off",
+                      "section": "Session", "position": 2}  # fmt: skip
+    assert found["/etc/php/8.3/fpm/php.ini: session.save_path"]["value"] == "/var/lib/php/sessions"
+
+
+def test_pool_settings_per_pool():
+    lines = ["[www]", "user = www-data", "php_admin_flag[session.upload_progress.enabled] = on",
+             "php_flag[session.upload_progress.enabled] = off", "[api]",
+             "php_value[memory_limit] = 256M", "include=/etc/php/8.3/fpm/extra/*.conf"]  # fmt: skip
+    found = php_settings("/etc/php/8.3/fpm/pool.d/www.conf", lines)
+    kinds = [(item["kind"], item.get("section"), item.get("how")) for _, item in found]
+    assert kinds == [
+        ("pool_header", "www", None),
+        ("pool", "www", "php_admin_flag"),
+        ("pool", "www", "php_flag"),  # both kept: the admin one isn't overwritten
+        ("pool_header", "api", None),
+        ("pool", "api", "php_value"),
+        ("include", None, None),
+    ]
+    assert found[1][1]["admin"] is True and found[2][1]["admin"] is False
+    assert (
+        php_settings("/etc/php/8.3/fpm/php-fpm.conf", ["[global]", "[www]"])[0][1]["section"]
+        == "www"
+    )
+
+
+def test_a_web_servers_own_php_settings():
+    apache = php_settings("/etc/apache2/sites-enabled/a.conf",
+                          ["  php_admin_flag session.upload_progress.enabled on",
+                           "SetEnv PHP_INI_SCAN_DIR /srv/ini"])  # fmt: skip
+    assert [(i["kind"], i.get("how"), i["value"]) for _, i in apache] == [
+        ("server", "php_admin_flag", "on"),
+        ("scan_dir", None, "/srv/ini"),
+    ]
+    nginx = php_settings(
+        "/etc/nginx/sites-enabled/b",
+        [r'  fastcgi_param PHP_VALUE "session.upload_progress.enabled=1\nx=2";'],
+    )
+    assert [(i["name"], i["value"]) for _, i in nginx] == [("session.upload_progress.enabled", "1"),
+                                                         ("x", "2")]  # fmt: skip
+
+
+def test_the_snapshot_holds_php_settings(tmp_path):
+    ini = "[Session]\nsession.upload_progress.enabled = On\n"
+    records = host_records(
+        planned=["host_facts", "web_logs"],
+        extra=text_source(9, "web_logs", "/etc/php/8.3/fpm/php.ini", ini),
+    )
+    snap = snapshot_of_records(records, tmp_path)
+    settings = snap.sections["php_settings"].items
+    assert settings["/etc/php/8.3/fpm/php.ini: session.upload_progress.enabled"]["value"] == "On"
+
+
+def test_no_package_history_leaves_it_incomplete(tmp_path):
+    records = host_records(
+        planned=["host_facts", "software"],
+        extra=[rec("software", "package_history_absent")],
+    )
+    snap = snapshot_of_records(records, tmp_path)
+    assert not snap.sections["package_history"].complete
+    assert snap.sections["packages"].complete  # the listing itself is whole
+
+
+# --- Package history ---------------------------------------------------------------------------
+
+
+def test_package_changes_become_events_in_the_hosts_zone():
+    builder = EventBuilder()
+    builder.record(
+        record("host_facts", "clock", localtime_link="/usr/share/zoneinfo/America/Los_Angeles")
+    )
+    builder.record(record("software", "package_change", manager="dpkg", action="upgrade",
+                          name="php8.3-fpm", arch="amd64", previous="8.3.6-0ubuntu0.24.04.5",
+                          version="8.3.6-0ubuntu0.24.04.6", local_time="2026-10-23 18:20:02",
+                          source="/var/log/dpkg.log"))  # fmt: skip
+    builder.record(record("software", "package_change", manager="rpm", action="install",
+                          name="bind", version="32:9.16-2.el9", time="2026-10-24T01:00:00+00:00",
+                          source="/var/lib/dnf/history.sqlite"))  # fmt: skip
+    builder.record(record("software", "package_change", action="explode", name="x"))
+    first, second = builder.events
+    assert (
+        first.type == "package.upgrade" and first.time == "2026-10-24T01:20:02+00:00"
+    )  # 18:20 Pacific
+    assert first.fields == {"manager": "dpkg", "name": "php8.3-fpm", "arch": "amd64",
+                            "version": "8.3.6-0ubuntu0.24.04.6",
+                            "previous": "8.3.6-0ubuntu0.24.04.5"}  # fmt: skip
+    assert first.source == "software:/var/log/dpkg.log"
+    assert second.type == "package.install" and second.fields["version"] == "32:9.16-2.el9"
+
+
+def test_a_local_time_without_a_known_zone_says_so():
+    builder = EventBuilder()
+    change = {"manager": "dpkg", "action": "install", "name": "nginx", "version": "1.24-1",
+              "local_time": "2026-10-24 09:00:00"}  # fmt: skip
+    builder.record(record("software", "package_change", **change))
+    (event,) = builder.events
+    assert event.fields.get("zone_assumed") is True
+
+
+def test_quoted_values_scoped_sections_and_repeats():
+    lines = ['session.upload_progress.enabled = "0" ; off for CVE-2026-115560',
+             "x = 'raw ; value'", "extension=a.so", "extension=b.so",
+             "[PATH=/var/www/legacy]", "session.upload_progress.enabled = 1"]  # fmt: skip
+    found = dict(php_settings("/etc/php.ini", lines))
+    assert found["/etc/php.ini: session.upload_progress.enabled"]["value"] == "0"
+    assert found["/etc/php.ini: x"]["value"] == "raw ; value"
+    assert found["/etc/php.ini: extension"]["value"] == "a.so"
+    assert found["/etc/php.ini: extension #2"]["value"] == "b.so"
+    scoped = found["/etc/php.ini [PATH=/var/www/legacy]: session.upload_progress.enabled"]
+    assert (
+        scoped["value"] == "1"
+        and scoped["position"] > found["/etc/php.ini: extension #2"]["position"]
+    )
+
+
+def test_an_ini_file_not_read_leaves_php_settings_incomplete(tmp_path):
+    records = host_records(
+        planned=["host_facts", "web_logs"],
+        extra=[rec("web_logs", "not_examined", path="/etc/php/8.3/fpm/php.ini", reason="x")],
+    )
+    snap = snapshot_of_records(records, tmp_path)
+    assert not snap.sections["php_settings"].complete
+    nginx = host_records(
+        planned=["host_facts", "web_logs", "unusual_files"],
+        extra=[rec("web_logs", "not_examined", path="/etc/nginx/nginx.conf", reason="x")],
+    )
+    assert snapshot_of_records(nginx, tmp_path).sections["php_settings"].complete
+
+
+# --- Sites' own PHP settings (plan 4.4c) -------------------------------------------------------
+
+
+def test_a_sites_user_ini_and_htaccess():
+    user_ini = php_settings("/var/www/a/.user.ini",
+                            ["session.upload_progress.enabled = 1", "[PATH=/x]",
+                             "PHP_INI_SCAN_DIR=/srv"], site=True)  # fmt: skip
+    assert [(i["kind"], i["how"], i["name"], i["value"]) for _, i in user_ini] == [
+        ("site", ".user.ini", "session.upload_progress.enabled", "1"),
+        ("site", ".user.ini", "PHP_INI_SCAN_DIR", "/srv"),  # just a setting there
+    ]
+    htaccess = php_settings("/var/www/a/.htaccess",
+                            ["php_flag session.upload_progress.enabled on",
+                             'SetEnv PHP_VALUE "memory_limit=1G"',
+                             "SetEnv PHP_INI_SCAN_DIR /srv"], site=True)  # fmt: skip
+    assert [(i["kind"], i["how"], i["name"]) for _, i in htaccess] == [
+        ("site", "php_flag", "session.upload_progress.enabled"),
+        ("site", "PHP_VALUE", "memory_limit"),
+    ]  # PHP_INI_SCAN_DIR is read as PHP starts: a site can't set it
+
+
+def site_records(*extra, planned=("host_facts", "web_logs", "unusual_files"), site_php=True):
+    return host_records(planned=list(planned), extra=list(extra), site_php=site_php)
+
+
+def test_site_files_feed_php_settings(tmp_path):
+    records = site_records(
+        *text_source(91, "unusual_files", "/var/www/a/.user.ini", "upload_max_filesize = 9M\n"),
+        *text_source(92, "unusual_files", "/var/www/a/.htaccess", "php_value x 1\n"),
+    )
+    section = snapshot_of_records(records, tmp_path).sections["php_settings"]
+    assert section.complete
+    assert section.items["/var/www/a/.user.ini: upload_max_filesize"]["kind"] == "site"
+    assert section.items["/var/www/a/.htaccess: php_value x"]["value"] == "1"
+
+
+def cut_source(*args):
+    records = text_source(*args)
+    records[-1].update(truncated=True, truncated_reason="size")
+    return records
+
+
+def test_a_site_file_not_read_leaves_only_php_settings_incomplete(tmp_path):
+    for extra in (
+        [rec("unusual_files", "site_php_partial", path="/var/www", found=3, read=2)],
+        [rec("unusual_files", "unreadable_file", path="/var/www/a/.htaccess", reason="x")],
+        cut_source(91, "unusual_files", "/var/www/a/.user.ini", "a = 1\n"),
+    ):
+        snap = snapshot_of_records(site_records(*extra), tmp_path)
+        assert not snap.sections["php_settings"].complete, extra
+        assert snap.sections["web_files"].complete, extra
+    other = site_records(
+        rec("unusual_files", "unreadable_file", path="/var/www/a/x.php", reason="x")
+    )
+    snap = snapshot_of_records(other, tmp_path)
+    assert snap.sections["php_settings"].complete and not snap.sections["web_files"].complete
+
+
+def test_the_hour_that_happens_twice_is_uncertain():
+    builder = EventBuilder()
+    zone = "/usr/share/zoneinfo/America/Los_Angeles"
+    builder.record(record("host_facts", "clock", localtime_link=zone))
+    change = {"manager": "dpkg", "action": "install", "name": "nginx", "version": "1.24-1"}
+    builder.record(record("software", "package_change", **change, local_time="2026-11-01 01:30:00"))
+    builder.record(record("software", "package_change", **change, local_time="2026-11-02 01:30:00"))
+    twice, once = builder.events
+    assert twice.fields.get("time_uncertain") is True and "time_uncertain" not in once.fields
+
+
+def test_a_php_value_set_some_other_way_is_kept_as_unread():
+    found = php_settings("/var/www/a/.htaccess", ["[PHP_VALUE set by SetEnvIf: not read]"], True)
+    assert [(i["kind"], i["how"]) for _, i in found] == [("site_unread", "SetEnvIf")]
+    # Only the collector's marker, only in a site's file.
+    assert php_settings("/etc/apache2/a.conf", ["[PHP_VALUE set by SetEnvIf: not read]"]) == []
+
+
+def test_an_older_collector_that_read_no_site_files_leaves_php_settings_incomplete(tmp_path):
+    snap = snapshot_of_records(site_records(site_php=False), tmp_path)
+    assert not snap.sections["php_settings"].complete
+    assert any("older collector" in gap for gap in snap.sections["php_settings"].gaps)
+    assert snap.sections["web_files"].complete
+
+
+def test_running_out_of_time_in_the_web_roots_leaves_php_settings_incomplete(tmp_path):
+    late = rec("unusual_files", "phase_time_limit", phase="web_roots", share=0.5)
+    assert not snapshot_of_records(site_records(late), tmp_path).sections["php_settings"].complete
+    early = rec("unusual_files", "phase_time_limit", phase="scratch", share=0.25)
+    assert snapshot_of_records(site_records(early), tmp_path).sections["php_settings"].complete

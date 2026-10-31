@@ -5765,5 +5765,387 @@ class ContainerTests(FixtureRoot):
         self.assertIn("containerd (k8s.io)", summary["data"]["not_inventoried"])
 
 
+class PackageHistoryTests(FixtureRoot):
+    """Package changes from dpkg's log and dnf's history (plan 4.4)."""
+
+    DPKG_LOG = (
+        b"2026-10-23 18:20:01 startup archives unpack\n"
+        b"2026-10-23 18:20:02 upgrade php8.3-fpm:amd64"
+        b" 8.3.6-0ubuntu0.24.04.5 8.3.6-0ubuntu0.24.04.6\n"
+        b"2026-10-23 18:20:02 status half-configured php8.3-fpm:amd64 8.3.6-0ubuntu0.24.04.6\n"
+        b"2026-10-24 09:00:00 install nginx:amd64 <none> 1.24.0-2ubuntu7\n"
+        b"2026-10-25 10:00:00 remove telnet:amd64 0.17-44build1 <none>\n"
+        b"garbage line\n"
+    )
+
+    def test_dpkg_log_and_its_rotated_copies(self):
+        self.write("var/log/dpkg.log", self.DPKG_LOG)
+        older = b"2026-09-01 08:00:00 install php8.3-fpm:amd64 <none> 8.3.6-0ubuntu0.24.04.4\n"
+        self.write("var/log/dpkg.log.2.gz", gzip.compress(older), age_days=40)
+        self.write("var/log/dpkg.log.13.gz", gzip.compress(older), age_days=500)  # too old
+        records = collect(self.root, ["software"])
+        changes = [r["data"] for r in named(records, "package_change")]
+        self.assertEqual(
+            [(c["action"], c["name"], c["previous"], c["version"]) for c in changes],
+            [
+                ("install", "php8.3-fpm", None, "8.3.6-0ubuntu0.24.04.4"),
+                ("upgrade", "php8.3-fpm", "8.3.6-0ubuntu0.24.04.5", "8.3.6-0ubuntu0.24.04.6"),
+                ("install", "nginx", None, "1.24.0-2ubuntu7"),
+                ("remove", "telnet", "0.17-44build1", None),
+            ],
+        )
+        self.assertEqual(changes[1]["local_time"], "2026-10-23 18:20:02")
+        self.assertEqual(changes[1]["arch"], "amd64")
+        self.assertEqual(sources(records), {})  # parsed here; no line of the log is sent
+
+    def test_dnf_history_read_without_writing(self):
+        import sqlite3
+
+        db = Path(self.root, "var/lib/dnf/history.sqlite")
+        db.parent.mkdir(parents=True)
+        connection = sqlite3.connect(db)
+        connection.executescript(
+            "CREATE TABLE trans (id INTEGER PRIMARY KEY, dt_begin INTEGER);"
+            "CREATE TABLE trans_item (id INTEGER PRIMARY KEY, trans_id INTEGER, item_id INTEGER,"
+            " action INTEGER, state INTEGER);"
+            "CREATE TABLE rpm (item_id INTEGER PRIMARY KEY, name TEXT, epoch INTEGER,"
+            " version TEXT, release TEXT, arch TEXT);"
+        )
+        began = int(NOW - 5 * DAY)
+        connection.execute("INSERT INTO trans VALUES (1, ?)", (began,))
+        connection.execute("INSERT INTO trans VALUES (2, ?)", (int(NOW - 900 * DAY),))
+        rows = [
+            (1, 1, 1, 6, 1, "php-fpm", 0, "8.3.15", "1.el9_6", "x86_64"),  # upgrade, done
+            (2, 1, 2, 7, 1, "php-fpm", 0, "8.3.14", "1.el9", "x86_64"),  # upgraded: skipped
+            (3, 1, 3, 1, 2, "nmap", 3, "7.92", "1.el9", "x86_64"),  # failed: skipped
+            (4, 1, 4, 1, 1, "bind", 32, "9.16", "2.el9", "x86_64"),  # install, epoch
+            (5, 2, 5, 1, 1, "old", 0, "1", "1", "noarch"),  # too old
+        ]
+        for item, trans, rpm_id, action, state, name, epoch, version, release, arch in rows:
+            connection.execute("INSERT INTO trans_item VALUES (?, ?, ?, ?, ?)",
+                               (item, trans, rpm_id, action, state))  # fmt: skip
+            connection.execute("INSERT INTO rpm VALUES (?, ?, ?, ?, ?, ?)",
+                               (rpm_id, name, epoch, version, release, arch))  # fmt: skip
+        connection.commit()
+        connection.close()
+        before = sorted(os.listdir(db.parent))
+        records = collect(self.root, ["software"])
+        changes = [r["data"] for r in named(records, "package_change")]
+        self.assertEqual(
+            [(c["action"], c["name"], c["version"]) for c in changes],
+            [("upgrade", "php-fpm", "8.3.15-1.el9_6"), ("install", "bind", "32:9.16-2.el9")],
+        )
+        self.assertTrue(
+            changes[0]["time"].startswith(
+                datetime.datetime.fromtimestamp(began, datetime.timezone.utc).strftime("%Y-%m-%d")
+            )
+        )
+        self.assertEqual(sorted(os.listdir(db.parent)), before)  # no -wal, -shm or journal
+
+    def test_no_history_is_said(self):
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_absent")), 1)
+
+
+class PhpIniTests(FixtureRoot):
+    """PHP's ini files, directives only (plan 4.4, decision D4)."""
+
+    def test_only_directives_and_sections_are_sent_masked(self):
+        secret = "sk-ant-api03-" + "a" * 60
+        self.write(
+            "etc/php/8.3/fpm/php.ini",
+            (
+                "[PHP]\n; a comment about engine\nengine = On\n\n"
+                "#another comment\n[Session]\nsession.upload_progress.enabled = On\n"
+                f"mail.api_key = {secret}\n"
+            ).encode(),
+        )
+        self.write(
+            "etc/php/8.3/mods-available/opcache.ini", b"; priority=10\nzend_extension=opcache.so\n"
+        )
+        os.makedirs(Path(self.root, "etc/php/8.3/fpm/conf.d"))
+        os.symlink("/etc/php/8.3/mods-available/opcache.ini",
+                   Path(self.root, "etc/php/8.3/fpm/conf.d/10-opcache.ini"))  # fmt: skip
+        self.write("etc/php/8.3/cli/php.ini", b"engine = Off\n")  # the CLI isn't web-facing
+        records = collect(self.root, ["web_logs"])
+        sent = sources(records)
+        ini = sent["/etc/php/8.3/fpm/php.ini"][1].decode()
+        expected = ["[PHP]", "engine = On", "[Session]", "session.upload_progress.enabled = On"]
+        self.assertEqual(ini.splitlines()[:4], expected)
+        self.assertNotIn("comment", ini)
+        self.assertNotIn(secret, ini)
+        # A linked one is sent under its target's name; the link is a record.
+        opcache = sent["/etc/php/8.3/mods-available/opcache.ini"][1]
+        self.assertEqual(opcache, b"zend_extension=opcache.so\n")
+        [link] = named(records, "config_link")
+        self.assertEqual(link["data"]["path"], "/etc/php/8.3/fpm/conf.d/10-opcache.ini")
+        self.assertNotIn("/etc/php/8.3/cli/php.ini", sent)
+
+    def test_rhel_layout(self):
+        self.write("etc/php.ini", b"[PHP]\nexpose_php = Off\n")
+        self.write("etc/php.d/20-session.ini", b"session.upload_progress.enabled = Off\n")
+        sent = sources(collect(self.root, ["web_logs"]))
+        self.assertEqual(sent["/etc/php.ini"][1], b"[PHP]\nexpose_php = Off\n")
+        self.assertIn("/etc/php.d/20-session.ini", sent)
+
+
+class PackageHistoryReviewTests(FixtureRoot):
+    """The review of plan 4.4's collection."""
+
+    def dnf_db(self, rows, transactions):
+        import sqlite3
+
+        db = Path(self.root, "var/lib/dnf/history.sqlite")
+        db.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(db)
+        connection.executescript(
+            "CREATE TABLE trans (id INTEGER PRIMARY KEY, dt_begin INTEGER);"
+            "CREATE TABLE trans_item (id INTEGER PRIMARY KEY, trans_id INTEGER, item_id INTEGER,"
+            " action INTEGER, state INTEGER);"
+            "CREATE TABLE rpm (item_id INTEGER PRIMARY KEY, name TEXT, epoch INTEGER,"
+            " version TEXT, release TEXT, arch TEXT);"
+        )
+        for trans_id, began in transactions:
+            connection.execute("INSERT INTO trans VALUES (?, ?)", (trans_id, began))
+        for item, trans, action, name in rows:
+            connection.execute(
+                "INSERT INTO trans_item VALUES (?, ?, ?, ?, 1)", (item, trans, item, action)
+            )
+            connection.execute(
+                "INSERT INTO rpm VALUES (?, ?, 0, '1.0', '1.el9', 'x86_64')", (item, name)
+            )
+        connection.commit()
+        connection.close()
+        return db
+
+    def test_obsoleting_and_obsoleted_packages_are_changes(self):
+        recent = int(NOW - DAY)
+        self.dnf_db([(1, 1, 4, "new-name"), (2, 1, 5, "old-name")], [(1, recent)])
+        changes = [r["data"] for r in named(collect(self.root, ["software"]), "package_change")]
+        self.assertEqual([(c["action"], c["name"]) for c in changes],
+                         [("install", "new-name"), ("remove", "old-name")])  # fmt: skip
+
+    def test_a_view_in_place_of_dnfs_tables_isnt_read(self):
+        import sqlite3
+
+        db = self.dnf_db([], [(1, int(NOW))])
+        connection = sqlite3.connect(db)
+        connection.executescript(
+            "DROP TABLE trans_item;"
+            "CREATE VIEW trans_item AS WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL"
+            " SELECT n + 1 FROM r) SELECT n AS id, 1 AS trans_id, 1 AS item_id, 1 AS action,"
+            " 1 AS state FROM r WHERE n < 0;"
+        )
+        connection.close()
+        records = collect(self.root, ["software"])
+        reasons = [r["data"].get("reason") for r in named(records, "not_examined")]
+        self.assertIn("not dnf's tables", reasons)
+
+    def test_a_query_that_runs_too_long_is_stopped(self):
+        import sqlite3
+
+        db = Path(self.root, "loop.sqlite")
+        connection = sqlite3.connect(db)
+        connection.execute("CREATE TABLE t (x)")
+        connection.commit()
+        connection.close()
+        collector = load_collector(self.root)
+        run = direct_run(collector, seconds=1)
+        reader = collector.sqlite_readonly(run, "/loop.sqlite")
+        started = time.monotonic()
+        with self.assertRaises(sqlite3.OperationalError):
+            reader.execute(
+                "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r)"
+                " SELECT count(*) FROM r"
+            ).fetchall()
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(reader.execute("PRAGMA temp_store").fetchone()[0], 2)  # memory
+        reader.close()
+
+    def test_transactions_still_in_the_write_ahead_log_are_said(self):
+        db = self.dnf_db([], [(1, int(NOW))])
+        Path(str(db) + "-wal").write_bytes(b"x" * 100)
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_pending")), 1)
+
+    def test_dateext_and_xz_rotations_and_old_lines_and_the_newest_kept(self):
+        import lzma
+
+        line = "{} upgrade pkg{}:amd64 1.0-1 1.0-2\n"
+        recent = datetime.datetime.fromtimestamp(NOW - 2 * DAY).strftime("%Y-%m-%d %H:%M:%S")
+        self.write(
+            "var/log/dpkg.log",
+            (
+                "2019-01-01 00:00:00 upgrade ancient:amd64 1-1 1-2\n" + line.format(recent, "c")
+            ).encode(),
+        )
+        dateext = gzip.compress(line.format(recent, "a").encode())
+        self.write("var/log/dpkg.log-20261001.gz", dateext, age_days=3)
+        self.write(
+            "var/log/dpkg.log.3.xz", lzma.compress(line.format(recent, "b").encode()), age_days=4
+        )
+        collector = load_collector(self.root)
+        collector.MAX_PACKAGE_CHANGES = 2
+        out = io.BytesIO()
+        collector.main(settings(["software"]), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        names = sorted(r["data"]["name"] for r in named(records, "package_change"))
+        self.assertNotIn("ancient", names)  # before the horizon, though in a recent file
+        self.assertEqual(len(names), 2)
+        self.assertIn("pkgc", names)  # the newest file's change is kept
+        [cut] = [r for r in named(records, "listing_truncated")]
+        self.assertEqual(cut["data"]["found"], 3)
+
+    def test_a_quiet_host_still_has_a_history(self):
+        self.write("var/log/dpkg.log", b"", age_days=600)
+        records = collect(self.root, ["software"])
+        self.assertEqual(named(records, "package_history_absent"), [])
+
+
+class PhpIniReviewTests(FixtureRoot):
+    def test_secret_directives_are_masked_whole(self):
+        self.write(
+            "etc/php.ini",
+            (
+                b"mysqli.default_pw = hunter2xyz\n"
+                b"newrelic.license = 0123456789abcdef0123456789abcdef01234567\n"
+                b'session.save_path = "tcp://10.0.0.1:6379?auth[]=user&auth[]=s3cret"\n'
+                b"foo[bar] = 1\n"
+                b"session.upload_progress.enabled = On\n"
+            ),
+        )
+        text = sources(collect(self.root, ["web_logs"]))["/etc/php.ini"][1].decode()
+        for secret in ("hunter2xyz", "0123456789abcdef", "s3cret"):
+            self.assertNotIn(secret, text)
+        self.assertIn("mysqli.default_pw = [MASKED:php_secret]", text)
+        self.assertIn("foo[bar] = 1", text)
+        self.assertIn("session.upload_progress.enabled = On", text)
+
+    def test_php_ini_doesnt_lead_to_phps_own_error_log(self):
+        self.write("etc/php.ini", b"error_log = /var/log/php_app_errors.log\n")
+        self.write("var/log/php_app_errors.log", b"PHP Warning: x\n")
+        sent = sources(collect(self.root, ["web_logs"]))
+        self.assertNotIn("/var/log/php_app_errors.log", sent)
+
+
+class SitePhpTests(FixtureRoot):
+    """Sites' .user.ini and .htaccess in the web roots: their PHP lines only (plan 4.4c)."""
+
+    def run_sites(self, **overrides):
+        collector = load_collector(self.root)
+        collector.file_capabilities = lambda absolute: ({}, None)
+        for name, value in overrides.items():
+            setattr(collector, name, value)
+        out = io.BytesIO()
+        collector.main(unusual_settings(None), out=out)
+        return [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+
+    def test_only_php_lines_are_sent_masked(self):
+        secret = "sk-ant-api03-" + "a" * 60
+        self.write(
+            "var/www/shop/.user.ini",
+            f"; tuning\n[hunter5]\nupload_max_filesize = 9M\nmail.api_key = {secret}\n".encode(),
+        )
+        self.write(
+            "var/www/blog/.htaccess",
+            (
+                "RewriteEngine On\nRewriteRule ^admin$ /secret-panel [L]\n"
+                "AuthUserFile /var/www/.htpasswd\nSetEnv DB_PASSWORD hunter2\n"
+                "<IfModule mod_php.c>\n  php_flag session.upload_progress.enabled on\n"
+                f"  php_value mail.api_key {secret}\n</IfModule>\n"
+                'SetEnv PHP_VALUE "session.upload_progress.enabled=0"\n'
+                'SetEnv PHP_VALUE "a=1\\nmysqli.default_pw=hunter3;newrelic.license=hunter4"\n'
+                "SetEnv PHP_ADMIN_VALUE newrelic.license=hunter6\n"
+                "SetEnv DB_PASS hunter7 PHP_VALUE\n"
+                "SetEnv DB_PASS hunter10 PHP_VALUE x=1\n"
+                'SetEnvIf Request_URI "^/" PHP_VALUE=x=hunter8\n'
+                "RewriteRule .* - [E=PHP_VALUE:x=hunter9]\n"
+            ).encode(),
+        )
+        self.write("var/www/blog/index.php", b"<?php echo 1;")
+        records = self.run_sites()
+        sent = sources(records)
+        self.assertEqual(
+            sent["/var/www/shop/.user.ini"][1],
+            b"upload_max_filesize = 9M\nmail.api_key = [MASKED:php_secret]\n",
+        )
+        htaccess = sent["/var/www/blog/.htaccess"][1].decode()
+        self.assertEqual(
+            htaccess.splitlines(),
+            [
+                "  php_flag session.upload_progress.enabled on",
+                "  php_value mail.api_key [MASKED:php_secret]",
+                'SetEnv PHP_VALUE "session.upload_progress.enabled=0"',
+                'SetEnv PHP_VALUE "a=1\\nmysqli.default_pw=[MASKED:php_secret]'
+                ';newrelic.license=[MASKED:php_secret]"',
+                "SetEnv PHP_ADMIN_VALUE newrelic.license=[MASKED:php_secret]",
+                "[PHP_VALUE set by SetEnv: not read]",
+                "[PHP_VALUE set by SetEnv: not read]",
+                "[PHP_VALUE set by SetEnvIf: not read]",
+                "[PHP_VALUE set by RewriteRule: not read]",
+            ],
+        )
+        self.assertNotIn("/var/www/blog/index.php", sent)  # no other file's text
+        self.assertEqual(named(records, "site_php_partial"), [])
+        self.assertEqual(len(named(records, "site_php")), 1)
+
+    def test_one_not_read_is_said(self):
+        self.write("var/www/a/.htaccess", b"php_flag x on\n")
+        os.link(Path(self.root, "var/www/a/.htaccess"), Path(self.root, "var/www/a/copy"))
+        Path(self.root, "var/www/b").mkdir(parents=True)
+        os.symlink("../x/password=hunter2", Path(self.root, "var/www/b/.user.ini"))
+        self.write("var/www/c/password=hunter2/.user.ini", b"x = 1\n")
+        records = self.run_sites()
+        sent = sources(records)
+        self.assertFalse([name for name in sent if name.startswith("/var/www/")])
+        refused = [r["data"]["reason"] for r in named(records, "unreadable_file")]
+        self.assertTrue(any("hard-linked" in reason for reason in refused))
+        [partial] = named(records, "site_php_partial")
+        self.assertEqual(partial["data"], {"path": "/var/www", "found": 3, "read": 0})
+        # The link is counted, never opened: its target isn't repeated anywhere.
+        self.assertNotIn("hunter2", json.dumps(records))
+
+    def test_a_folder_swapped_for_a_link_after_the_walk_isnt_followed(self):
+        self.write("var/www/site/sub/.htaccess", b"php_value session.name ok\n")
+        self.write("home/bob/private/.htaccess", b"php_value session.name BOBSECRET\n")
+        collector = load_collector(self.root)
+        listed = collector._is_web_listed
+
+        def swap_after_listing(entry, root):
+            if entry["path"] == "/var/www/site/sub/.htaccess":
+                os.rename(Path(self.root, "var/www/site/sub"), Path(self.root, "var/www/site/old"))
+                os.symlink("../../../home/bob/private", Path(self.root, "var/www/site/sub"))
+            return listed(entry, root)
+
+        collector._is_web_listed = swap_after_listing
+        collector.file_capabilities = lambda absolute: ({}, None)
+        out = io.BytesIO()
+        collector.main(unusual_settings(None), out=out)
+        records = [json.loads(x) for x in gzip.decompress(out.getvalue()).splitlines()]
+        self.assertNotIn("BOBSECRET", json.dumps(records))
+        refused = [r["data"]["reason"] for r in named(records, "unreadable_file")]
+        self.assertTrue(any("not the file the walk listed" in reason for reason in refused))
+        self.assertEqual(named(records, "site_php_partial")[0]["data"]["read"], 0)
+
+    def test_running_out_of_time_says_what_wasnt_read(self):
+        self.write("var/www/a/.user.ini", b"x = 1\n")
+        records = self.run_sites(WEB_TIME_SHARE=0.0)
+        self.assertEqual(named(records, "site_php"), [])
+        partial = {r["data"]["path"] for r in named(records, "site_php_partial")}
+        self.assertEqual(partial, {"/var/www", "/srv/www", "/srv/http", "/usr/share/nginx/html"})
+
+    def test_the_refusal_keeps_to_the_names_and_the_root(self):
+        collector = load_collector(self.root)
+        run = collector.Run(None, json.loads(settings([])), 1e12)
+        info = os.stat(self.write("var/www/a/.htaccess", b""))
+        root = "/var/www"
+        self.assertIsNone(run.refusal("/var/www/a/.htaccess", info, site_root=root))
+        self.assertIn("not a site's", run.refusal("/var/www/a/.env", info, site_root=root))
+        self.assertIn("outside the web root", run.refusal("/srv/.htaccess", info, site_root=root))
+        self.assertIn(
+            "outside the web root", run.refusal("/var/wwwx/.htaccess", info, site_root=root)
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

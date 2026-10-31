@@ -1,0 +1,6 @@
+format: 1
+serial: 1
+issued: 2026-10-30
+pack_keys:
+  - {name: pack key 2026-10, public_key: RWTwJEBRLXzPl0ix1c6SXYqly8WeF/3/S6tcBjf/4BrfekjiK/JsATdY}
+revoked: []

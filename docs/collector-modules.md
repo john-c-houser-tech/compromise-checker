@@ -619,7 +619,31 @@ use up another's time; one that runs out of its share stops there
   link) are sent (`web_file`); everything else — uploads, whose names can be
   personal — is only counted (`not_listed` in the walk summary). Hidden
   data files (`.env`, `.htpasswd`, `.user.ini`) are listed but not hashed:
-  a short secret's hash could be guessed;
+  a short secret's hash could be guessed. Each site's `.user.ini` and
+  `.htaccess` found there (up to 500 per web root) is then read for its
+  PHP settings alone (plan 4.4c): a site can set a threat pack's
+  mitigation back for itself there. From `.user.ini` only directive lines
+  are sent (as from php.ini, the same secret-named values masked whole; no
+  `[section]` lines); from `.htaccess` only `php_value`, `php_flag` and
+  their `php_admin_` forms, and `SetEnv PHP_VALUE` / `PHP_ADMIN_VALUE`,
+  masked — each secret-named setting's value whole, inside a `PHP_VALUE`
+  too. Another directive naming `PHP_VALUE` (`SetEnvIf`, `BrowserMatch`,
+  `ProxyFCGISetEnvIf`, a rewrite's `E=` flag) is sent only as a marker
+  naming the directive (`[PHP_VALUE set by SetEnvIf: not read]`), none of
+  its arguments; rewrite rules, authentication lines and every other line
+  are left out. These are the only file contents read in a web root, and
+  only under the rules for walked files (no hard link, nothing inside a
+  home kept out — www-data's home is often `/var/www`, kept out if a
+  shell history file is there), and only the very file the walk listed:
+  the file opened must have the walked inode on the root's filesystem, so
+  a folder swapped for a link afterwards leads nowhere. A link named
+  `.user.ini` or `.htaccess` is counted, never opened. One not read — a
+  link, a refusal, a path that masking would change (a source's path is
+  sent as it is), more than 500, a walk of the root not whole, a root not
+  examined, or time running out — is reported (`site_php_partial`), and
+  the PHP settings count as incomplete; a `site_php` record says every
+  web root was gone through (a collection without one, from an older
+  collector, read no site files);
 - every other top-level directory the system walk (`system_files`) doesn't
   cover — `/var`, `/home`, `/root`, `/srv`, `/run`, `/mnt`, `/media`, and
   whatever else is there (`/data`, `/app`, `/.x`) — and the files directly
@@ -647,7 +671,8 @@ hashed under the protection rules for walked files. Because anyone can name
 a file here, each path and link target is masked like log text (a file
 named after a password or token) — and so is error text that repeats them
 — with what was masked counted on the entry. Files over 8 MiB are not
-hashed, and say so. No file contents are sent.
+hashed, and say so. No file contents are sent, except the PHP setting
+lines of `.user.ini` and `.htaccess` above.
 
 ## `processes`
 
@@ -814,6 +839,23 @@ packages installed system-wide by hand.
   architecture and install time; and from dpkg's status file, where there
   is one too, name, version and architecture, with the modification time
   of the package's file list in `/var/lib/dpkg/info` as its install time;
+- the package history, for threat packs (plan 4.4: when a fix arrived,
+  not only when a package was last updated): dpkg's log
+  (`/var/log/dpkg.log` and its rotated copies, `.gz` read here) or dnf's
+  history database (`/var/lib/dnf/history.sqlite`, opened immutable like
+  rpm's), going back 400 days or the look-back window if longer, the
+  newest 20,000 changes: each install, upgrade, downgrade, reinstall,
+  obsoleting or removal with its time, package name, architecture and
+  versions, as `package_change` records. dpkg's rotated logs are read in
+  any name logrotate gives them (`.1`, `.2.gz`, `-20261001.gz`) and any
+  compression this collector opens. The log's lines are parsed on the
+  server and nothing else of them is sent; dpkg's times are the host's
+  local time (read in its zone), dnf's are UTC. `package_history_absent`
+  says there was none to read; `package_history_pending`, that dnf's
+  write-ahead log holds changes an immutable read can't see. Every SQLite
+  read of a server's database (this and rpm's) keeps its sorts in memory
+  (none spills to a file), runs no functions from the database's schema,
+  and checks the deadline while SQLite works;
 - repositories as masked text (a password in a repository's URL is
   masked): `/etc/apt/sources.list`, `sources.list.d`, `/etc/yum.repos.d`,
   `/etc/dnf/dnf.conf`, `/etc/yum.conf`, `/etc/dnf/vars`, `/etc/yum/vars`
@@ -930,7 +972,19 @@ exploit attempts that got an answer, error bursts.
   `/etc/nginx/nginx.conf`, `conf.d`, `sites-enabled`;
   `/etc/apache2/apache2.conf`, `envvars`, `sites-enabled`, `conf-enabled`;
   `/etc/httpd/conf/httpd.conf`, `conf.d`; `/etc/php-fpm.conf`,
-  `/etc/php-fpm.d`, `/etc/php/*/fpm/php-fpm.conf` and `pool.d`;
+  `/etc/php-fpm.d`, `/etc/php/*/fpm/php-fpm.conf` and `pool.d`, and
+  Remi's `/etc/opt/remi/php*/php-fpm.conf` and `php-fpm.d`;
+- PHP's own settings, for threat packs' mitigations (decision D4): each
+  web-facing PHP's `php.ini` and `conf.d/*.ini` (`/etc/php/*/{fpm,apache2,cgi}`,
+  not the CLI's; `/etc/php.ini` and `/etc/php.d`; Remi's
+  `/etc/opt/remi/php*/php.ini` and `php.d`), by file, never by running
+  `php`. Only directive and `[section]` lines are sent, masked; comments and
+  blank lines are left out. A directive whose value is or may hold a
+  secret (`*_pw`, `license`, `secret`, `token`, `auth`, `key`, `dsn`,
+  `save_path`, `credential`) has its whole value masked. A `conf.d` link
+  into `mods-available` is followed and sent under its target's name,
+  with a `config_link` record. The log files php.ini names (PHP's own
+  `error_log`) are not read;
 - the log files that configuration names (`access_log`, `error_log`,
   `CustomLog`, `TransferLog`, `ErrorLog`, PHP-FPM's `error_log`, `slowlog`
   and `access.log`; `${APACHE_LOG_DIR}` and RHEL's relative `logs/`

@@ -18,7 +18,7 @@ import math
 from collections import defaultdict
 from typing import Any
 
-SCORING_VERSION = 2  # 2: chains
+SCORING_VERSION = 3  # 2: chains; 3: threat packs' ratios (plan 4.5)
 
 DEFAULT_PRIOR = 0.02  # DESIGN.md §11.2
 
@@ -51,15 +51,28 @@ PROBABILITY_BANDS = ((0.90, "Critical"), (0.50, "High"), (0.10, "Elevated"), (0.
 COMPROMISE = "compromise indicator"
 
 
+def prior_raise_of(raised_by: list[dict[str, Any]]) -> float:
+    """The prior's log-odds raise a stored score's `raised_by` stands for,
+    exactly as it was computed (checker/packs/exposure.py)."""
+    return float(raised_by[0]["log_raise"]) if raised_by else 0.0
+
+
 def ratio(finding: dict[str, Any]) -> float:
     if finding.get("maintenance"):
         # Planned work lowered its band: the band's ratio, whatever the
         # check's override says.
         return BAND_RATIOS[finding["band"]]
+    own = BAND_RATIOS[finding["band"]]
     for key in ((finding["check"], finding.get("variant")), (finding["check"], None)):
         if key in OVERRIDES:
-            return OVERRIDES[key]
-    return BAND_RATIOS[finding["band"]]
+            own = OVERRIDES[key]
+            break
+    if finding.get("likelihood_ratio"):
+        # A threat pack's (checker/packs/detect.py): its own detection's, or
+        # a core finding's it raised, never below what the check says now.
+        pack = float(finding["likelihood_ratio"])
+        return max(pack, own) if finding.get("raised_by_pack") else pack
+    return own
 
 
 def logit(p: float) -> float:
@@ -74,11 +87,15 @@ def score(
     findings: list[dict[str, Any]],
     prior: float = DEFAULT_PRIOR,
     chains: list[dict[str, Any]] | None = None,
+    raised: float = 0.0,
+    raised_by: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The score of one assessment's findings (dicts, as stored). Sets
     `ratio` and `contribution` on each finding and returns the score:
     prior, log-odds, probability, band, contributors (largest first) and
-    the separate hygiene and exposure rating."""
+    the separate hygiene and exposure rating. `raised` is what exposure to
+    the threats in the packs adds to the prior's log-odds (DESIGN.md §11.2;
+    checker/packs/exposure.py), `raised_by` what it came from."""
     if not 0 < prior < 1:
         raise ValueError(f"a prior must be between 0 and 1, not {prior}")
     counted = []
@@ -99,7 +116,10 @@ def score(
     # story add their chain's bonus, once per chain, on top.
     bonus = [(c, math.log(c["ratio"])) for c in chains or []]
     log_odds = (
-        logit(prior) + sum(findings[i]["contribution"] for i in counted) + sum(b for _, b in bonus)
+        logit(prior)
+        + raised
+        + sum(findings[i]["contribution"] for i in counted)
+        + sum(b for _, b in bonus)
     )
     probability = 1 / (1 + math.exp(-log_odds))
     total = sum(findings[i]["contribution"] for i in counted) + sum(b for _, b in bonus)
@@ -135,9 +155,18 @@ def score(
     contributors.sort(key=lambda c: -c["contribution"])
     for finding in findings:
         finding["contribution"] = round(finding["contribution"], 4)
+    raise_fields = (
+        {
+            "raised_prior": round(1 / (1 + math.exp(-(logit(prior) + raised))), 4),
+            "raised_by": raised_by or [],
+        }
+        if raised > 0
+        else {}
+    )
     return {
         "version": SCORING_VERSION,
         "prior": prior,
+        **raise_fields,
         "log_odds": round(log_odds, 4),
         "probability": round(probability, 4),
         "band": probability_band(probability),
@@ -205,6 +234,10 @@ def _groups(findings: list[dict[str, Any]], counted: list[int]) -> list[list[int
 
     holder: dict[str, int] = {}
     for i in counted:
+        if findings[i]["check"] == "pack.detection":
+            # A pack's finding can name many paths: it mustn't join core
+            # findings about them into one group (and cut them).
+            continue
         for entity in findings[i].get("entities") or []:
             if entity.startswith(GROUPING_ENTITIES):
                 if entity in holder:

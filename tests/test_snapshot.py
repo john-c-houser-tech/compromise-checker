@@ -77,6 +77,7 @@ def host_records(
     planned=ALL_MODULES,
     trailer=True,
     masking=6,
+    site_php=True,
 ):
     records = [
         {
@@ -174,6 +175,9 @@ def host_records(
         )
     )
     records += list(extra)
+    if "unusual_files" in planned and site_php:
+        # Every web root's .user.ini and .htaccess read (plan 4.4c).
+        records.append(rec("unusual_files", "site_php", roots=4))
     if trailer:
         records.append(
             {

@@ -1,0 +1,2 @@
+# Signed as they are: a changed line ending breaks the signature.
+checker/packs/keys/* -text

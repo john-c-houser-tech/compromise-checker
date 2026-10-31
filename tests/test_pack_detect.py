@@ -1,0 +1,706 @@
+"""A pack's detections (checker/packs/detect.py, plan 4.5): the language's
+format, its matching, and how they count only while the host was exposed.
+The pack is the format tests' made-up one; its window opens 2026-10-20."""
+
+import textwrap
+
+import pytest
+from test_pack_exposure import FIXED_AT, records
+from test_pack_format import GOOD, changed
+from test_snapshot import add_bundle, rec
+
+from checker.checks import Context
+from checker.events import Event
+from checker.packs.detect import _band, glob_match, own_detections, raise_referenced
+from checker.packs.exposure import Exposure
+from checker.packs.format import PackError, read
+from checker.scoring import ratio
+from checker.snapshot import Section, Snapshot
+
+WORKER = "  - id: worker-child\n    check: web.worker_child\n    likelihood_ratio: 20\n"
+
+
+def pack_with(detections: str):
+    return read(changed(WORKER, textwrap.indent(textwrap.dedent(detections), "  ")))
+
+
+CRASH = """\
+    - id: fpm-crash
+      title: PHP-FPM workers crashing
+      counts: while_exposed
+      events:
+        any_of:
+          - type: web.error
+            fields: {message: {glob: "*child * exited on signal 11*"}}
+          - type: kernel.segfault
+            fields: {comm: {prefix: php-fpm}}
+        count: {at_least: 3, within: 10m}
+      likelihood_ratio: 8
+"""
+
+
+def event(time, kind, program=None, **fields):
+    return Event(time, time, "web_logs:/var/log/php-fpm.log", kind, fields, program)
+
+
+def exposure(pack, exposed_from="2026-10-20T00:00:00+00:00", until=None):
+    return Exposure(pack.id, pack.version, 5, "ubuntu:24.04", "vulnerable",
+                    exposed_from=exposed_from, exposed_until=until)  # fmt: skip
+
+
+LOGS = {"web_logs_summary": {"access_logs_opted_in": True, "access_sent": 1, "error_sent": 1},
+        "exec_records_summary": {"starts": 5}}  # fmt: skip
+
+
+def context(pack, events=(), sections=None, live=None, exposed=True, **kwargs):
+    snapshot = Snapshot({}, sections or {}, LOGS if live is None else live)
+    found = Context("web01", "b1", list(events), snapshot, packs=[pack], **kwargs)
+    found.exposures = [exposure(pack) if exposed is True else exposed] if exposed else []
+    return found
+
+
+def crash(minute, pid=1):
+    message = f"WARNING: [pool www] child {pid} exited on signal 11 (SIGSEGV)"
+    return event(f"2026-10-22T10:{minute:02d}:00+00:00", "web.error", message=message)
+
+
+# --- The format ------------------------------------------------------------------------------
+
+
+def test_the_documented_example_reads():
+    pack = pack_with(CRASH)
+    (detection,) = pack.detections
+    assert detection.events.count.at_least == 3 and detection.events.count.within == "10m"
+    assert detection.events.any_of[1].fields["comm"].prefix == "php-fpm"
+
+
+@pytest.mark.parametrize(
+    ("detections", "problem"),
+    [
+        ("- {id: a, likelihood_ratio: 2}", "one of: check, events, snapshot"),
+        ("- {id: a, check: web.errors, title: x, snapshot: {section: s, state: present},"
+         " likelihood_ratio: 2}", "one of: check, events, snapshot"),
+        ("- {id: a, snapshot: {section: s, state: present}, likelihood_ratio: 2}", "has a title"),
+        ("- {id: a, title: t, snapshot: {section: s, state: present}, likelihood_ratio: 21}",
+         "at most 20"),
+        ("- {id: a, check: web.errors, likelihood_ratio: 101}", "less than or equal to 100"),
+        ("- {id: a, title: t, variant: x, snapshot: {section: s, state: present},"
+         " likelihood_ratio: 2}", "variant goes with check"),
+        ("- {id: a, title: t, snapshot: {section: s, state: here}, likelihood_ratio: 2}",
+         "present"),
+        ("- {id: a, title: t, snapshot: {section: s, key: {equals: x, glob: y}, state: present},"
+         " likelihood_ratio: 2}", "one of equals, prefix or glob"),
+        ("- {id: a, title: t, snapshot: {section: s, key: {glob: '*********** *'},"
+         " state: present}, likelihood_ratio: 2}", "at most 10"),
+        ("- {id: a, title: t, snapshot: {section: s, key: {regex: x}, state: present},"
+         " likelihood_ratio: 2}", "regex"),
+        ("- {id: a, title: t, events: {any_of: [{type: 'Web'}]}, likelihood_ratio: 2}",
+         "not an event type"),
+        ("- {id: a, title: t, events: {any_of: [{type: web.x, fields: {Bad: {equals: x}}}]},"
+         " likelihood_ratio: 2}", "not a field name"),
+        ("- {id: a, title: t, events: {any_of: [{type: web.x}], count: {at_least: 2,"
+         " within: 8d}}, likelihood_ratio: 2}", "at most 7 days"),
+        ("- {id: a, title: t, events: {any_of: []}, likelihood_ratio: 2}", "at least 1"),
+        ("- {id: a, check: web.errors, needs: [telepathy], likelihood_ratio: 2}", "web_access_log"),
+        ("- {id: a, check: web.errors, needs: [web_error_log, web_error_log],"
+         " likelihood_ratio: 2}", "listed twice"),
+    ],
+)  # fmt: skip
+def test_what_a_detection_cant_say(detections, problem):
+    with pytest.raises(PackError, match=problem):
+        pack_with(detections + "\n")
+
+
+# --- Matching --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("pattern", "text", "expected"),
+    [
+        ("*", "", True),
+        ("a*c", "abbbc", True),
+        ("a*c", "abbbd", False),
+        ("a?c", "abc", True),
+        ("a?c", "ac", False),
+        ("*child * exited*", "WARNING: child 12 exited on signal 11", True),
+        ("[x]", "[x]", True),  # no character classes: brackets are themselves
+        ("a.c", "abc", False),  # nor a dot
+        ("*a*a*a*a*a*a*a*a*b", "a" * 3000, False),  # no runaway
+    ],
+)
+def test_glob(pattern, text, expected):
+    assert glob_match(pattern, text) is expected
+
+
+@pytest.mark.parametrize(
+    ("ratio", "band"),
+    [(1.5, "low"), (4, "medium"), (19.9, "medium"), (20, "high"), (100, "critical")],
+)
+def test_a_detections_band_follows_its_ratio(ratio, band):
+    assert _band(ratio) == band
+
+
+# --- Events ----------------------------------------------------------------------------------
+
+
+def test_a_burst_fires_once_with_its_events():
+    pack = pack_with(CRASH)
+    events = [crash(0), crash(4), crash(9), crash(30)]
+    events.append(event("2026-10-22T10:05:00+00:00", "kernel.segfault", comm="php-fpm8.3"))
+    # A prefix is the start: another program with it inside isn't one.
+    events.append(event("2026-10-22T10:06:00+00:00", "kernel.segfault", comm="not-php-fpm"))
+    (finding,) = own_detections(context(pack, events))
+    assert finding.check == "pack.detection" and finding.variant == "example-2026-10/fpm-crash"
+    assert finding.likelihood_ratio == 8 and finding.band == "medium"
+    assert finding.summary.startswith("4 matching events within 10m (5 in all)")
+    assert [e["event"] for e in finding.evidence] == [0, 1, 4, 2]  # in time order
+    assert finding.first_seen.startswith("2026-10-22T10:00")
+
+
+def test_too_few_or_spread_out_doesnt_fire():
+    pack = pack_with(CRASH)
+    assert own_detections(context(pack, [crash(0), crash(20), crash(40)])) == []
+
+
+def test_only_while_the_host_was_exposed():
+    pack = pack_with(CRASH)
+    events = [crash(0), crash(1), crash(2)]
+    assert own_detections(context(pack, events, exposed=False)) == []
+    # Fixed before the crashes: they can't have exploited it.
+    early = exposure(pack, until="2026-10-21T00:00:00+00:00")
+    assert own_detections(context(pack, events, exposed=early)) == []
+    # Before the window: not counted either.
+    before = [event(f"2026-10-19T10:0{m}:00+00:00", "web.error", message="child 1 exited on"
+                    " signal 11") for m in range(3)]  # fmt: skip
+    assert own_detections(context(pack, before)) == []
+
+
+def test_counted_apart_by_a_field_and_named_by_address():
+    pack = pack_with(
+        """\
+        - id: errors
+          title: 5xx bursts
+          events:
+            any_of: [{type: web.request, fields: {status: {glob: "5??"}}}]
+            count: {at_least: 2, within: 1m}
+            by: network
+          likelihood_ratio: 4
+        """
+    )
+    events = [
+        event("2026-10-22T10:00:00+00:00", "web.request", status=502, network="203.0.113.0/24"),
+        event("2026-10-22T10:00:10+00:00", "web.request", status=500, network="203.0.113.0/24"),
+        event("2026-10-22T10:00:20+00:00", "web.request", status=500, network="198.51.100.0/24"),
+        event("2026-10-22T10:00:30+00:00", "web.request", status=404, network="198.51.100.0/24"),
+    ]
+    (finding,) = own_detections(context(pack, events))
+    assert "address:203.0.113.0/24" in finding.entities and finding.entities_complete
+
+
+def test_list_values_match_any_element_and_missing_fields_never():
+    pack = pack_with(
+        """\
+        - id: traversal
+          title: Traversal
+          events:
+            any_of: [{type: web., fields: {attacks: {equals: traversal}}}]
+          likelihood_ratio: 3
+        """
+    )
+    events = [
+        event("2026-10-22T10:00:00+00:00", "web.request", attacks=["sqli", "traversal"]),
+        event("2026-10-22T10:00:01+00:00", "web.request"),
+        event("2026-10-22T10:00:02+00:00", "web.error", attacks={"traversal": 1}),
+    ]
+    (finding,) = own_detections(context(pack, events))
+    assert finding.evidence == [{"event": 0}]
+
+
+# --- The snapshot ----------------------------------------------------------------------------
+
+INI = """\
+    - id: ini
+      title: A .user.ini added to a web root
+      snapshot:
+        section: web_files
+        key: {glob: "*/.user.ini"}
+        state: {state}
+      likelihood_ratio: 4
+"""
+
+
+def web_files(*paths, complete=True):
+    return {"web_files": Section({p: {"size": 1} for p in paths}, complete)}
+
+
+def test_present_and_absent():
+    present = pack_with(INI.replace("{state}", "present"))
+    (finding,) = own_detections(context(present, sections=web_files("/var/www/a/.user.ini")))
+    assert finding.evidence == [{"item": ["web_files", "/var/www/a/.user.ini"]}]
+    assert "path:/var/www/a/.user.ini" in finding.entities
+    absent = pack_with(INI.replace("{state}", "absent"))
+    assert own_detections(context(absent, sections=web_files("/var/www/a/.user.ini"))) == []
+    assert len(own_detections(context(absent, sections=web_files("/var/www/a/x.php")))) == 1
+    found = context(absent, sections=web_files(complete=False))
+    assert own_detections(found) == [] and "absence can't be told" in found.gaps[0]
+
+
+def test_added_since_the_baseline_needs_one():
+    added = pack_with(INI.replace("{state}", "added"))
+    sections = web_files("/var/www/a/.user.ini", "/var/www/b/.user.ini")
+    diff = {"web_files": {"added": {"/var/www/b/.user.ini": {}}, "removed": {}, "changed": {},
+                          "comparable": True, "notes": []}}  # fmt: skip
+    (finding,) = own_detections(context(added, sections=sections, since_baseline=diff,
+                                        baseline_id="b0"))  # fmt: skip
+    assert finding.evidence == [{"change": ["b0", "web_files", "/var/www/b/.user.ini", "added"]}]
+    none = context(added, sections=sections)
+    assert own_detections(none) == [] and "needs a baseline" in none.gaps[0]
+
+
+def test_a_section_not_collected_is_a_gap():
+    found = context(pack_with(INI.replace("{state}", "present")))
+    assert own_detections(found) == [] and "web_files not collected" in found.gaps[0]
+
+
+# --- Needs -----------------------------------------------------------------------------------
+
+
+def test_what_the_collection_lacks_is_a_gap_not_silence():
+    pack = pack_with(
+        """\
+        - id: multipart
+          title: Multipart POSTs to the site root
+          needs: [web_access_log, request_content_type]
+          events:
+            any_of: [{type: web.request, fields: {method: {equals: POST}, path: {equals: /}}}]
+          likelihood_ratio: 4
+        """
+    )
+    found = context(pack, [event("2026-10-22T10:00:00+00:00", "web.request", method="POST",
+                                 path="/")], live={})  # fmt: skip
+    assert own_detections(found) == []
+    assert "web access logs (not chosen at setup)" in found.gaps[0]
+    assert "content types" in found.gaps[0]
+
+
+# --- References to core checks ---------------------------------------------------------------
+
+
+def core(check="web.worker_child", first="2026-10-22T10:00:00+00:00", variant="history"):
+    return {"check": check, "category": "compromise indicator", "band": "high",
+            "variant": variant, "first_seen": first, "last_seen": first}  # fmt: skip
+
+
+def test_a_core_finding_while_exposed_weighs_as_the_pack_says():
+    pack = read(changed("likelihood_ratio: 20\n", "likelihood_ratio: 60\n"))
+    found = [core(), core(first="2026-10-01T00:00:00+00:00"), core("web.errors")]
+    raise_referenced(context(pack), found, [{"check": "web.worker_child", "status": "ran"}])
+    assert (
+        ratio(found[0]) == 60 and found[0]["raised_by_pack"] == "example-2026-10 v2 (worker-child)"
+    )
+    assert ratio(found[1]) == 20 and "raised_by_pack" not in found[1]  # before the window
+    assert "raised_by_pack" not in found[2]
+    # Never lowered: the pack's 20 is the band's own.
+    found = [core()]
+    raise_referenced(context(read(GOOD.encode())), found, [{"check": "web.worker_child",
+                                                           "status": "ran"}])  # fmt: skip
+    assert "raised_by_pack" not in found[0]
+
+
+RAN = [{"check": "web.worker_child", "status": "ran"}]
+
+
+def test_a_finding_with_no_time_counts_when_the_time_runs_to_the_collection():
+    since = read(changed("likelihood_ratio: 20\n", "likelihood_ratio: 60\n"))
+    fixed = exposure(since, until="2026-10-25T00:00:00+00:00")
+    found = [core(first=None)]
+    raise_referenced(context(since, exposed=fixed), found, RAN)
+    assert ratio(found[0]) == 60  # since exposed (the default): fix or not
+    while_ = read(changed("likelihood_ratio: 20\n",
+                          "likelihood_ratio: 60\n    counts: while_exposed\n"))  # fmt: skip
+    found = [core(first=None)]
+    raise_referenced(context(while_), found, RAN)
+    assert ratio(found[0]) == 60  # still exposed
+    found = [core(first=None)]
+    raise_referenced(context(while_, exposed=fixed), found, RAN)
+    assert "raised_by_pack" not in found[0]  # fixed since
+
+
+def test_a_variant_narrows_and_a_check_that_didnt_run_is_a_gap():
+    pack = read(changed("    check: web.worker_child\n    likelihood_ratio: 20\n",
+                        "    check: web.worker_child\n    variant: live\n"
+                        "    likelihood_ratio: 60\n"))  # fmt: skip
+    found = [core(), core(variant="live")]
+    raise_referenced(context(pack), found, [{"check": "web.worker_child", "status": "ran"}])
+    assert "raised_by_pack" not in found[0] and ratio(found[1]) == 60
+    skipped = context(pack)
+    raise_referenced(skipped, [], [{"check": "web.worker_child", "status": "no baseline yet"}])
+    assert "web.worker_child no baseline yet" in skipped.gaps[0]
+
+
+# --- An analysis -----------------------------------------------------------------------------
+
+
+def test_an_analysis_scores_a_packs_own_detection(home):
+    from checker.assess import analyze
+
+    _, store, identity, config = home
+    pack = pack_with(CRASH)
+    lines = [
+        rec("host_facts", "clock", localtime_link="/usr/share/zoneinfo/Etc/UTC"),
+        rec("web_logs", "web_logs_summary", access_logs_opted_in=False, error_sent=1),
+    ]
+    from test_snapshot import text_source
+
+    log = "".join(
+        f"22-Oct-2026 10:0{m}:00] WARNING: [pool www] child {m} exited on signal 11 (SIGSEGV)\n"
+        for m in range(3)
+    )
+    extra = (*lines, *text_source(9, "web_logs", "/var/log/php8.3-fpm.log", "[" + log.replace(
+        "\n22", "\n[22")))  # fmt: skip
+    add_bundle(home, "b1", 0, records("8.3.6-0ubuntu0.24.04.5", FIXED_AT, extra))
+    assessment = analyze(store, "web01", identity, config.recipients, packs=[pack])
+    (finding,) = [f for f in assessment["findings"] if f["check"] == "pack.detection"]
+    assert finding["likelihood_ratio"] == 8 and finding["contribution"] > 0
+    assert any(c["check"] == "pack.detection" for c in assessment["score"]["contributors"])
+
+
+# --- After review ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("detections", "problem"),
+    [
+        ("- {id: a, check: pack.detection, likelihood_ratio: 100}", "can't name a pack check"),
+        ("- {id: a, check: pack.exposure, likelihood_ratio: 2}", "can't name a pack check"),
+        ("- {id: a, check: web.errors, title: t, likelihood_ratio: 2}", "keep their own title"),
+        ("- {id: a, title: t, snapshot: {section: packages, key: {prefix: php}, state: present},"
+         " likelihood_ratio: 2}", "exposure is judged from"),
+        ("- {id: a, title: t, snapshot: {section: php_settings, state: present},"
+         " likelihood_ratio: 2}", "exposure is judged from"),
+        ("- {id: a, check: web.errors, counts: always, likelihood_ratio: 2}", "while_exposed"),
+    ],
+)  # fmt: skip
+def test_what_a_detection_cant_say_after_review(detections, problem):
+    with pytest.raises(PackError, match=problem):
+        pack_with(detections + "\n")
+
+
+@pytest.mark.parametrize(
+    ("pattern", "text", "expected"),
+    [
+        ("*a?c*", "xxabdabc", True),
+        ("*a?c", "abcabd", False),
+        ("a*?", "a", False),
+        ("a*?", "ab", True),
+        ("*??*", "x", False),
+        ("*b*b*", "abab", True),
+        ("x*y*z", "xzyz", True),
+        ("x*y*z", "xzy", False),
+        ("*.php", "/var/www/a.php.jpg", False),
+        ("a*bc*c", "abc", False),  # a middle segment can't use the last one's place
+        ("*ab*ab*", "xab", False),  # nor two segments one place
+        ("*ab*ab*", "xabab", True),
+    ],
+)
+def test_glob_segments(pattern, text, expected):
+    assert glob_match(pattern, text) is expected
+
+
+def test_a_careless_glob_on_long_values_stays_cheap():
+    import time
+
+    start = time.monotonic()
+    for _ in range(100):
+        assert not glob_match("*" + "a" * 198 + "b", "a" * 65536)
+    assert time.monotonic() - start < 2  # 4.2 s per value before
+
+
+def test_past_the_budget_the_detections_stop_with_a_gap(monkeypatch):
+    import checker.packs.detect as detect
+
+    monkeypatch.setattr(detect, "BUDGET", 100)
+    pack = pack_with(CRASH)
+    events = [crash(m % 10, pid=m) for m in range(200)]
+    found = context(pack, events)
+    assert own_detections(found) == []
+    assert any("cost more than an analysis allows" in g for g in found.gaps)
+
+
+def test_a_web_rule_needs_its_log_whether_it_says_so_or_not():
+    pack = pack_with(
+        """\
+        - id: mixed
+          title: Crashes or errors
+          events:
+            any_of:
+              - {type: web.error, fields: {message: {glob: "*signal 11*"}}}
+              - {type: kernel.segfault, fields: {comm: {prefix: php-fpm}}}
+          likelihood_ratio: 4
+        - id: errors-only
+          title: Errors
+          events:
+            any_of: [{type: web., fields: {message: {glob: "*signal 11*"}}}]
+          likelihood_ratio: 4
+        """
+    )
+    segfault = event("2026-10-22T10:00:00+00:00", "kernel.segfault", comm="php-fpm8.3")
+    found = context(pack, [segfault], live={})
+    (finding,) = own_detections(found)  # the segfault, still
+    assert finding.variant.endswith("/mixed")
+    assert any("mixed judged in part: no web error logs" in g for g in found.gaps)
+    assert any("errors-only needs web access logs" in g and "web error logs" in g
+               for g in found.gaps)  # fmt: skip
+
+
+def test_some_data_is_never_there():
+    pack = pack_with(
+        """\
+        - id: posts
+          title: POSTs
+          needs: [every_web_request]
+          events: {any_of: [{type: web.request, fields: {method: {equals: POST}}}]}
+          likelihood_ratio: 4
+        """
+    )
+    found = context(pack)
+    assert own_detections(found) == [] and "every web request" in found.gaps[0]
+
+
+def test_a_snapshot_rule_follows_when_it_counts():
+    for counts, fires in (("while_exposed", False), ("since_exposed", True)):
+        rule = INI.replace("{state}", "present")
+        pack = pack_with(
+            rule.replace("  likelihood_ratio", f"  counts: {counts}\n      likelihood_ratio")
+        )
+        fixed = exposure(pack, until="2026-10-21T00:00:00+00:00")
+        found = own_detections(context(pack, sections=web_files("/var/www/a/.user.ini"),
+                                       exposed=fixed))  # fmt: skip
+        assert bool(found) is fires, counts
+    # A change since a baseline taken after the fix: not while exposed.
+    rule = INI.replace("{state}", "added")
+    added = pack_with(
+        rule.replace("  likelihood_ratio", "  counts: while_exposed\n      likelihood_ratio")
+    )
+    diff = {"web_files": {"added": {"/var/www/b/.user.ini": {}}, "removed": {}, "changed": {},
+                          "comparable": True, "notes": []}}  # fmt: skip
+    fixed = exposure(added, until="2026-10-21T00:00:00+00:00")
+    for taken, fires in (("2026-10-22T00:00:00+00:00", False), ("2026-10-20T12:00:00+00:00", True)):
+        found = own_detections(context(added, sections=web_files("/var/www/b/.user.ini"),
+                                       exposed=fixed, since_baseline=diff, baseline_id="b0",
+                                       baseline_time=taken))  # fmt: skip
+        assert bool(found) is fires, taken
+
+
+def test_while_exposed_ends_with_the_window():
+    pack = pack_with(CRASH)
+    closed = exposure(pack)
+    closed.window_end = "2026-10-21T00:00:00+00:00"
+    assert own_detections(context(pack, [crash(0), crash(1), crash(2)], exposed=closed)) == []
+
+
+def test_a_listing_collected_in_part_with_no_package_found_gets_nothing():
+    pack = pack_with(CRASH)
+    unsure = exposure(pack)
+    unsure.status = "can't judge"
+    found = context(pack, [crash(0), crash(1), crash(2)], exposed=unsure, live={})
+    assert own_detections(found) == [] and found.gaps == []
+
+
+def test_untimed_matches_are_a_gap():
+    pack = pack_with(CRASH)
+    untimed = Event(
+        None, None, "web_logs:x", "web.error", {"message": "child 1 exited on signal 11"}
+    )
+    found = context(pack, [untimed])
+    assert own_detections(found) == [] and "no usable time" in found.gaps[0]
+
+
+def test_the_same_gap_is_said_once():
+    pack = pack_with(INI.replace("{state}", "present") + INI.replace("{state}", "present")
+                     .replace("id: ini", "id: ini-again"))  # fmt: skip
+    found = context(pack)
+    own_detections(found)
+    assert len(found.gaps) == 2  # one per detection, not repeated
+    own_detections(found)
+    assert len(found.gaps) == 2
+
+
+def test_a_packs_finding_naming_paths_doesnt_join_core_findings():
+    from checker.scoring import score
+
+    core_findings = [
+        {"check": "integrity.preload", "title": "t", "category": "compromise indicator",
+         "band": "critical", "summary": "a", "entities": ["path:/etc/ld.so.preload"]},
+        {"check": "integrity.binaries", "title": "t", "category": "compromise indicator",
+         "band": "critical", "summary": "b", "entities": ["path:/usr/sbin/sshd"]},
+    ]  # fmt: skip
+    alone = score([dict(f) for f in core_findings])["log_odds"]
+    pack_finding = {"check": "pack.detection", "title": "t", "category": "compromise indicator",
+                    "band": "low", "summary": "c", "likelihood_ratio": 1.5,
+                    "entities": ["path:/etc/ld.so.preload", "path:/usr/sbin/sshd"]}  # fmt: skip
+    together = score([dict(f) for f in core_findings] + [pack_finding])["log_odds"]
+    assert together > alone
+
+
+def test_a_raised_finding_never_weighs_less_than_its_check_says_now(monkeypatch):
+    import checker.scoring as scoring
+
+    finding = {"check": "web.worker_child", "band": "high", "likelihood_ratio": 60,
+               "raised_by_pack": "p v1 (d)"}  # fmt: skip
+    monkeypatch.setitem(scoring.OVERRIDES, ("web.worker_child", None), 150.0)
+    assert ratio(finding) == 150
+    own = {"check": "pack.detection", "band": "medium", "likelihood_ratio": 8}
+    assert ratio(own) == 8
+
+
+def test_references_name_only_what_this_version_has():
+    from checker.checks import load_checks
+    from checker.packs.detect import reference_problems
+
+    pack = pack_with(
+        """\
+        - {id: a, check: web.worker_child, variant: livee, likelihood_ratio: 30}
+        - {id: b, check: web.no_such, likelihood_ratio: 30}
+        - id: c
+          title: t
+          snapshot: {section: web_filez, state: present}
+          likelihood_ratio: 2
+        - {id: d, check: web.worker_child, variant: live, likelihood_ratio: 30}
+        """
+    )
+    assert reference_problems(pack, load_checks()) == [
+        "detection a: web.worker_child has no variant livee",
+        "detection b: no check web.no_such",
+        "detection c: no snapshot section web_filez",
+    ]
+
+
+def test_a_whitelist_rule_for_a_pack_detection_names_the_pack():
+    from pydantic import ValidationError
+
+    from checker.whitelist import Match
+
+    with pytest.raises(ValidationError, match="must name the pack"):
+        Match(check="pack.detection")
+    Match(check="pack.detection", pack="example-2026-10", variant="example-2026-10/fpm-crash")
+    with pytest.raises(ValidationError, match="another pack's"):
+        Match(check="pack.detection", pack="other", variant="example-2026-10/fpm-crash")
+    with pytest.raises(ValidationError, match="pack-id/detection-id"):
+        Match(check="pack.detection", pack="example-2026-10", variant="fpm-crash")
+
+
+def test_a_broken_reference_doesnt_stop_the_analysis(home, monkeypatch):
+    import checker.assess as assess
+    from checker.assess import analyze
+
+    def broken(*args):
+        raise TypeError("x")
+
+    monkeypatch.setattr(assess, "raise_referenced", broken)
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, records("8.3.6-0ubuntu0.24.04.5", FIXED_AT))
+    assessment = analyze(store, "web01", identity, config.recipients, packs=[read(GOOD.encode())])
+    assert any("references to checks failed" in g for g in assessment["coverage"]["gaps"])
+
+
+def test_question_marks_cost_against_the_budget():
+    from checker.packs.detect import Budget, _OverBudget
+
+    with pytest.raises(_OverBudget):
+        glob_match("*a?b*", "a" * 1000, Budget(100))
+
+
+def test_web_logs_in_a_format_not_recognised_are_missing():
+    pack = pack_with(
+        """\
+        - id: errors
+          title: Errors
+          events: {any_of: [{type: web.error}]}
+          likelihood_ratio: 4
+        """
+    )
+    live = dict(LOGS, web_requests={"lines": {"a": 10}, "unparsed": {"a": 9}})
+    found = context(pack, live=live)
+    assert own_detections(found) == [] and "format not recognised" in found.gaps[0]
+
+
+@pytest.mark.parametrize(
+    ("band", "raised"), [("low", 4), ("medium", 20), ("high", 60), ("critical", None)]
+)
+def test_a_raise_is_at_most_one_band_up(band, raised):
+    pack = read(changed("likelihood_ratio: 20\n", "likelihood_ratio: 60\n"))
+    finding = dict(core(), band=band)
+    raise_referenced(context(pack), [finding], RAN)
+    if raised is None:
+        assert "raised_by_pack" not in finding  # critical's 100 is above the pack's 60
+    else:
+        assert ratio(finding) == raised and finding["raised_by_pack"]
+
+
+def test_phps_own_error_log_is_read_with_the_zone_it_names(home):
+    """RHEL's PHP-FPM pools log here by default; the pack's memory rule reads it."""
+    from test_snapshot import text_source
+
+    from checker.assess import analyze
+
+    _, store, identity, config = home
+    lines = "".join(
+        f"[22-Oct-2026 03:0{m}:00 America/Los_Angeles] PHP Fatal error:  Allowed memory size of"
+        " 134217728 bytes exhausted (tried to allocate 20480 bytes) in /var/www/a.php on line 3\n"
+        for m in range(3)
+    )
+    extra = (
+        rec("host_facts", "clock", localtime_link="/usr/share/zoneinfo/Etc/UTC"),
+        rec("web_logs", "web_logs_summary", access_logs_opted_in=False, error_sent=1),
+        *text_source(9, "web_logs", "/var/log/php-fpm/www-error.log", lines),
+    )
+    add_bundle(home, "b1", 0, records("8.3.6-0ubuntu0.24.04.5", FIXED_AT, extra))
+    analyze(store, "web01", identity, config.recipients)
+    from checker.analysis import load_events
+
+    events = [e for e in load_events(store, store.bundle("b1"), identity).events
+              if e.type == "web.error"]  # fmt: skip
+    assert len(events) == 3
+    assert events[0].fields["level"] == "fatal error"
+    assert "Allowed memory size" in events[0].fields["message"]
+    assert events[0].time.startswith("2026-10-22T10:00:00+00:00")  # 03:00 there
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["[01-Jan-0001 00:00:00 Asia/Tokyo] PHP Fatal error:  x in y on line 1",
+     "[31-Dec-9999 23:59:59 America/New_York] PHP Fatal error:  x in y on line 1"],
+)  # fmt: skip
+def test_a_date_no_clock_can_hold_doesnt_stop_the_analysis(line):
+    from datetime import UTC, datetime
+
+    from checker.events import EventBuilder, WebLogs
+
+    builder = EventBuilder(controller_started=datetime(2026, 10, 30, tzinfo=UTC))
+    WebLogs().line(builder, "www-error.log", line)
+    (found,) = builder.events
+    assert found.type == "web.error" and found.time is None and found.corrected is None
+
+
+def test_what_php_writes_besides_its_errors_is_read_or_counted_as_part_of_one():
+    from datetime import UTC, datetime
+
+    from checker.events import EventBuilder, WebLogs
+
+    builder, logs = EventBuilder(controller_started=datetime(2026, 10, 30, tzinfo=UTC)), WebLogs()
+    for line in (
+        "[22-Oct-2026 03:00:00 UTC] PHP Fatal error:  Uncaught Exception: x in /a.php:3",
+        "Stack trace:",
+        "#0 {main}",
+        "  thrown in /a.php on line 3",
+        "[22-Oct-2026 03:00:00 UTC] PHP Stack trace:",
+        "PHP   1. {main}() /a.php:0",
+        "[22-Oct-2026 03:00:00 UTC] WordPress database error Table missing",
+        "[22-Oct-2026 03:00:00] PHP Fatal error:  no zone",
+    ):
+        logs.line(builder, "www-error.log", line)
+    assert logs.unparsed == {}
+    assert sum(e.type == "web.error" for e in builder.events) == 4
+    word = [e for e in builder.events if "WordPress" in e.fields["message"]]
+    assert word[0].fields["level"] == "notice"

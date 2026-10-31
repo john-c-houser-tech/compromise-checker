@@ -95,6 +95,7 @@ policy §9).</p>
 </table></div>
 
 {% macro advice_meta(x, full=False) %}<p class="meta">Asked {{ x.model_asked|visible(80) }}{% if x.declined_by %}; declined by {{ x.declined_by|join(", ")|visible(200) }}{% endif %}{% if x.model_answered %}; answered by {{ x.model_answered|visible(80) }}{% if x.endpoint %} at {{ x.endpoint|visible(200) }}{% endif %}{% endif %} · redaction {{ x.redaction }} · {{ x.at[:16] }} UTC{% if full %} · about the assessment of {{ x.assessed_at[:16] }}{% endif %}{% if x.stale %} · <strong>stale{% if full %}: it read another collection or assessment of this host than this report shows{% endif %}</strong>{% endif %}</p>
+{% if x.warning %}<p><strong>Warning: {{ x.warning|visible(600) }}.</strong></p>{% endif %}
 {% if x.local and x.model_answered %}<p class="muted">Answered by a local model, on the machine that ran <span class="mono">checker advise</span>: expect lower quality than from a large hosted model, and read it with more care.</p>{% endif %}{% endmacro %}
 {% macro came_to_nothing(title, entry) %}{% set x = entry.get("later") %}{% if x %}<p class="muted">AI advisor, {{ title }}: {% if entry.get("answered") %}a later request{% else %}a request{% endif %} ({{ x.model_asked|visible(80) }}, {{ x.at[:16] }} UTC) came to nothing: {{ x.note|visible(400) }}.</p>{% endif %}{% endmacro %}
 {% macro finding_card(f) %}
@@ -106,6 +107,7 @@ policy §9).</p>
 <span class="tag mono">{{ f.check }}</span></div>
 <div class="mono">{{ f.summary|visible(400) }}</div>
 {% if f.uncertain %}<div class="muted">Uncertain: {{ f.uncertain|visible(300) }}</div>{% endif %}
+{% if f.raised_by_pack and not f.maintenance %}<div class="muted">Weighted by threat pack <span class="mono">{{ f.raised_by_pack|visible(160) }}</span>: odds times {{ "%g"|format(f.likelihood_ratio) }} while its threat counts.</div>{% endif %}
 {% if f.maintenance %}<div class="muted">In maintenance window <span class="mono">{{ f.maintenance.window|visible(80) }}</span> ({{ f.maintenance.layer|visible(80) }}: {{ f.maintenance.reason|visible(200) }}); {{ f.maintenance.band }} outside it.</div>{% endif %}
 {% if f.first_seen %}<div class="muted">Seen {{ f.first_seen[:19] }}{% if f.last_seen and f.last_seen != f.first_seen %} to {{ f.last_seen[:19] }}{% endif %} (controller clock, UTC)</div>{% endif %}
 {% if f.excerpts %}
@@ -128,7 +130,7 @@ baseline <span class="mono">{{ r.assessment.baseline_id|visible(120) }}</span>{%
 {% set s = r.assessment.score %}
 <h3>Probability of compromise</h3>
 <p class="scoreline"><span class="score {{ s.band|lower }}">{{ s.probability|percent }} · {{ s.band }}</span>
-<span class="muted">from a prior of {{ s.prior|percent }} ({{ s.prior_source|visible(60) }});
+<span class="muted">from a prior of {{ s.prior|percent }} ({{ s.prior_source|visible(60) }}){% if s.raised_prior %}, raised to {{ s.raised_prior|percent }} by exposure to {% for b in s.raised_by %}{{ b.pack|visible(80) }} v{{ b.version }} ({{ (b.share * 100)|round|int }}% of its window, at most){% if not loop.last %}, {% endif %}{% endfor %}{% endif %};
 {{ r.assessment.coverage.gaps|length }} coverage gap(s) below. Hygiene and exposure, rated separately: {{ s.hygiene_and_exposure.band }}.</span></p>
 {% if s.contributors %}
 <div class="wrap"><table>
@@ -142,7 +144,7 @@ baseline <span class="mono">{{ r.assessment.baseline_id|visible(120) }}</span>{%
 <p class="muted">Findings about the same file or process count once in full; one check's repeated findings add at most a doubling;
 "capped" marks a finding a cap cut;
 uncertain findings count half. Suppressed and informational findings don't count.</p>
-{% else %}<p class="muted">No compromise indicators: the probability is the prior.</p>{% endif %}
+{% else %}<p class="muted">No compromise indicators: the probability is the prior{% if s.raised_prior %}, as raised{% endif %}.</p>{% endif %}
 
 <h3>Compromise indicators</h3>
 {% set shown = r.findings.get("compromise indicator", [])|rejectattr("band", "equalto", "info")|list %}

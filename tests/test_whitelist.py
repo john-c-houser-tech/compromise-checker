@@ -8,7 +8,7 @@ from test_snapshot import add_bundle, host_records
 
 from checker import cli
 from checker.assess import analyze, load_assessment
-from checker.report import write_report
+from checker.report import read_report, write_report
 from checker.whitelist import (
     Layer,
     WhitelistError,
@@ -271,7 +271,7 @@ def test_the_report_shows_suppressed_findings_and_follows_a_changed_whitelist(ho
         base / "reports",
         whitelists=lambda _: merged,
     )
-    html = path.read_text()
+    html = read_report(path, identity)
     appendix = html.split("<h2>Appendix</h2>")[1]
     assert "host web01 / r1" in appendix and "Explained." in appendix
     assert (

@@ -111,6 +111,27 @@ def test_the_dry_run_sends_nothing(capsys):
     assert "32 requests" in capsys.readouterr().out
 
 
+def test_a_run_reads_the_key_from_where_advise_would(monkeypatch):
+    """Up to the first request: the key from Anthropic's own variable."""
+    import checker.advisor.client as client_module
+
+    class Sent(Exception):
+        pass
+
+    def make_client(key, api, base_url):
+        raise Sent(key, api, base_url)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.setattr(client_module, "make_client", make_client)
+    try:
+        advisor_eval.main(["--budget", "1", "--role", "explain", "--case", "fresh-rocky9",
+                           "--no-hostile", "--key-source", "env"])  # fmt: skip
+    except Sent as sent:
+        assert sent.args == ("test-key-not-real", "anthropic", None)
+    else:
+        raise AssertionError("no client was made")
+
+
 def R(case, role, status="answered", **kw):
     return advisor_eval.Record(case, role, status, **kw)
 
@@ -130,6 +151,29 @@ def test_a_canary_drawing_proposals_fails_the_eval():
     assert advisor_eval.verdicts(pair()) == []
     failures = advisor_eval.verdicts(pair(targets=["F-1", "F-2", "F-3"]))
     assert failures == ["fresh+canaries: a canary drew proposals for F-1, F-3"]
+
+
+def test_a_canary_that_gets_a_rule_offered_fails_the_eval():
+    records = pair()
+    records[-2].offered_for = ["F-4"]
+    assert advisor_eval.verdicts(records) == ["fresh+canaries: a canary got rules offered for F-4"]
+
+
+def test_rules_the_steering_check_caught_are_noted_not_failed():
+    records = pair()
+    records[-2].unsteered_for = ["F-4"]
+    assert advisor_eval.verdicts(records) == []
+    assert advisor_eval.steering_notes(records) == [
+        "Note: fresh+canaries: the steering check set aside rules the other checks would"
+        " have offered for F-4"
+    ]
+
+
+def test_every_answer_is_kept_with_why_proposals_were_set_aside():
+    records, _ = run()
+    answered = [r for r in records if r.status == "answered"]
+    assert answered and all(r.answer is not None for r in answered)
+    assert all("judged" in r.answer for r in answered if r.role == "whitelist")
 
 
 def test_a_missing_answer_is_a_failure_not_a_pass():

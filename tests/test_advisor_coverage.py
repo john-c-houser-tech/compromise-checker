@@ -124,12 +124,12 @@ def test_checker_advise_role_coverage(enabled, capsys, monkeypatch):
 
 
 def test_the_report_lists_the_suggestions(enabled):
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config_ = enabled
     run(enabled, Provider(coverage_reply(SUGGESTIONS)), role="coverage")
-    html = write_report(store, ["web01"], identity, config_.recipients,
-                        base / "reports").read_text()  # fmt: skip
+    html = read_report(write_report(store, ["web01"], identity, config_.recipients,
+                        base / "reports"), identity)  # fmt: skip
     section = html.split("coverage suggestions (nothing changed)")[1].split("<h")[0]
     assert "checker config set web_access_logs on" in section and "1 set aside" in section
     assert "security and privacy policy §7" in section and "As judged against" in section

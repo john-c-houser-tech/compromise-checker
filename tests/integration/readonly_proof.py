@@ -305,6 +305,7 @@ EXPECTED_RECORDS = (
     ("logging_state", "audit_records"),
     ("logging_state", "mac_state"),
     ("software", "package"),
+    ("software", "package_change"),  # the setup's own installs, in dpkg's log or dnf's history
     ("software", "signing_key"),
     ("mail", "mail_servers"),
     ("mail", "mail_queue"),  # Postfix, installed by the setup
@@ -318,6 +319,8 @@ PROOF_MAIL_LOCAL = "proofmail"
 # A value the setup puts in web requests' query strings and referrers:
 # it must never leave the server either (policy §7).
 PROOF_WEB_SECRET = "proofwebsecret"
+# In a planted .user.ini and .htaccess (plan 4.4c): never in the bundle.
+PROOF_SITE_SECRET = "proofsitesecret"
 
 SETUP = r"""
 set -eu
@@ -413,6 +416,11 @@ for path in '/?token=proofwebsecret' '/missing.php?id=proofwebsecret' '/x?f=../.
     curl -s -o /dev/null -e 'https://ref.example/page?u=proofwebsecret' \
         "http://127.0.0.1$path" || true
 done
+# A site's own PHP settings (plan 4.4c): only their PHP lines are read.
+mkdir -p /var/www/proof
+printf 'upload_max_filesize = 9M\nmail.api_key = proofsitesecret\n' > /var/www/proof/.user.ini
+printf 'RewriteRule ^x$ /proofsitesecret\nphp_flag session.upload_progress.enabled off\n' \
+    > /var/www/proof/.htaccess
 web=$(id -u www-data >/dev/null 2>&1 && echo www-data || echo nginx)
 runuser -u "$web" -- /usr/bin/date >/dev/null  # recorded, and nothing a check flags
 # Something for the collector to find in the authentication log.
@@ -886,6 +894,14 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             result.missing = [f"{m}.{n}" for m, n in EXPECTED_RECORDS if not counts.get(f"{m}.{n}")]
             with_sources = {s.get("module") for s in opened.summary.sources if s.get("bytes")}
             result.missing += [f"{m} (source)" for m in EXPECTED_SOURCES if m not in with_sources]
+            # PHP-FPM, installed by the setup: its php.ini, comments left out (plan 4.4).
+            if not any(str(s["name"]).endswith("php.ini") for s in opened.summary.sources):
+                result.missing.append("php.ini (source)")
+            # The site files the setup planted (plan 4.4c).
+            names = {str(s["name"]) for s in opened.summary.sources}
+            for site in ("/var/www/proof/.user.ini", "/var/www/proof/.htaccess"):
+                if site not in names:
+                    result.missing.append(f"{site} (source)")
             check_parse(result, home, outcome.bundle_id, Path(config.identity_file), scanner_key)
             result.sudo_listing += check_directory_lookup(
                 home, third.bundle_id, Path(config.identity_file)
@@ -1161,7 +1177,7 @@ def check_parse(result: Result, home: Path, bundle_id: str, identity_file: Path,
     ]
     result.events = len(parsed.events)
     result.mail_events = sum(1 for e in parsed.events if e.type.startswith("mail."))
-    leaks = MailLeaks([mail_key(home), PROOF_MAIL_LOCAL, PROOF_WEB_SECRET])
+    leaks = MailLeaks([mail_key(home), PROOF_MAIL_LOCAL, PROOF_WEB_SECRET, PROOF_SITE_SECRET])
     walk_bundle(Path(row["path"]), identity, leaks)
     result.mail_leaks = leaks.found
     if parsed.snapshot is not None:

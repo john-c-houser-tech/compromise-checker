@@ -12,31 +12,46 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
+import sys
 import tempfile
+import threading
+import time
 import unicodedata
+import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import pyrage
 from jinja2 import Environment, PackageLoader, select_autoescape
 from markupsafe import Markup
 from pyrage import x25519
 
 from checker import __version__
 from checker.analysis import load_events, snapshot_of
-from checker.assess import analyze, count, events_of, load_assessment, store_assessment
+from checker.assess import (
+    analyze,
+    count,
+    events_of,
+    load_assessment,
+    packs_applied,
+    store_assessment,
+)
 from checker.baseline import USABLE, usable_bundles
 from checker.checks import BANDS, CATEGORIES, CHECKS_VERSION
 from checker.correlate import find_chains
 from checker.evidence import EvidenceError, Store, open_text, who_and_where
-from checker.scoring import DEFAULT_PRIOR, percent, score
+from checker.scoring import DEFAULT_PRIOR, percent, prior_raise_of, score
 from checker.snapshot import Snapshot
 from checker.whitelist import Whitelist, reapply
 
 MAX_EVIDENCE = 5  # excerpts shown per finding
 MAX_TIMELINE = 300
+MAX_MARKED = 20  # threat packs whose window the timeline marks (four marks each at most)
 MAX_TEXT = 300
 
 
@@ -229,7 +244,11 @@ def reassess(
     again["analysed_at"] = datetime.now(UTC).isoformat()
     again["whitelist"] = reapply(again["findings"], whitelist, events=events)
     chains = find_chains(again["findings"], events, assessment.get("previous_time"))
-    again["score"] = score(again["findings"], prior[0], chains) | {
+    # Exposure to the packs' threats raised the prior when it was analysed:
+    # the same raise, whatever the prior is now.
+    raised_by = assessment["score"].get("raised_by") or []
+    raised = prior_raise_of(raised_by)
+    again["score"] = score(again["findings"], prior[0], chains, raised, raised_by) | {
         "prior_source": prior[1],
         "chains": chains,
     }
@@ -250,10 +269,13 @@ def host_report(
     bundle_id=None,
     prior: tuple[float, str] = (DEFAULT_PRIOR, "default"),
     whitelist: Whitelist | None = None,
+    packs: list | None = None,
+    pack_problems: list[str] | None = None,
 ) -> HostReport:
     """A host's latest (or a given) bundle, analysed with the current
-    checks, whitelist and prior: analysed again if its stored assessment is
-    missing or older, reassessed if only the whitelist or prior changed."""
+    checks, whitelist, prior and threat packs: analysed again if its stored
+    assessment is missing or older or applied other packs, reassessed if
+    only the whitelist or prior changed."""
     rows = usable_bundles(store, host)
     if bundle_id is None and not rows:
         raise EvidenceError(f"no usable bundle for {host}")
@@ -265,8 +287,16 @@ def host_report(
     assessment = load_assessment(store, row["id"], identity)
     # Its evidence points into one parse of the bundle (event numbers,
     # snapshot keys): any newer parser or checks means analysing again.
-    if assessment is None or assessment.get("versions") != current_versions():
-        assessment = analyze(store, host, identity, recipients, row["id"], prior, whitelist)
+    # So do other packs: what they judge and detect isn't in the findings.
+    if (
+        assessment is None
+        or assessment.get("versions") != current_versions()
+        or assessment.get("packs", []) != packs_applied(packs)
+        or assessment.get("packs_not_applied", []) != list(pack_problems or [])
+    ):
+        assessment = analyze(
+            store, host, identity, recipients, row["id"], prior, whitelist, packs, pack_problems
+        )
     elif (
         (assessment["score"]["prior"], assessment["score"]["prior_source"]) != prior
         or whitelist_hash(assessment) != (whitelist.digest() if whitelist else None)
@@ -343,10 +373,39 @@ def host_report(
             "type": "",
             "text": f"… {len(ordered) - len(head) - len(tail)} events not shown …",
             "findings": [],
+            "after": head[-1]["when"],  # where it goes among the threat packs' marks
         }
         ordered = [*head, gap, *tail]
-    report.timeline = ordered
+    report.timeline = sorted(
+        [*ordered, *exposure_marks(assessment)], key=lambda e: e.get("after", e["when"])
+    )
     return report
+
+
+def exposure_marks(assessment: dict) -> list[dict]:
+    """The timeline's marks for each threat pack's window and the host's
+    exposure in it (the assessment's `exposures`, checker.assess)."""
+    marks = []
+
+    def mark(when, text):
+        if when:
+            marks.append({"when": when, "type": "threat pack", "text": text, "findings": []})
+
+    for item in (assessment.get("exposures") or [])[:MAX_MARKED]:
+        named = f"{visible(item.get('pack'), 80)} v{visible(item.get('version'), 10)}"
+        if not item.get("share"):
+            continue  # never exposed: the window says nothing about this host
+        mark(item.get("window_start"), f"{named}: the threat's window opens")
+        mark(item.get("window_end"), f"{named}: the threat's window closes")
+        if not item.get("judged", True):
+            continue  # counted as exposed for want of a full listing: no dates of its own
+        if item.get("exposed_from") != item.get("window_start"):
+            mark(item.get("exposed_from"), f"{named}: the host is exposed from here")
+        until = item.get("exposed_until")
+        if until and until != item.get("window_end"):
+            exact = item.get("fix_time_exact")
+            mark(until, f"{named}: exposed until here" + ("" if exact else " at the latest"))
+    return marks
 
 
 def render(
@@ -386,13 +445,26 @@ def write_report(
     priors: Callable[[str], tuple[float, str]] | None = None,
     whitelists: Callable[[str], Whitelist | None] | None = None,
     advisor_enabled: bool = False,
+    plain: bool = False,
+    packs: Callable[[str], tuple[list, list[str]]] | None = None,
 ) -> Path:
-    """Write the report (owner-only, like the evidence) and add a
-    `reported` entry, with the report's hash, to each bundle's custody."""
+    """Write the report, encrypted to the evidence key (`report-….html.age`;
+    read_report() reads it) unless `plain`, owner-only either way, and add
+    a `reported` entry, with the hash of the file as written, to each
+    bundle's custody. `packs` gives a host's threat packs and why any
+    isn't applied (checker.packs.choice.for_host)."""
+    if output is not None and not plain and not output.name.endswith(".html.age"):
+        raise EvidenceError(
+            f"an encrypted report's name ends in .html.age ({output.name}); --plain writes"
+            " plain HTML"
+        )
+    if output is not None and plain and output.suffix == ".age":
+        raise EvidenceError(f"a plain report's name can't end in .age ({output.name})")
     priors = priors or (lambda _: (DEFAULT_PRIOR, "default"))
     whitelists = whitelists or (lambda _: None)
+    packs = packs or (lambda _: ([], []))
     reports = [
-        host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h))
+        host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h), *packs(h))
         for h in hosts
     ]
     html = render(reports, who_and_where(), advisor_enabled)
@@ -401,8 +473,10 @@ def write_report(
         directory.chmod(0o700)  # also when it was already there
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         name = hosts[0] if len(hosts) == 1 else f"{len(hosts)}-hosts"
-        output = directory / f"report-{name}-{stamp}.html"
+        output = directory / (f"report-{name}-{stamp}.html" + ("" if plain else ".age"))
     data = html.encode("utf-8", "backslashreplace")  # never fails on stray text
+    if not plain:
+        data = pyrage.encrypt(data, [x25519.Recipient.from_str(r) for r in recipients])
     # Written whole beside its place (mkstemp makes it owner-only) and then
     # moved there: a crash leaves the old file, a link at the path is
     # replaced rather than followed, and no one holding the old file open
@@ -419,5 +493,129 @@ def write_report(
         raise
     digest = hashlib.sha256(data).hexdigest()
     for report in reports:
-        store.custody(report.row["id"], "reported", {"report_sha256": digest})
+        store.custody(
+            report.row["id"], "reported", {"report_sha256": digest, "encrypted": not plain}
+        )
     return output
+
+
+def read_report(path: Path, identity: x25519.Identity | None) -> str:
+    """A report's HTML: decrypted when it was written encrypted (.age). The
+    one way in for anything that shows reports."""
+    data = path.read_bytes()
+    if path.suffix == ".age":
+        if identity is None:
+            raise EvidenceError("no evidence key here; pass --identity PATH")
+        try:
+            data = pyrage.decrypt(data, [identity])
+        except pyrage.DecryptError as exc:
+            raise EvidenceError(f"cannot decrypt {path.name}: {exc}") from None
+    return data.decode("utf-8")
+
+
+def latest_report(directory: Path) -> Path | None:
+    """The newest report in the reports folder, encrypted or plain (by time,
+    then by name, whose UTC stamp sorts by time where clocks are coarse)."""
+    found = [
+        p
+        for p in directory.glob("report-*.html*")
+        if p.name.endswith((".html", ".html.age")) and p.is_file() and not p.is_symlink()
+    ]
+    return _newest(found)
+
+
+def _newest(paths: list[Path]) -> Path | None:
+    return max(paths, key=lambda p: (p.stat().st_mtime, p.name)) if paths else None
+
+
+# The page's own policy, sent as a header too: it loads nothing.
+CSP = (
+    "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; form-action 'none';"
+    " base-uri 'none'"
+)
+NO_TERMINAL_SECONDS = 600  # how long a report is shown with no terminal to press Enter in
+
+
+def has_screen(environ: dict[str, str] | None = None, platform: str | None = None) -> bool:
+    """Whether a graphical browser can be started here (not over SSH)."""
+    environ = os.environ if environ is None else environ
+    if (platform or sys.platform) == "darwin":
+        return not environ.get("SSH_CONNECTION")
+    return bool(environ.get("DISPLAY") or environ.get("WAYLAND_DISPLAY"))
+
+
+def _launch(url: str) -> bool:
+    try:
+        browser = webbrowser.get()
+    except webbrowser.Error:
+        return False
+    if isinstance(browser, webbrowser.GenericBrowser) and not isinstance(
+        browser, webbrowser.BackgroundBrowser
+    ):  # a text browser (lynx, w3m, $BROWSER): it would take the terminal
+        return False
+    return browser.open(url)
+
+
+def view(
+    path: Path,
+    identity: x25519.Identity | None,
+    browser: Callable[[str], bool] | None = None,
+    ask: Callable[[str], str] = input,
+    wait: Callable[[float], None] | None = None,
+    say: Callable[[str], None] = print,
+    screen: bool | None = None,
+) -> None:
+    """Show a report in the browser without writing it anywhere in plain. It
+    is served from memory on 127.0.0.1, at an address no one can guess (a
+    random port and a long random path), to requests naming that address
+    as their host, never to be cached; until Enter is pressed, or, with no
+    terminal, for ten minutes. Sandboxed browsers (snap, Flatpak), which
+    can't read a private file, can read it; over SSH, it says how to see it
+    through a forwarded port."""
+    body = read_report(path, identity).encode("utf-8")
+    route = f"/{secrets.token_urlsafe(32)}/{path.name.removesuffix('.age')}"
+
+    class Show(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - the library's name
+            port = self.server.server_address[1]
+            if self.path != route or self.headers.get("Host") != f"127.0.0.1:{port}":
+                self.send_error(404)
+                return
+            self.send_response(200)
+            for name, value in (
+                ("Content-Type", "text/html; charset=utf-8"),
+                ("Content-Length", str(len(body))),
+                ("Cache-Control", "no-store"),
+                ("Content-Security-Policy", CSP),
+                ("Referrer-Policy", "no-referrer"),
+                ("X-Content-Type-Options", "nosniff"),
+            ):
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: Any) -> None:  # nothing on the terminal per request
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Show)
+    port = server.server_address[1]
+    url = f"http://127.0.0.1:{port}{route}"
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        if (has_screen() if screen is None else screen) and (browser or _launch)(url):
+            say(f"Showing {path.name} in your browser, from memory: nothing is written in plain.")
+        else:
+            say(
+                f"Showing {path.name} at {url}\n"
+                f"From another machine: ssh -L {port}:127.0.0.1:{port} THIS-HOST, then open"
+                " that address there."
+            )
+        try:
+            ask("Press Enter to stop showing it: ")
+        except EOFError:
+            minutes = NO_TERMINAL_SECONDS // 60
+            say(f"No terminal to press Enter in: it is shown for {minutes} minutes.")
+            (wait or time.sleep)(NO_TERMINAL_SECONDS)
+    finally:
+        server.shutdown()
+        server.server_close()

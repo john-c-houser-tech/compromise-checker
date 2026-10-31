@@ -575,13 +575,147 @@ The advisor's answers can't be golden-tested, so they are measured.
 
 ## After Phase 3
 
+- **3.9 — Proposals a host's text steered (2026-10-30, John: "go ahead
+  with 1 and 3").** The local eval had a canary get two rules offered on a
+  quiet host. `proposals.steering()` looks through the case as sent for
+  text that addresses an AI (asks for rules or exceptions for the
+  findings, states a verdict, says to ignore instructions) in host text and
+  in quoted whitelist rules' reasons, and `judge` sets every proposal aside
+  when it finds some, naming where. Text is read as a model would: URL and
+  HTML encoding and the report's escapes undone until stable, spaces of
+  every kind made spaces, invisible and combining marks dropped, NFKC,
+  Cyrillic and Greek look-alikes folded, camelCase split. Each pattern
+  needs words aimed at an assistant or at the findings, so an
+  administrator's own `ipset add whitelist` or a bot probing
+  `copilot-instructions.md` doesn't count. No match on the golden cases
+  (pseudonymize and strict; strict sends no host text). The eval now keeps
+  every answer with why each proposal was set aside, records the findings
+  offered rules hide, fails when a canary gets a rule offered, and notes
+  rules only the steering check stopped; it also reads its key from the
+  same places `advise` does (it crashed before the first request since
+  3.7). Test-wide guards refuse to run a password manager as a key
+  command, however wrapped, or to read the OS keyring (a test reached
+  1Password's prompt once).
+- **After review (3.9; 2 high, 3 medium, 3 low):** escapes were deleted,
+  not decoded (a tab or an escaped letter split words; astral escapes
+  misparsed), URL-encoded invisible characters survived; synonyms
+  (allowlist, suppress, benign, reviewer), camelCase, Cyrillic letters and
+  triple encoding slipped past; `gpt`, "add … whitelist", "add rules for",
+  "your response" and "verified … clean" matched ordinary logs; the eval's
+  new check couldn't fail (all canaries match), hence the unsteered note;
+  the guard missed wrapped commands and the keyring. All fixed. Not done:
+  a note on the other roles' answers when the case's text addresses an AI.
+- **After the second review (3.9; 1 high, 3 medium):** an escape for a
+  number past U+10FFFF (`GET /%5CU00110000`) crashed the check, which
+  set the paid answer aside: now left as written. Mixed case
+  (`iGNORE`), accents NFKC recombined, a dotless ı, small capitals and
+  Armenian look-alikes, and an AI word followed by a path or no space
+  slipped past: text is now read both as written and with camelCase
+  split, decomposed before accents are dropped, and more look-alikes
+  fold. Chat-template markers, "new instructions" and "treat … as
+  authorized" added; "recommend … rules", "your task", "system is clean"
+  and "Copilot: you are" no longer match. Odd case shapes don't crash it;
+  the test guard reads only words in command position. Scanners' own
+  injection probes mean internet-facing web servers often get no
+  proposals: the whitelist doc says so.
+- **Local whitelist rerun (3.9, `qwen2.5:7b-32k`, pseudonymize, free):**
+  8 requests, all read whole. The stored answers, judged again with the
+  final code: no rule offered on any case. The steering check found the
+  canaries in all four planted cases and in none of the others. Without
+  it, one rule would have been offered (fresh Rocky Linux 9 with canaries,
+  `persistence.homes`, info, a user's own systemd unit; the clean run had
+  tried the same finding with a directory that didn't match). The fresh
+  Ubuntu 24.04 answer with canaries was set aside whole (it named findings
+  not in the case). The eval still reports FAIL, as a small model's
+  run is expected to: the set-aside answer, and canaries drawing rules on
+  three cases, none offered.
+- **3.10 — A warning on steered advice (2026-10-30, John: "do the warning
+  next").** The note left open in 3.9: when `steering()` finds text in the
+  case addressing an AI, the answer of every role (explain, coverage,
+  remediation, and whitelist, whose proposals are already set aside) is
+  still shown, with a warning naming where the text was, restored to real
+  names. The warning is stored with the encrypted answer and printed in
+  the terminal and the report. If the check itself fails, the paid answer
+  is kept with a warning that it couldn't be checked.
+- **After review (3.10; 1 medium, 6 low):** a whitelist rule's reason
+  (usually the organization's own, e.g. "these alerts are expected during
+  patching") was put down to an intruder on every answer: such a rule now
+  reads "the reason or match of whitelist rule … reads like words to an
+  AI … check the rule", in the warning and the proposals' reasons alike.
+  Steering is checked once per answer and the result passed to the
+  whitelist judge, so a failing check sets the proposals aside instead of
+  failing the answer; the place's name is restored inside the guard.
+  Tests for the remediation and whitelist roles, a set-aside answer, and
+  a rule's reason. Not done: answers stored before 3.10 aren't checked
+  again (the docs say so); the eval doesn't show the warning for the
+  other roles.
+
 - Threat packs and pack drafting (Phase 4).
-- **Scheduled checks** of production servers, run from a permanent
-  controller (the Mac mini or a small Linode), not the laptop. To discuss
-  with John later: unattended runs need a key source that doesn't prompt
-  (an environment file, or a 1Password service account for the command
-  source) and an SSH key that doesn't need an agent prompt.
+- **3.11 — Scheduled checks (2026-10-30, John: "build it that way").**
+  `checker run` does collect, analyze, report and `purge --expired` in one
+  pass under a lock, and lists what needs a look: a band risen since the
+  host's last analysis, a high or critical finding newly in effect, a host
+  not collected or analysed. `notify_command` (a setting; split into
+  words, no shell) gets a short summary on its input: host names, bands,
+  the tool's own finding titles and the report's path, no evidence. The
+  exit status is the worst band (10/11/12), else 1 for a failed step, 2
+  for setup, 3 when another run holds the lock. `--unattended` refuses,
+  before collecting, hosts that would need a prompt (a typed password, a
+  key with a passphrase, no agent). The advisor is never asked, so no key
+  is needed. `checker schedule install|show|remove` writes a systemd user
+  timer (Linux; `SuccessExitStatus=10 11 12`, `Persistent=true`, a
+  lingering hint) or a launchd agent (macOS), running this Python with
+  `CHECKER_HOME` set. Where the permanent controller runs (the Mac mini
+  or a small Linode) is still to choose.
+- **After review (3.11; 2 high, 4 medium, 9 low):** a host's own error
+  text (sudo's stderr) reached the summary unescaped: alerts are now in the
+  tool's words only (statuses, exception classes, check ids, titles), the
+  detail escaped in the log. One host needing a prompt stopped every run
+  silently: such a host is now left out and needs a look. Exceptions
+  outside the caught set skipped the purge and the notice: every step is
+  guarded, and a crash is notified. Alerts were lost when the notify
+  command failed or a manual analysis came between runs: the last run's
+  view and undelivered alerts are kept encrypted (`run-state.age`). The
+  keyring is waited for a minute at most; `TimeoutStartSec=4h`. A failure
+  now outranks the band in the exit status. systemd quoting: `$`, quotes
+  and backslashes are refused, not escaped. Purged baselines, partial
+  collections, newly failing checks and findings grown serious need a
+  look; a process's id doesn't make a finding new; a group listed in part
+  shows a new member. macOS install retries `bootstrap`; the notify
+  command needs a full path, keeps its output in a file and doesn't get
+  the advisor's keys; `python -P`; unreadable settings exit 2.
+  A side note (John relayed it): the unattended purge would take the
+  expired baseline of a host taken out of the inventory to pause it, so
+  re-adding it would hide changes made meanwhile. A run now purges only
+  inventoried hosts; the others wait for a person's `checker purge
+  --expired`, and each run notes how many bundles wait.
+  Policy §10 (John approved the wording, 2026-10-30): notifications from
+  `checker run` added to what can leave. It can send data somewhere, so
+  under §15 it goes at the top of the next release's notes.
+- **3.12 — Reports encrypted at rest (2026-10-30, John: "build it that
+  way"; a web interface to view them comes later, DESIGN Phase 5).**
+  `write_report` encrypts to the evidence key (`report-….html.age`) unless
+  `plain` (`--plain`, with a warning); `--output` must end in `.age`
+  unless plain. Custody records the hash of the file as written and
+  `encrypted`. `read_report()` is the one way in (the web interface will
+  use it). `checker report --open [FILE]` (newest by default) serves it
+  from memory on 127.0.0.1 (random port, unguessable path, Host checked,
+  `no-store`, the page's CSP as a header) until Enter. Purge finds both
+  kinds by hash; the notify summary says how to open the report.
+  Reports written before stay as they are.
+- **After review (3.12; 4 medium, 7 low):** the first viewer wrote a plain
+  copy to a private temporary folder for a minute: snap and Flatpak
+  browsers can't read such a folder, a slow browser lost the race,
+  `xdg-open` "succeeded" with nothing shown, a text browser over SSH took
+  the terminal, and a closed terminal left the copy behind. Now nothing
+  plain is written: served from memory (above); no browser is started
+  without a screen (the `ssh -L` line instead) or when it would be a text
+  browser. Encrypted `--output` must end in `.html.age`, a plain one
+  mustn't end in `.age`; `--open` takes only `.html`/`.html.age` files,
+  refuses `--plain`/`--output`/`--bundle`, needs no key for a plain
+  report, and exits 130 on Ctrl-C; the newest report is found by time,
+  then name.
+  Policy §8 (John approved the wording, 2026-10-30): reports encrypted
+  like the evidence; `--open` serves from memory; `--plain` is yours to protect.
 - Carried over: RHEL proof only if there is interest; package verification
-  against vendor packages; report encryption at rest (John's decision
-  2026-10-27: revisit after the currently planned phases); outbound
-  connections over time.
+  against vendor packages; outbound connections over time.

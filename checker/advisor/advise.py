@@ -45,6 +45,7 @@ class Advice:
     note: str = ""
     judged: list | None = None  # whitelist proposals, each accepted or why not
     file: Path | None = None  # where the accepted ones were written
+    warning: str = ""  # the case's text addresses an AI: the answer may have been steered
 
 
 def _restore(value: Any, restore: Callable[[str], str]) -> Any:
@@ -74,6 +75,7 @@ def advise(
     home: Path | None = None,
     planned: Planned | None = None,
     clients: dict | None = None,
+    packs: tuple[list, list[str]] = ([], []),
 ) -> Advice:
     """Ask the advisor about a host's current assessment. `confirm` is
     asked (with the estimate) when a run would cost more than the limit or
@@ -91,7 +93,7 @@ def advise(
             " (`checker advise HOST --show` shows what it would send)"
         )
     built, known, which = case_for_host(
-        store, host, identity, config.recipients, inventory, prior, whitelist, bundle_id
+        store, host, identity, config.recipients, inventory, prior, whitelist, bundle_id, packs
     )
     if planned is not None:
         chosen, _ = model_for(config.advisor, role, which["band"], which["report"].assessment)
@@ -122,6 +124,7 @@ def advise(
     if client is None:
         client = _client(advisor.api_key_source, advisor.api, advisor.base_url)
     sent_fallback = None
+    warning, steered = "", None
 
     recorded = False
 
@@ -167,7 +170,10 @@ def advise(
                     config.recipients,
                 ),
                 "answer": seal_text(
-                    json.dumps({"raw": raw, "restored": answer, "note": note}, ensure_ascii=False),
+                    json.dumps(
+                        {"raw": raw, "restored": answer, "note": note, "warning": warning},
+                        ensure_ascii=False,
+                    ),
                     config.recipients,
                 ),
             }
@@ -241,6 +247,7 @@ def advise(
                 status, note = "invalid", f"the answer was set aside: it {exc}"
             else:
                 answer = _restore(raw, pseudonyms.restore) if pseudonyms is not None else raw
+                steered, warning = _steered(payload, pseudonyms)
         judged, written = None, None
         if status == "answered" and role == "remediation":
             from checker.advisor.roles import DESTRUCTIVE, _plain
@@ -273,7 +280,7 @@ def advise(
         if status == "answered" and role == "whitelist":
             try:
                 judged, written = _proposals(
-                    store, host, identity, inventory, whitelist, which, answer, home
+                    store, host, identity, inventory, whitelist, which, answer, home, steered
                 )
             except Exception as exc:  # the answer was paid for: kept, whatever happens next
                 if isinstance(exc, _Unrecorded):
@@ -307,7 +314,7 @@ def advise(
         elif outcome.status == "unreadable":
             note = "the answer didn't fit the requested form"
         record(outcome, status, raw, answer, note)
-        return Advice(status, outcome, answer, note, judged, written)
+        return Advice(status, outcome, answer, note, judged, written, warning)
     except BaseException as exc:
         if not recorded:
             interrupted = isinstance(exc, KeyboardInterrupt)
@@ -318,6 +325,26 @@ def advise(
             )
             record(outcome, "interrupted" if interrupted else "failed", raw, None, why)
         raise
+
+
+def _steered(payload: dict[str, Any], pseudonyms) -> tuple[str | None, str]:
+    """Where text in the case as sent addresses an AI (proposals.steering(),
+    real names restored; UNCHECKED if the check failed), and the warning
+    shown with the answer, else (None, ""). The answer is still shown: a
+    person weighs it, knowing it may have been steered."""
+    from checker.advisor.proposals import UNCHECKED, steered_words, steering
+
+    try:
+        where = steering(payload)
+        if where and pseudonyms is not None:
+            where = pseudonyms.restore(where)
+    except Exception:  # noqa: BLE001 - the answer was paid for: kept, with a warning
+        where = UNCHECKED
+    if not where:
+        return None, ""
+    return where, (
+        f"{steered_words(where)}: this advice may have been steered; weigh it with that in mind"
+    )
 
 
 @dataclass
@@ -333,16 +360,25 @@ class Planned:
     priced: Estimate | None
     prior: Any
     whitelist: Any
+    packs: Any = ([], [])  # the host's threat packs, as estimated (choice.for_host)
 
 
 def plan(
-    store, host: str, identity, config: Config, inventory, prior, whitelist, role: str
+    store,
+    host: str,
+    identity,
+    config: Config,
+    inventory,
+    prior,
+    whitelist,
+    role: str,
+    packs: tuple[list, list[str]] = ([], []),
 ) -> Planned:
     """The model a host's request would go to and its estimate: the case is
     built and redacted as `advise` will, and nothing is sent."""
     advisor = config.advisor
     built, known, which = case_for_host(
-        store, host, identity, config.recipients, inventory, prior, whitelist
+        store, host, identity, config.recipients, inventory, prior, whitelist, packs=packs
     )
     model, triaged = model_for(advisor, role, which["band"], which["report"].assessment)
     advisor = advisor.model_copy(update={"model": model})
@@ -351,7 +387,7 @@ def plan(
     line, priced = cost_line(advisor, tokens_in(json.dumps(request.body, ensure_ascii=False)))
     return Planned(
         host, which["bundle_id"], which["assessed_at"], model, triaged, line, priced, prior,
-        whitelist,
+        whitelist, packs,
     )  # fmt: skip
 
 
@@ -490,9 +526,10 @@ def spent(outcome: Outcome) -> float | None:
     return cost(outcome.model_answered or outcome.model_asked, outcome.usage)
 
 
-def _proposals(store, host, identity, inventory, whitelist, which, answer, home):
+def _proposals(store, host, identity, inventory, whitelist, which, answer, home, steered):
     """Role 2's rules judged against the real findings (checker.advisor.
-    proposals), and the file the accepted ones go to."""
+    proposals), and the file the accepted ones go to. `steered` is where
+    the case as sent addresses an AI (_steered()): none are offered then."""
     from checker.advisor.proposals import judge, write_file
     from checker.assess import load_assessment
     from checker.baseline import usable_bundles
@@ -542,6 +579,7 @@ def _proposals(store, host, identity, inventory, whitelist, which, answer, home)
         rule_ids,
         group=group,
         band=which["band"],
+        steered=steered,
     )
     written = write_file(base, host, group, judged, datetime.now(UTC).strftime("%Y-%m-%d %H:%M"))
     if written is not None:
@@ -602,6 +640,7 @@ def latest_advice(
         saved = json.loads(open_text(row["answer"], identity) or "{}")
         record["answer"] = saved.get("restored")
         record["note"] = saved.get("note") or ""
+        record["warning"] = saved.get("warning") or ""
         record["declined_by"] = json.loads(row["declined_by"]) if row["declined_by"] else []
         record["stale"] = row["bundle_id"] != bundle_id or row["assessed_at"] != assessed_at
         record["local"] = is_local(row["endpoint"])

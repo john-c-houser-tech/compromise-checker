@@ -23,34 +23,40 @@ def main() -> int:
         path.unlink()
         print(f"{path.name}: removed (its case is gone)")
     for path in golden.cases():
-        before_path = golden.expected_path(path)
-        before = json.loads(before_path.read_text()) if before_path.exists() else None
-        after = golden.write_expected(path)
+        paths = (golden.expected_path(path), golden.pack_expected_path(path))
+        befores = [json.loads(p.read_text()) if p.exists() else None for p in paths]
+        golden.write_expected(path)
         name = path.name.removesuffix(".json.gz")
-        now = after["score"]
-        if before is None:
-            print(f"{name}: new, {now['probability']:.4f} {now['band']}")
-            continue
-        was = before["score"]
-        print(
-            f"{name}: log-odds {was['log_odds']:+.3f} -> {now['log_odds']:+.3f},"
-            f" {was['probability']:.4f} {was['band']} -> {now['probability']:.4f} {now['band']}"
-        )
-        old = Counter(key(f) for f in before["findings"])
-        new = Counter(key(f) for f in after["findings"])
-        for f, n in sorted((new - old).items()):
-            print(f"  + {n}x {f[1]:8} {f[0]}: {f[2][:100]}")
-        for f, n in sorted((old - new).items()):
-            print(f"  - {n}x {f[1]:8} {f[0]}: {f[2][:100]}")
-        ratios_before = {
-            (f["check"], f.get("variant"), f["band"]): f["ratio"] for f in before["findings"]
-        }
-        for f in after["findings"]:
-            k = (f["check"], f.get("variant"), f["band"])
-            if k in ratios_before and ratios_before[k] != f["ratio"]:
-                print(f"  ratio {k[0]} {k[2]}: {ratios_before[k]:g} -> {f['ratio']:g}")
-                ratios_before.pop(k)
+        for label, before, written in zip(("", " (test pack)"), befores, paths, strict=True):
+            show(name + label, before, json.loads(written.read_text()))
     return 0
+
+
+def show(name: str, before: dict | None, after: dict) -> None:
+    """What moved in one expectation."""
+    now = after["score"]
+    if before is None:
+        print(f"{name}: new, {now['probability']:.4f} {now['band']}")
+        return
+    was = before["score"]
+    print(
+        f"{name}: log-odds {was['log_odds']:+.3f} -> {now['log_odds']:+.3f},"
+        f" {was['probability']:.4f} {was['band']} -> {now['probability']:.4f} {now['band']}"
+    )
+    old = Counter(key(f) for f in before["findings"])
+    new = Counter(key(f) for f in after["findings"])
+    for f, n in sorted((new - old).items()):
+        print(f"  + {n}x {f[1]:8} {f[0]}: {f[2][:100]}")
+    for f, n in sorted((old - new).items()):
+        print(f"  - {n}x {f[1]:8} {f[0]}: {f[2][:100]}")
+    ratios_before = {
+        (f["check"], f.get("variant"), f["band"]): f["ratio"] for f in before["findings"]
+    }
+    for f in after["findings"]:
+        k = (f["check"], f.get("variant"), f["band"])
+        if k in ratios_before and ratios_before[k] != f["ratio"]:
+            print(f"  ratio {k[0]} {k[2]}: {ratios_before[k]:g} -> {f['ratio']:g}")
+            ratios_before.pop(k)
 
 
 if __name__ == "__main__":

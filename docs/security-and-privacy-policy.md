@@ -138,6 +138,16 @@ that may include access tokens, and sometimes secrets typed into commands.
   Your organization can choose during setup to collect program starts for
   root, service accounts and accounts with administrator rights too, and,
   only with that, for ordinary users.
+- **Package history and PHP settings.** The record of package installs,
+  upgrades and removals (from dpkg's log or dnf's history, up to about a
+  year back; package names, versions and times only) and the settings in
+  PHP's configuration files (setting names and values, masked; comments
+  left out), so a threat pack can tell when a fix arrived and whether a
+  recommended setting is in place.
+- **Sites' own PHP settings.** In the web folders the tool already examines,
+  the PHP setting lines of `.user.ini` and `.htaccess` files (setting names
+  and values, masked; nothing else from those files), because a site can
+  override a protective PHP setting there.
 - **Mail logs.** Outgoing mail logs (Postfix, Exim) are collected, because
   mail sent from a compromised server is a common sign of misuse. Before they
   leave the server, every email address in them is changed: the part before
@@ -221,7 +231,11 @@ that may include access tokens, and sometimes secrets typed into commands.
   server removed from the inventory has no such exception. Each purge is
   recorded by identifiers, times and counts only, never content.
 - **Reports are confidential documents.** They describe weaknesses an attacker
-  could use. Handle them like the evidence.
+  could use, so they are encrypted to the same key as the evidence. Showing
+  one (`checker report --open`) serves it to your browser from memory, on
+  this machine only, without writing a plain copy. A report written as plain
+  HTML on purpose (`--plain`), to hand on, is yours to protect: handle it
+  like the evidence.
 
 ## 9. The optional AI advisor
 
@@ -314,7 +328,12 @@ Nothing, unless you choose one of these:
 
 - the AI advisor (section 9);
 - optional reputation checks, which send IP addresses or file fingerprints
-  (never files) to a reputation service you configure.
+  (never files) to a reputation service you configure;
+- notifications from `checker run`, if you set a notify command: the tool
+  runs your command on your machine and gives it a short summary in the
+  tool's own words (host names, bands, check names, finding titles and the
+  report's path; never evidence or text from a host); where that command
+  sends it is your choice.
 
 The tool has no telemetry, usage reporting or licence check, and it never
 contacts NouriLoop LLC. Updates to threat packs (section 11) are downloaded

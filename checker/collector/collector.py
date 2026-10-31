@@ -602,7 +602,9 @@ class Run:
         self.deadline = deadline
         self._protected = None
 
-    def refusal(self, opened, info, key_file=False, spool=False, walked=False, home=None):
+    def refusal(
+        self, opened, info, key_file=False, spool=False, walked=False, home=None, site_root=None
+    ):
         """Why the contents of a file just opened (its path after links, its
         fstat) must not be read, or None. These rules don't depend on knowing
         every history file on the server:
@@ -657,6 +659,13 @@ class Run:
             # from a configuration file can reach a spool.
             if not opened.startswith(SPOOL_LOCATIONS):
                 return "is outside cron's and at's spools"
+        elif site_root is not None:
+            # A site's own PHP settings (plan 4.4c): only these names, only
+            # inside the web root being walked; only their PHP lines are sent.
+            if opened.rsplit("/", 1)[-1] not in SITE_PHP_FILES:
+                return "is not a site's .user.ini or .htaccess"
+            if not opened.startswith(site_root.rstrip("/") + "/"):
+                return "is outside the web root being walked"
         elif not opened.startswith(SYSTEM_LOCATIONS):
             return "is outside the system locations configuration and logs are read from"
         if opened.startswith(homes):
@@ -864,6 +873,8 @@ def send_file(
     walked=False,
     home=None,
     transform=None,
+    site_root=None,
+    expect=None,
 ):
     """Send one file as a source: decompressed, masked, chunked, capped.
     Returns True if sent, False if it could not be read (recorded instead).
@@ -878,7 +889,10 @@ def send_file(
     link is read; with `home` (see homes_for), it is a home file whose text
     the opt-in allows, and must lie in that home and in no home the opt-in
     doesn't cover (Run.refusal). With `transform`, each line goes through
-    `transform(line, masker)` instead of the plain masking (see pump_lines)."""
+    `transform(line, masker)` instead of the plain masking (see pump_lines).
+    With `site_root`, see Run.refusal; with `expect` (device, inode), the
+    file opened must be that one (a walked file, not whatever its path
+    leads to now)."""
     suffix = os.path.splitext(absolute)[1]
     if suffix in _COMPRESSED and suffix not in _OPENERS:
         details = describe_unreadable(absolute)
@@ -895,7 +909,11 @@ def send_file(
         details["reason"] = str(exc)
         run.stream.record(module, "unreadable_file", details)
         return False
-    refusal = run.refusal(absolute, info, spool=spool, walked=walked, home=home)
+    refusal = run.refusal(
+        absolute, info, spool=spool, walked=walked, home=home, site_root=site_root
+    )
+    if not refusal and expect is not None and (info.st_dev, info.st_ino) != tuple(expect):
+        refusal = "is not the file the walk listed (replaced since); its contents aren't read"
     if refusal:
         # The file actually opened — through any link or hard link — is one
         # collected as status or metadata only: never send its text.
@@ -4730,11 +4748,8 @@ def rpm_entries(run, module, database):
     group, capabilities as cap_to_text writes them). Reading stops at
     MAX_PACKAGE_FILES entries (truncated is then True) and at the module's
     deadline (ModuleTimeout)."""
-    import sqlite3  # standard library; only needed on rpm systems
-    from urllib.parse import quote
 
-    uri = "file:" + quote(path(database)) + "?immutable=1&mode=ro"
-    connection = sqlite3.connect(uri, uri=True)
+    connection = sqlite_readonly(run, database)
     try:
         return _rpm_entries(run, connection.execute("SELECT blob FROM Packages"))
     finally:
@@ -5182,12 +5197,9 @@ def canonical_path(absolute, links):
 def rpm_owners(run, database, links):
     """{canonical path: package} from rpm's database, reading only each
     header's names (lighter than rpm_entries). Returns (owners, complete)."""
-    import sqlite3  # standard library; only needed on rpm systems
-    from urllib.parse import quote
 
     owners, complete = {}, True
-    uri = "file:" + quote(path(database)) + "?immutable=1&mode=ro"
-    connection = sqlite3.connect(uri, uri=True)
+    connection = sqlite_readonly(run, database)
     try:
         for (blob,) in connection.execute("SELECT blob FROM Packages"):
             run.check_time()
@@ -5570,13 +5582,18 @@ def mask_names(entry):
         entry["masked"] = found
 
 
-def walk_place(run, module, top, limit, keep, hash_it, record="unusual_file", prune=None):
+def walk_place(
+    run, module, top, limit, keep, hash_it, record="unusual_file", prune=None, missed=None
+):
     """Walk one place; send each entry `keep(entry)` accepts as `record`,
     annotated (hashed where `hash_it(entry, kind)` says), and count the
-    rest. Returns the walk's summary, or None if the place isn't there."""
+    rest. Returns the walk's summary, or None if the place isn't there, or
+    is there but couldn't be walked (then appended to `missed`, if given)."""
     directory, risk = resolve_links(top)
     if risk:
         run.stream.record(module, "not_examined", {"path": top, "reason": risk})
+        if missed is not None:
+            missed.append(top)
         return None
     try:
         info = os.lstat(path(directory))
@@ -5584,6 +5601,8 @@ def walk_place(run, module, top, limit, keep, hash_it, record="unusual_file", pr
         return None
     except OSError as exc:
         run.stream.record(module, "unreadable_file", {"path": top, "reason": str(exc)})
+        if missed is not None:
+            missed.append(top)
         return None
     if not stat.S_ISDIR(info.st_mode):
         return None
@@ -5611,6 +5630,102 @@ def walk_place(run, module, top, limit, keep, hash_it, record="unusual_file", pr
     summary["whole"] = not summary["truncated"] and not any(summary["not_descended"].values())
     run.stream.record(module, "walk_summary", summary)
     return summary
+
+
+# A site's own PHP settings (plan 4.4c): PHP-FPM reads .user.ini in each
+# folder of a request's path, Apache .htaccess; either can set a setting
+# again for that site (a pack's mitigation, say).
+SITE_PHP_FILES = (".user.ini", ".htaccess")
+MAX_SITE_PHP_FILES = 500
+_HTACCESS_PHP = re.compile(rb"^\s*php_(?:admin_)?(?:value|flag)\s+([A-Za-z0-9_.\[\]-]+)", re.I)
+_HTACCESS_SETENV = re.compile(rb"^(\s*SetEnv\s+PHP_(?:ADMIN_)?VALUE\s+)(.*?)(\s*)$", re.I)
+_HTACCESS_PHP_VALUE = re.compile(rb"\bPHP_(?:ADMIN_)?VALUE\b", re.I)
+# Directives that can set PHP_VALUE some other way (conditionally, or as a
+# rewrite's environment flag): named, their values never sent.
+_HTACCESS_OTHER = re.compile(
+    rb"^\s*(SetEnvIf(?:NoCase|Expr)?|BrowserMatch(?:NoCase)?|ProxyFCGISetEnvIf|RewriteRule"
+    rb"|RewriteCond|SetEnv|PassEnv|Define)\b",
+    re.I,
+)
+_INI_SECTION_LINE = re.compile(rb"^\s*\[")
+
+
+def _php_value_masked(value, masker):
+    """A PHP_VALUE's "a=1\\nb=2" with each secret setting's value masked whole."""
+    quoted = len(value) >= 2 and value[:1] == b'"' and value[-1:] == b'"'
+    inner = value[1:-1] if quoted else value
+    parts = re.split(rb"(\\n|;)", inner)
+    for n, part in enumerate(parts):
+        name, sep, _ = part.partition(b"=")
+        if sep and _PHP_SECRET_NAME.search(name.strip()):
+            parts[n] = name + b"=[MASKED:php_secret]"
+            masker.counts["php_secret"] = masker.counts.get("php_secret", 0) + 1
+    inner = b"".join(parts)
+    return b'"' + inner + b'"' if quoted else inner
+
+
+def htaccess_php_line(line, masker):
+    """An .htaccess line as sent: only a PHP setting (php_value, php_flag,
+    their admin forms, or SetEnv PHP_VALUE / PHP_ADMIN_VALUE), masked (a
+    secret setting's whole value). Another directive naming PHP_VALUE
+    (SetEnvIf, a rewrite's E= flag) is sent only as a marker naming the
+    directive, its arguments left out; everything else is left out."""
+    found = _HTACCESS_PHP.match(line)
+    if found:
+        if _PHP_SECRET_NAME.search(found.group(1)):
+            masker.counts["php_secret"] = masker.counts.get("php_secret", 0) + 1
+            return line[: found.end(1)] + b" [MASKED:php_secret]\n"
+        return masker.line(line)
+    setenv = _HTACCESS_SETENV.match(line.rstrip(b"\r\n"))
+    if setenv:
+        return masker.line(setenv.group(1) + _php_value_masked(setenv.group(2), masker) + b"\n")
+    if _HTACCESS_PHP_VALUE.search(line):
+        other = _HTACCESS_OTHER.match(line)
+        what = other.group(1) if other else b"another directive"
+        return b"[PHP_VALUE set by " + what + b": not read]\n"
+    return b""
+
+
+def user_ini_line(line, masker):
+    """A .user.ini line as sent: a directive only, as from php.ini (PHP
+    reads no sections there)."""
+    return b"" if _INI_SECTION_LINE.match(line) else php_ini_line(line, masker)
+
+
+def _site_php(run, module, summary, sites):
+    """Each .user.ini and .htaccess the walk of a web root found: their PHP
+    lines only, and only the very file the walk listed (a folder swapped
+    for a link since can't lead elsewhere: the file opened must have the
+    walked inode, on the root's filesystem, which the walk never left). One
+    not read — a link (never followed), a path that masking would change
+    (a source's path is sent as it is), refused, unreadable, or past the
+    limit — or a walk not whole or cut short by time, may hide a setting:
+    said so (`site_php_partial`), however the reading ends."""
+    root = summary.get("resolved") or summary.get("place")
+    read = 0
+    try:
+        try:
+            device = os.stat(path(root)).st_dev
+        except OSError:
+            device = None
+        for absolute, kind, inode in sites[:MAX_SITE_PHP_FILES]:
+            run.check_time()
+            if kind != "-" or device is None:
+                continue
+            _, masked = mask_text(absolute.encode("utf-8", "surrogateescape") + b"\n")
+            if masked:
+                continue
+            transform = user_ini_line if absolute.endswith(".user.ini") else htaccess_php_line
+            if send_file(run, module, absolute, text_only=True, walked=True, transform=transform,
+                         site_root=root, expect=(device, inode)):  # fmt: skip
+                read += 1
+    finally:
+        if read < len(sites) or not summary.get("whole"):
+            run.stream.record(
+                module,
+                "site_php_partial",
+                {"path": summary.get("place"), "found": len(sites), "read": read},
+            )
 
 
 def _is_web_listed(entry, root):
@@ -5723,19 +5838,34 @@ def module_unusual_files(run):
         module, "web_roots", {"roots": roots, "source": "default" if configured is None else "host"}
     )
     with time_share(run, module, "web_roots", WEB_TIME_SHARE):
-        for top in roots:
-            run.check_time()
-            note(
-                walk_place(
-                    run,
-                    module,
-                    top,
-                    MAX_WEB_ENTRIES,
-                    lambda entry, root=top: _is_web_listed(entry, root),
-                    _web_hashed,
-                    "web_file",
-                )
-            )
+        done = 0
+        try:
+            for top in roots:
+                run.check_time()
+                sites, missed = [], []
+
+                def web_listed(entry, root=top, sites=sites):
+                    # A site's own PHP settings are read after the walk; a
+                    # link isn't followed, so it counts as one not read.
+                    name = entry["path"].rsplit("/", 1)[-1]
+                    if name in SITE_PHP_FILES and entry.get("type") in ("-", "l"):
+                        sites.append((entry["path"], entry.get("type"), entry.get("inode")))
+                    return _is_web_listed(entry, root)
+
+                summary = walk_place(run, module, top, MAX_WEB_ENTRIES, web_listed, _web_hashed,
+                                     "web_file", missed=missed)  # fmt: skip
+                note(summary)
+                done += 1
+                if summary is not None:
+                    _site_php(run, module, summary, sites)
+                elif missed:  # there, but not examined or not readable
+                    run.stream.record(module, "site_php_partial", {"path": top, "read": 0})
+            # Every web root's sites were read, or what wasn't is said: a
+            # collection without this record (an older collector's) didn't.
+            run.stream.record(module, "site_php", {"roots": len(roots)})
+        finally:
+            for top in roots[done:]:  # time ran out first
+                run.stream.record(module, "site_php_partial", {"path": top, "read": 0})
 
     # The rest of the time: every top-level directory the system walk
     # doesn't cover.
@@ -6762,8 +6892,6 @@ def rpm_packages(run, module, database):
     """Installed packages from rpm's SQLite database, opened immutable (no
     locks, no -shm or -wal file): name, version, architecture, install
     time."""
-    import sqlite3  # standard library; only needed on rpm systems
-    from urllib.parse import quote
 
     wal = path(database) + "-wal"
     try:
@@ -6774,8 +6902,7 @@ def rpm_packages(run, module, database):
         # Opened immutable, the database is read without its write-ahead
         # log: changes still only there (a very recent install) aren't seen.
         run.stream.record(module, "packages_pending", {"path": database + "-wal", "bytes": pending})
-    uri = "file:" + quote(path(database)) + "?immutable=1&mode=ro"
-    connection = sqlite3.connect(uri, uri=True)
+    connection = sqlite_readonly(run, database)
     count = 0
     try:
         for (blob,) in connection.execute("SELECT blob FROM Packages"):
@@ -6801,6 +6928,210 @@ def rpm_packages(run, module, database):
                 count += 1
             except (ValueError, struct.error):
                 run.stream.record(module, "malformed_header", {"path": database})
+    finally:
+        connection.close()
+
+
+# Package history (DESIGN.md §5.5): what was installed, upgraded or removed,
+# and when, so a threat pack's fix is dated by when it arrived, not by a
+# package's last update. dpkg's log on Debian and Ubuntu (rotated monthly,
+# a year kept), dnf's history database on the RHEL family. Package names
+# and versions only; the log's lines are parsed here and nothing else of
+# them is sent. The newest changes are kept when there are too many.
+PACKAGE_HISTORY_DAYS = 400
+MAX_PACKAGE_CHANGES = 20000
+DNF_HISTORY = "/var/lib/dnf/history.sqlite"
+# dpkg.log, dpkg.log.1, dpkg.log.2.gz, and logrotate's dateext names
+# (dpkg.log-20260901.gz), in any compression this collector can open.
+_DPKG_LOG = re.compile(r"^dpkg\.log(?:[.-]\d+)?(?:\.(?:gz|xz|bz2))?$")
+_DPKG_LOG_LINE = re.compile(
+    rb"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (install|upgrade|remove|purge)"
+    rb" ([a-z0-9][a-z0-9+.-]*)(?::([a-z0-9-]+))? (\S+) (\S+)\s*$"
+)
+# dnf's (libdnf's) TransactionItemAction values: the ones that leave a
+# version installed (an obsoleting package arrives as another's
+# replacement), and the ones that take one away.
+_DNF_ACTIONS = {1: "install", 2: "downgrade", 4: "install", 6: "upgrade", 9: "reinstall",
+                5: "remove", 8: "remove"}  # fmt: skip
+# Rows a SQLite statement may step through between deadline checks.
+SQLITE_PROGRESS_STEPS = 10000
+
+
+def package_history(run, module):
+    """Package changes from dpkg's log and dnf's history, within
+    PACKAGE_HISTORY_DAYS or the look-back window, whichever reaches further
+    (a threat's window may have opened months ago); the newest kept."""
+    since = min(time.time() - PACKAGE_HISTORY_DAYS * 86400, run.since.timestamp())
+    changes = collections.deque(maxlen=MAX_PACKAGE_CHANGES)  # the newest stay
+    total = [0]
+
+    def change(data):
+        changes.append(data)
+        total[0] += 1
+
+    found = False
+    try:
+        names = os.listdir(path("/var/log"))
+    except OSError:
+        names = []
+    logs = []
+    for name in names:
+        if _DPKG_LOG.match(name):
+            absolute = "/var/log/" + name
+            try:
+                info = os.lstat(path(absolute))
+            except OSError:
+                continue
+            if stat.S_ISREG(info.st_mode):
+                found = True  # dpkg keeps a log, even if nothing changed lately
+                if info.st_mtime >= since:
+                    logs.append((info.st_mtime, absolute))
+    # Oldest first, so the newest end up kept; the live log is the newest of
+    # any written in the same second.
+    for _, _, absolute in sorted((t, a == "/var/log/dpkg.log", a) for t, a in logs):
+        _dpkg_log(run, module, absolute, since, change)
+    if os.path.isfile(path(DNF_HISTORY)):
+        found = True
+        _dnf_history(run, module, since, change)
+    for data in changes:
+        run.stream.record(module, "package_change", data)
+    if total[0] > len(changes):
+        run.stream.record(
+            module,
+            "listing_truncated",
+            {"path": "package history", "kept": len(changes), "found": total[0]},
+        )
+    if not found:
+        run.stream.record(module, "package_history_absent", {})
+
+
+def _dpkg_log(run, module, absolute, since, change):
+    """One dpkg log's install, upgrade and remove lines within `since`
+    (local time, as dpkg writes it: a day's slack for the zone)."""
+    try:
+        raw, _ = open_regular_file(absolute)
+    except (OSError, ValueError) as exc:
+        run.stream.record(module, "not_examined", {"path": absolute, "reason": str(exc)})
+        return
+    suffix = os.path.splitext(absolute)[1]
+    earliest = datetime.datetime.fromtimestamp(since - 86400, datetime.timezone.utc)
+    earliest = earliest.strftime("%Y-%m-%d").encode()
+    try:
+        with raw, _OPENERS[suffix][1](raw) if suffix in _OPENERS else raw as opened:
+            while True:
+                run.check_time()
+                line = opened.readline(1024)
+                if not line:
+                    return
+                found = _DPKG_LOG_LINE.match(line)
+                if not found or found.group(1)[:10] < earliest:
+                    continue
+                when, action, name, arch, before, after = (
+                    g.decode("ascii", "replace") if g is not None else None for g in found.groups()
+                )
+                change(
+                    {
+                        "manager": "dpkg",
+                        "local_time": when,
+                        "action": action,
+                        "name": name,
+                        "arch": arch,
+                        "previous": None if before == "<none>" else before,
+                        "version": None if after == "<none>" else after,
+                        "source": absolute,
+                    }
+                )
+    except _DECOMPRESS_ERRORS as exc:
+        run.stream.record(module, "not_examined", {"path": absolute, "reason": str(exc)})
+
+
+def sqlite_readonly(run, database):
+    """A server's SQLite database, opened so that reading it writes
+    nothing anywhere and can't outrun the module's time: immutable and
+    read-only (no locks, no -wal, -shm or journal file), sorts kept in
+    memory (a big ORDER BY would otherwise spill to a file in /tmp), no
+    functions run from its schema, and a deadline check every
+    SQLITE_PROGRESS_STEPS steps (a crafted view could loop in SQLite
+    itself, never returning a row)."""
+    import sqlite3
+    from urllib.parse import quote
+
+    uri = "file:" + quote(path(database)) + "?immutable=1&mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    connection.text_factory = lambda b: b.decode("utf-8", "replace")
+    connection.execute("PRAGMA temp_store=MEMORY")
+    try:
+        connection.execute("PRAGMA trusted_schema=OFF")
+    except sqlite3.Error:
+        pass  # older SQLite: no such setting
+    connection.set_progress_handler(lambda: 1 if run.out_of_time() else 0, SQLITE_PROGRESS_STEPS)
+    return connection
+
+
+def _tables(connection, names):
+    """Whether these are tables in the database (not views a crafted
+    database could put in their place)."""
+    found = {
+        row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    return all(n in found for n in names)
+
+
+def _dnf_history(run, module, since, change):
+    """dnf's history database: each completed package change since `since`."""
+    import sqlite3
+
+    wal = path(DNF_HISTORY) + "-wal"
+    try:
+        pending = os.lstat(wal).st_size
+    except OSError:
+        pending = 0
+    if pending:
+        # Read immutable, the database is read without its write-ahead log:
+        # the latest transactions may only be there.
+        run.stream.record(
+            module, "package_history_pending", {"path": DNF_HISTORY + "-wal", "bytes": pending}
+        )
+    connection = sqlite_readonly(run, DNF_HISTORY)
+    try:
+        if not _tables(connection, ("trans", "trans_item", "rpm")):
+            run.stream.record(
+                module, "not_examined", {"path": DNF_HISTORY, "reason": "not dnf's tables"}
+            )
+            return
+        rows = connection.execute(
+            "SELECT t.dt_begin, ti.action, r.name, r.epoch, r.version, r.release, r.arch"
+            " FROM trans_item ti JOIN trans t ON t.id = ti.trans_id"
+            " JOIN rpm r ON r.item_id = ti.item_id"
+            " WHERE t.dt_begin >= ? AND ti.state = 1 AND ti.action IN (1, 2, 4, 5, 6, 8, 9)"
+            " ORDER BY t.dt_begin, ti.id",
+            (int(since),),
+        )
+        for began, action, name, epoch, version, release, arch in rows:
+            run.check_time()
+            kind = _DNF_ACTIONS.get(action)
+            if kind is None or not name:
+                continue
+            evr = f"{version}-{release}"
+            evr = f"{epoch}:{evr}" if epoch else evr
+            change(
+                {
+                    "manager": "rpm",
+                    "time": iso_from_timestamp(began),
+                    "action": kind,
+                    "name": name,
+                    "arch": arch,
+                    "previous": evr if kind == "remove" else None,
+                    "version": None if kind == "remove" else evr,
+                    "source": DNF_HISTORY,
+                }
+            )
+    except sqlite3.OperationalError as exc:
+        if run.out_of_time():
+            raise ModuleTimeout() from None
+        run.stream.record(module, "not_examined", {"path": DNF_HISTORY, "reason": str(exc)})
+    except sqlite3.Error as exc:
+        run.stream.record(module, "not_examined", {"path": DNF_HISTORY, "reason": str(exc)})
     finally:
         connection.close()
 
@@ -6973,6 +7304,7 @@ def module_software(run):
         _key_files(run, module)
 
     part("packages", packages)
+    part("package_history", package_history, run, module)
     part("software_files", repositories)
     part("global_packages", _global_packages, run, module)
 
@@ -7380,7 +7712,50 @@ WEB_CONFIG_DIRS = (
     "/etc/httpd/conf.d",
     "/etc/php-fpm.d",
 )
-WEB_CONFIG_GLOBS = ("/etc/php/*/fpm/php-fpm.conf", "/etc/php/*/fpm/pool.d")
+WEB_CONFIG_GLOBS = (
+    "/etc/php/*/fpm/php-fpm.conf",
+    "/etc/php/*/fpm/pool.d",
+    "/etc/opt/remi/php*/php-fpm.conf",
+    "/etc/opt/remi/php*/php-fpm.d",
+)
+# PHP's own settings, for the threat packs' mitigations (decision D4): each
+# installed PHP's php.ini and conf.d, by file, never by running php. Only
+# directive and section lines are sent (PHP_INI_LINE): php.ini is mostly
+# comments. The web-facing ones: FPM, Apache's module, CGI (not the CLI).
+PHP_INI_FILES = ("/etc/php.ini",)
+PHP_INI_DIRS = ("/etc/php.d",)
+PHP_INI_GLOBS = (
+    "/etc/php/*/fpm/php.ini",
+    "/etc/php/*/apache2/php.ini",
+    "/etc/php/*/cgi/php.ini",
+    "/etc/php/*/fpm/conf.d",
+    "/etc/php/*/apache2/conf.d",
+    "/etc/php/*/cgi/conf.d",
+    "/etc/opt/remi/php*/php.ini",
+    "/etc/opt/remi/php*/php.d",
+)
+_PHP_INI_LINE = re.compile(rb"^\s*(?:\[[^\]]*\]|[A-Za-z0-9_.\[\]-]+\s*=)")
+_PHP_INI_DIRECTIVE = re.compile(rb"^(\s*([A-Za-z0-9_.\[\]-]+)\s*=)")
+# Directives whose value is a secret, or may hold one (a password in a
+# session store's address): the whole value is masked, whatever it looks
+# like (mysqli.default_pw, newrelic.license, session.save_path …).
+_PHP_SECRET_NAME = re.compile(
+    rb"(?i)(?:_pw\b|pass|license|secret|token|auth|key|dsn|save_path|credential)"
+)
+
+
+def php_ini_line(line, masker):
+    """A php.ini line as sent: a directive or a section, masked (a secret
+    directive's whole value); comments and blank lines are left out."""
+    if not _PHP_INI_LINE.match(line):
+        return b""
+    directive = _PHP_INI_DIRECTIVE.match(line)
+    if directive and _PHP_SECRET_NAME.search(directive.group(2)):
+        masker.counts["php_secret"] = masker.counts.get("php_secret", 0) + 1
+        return directive.group(1) + b" [MASKED:php_secret]\n"
+    return masker.line(line)
+
+
 # Where web servers log when their configuration doesn't say otherwise.
 WEB_LOG_DIRS = ("/var/log/nginx", "/var/log/apache2", "/var/log/httpd", "/var/log/php-fpm")
 _PHP_FPM_LOG = re.compile(r"^php[\d.]*-fpm\.log(?:[-.][\w.-]+)?$")
@@ -7881,12 +8256,34 @@ def module_web_logs(run):
                 collect_tree(run, module, found, seen, max_depth=1)
             else:
                 send_config_files(run, module, (found,), seen)
-    texts = [
-        (absolute, read_config_text(run, module, absolute))
-        for absolute in sorted(p for p in seen if isinstance(p, str))
-    ]
+    configured = sorted(p for p in seen if isinstance(p, str))
+    _php_ini(run, module, seen)
+    # PHP's ini files name PHP's own error log; it isn't collected (plan
+    # 4.4: reading them mustn't widen what is), so they don't lead to logs.
+    texts = [(absolute, read_config_text(run, module, absolute)) for absolute in configured]
     with time_share(run, module, "logs", 1.0):
         _web_logs(run, module, texts)
+
+
+def _php_ini(run, module, seen):
+    """Each installed PHP's ini files (PHP_INI_*): a conf.d folder holds
+    links into mods-available on Debian and Ubuntu, followed as PHP
+    follows them."""
+    send_config_files(run, module, PHP_INI_FILES, seen, transform=php_ini_line)
+    folders = list(PHP_INI_DIRS)
+    for pattern in PHP_INI_GLOBS:
+        for found in glob_absolute(pattern, run=run):
+            if os.path.isdir(path(found)):
+                folders.append(found)
+            else:
+                send_config_files(run, module, (found,), seen, transform=php_ini_line)
+    for folder in folders:
+        try:
+            names, _ = list_directory(folder, MAX_DIR_FILES, run)
+        except OSError:
+            continue
+        inis = [_join(folder, n) for n in names if n.endswith(".ini")]
+        send_config_files(run, module, inis, seen, transform=php_ini_line)
 
 
 # --- Containers (DESIGN.md §8.13) -------------------------------------------------------

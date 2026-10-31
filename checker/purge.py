@@ -66,9 +66,11 @@ def plan(
     expired: bool = False,
     now: datetime | None = None,
     files: bool = True,
+    only: set[str] | None = None,
 ) -> Plan:
     """What a purge would delete. Nothing is changed. Without `files`, only
-    the bundles (a count, without hashing every report)."""
+    the bundles (a count, without hashing every report); with `only`, only
+    those hosts' bundles."""
     if expired and before is not None:
         raise ValueError("--expired and --before can't be combined")
     if not (host or before or expired):
@@ -83,7 +85,8 @@ def plan(
         before = now - timedelta(days=retention_days)
         scope.update(expired=True, retention_days=retention_days, before=before.isoformat())
     result = Plan(scope)
-    for name in [host] if host else store.hosts():
+    names = [host] if host else store.hosts()
+    for name in names if only is None else [n for n in names if n in only]:
         rows = store.bundles(name)
         doomed = [r for r in rows if before is None or _started(r) < before]
         baseline = current_baseline(store, name)
@@ -141,7 +144,7 @@ def _reports(store: Store, base: Path, bundle_ids: list[str]) -> list[Path]:
     by the hash each report left in the custody of the bundles it covers. A
     report written elsewhere (`--output`) is the operator's to delete."""
     return _derived(
-        store, base / "reports", "report-*.html", bundle_ids, "reported", "report_sha256"
+        store, base / "reports", "report-*.html*", bundle_ids, "reported", "report_sha256"
     )
 
 
@@ -307,8 +310,11 @@ def _derived_left(base: Path, row: Any) -> list[Path]:
         if not (isinstance(where, str) and isinstance(digest, str)):
             continue
         folder_name, _, name = where.partition("/")
-        pattern = {"reports": "report-*.html", "proposals": "*.yaml"}.get(folder_name)
-        if pattern is None or not _plain_name(name, pattern):
+        patterns = {
+            "reports": ("report-*.html", "report-*.html.age"),  # plain, encrypted
+            "proposals": ("*.yaml",),
+        }.get(folder_name, ())
+        if not any(_plain_name(name, pattern) for pattern in patterns):
             continue
         folder = base / folder_name
         path = folder / name

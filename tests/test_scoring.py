@@ -10,7 +10,7 @@ from checker import cli
 from checker.assess import analyze, load_assessment, prior_for
 from checker.evidence import Config
 from checker.inventory import Host, Inventory
-from checker.report import write_report
+from checker.report import read_report, write_report
 from checker.scoring import (
     BAND_RATIOS,
     EXTRA,
@@ -192,7 +192,7 @@ def test_an_assessment_is_scored_and_stored_with_its_score(home):
     add_bundle(home, "b1", 0, host_records())
     add_bundle(home, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))))
     assessment = analyze(store, "web01", identity, config.recipients, prior=(0.05, "host"))
-    assert assessment["format"] == 2 and assessment["versions"]["scoring"] == 2
+    assert assessment["format"] == 2 and assessment["versions"]["scoring"] == 3
     scored = assessment["score"]
     assert scored["prior"] == 0.05 and scored["prior_source"] == "host"
     assert scored["contributors"][0]["check"] == "account.uid0"
@@ -214,7 +214,7 @@ def test_the_report_shows_the_score_and_rescores_for_a_new_prior(home):
     add_bundle(home, "b1", 0, host_records())
     analyze(store, "web01", identity, config.recipients)
     path = write_report(store, ["web01"], identity, config.recipients, base / "reports")
-    html = path.read_text()
+    html = read_report(path, identity)
     assert "Probability of compromise" in html and "2% Low" in html
     before = len(store.assessments("b1"))
     write_report(
@@ -296,7 +296,7 @@ def test_cli_analyze_and_report_use_the_hosts_prior(home, capsys):
     add_bundle(home, "b1", 0, host_records())
     assert cli.main(["analyze", "web01"]) == 0
     assert "(prior 20%, host)" in capsys.readouterr().out
-    assert cli.main(["report", "web01", "--output", str(base / "r.html")]) == 0
+    assert cli.main(["report", "web01", "--output", str(base / "r.html"), "--plain"]) == 0
     assert "from a prior of 20% (host)" in (base / "r.html").read_text()
 
 

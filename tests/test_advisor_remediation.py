@@ -146,13 +146,13 @@ def test_a_plan_contradicting_the_band_is_set_aside(enabled):
 
 
 def test_the_report_shows_the_plan(enabled):
-    from checker.report import write_report
+    from checker.report import read_report, write_report
 
     base, store, identity, config = enabled
     band = band_of(enabled)
     run(enabled, Provider(remediation_reply(plan(band))), role="remediation")
-    html = write_report(store, ["web01"], identity, config.recipients,
-                        base / "reports").read_text()  # fmt: skip
+    html = read_report(write_report(store, ["web01"], identity, config.recipients,
+                        base / "reports"), identity)  # fmt: skip
     section = html.split("remediation (advice; nothing was run)")[1].split("<h2")[0]
     assert "Preserve evidence first" in section and "[destroys state]" in section
     assert "the security team" in section
@@ -381,3 +381,20 @@ def test_numbers_in_a_role(role):
 def test_a_continuation_line_doesnt_end_a_clause():
     with pytest.raises(InvalidAnswer, match="sends or fetches"):
         check(answer(contain=[step("Upload the memory image \\\n  to IP-3-7f3a:/drop")]))
+
+
+def test_a_plan_for_a_case_whose_text_addresses_an_ai_is_shown_with_a_warning(
+    enabled, capsys, monkeypatch
+):
+    import re
+
+    import checker.advisor.proposals as proposals
+
+    band = band_of(enabled)
+    provider = Provider(remediation_reply(plan(band)))
+    monkeypatch.setattr(advise_module, "make_client", lambda key, *where: provider.client())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x" + "y" * 30)
+    monkeypatch.setattr(proposals, "ADDRESSED", re.compile(r"root under another name"))
+    assert cli.main(["advise", "web01", "--role", "remediation", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "Warning: text in the case (F-" in out and "Preserve evidence first:" in out

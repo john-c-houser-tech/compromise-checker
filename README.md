@@ -96,8 +96,9 @@ What works today:
   every change so far; read the advisor's API key from its source to check
   it works, without sending anything. A key pasted into a `command:`
   source is refused.
-- `checker hosts add|list|remove` and `checker trust` — the inventory
-  (`--web-root DIR`, repeatable, sets a host's own web roots), and
+- `checker hosts add|list|remove|packs` and `checker trust` — the inventory
+  (`--web-root DIR`, repeatable, sets a host's own web roots; `hosts packs
+  HOST [RULE]` shows or sets which threat packs apply to it), and
   verified SSH host keys (no way to switch verification off).
 - `checker collect` — logs in (key, agent or password; sudo with or without a
   password, or root), runs the collector read-only, and stores the result as
@@ -127,7 +128,10 @@ What works today:
   encrypted ([checks](docs/checks.md), [scoring](docs/scoring.md)).
 - `checker report HOST|--all` — writes one self-contained, confidential HTML
   report: findings with their evidence, a timeline, coverage, and the
-  collection's hashes and chain of custody ([report](docs/report.md)).
+  collection's hashes and chain of custody, encrypted to the evidence key
+  (`--plain` for plain HTML to hand on); `checker report --open [FILE]`
+  shows one in the browser, served from memory on this machine, never
+  written in plain ([report](docs/report.md)).
 - `checker whitelist check [HOST]`, `test HOST --file F`, `stale` —
   validate the whitelist files (global, per group, per host) and show a
   host's merged rules; show what a proposed file would hide or reveal on
@@ -138,6 +142,14 @@ What works today:
   a finding an operator has explained, with a reason, an owner and an
   expiry; suppressed findings are kept and listed in the report's appendix,
   and count for nothing in the score ([whitelists](docs/whitelists.md)).
+- `checker run --all [--unattended]` — collects, analyses, writes the
+  report and purges what has expired, in one pass, and says which hosts
+  need a look (band risen, a new high or critical finding, not collected);
+  `notify_command` hands that short summary to a command of yours (mail,
+  a webhook). `--unattended` asks nothing and leaves out, with a warning,
+  hosts that would need a prompt. `checker schedule install --at HH:MM` runs it every day (a
+  systemd user timer, or a launchd agent on macOS)
+  ([scheduling](docs/scheduling.md)).
 - `checker purge HOST | --before DATE | --expired` — deletes stored evidence,
   reports included, and records what went by identifiers and counts only.
   `--expired` keeps each host's current baseline until a newer one is

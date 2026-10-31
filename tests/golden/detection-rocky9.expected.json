@@ -137,7 +137,7 @@
   },
   {
    "check": "mail.domains",
-   "findings": 0,
+   "findings": 1,
    "status": "ran"
   },
   {
@@ -147,7 +147,7 @@
   },
   {
    "check": "mail.volume",
-   "findings": 0,
+   "findings": 1,
    "status": "ran"
   },
   {
@@ -198,6 +198,16 @@
   {
    "check": "net.tunnel",
    "findings": 2,
+   "status": "ran"
+  },
+  {
+   "check": "pack.detection",
+   "findings": 0,
+   "status": "ran"
+  },
+  {
+   "check": "pack.exposure",
+   "findings": 0,
    "status": "ran"
   },
   {
@@ -356,7 +366,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 100.0,
    "summary": "cc-toor has UID 0: it is root under another name",
    "title": "An account other than root has UID 0",
@@ -382,7 +394,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 100.0,
    "summary": "/etc/ld.so.preload (17 bytes)",
    "title": "/etc/ld.so.preload loads a library into every program",
@@ -411,7 +425,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "cc-toor: primary group root (GID 0)",
    "title": "A new account whose primary group is root-equivalent",
@@ -440,7 +456,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "podman: cc-priv: has CAP_BPF, has CAP_DAC_READ_SEARCH, has CAP_SYS_ADMIN, has CAP_SYS_MODULE, has CAP_SYS_RAWIO, mounts /, privileged; image docker.io/library/alpine:latest (running)",
    "title": "A container that holds the host since the baseline",
@@ -468,7 +486,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "/tmp/.cc-sh: set-user-ID, owner UID 0",
    "title": "A new privileged file since the baseline",
@@ -494,7 +514,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "/tmp/.cc-sh (owner UID 0)",
    "title": "A program in a scratch directory",
@@ -522,7 +544,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "/usr/share/nginx/html/cc-shell.php (SHA-256 47d73aad164dc1b3\u2026)",
    "title": "A new script in a web root",
@@ -548,7 +572,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "/root/.bash_history",
    "title": "A shell history file is a link to /dev/null",
@@ -567,7 +593,9 @@
    "evidence": [],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "/var/log/wtmp: 2304 bytes \u2192 0 bytes, same inode",
    "title": "A log was truncated since the previous collection",
@@ -595,7 +623,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "auditd",
    "title": "A logging service that ran at the baseline isn't running",
@@ -612,7 +642,9 @@
    "evidence": [],
    "first_seen": "2026-10-29T15:51:26+00:00",
    "last_seen": "2026-10-29T15:51:26+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "type=DAEMON_END msg=audit(1793289086.766:735): op=terminate auid=0 uid=0 ses=1 pid=16562 subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 res=success\u001dAUID=\"root\" UID=\"root\"",
    "title": "The audit daemon stopped, not during a shutdown",
@@ -638,7 +670,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "now permissive, configured enforcing",
    "title": "SELinux was turned down since the baseline",
@@ -668,7 +702,9 @@
    ],
    "first_seen": "2026-10-29T15:51:21.320000+00:00",
    "last_seen": "2026-10-29T15:51:21.320000+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "sleep (pid 16523, www-data, /usr/bin/sleep): connected to 127.0.0.1 port 445, established",
    "title": "A web-server account reached SMB",
@@ -697,7 +733,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "/etc/pam.d/sshd: session optional pam_exec.so quiet /bin/true",
    "title": "A PAM line was added that runs a program (pam_exec)",
@@ -725,7 +763,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "/etc/ld.so.preload",
    "title": "A new startup file",
@@ -753,7 +793,9 @@
    ],
    "first_seen": "2026-10-29T15:51:18.120000+00:00",
    "last_seen": "2026-10-29T15:51:18.120000+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "cc-sleep (pid 16482): /root/cc-sleep (deleted)",
    "title": "A process whose program was deleted",
@@ -781,7 +823,9 @@
    ],
    "first_seen": "2026-10-29T15:51:18.120000+00:00",
    "last_seen": "2026-10-29T15:51:18.120000+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "cc-sleep (pid 16482): /root/cc-sleep (deleted)",
    "title": "A process has code mapped from a scratch or home file",
@@ -809,7 +853,9 @@
    ],
    "first_seen": "2026-10-29T15:51:19.670000+00:00",
    "last_seen": "2026-10-29T15:51:19.670000+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "bash (pid 16494): stdin is tcp to 127.0.0.1:4444",
    "title": "A shell talking to a network socket (a reverse shell)",
@@ -838,7 +884,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "ccadmin: ssh-ed25519 SHA256:AXPuEMPU8ClhGRQ/21NkuEqppsBQFqvHcP8Jus4uRjI in /home/ccadmin/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
@@ -867,7 +915,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "operator: ssh-ed25519 SHA256:B8t61310m/RL9E9teOdFniHDwtckdIE7NP2Vw1Rkaj8 in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
@@ -896,7 +946,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "operator: ssh-ed25519 SHA256:BsQIrMxk7imzfB5tAxgnv6Wp5BM7wCxe5vnA/V2Vcgs in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
@@ -925,7 +977,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "root: ssh-ed25519 SHA256:B8t61310m/RL9E9teOdFniHDwtckdIE7NP2Vw1Rkaj8 in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
@@ -954,7 +1008,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "root: ssh-ed25519 SHA256:BsQIrMxk7imzfB5tAxgnv6Wp5BM7wCxe5vnA/V2Vcgs in /root/.ssh/authorized_keys",
    "title": "A new authorized SSH key",
@@ -982,7 +1038,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "/etc/ssh/sshd_config.d/00-cc-proof.conf: permitrootlogin yes",
    "title": "An sshd setting was added",
@@ -1011,7 +1069,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "/etc/sudoers.d/cc-admin: ccadmin ALL=(ALL) NOPASSWD: ALL",
    "title": "A new sudo rule without a password (NOPASSWD)",
@@ -1055,7 +1115,9 @@
    ],
    "first_seen": "2026-10-29T15:51:23.041747+00:00",
    "last_seen": "2026-10-29T15:51:23.041747+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "/usr/share/nginx/html/cc-shell.php: 5 requests answered, from 127.0.0.0/24",
    "title": "A script new since the baseline answered requests",
@@ -1079,7 +1141,9 @@
    ],
    "first_seen": "2026-10-29T15:51:23.041747+00:00",
    "last_seen": "2026-10-29T15:51:23.041747+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "apache ran bash 1 time, e.g. sh -c uname -a",
    "title": "A web account started a shell running an attacker's command",
@@ -1112,7 +1176,9 @@
    ],
    "first_seen": "2026-10-29T15:51:23.041747+00:00",
    "last_seen": "2026-10-29T15:51:23.041747+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "apache ran bash 4 times, e.g. sh -c id",
    "title": "A web account started a shell running an attacker's command",
@@ -1145,7 +1211,9 @@
    ],
    "first_seen": "2026-10-29T15:51:23.041747+00:00",
    "last_seen": "2026-10-29T15:51:23.041747+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "apache ran id 4 times, e.g. id",
    "title": "A web account started a reconnaissance command",
@@ -1169,7 +1237,9 @@
    ],
    "first_seen": "2026-10-29T15:51:23.041747+00:00",
    "last_seen": "2026-10-29T15:51:23.041747+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 20.0,
    "summary": "apache ran uname 1 time, e.g. uname -a",
    "title": "A web account started a reconnaissance command",
@@ -1197,7 +1267,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "cc-toor (UID 0, shell /bin/bash)",
    "title": "A new account",
@@ -1225,7 +1297,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "ccadmin (UID 1002, shell /bin/bash)",
    "title": "A new account",
@@ -1253,7 +1327,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "www-data (UID 994, shell /usr/sbin/nologin)",
    "title": "A new account",
@@ -1276,7 +1352,9 @@
    ],
    "first_seen": "2026-10-29T15:51:18.143068+00:00",
    "last_seen": "2026-10-29T15:51:18.143068+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "created: cc-toor UID 0",
    "title": "An account or group was changed (from the logs)",
@@ -1299,7 +1377,9 @@
    ],
    "first_seen": "2026-10-29T15:52:06.507971+00:00",
    "last_seen": "2026-10-29T15:52:06.507971+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "created: ccadmin UID 1002",
    "title": "An account or group was changed (from the logs)",
@@ -1322,7 +1402,9 @@
    ],
    "first_seen": "2026-10-29T15:50:04.200782+00:00",
    "last_seen": "2026-10-29T15:50:04.200782+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "created: proofuser UID 1001",
    "suppressed_by": {
@@ -1352,7 +1434,9 @@
    ],
    "first_seen": "2026-10-29T15:49:58.698342+00:00",
    "last_seen": "2026-10-29T15:49:58.698342+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "created: scanner UID 1000",
    "suppressed_by": {
@@ -1365,6 +1449,409 @@
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "created"
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "mail.domains",
+   "contribution": 1.3863,
+   "entities": [
+    "domain:d0.invalid",
+    "domain:d1.invalid",
+    "domain:d10.invalid",
+    "domain:d11.invalid",
+    "domain:d12.invalid",
+    "domain:d13.invalid",
+    "domain:d14.invalid",
+    "domain:d15.invalid",
+    "domain:d16.invalid",
+    "domain:d17.invalid",
+    "domain:d18.invalid",
+    "domain:d19.invalid",
+    "domain:d2.invalid",
+    "domain:d20.invalid",
+    "domain:d21.invalid",
+    "domain:d22.invalid",
+    "domain:d23.invalid",
+    "domain:d24.invalid",
+    "domain:d25.invalid",
+    "domain:d26.invalid",
+    "domain:d27.invalid",
+    "domain:d28.invalid",
+    "domain:d29.invalid",
+    "domain:d3.invalid",
+    "domain:d30.invalid",
+    "domain:d31.invalid",
+    "domain:d32.invalid",
+    "domain:d33.invalid",
+    "domain:d34.invalid",
+    "domain:d35.invalid",
+    "domain:d36.invalid",
+    "domain:d37.invalid",
+    "domain:d38.invalid",
+    "domain:d39.invalid",
+    "domain:d4.invalid",
+    "domain:d40.invalid",
+    "domain:d41.invalid",
+    "domain:d42.invalid",
+    "domain:d43.invalid",
+    "domain:d44.invalid",
+    "domain:d45.invalid",
+    "domain:d46.invalid",
+    "domain:d47.invalid",
+    "domain:d48.invalid",
+    "domain:d49.invalid",
+    "domain:d5.invalid",
+    "domain:d50.invalid",
+    "domain:d51.invalid",
+    "domain:d52.invalid",
+    "domain:d53.invalid",
+    "domain:d54.invalid",
+    "domain:d55.invalid",
+    "domain:d56.invalid",
+    "domain:d57.invalid",
+    "domain:d58.invalid",
+    "domain:d59.invalid",
+    "domain:d6.invalid",
+    "domain:d7.invalid",
+    "domain:d8.invalid",
+    "domain:d9.invalid"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 272
+    },
+    {
+     "event": 282
+    },
+    {
+     "event": 287
+    },
+    {
+     "event": 288
+    },
+    {
+     "event": 295
+    },
+    {
+     "event": 299
+    },
+    {
+     "event": 302
+    },
+    {
+     "event": 309
+    },
+    {
+     "event": 314
+    },
+    {
+     "event": 317
+    },
+    {
+     "event": 324
+    },
+    {
+     "event": 325
+    },
+    {
+     "event": 331
+    },
+    {
+     "event": 338
+    },
+    {
+     "event": 345
+    },
+    {
+     "event": 351
+    },
+    {
+     "event": 356
+    },
+    {
+     "event": 360
+    },
+    {
+     "event": 366
+    },
+    {
+     "event": 368
+    },
+    {
+     "event": 372
+    },
+    {
+     "event": 381
+    },
+    {
+     "event": 384
+    },
+    {
+     "event": 392
+    },
+    {
+     "event": 395
+    },
+    {
+     "event": 396
+    },
+    {
+     "event": 402
+    },
+    {
+     "event": 410
+    },
+    {
+     "event": 414
+    },
+    {
+     "event": 416
+    },
+    {
+     "event": 424
+    },
+    {
+     "event": 429
+    },
+    {
+     "event": 432
+    },
+    {
+     "event": 437
+    },
+    {
+     "event": 444
+    },
+    {
+     "event": 448
+    },
+    {
+     "event": 458
+    },
+    {
+     "event": 460
+    },
+    {
+     "event": 465
+    },
+    {
+     "event": 470
+    },
+    {
+     "event": 472
+    },
+    {
+     "event": 483
+    },
+    {
+     "event": 487
+    },
+    {
+     "event": 492
+    },
+    {
+     "event": 496
+    },
+    {
+     "event": 502
+    },
+    {
+     "event": 503
+    },
+    {
+     "event": 509
+    },
+    {
+     "event": 512
+    },
+    {
+     "event": 517
+    }
+   ],
+   "first_seen": "2026-10-29T15:51:30.482080+00:00",
+   "last_seen": "2026-10-29T15:51:33.169583+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "2026-10-29: 60 new domains: d0.invalid, d1.invalid, d10.invalid, d11.invalid, d12.invalid, d13.invalid, d14.invalid, d15.invalid and 52 more",
+   "title": "Mail to many recipient domains never written to before",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "medium",
+   "category": "compromise indicator",
+   "check": "mail.volume",
+   "contribution": 1.3863,
+   "entities": [
+    "host:rocky9"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 272
+    },
+    {
+     "event": 282
+    },
+    {
+     "event": 287
+    },
+    {
+     "event": 288
+    },
+    {
+     "event": 295
+    },
+    {
+     "event": 299
+    },
+    {
+     "event": 302
+    },
+    {
+     "event": 309
+    },
+    {
+     "event": 314
+    },
+    {
+     "event": 317
+    },
+    {
+     "event": 324
+    },
+    {
+     "event": 325
+    },
+    {
+     "event": 331
+    },
+    {
+     "event": 338
+    },
+    {
+     "event": 345
+    },
+    {
+     "event": 351
+    },
+    {
+     "event": 356
+    },
+    {
+     "event": 360
+    },
+    {
+     "event": 366
+    },
+    {
+     "event": 368
+    },
+    {
+     "event": 372
+    },
+    {
+     "event": 381
+    },
+    {
+     "event": 384
+    },
+    {
+     "event": 392
+    },
+    {
+     "event": 395
+    },
+    {
+     "event": 396
+    },
+    {
+     "event": 402
+    },
+    {
+     "event": 410
+    },
+    {
+     "event": 414
+    },
+    {
+     "event": 416
+    },
+    {
+     "event": 424
+    },
+    {
+     "event": 429
+    },
+    {
+     "event": 432
+    },
+    {
+     "event": 437
+    },
+    {
+     "event": 444
+    },
+    {
+     "event": 448
+    },
+    {
+     "event": 458
+    },
+    {
+     "event": 460
+    },
+    {
+     "event": 465
+    },
+    {
+     "event": 470
+    },
+    {
+     "event": 472
+    },
+    {
+     "event": 483
+    },
+    {
+     "event": 487
+    },
+    {
+     "event": 492
+    },
+    {
+     "event": 496
+    },
+    {
+     "event": 502
+    },
+    {
+     "event": 503
+    },
+    {
+     "event": 509
+    },
+    {
+     "event": 512
+    },
+    {
+     "event": 517
+    }
+   ],
+   "first_seen": "2026-10-29T15:51:30.482080+00:00",
+   "last_seen": "2026-10-29T15:51:36.469720+00:00",
+   "likelihood_ratio": null,
+   "new": true,
+   "raised_by_pack": null,
+   "ratio": 4.0,
+   "summary": "2026-10-29: 150 deliveries attempted; the baseline averaged 1.0 a day",
+   "title": "A sudden jump in outgoing mail",
+   "uncertain": null,
+   "variant": "deliveries"
   },
   {
    "band": "medium",
@@ -1529,7 +2016,9 @@
    ],
    "first_seen": "2026-10-29T15:51:30.463785+00:00",
    "last_seen": "2026-10-29T15:51:36.465528+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "www-data: 150 messages",
    "title": "Mail submitted by a web-server account",
@@ -1557,7 +2046,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "/etc/hosts",
    "title": "A network configuration file was changed",
@@ -1587,7 +2078,9 @@
    ],
    "first_seen": "2026-10-29T15:51:20.700000+00:00",
    "last_seen": "2026-10-29T15:51:20.700000+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "sleep (pid 16505, root, /usr/bin/sleep): connected to 169.254.169.254 port 80, established",
    "title": "A program other than the cloud agent reached the metadata address",
@@ -1616,7 +2109,9 @@
    ],
    "first_seen": "2026-10-29T15:51:21.540000+00:00",
    "last_seen": "2026-10-29T15:51:21.540000+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "ssh (pid 16531, root): -R 127.0.0.1:2222:127.0.0.1:22; ssh -f -N -o StrictHostKeyChecking=no -o BatchMode=yes -i /root/.ssh/cc_tunnel -R 127.0.0.1:2222:127.0.0.1:22 root@127.0.0.1",
    "title": "An SSH client forwarding ports (a tunnel)",
@@ -1643,7 +2138,9 @@
    ],
    "first_seen": "2026-10-29T15:51:21.580000+00:00",
    "last_seen": "2026-10-29T15:51:21.580000+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "sshd session (pid 16534) listening on 127.0.0.1 port 2222",
    "title": "An SSH session listening on a port (a remote forward)",
@@ -1669,7 +2166,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "/var/spool/at/a0000101c80f0e (owner UID 0)",
    "suppressed_by": {
@@ -1704,7 +2203,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "/etc/cron.d/cc-proof",
    "title": "A new cron file",
@@ -1732,7 +2233,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "/etc/systemd/system/cc-proof.service",
    "title": "A new systemd file",
@@ -1760,7 +2263,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "/etc/systemd/system/cc-proof.timer",
    "title": "A new systemd file",
@@ -1788,7 +2293,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "/home/ccadmin/.bash_logout",
    "title": "A new startup file",
@@ -1816,7 +2323,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "/home/ccadmin/.bash_profile",
    "title": "A new startup file",
@@ -1844,7 +2353,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "/home/ccadmin/.bashrc",
    "title": "A new startup file",
@@ -1872,7 +2383,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "/etc/pki/rpm-gpg/RPM-GPG-KEY-cc-proof",
    "title": "A package signing key was added",
@@ -1900,7 +2413,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "/etc/yum.repos.d/cc-proof.repo",
    "title": "A package repository was added",
@@ -1928,7 +2443,9 @@
    ],
    "first_seen": "2026-10-29T15:51:29+00:00",
    "last_seen": "2026-10-29T15:51:29+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "nmap 3:7.92-5.el9",
    "title": "An attack or tunnelling tool was installed",
@@ -1956,7 +2473,9 @@
    ],
    "first_seen": "2026-10-29T15:51:29+00:00",
    "last_seen": "2026-10-29T15:51:29+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "nmap-ncat 3:7.92-5.el9",
    "title": "An attack or tunnelling tool was installed",
@@ -1980,7 +2499,9 @@
    ],
    "first_seen": "2026-10-29T15:51:21.619723+00:00",
    "last_seen": "2026-10-29T15:51:21.619723+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "127.0.0.1: 1 login(s) as root",
    "title": "Logins from an address never seen before",
@@ -2004,7 +2525,9 @@
    ],
    "first_seen": "2026-10-29T15:51:21.619723+00:00",
    "last_seen": "2026-10-29T15:51:21.619723+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "root from 127.0.0.1 (publickey)",
    "suppressed_by": {
@@ -2035,7 +2558,9 @@
    ],
    "first_seen": "2026-10-29T15:48:12.176053+00:00",
    "last_seen": "2026-10-29T15:48:12.176053+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "root from 203.0.113.9 (publickey)",
    "suppressed_by": {
@@ -2065,7 +2590,9 @@
    ],
    "first_seen": "2026-10-29T15:51:23.041747+00:00",
    "last_seen": "2026-10-29T15:51:23.041747+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "127.0.0.0/24: 1 request (status 200), e.g. /cc-shell.php?c=[MASKED:value]&f=[MASKED:exploit:traversal]",
    "title": "A traversal attack answered",
@@ -2088,7 +2615,9 @@
    ],
    "first_seen": "2026-10-29T15:50:21.172464+00:00",
    "last_seen": "2026-10-29T15:50:21.172464+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "created: apache UID 48",
    "title": "An account or group was changed (from the logs)",
@@ -2111,7 +2640,9 @@
    ],
    "first_seen": "2026-10-29T15:50:21.143539+00:00",
    "last_seen": "2026-10-29T15:50:21.143539+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "created: group apache",
    "title": "An account or group was changed (from the logs)",
@@ -2134,7 +2665,9 @@
    ],
    "first_seen": "2026-10-29T15:50:20.934007+00:00",
    "last_seen": "2026-10-29T15:50:20.934007+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "created: group nginx",
    "title": "An account or group was changed (from the logs)",
@@ -2157,7 +2690,9 @@
    ],
    "first_seen": "2026-10-29T15:50:07.838428+00:00",
    "last_seen": "2026-10-29T15:50:07.838428+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "created: group postdrop",
    "title": "An account or group was changed (from the logs)",
@@ -2180,7 +2715,9 @@
    ],
    "first_seen": "2026-10-29T15:50:07.665892+00:00",
    "last_seen": "2026-10-29T15:50:07.665892+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "created: group postfix",
    "title": "An account or group was changed (from the logs)",
@@ -2203,7 +2740,9 @@
    ],
    "first_seen": "2026-10-29T15:50:20.960459+00:00",
    "last_seen": "2026-10-29T15:50:20.960459+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "created: nginx UID 995",
    "title": "An account or group was changed (from the logs)",
@@ -2226,7 +2765,9 @@
    ],
    "first_seen": "2026-10-29T15:50:07.725135+00:00",
    "last_seen": "2026-10-29T15:50:07.725135+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "created: postfix UID 89",
    "title": "An account or group was changed (from the logs)",
@@ -2249,7 +2790,9 @@
    ],
    "first_seen": "2026-10-29T15:51:20.809118+00:00",
    "last_seen": "2026-10-29T15:51:20.809118+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "created: www-data UID 994",
    "title": "An account or group was changed (from the logs)",
@@ -2273,7 +2816,9 @@
    ],
    "first_seen": "2026-10-29T15:50:07.908176+00:00",
    "last_seen": "2026-10-29T15:50:07.908176+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "member added: postfix group mail",
    "title": "An account or group was changed (from the logs)",
@@ -2297,7 +2842,9 @@
    ],
    "first_seen": "2026-10-29T15:50:07.908371+00:00",
    "last_seen": "2026-10-29T15:50:07.908371+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "member added: postfix group mail",
    "title": "An account or group was changed (from the logs)",
@@ -2326,7 +2873,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "podman: cc-priv: image docker.io/library/alpine:latest (running)",
    "title": "A container new since the baseline",
@@ -2356,7 +2905,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "tcp 127.0.0.1:2222 netns=net:[4026531840]: sshd-session",
    "title": "A new listening port",
@@ -2386,7 +2937,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "tcp 127.0.0.1:4444 netns=net:[4026531840]: python3",
    "title": "A new listening port",
@@ -2416,7 +2969,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "tcp 127.0.0.1:445 netns=net:[4026531840]: python3",
    "title": "A new listening port",
@@ -2446,7 +3001,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "udp 0.0.0.0:37756 netns=net:[4026531840]: local",
    "title": "A new listening port",
@@ -2488,7 +3045,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "3 list file(s): expected after package installs and updates; a rewrite to hide a replaced file would show here too",
    "title": "The package managers' checksum lists changed since the baseline",
@@ -2516,7 +3075,9 @@
    ],
    "first_seen": "2026-10-29T15:48:03.610000+00:00",
    "last_seen": "2026-10-29T15:48:03.610000+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "firewalld (pid 624): /memfd:libffi (deleted)",
    "suppressed_by": {
@@ -2578,7 +3139,9 @@
    ],
    "first_seen": "2026-10-29T15:51:29+00:00",
    "last_seen": "2026-10-29T15:51:29+00:00",
+   "likelihood_ratio": null,
    "new": true,
+   "raised_by_pack": null,
    "ratio": 1.5,
    "summary": "4: libibverbs, libpcap, nmap, nmap-ncat",
    "title": "Packages installed since the baseline",
@@ -2604,7 +3167,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "/home/proofuser/.config/systemd/user/proof.service",
    "title": "A user's own systemd unit",
@@ -2627,7 +3192,9 @@
    ],
    "first_seen": "2026-10-29T15:50:23.041747+00:00",
    "last_seen": "2026-10-29T15:50:23.041747+00:00",
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "127.0.0.0/24: 1 request (status 404), e.g. /x?f=[MASKED:exploit:traversal]",
    "title": "A traversal attack refused",
@@ -2654,7 +3221,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "/etc/NetworkManager/NetworkManager.conf (NetworkManager): changed",
    "title": "A package's configuration file was edited",
@@ -2681,7 +3250,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "/etc/nsswitch.conf (glibc): mode",
    "title": "A package's configuration file was edited",
@@ -2708,7 +3279,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "/etc/pam.d/fingerprint-auth (pam): mode, unreadable",
    "title": "A package's configuration file was edited",
@@ -2735,7 +3308,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "/etc/pam.d/password-auth (pam): mode, unreadable",
    "title": "A package's configuration file was edited",
@@ -2762,7 +3337,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "/etc/pam.d/postlogin (pam): mode, unreadable",
    "title": "A package's configuration file was edited",
@@ -2789,7 +3366,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "/etc/pam.d/smartcard-auth (pam): mode, unreadable",
    "title": "A package's configuration file was edited",
@@ -2816,7 +3395,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "/etc/pam.d/sshd (openssh-server): changed",
    "title": "A package's configuration file was edited",
@@ -2843,7 +3424,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "/etc/pam.d/system-auth (pam): mode, unreadable",
    "title": "A package's configuration file was edited",
@@ -2870,7 +3453,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "/etc/shadow (setup): mode",
    "title": "A package's configuration file was edited",
@@ -2897,7 +3482,9 @@
    ],
    "first_seen": null,
    "last_seen": null,
+   "likelihood_ratio": null,
    "new": false,
+   "raised_by_pack": null,
    "ratio": 1.0,
    "summary": "/etc/ssh/sshd_config (openssh-server): changed",
    "title": "A package's configuration file was edited",
@@ -2940,7 +3527,7 @@
     "contribution": 4.6052,
     "finding": 0,
     "ratio": 100.0,
-    "share": 0.0538,
+    "share": 0.0521,
     "title": "An account other than root has UID 0"
    },
    {
@@ -2949,7 +3536,7 @@
     "contribution": 4.6052,
     "finding": 1,
     "ratio": 100.0,
-    "share": 0.0538,
+    "share": 0.0521,
     "title": "/etc/ld.so.preload loads a library into every program"
    },
    {
@@ -2958,7 +3545,7 @@
     "contribution": 2.9957,
     "finding": 2,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A new account whose primary group is root-equivalent"
    },
    {
@@ -2967,7 +3554,7 @@
     "contribution": 2.9957,
     "finding": 3,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A container that holds the host since the baseline"
    },
    {
@@ -2976,7 +3563,7 @@
     "contribution": 2.9957,
     "finding": 4,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A new privileged file since the baseline"
    },
    {
@@ -2985,7 +3572,7 @@
     "contribution": 2.9957,
     "finding": 6,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A new script in a web root"
    },
    {
@@ -2994,7 +3581,7 @@
     "contribution": 2.9957,
     "finding": 7,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A shell history file is a link to /dev/null"
    },
    {
@@ -3003,7 +3590,7 @@
     "contribution": 2.9957,
     "finding": 8,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A log was truncated since the previous collection"
    },
    {
@@ -3012,7 +3599,7 @@
     "contribution": 2.9957,
     "finding": 9,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A logging service that ran at the baseline isn't running"
    },
    {
@@ -3021,7 +3608,7 @@
     "contribution": 2.9957,
     "finding": 11,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "SELinux was turned down since the baseline"
    },
    {
@@ -3030,7 +3617,7 @@
     "contribution": 2.9957,
     "finding": 12,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A web-server account reached SMB"
    },
    {
@@ -3039,7 +3626,7 @@
     "contribution": 2.9957,
     "finding": 13,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A PAM line was added that runs a program (pam_exec)"
    },
    {
@@ -3048,7 +3635,7 @@
     "contribution": 2.9957,
     "finding": 15,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A process whose program was deleted"
    },
    {
@@ -3057,7 +3644,7 @@
     "contribution": 2.9957,
     "finding": 17,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A shell talking to a network socket (a reverse shell)"
    },
    {
@@ -3066,7 +3653,7 @@
     "contribution": 2.9957,
     "finding": 18,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A new authorized SSH key"
    },
    {
@@ -3075,7 +3662,7 @@
     "contribution": 2.9957,
     "finding": 23,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "An sshd setting was added"
    },
    {
@@ -3084,7 +3671,7 @@
     "contribution": 2.9957,
     "finding": 24,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A new sudo rule without a password (NOPASSWD)"
    },
    {
@@ -3093,7 +3680,7 @@
     "contribution": 2.9957,
     "finding": 26,
     "ratio": 20.0,
-    "share": 0.035,
+    "share": 0.0339,
     "title": "A web account started a shell running an attacker's command"
    },
    {
@@ -3115,7 +3702,7 @@
     "contribution": 1.6094,
     "finding": null,
     "ratio": 5.0,
-    "share": 0.0188,
+    "share": 0.0182,
     "title": "A new account or key, given privilege, then used to log in (ccadmin)"
    },
    {
@@ -3135,7 +3722,7 @@
     "contribution": 1.6094,
     "finding": null,
     "ratio": 5.0,
-    "share": 0.0188,
+    "share": 0.0182,
     "title": "A script new since the baseline answered requests, then the web account started a shell or tool (apache)"
    },
    {
@@ -3144,88 +3731,106 @@
     "contribution": 1.3863,
     "finding": 33,
     "ratio": 4.0,
-    "share": 0.0162,
+    "share": 0.0157,
     "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": null,
+    "check": "mail.domains",
+    "contribution": 1.3863,
+    "finding": 37,
+    "ratio": 4.0,
+    "share": 0.0157,
+    "title": "Mail to many recipient domains never written to before"
+   },
+   {
+    "capped": null,
+    "check": "mail.volume",
+    "contribution": 1.3863,
+    "finding": 38,
+    "ratio": 4.0,
+    "share": 0.0157,
+    "title": "A sudden jump in outgoing mail"
    },
    {
     "capped": null,
     "check": "mail.web_user",
     "contribution": 1.3863,
-    "finding": 37,
+    "finding": 39,
     "ratio": 4.0,
-    "share": 0.0162,
+    "share": 0.0157,
     "title": "Mail submitted by a web-server account"
    },
    {
     "capped": null,
     "check": "net.config",
     "contribution": 1.3863,
-    "finding": 38,
+    "finding": 40,
     "ratio": 4.0,
-    "share": 0.0162,
+    "share": 0.0157,
     "title": "A network configuration file was changed"
    },
    {
     "capped": null,
     "check": "net.metadata",
     "contribution": 1.3863,
-    "finding": 39,
+    "finding": 41,
     "ratio": 4.0,
-    "share": 0.0162,
+    "share": 0.0157,
     "title": "A program other than the cloud agent reached the metadata address"
    },
    {
     "capped": null,
     "check": "net.tunnel",
     "contribution": 1.3863,
-    "finding": 40,
+    "finding": 42,
     "ratio": 4.0,
-    "share": 0.0162,
+    "share": 0.0157,
     "title": "An SSH client forwarding ports (a tunnel)"
    },
    {
     "capped": null,
     "check": "persistence.changes",
     "contribution": 1.3863,
-    "finding": 43,
+    "finding": 45,
     "ratio": 4.0,
-    "share": 0.0162,
+    "share": 0.0157,
     "title": "A new cron file"
    },
    {
     "capped": null,
     "check": "software.repository",
     "contribution": 1.3863,
-    "finding": 49,
+    "finding": 51,
     "ratio": 4.0,
-    "share": 0.0162,
+    "share": 0.0157,
     "title": "A package signing key was added"
    },
    {
     "capped": null,
     "check": "software.tools",
     "contribution": 1.3863,
-    "finding": 51,
+    "finding": 53,
     "ratio": 4.0,
-    "share": 0.0162,
+    "share": 0.0157,
     "title": "An attack or tunnelling tool was installed"
    },
    {
     "capped": null,
     "check": "ssh.login",
     "contribution": 1.3863,
-    "finding": 53,
+    "finding": 55,
     "ratio": 4.0,
-    "share": 0.0162,
+    "share": 0.0157,
     "title": "Logins from an address never seen before"
    },
    {
     "capped": null,
     "check": "web.exploit",
     "contribution": 1.3863,
-    "finding": 56,
+    "finding": 58,
     "ratio": 4.0,
-    "share": 0.0162,
+    "share": 0.0157,
     "title": "A traversal attack answered"
    },
    {
@@ -3234,7 +3839,7 @@
     "contribution": 0.6931,
     "finding": 5,
     "ratio": 20.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "A program in a scratch directory"
    },
    {
@@ -3243,7 +3848,7 @@
     "contribution": 0.6931,
     "finding": 10,
     "ratio": 20.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "The audit daemon stopped, not during a shutdown"
    },
    {
@@ -3252,7 +3857,7 @@
     "contribution": 0.6931,
     "finding": 14,
     "ratio": 20.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "A new startup file"
    },
    {
@@ -3261,7 +3866,7 @@
     "contribution": 0.6931,
     "finding": 16,
     "ratio": 20.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "A process has code mapped from a scratch or home file"
    },
    {
@@ -3270,70 +3875,70 @@
     "contribution": 0.6931,
     "finding": 25,
     "ratio": 20.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "A script new since the baseline answered requests"
    },
    {
     "capped": "family",
     "check": "net.tunnel",
     "contribution": 0.6931,
-    "finding": 41,
+    "finding": 43,
     "ratio": 4.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "An SSH session listening on a port (a remote forward)"
    },
    {
     "capped": "family",
     "check": "software.repository",
     "contribution": 0.6931,
-    "finding": 50,
+    "finding": 52,
     "ratio": 4.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "A package repository was added"
    },
    {
     "capped": "family",
     "check": "software.tools",
     "contribution": 0.6931,
-    "finding": 52,
+    "finding": 54,
     "ratio": 4.0,
-    "share": 0.0081,
+    "share": 0.0078,
     "title": "An attack or tunnelling tool was installed"
    },
    {
     "capped": null,
     "check": "container.new",
     "contribution": 0.4055,
-    "finding": 67,
+    "finding": 69,
     "ratio": 1.5,
-    "share": 0.0047,
+    "share": 0.0046,
     "title": "A container new since the baseline"
    },
    {
     "capped": null,
     "check": "net.listener",
     "contribution": 0.4055,
-    "finding": 68,
+    "finding": 70,
     "ratio": 1.5,
-    "share": 0.0047,
+    "share": 0.0046,
     "title": "A new listening port"
    },
    {
     "capped": null,
     "check": "package.changed",
     "contribution": 0.4055,
-    "finding": 72,
+    "finding": 74,
     "ratio": 1.5,
-    "share": 0.0047,
+    "share": 0.0046,
     "title": "The package managers' checksum lists changed since the baseline"
    },
    {
     "capped": null,
     "check": "software.packages",
     "contribution": 0.4055,
-    "finding": 74,
+    "finding": 76,
     "ratio": 1.5,
-    "share": 0.0047,
+    "share": 0.0046,
     "title": "Packages installed since the baseline"
    },
    {
@@ -3342,7 +3947,7 @@
     "contribution": 0.231,
     "finding": 27,
     "ratio": 20.0,
-    "share": 0.0027,
+    "share": 0.0026,
     "title": "A web account started a shell running an attacker's command"
    },
    {
@@ -3351,7 +3956,7 @@
     "contribution": 0.231,
     "finding": 28,
     "ratio": 20.0,
-    "share": 0.0027,
+    "share": 0.0026,
     "title": "A web account started a reconnaissance command"
    },
    {
@@ -3360,7 +3965,7 @@
     "contribution": 0.231,
     "finding": 29,
     "ratio": 20.0,
-    "share": 0.0027,
+    "share": 0.0026,
     "title": "A web account started a reconnaissance command"
    },
    {
@@ -3369,7 +3974,7 @@
     "contribution": 0.231,
     "finding": 30,
     "ratio": 4.0,
-    "share": 0.0027,
+    "share": 0.0026,
     "title": "A new account"
    },
    {
@@ -3378,7 +3983,7 @@
     "contribution": 0.231,
     "finding": 31,
     "ratio": 4.0,
-    "share": 0.0027,
+    "share": 0.0026,
     "title": "A new account"
    },
    {
@@ -3387,26 +3992,8 @@
     "contribution": 0.231,
     "finding": 32,
     "ratio": 4.0,
-    "share": 0.0027,
+    "share": 0.0026,
     "title": "A new account"
-   },
-   {
-    "capped": "family",
-    "check": "net.listener",
-    "contribution": 0.231,
-    "finding": 69,
-    "ratio": 1.5,
-    "share": 0.0027,
-    "title": "A new listening port"
-   },
-   {
-    "capped": "family",
-    "check": "net.listener",
-    "contribution": 0.231,
-    "finding": 70,
-    "ratio": 1.5,
-    "share": 0.0027,
-    "title": "A new listening port"
    },
    {
     "capped": "family",
@@ -3414,7 +4001,25 @@
     "contribution": 0.231,
     "finding": 71,
     "ratio": 1.5,
-    "share": 0.0027,
+    "share": 0.0026,
+    "title": "A new listening port"
+   },
+   {
+    "capped": "family",
+    "check": "net.listener",
+    "contribution": 0.231,
+    "finding": 72,
+    "ratio": 1.5,
+    "share": 0.0026,
+    "title": "A new listening port"
+   },
+   {
+    "capped": "family",
+    "check": "net.listener",
+    "contribution": 0.231,
+    "finding": 73,
+    "ratio": 1.5,
+    "share": 0.0026,
     "title": "A new listening port"
    },
    {
@@ -3423,7 +4028,7 @@
     "contribution": 0.1766,
     "finding": 34,
     "ratio": 4.0,
-    "share": 0.0021,
+    "share": 0.002,
     "title": "An account or group was changed (from the logs)"
    },
    {
@@ -3466,28 +4071,10 @@
     "capped": "family",
     "check": "persistence.changes",
     "contribution": 0.1386,
-    "finding": 44,
-    "ratio": 4.0,
-    "share": 0.0016,
-    "title": "A new systemd file"
-   },
-   {
-    "capped": "family",
-    "check": "persistence.changes",
-    "contribution": 0.1386,
-    "finding": 45,
-    "ratio": 4.0,
-    "share": 0.0016,
-    "title": "A new systemd file"
-   },
-   {
-    "capped": "family",
-    "check": "persistence.changes",
-    "contribution": 0.1386,
     "finding": 46,
     "ratio": 4.0,
     "share": 0.0016,
-    "title": "A new startup file"
+    "title": "A new systemd file"
    },
    {
     "capped": "family",
@@ -3496,7 +4083,7 @@
     "finding": 47,
     "ratio": 4.0,
     "share": 0.0016,
-    "title": "A new startup file"
+    "title": "A new systemd file"
    },
    {
     "capped": "family",
@@ -3509,21 +4096,21 @@
    },
    {
     "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 57,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 49,
+    "ratio": 4.0,
+    "share": 0.0016,
+    "title": "A new startup file"
    },
    {
     "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 58,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 50,
+    "ratio": 4.0,
+    "share": 0.0016,
+    "title": "A new startup file"
    },
    {
     "capped": "family",
@@ -3596,6 +4183,24 @@
     "ratio": 1.5,
     "share": 0.0006,
     "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0517,
+    "finding": 67,
+    "ratio": 1.5,
+    "share": 0.0006,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.0517,
+    "finding": 68,
+    "ratio": 1.5,
+    "share": 0.0006,
+    "title": "An account or group was changed (from the logs)"
    }
   ],
   "hygiene_and_exposure": {
@@ -3606,11 +4211,11 @@
     }
    }
   },
-  "log_odds": 81.658,
+  "log_odds": 84.4306,
   "prior": 0.02,
   "prior_source": "golden",
   "probability": 1.0,
-  "version": 2
+  "version": 3
  },
  "whitelist": {
   "as_of": "2026-10-28",

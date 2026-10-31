@@ -1,0 +1,56 @@
+# A made-up threat pack for the golden cases (plan 4.6): each case is
+# analysed with it as well as without (*.pack.expected.json). Its versions
+# put the cases' PHP just before the "fix", so both families are exposed
+# for the whole window; its detections fire on the detection cases only.
+# Never signed, never added to a checker home: the harness reads it as is.
+format: 1
+id: golden-test-2026-10
+version: 1
+title: "Golden test: a made-up PHP threat"
+published: 2026-10-25
+cves: [CVE-2026-109618]
+exposure:
+  window_start: 2026-10-20T00:00:00Z
+  likelihood_ratio: 5
+  packages:
+    - release: "ubuntu:24.04"
+      binary_names: [php8.3-fpm]
+      fixed: "8.3.6-0ubuntu0.24.04.14"
+      source: https://example.org/golden-test
+    - release: "rhel:9"
+      binary_names: [php-fpm]
+      fixed: "8.0.30-8.el9_8.2"
+      source: https://example.org/golden-test
+  stale_code: {programs: ["php-fpm*"]}
+mitigations:
+  - id: upload-progress-off
+    setting: {kind: php_ini, name: session.upload_progress.enabled}
+    expect: "off"
+    default: "on"
+    text: Turn off upload progress tracking.
+detections:
+  - id: worker-child
+    check: web.worker_child
+    likelihood_ratio: 100
+  - id: shell-probe
+    title: A web account probing the host
+    events:
+      any_of:
+        - type: process.exec
+          fields: {argv: {equals: id}}
+        - type: process.exec
+          fields: {argv: {prefix: "uname "}}
+      count: {at_least: 3, within: 1m}
+      by: uid
+    likelihood_ratio: 8
+  - id: shell-script
+    title: A web shell's name in a web root
+    snapshot:
+      section: web_files
+      key: {glob: "*/cc-shell.php"}
+      state: present
+    likelihood_ratio: 4
+remediation:
+  - "None: the threat is made up."
+references:
+  - https://example.org/golden-test

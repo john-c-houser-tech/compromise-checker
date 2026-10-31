@@ -17,12 +17,13 @@ from pyrage import x25519
 
 from checker.analysis import load_events, parse_bundle, snapshot_of, store_parsed
 from checker.baseline import changes, usable_bundles
-from checker.checks import CHECKS_VERSION, Context, run_checks
+from checker.checks import CHECKS_VERSION, Context, parse_time, run_checks
 from checker.checks.containers import uninventoried
 from checker.correlate import find_chains
 from checker.events import PARSER_VERSION, Event
 from checker.evidence import Config, EvidenceError, Store, open_text, seal_text
 from checker.inventory import Inventory
+from checker.packs.detect import raise_referenced
 from checker.scoring import DEFAULT_PRIOR, SCORING_VERSION, score
 from checker.snapshot import FULL, SNAPSHOT_VERSION, Snapshot
 from checker.whitelist import Whitelist
@@ -177,12 +178,115 @@ def evaluate(
     score: the findings (as stored, suppressed ones marked), which checks
     ran, the score, and what the whitelist did. What `analyze` stores, and
     what the golden reports pin (tests/golden)."""
+    raised, raised_by = _exposures(context)
     findings, ran = run_checks(context)
     found = [f.as_dict() for f in findings]
+    # Core findings a pack names weigh as it says while its detection counts.
+    try:
+        raise_referenced(context, found, ran)
+    except Exception as exc:  # a broken pack must not stop the analysis
+        context.gaps.append(f"threat packs' references to checks failed: {type(exc).__name__}")
     applied = whitelist.apply(found, today, context.events) if whitelist is not None else None
     chains = find_chains(found, context.events, context.previous_time)
-    scored = score(found, prior[0], chains) | {"prior_source": prior[1], "chains": chains}
+    scored = score(found, prior[0], chains, raised, raised_by) | {
+        "prior_source": prior[1],
+        "chains": chains,
+    }
     return found, ran, scored, applied
+
+
+def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
+    """Each pack's exposure, judged once (for the pack check, on the
+    context) and what together they add to the prior (DESIGN.md §11.2)."""
+    from checker.packs.exposure import (
+        NOT_AFFECTED,
+        NOT_COVERED,
+        UNKNOWN_RELEASE,
+        judge,
+        prior_raise,
+    )
+    from checker.packs.format import MAX_LR
+    from checker.packs.mitigation import judge as judge_mitigations
+
+    if not context.packs:
+        return 0.0, []
+    collected = parse_time(context.collected_at) if context.collected_at else None
+    now = collected or datetime.now(UTC)
+    processes = context.snapshot.live.get("processes", [])
+    listing = context.snapshot.sections.get("packages")
+    complete = listing is not None and listing.complete
+    history = [
+        {"time": e.corrected or e.time, "type": e.type, "fields": e.fields}
+        for _, e in context.of("package.")
+    ]
+    earlier = []
+    for when, snap in (
+        (context.previous_time, context.previous_snapshot),
+        (context.baseline_time, context.baseline_snapshot),
+    ):
+        collected = parse_time(when) if when else None
+        if collected is not None and snap is not None and "packages" in snap.sections:
+            earlier.append((collected, snap.sections["packages"].items))
+    whole = context.snapshot.sections.get("package_history")
+    history_complete = whole is not None and whole.complete
+    php = context.snapshot.sections.get("php_settings")
+    php_complete = php is not None and php.complete
+    context.exposures = []
+    for pack in context.packs:
+        found = judge(
+            pack, context.items("host"), context.items("packages"), processes, now, complete,
+            history, earlier, history_complete,
+        )  # fmt: skip
+        if found.status not in (NOT_AFFECTED, NOT_COVERED, UNKNOWN_RELEASE):
+            found.mitigations = judge_mitigations(
+                pack.mitigations, context.items("php_settings"), context.items("web_config"),
+                php_complete,
+            )  # fmt: skip
+        context.exposures.append(found)
+    raised = prior_raise(context.exposures, MAX_LR)
+    raised_by = [
+        {"pack": e.pack_id, "version": e.pack_version, "status": e.status,
+         "share": round(e.share, 4), "ratio": e.likelihood_ratio, "log_raise": raised}
+        for e in context.exposures
+        if e.share > 0
+    ]  # fmt: skip
+    return raised, raised_by
+
+
+def packs_applied(packs: list[Any] | None) -> list[dict[str, Any]]:
+    """The threat packs an analysis applied, as it records them: id and
+    version (a version's content is pinned once accepted, plan 4.2)."""
+    return [{"id": p.id, "version": p.version} for p in packs or []]
+
+
+def exposure_records(exposures: list[Any]) -> list[dict[str, Any]]:
+    """Each pack's exposure as an assessment keeps it (for the report's
+    timeline and a run's "needs a look"); `judged` is False for one that
+    can't be judged only because the package listing was collected in part
+    (none of the pack's packages seen vulnerable or unjudgeable, none
+    removed): a gap, counted as exposed for the prior only."""
+    from checker.packs.exposure import CANT_JUDGE, VULNERABLE
+
+    def judged(e) -> bool:
+        if e.status != CANT_JUDGE or e.removed_at:
+            return True
+        return any(p.status in (CANT_JUDGE, VULNERABLE) for p in e.packages)
+
+    return [
+        {
+            "pack": e.pack_id,
+            "version": e.pack_version,
+            "status": e.status,
+            "share": round(e.share, 4),
+            "window_start": e.window_start or None,
+            "window_end": e.window_end,
+            "exposed_from": e.exposed_from,
+            "exposed_until": e.exposed_until,
+            "fix_time_exact": e.fix_time_exact,
+            "judged": judged(e),
+        }
+        for e in exposures
+    ]
 
 
 def analyze(
@@ -193,10 +297,14 @@ def analyze(
     bundle_id: str | None = None,
     prior: tuple[float, str] = (DEFAULT_PRIOR, "default"),
     whitelist: Whitelist | None = None,
+    packs: list[Any] | None = None,
+    pack_problems: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run every check on a host's bundle (by default its latest), score
     the findings from `prior` (value, source) and store the assessment;
-    returns it."""
+    returns it. `packs` are the threat packs in force, `pack_problems` why
+    any kept one isn't among them (checker.packs.store.in_force): coverage
+    gaps, since what they would have found isn't looked for."""
     found = changes(store, host, identity, recipients, bundle_id)
     row = store.bundle(found.bundle_id)
     snapshot = snapshot_of(store, row, identity, recipients)
@@ -269,6 +377,8 @@ def analyze(
         previous_snapshot=previous_snapshot,
         baseline_time=baseline_time,
         baseline_snapshot=baseline_snapshot,
+        packs=list(packs or []),
+        collected_at=row["started_at"],
     )
     found_dicts, ran, scored, applied = evaluate(context, prior, whitelist)
     counts = count(found_dicts)
@@ -291,11 +401,17 @@ def analyze(
         "counts": counts,
         "score": scored,
         "whitelist": applied,
+        # The threat packs applied, so the analysis can be reproduced.
+        "packs": packs_applied(packs),
+        "packs_not_applied": list(pack_problems or []),
+        "exposures": exposure_records(context.exposures),
         "findings": found_dicts,
         "checks": ran,
         "coverage": coverage(row, identity, parsed.events, parsed.summary, snapshot),
     }
-    assessment["coverage"]["gaps"] += context.gaps
+    assessment["coverage"]["gaps"] += [
+        f"threat pack not applied: {problem}" for problem in pack_problems or []
+    ] + context.gaps
     store_assessment(store, row, recipients, assessment)
     return assessment
 

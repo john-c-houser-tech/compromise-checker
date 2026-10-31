@@ -948,14 +948,16 @@ def case_for_host(
     prior: tuple[float, str],
     whitelist,
     bundle_id: str | None = None,
+    packs: tuple[list, list[str]] = ([], []),
 ) -> tuple[dict[str, Any], Known, dict[str, Any]]:
     """The case for a host's latest (or a given) bundle, from the same
     current assessment the report shows (analysed or reassessed first if
-    the checks, whitelist or prior changed), its names to redact, and
+    the checks, whitelist, prior or threat packs changed: `packs` as
+    checker.packs.choice.for_host gives them), its names to redact, and
     which assessment it is (bundle, when assessed, band)."""
     from checker.report import host_report
 
-    report = host_report(store, host, identity, recipients, bundle_id, prior, whitelist)
+    report = host_report(store, host, identity, recipients, bundle_id, prior, whitelist, *packs)
     entry = next((h for h in inventory.hosts if h.name == host), None)
     built = build_case(
         host,

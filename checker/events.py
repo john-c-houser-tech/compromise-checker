@@ -18,7 +18,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
-PARSER_VERSION = 7  # 3: clock_changed; 4: unit.starting/finished; 5: mail; 6: web; 7: useradd shell
+# 3: clock_changed; 4: unit.starting/finished; 5: mail; 6: web; 7: useradd shell;
+# 8: package history; 9: PHP's own error log, dates a clock can't hold
+PARSER_VERSION = 9
 MAX_EVENT_LINE = 2048  # characters of the source line kept on each event
 
 _MONTHS = {m: i for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)}
@@ -458,6 +460,8 @@ class EventBuilder:
             self.sudo_lookup = bool(record.data.get("lookup_command"))
         elif (record.module, record.name) == ("web_logs", "exec_record"):
             self._exec_record(record.data)
+        elif (record.module, record.name) == ("software", "package_change"):
+            self._package_change(record.data)
 
     def source_start(self, start: SourceStart) -> None:
         if _log_kind(start) is not None:
@@ -498,11 +502,15 @@ class EventBuilder:
     # Helpers
     def _add(self, moment, source, kind, fields, program=None, line=""):
         """Add one event. Classified fields are this event's own dict."""
-        corrected = moment - self.offset if (moment is not None and self.offset_known) else moment
+        try:
+            corrected = moment - self.offset if moment is not None and self.offset_known else moment
+            when, fixed = _iso(moment), _iso(corrected)
+        except OverflowError:  # a date a log line can write and a clock can't hold
+            when, fixed = None, None
         self.events.append(
             Event(
-                time=_iso(moment),
-                corrected=_iso(corrected),
+                time=when,
+                corrected=fixed,
                 source=source,
                 type=kind,
                 fields=fields,
@@ -678,6 +686,42 @@ class EventBuilder:
         "login_process": "login.prompt",
     }
 
+    _PACKAGE_ACTIONS = ("install", "upgrade", "downgrade", "reinstall", "remove", "purge")
+
+    def _package_change(self, data: dict[str, Any]) -> None:
+        """A package installed, upgraded or removed (dpkg's log, dnf's
+        history): `package.<action>`. dpkg logs the host's local time, read
+        in the host's zone (host_facts comes first)."""
+        action = data.get("action")
+        if action not in self._PACKAGE_ACTIONS or not data.get("name"):
+            return
+        ambiguous = False
+        try:
+            if data.get("time"):
+                moment = datetime.fromisoformat(data["time"])
+            elif data.get("local_time"):
+                local = datetime.strptime(data["local_time"], "%Y-%m-%d %H:%M:%S")
+                moment = local.replace(tzinfo=self.zone)
+                # The hour the clocks go back happens twice: either is possible.
+                ambiguous = (
+                    moment.utcoffset() != local.replace(tzinfo=self.zone, fold=1).utcoffset()
+                )
+            else:
+                moment = None
+        except (ValueError, TypeError):
+            moment = None
+        fields = {
+            k: str(data[k])[:200]
+            for k in ("manager", "name", "arch", "version", "previous")
+            if data.get(k) not in (None, "")
+        }
+        if self.zone_assumed and data.get("local_time"):
+            fields["zone_assumed"] = True
+        if data.get("local_time") and moment is not None and ambiguous:
+            fields["time_uncertain"] = True
+        self._add(moment, f"software:{data.get('source') or 'package history'}",
+                  f"package.{action}", fields)  # fmt: skip
+
     def _login_record(self, data: dict[str, Any]) -> None:
         path = data.get("path") or ""
         failed = path.rsplit("/", 1)[-1].startswith("btmp")
@@ -715,6 +759,16 @@ _WEB_APACHE_ERROR = re.compile(
 )
 _WEB_PHP_FPM = re.compile(
     r"^\[(?P<time>\d\d-\w{3}-\d{4} \d\d:\d\d:\d\d(?:\.\d+)?)\] (?P<level>\w+): (?P<message>.*)$"
+)
+# PHP's own error_log file (RHEL's PHP-FPM pools default to one), which
+# names its time zone: PHP's messages, and what applications write there.
+_WEB_PHP_ERROR = re.compile(
+    r"^\[(?P<time>\d\d-\w{3}-\d{4} \d\d:\d\d:\d\d)(?: (?P<zone>[\w/+-]+))?\]"
+    r" (?:PHP (?P<level>[A-Za-z ]+?):\s+)?(?P<message>.*)$"
+)
+# The rest of a PHP error: not lines in an unknown format.
+_WEB_PHP_CONTINUATION = re.compile(
+    r"^(?:Stack trace:|#\d+ |\s+thrown in |PHP\s+(?:Stack trace:|\d+\. ))"
 )
 _WEB_ERROR_CLIENT = re.compile(r"client: ([^,\s]+)")
 _WEB_ERROR_REQUEST = re.compile(r'request: "([^"]*)"')
@@ -789,12 +843,14 @@ class WebLogs:
             (_WEB_NGINX_ERROR, "%Y/%m/%d %H:%M:%S"),
             (_WEB_APACHE_ERROR, "%a %b %d %H:%M:%S.%f %Y"),
             (_WEB_PHP_FPM, "%d-%b-%Y %H:%M:%S"),
+            (_WEB_PHP_ERROR, "%d-%b-%Y %H:%M:%S"),
         ):
             found = pattern.match(text)
             if found:
                 self._error(builder, source, found, form, text)
                 return
-        self.unparsed[name] = self.unparsed.get(name, 0) + 1
+        if not _WEB_PHP_CONTINUATION.match(text):
+            self.unparsed[name] = self.unparsed.get(name, 0) + 1
 
     def _request(self, builder: EventBuilder, source: str, found, text: str) -> None:
         method, _, rest = found["request"].partition(" ")
@@ -856,11 +912,19 @@ class WebLogs:
         elif "%f" not in form and "." in stamp:
             stamp = stamp.split(".", 1)[0]
         try:
-            moment = datetime.strptime(" ".join(stamp.split()), form).replace(tzinfo=builder.zone)
+            zone = builder.zone
+            named = found.groupdict().get("zone")
+            if named:
+                try:
+                    zone = ZoneInfo(named)
+                except (ValueError, OSError, ZoneInfoNotFoundError):
+                    pass  # a name it doesn't know: the host's, as for other logs
+            moment = datetime.strptime(" ".join(stamp.split()), form).replace(tzinfo=zone)
         except ValueError:
             moment = None
         message = found["message"]
-        fields: dict[str, Any] = {"level": found["level"].lower(), "message": message[:500]}
+        level = (found["level"] or "notice").lower()
+        fields: dict[str, Any] = {"level": level, "message": message[:500]}
         client = found.groupdict().get("client") or None
         if client is None:
             match = _WEB_ERROR_CLIENT.search(message)

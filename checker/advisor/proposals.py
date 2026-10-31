@@ -3,6 +3,10 @@ its rules are safe to offer a person, judged against the host's real
 findings (its placeholders already turned back into names), and the file
 they are offered in.
 
+None is offered for a host assessed High or Critical or with a chain, or
+whose text in the case addresses an AI (steering): an intruder on a quiet
+host could otherwise ask the advisor for rules that hide their own work.
+
 A proposal is offered only when, in this order:
 
 1. it is a valid whitelist rule (checker/whitelist.py's own model) that
@@ -29,14 +33,17 @@ can't add one.
 
 from __future__ import annotations
 
+import html
 import ipaddress
 import os
 import posixpath
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote_plus
 
 import yaml
 from pydantic import ValidationError
@@ -76,6 +83,50 @@ INTERPRETERS = re.compile(
 FINDING_ID = re.compile(r"F-([1-9][0-9]{0,5})")
 WILDCARDS = re.compile(r"[*?]")
 WIDEST = {4: 24, 6: 64}  # the widest network a proposal may name
+# Text in the case that speaks to an AI, as an intruder steering the
+# advisor would write it: none of the sources the tool reads writes like
+# this. Matched on _plain() text. A match costs the host its proposals, so
+# each pattern needs words aimed at an assistant or at the findings
+# themselves, not words an administrator's own commands use ("ipset add
+# whitelist", "add rules for service").
+_AI = (
+    r"(?:assistant|ai|llm|chatbot|language model|claude|chatgpt|copilot|reviewer"
+    r"|reviewing agent|ai agent|automated agent|analyst|security model)"
+)
+_FINDINGS = r"(?:every|all|each|these|this|the|any) (?:findings?|alerts?|detections?|issues?)"
+ADDRESSED = re.compile(
+    "|".join(
+        (
+            r"\b(?:ignore|disregard|forget|override)\b.{0,40}"
+            r"\b(?:instructions?|prompts?|guidelines|rules above)\b",
+            # Not where the word is part of a name or path: "copilot-
+            # instructions.md" (a file bots probe for), "home-assistant.service".
+            rf"\b{_AI}(?![-./\w])[\s,:;!\u2013\u2014]*.{{0,60}}?\b(?:instructions?|verdict"
+            r"|whitelist|allow ?list|propose|suppress|you must|you should|you will|do not flag)\b",
+            r"\byour (?:verdict|instructions)\b",
+            r"\bnew instructions\b",
+            r"<\|im ?start\|>|\[/?inst\]",  # chat templates ("_" reads as a space)
+            r"\b(?:propose|suggest|recommend)\b.{0,30}"
+            r"\b(?:whitelist|allow ?list|suppress\w*|exceptions? for)\b",
+            rf"\b(?:rules?|exceptions?) for {_FINDINGS}\b",
+            rf"\b(?:suppress|whitelist|allow ?list|ignore|dismiss)\b.{{0,20}}\b{_FINDINGS}\b",
+            r"\b(?:findings?|alerts?|detections?)\b.{0,30}"
+            r"\b(?:are|is) (?:benign|false positives?|expected|safe to ignore)\b",
+            r"\btreat\b.{0,40}\bas (?:authori[sz]ed|legitimate|safe|benign|routine|expected)\b",
+            r"\bno signs (?:found|of compromise)\b",
+            r"\b(?:host|server)\b.{0,20}\b(?:is|as) (?:clean|benign|not compromised)\b",
+            r"\btell the (?:operator|user|admin)",
+        )
+    )
+)
+# Letters that look like Latin ones (a Cyrillic а in "аssistant", a dotless
+# ı, small capitals): read as the letter they pass for.
+LOOK_ALIKES = str.maketrans(
+    "аеорсухіјѕԁһӏкмнтвАЕОРСУХІЈЅНКМТВαεοριυνκτχΑΕΟΡΙΥΝΚΤΧΒΜıᴀʙᴄᴅᴇɢʜɪᴊᴋʟᴍɴᴏᴘʀꜱᴛᴜᴠᴡʏᴢօսհո",
+    "aeopcyxijsdhlkmhtbAEOPCYXIJSHKMTBaeopiuvktxAEOPIYNKTXBMiabcdeghijklmnoprstuvwyzouhn",
+)
+ESCAPE = re.compile(r"\\(\\|U[0-9a-fA-F]{8}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2})")
+CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
 @dataclass
@@ -186,6 +237,87 @@ def _pool_problem(rule: Rule, assessment: dict[str, Any], named_ids: set, where:
     return None
 
 
+def _unescape(match: re.Match) -> str:
+    body = match.group(1)
+    if body == "\\":
+        return "\\"
+    code = int(body[1:], 16)
+    return chr(code) if code <= 0x10FFFF else match.group(0)  # not a character: as written
+
+
+def _readings(text: str) -> tuple[str, str]:
+    """Text as a model would read it: URL and HTML encoding and the
+    report's escapes undone (until nothing changes), spaces of every kind
+    made spaces, invisible characters and accents dropped, compatibility
+    forms and look-alike letters folded, in lower case; as written and
+    with camelCase split (not only split: "iGNORE" would split wrongly)."""
+    for _ in range(8):
+        before = text
+        text = ESCAPE.sub(_unescape, html.unescape(unquote_plus(text)))
+        if text == before:
+            break
+    kept = []
+    for char in unicodedata.normalize("NFKD", text):
+        category = unicodedata.category(char)
+        if category in ("Cc", "Zs", "Zl", "Zp"):
+            kept.append(" ")
+        elif category not in ("Cf", "Mn", "Me"):
+            kept.append(char)
+    text = unicodedata.normalize("NFKC", "".join(kept)).translate(LOOK_ALIKES)
+    plain, split = (re.sub(r"[\s_+]+", " ", f).lower() for f in (text, CAMEL.sub(" ", text)))
+    return plain, split
+
+
+def steering(payload: dict[str, Any]) -> str | None:
+    """Where the case's text addresses an AI, if it does anywhere: a
+    finding's id, "the host's facts" (its OS, kernel, notes, chains), or a
+    whitelist rule the case quotes."""
+
+    def found(value: Any) -> bool:
+        if isinstance(value, str):
+            return any(ADDRESSED.search(form) for form in _readings(value))
+        if isinstance(value, list):
+            return any(found(item) for item in value)
+        if isinstance(value, dict):
+            return any(found(item) for item in value.values())
+        return False
+
+    findings = payload.get("findings")
+    for finding in findings if isinstance(findings, list) else []:
+        if isinstance(finding, dict) and found(finding.get("from_host")):
+            return str(finding.get("id"))
+    host = payload.get("host")
+    host = host if isinstance(host, dict) else {}
+    facts = [host.get("os"), host.get("kernel"), payload.get("from_host")]
+    facts += [chain.get("account") for chain in payload.get("chains") or []
+              if isinstance(chain, dict)]  # fmt: skip
+    if found(facts):
+        return "the host's facts"
+    # Organization-written, but a rule once proposed carries the model's
+    # reason, which could repeat what steered it.
+    rules = payload.get("whitelist_rules")
+    for rule in rules if isinstance(rules, list) else []:
+        if isinstance(rule, dict) and found([rule.get("reason"), rule.get("match")]):
+            return f"whitelist rule {rule.get('id')}"
+    return None
+
+
+UNCHECKED = "unchecked"  # steering() itself failed: where it would have looked
+
+
+def steered_words(where: str) -> str:
+    """What steering() found at `where`, in words. A whitelist rule's reason
+    is usually the organization's own, so it isn't put down to an intruder."""
+    if where == UNCHECKED:
+        return "the case's text couldn't be checked for words addressing an AI"
+    if where.startswith("whitelist rule "):
+        return (
+            f"the reason or match of {where} reads like words to an AI (an intruder's, or a"
+            " reason of your own worded that way: check the rule)"
+        )
+    return f"text in the case ({where}) addresses an AI, as an intruder steering the advisor might"
+
+
 def judge(
     proposals: list[dict[str, Any]],
     findings: list[dict[str, Any]],
@@ -197,10 +329,12 @@ def judge(
     today: date | None = None,
     group: str | None = None,
     band: str | None = None,
+    steered: str | None = None,
 ) -> list[Judged]:
     """`findings` are the assessment's (F-n is findings[n-1]); `others` are
     the host's other stored assessments, `group_others` those of the other
-    hosts in its group; `rule_ids` the ids their whitelists use."""
+    hosts in its group; `rule_ids` the ids their whitelists use; `steered`
+    where the case's text addresses an AI (steering(), or UNCHECKED)."""
     today = today or datetime.now(UTC).date()
     in_chain = {i for chain in chains for i in chain.get("findings") or []}
     results, taken = [], set(rule_ids)
@@ -212,6 +346,11 @@ def judge(
             Judged(p, False, f"{why}: no proposals until it has been investigated")
             for p in proposals
         ]
+    if steered:
+        # The answer may be what that text asked for: a quiet intruder's
+        # own rules. A person looks first.
+        why = f"{steered_words(steered)}: no proposals until a person has looked at it"
+        return [Judged(p, False, why) for p in proposals]
     for proposal in proposals:
         try:
             rule = _rule(proposal, today)

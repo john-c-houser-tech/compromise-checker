@@ -798,13 +798,19 @@ any trouble, only text counts, and losing JSON a baseline had is a finding, sinc
 attacker could grow the ruleset to cause it (a real blocklist of about 130,000
 elements can too: the finding says why). The second review showed a comment in a
 managed chain could recreate a changed iptables-nft rule's old lines, seen by
-neither: JSON's data now shows such a comment directly, the text refuses to
-summarise on the same chain twice, and either is a finding, `net.firewall_comment`.
-A fixed list over 50 elements a compared rule uses is compared by its hash.
+neither, and the third that scanning the JSON's strings doesn't stop it: a word
+_VOLATILE removes defeats a duplicate check, and a comment in an object too big to
+send, a big set's element, an xt argument or invalid UTF-8 never reaches the scan.
+So the text's structure is checked against the JSON's: any table, chain, set or map
+the text has that JSON doesn't list raises `net.firewall_comment` and compares the
+text literally. A comment can't forge JSON's list, and without a forged header it
+can't give a line another chain's place. Text with no JSON to check against only
+has its own checks (a quote out of balance, a header twice), with `json_lost` saying
+so. A fixed list over 50 elements a compared rule uses is compared by its hash, so
+refreshing one (a cron job) shows as a change, as it would at 50 or fewer.
 
-Limits: rule order isn't in either key; a comment with invalid UTF-8 vanishes from
-JSON (nft's doing), so it reaches the text unseen, though it needs raw netlink to
-hold a quote too; a fixed big list no compared rule uses, or one filled as it runs,
+Limits: rule order isn't in either key; a chain removed between the two listings
+raises the finding once; a big list no compared rule uses, or one filled as it runs,
 isn't compared; a set of 50 or fewer filled as it runs churns, as text always did.
 
 ## After Phase 4: the pack application

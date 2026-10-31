@@ -29,6 +29,7 @@ from checker.snapshot import (
     firewall_lines,
     firewall_text_is_odd,
     nft_json_odd_strings,
+    nft_text_beyond_json,
     sshd_lines,
     sudoers_lines,
 )
@@ -1445,14 +1446,16 @@ def test_an_odd_comment_seen_in_json_makes_the_text_literal_and_says_so():
     text = ["table ip nat {", "\tchain DOCKER {", "\t\ttcp dport 8080 return", "\t}", "}"]
     rule = {"family": "ip", "table": "nat", "chain": "x", "comment": "a\nb", "expr": []}
     odd = SnapshotBuilder()
-    _firewall_sources(odd, text, nft_objects({"rule": rule}))
+    listed = [{"table": {"family": "ip", "name": "nat"}},
+              {"chain": {"family": "ip", "table": "nat", "name": "DOCKER"}}]  # fmt: skip
+    _firewall_sources(odd, text, nft_objects(*listed, {"rule": rule}))
     assert odd.live["nft_odd_comments"] == 1
     keys = odd.section("firewall_rules").items
     assert "nft: [ip nat / chain DOCKER] tcp dport 8080 return" in keys
     assert not any("managed" in key for key in keys if key.startswith("nft: "))
 
     plain = SnapshotBuilder()
-    _firewall_sources(plain, text, nft_objects({"rule": {**rule, "comment": "web"}}))
+    _firewall_sources(plain, text, nft_objects(*listed, {"rule": {**rule, "comment": "web"}}))
     assert "nft_odd_comments" not in plain.live
     assert any("managed" in key for key in plain.section("firewall_rules").items)
 
@@ -1494,3 +1497,90 @@ def test_a_count_in_the_text_isnt_a_change():
     assert firewall_lines(["table a b {", "\tset s {", "\t\tsize 1000 # count 3", "\t}", "}"]) == (
         firewall_lines(["table a b {", "\tset s {", "\t\tsize 1000 # count 9", "\t}", "}"])
     )
+
+
+_HOOK = "\t\ttype nat hook prerouting priority dstnat; policy accept;"
+_REAL = [
+    {"table": {"family": "ip", "name": "nat"}},
+    {"chain": {"family": "ip", "table": "nat", "name": "DOCKER"}},
+    {"chain": {"family": "ip", "table": "nat", "name": "PREROUTING"}},
+]
+
+
+def _forged(header):
+    """A changed dnat, with its old lines recreated by a comment in DOCKER."""
+    return [
+        "table ip nat {",
+        "\tchain DOCKER {",
+        '\t\tcounter comment "a"',
+        "\t}",
+        f"\t{header}",
+        _HOOK,
+        "\t\ttcp dport 8080 counter dnat to 10.0.0.5",
+        "\t}",
+        "\tchain DOCKER expires 1 {",
+        "\tq {",
+        '"b"',
+        "\t}",
+        "\tchain PREROUTING {",
+        _HOOK,
+        "\t\ttcp dport 8080 counter dnat to 6.6.6.6",
+        "\t}",
+        "\t}",
+        "}",
+    ]
+
+
+@pytest.mark.parametrize(
+    "header", ["chain PREROUTING {", "chain PREROUTING expires 1 {", "chain  PREROUTING  {"]
+)
+def test_a_forged_header_is_found_however_it_is_worded_and_wherever_the_comment_hid(header):
+    # What JSON holds of the comment is nothing here, as for an xt argument,
+    # invalid UTF-8, an oversized object or a big set's element.
+    builder = SnapshotBuilder()
+    rule = {"family": "ip", "table": "nat", "chain": "DOCKER", "expr": [{"xt": None}]}
+    _firewall_sources(builder, _forged(header), nft_objects(*_REAL, {"rule": rule}))
+    assert builder.live["nft_odd_comments"] >= 1
+    assert any("6.6.6.6" in key for key in builder.section("firewall_rules").items)
+
+
+def test_text_is_checked_against_each_table_not_just_any_with_that_chain():
+    # Another table's real chain of the same name gives no cover.
+    decoy = [*_REAL, {"chain": {"family": "ip", "table": "zz", "name": "PREROUTING"}}]
+    text = _forged("chain PREROUTING {")
+    assert nft_text_beyond_json(text, nft_objects(*decoy)) >= 2
+    gone = ["table ip nat {", "\tchain PREROUTING {", "\t}", "}"]
+    assert nft_text_beyond_json(gone, nft_objects(_REAL[0])) == 1  # text has it, JSON doesn't
+    assert nft_text_beyond_json(gone, nft_objects(*_REAL)) == 0  # JSON has more: no matter
+    quoted = ["table ip nat {", '\tchain "a b" {', "\t}", "}"]
+    named = {"chain": {"family": "ip", "table": "nat", "name": "a b"}}
+    assert nft_text_beyond_json(quoted, nft_objects(_REAL[0], named)) == 0
+
+
+def test_an_owned_table_is_an_ordinary_table():
+    text = ["table inet firewalld { # progname firewalld", "\tflags owner,persist", "}"]
+    assert not firewall_text_is_odd(text + ["table inet other {", "\tchain input {", "\t}", "}"])
+    assert firewall_lines(text)[0].startswith("[inet firewalld")
+    two = ["table a b {", "\tchain input {", "\t}", "}"]
+    three = ["table inet firewalld { # progname firewalld", "\tchain input {", "\t}", "}"]
+    assert not firewall_text_is_odd(two + three)
+
+
+def test_a_chain_only_the_text_has_is_found_with_nothing_else_odd_about_it():
+    # The real PREROUTING deleted, its old lines kept up by a comment: no duplicate
+    # and no stray quote, so only the JSON's list can show it.
+    text = [
+        "table ip nat {",
+        "\tchain DOCKER {",
+        "\t\treturn",
+        "\t}",
+        "\tchain PREROUTING {",
+        "\t\ttcp dport 8080 dnat to 10.0.0.5",
+        "\t}",
+        "}",
+    ]
+    assert not firewall_text_is_odd(text)
+    builder = SnapshotBuilder()
+    _firewall_sources(builder, text, nft_objects(*_REAL[:2]))
+    assert builder.live["nft_odd_comments"] == 1
+    assert "nft: [ip nat / chain DOCKER] return" in builder.section("firewall_rules").items

@@ -18,7 +18,7 @@ from typing import Any
 
 from checker.checks import COMPROMISE, Context, Finding, check
 from checker.checks.processes import own_processes
-from checker.snapshot import NFT_JSON, NFT_JSON_LOST, NFT_JSON_STARTED
+from checker.snapshot import NFT_JSON, NFT_JSON_LOST, NFT_JSON_STARTED, read_without_json
 
 METADATA = {"169.254.169.254", "fd00:ec2::254"}
 # Cloud agents that talk to the metadata service for a living, by the name
@@ -496,10 +496,7 @@ def config(context: Context) -> list[Finding]:
                 " disguise what follows it in the text listing" + (f" ({why})" if why else ""),
                 [],
                 [],
-                new=bool(
-                    context.since_previous is None
-                    or (context.since_previous.get("firewall_rules") or {}).get("nft_json")
-                ),
+                new=not read_without_json(context.previous_snapshot),
                 uncertain=context.uncertain("firewall_rules"),
                 variant="json_lost",
             )
@@ -554,24 +551,29 @@ _MANAGED_KEY = re.compile(
 )
 
 
-@check("net.firewall_comment", "A firewall comment holding line breaks or quotes")
+@check("net.firewall_comment", "Firewall rules a comment may be disguising")
 def firewall_comment(context: Context) -> list[Finding]:
-    """Nothing an ordinary rule has, and how a comment passes for structure in
-    `nft list ruleset`. Those rules are then compared literally."""
+    """A string with a line break or a quote, or a listing with a chain nft's
+    JSON doesn't have: nothing ordinary rules give, and how a comment passes for
+    structure in `nft list ruleset`. That text is then compared literally."""
     odd = context.snapshot.live.get("nft_odd_comments")
     if not odd:
         return []
     return [
         Finding(
             "net.firewall_comment",
-            "A firewall comment holds line breaks or quotes",
+            "A firewall comment may be disguising rules",
             COMPROMISE,
             "medium",
-            f"{odd} string(s) in the nftables rules could disguise what follows them in a"
-            " listing: read them with `nft -j list ruleset`. All nftables rules are compared"
-            " literally while this lasts, so more may show as changed",
+            f"`nft list ruleset` shows {odd} sign(s) of a comment passing for rules (a line"
+            " break or quote in a string, or a chain, set or table nft's JSON doesn't list):"
+            " read the rules with `nft -j list ruleset` and `iptables-nft-save` instead. The"
+            " text is compared literally while this lasts, so more may show as changed",
             [],
             [],
+            new=not (
+                context.previous_snapshot and context.previous_snapshot.live.get("nft_odd_comments")
+            ),
         )
     ]
 

@@ -4640,6 +4640,17 @@ class NetworkTests(FixtureRoot):
 
         self.assertEqual(hashes(1), hashes(900))
 
+    def test_a_big_sets_hash_doesnt_move_with_its_order(self):
+        def digest(elements):
+            body = {"family": "inet", "table": "t", "name": "big", "elem": elements}
+            sent = self.nft_json([{"set": body}])
+            [(_, content, _)] = [v for n, v in sent.items() if " -j " in n]
+            return json.loads(content.decode().splitlines()[0])["set"]["elem"]["sha256"]
+
+        elements = [f"192.0.2.{n}" for n in range(120)]
+        self.assertEqual(digest(elements), digest(elements[::-1]))
+        self.assertNotEqual(digest(elements), digest(elements[1:] + ["192.0.2.200"]))
+
     def test_a_ruleset_past_the_usual_line_limit_is_still_read_as_json(self):
         # A big blocklist: nft -j gives it all on one line, longer than MAX_LINE.
         elements = [f"10.{a}.{b}.{c}" for a in range(2) for b in range(256) for c in range(256)]

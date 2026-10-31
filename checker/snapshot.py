@@ -15,6 +15,7 @@ import ipaddress
 import json
 import re
 import shlex
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -177,6 +178,7 @@ _VOLATILE = (
     (re.compile(r"\blast used \S+(?: ago)?"), ""),
     (re.compile(r"\[\d+:\d+\]"), ""),
     (re.compile(r"# count \d+"), ""),
+    (re.compile(r"\{ # progname \S+$"), "{"),  # a table its owner holds (firewalld)
     (re.compile(r"\[\d+ elements, sha256 [0-9a-f]+\]"), "[a large set: elements not compared]"),
 )
 # Chains other software rewrites all the time (Docker, Kubernetes, CNI
@@ -192,8 +194,16 @@ _NFT_BLOCK = re.compile(r"^(.+) \{$")
 # another table's set may be what a rule lets traffic in by.
 _BANNED_SET = re.compile(r"^addr6?-set-[\w-]+$", re.IGNORECASE)
 _BANNED_TABLE = re.compile(r"^f2b-", re.IGNORECASE)
+_NFT_NAMED = re.compile(r"^(chain|set|map) (.+) \{$")
 _MANAGED = "(managed by other software: rules not compared)"
 _PLAIN_NAME = re.compile(r"[\w.-]+")
+
+
+def _firewall_clean(line: str) -> str:
+    text = line.strip()
+    for pattern, replacement in _VOLATILE:
+        text = pattern.sub(replacement, text)
+    return " ".join(text.split())
 
 
 def _placed(lines: list[str], literal: bool) -> list[tuple[str, str, str, str]]:
@@ -205,12 +215,9 @@ def _placed(lines: list[str], literal: bool) -> list[tuple[str, str, str, str]]:
     table = block = ""
     depth = 0
     for line in lines:
-        text = line.strip()
-        if not text or (text.startswith("#") and not literal):
+        if not line.strip() or (line.strip().startswith("#") and not literal):
             continue
-        for pattern, replacement in _VOLATILE:
-            text = pattern.sub(replacement, text)
-        text = " ".join(text.split())
+        text = _firewall_clean(line)
         if text == "}":
             depth = max(depth - 1, 0)
             if depth <= 1:
@@ -235,22 +242,47 @@ def _placed(lines: list[str], literal: bool) -> list[tuple[str, str, str, str]]:
     return placed
 
 
+def _nft_headers(lines: list[str]) -> Counter[tuple[str, str]]:
+    """Each table, chain, set and map the text reads as having, cleaned as
+    _placed cleans it, however deep: what can give a line its place."""
+    found: Counter[tuple[str, str]] = Counter()
+    table = ""
+    for line in lines:
+        text = _firewall_clean(line)
+        if match := _NFT_TABLE.match(text):
+            table = match.group(1)
+            found["", f"table {table}"] += 1
+        elif match := _NFT_NAMED.match(text):
+            found[table, f"{match.group(1)} {match.group(2).strip(chr(34))}"] += 1
+    return found
+
+
 def firewall_text_is_odd(lines: list[str]) -> bool:
     """What real nft never prints unless a comment put it there: an unbalanced
-    quote, or a table holding the same chain or set twice (a comment recreating a
+    quote, or the same table, chain or set twice (a comment recreating a
     chain's rules, the real ones hidden after it)."""
     if any(line.count('"') % 2 for line in lines):
         return True
-    seen: set[str] = set()
+    return any(count > 1 for count in _nft_headers(lines).values())
+
+
+def nft_text_beyond_json(text: list[str], lines: list[str]) -> int:
+    """Tables, chains, sets and maps the text has and nft's JSON doesn't. To pass
+    a line off as a chain's, a comment must print that chain's header, and the
+    JSON lists what really exists whatever the comment holds, or wherever: xt's
+    arguments, a string JSON can't carry and an object too big to send included.
+    A chain the text lacks is no matter: that can only make lines show as gone."""
+    listed: Counter[tuple[str, str]] = Counter()
     for line in lines:
-        text = " ".join(line.split())
-        if _NFT_TABLE.match(text):
-            seen = set()
-        elif text.startswith(("chain ", "set ", "map ")) and text.endswith(" {"):
-            if text in seen:
-                return True
-            seen.add(text)
-    return False
+        if not line.startswith("{"):
+            continue
+        ((kind, body),) = json.loads(line).items()
+        if kind == "table":
+            listed["", f"table {body.get('family')} {body.get('name')}"] += 1
+        elif kind in ("chain", "set", "map"):
+            where = f"{body.get('family')} {body.get('table')}"
+            listed[where, f"{kind} {body.get('name')}"] += 1
+    return sum((_nft_headers(text) - listed).values())
 
 
 def nft_json_odd_strings(lines: list[str]) -> int:
@@ -278,8 +310,8 @@ def firewall_lines(lines: list[str], literal: bool = False) -> list[str]:
 
     nft prints a quoted comment as it is, newlines and all, so what follows
     one can read as a chain or set of its own, and it can't be read back
-    reliably. When that shows (firewall_text_is_odd, or `literal`, from what the
-    JSON says), nothing is summarised or dropped, so what it hides shows as a
+    reliably. When that shows (firewall_text_is_odd, or `literal`, from checking
+    the text against the JSON), nothing is summarised or dropped, so what it hides shows as a
     change."""
     literal = literal or firewall_text_is_odd(lines)
     placed = _placed(lines, literal)
@@ -1060,6 +1092,7 @@ class SnapshotBuilder:
                 try:
                     program, rules = NFT_JSON, firewall_json_lines(lines or [])
                     odd = nft_json_odd_strings(lines or [])
+                    odd += nft_text_beyond_json(self._nft_text, lines or [])
                 except (ValueError, TypeError, RecursionError):
                     self.live["nft_json_unread"] = "not what nft gives"
                     return
@@ -1675,6 +1708,13 @@ def _has_nft_json(items: dict[str, Any]) -> bool:
 
 def _has_nft_text(items: dict[str, Any]) -> bool:
     return any(k.startswith("nft: ") for k in items)
+
+
+def read_without_json(snapshot: Snapshot | None) -> bool:
+    """nftables rules this snapshot has as text, and not as JSON."""
+    section = snapshot.sections.get("firewall_rules") if snapshot else None
+    items = section.items if section else {}
+    return _has_nft_text(items) and not _has_nft_json(items)
 
 
 def compare(old: Snapshot, new: Snapshot) -> dict[str, dict[str, Any]]:

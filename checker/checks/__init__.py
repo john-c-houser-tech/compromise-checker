@@ -132,7 +132,7 @@ class Context:
         if self.since_previous is None:
             return True
         diff = self.since_previous.get(section) or {}
-        if diff.get("nft_json"):
+        if key.startswith("nft-json: ") and diff.get("nft_json"):
             return True  # one of the two had no JSON: can't say it isn't new
         if not diff.get("comparable", True) and not any(
             diff.get(kind) for kind in ("added", "removed", "changed")

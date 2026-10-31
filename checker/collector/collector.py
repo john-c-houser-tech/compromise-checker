@@ -6614,7 +6614,8 @@ def nft_json_lines(run):
         for kind in ("set", "map"):
             body = item.get(kind)
             if isinstance(body, dict) and len(body.get("elem") or ()) > NFT_SET_LIMIT:
-                text = json.dumps(_nft_stable(body["elem"]), sort_keys=True).encode()
+                elements = sorted(json.dumps(e, sort_keys=True) for e in _nft_stable(body["elem"]))
+                text = json.dumps(elements).encode()
                 body["elem"] = {
                     "count": len(body["elem"]),
                     "sha256": hashlib.sha256(text).hexdigest(),

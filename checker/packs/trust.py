@@ -42,10 +42,9 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationErr
 from checker.packs.format import PackError, load, problems
 from checker.packs.signing import PublicKey, SignatureError, public_key, verify
 
-# NouriLoop LLC's root key: none until John makes it (plan 4.8, D5). Until
-# then no NouriLoop pack is trusted, only an organization's own.
-ROOT_KEYS: tuple[str, ...] = ()
-SHIPPED = Path(__file__).parent / "keys"  # keys.yaml and keys.yaml.minisig, from 4.8
+# NouriLoop LLC's root key (key id 93AB05572B87296E), also on nouriloop.com.
+ROOT_KEYS: tuple[str, ...] = ("RWRuKYcrVwWrk/3tRXnYG4bvYQFjvzl7qbGBZfVwvqTOuoP0scPHE16r",)
+SHIPPED = Path(__file__).parent / "keys"  # keys.yaml and keys.yaml.minisig
 KEY_LIST = "keys.yaml"
 
 

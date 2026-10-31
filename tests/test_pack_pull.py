@@ -180,6 +180,7 @@ def test_an_old_index_is_pointed_out_on_the_pull_and_in_the_list(home, repo, cap
 
 
 def test_without_a_root_key_nothing_can_be_trusted(home, monkeypatch):
+    monkeypatch.setattr("checker.packs.trust.ROOT_KEYS", ())
     repo = Repository(Key(), Key())
     repo.index(1, [GOOD])
     with pytest.raises(PullError, match="no NouriLoop root key yet"):

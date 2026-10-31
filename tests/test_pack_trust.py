@@ -479,3 +479,21 @@ def test_an_oversized_kept_pack_isnt_read(ours, home, tmp_path):
     (home[0] / "packs" / "active" / "example-2026-10-v2.yaml").write_bytes(b"#" * (MAX_BYTES + 10))
     usable, problems = active(home[0], load_config(home[0]).packs.trusted_keys)
     assert usable == [] and "larger than a pack may be" in problems[0]
+
+
+# --- The keys shipped ------------------------------------------------------------------------
+
+
+def test_the_shipped_key_list_is_signed_by_the_shipped_root_key():
+    """NouriLoop's own: changing either key is a deliberate, visible change."""
+    assert [k.key_id for k in trust.root_keys()] == ["93AB05572B87296E"]
+    data = (trust.SHIPPED / "keys.yaml").read_bytes()
+    listed = trust.read_key_list(data, (trust.SHIPPED / "keys.yaml.minisig").read_bytes())
+    assert listed.serial == 1 and listed.revoked == []
+    assert [k.key_id for k in listed.trusted()] == ["97CF7C2D514024F0"]
+
+
+def test_a_fresh_home_trusts_the_shipped_pack_key_and_nothing_else(home):
+    keys, problem = trust.trusted_keys(home[0], [])
+    assert problem is None
+    assert [(k.key.key_id, k.domain) for k in keys] == [("97CF7C2D514024F0", trust.NOURILOOP)]

@@ -583,6 +583,28 @@ is John's to approve before it is committed. Also:
 - The public key published on nouriloop.com (the site is GitHub Pages), so
   it can be checked against the copy in the tool.
 
+- As built (2026-10-30): `checker/packs/pull.py`. The repository holds
+  `keys.yaml` (root-signed), `index.yaml` (signed by a NouriLoop pack
+  key: an organization's own key can't sign it) and `packs/<id>/PACK.yaml`,
+  each with its `.minisig`. A pull takes a newer key list first (and
+  retires packs whose key it revokes), then the index: its serial only
+  goes up (`index_serial` in `packs/state.json`), and a pack newer than
+  any version accepted here is downloaded, must have the index's SHA-256,
+  and goes through `packs add`'s checks; one a person retired isn't
+  brought back; a withdrawn one is retired. A pack's path comes from its
+  id, never from the index. HTTPS only, redirects included (urllib, the
+  system's certificates), each file's size capped, 30 seconds a file.
+  `packs.source` (default the repository's raw files on GitHub) can point
+  at a mirror. `checker packs index DIR` writes the index for signing by
+  hand (hashes quoted: a hash of digits alone would read as a number).
+- **A stale source** (a side note relayed 2026-10-30): a serial stops an
+  older index, not the current one served for ever, which would hide a
+  new pack or a revoking key list. So the index is signed again at least
+  monthly, even with nothing new, and the pull and `checker packs list`
+  point out one older than 30 days, with when the last pull was.
+- Waits for 4.8's keys: the repository's first `keys.yaml` and index, and
+  the root public key on nouriloop.com.
+
 ### 4.8 — The PHP2Shell pack
 
 - Written from the advisories: CISA's alert, the vendors' errata for

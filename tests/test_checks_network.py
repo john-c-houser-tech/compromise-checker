@@ -337,24 +337,34 @@ def test_generic_tools_reaching_the_metadata_address_stay_medium(exe):
     assert finding.band == "medium"
 
 
-def rule_gaps(items, diff=None):
+def rule_check(items, diff=None, live=None):
     from checker.checks import Context
     from checker.checks.network import config, managed_chains
     from checker.snapshot import Section, Snapshot
 
-    snapshot = Snapshot({}, {"firewall_rules": Section(items)}, {})
+    snapshot = Snapshot({}, {"firewall_rules": Section(items)}, live or {})
     context = Context("h", "b", [], snapshot, since_baseline={}, baseline_id="a")
     context.since_baseline = {"firewall_rules": diff} if diff else {}
     managed_chains(context)
-    config(context)
-    return context.gaps
+    return config(context), context.gaps
 
 
-def test_rules_read_as_text_or_uncompared_are_said():
-    from checker.snapshot import NFT_FORMAT_NOTE
+def test_rules_read_only_as_text_are_said():
+    assert any("only as text" in g for g in rule_check({"nft: [inet t] x": {}})[1])
+    both = {"nft: [inet t] x": {}, "nft-json: [inet t] {}": {}}
+    assert rule_check(both)[1] == []
 
-    assert any("read as text" in g for g in rule_gaps({"nft: [inet t] x": {}}))
-    assert rule_gaps({"nft-json: [inet t] table": {}}) == []
-    diff = {"added": {}, "removed": {}, "changed": {}, "comparable": False,
-            "notes": [NFT_FORMAT_NOTE]}  # fmt: skip
-    assert rule_gaps({"nft-json: [inet t] table": {}}, diff) == [NFT_FORMAT_NOTE]
+
+def json_change(how):
+    return {"added": {}, "removed": {}, "changed": {}, "comparable": True, "notes": [],
+            "nft_json": how}  # fmt: skip
+
+
+def test_json_starting_is_a_gap_and_json_lost_a_finding():
+    from checker.snapshot import NFT_JSON_LOST, NFT_JSON_STARTED
+
+    found_now, gaps = rule_check({"nft-json: x": {}, "nft: y": {}}, json_change(NFT_JSON_STARTED))
+    assert not found_now and any("a new baseline compares both" in g for g in gaps)
+    live = {"nft_json_unread": "too long"}
+    found_now, _ = rule_check({"nft: y": {}}, json_change(NFT_JSON_LOST), live)
+    assert [f.variant for f in found_now] == ["json_lost"] and "too long" in found_now[0].summary

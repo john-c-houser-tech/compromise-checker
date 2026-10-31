@@ -785,32 +785,18 @@ needs D6; 4.8 needs D5 and D7. 4.9 last.
 
 ## After Phase 4: reading nftables as JSON
 
-Decided by John (2026-10-31), the next PR. nft prints comments and interface
-names raw, so `nft list ruleset` text can't be read back reliably: a comment with
-balanced quotes can forge a block, and a comment line starting `elements = {`
-triggers the collector's large-set reduction. Unbalanced quotes already stop all
-summarising; these two remain, and both need root on the server.
+Decided by John (2026-10-31, option B after review). nft prints comments raw, so
+text can't be read back reliably: a comment can forge a block or set off the
+large-set reduction. But JSON alone was worse: a review on real nft showed it drops
+iptables-nft rules' arguments (ufw, Docker: a changed DNAT target compares equal;
+on 22.04 even the name is gone), and parsing took 12 to 20 times its size in memory.
 
-- **Collect `nft -j list ruleset`**, which gives each comment and name as data,
-  and turn each object into one comparable line. iptables-save stays text: it is
-  a separate path, and comments there are escaped.
-- **Masking and size, as now:** every value masked, and a long set sent as its
-  element count and hash. That reduction moves to the set's own JSON object, so
-  a comment can't trigger it.
-- **Older hosts:** an nft built without JSON, or one that refuses `-j`, falls back
-  to the text path, and the analysis says so as a coverage note.
-- **Stored baselines:** text and JSON lines differ, so a comparison across the
-  change says "not comparable", not every rule as changed. Against a baseline
-  from before the change that lasts until a new one is accepted: new or removed
-  nftables rules aren't flagged until then, and each analysis says so as a gap.
-  So after this reaches a host, collect, review the findings, then `checker
-  baseline accept` soon (a side note John relayed, 2026-10-31).
-- **Prove it:** `-j` must load no kernel module and write nothing (the
-  `nft_compat` experiment's care applies), on the read-only proof's seven images:
-  one OK for the Linode spend. Golden cases re-exported, and every firewall key
-  reviewed against real `nft -j` output from each image.
-- **Docs:** `docs/collector-modules.md` lists the command. Any policy wording goes
-  to John first; the plain expectation is none, as what is read doesn't change.
+So both are collected and each is compared with itself: what one misses the other
+shows. The text keeps comparing with existing baselines, so nothing pauses; the JSON
+side says so as a gap until a new baseline. JSON is read up to 8 MB; past that, or on
+any trouble, only text counts, and losing JSON a baseline had is a finding, since an
+attacker could grow the ruleset to cause it. Limit: rule order isn't in either
+key, and a firewall wholly in iptables-nft rules gets nothing from JSON's side.
 
 ## After Phase 4: the pack application
 

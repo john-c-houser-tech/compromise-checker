@@ -859,8 +859,11 @@ def pump_lines(run, writer, reader, transform=None):
             masked = masker.oversized(length)
         elif transform is not None:
             masked = transform(line, masker)
-            if limit != MAX_LINE:  # a reduced listing counts as what it sends
-                length = len(masked)
+            if isinstance(masked, list):  # several lines, each counting as sent
+                for piece in masked:
+                    if not writer.add(piece, len(piece)):
+                        return "size"
+                continue
         else:
             masked = masker.line(line)
         if not writer.add(masked, length):
@@ -6514,7 +6517,9 @@ IFF_PROMISC = 0x100
 # lines, never element by element; nor are its lines held past these.
 NFT_SET_LIMIT = 50
 NFT_SET_HELD_BYTES = 256 * 1024
-NFT_JSON_BYTES = 32 * 1024 * 1024  # `nft -j`'s one line; past it, the text listing
+# `nft -j`'s one line. Parsing takes 12 to 20 times this in memory, measured, and
+# this runs on the server being checked: past it, only the text listing counts.
+NFT_JSON_BYTES = 8 * 1024 * 1024
 _NFT_ELEMENTS = re.compile(rb"^(\s*)elements = \{")
 ROUTE_BYTES = 1024 * 1024
 ROUTE_LINES = 2000
@@ -6571,17 +6576,21 @@ def nft_sets_reduced():
     return transform
 
 
-def nft_json_lines():
-    """A transform for `nft -j list ruleset`, one long line of JSON: each
-    object goes as a line of its own, every string in it masked, and a set or
-    map with more elements than the limit as their count and a SHA-256, never
-    element by element. Parsed, so a comment is a comment: nothing in one can
-    read as a set or a chain. `transform.parsed()` says whether it was JSON."""
+def nft_json_lines(run):
+    """A transform for `nft -j list ruleset`, one long line of JSON: a list of
+    lines, one per object, every string value masked, a set or map with more
+    elements than the limit as their count and a SHA-256, and an object too long
+    for a line as its name and a SHA-256. Parsed, so a comment is a comment.
+    `transform.parsed()` says whether it was read whole. Anything unexpected in
+    it, even running out of memory, leaves this listing unread and the
+    collection going: the text listing has the rules."""
     state = {"parsed": False}
 
     def masked_value(value, masker):
         if isinstance(value, str):
             line = masker.line(value.encode("utf-8", "surrogateescape") + b"\n")
+            # A value is whole: a key block one opens must not blank the next.
+            masker._in_key_block, masker._key_tail = False, None
             return line.rstrip(b"\n").decode("utf-8", "backslashreplace")
         if isinstance(value, list):
             return [masked_value(item, masker) for item in value]
@@ -6589,26 +6598,35 @@ def nft_json_lines():
             return {key: masked_value(item, masker) for key, item in value.items()}
         return value
 
+    def one_line(item, masker):
+        item = masked_value(item, masker)
+        for kind in ("set", "map"):
+            body = item.get(kind)
+            if isinstance(body, dict) and len(body.get("elem") or ()) > NFT_SET_LIMIT:
+                text = json.dumps(body["elem"], sort_keys=True).encode()
+                body["elem"] = {
+                    "count": len(body["elem"]),
+                    "sha256": hashlib.sha256(text).hexdigest(),
+                }
+        line = json.dumps(item, sort_keys=True).encode() + b"\n"
+        if len(line) <= MAX_LINE:
+            return line
+        ((kind, body),) = item.items()
+        named = {k: body.get(k) for k in ("family", "table", "chain", "name") if k in body}
+        named["oversized_sha256"] = hashlib.sha256(line).hexdigest()
+        return json.dumps({kind: named}, sort_keys=True).encode() + b"\n"
+
     def transform(line, masker):
-        try:
-            objects = json.loads(line.decode("utf-8", "surrogateescape"))["nftables"]
-        except (ValueError, KeyError, TypeError):
-            return b""  # not what was asked for: the text listing follows
-        if not isinstance(objects, list):
-            return b""
-        state["parsed"] = True
         out = []
-        for item in objects:
-            item = masked_value(item, masker)
-            for body in (item.get(k) for k in ("set", "map") if isinstance(item, dict)):
-                if isinstance(body, dict) and len(body.get("elem") or ()) > NFT_SET_LIMIT:
-                    text = json.dumps(body["elem"], sort_keys=True).encode()
-                    body["elem"] = {
-                        "count": len(body["elem"]),
-                        "sha256": hashlib.sha256(text).hexdigest(),
-                    }
-            out.append(json.dumps(item, sort_keys=True).encode() + b"\n")
-        return b"".join(out)
+        try:
+            for item in json.loads(line.decode("utf-8", "surrogateescape"))["nftables"]:
+                if run.out_of_time():
+                    return []
+                out.append(one_line(item, masker))
+        except Exception:  # noqa: BLE001 - see the docstring
+            return []
+        state["parsed"] = True
+        return out
 
     transform.max_line = NFT_JSON_BYTES
     transform.open = lambda: False
@@ -6617,14 +6635,22 @@ def nft_json_lines():
 
 
 def _nft_listing(run, module):
-    """The loaded nftables rules: as JSON, or as text from an nft without it."""
-    transform = nft_json_lines()
+    """The loaded nftables rules, both ways, because neither is enough. The
+    text has what JSON leaves out (iptables-nft rules' arguments, on ufw and
+    Docker hosts), but prints a comment raw, so one can pass for structure;
+    JSON can't be fooled that way."""
+    _firewall_command(run, module, "nft", ["list", "ruleset"], nft_sets_reduced())
+    if find_command("nft")[0] is None:
+        return
+    transform = nft_json_lines(run)
+    reason = "not JSON, or longer than the tool reads"
     try:
         run_command(run, module, "nft", ["-j", "list", "ruleset"], transform=transform)
-    except CommandFailed:
-        pass  # said by the text listing, if that fails too
-    if not transform.parsed():
-        _firewall_command(run, module, "nft", ["list", "ruleset"], nft_sets_reduced())
+    except CommandFailed as exc:
+        transform = None
+        reason = str(exc)
+    if transform is None or not transform.parsed():
+        run.stream.record(module, "nft_json_unread", {"reason": reason})
 
 
 def _read_int(absolute):

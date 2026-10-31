@@ -336,7 +336,7 @@ and only these: `journalctl` (read options only), `rpm -Va` / `rpm -qa`
 (in practice rpm's database is read directly instead: run as root, rpm
 makes SQLite write `-shm`/`-wal` files),
 `dpkg-query`, `ss` only as a cross-check against `/proc/net`, `systemctl show` /
-`list-unit-files`, `sestatus` / `aa-status`, `nft list ruleset` and
+`list-unit-files`, `sestatus` / `aa-status`, `nft list ruleset`, `nft -j list ruleset` and
 `iptables-legacy-save` / `ip6tables-legacy-save` (read, and only when that
 firewall is already loaded, so a listing never loads a kernel module:
 decision 2 of the Phase 2 plan), `docker`/`podman` `ps --all` and `inspect` (read). Each

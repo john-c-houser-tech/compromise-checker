@@ -3625,7 +3625,7 @@
   }
  ],
  "gaps": [
-  "nftables rules were read as text (a nft with no JSON, or an older collection): a rule's comment could disguise what follows it",
+  "nftables rules were read only as text (an nft without JSON, a very large ruleset, or an older collection): a rule's comment could disguise what follows it",
   "login hours not judged for 2 accounts: fewer than 10 logins or 21 days of history"
  ],
  "score": {

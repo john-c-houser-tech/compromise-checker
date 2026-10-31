@@ -774,9 +774,11 @@ firewall changes, promiscuous interfaces.
 
 **Runs** (decision 2 of the Phase 2 plan), only for a firewall that is
 already loaded, so listing it never loads a kernel module:
-- `nft -j list ruleset` when nf_tables is loaded, as JSON, so a rule's comment
-  can't pass for structure; an nft that refuses it (no JSON built in) or whose
-  output is past 32 MB gets `nft list ruleset` as text. That includes iptables-nft
+- `nft list ruleset` and `nft -j list ruleset` when nf_tables is loaded, both,
+  because neither is enough: text has what JSON leaves out (iptables-nft rules'
+  arguments), and JSON can't be fooled by a comment printed raw. The JSON is read
+  only up to 8 MB (parsing takes 12 to 20 times that in memory on the server), and
+  anything wrong with it leaves only the text, which is noted. Both include iptables-nft
   rules (ufw, Docker: nft_compat loaded). Printing those asks the kernel
   about the xtables extensions they use, so it was measured first: on
   Ubuntu 22.04, 24.04 and 26.04 with ufw and Docker running, 45 listings
@@ -786,8 +788,8 @@ already loaded, so listing it never loads a kernel module:
   the proof doesn't run there: Rocky and Alma are proved with firewalld's
   native nftables). A set
   with more than 50 elements or lines (a fail2ban or CrowdSec blocklist) is
-  sent as its element count and a SHA-256 of its masked elements, never
-  element by element. Every string sent or hashed is masked first;
+  sent as its element count and a SHA-256, never element by element. Every line
+  (text) or string value (JSON) sent or hashed is masked first;
 - `iptables-legacy-save` / `ip6tables-legacy-save` when legacy tables
   exist.
 

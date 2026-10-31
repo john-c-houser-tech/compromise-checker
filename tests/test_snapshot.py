@@ -1273,7 +1273,7 @@ def test_json_rules_read_in_the_same_form_as_text():
         {"rule": {"family": "inet", "table": "filter", "chain": "input", "handle": 4,
                   "comment": "web", "expr": [{"accept": None}]}},
     ))  # fmt: skip
-    assert out[0] == "[inet filter] table"
+    assert out[0] == "[inet filter] {}"
     assert out[1].startswith('[inet filter / chain input] {"hook": "input"')
     assert out[2] == '[inet filter / chain input] {"comment": "web", "expr": [{"accept": null}]}'
     assert not any("1.1.7" in line or "handle" in line for line in out)
@@ -1322,17 +1322,68 @@ def test_a_line_not_json_is_kept_and_compared():
     ]
 
 
-def test_text_and_json_rules_arent_compared_with_each_other_and_say_so():
-    from checker.snapshot import NFT_FORMAT_NOTE, Section, Snapshot
+def test_text_and_json_are_each_compared_with_themselves():
+    from checker.snapshot import NFT_JSON_LOST, NFT_JSON_STARTED, Section, Snapshot
 
     def snap(*keys):
         return Snapshot({}, {"firewall_rules": Section({k: {} for k in keys})}, {})
 
-    old = snap("nft: [inet t / chain c] accept", "iptables-legacy-save: [filter] -A X")
-    new = snap("nft-json: [inet t / chain c] {}", "iptables-legacy-save: [filter] -A Y")
-    diff = compare(old, new)["firewall_rules"]
-    assert diff["notes"] == [NFT_FORMAT_NOTE] and not diff["comparable"]
-    assert list(diff["added"]) == ["iptables-legacy-save: [filter] -A Y"]
-    assert list(diff["removed"]) == ["iptables-legacy-save: [filter] -A X"]
-    same = compare(snap("nft-json: a"), snap("nft-json: b"))["firewall_rules"]
-    assert same["comparable"] and list(same["added"]) == ["nft-json: b"]
+    # An old baseline, text only: the text is still compared, the JSON waits.
+    diff = compare(snap("nft: a"), snap("nft: b", "nft-json: x"))["firewall_rules"]
+    assert list(diff["added"]) == ["nft: b"] and list(diff["removed"]) == ["nft: a"]
+    assert diff["comparable"] and diff["nft_json"] == NFT_JSON_STARTED
+    # JSON lost: said, and not every rule as removed.
+    diff = compare(snap("nft: a", "nft-json: x"), snap("nft: a"))["firewall_rules"]
+    assert not diff["removed"] and diff["nft_json"] == NFT_JSON_LOST
+    # Both on both sides: a change shows on the side that sees it.
+    diff = compare(snap("nft: a", "nft-json: x"), snap("nft: a", "nft-json: y"))["firewall_rules"]
+    assert list(diff["added"]) == ["nft-json: y"] and "nft_json" not in diff
+
+
+def test_what_json_drops_the_text_still_shows():
+    # iptables-nft's arguments: gone from JSON, in the text as nft translates them.
+    def both(target):
+        expr = [{"xt": None}]
+        rule = {"rule": {"family": "ip", "table": "nat", "chain": "PREROUTING", "expr": expr}}
+        text = ["table ip nat {", "\tchain PREROUTING {", f"\t\tdnat to {target}", "\t}", "}"]
+        return firewall_json_lines(nft_objects(rule)), firewall_lines(text)
+
+    (json_a, text_a), (json_b, text_b) = both("192.0.2.77:4444"), both("203.0.113.66:22")
+    assert json_a == json_b and text_a != text_b
+
+
+def test_a_dormant_table_shows():
+    def table(**more):
+        body = {"family": "inet", "name": "filter", "handle": 1, **more}
+        return firewall_json_lines(nft_objects({"table": body}))
+
+    assert table() != table(flags=["dormant"])
+
+
+def test_steady_keeps_a_quotas_limit_and_drops_what_runs_on_its_own():
+    def named(kind, **more):
+        body = {"family": "inet", "table": "t", "name": "q", **more}
+        return firewall_json_lines(nft_objects({kind: body}))
+
+    assert named("quota", bytes=1048576, used=1) != named("quota", bytes=2097152, used=1)
+    assert named("quota", bytes=1, used=1) == named("quota", bytes=1, used=9, used_unit="bytes")
+    assert named("set", size=5, count=1) == named("set", size=5, count=2)
+
+
+def test_an_odd_name_is_never_managed():
+    expr = [{"accept": None}]
+    rule = {"rule": {"family": "inet", "table": "a]b", "chain": "f2b-q", "expr": expr}}
+    assert "managed by other software" not in firewall_json_lines(nft_objects(rule))[0]
+
+
+def test_json_said_to_be_unread_leaves_only_the_text():
+    builder = SnapshotBuilder()
+    rules = builder.section("firewall_rules").items
+    rules["nft: a"], rules["nft-json: b"] = {}, {}
+    builder._on_network("nft_json_unread", {"reason": "not JSON"})
+    assert list(rules) == ["nft: a"] and builder.live["nft_json_unread"] == "not JSON"
+
+
+def test_an_odd_chain_name_is_never_managed_either():
+    rule = {"rule": {"family": "inet", "table": "t", "chain": "f2b q", "expr": [{"accept": None}]}}
+    assert "managed by other software" not in firewall_json_lines(nft_objects(rule))[0]

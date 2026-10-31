@@ -571,3 +571,112 @@ def when(moment: object) -> str:
         )
     except (ValueError, OverflowError):
         return str(moment)
+
+
+THREAT_GROUPS = (
+    ("vulnerable", "critical", "Open to this threat now"),
+    ("can't judge", "unknown", "May be open: the check can't tell"),
+    ("fixed", "elevated", "Were open while it was active, fixed now"),
+)
+
+
+def threat_details(stored: dict) -> dict:
+    """Each threat with the servers it touches, worst first. A server is only ever "no sign
+    of exposure": that's about this threat's versions, nothing more."""
+    threats = []
+    hosts = stored["hosts"]
+    applies = stored["applies"]
+    for pack in stored["packs"]:
+        groups = []
+        for status, tone, title in THREAT_GROUPS:
+            named = sorted(h.host for h in hosts if h.exposed.get(pack.id) == status)
+            if named:
+                groups.append({"tone": tone, "title": title, "hosts": named})
+        told = {name for group in groups for name in group["hosts"]}
+        unjudged = sorted(h.host for h in hosts if pack.id in h.unjudged and h.host not in told)
+        kept_off = sorted(h.host for h in hosts if pack.id not in applies.get(h.host, ()))
+        unchecked = sorted(
+            h.host for h in hosts if h.state != "analysed" and h.host not in kept_off
+        )
+        told |= {*unjudged, *kept_off, *unchecked}
+        clear = sorted(h.host for h in hosts if h.host not in told)
+        for named, tone, title in (
+            (unjudged, "unknown", "Can't tell: the check saw only part of the software list"),
+            (unchecked, "unknown", "Not checked yet"),
+            (kept_off, "removed", "Not checked for this threat, by your settings"),
+            (clear, "low", "No sign of exposure"),
+        ):
+            if named:
+                groups.append({"tone": tone, "title": title, "hosts": named})
+        threats.append(
+            {
+                "id": pack.id,
+                "title": pack.title,
+                "published": pack.published,
+                "cves": pack.cves,
+                "groups": groups,
+                "remediation": pack.remediation,
+                "mitigations": [m.text for m in pack.mitigations],
+                "references": pack.references,
+            }
+        )
+    worst = {"critical": 0, "unknown": 1, "elevated": 2, "removed": 3, "low": 4}
+    threats.sort(key=lambda t: min((worst[g["tone"]] for g in t["groups"]), default=9))
+    return {
+        "threats": threats,
+        "threat_problem": bool(stored["problems"]),
+        "retired": stored["retired"],
+    }
+
+
+def _list_of_dicts(value: object) -> list[dict]:
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
+
+def advice_details(advice: dict, enabled: bool) -> dict:
+    """What the AI advisor said, for the host page. Its words are labelled as its own and
+    never move the verdict. Proposals to change settings wait for the page that acts on them."""
+    out = {"explain": None, "remediation": None, "advisor_off": not enabled and not advice}
+    try:
+        explain = (advice.get("explain") or {}).get("answered")
+        if explain and isinstance(explain.get("answer"), dict):
+            answer = explain["answer"]
+            out["explain"] = {
+                "meta": _advice_meta(explain),
+                "verdict": answer.get("verdict"),
+                "summary": answer.get("summary"),
+                "important": _list_of_dicts(answer.get("most_important")),
+                "innocent": _list_of_dicts(answer.get("innocent_explanations")),
+                "settle": [str(q) for q in answer.get("what_would_settle_it") or []],
+            }
+        steps = (advice.get("remediation") or {}).get("answered")
+        if steps and isinstance(steps.get("answer"), dict):
+            answer = steps["answer"]
+            out["remediation"] = {
+                "meta": _advice_meta(steps),
+                "urgency": answer.get("urgency"),
+                "summary": answer.get("summary"),
+                "stages": [
+                    {"title": title, "steps": _list_of_dicts(answer.get(key))}
+                    for title, key in (
+                        ("Preserve evidence first", "preserve"),
+                        ("Contain", "contain"),
+                        ("Remove", "eradicate"),
+                        ("Recover", "recover"),
+                    )
+                    if _list_of_dicts(answer.get(key))
+                ],
+            }
+    except Exception:  # noqa: BLE001 - advice is extra: the findings still show
+        return {"explain": None, "remediation": None, "advisor_off": False}
+    return out
+
+
+def _advice_meta(record: dict) -> dict:
+    return {
+        "at": record.get("at"),
+        "model": record.get("model_answered") or record.get("model_asked"),
+        "stale": bool(record.get("stale")),
+        "warning": record.get("warning"),
+        "local": bool(record.get("local")),
+    }

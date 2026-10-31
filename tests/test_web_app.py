@@ -1244,3 +1244,212 @@ def test_odd_findings_do_not_blame_the_settings(web, monkeypatch):
 
     monkeypatch.setattr(fleet_module, "load_assessment", load)
     assert client.get("/hosts/web01/evidence").status_code == 200
+
+
+# --- Known threats and the advisor -----------------------------------------------------------
+
+
+def pack_named(**extra):
+    from types import SimpleNamespace
+
+    fields = {
+        "id": "p1",
+        "title": "A threat",
+        "published": "2026-10-30",
+        "cves": ["CVE-2026-1"],
+        "remediation": ["Update it."],
+        "mitigations": [SimpleNamespace(text="Turn it off.")],
+        "references": ["https://example.com/advisory"],
+    }
+    return SimpleNamespace(**{**fields, **extra})
+
+
+def threats_stored(hosts, **extra):
+    return {
+        "packs": [pack_named()],
+        "hosts": hosts,
+        "applies": {h.host: {"p1"} for h in hosts},
+        "problems": [],
+        "retired": [],
+        **extra,
+    }
+
+
+def test_threats_need_a_login(web):
+    client, _ = web
+    assert client.get("/threats").status_code == 302
+
+
+def test_no_threat_updates_says_what_to_do(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    response = client.get("/threats")
+    assert response.status_code == 200 and "No threat updates" in response.content.decode()
+
+
+def test_the_threats_page_changes_nothing(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    before = _home_files(home[0])
+    assert client.get("/threats").status_code == 200
+    assert _home_files(home[0]) == before
+
+
+def test_each_threat_groups_servers_and_never_says_safe():
+    from checker.fleet import FleetHost
+    from checker.web.wording import threat_details
+
+    analysed_host = lambda name, **kw: FleetHost(name, state="analysed", band="Low", **kw)  # noqa: E731
+    hosts = [
+        analysed_host("open", exposed={"p1": "vulnerable"}),
+        analysed_host("maybe", exposed={"p1": "can't judge"}),
+        analysed_host("was", exposed={"p1": "fixed"}),
+        analysed_host("partly", unjudged=("p1",)),
+        analysed_host("clear"),
+        analysed_host("off"),
+        FleetHost("new", state="no_evidence"),
+    ]
+    stored = threats_stored(hosts)
+    stored["applies"]["off"] = set()
+    (threat,) = threat_details(stored)["threats"]
+    groups = {g["title"]: g["hosts"] for g in threat["groups"]}
+    assert groups["Open to this threat now"] == ["open"]
+    assert groups["May be open: the check can't tell"] == ["maybe"]
+    assert groups["Were open while it was active, fixed now"] == ["was"]
+    assert groups["Can't tell: the check saw only part of the software list"] == ["partly"]
+    assert groups["Not checked yet"] == ["new"]
+    assert groups["Not checked for this threat, by your settings"] == ["off"]
+    assert groups["No sign of exposure"] == ["clear"]
+    assert "safe" not in " ".join(groups).lower()
+
+
+def test_a_server_appears_once_under_a_threat():
+    from checker.fleet import FleetHost
+    from checker.web.wording import threat_details
+
+    hosts = [FleetHost("a", state="analysed", exposed={"p1": "vulnerable"}, unjudged=("p1",))]
+    (threat,) = threat_details(threats_stored(hosts))["threats"]
+    assert sum(len(g["hosts"]) for g in threat["groups"]) == 1
+
+
+def test_the_threats_page_shows_what_to_do_and_keeps_links_private(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    hosts = [FleetHost("web01", state="analysed", exposed={"p1": "vulnerable"})]
+    monkeypatch.setattr("checker.web.views.read_threats", lambda base: threats_stored(hosts))
+    text = client.get("/threats").content.decode()
+    assert "A threat" in text and "Update it." in text and "Turn it off." in text
+    assert 'href="/hosts/web01"' in text
+    assert 'rel="noreferrer noopener"' in text
+
+
+def test_a_hostile_host_name_does_nothing_on_the_threats_page(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    hosts = [FleetHost(HOSTILE, state="analysed", exposed={"p1": "vulnerable"})]
+    monkeypatch.setattr("checker.web.views.read_threats", lambda base: threats_stored(hosts))
+    text = client.get("/threats").content.decode()
+    assert "<script>alert" not in text and "<img src=x" not in text and BIDI not in text
+
+
+def explained(**extra):
+    answer = {
+        "verdict": "Likely",
+        "summary": "A summary.",
+        "most_important": [{"finding": "F-1", "why": "Because."}],
+        "innocent_explanations": [{"finding": "F-1", "explanation": "Maybe not."}],
+        "what_would_settle_it": ["Ask them."],
+    }
+    return {
+        "answered": {
+            "answer": answer,
+            "at": "2026-10-30T10:00:00+00:00",
+            "model_answered": "m",
+            **extra,
+        }
+    }
+
+
+def stepped():
+    step = {"action": "rm -rf x", "destructive": True, "why": "Reasons."}
+    answer = {"urgency": "today", "summary": "Do this.", "preserve": [step], "contain": "odd"}
+    return {"answered": {"answer": answer, "at": "2026-10-30T10:00:00+00:00", "model_asked": "m"}}
+
+
+def test_the_advisors_words_are_labelled_and_commands_warned_about(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    host = FleetHost("web01", state="analysed", band="Low", probability=0.02, first=False)
+    advice = {"explain": explained(), "remediation": stepped()}
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, {"findings": []}, advice, True)
+    )
+    text = client.get("/hosts/web01").content.decode()
+    assert "What the AI advisor said" in text and "not a finding" in text
+    assert "Because." in text and "Maybe not." in text and "Ask them." in text
+    assert "<code>rm -rf x</code>" in text and "This destroys evidence." in text
+    assert "Nothing here has been run" in text
+
+
+def test_stale_advice_is_said(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    host = FleetHost("web01", state="analysed", band="Low", probability=0.02, first=False)
+    advice = {"explain": explained(stale=True, warning="It may be steered")}
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, {"findings": []}, advice, True)
+    )
+    text = client.get("/hosts/web01").content.decode()
+    assert "about an older check" in text and "It may be steered" in text
+
+
+def test_the_advisor_being_off_is_said_and_no_box_is_shown(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    text = client.get("/hosts/web01").content.decode()
+    assert "AI advisor is off" in text and "What the AI advisor said" not in text
+
+
+@pytest.mark.parametrize(
+    "advice",
+    [
+        {"explain": "odd"},
+        {"explain": {"answered": "odd"}},
+        {"explain": {"answered": {"answer": {"most_important": "odd", "what_would_settle_it": 5}}}},
+        {"remediation": {"answered": {"answer": {"preserve": "odd", "contain": [5]}}}},
+    ],
+)
+def test_odd_advice_never_takes_the_host_page_down(web, monkeypatch, advice):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    host = FleetHost("web01", state="analysed", band="Low", probability=0.02, first=False)
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, {"findings": []}, advice, True)
+    )
+    assert client.get("/hosts/web01").status_code == 200
+
+
+def test_hostile_advice_does_nothing(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    host = FleetHost("web01", state="analysed", band="Low", probability=0.02, first=False)
+    answer = {"verdict": HOSTILE, "summary": HOSTILE, "most_important": [{"why": HOSTILE}]}
+    advice = {"explain": {"answered": {"answer": answer, "at": HOSTILE, "model_asked": HOSTILE}}}
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, {"findings": []}, advice, True)
+    )
+    text = client.get("/hosts/web01").content.decode()
+    assert "<script>alert" not in text and BIDI not in text
+
+
+def test_the_main_navigation_is_only_for_people_signed_in(web):
+    client, _ = web
+    assert 'href="/threats"' not in client.get("/login").content.decode()
+    client, _ = signed_in(web)
+    assert 'href="/threats"' in client.get("/").content.decode()

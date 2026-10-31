@@ -48,6 +48,40 @@
 {% if caveat %}
 <p>{{ caveat }}</p>
 {% endif %}
+{% if row.exposures %}<p><a href="{{ url('threats') }}">What to do about these known threats</a></p>{% endif %}
+{% if explain or remediation %}
+<section class="findings ai">
+  <h2>What the AI advisor said</h2>
+  <p class="note">This is advice from an AI model, not a finding. It doesn't change the estimate above. It read what the server's logs say, and an intruder can write things into logs to mislead it, so weigh it against what you know.</p>
+  {% if explain %}
+  <div class="from-ai">
+    {% if explain.meta.stale %}<p class="error">This is about an older check, not the one shown here.</p>{% endif %}
+    {% if explain.meta.warning %}<p class="error">{{ explain.meta.warning }}</p>{% endif %}
+    <p><strong>{{ explain.verdict }}.</strong> {{ explain.summary }}</p>
+    {% if explain.important %}<h3>Most important</h3><ul>{% for p in explain.important %}<li>{{ p.why }}</li>{% endfor %}</ul>{% endif %}
+    {% if explain.innocent %}<h3>Possible innocent explanations</h3><ul>{% for p in explain.innocent %}<li>{{ p.explanation }}</li>{% endfor %}</ul>{% endif %}
+    {% if explain.settle %}<h3>What would settle it</h3><ul>{% for q in explain.settle %}<li>{{ q }}</li>{% endfor %}</ul>{% endif %}
+    <p class="note">{{ explain.meta.model }}, {{ explain.meta.at | when }}.{% if explain.meta.local %} A local model: read it with more care.{% endif %}</p>
+  </div>
+  {% endif %}
+  {% if remediation %}
+  <div class="from-ai">
+    <h3>Suggested steps: {{ remediation.urgency }}</h3>
+    {% if remediation.meta.stale %}<p class="error">This is about an older check, not the one shown here.</p>{% endif %}
+    {% if remediation.meta.warning %}<p class="error">{{ remediation.meta.warning }}</p>{% endif %}
+    <p>{{ remediation.summary }}</p>
+    <p class="note">Nothing here has been run. Have someone who knows this server read each command before using it.</p>
+    {% for stage in remediation.stages %}
+    <h4>{{ stage.title }}</h4>
+    <ol>{% for s in stage.steps %}<li><code>{{ s.action }}</code>{% if s.destructive %} <strong>This destroys evidence.</strong>{% endif %}<br>{{ s.why }}</li>{% endfor %}</ol>
+    {% endfor %}
+    <p class="note">{{ remediation.meta.model }}, {{ remediation.meta.at | when }}.{% if remediation.meta.local %} A local model: read it with more care.{% endif %}</p>
+  </div>
+  {% endif %}
+</section>
+{% elif advisor_off %}
+<p class="note">The AI advisor is off. It can explain these findings in more detail if your organization turns it on.</p>
+{% endif %}
 {% if suppressed %}
 <section class="findings">
   <h2>Hidden by your list of accepted activity <span>({{ suppressed | length }})</span></h2>

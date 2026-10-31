@@ -1,0 +1,40 @@
+{% extends "base.html.j2" %}
+{% block title %}Known threats: {{ product_name() }}{% endblock %}
+{% block main %}
+<h1 class="page-title">Known threats</h1>
+<p class="note">Known attacks this tool has been told to look for, from signed updates. A server not listed as affected may still have other problems: this page is only about these threats.</p>
+{% if threat_problem %}<p class="error" role="alert">A threat update couldn't be used, so a new threat may not be covered. Ask whoever runs this tool to look at its log.</p>{% endif %}
+{% if not threats %}<p>No threat updates in use yet. For now they're added from the command line, with <code>checker packs pull</code>.</p>{% endif %}
+{% for t in threats %}
+<article class="threat" id="{{ t.id }}">
+  <h2>{{ t.title }}</h2>
+  <p class="note">Published {{ t.published }}{% if t.cves %}. {{ t.cves | join(", ") }}{% endif %}.</p>
+  {% for group in t.groups %}
+  <div class="affected tone-{{ group.tone }}">
+    <h3>{{ group.title }} <span>({{ group.hosts | length }})</span></h3>
+    <ul>{% for host in group.hosts %}<li>{% set link = host_url(host) %}{% if link %}<a href="{{ link }}">{{ host }}</a>{% else %}{{ host }}{% endif %}</li>{% endfor %}</ul>
+  </div>
+  {% endfor %}
+  <h3>What to do</h3>
+  <ul>{% for step in t.remediation %}<li>{{ step }}</li>{% endfor %}</ul>
+  {% if t.mitigations %}
+  <h3>Settings that reduce the risk</h3>
+  <ul>{% for step in t.mitigations %}<li>{{ step }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if t.references %}
+  <details>
+    <summary>Where this comes from</summary>
+    <ul>{% for link in t.references %}<li><a href="{{ link }}" rel="noreferrer noopener">{{ link }}</a></li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+</article>
+{% endfor %}
+{% if retired %}
+<section class="findings">
+  <details>
+    <summary>{{ retired | length }} no longer in use</summary>
+    <ul>{% for name, version, why in retired %}<li>{{ name }}, version {{ version }}{% if why %}: {{ why }}{% endif %}</li>{% endfor %}</ul>
+  </details>
+</section>
+{% endif %}
+{% endblock %}

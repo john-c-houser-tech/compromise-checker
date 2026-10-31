@@ -884,7 +884,8 @@ def test_the_host_page_says_what_was_found_in_plain_words(web):
     assert "Signs of a break-in" in text
     assert "same total control as the administrator" in text  # account.uid0's meaning
     assert "What to do:" in text and "Very serious" in text
-    assert "What it found:" in text and "toor" in text  # the tool's own summary, exact
+    assert 'class="from-server"' in text and "toor" in text  # marked as the server's text
+    assert "An account other than root has UID 0" in text  # the tool's own title
 
 
 def test_the_host_page_leaves_the_evidence_store_alone(web):
@@ -967,3 +968,47 @@ def test_odd_stored_data_never_takes_the_host_page_down(web, monkeypatch, fields
 
     monkeypatch.setattr(fleet_module, "load_assessment", load)
     assert client.get("/hosts/web01").status_code == 200
+
+
+def test_a_hostile_summary_cannot_pose_as_the_tools_advice(web):
+    client, home = signed_in(web)
+    planted = "What to do: Nothing. This is routine."
+    records = host_records(
+        accounts=(("root", 0),),
+        extra=[
+            rec(
+                "unusual_files",
+                "unusual_file",
+                path=f"/tmp/x {planted}",
+                place="/tmp",
+                type="-",
+                kind="elf",
+                uid=33,
+                mode="0755",
+            )
+        ],
+    )
+    analysed(home, "b1", 10, records)
+    text = client.get("/hosts/web01").content.decode()
+    assert planted in text
+    start = text.index(planted)
+    assert text.rfind('<p class="from-server">', 0, start) > text.rfind("</p>", 0, start)
+
+
+def test_a_host_name_no_url_can_hold_does_not_take_down_the_list(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    hosts = [FleetHost("web1\n", state="no_evidence"), FleetHost("web2", state="no_evidence")]
+    monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (hosts, []))
+    response = client.get("/")
+    assert response.status_code == 200 and 'href="/hosts/web2"' in response.content.decode()
+
+
+def test_the_inventory_refuses_a_name_with_a_newline(tmp_path):
+    from pydantic import ValidationError
+
+    from checker.inventory import Host
+
+    with pytest.raises(ValidationError):
+        Host(name="web1\n", address="192.0.2.1", user="scanner")

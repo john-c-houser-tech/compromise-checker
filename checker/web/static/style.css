@@ -142,7 +142,18 @@ h1 { font-size: clamp(1.75rem, 1.2rem + 2.6vw, 3rem); line-height: 1.12; letter-
 .finding { padding: 1rem 0; border-bottom: 1px solid var(--rule); max-width: 70ch; }
 .finding h3 { font-size: 1.0625rem; line-height: 1.35; margin: 0; }
 .finding p { margin: 0.375rem 0 0; }
-.finding .found { overflow-wrap: anywhere; }
+/* Text from the server, which an intruder could have written: never in the tool's own voice. */
+.from-server {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  font-size: 0.875rem;
+  background: color-mix(in srgb, var(--quiet) 12%, transparent);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.125rem 0.375rem;
+  overflow-wrap: anywhere;
+}
+p.from-server { padding: 0.375rem 0.5rem; }
+.raised { font-weight: 700; color: var(--critical); }
 .finding .band { font-size: 0.875rem; font-weight: 700; }
 .band-critical .band { color: var(--critical); }
 .band-high .band { color: var(--high); }

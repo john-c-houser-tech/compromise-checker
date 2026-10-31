@@ -29,7 +29,8 @@
 {% for row in rows %}
   <li class="server tone-{{ row.tone }}">
     <div class="who">
-      <h2><a href="{{ url('host', name=row.host.host) }}">{{ row.host.host }}</a></h2>
+      {% set link = host_url(row.host.host) %}
+      <h2>{% if link %}<a href="{{ link }}">{{ row.host.host }}</a>{% else %}{{ row.host.host }}{% endif %}</h2>
       {% if row.host.group %}<p>{{ row.host.group }}</p>{% endif %}
       {% if row.checked %}<p>{{ row.checked }}</p>{% endif %}
     </div>

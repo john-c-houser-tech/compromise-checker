@@ -21,12 +21,12 @@ WORDS = {
         "Check whether it came from an update you know about. If not, treat it as a break-in.",
     ),
     "files.backdated": (
-        "A program's date has been set back, which makes a new file look old. Very little legitimate software does this.",
-        "Have someone look at the file before deleting anything: it may be evidence.",
+        "A program or script has a date much older than when it was written to disk. Unpacking an archive or installing software does this, and attackers also do it to make a new file look old.",
+        "Check whether it came from software you installed. If not, have someone look before deleting anything.",
     ),
     "web.worker_child": (
         "The program serving your website started a command line or a download tool. Websites rarely need to, and it's what a website break-in looks like.",
-        "Treat this as urgent. Find out which site and which request caused it.",
+        "Treat this as urgent unless your site is known to run this. Find out which site and which request caused it.",
     ),
     "web.new_script_hit": (
         "Someone visited a script that's new on your website. A planted script gets used this way.",
@@ -61,12 +61,12 @@ WORDS = {
         "Check that someone you know gave these rights, and why.",
     ),
     "group.privileged": (
-        "An account joined a group that gives it administrator-level control.",
+        "An account joined a group that gives it administrator-level control, or lets it read all the logs.",
         "Check that someone you know added it, and why.",
     ),
     "ssh.authorized_keys": (
         "A login key was added or changed. A key lets someone log in without a password, so attackers often leave one behind.",
-        "Check that each key belongs to someone you know. Remove any that doesn't, after keeping a copy as evidence.",
+        "Check that each key belongs to someone you know. If one isn't recognised, treat it as a break-in and get advice before removing it.",
     ),
     "ssh.guessed": (
         "Someone failed to log in and then succeeded from the same address. That can mean a password was guessed.",
@@ -89,7 +89,7 @@ WORDS = {
         "Check that someone you know changed them, and why.",
     ),
     "pam.changes": (
-        "The part of the system that checks passwords has changed. Attackers change it to steal passwords or let themselves in.",
+        "The part of the system that checks passwords has been changed, or runs something unusual. Attackers do this to steal passwords or let themselves in.",
         "Unless an update you know about explains it, treat this as serious.",
     ),
     "logs.cleared": (
@@ -117,7 +117,7 @@ WORDS = {
         "Find out why, and start it again.",
     ),
     "clock.jump": (
-        "The system clock was set by hand. This can make logs misleading.",
+        "The system clock was changed. Time-sync software does this; someone doing it by hand can make logs misleading.",
         "Find out who did this and why.",
     ),
     "container.privileged": (
@@ -194,7 +194,7 @@ WORDS = {
     ),
     "process.miner": (
         "A program looks like cryptocurrency mining, which is a common use for broken-into servers.",
-        "Treat this as a break-in, since a miner got in somehow.",
+        "If nobody here runs one on purpose, treat it as a break-in. Don't stop it or restart until someone has looked.",
     ),
     "process.injected": (
         "A running program has code loaded from somewhere unusual. Attackers do this to hide inside normal programs, though some software does it innocently.",
@@ -213,8 +213,8 @@ WORDS = {
         "Check which program it was. If unexpected, change any keys the server holds.",
     ),
     "net.directory": (
-        "Your website's account contacted a company directory service, which websites rarely do. It's how an attacker moves further in.",
-        "Treat this as urgent if your site doesn't use one.",
+        "Your website's account contacted a company directory service. Some sites log users in this way; if yours doesn't, it can be how an attacker moves further in.",
+        "Find out whether your site uses one. If it doesn't, treat this as urgent.",
     ),
     "net.tunnel": (
         "A remote connection is carrying other traffic through this server, which can get around a firewall.",
@@ -242,7 +242,7 @@ WORDS = {
     ),
     "pack.detection": (
         "A sign of a known attack was found while this server was open to it.",
-        "Treat this as serious, and follow the advice about this threat.",
+        "Treat this as serious, and have someone investigate before changing anything.",
     ),
     "pack.exposure": (
         "This server has been affected by a known, active threat.",
@@ -287,6 +287,46 @@ WORDS = {
 }
 # Where one kind of finding from a check means something different.
 BY_VARIANT = {
+    ("process.injected", "replaced"): (
+        "A running program is still using a file that an update has since replaced. This is normal after updates, but it keeps running the old code.",
+        "Restart it when convenient, unless this page shows signs of a break-in. If it does, get advice first.",
+    ),
+    ("kernel.taint", "unexplained"): (
+        "The core of the system shows a module was loaded, but none is listed. A module may be hiding itself, which is one of the most serious kinds of attack.",
+        "Treat this as urgent, and have someone investigate before restarting: a restart loses the evidence.",
+    ),
+    ("logs.stopped", "moved"): (
+        "This logging program is now running from a different file than before. It may be an impostor.",
+        "Treat this as serious, and have someone check that file before changing anything.",
+    ),
+    ("agent.stopped", "moved"): (
+        "This security program is now running from a different file than before. It may be an impostor.",
+        "Treat this as serious, and have someone check that file before changing anything.",
+    ),
+    ("container.privileged", "new"): (
+        "A new container has enough access to take over the whole server.",
+        "Check that someone you know started it. If not, treat it as a break-in.",
+    ),
+    ("software.tools", "compiler"): (
+        "A compiler was installed. Developers use these, and so do attackers building tools on a server.",
+        "Find out who installed it and why.",
+    ),
+    ("ssh.authorized_keys", "unattributed"): (
+        "A login key sits in a place that belongs to no account on this server.",
+        "Find out whose it is. If nobody knows, treat it as a break-in and get advice before removing it.",
+    ),
+    ("mail.relay", "open_relay"): (
+        "This server may send mail for anyone, which spammers look for.",
+        "Have someone close this.",
+    ),
+    ("mail.volume", "queue"): (
+        "Many messages are waiting to go out. A mail problem can cause this, and so can spam.",
+        "Check what's waiting and which account sent it.",
+    ),
+    ("net.config", "json_lost"): (
+        "The firewall rules can no longer be read in the reliable form, so a disguised rule could go unnoticed.",
+        "Have someone read the firewall rules directly.",
+    ),
     ("account.changes", "new"): (
         "A new user account appeared on this server. Attackers add accounts so they can come back.",
         "Check that someone you know made it, and why.",
@@ -305,30 +345,30 @@ BY_VARIANT = {
     ),
     ("pack.exposure", "vulnerable"): (
         "This server is running a version with a known flaw that attackers are using now.",
-        "Update this server's software, then restart its services.",
+        "Update this server's software, then restart its services. If no fix exists yet, have someone apply a workaround. If this page also shows signs of a break-in, get advice first, since restarting loses evidence.",
     ),
     ("pack.exposure", "cant_judge"): (
         "This server may have a known flaw that attackers are using, but the check can't tell from the version it runs.",
-        "Ask whoever runs this server whether this version has the fix.",
+        "Ask whoever runs this server whether this version has the fix. If the check saw only part of the package list, run a fresh check.",
     ),
     ("pack.exposure", "was_exposed"): (
-        "This server had a known flaw while attackers were using it. It's fixed now, but someone could have got in before that.",
-        "Look through this page for signs of a break-in from that time.",
+        "This server had a known flaw while attackers were using it. The flawed version isn't installed now, but someone could have got in while it was.",
+        "Look through this page for signs of a break-in.",
     ),
     ("pack.exposure", "stale_code"): (
         "The fix is installed, but a program is still running the old code.",
-        "Restart its services.",
+        "Restart its services. If this page also shows signs of a break-in, get advice first, since restarting loses evidence.",
     ),
     ("pack.exposure", "mitigation_missing"): (
         "A setting that reduces the risk from a known threat isn't in place.",
-        "Follow the advice about this threat.",
+        "Have someone make the setting named here.",
     ),
     ("web.exploit", "answered"): (
         "Your site answered a web request containing a known attack pattern, so the attack may have reached it.",
         "Check that the site's software is up to date, and look at what the request did.",
     ),
     ("web.exploit", "refused"): (
-        "Web requests contained known attack patterns, and your site refused them. Every website gets these.",
+        "Web requests contained known attack patterns, and the check judged they did no harm. Every website gets these.",
         "Keep the website's software up to date.",
     ),
     ("system.reboot", "unclean"): (
@@ -336,6 +376,98 @@ BY_VARIANT = {
         "Check that you know why it happened.",
     ),
 }
+# Where a check's kinds of finding have no variant to tell them apart, by the finding's own
+# title. Only for titles the tool writes; a test checks each is still in the checks' source.
+BY_TITLE = (
+    (
+        "process.executable",
+        "A process still running a replaced program",
+        (
+            "A running program is still using a version that an update has since replaced. This is normal after updates, but it keeps running the old code.",
+            "Restart it when convenient, unless this page shows signs of a break-in. If it does, get advice first.",
+        ),
+    ),
+    (
+        "package.changed",
+        "The package managers' checksum lists changed",
+        (
+            "The package manager's records of its files changed. Installs and updates do this.",
+            "Check that it fits updates you know about.",
+        ),
+    ),
+    (
+        "account.uid0",
+        "Accounts sharing a UID",
+        (
+            "Two accounts share one identity number, so the system can't tell them apart.",
+            "Find out who set this up, and why.",
+        ),
+    ),
+    (
+        "account.uid0",
+        "An account name listed twice",
+        (
+            "The same account name is listed twice, which can confuse the system about who's who.",
+            "Find out who set this up, and why.",
+        ),
+    ),
+    (
+        "files.web",
+        "A secrets or repository file",
+        (
+            "A file holding secrets or your site's source code is in a website folder, so anyone may be able to download it.",
+            "Have someone move or block it, and change any passwords in it.",
+        ),
+    ),
+    (
+        "files.web",
+        "A link out of the web root",
+        (
+            "A link in your website's folder leads outside it, which can expose other files on the server.",
+            "Check that someone you know set it up.",
+        ),
+    ),
+    (
+        "files.web",
+        "A program in a web root",
+        (
+            "A program is in your website's folder, where only web pages and scripts normally belong.",
+            "Check whether it came from an update you know about. If not, treat it as a break-in.",
+        ),
+    ),
+    (
+        "files.dev",
+        "A device node outside /dev",
+        (
+            "A special device file is outside the place they belong. It can give direct access to memory or disks.",
+            "Have someone look at the file before deleting anything: it may be evidence.",
+        ),
+    ),
+    (
+        "kernel.core_dump",
+        "A new crash dump file",
+        (
+            "A program crashed and left a dump file.",
+            "Have someone look if it repeats.",
+        ),
+    ),
+    (
+        "kernel.taint",
+        "The kernel became tainted",
+        (
+            "The core of the system reported a problem or a warning, or loaded something from outside the usual software.",
+            "Have someone look at what it reported.",
+        ),
+    ),
+    (
+        "persistence.ld_preload",
+        "A process runs with LD_PRELOAD",
+        (
+            "One running program was started with extra code loaded into it. Attackers use this to hide and to steal passwords, though some software does it innocently.",
+            "Find out which program it is and what's being loaded.",
+        ),
+    ),
+)
 # What a check couldn't see, by how the tool says it. Anything else is shown as it is.
 GAP_WORDS = (
     ("no authentication log events", "Any record of logins, so it can't tell who has logged in."),
@@ -359,14 +491,20 @@ BAND_WORDS = {
 }
 SECTIONS = {
     "compromise indicator": "Signs of a break-in",
-    "exposure": "Known threats",
-    "hygiene": "Weak spots that make a break-in easier",
+    "exposure": "Known threats and exposed settings",
+    "hygiene": "Weak spots and system problems",
 }
 
 
-def words_for(check: object, variant: object) -> tuple[str, str]:
+def words_for(check: object, variant: object, title: object = None) -> tuple[str, str]:
     try:
-        return BY_VARIANT.get((check, variant)) or WORDS.get(check) or FALLBACK
+        if found := BY_VARIANT.get((check, variant)):
+            return found
+        if isinstance(title, str):
+            for on, start, words in BY_TITLE:
+                if on == check and title.startswith(start):
+                    return words
+        return WORDS.get(check) or FALLBACK
     except TypeError:  # an odd stored value isn't hashable
         return FALLBACK
 

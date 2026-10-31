@@ -316,13 +316,16 @@ from and until), for the report's timeline and a run's "needs a look".
 **Which packs apply to a host.** A rule says it: `all` (the default),
 `none`, `only: ID, ...` or `except: ID, ...`. A host's own rule wins
 (`checker hosts packs HOST RULE`; `default` clears it), then its group's
-(`packs.group_apply:` in `config.yaml`, `{web: "except: ID"}`), then the
-configuration's (`checker config set packs.apply RULE`). `checker hosts
-packs HOST` says which rule is in force and which packs it applies or
-holds back; `checker config show` gives the configuration's and groups'.
+(`checker config set packs.group_apply.GROUP RULE`; `default` clears
+it), then the configuration's (`checker config set packs.apply RULE`).
+`checker hosts packs HOST` says which rule is in force and which packs
+it applies or holds back, and points out a pack it names that isn't in
+force (a typo, or one not added yet); `checker config show` gives the
+configuration's and groups' rules, and points out a group no host is in.
 Each change made with these commands is recorded with who made it and
-when (`checker config history`: `hosts.HOST.packs`, `packs.apply`); an
-edit made to `hosts.yaml` or `config.yaml` by hand is not. A pack held
+when (`checker config history`: `hosts.HOST.packs`, also when a host
+with its own rule is removed, `packs.group_apply.GROUP`, `packs.apply`);
+an edit made to `hosts.yaml` or `config.yaml` by hand is not. A pack held
 back from a host is a coverage gap in its analysis ("held back by the
 host's setting"), not a problem: nothing it would find is looked for
 there, and its exposure doesn't raise that host's prior. A pack named in

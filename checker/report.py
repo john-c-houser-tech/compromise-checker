@@ -51,6 +51,7 @@ from checker.whitelist import Whitelist, reapply
 
 MAX_EVIDENCE = 5  # excerpts shown per finding
 MAX_TIMELINE = 300
+MAX_MARKED = 20  # threat packs whose window the timeline marks (four marks each at most)
 MAX_TEXT = 300
 
 
@@ -390,7 +391,7 @@ def exposure_marks(assessment: dict) -> list[dict]:
         if when:
             marks.append({"when": when, "type": "threat pack", "text": text, "findings": []})
 
-    for item in assessment.get("exposures") or []:
+    for item in (assessment.get("exposures") or [])[:MAX_MARKED]:
         named = f"{visible(item.get('pack'), 80)} v{visible(item.get('version'), 10)}"
         if not item.get("share"):
             continue  # never exposed: the window says nothing about this host
@@ -398,7 +399,8 @@ def exposure_marks(assessment: dict) -> list[dict]:
         mark(item.get("window_end"), f"{named}: the threat's window closes")
         if not item.get("judged", True):
             continue  # counted as exposed for want of a full listing: no dates of its own
-        mark(item.get("exposed_from"), f"{named}: the host is exposed from here")
+        if item.get("exposed_from") != item.get("window_start"):
+            mark(item.get("exposed_from"), f"{named}: the host is exposed from here")
         until = item.get("exposed_until")
         if until and until != item.get("window_end"):
             exact = item.get("fix_time_exact")

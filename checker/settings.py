@@ -334,13 +334,31 @@ def message(exc: ValidationError, key: str) -> str:
     return f"{key}: {error['msg'].removeprefix('Value error, ')}"
 
 
+GROUP_APPLY = "packs.group_apply."
+
+
+def _setting(key: str) -> Setting | None:
+    """A key's setting: one of SETTABLE, or a group's pack rule
+    (`packs.group_apply.<group>`, whose value `default` removes it)."""
+    if not key.startswith(GROUP_APPLY):
+        return SETTABLE.get(key)
+    group = key.removeprefix(GROUP_APPLY)  # the configuration checks it is a group name
+    return Setting(
+        ("packs", "group_apply", group),
+        lambda text: None if text.strip() == "default" else text,
+        "the group's threat-pack rule, or default",
+    )
+
+
 def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
     """Set `key` to the value `text` names: validated against the whole
     configuration, recorded, then written. Returns (old, new, config); a
     value equal to the current one changes and records nothing."""
-    setting = SETTABLE.get(key)
+    setting = _setting(key)
     if setting is None:
-        raise EvidenceError(f"no setting {key!r}; settable: {', '.join(SETTABLE)}")
+        raise EvidenceError(
+            f"no setting {key!r}; settable: {', '.join(SETTABLE)}, {GROUP_APPLY}<group>"
+        )
     try:
         value = setting.parse(text)
     except ValueError as exc:
@@ -349,14 +367,17 @@ def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
     with locked(path):
         current = load_config(home)
         data = current.model_dump()
-        old = _get(data, setting.path)
         parent = _get(data, setting.path[:-1])
-        parent[setting.path[-1]] = value
+        old = parent.get(setting.path[-1])
+        if value is None and key.startswith(GROUP_APPLY):
+            parent.pop(setting.path[-1], None)
+        else:
+            parent[setting.path[-1]] = value
         try:
             config = Config.model_validate(data)
         except ValidationError as exc:
             raise EvidenceError(message(exc, key)) from None
-        new = _get(config.model_dump(), setting.path)
+        new = _get(config.model_dump(), setting.path[:-1]).get(setting.path[-1])
         if new == old:
             return old, new, current
         before = path.read_text(encoding="utf-8")
@@ -372,6 +393,34 @@ def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
         finally:
             store.close()
     return old, new, config
+
+
+def remove_host(home: Path, name: str) -> None:
+    """Take a host out of the inventory; its own threat-pack rule, if it
+    had one, is recorded as gone (`hosts.<name>.packs`), so a host added
+    again under the name doesn't lose it unseen."""
+    from checker.inventory import hosts_file, load_inventory, save_inventory
+
+    path = hosts_file(home)
+    with locked(path):
+        inventory = load_inventory(path)
+        rule = inventory.get(name).packs
+        inventory.remove(name)
+        if rule is None:
+            save_inventory(inventory, path)
+            return
+        before = path.read_text(encoding="utf-8")
+        store = Store(database_file(home))
+        try:
+            store.record_config_change(
+                f"hosts.{name}.packs",
+                rule,
+                None,
+                lambda: save_inventory(inventory, path),
+                lambda: atomic_write(path, before),
+            )
+        finally:
+            store.close()
 
 
 def change_host_packs(home: Path, name: str, rule: str | None) -> tuple[Any, Any]:

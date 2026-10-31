@@ -427,10 +427,11 @@ def test_a_pack_problem_is_told_once_while_it_lasts(fleet, ours):
 
 def test_an_exposure_resting_only_on_a_listing_in_part_is_kept_as_unjudged():
     from checker.assess import exposure_records
-    from checker.packs.exposure import Exposure
+    from checker.packs.exposure import Exposure, Judged
 
     unsure = Exposure("p-2026", 1, 5, "ubuntu:24.04", "can't judge", share=1.0)
-    seen = Exposure("p-2026", 1, 5, "ubuntu:24.04", "can't judge", packages=[object()], share=1.0)
+    odd = Judged("php8.3-fpm amd64", "php8.3-fpm", "8.3.6-x", None, "can't judge", None)
+    seen = Exposure("p-2026", 1, 5, "ubuntu:24.04", "can't judge", packages=[odd], share=1.0)
     gone = Exposure("p-2026", 1, 5, "ubuntu:24.04", "can't judge", removed_at="t", share=1.0)
     plain = Exposure("p-2026", 1, 5, "ubuntu:24.04", "vulnerable", share=1.0)
     judged = [r["judged"] for r in exposure_records([unsure, seen, gone, plain])]
@@ -445,3 +446,103 @@ def test_a_snapshot_detections_identity_leaves_out_the_packs_version():
     other = dict(found, summary="accounts present: mallory (p-2026 v2, since)")
     identity = schedule._identity_of
     assert identity(found) == identity(newer) != identity(other)
+
+
+# --- After the second review -------------------------------------------------------------------
+
+
+def test_a_value_too_long_to_name_isnt_cut_short_for_a_whitelist():
+    from test_pack_detect import context, event, pack_with
+
+    from checker.packs.detect import MAX_GROUP, own_detections
+
+    pack = pack_with("""\
+        - id: odd-path
+          title: Odd paths
+          events:
+            any_of:
+              - type: web.request
+                fields: {path: {prefix: /var/www/}}
+            by: path
+          likelihood_ratio: 4
+    """)  # fmt: skip
+    long = "/var/www/" + "a/" * 96 + "../../../../../etc/cron.d/x"
+    assert len(long) > MAX_GROUP
+    found = [f.as_dict() for f in own_detections(context(pack, [
+        event("2026-10-22T10:00:00+00:00", "web.request", path=long),
+        event("2026-10-22T10:00:00+00:00", "web.request", path="/var/www/ok"),
+    ]))]  # fmt: skip
+    by_path = {f["entities_complete"]: f["entities"] for f in found}
+    assert by_path[False] == ["pack:example-2026-10"]  # not named: listed in part
+    assert by_path[True] == ["pack:example-2026-10", "path:/var/www/ok"]
+
+
+def test_a_listing_in_part_with_only_fixed_packages_seen_doesnt_flap():
+    from checker.assess import exposure_records
+    from checker.packs.exposure import Exposure, Judged
+
+    def judged(status):
+        return Judged("php8.3-fpm amd64", "php8.3-fpm", "8.3.6-1", None, status, "8.3.6-0")
+
+    fixed_only = Exposure("p-2026", 1, 5, "ubuntu:24.04", "can't judge",
+                          packages=[judged("fixed")], share=1.0)  # fmt: skip
+    vulnerable = Exposure("p-2026", 1, 5, "ubuntu:24.04", "can't judge",
+                          packages=[judged("vulnerable")], share=1.0)  # fmt: skip
+    assert [r["judged"] for r in exposure_records([fixed_only, vulnerable])] == [False, True]
+    partial = scored(exposed("can't judge", judged=False))
+    said = runs(scored(exposed("fixed")), partial, scored(exposed("fixed")), partial)
+    assert said[1:] == [[], [], []]
+
+
+def test_the_first_run_after_weighing_was_kept_isnt_a_burst_of_news():
+    weighed = {"check": "web.worker_child", "band": "medium", "title": "t", "variant": None,
+               "entities": ["account:x"], "suppressed_by": None,
+               "raised_by_pack": "p v1 (w)"}  # fmt: skip
+    before = schedule.remembered(scored(findings=[weighed]))
+    del before["weighed"]
+    assert schedule.alerts("h", before, scored(findings=[weighed])) == []
+
+
+def test_the_window_opening_and_the_exposure_starting_together_are_one_mark():
+    from checker.report import MAX_MARKED, exposure_marks
+
+    start = "2026-10-20T00:00:00+00:00"
+    item = exposed() | {"window_start": start, "exposed_from": start}
+    assert [m["text"] for m in exposure_marks({"exposures": [item]})] == [
+        "p-2026 v1: the threat's window opens"
+    ]
+    many = [item | {"pack": f"p{n}"} for n in range(MAX_MARKED + 5)]
+    assert len(exposure_marks({"exposures": many})) == MAX_MARKED
+
+
+def test_removing_a_host_with_its_own_rule_is_recorded(fleet, capsys):
+    assert cli.main(["hosts", "packs", "web01", "none"]) == 0
+    assert cli.main(["hosts", "remove", "web01"]) == 0
+    capsys.readouterr()
+    assert cli.main(["config", "history"]) == 0
+    assert capsys.readouterr().out.splitlines()[-1].endswith('hosts.web01.packs: "none" -> null')
+
+
+def test_a_groups_rule_is_set_and_cleared_on_the_record(fleet, capsys):
+    assert cli.main(["config", "set", "packs.group_apply.web", "except:x-1"]) == 0
+    assert load_config(fleet[0]).packs.group_apply == {"web": "except: x-1"}
+    assert cli.main(["config", "set", "packs.group_apply.web", "default"]) == 0
+    assert load_config(fleet[0]).packs.group_apply == {}
+    assert cli.main(["config", "set", "packs.group_apply.we b", "none"]) == 2
+    assert "not a group name: 'we b'" in capsys.readouterr().err
+    assert cli.main(["config", "set", "packs.group_apply.web", "some"]) == 2
+    capsys.readouterr()
+    assert cli.main(["config", "history"]) == 0
+    assert [line.split("  ", 2)[2] for line in capsys.readouterr().out.splitlines()] == [
+        'packs.group_apply.web: null -> "except: x-1"',
+        'packs.group_apply.web: "except: x-1" -> null',
+    ]
+
+
+def test_typos_are_pointed_out(fleet, ours, capsys):
+    assert cli.main(["hosts", "packs", "web01", "only: exampel-2026-10"]) == 0
+    assert "note: no pack exampel-2026-10 is in force (yet)" in capsys.readouterr().out
+    assert cli.main(["config", "set", "packs.group_apply.wbe", "none"]) == 0
+    capsys.readouterr()
+    assert cli.main(["config", "show"]) == 0
+    assert "note: no host is in group wbe, whose pack rule is set" in capsys.readouterr().out

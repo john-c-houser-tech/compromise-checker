@@ -558,6 +558,19 @@ is John's to approve before it is committed. Also:
   printed unescaped and the run's pack alert repeated daily; the plan's
   golden note was wrong (both detection cases moved); tests asserted
   loosely.
+- **Second review (the switch and the fixes; 2 medium, 4 low), all
+  fixed:** a by-field value cut to 200 characters could let a whitelist
+  rule judge part of it (now never cut: too long, not named); a listing
+  collected in part with only fixed packages seen flapped between fixed
+  and can't judge (now unjudged); a run state from before weighing was
+  kept would have told every weighed finding once; the timeline's
+  exposure mark duplicated the window's opening and wasn't capped;
+  removing a host with its own rule, and a group's rule, went
+  unrecorded (now `checker config set packs.group_apply.GROUP`); typos in
+  pack ids and group names went unnoticed. Behaviour change to note: a
+  by-field pack detection now names its group, so its identity in a run's
+  memory changes once (one "new" alert each, the first run after), and a
+  broad whitelist rule for the pack now hides it.
 
 ### 4.7 — Distribution
 

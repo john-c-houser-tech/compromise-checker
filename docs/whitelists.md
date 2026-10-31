@@ -105,7 +105,13 @@ A rule matches a finding only if, for each kind it names, it covers
 `deploy` doesn't hide "3 logins as admin, deploy", and a rule for one file
 doesn't hide a group of files that also holds an unknown one. A finding
 that lists only some of its entities (a group of more than 20 files) is
-matched only by a broad rule.
+matched only by a broad rule. A threat pack's detection that counts
+events apart by a field names its group as an entity (`address:…`,
+`path:…`, or the field's name and value, such as `uid:48`, which no rule
+field narrows), so a rule naming the pack and that address or path can
+hide one group's; a value longer than 200 characters isn't named (never
+cut short, so a rule can't judge part of it), and that detection lists
+its group in part.
 
 ## Conditions: `correlated_with`
 

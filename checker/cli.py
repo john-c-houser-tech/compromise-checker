@@ -60,6 +60,7 @@ from checker.settings import (
     packs_line,
     recipient,
     recipients,
+    remove_host,
     value_of,
 )
 from checker.settings import change as change_setting
@@ -118,6 +119,7 @@ def cmd_hosts_packs(args: argparse.Namespace) -> int:
     """Show which threat packs apply to a host, or set its own rule
     (recorded: `checker config history`)."""
     from checker.packs.choice import choose, rule_for
+    from checker.packs.choice import parse as parse_rule
     from checker.packs.store import in_force
     from checker.report import visible
 
@@ -147,6 +149,9 @@ def cmd_hosts_packs(args: argparse.Namespace) -> int:
     for pack in packs:
         state = "applied" if pack in applied else "held back"
         print(f"  {state}: {pack.id} v{pack.version}")
+    named = set(parse_rule(rule)[1]) - {p.id for p in packs}
+    for pack_id in sorted(named):
+        print(f"  note: no pack {pack_id} is in force (yet): check its spelling")
     for problem in problems:
         print(f"checker: not usable: {visible(problem, 300)}", file=sys.stderr)
     return 0
@@ -154,8 +159,7 @@ def cmd_hosts_packs(args: argparse.Namespace) -> int:
 
 def cmd_hosts_remove(args: argparse.Namespace) -> int:
     try:
-        with inventory_transaction() as inventory:
-            inventory.remove(args.name)
+        remove_host(home(), args.name)
     except KeyError as exc:
         print(f"checker: {exc.args[0]}", file=sys.stderr)
         return 2
@@ -276,6 +280,12 @@ def cmd_config_show(args: argparse.Namespace) -> int:
         print(line)
     print(f"Retention: {config.retention_days} days. Prior: {percent(config.prior)}.")
     print(packs_line(config))
+    try:
+        groups = {h.group for h in load_inventory().hosts}
+    except (ValidationError, ValueError):
+        groups = set(config.packs.group_apply)  # the inventory's trouble is said elsewhere
+    for group in sorted(set(config.packs.group_apply) - groups):
+        print(f"  note: no host is in group {group}, whose pack rule is set")
     print("Settable with `checker config set KEY VALUE`:")
     for key, setting in SETTABLE.items():
         print(f"  {key} = {json.dumps(value_of(config, key))}    ({setting.help})")
@@ -851,7 +861,9 @@ def build_parser() -> argparse.ArgumentParser:
             " '-' goes after '--': checker config set KEY -- VALUE."
         ),
     )
-    setting.add_argument("key", choices=list(SETTABLE), metavar="KEY", help=", ".join(SETTABLE))
+    setting.add_argument(
+        "key", metavar="KEY", help=", ".join(SETTABLE) + ", packs.group_apply.GROUP"
+    )
     setting.add_argument("value")
     setting.set_defaults(handler=cmd_config_set)
     config_commands.add_parser(

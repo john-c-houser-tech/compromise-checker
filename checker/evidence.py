@@ -284,6 +284,14 @@ class Packs(BaseModel):
     apply: PackRule = "all"
     group_apply: dict[str, PackRule] = {}
 
+    @field_validator("group_apply")
+    @classmethod
+    def _groups(cls, value: dict[str, str]) -> dict[str, str]:
+        for group in value:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}", group):
+                raise ValueError(f"not a group name: {group!r}")
+        return value
+
     @model_validator(mode="after")
     def _unique(self) -> "Packs":
         names = [k.name for k in self.trusted_keys]

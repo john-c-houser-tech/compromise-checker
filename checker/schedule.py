@@ -277,7 +277,10 @@ def alerts(host: str, before: dict | None, after: dict) -> list[str]:
                 f" v{visible(versions.get(pack), 10)} ({EXPOSED[status]})"
             )
     seen = (before or {}).get("findings") or {}
-    weighed = set((before or {}).get("weighed") or [])
+    if before is not None and "weighed" not in before:  # kept before weighing was: no news
+        weighed = {_identity_of(f) for f in after.get("findings") or [] if f.get("raised_by_pack")}
+    else:
+        weighed = set((before or {}).get("weighed") or [])
     for finding in after.get("findings") or []:
         by_pack = finding.get("raised_by_pack")
         detection = finding.get("check") == "pack.detection" or bool(by_pack)

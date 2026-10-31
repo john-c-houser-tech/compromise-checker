@@ -244,9 +244,8 @@ def test_invalid_values_are_refused_and_change_nothing(base, capsys, key, text, 
 
 
 def test_unknown_setting(base, capsys):
-    with pytest.raises(SystemExit):
-        main(["config", "set", "recipients", "age1…"])
-    assert "invalid choice" in capsys.readouterr().err
+    assert main(["config", "set", "recipients", "age1…"]) == 2
+    assert "no setting 'recipients'; settable: home_text," in capsys.readouterr().err
 
 
 def test_same_value_records_nothing(base, capsys):

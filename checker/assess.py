@@ -262,9 +262,15 @@ def packs_applied(packs: list[Any] | None) -> list[dict[str, Any]]:
 def exposure_records(exposures: list[Any]) -> list[dict[str, Any]]:
     """Each pack's exposure as an assessment keeps it (for the report's
     timeline and a run's "needs a look"); `judged` is False for one that
-    rests only on a package listing collected in part, with none of the
-    pack's packages seen: a gap, counted as exposed for the prior only."""
-    from checker.packs.exposure import CANT_JUDGE
+    can't be judged only because the package listing was collected in part
+    (none of the pack's packages seen vulnerable or unjudgeable, none
+    removed): a gap, counted as exposed for the prior only."""
+    from checker.packs.exposure import CANT_JUDGE, VULNERABLE
+
+    def judged(e) -> bool:
+        if e.status != CANT_JUDGE or e.removed_at:
+            return True
+        return any(p.status in (CANT_JUDGE, VULNERABLE) for p in e.packages)
 
     return [
         {
@@ -277,7 +283,7 @@ def exposure_records(exposures: list[Any]) -> list[dict[str, Any]]:
             "exposed_from": e.exposed_from,
             "exposed_until": e.exposed_until,
             "fix_time_exact": e.fix_time_exact,
-            "judged": not (e.status == CANT_JUDGE and not e.packages and not e.removed_at),
+            "judged": judged(e),
         }
         for e in exposures
     ]

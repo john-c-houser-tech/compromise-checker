@@ -6,13 +6,13 @@
   <p>This is an estimate from what each server's logs and settings show, not proof either way. A
   server with no warnings can still have been broken into.</p>
 </div>
-{% for problem in problems %}
-<p class="error" role="alert">A threat update couldn't be used: {{ problem }}</p>
-{% endfor %}
+{% if threat_problem %}
+<p class="error" role="alert">A threat update couldn't be used, so a new threat may not be covered. Ask whoever runs this tool to look at its log.</p>
+{% endif %}
 {% if not total %}
 <p>Add your first server to check it. For now that's done from the command line, with <code>checker hosts add</code>.</p>
 {% else %}
-{% if groups or tones | length > 1 %}
+{% if groups or tones | length > 1 or group or tone %}
 <nav class="filters" aria-label="Filter servers">
   <a href="{{ url('fleet') }}"{% if not group and not tone %} aria-current="true"{% endif %}>All {{ total }}</a>
   {% for value, name in tones %}
@@ -24,7 +24,7 @@
 </nav>
 {% endif %}
 {% if not rows %}<p>No servers match this filter.</p>{% endif %}
-<ol class="fleet">
+<ol class="fleet" role="list">
 {% for row in rows %}
   <li class="server tone-{{ row.tone }}">
     <div class="who">

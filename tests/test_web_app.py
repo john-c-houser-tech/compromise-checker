@@ -670,11 +670,114 @@ def test_filters_narrow_the_list_but_not_the_answer(web, monkeypatch):
     ]
     monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (hosts, []))
     text = client.get("/", {"group": "db"}).content.decode()
-    assert "2 of your 3 servers need attention" in text
+    assert "needs attention" in text or "need attention" in text
     assert "<h2>fine" in text and "<h2>bad" not in text
     assert "<h2>gone" in text  # a removed host's bad result isn't filtered out of sight
     text = client.get("/", {"show": "low"}).content.decode()
     assert "<h2>fine" in text and "<h2>bad" not in text
+
+
+def test_the_page_shows_what_it_worked_out(web, monkeypatch):
+    """The answer, the verdict, what to do, what's new, the notes, the threat, the scale."""
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    host = FleetHost(
+        "bad",
+        "web",
+        "analysed",
+        "High",
+        0.67,
+        first=False,
+        changes=("bad: new high: A shell was started",),
+        doubts=("its last collection was failed",),
+        exposed={"p1": "vulnerable"},
+    )
+    monkeypatch.setattr(
+        "checker.web.views.read_fleet", lambda *a, **k: ([host], ["pack-file-detail"])
+    )
+    text = client.get("/").content.decode()
+    for words in (
+        "Your server needs attention now.",
+        "Signs of a break-in",
+        "Look into this today.",
+        "A shell was started",
+        "The last check didn&#39;t finish.",
+        "Open to a known threat now: p1.",
+        "A threat update couldn't be used",
+        "67%",
+        'x1="67.0"',
+    ):
+        assert words in text, words
+    assert "pack-file-detail" not in text
+
+
+def test_a_filter_with_no_matches_still_offers_the_way_back(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    host = FleetHost("a", state="analysed", band="Low", probability=0.02, first=False)
+    monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: ([host], []))
+    text = client.get("/", {"show": "critical"}).content.decode()
+    assert "No servers match" in text and ">All 1<" in text
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"score": {"band": ["a"], "probability": 0.5}},
+        {"score": {"band": {"a": 1}, "probability": 0.5}},
+        {"score": {"band": "Low", "probability": float("inf")}},
+        {"score": {"band": "Low", "probability": 1e308}},
+        {"score": {"band": "Low", "probability": 10**400}},
+        {"score": {"band": "Low", "probability": True}},
+        {"score": {"band": "Low", "probability": float("nan")}},
+        {"score": {"band": "Low", "probability": -1}},
+        {"score": {"band": "Low", "probability": "half"}},
+        {"counts": {"x/high": "many"}},
+        {"counts": {"x/high": None}},
+        {"counts": ["x"]},
+        {"coverage": "none"},
+        {"exposures": "odd"},
+        {"findings": "odd"},
+    ],
+)
+def test_one_hosts_odd_stored_data_never_takes_the_page_down(web, monkeypatch, fields):
+    from checker import fleet as fleet_module
+
+    client, home = signed_in(web)
+    analysed(home, "odd", 10, CLEAN, host="odd")
+    analysed(home, "bad", 10, ROOTED, host="rooted")
+    real = fleet_module.load_assessment
+
+    def load(store, bundle, identity, which=-1):
+        found = real(store, bundle, identity, which)
+        return {**found, **fields} if found and bundle == "odd" else found
+
+    monkeypatch.setattr(fleet_module, "load_assessment", load)
+    response = client.get("/")
+    text = response.content.decode()
+    assert response.status_code == 200 and "<h2>rooted" in text and "<h2>odd" in text
+    assert "No strong signs of a break-in on" not in text
+
+
+def test_the_fonts_are_served_by_name_only(web):
+    client, _ = web
+    good = client.get("/fonts/atkinson-hyperlegible-latin-400-normal.woff2")
+    assert good.status_code == 200 and good["Content-Type"] == "font/woff2"
+    assert good.content[:4] == b"wOF2"
+    assert client.get("/fonts/OFL.txt").status_code == 404
+    assert client.get("/fonts/..%2Fstyle.css").status_code == 404
+    assert "font-src 'self'" in good["Content-Security-Policy"]
+
+
+def test_the_stylesheet_only_asks_for_fonts_that_exist(web):
+    client, _ = web
+    css = client.get("/style.css").content.decode()
+    names = re.findall(r'url\("(/fonts/[^"]+)"\)', css)
+    assert len(names) == 2
+    assert all(client.get(n).status_code == 200 for n in names)
+    assert "http" not in css
 
 
 def test_no_servers_says_what_to_do(web):

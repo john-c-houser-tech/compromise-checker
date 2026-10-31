@@ -9,8 +9,10 @@ The first time, it prints a link that works once, for an hour. Open it and creat
 account. Each restart replaces the link until an account exists. After that, sign in at the
 address it prints.
 
-So far it shows the fleet, most worrying first ([the fleet at a glance](report.md)). It only
-reads: the evidence store is opened read-only, and pages collect, analyse and change nothing.
+So far it shows the fleet, most worrying first ([the fleet at a glance](report.md)). A server
+reads as having no strong signs only if its score is Low and nothing else is wrong: an open
+threat, serious problems, warnings from the check before, missing logs or a stale result all
+take that away. It only reads: the evidence store is opened read-only, and pages collect, analyse and change nothing.
 
 ## Where it listens
 
@@ -46,6 +48,8 @@ keep them. There is no access log; only errors in the tool itself go to its stan
   and the content security policy allows no scripts at all and nothing from other sites.
 - **Sessions** last 8 hours or until the browser closes. Cookies can't be read by scripts or sent
   from other sites.
-- **Nothing is fetched from elsewhere:** no fonts, analytics or content delivery networks.
+- **Nothing is fetched from elsewhere:** no analytics or content delivery networks. The font,
+  Atkinson Hyperlegible from the Braille Institute, ships with the tool under the SIL Open Font
+  License (`checker/web/static/fonts/OFL.txt`).
 
 The name shown can be changed with the environment variable `CHECKER_PRODUCT_NAME`.

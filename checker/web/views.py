@@ -22,6 +22,7 @@ from yaml import YAMLError
 from checker.evidence import EvidenceError
 from checker.fleet import read_fleet
 from checker.inventory import home
+from checker.report import visible
 from checker.web import accounts, wording
 from checker.web.app import HERE, is_local
 
@@ -60,6 +61,23 @@ def _safe_next(request) -> str:
         except Resolver404:
             pass
     return reverse("fleet")
+
+
+FONTS = (
+    "atkinson-hyperlegible-latin-400-normal.woff2",
+    "atkinson-hyperlegible-latin-700-normal.woff2",
+)
+
+
+@require_GET
+def font(request, name: str) -> HttpResponse:
+    """Only these files, by exact name: nothing typed in a URL reaches the file system."""
+    if name not in FONTS:
+        return not_found(request)
+    data = (HERE / "static" / "fonts" / name).read_bytes()
+    response = HttpResponse(data, content_type="font/woff2")
+    response["Cache-Control"] = "max-age=86400"
+    return response
 
 
 @require_GET
@@ -143,6 +161,8 @@ def fleet_page(request) -> HttpResponse:
         # Details may quote a settings file, secrets included: only the kind goes to the log.
         print(f"checker web: can't read the settings: {type(exc).__name__}", file=sys.stderr)
         return _unavailable(request, "A settings file or the evidence key can't be read.")
+    for problem in problems:
+        print(f"checker web: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)
     rows = wording.rows_for(hosts)
     groups = sorted({h.group for h in hosts if h.group})
     tones = [t for t in wording.TONE_NAMES if any(r.tone == t for r in rows)]
@@ -163,7 +183,7 @@ def fleet_page(request) -> HttpResponse:
             "headline_tone": title_tone,
             "rows": shown,
             "total": len(rows),
-            "problems": problems,
+            "threat_problem": bool(problems),
             "group": group,
             "groups": groups,
             "tone": tone,

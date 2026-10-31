@@ -304,6 +304,49 @@ def test_a_new_packs_own_note_is_not_seeing_less(home, monkeypatch):
     assert fleet_host(home[1], "web01", identity_of(home), now=SOON).doubts == ()
 
 
+@pytest.mark.parametrize(
+    ("blind_for", "doubted"),
+    [(2, True), (1, True), (9, False)],  # still news on day two; how the host is by day nine
+)
+def test_seeing_less_stays_a_doubt_until_it_is_how_the_host_is(
+    home, monkeypatch, blind_for, doubted
+):
+    names = [f"b{n}" for n in range(10)]
+    gaps = {}
+    for n, name in enumerate(names):
+        gaps[name] = analysed(home, name, 10 * (n + 1), CLEAN)["coverage"]["gaps"]
+    gap = "module web_logs: timeout"
+    patched(monkeypatch, {n: {"coverage": {"gaps": [*gaps[n], gap]}} for n in names[-blind_for:]})
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert any("see less" in d for d in item.doubts) is doubted
+
+
+def test_a_date_in_the_future_vouches_for_nothing():
+    later = (SOON + timedelta(days=400)).isoformat()
+    assert fleet_module._old(later, SOON, STALE_AFTER)
+    assert not fleet_module._old((SOON + timedelta(hours=1)).isoformat(), SOON, STALE_AFTER)
+
+
+@pytest.mark.parametrize(
+    ("value", "kept"),
+    [
+        (0.5, 0.5),
+        (0, 0.0),
+        (1, 1.0),
+        (True, None),
+        (-1, None),
+        (1.5, None),
+        (10**400, None),
+        (float("nan"), None),
+        (float("inf"), None),
+        ("half", None),
+        (None, None),
+    ],
+)
+def test_only_a_real_probability_is_kept(value, kept):
+    assert fleet_module._probability(value) == kept
+
+
 def test_a_gap_differing_only_in_a_number_is_not_new(home):
     analysed(home, "b1", 10, CLEAN)
     analysed(home, "b2", 20, CLEAN)  # a clock offset differs between these
@@ -549,7 +592,9 @@ def test_the_command_passes_the_packs(home, capsys, monkeypatch):
 
 
 def test_the_command_uses_the_stale_after_setting(home, capsys):
-    analysed(home, "b1", 10, CLEAN)
+    analysed(home, "b1", -60 * 24 * 200, CLEAN)  # 200 days before the fixtures' start
+    assert cli.main(["fleet"]) == 0
+    assert "days ago" in capsys.readouterr().out
     set_setting(home[0], "stale_after_days", "100000")
     assert cli.main(["fleet"]) == 0
     assert "days ago" not in capsys.readouterr().out

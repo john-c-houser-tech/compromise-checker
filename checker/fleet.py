@@ -27,6 +27,8 @@ from checker.schedule import BANDS, SERIOUS, _exposed, _identity_of, alerts, rem
 STALE_AFTER = timedelta(days=3)
 # How far back to look for what an unjudged exposure last was.
 _EXPOSURE_LOOKBACK = 30
+# How far back to look for what it could see before: about a week of daily checks.
+_GAP_LOOKBACK = 7
 
 # Most worrying first. An analysis that can't be read comes before everything:
 # the tool's own store may have been tampered with. A host nobody can vouch for
@@ -215,7 +217,9 @@ def _gone(before: dict | None, after: dict, comparable: bool) -> tuple[int, int,
 
 def _old(started_at: str, now: datetime, stale_after: timedelta) -> bool:
     try:
-        return now - datetime.fromisoformat(started_at) > stale_after
+        age = now - datetime.fromisoformat(started_at)
+        # A date in the future vouches for nothing either.
+        return age > stale_after or age < -timedelta(days=1)
     except (TypeError, ValueError):
         return True
 
@@ -228,22 +232,54 @@ def _gaps(assessment: dict | None) -> list[str]:
     return list(((assessment or {}).get("coverage") or {}).get("gaps") or [])
 
 
+def _recent_gaps(store, previous: dict | None, older: list, identity) -> list[set[str]]:
+    """The kinds of gap in each of the last few readable analyses, newest first."""
+    if previous is None:
+        return []
+    found = [{_gap_kind(g) for g in _gaps(previous)}]
+    for row in list(reversed(older))[:_GAP_LOOKBACK]:
+        if row["id"] == previous.get("bundle_id"):
+            continue
+        earlier, _ = _load(store, row["id"], identity)
+        if earlier is not None:
+            found.append({_gap_kind(g) for g in _gaps(earlier)})
+    return found
+
+
 def _gap_kind(gap: str) -> str:
     """A gap without its numbers: a clock off by another second isn't a new gap."""
     return re.sub(r"[-+]?\d+", "#", gap)
 
 
+def _band_of(assessment: dict | None) -> str | None:
+    band = ((assessment or {}).get("score") or {}).get("band")
+    return band if isinstance(band, str) else None
+
+
+def _probability(value: Any) -> float | None:
+    """A stored probability, only if it is one: anything else mustn't read as a score."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return float(value) if 0 <= value <= 1 else None
+    except OverflowError:
+        return None
+
+
 def _headline(host: str, group, row, after: dict, last_failed, removed: bool) -> FleetHost:
     """What an analysis says outright, whatever can be worked out beyond it."""
     score = after.get("score") or {}
-    probability = score.get("probability")
     return FleetHost(
         host,
         group,
         "analysed",
-        band=score.get("band"),
-        probability=probability if isinstance(probability, (int, float)) else None,
-        counts=dict(after.get("counts") or {}),
+        band=_band_of(after),
+        probability=_probability(score.get("probability")),
+        counts={
+            str(k): n
+            for k, n in dict(after.get("counts") or {}).items()
+            if isinstance(n, int) and not isinstance(n, bool)
+        },
         gaps=len(_gaps(after)),
         hygiene=(score.get("hygiene_and_exposure") or {}).get("band"),
         collected_at=row["started_at"],
@@ -280,7 +316,7 @@ def fleet_host(
             "unreadable",
             last_failed=last_failed,
             unreadable_why=found.newest_unreadable,
-            last_readable_band=((found.after or {}).get("score") or {}).get("band"),
+            last_readable_band=_band_of(found.after),
             removed=removed,
         )
     if found.after is None:
@@ -375,7 +411,10 @@ def _with_details(
         else:
             older = older_than_after
         before["exposed"] = _known_exposure(store, previous, older, identity)
-    known = {_gap_kind(g) for g in _gaps(previous)}
+    # Against each recent analysis, not only the last: blindness that lasts a second day
+    # is still blindness, and a gap every recent analysis shares is how this host is.
+    recent = _recent_gaps(store, previous, older_than_after, identity)
+    known = set.intersection(*recent) if recent else set()
     # Notes on what a pack or a check chose not to judge aren't the host hiding anything.
     new_gaps = [
         g
@@ -398,7 +437,7 @@ def _with_details(
         and not blind
     )
     resolved, suppressed, not_seen = _gone(before, after, comparable)
-    rescored = (earlier.get("score") or {}).get("band") if earlier else None
+    rescored = _band_of(earlier)
     return replace(
         headline,
         exposed=_known_exposure(store, after, older_than_after, identity),
@@ -407,7 +446,7 @@ def _with_details(
         out_of_date=tuple(reasons),
         first=before is None and not found.before_unreadable and not earlier_why,
         before_unreadable=before is None and (found.before_unreadable or bool(earlier_why)),
-        band_before=before["band"] if before else None,
+        band_before=_band_of(previous) if before else None,
         rescored_from=rescored if rescored != headline.band else None,
         changes=tuple(alerts(host, before, after)) if before else (),
         resolved=resolved,

@@ -1,3 +1,15 @@
+@font-face {
+  font-family: "Atkinson Hyperlegible";
+  src: url("/fonts/atkinson-hyperlegible-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Atkinson Hyperlegible";
+  src: url("/fonts/atkinson-hyperlegible-latin-700-normal.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
 /* An inspector's report, not a dashboard: one plain answer, then each server in the order
    to deal with it. Colour means how worrying something is, and nothing else. */
 :root {
@@ -51,6 +63,7 @@ header {
   background: var(--bar);
   color: var(--on-bar);
 }
+header :focus-visible { outline-color: var(--on-bar); }
 header strong { font-size: 1.125rem; }
 header span { opacity: 0.8; }
 header form { margin-left: auto; }
@@ -85,6 +98,7 @@ h1 { font-size: clamp(1.75rem, 1.2rem + 2.6vw, 3rem); line-height: 1.12; letter-
 .tone-elevated { --tone: var(--elevated); }
 .tone-low { --tone: var(--low); }
 .tone-unknown { --tone: var(--unknown); }
+.tone-removed { --tone: var(--quiet); }
 .server.tone-critical, .server.tone-high { background: color-mix(in srgb, var(--tone) var(--wash), var(--sheet)); }
 
 .who h2 { font-size: 1.125rem; margin: 0; overflow-wrap: anywhere; }

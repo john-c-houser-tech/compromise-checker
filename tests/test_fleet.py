@@ -28,6 +28,16 @@ BIDI = chr(0x202E)
 SOON = START + timedelta(minutes=30)
 
 
+REAL_BLIND = fleet_module._BLIND
+
+
+@pytest.fixture(autouse=True)
+def _sees_logs(monkeypatch):
+    """The test records hold no log events, which a real host's do: only the
+    tests about being blind are blind."""
+    monkeypatch.setattr(fleet_module, "_BLIND", ())
+
+
 def identity_of(home):
     return load_identity(home[0] / "keys" / "evidence-identity.txt")
 
@@ -177,6 +187,76 @@ def test_a_group_listed_in_part_with_a_new_count_is_the_same_finding():
     assert gone == (0, 0, 0)
 
 
+def test_a_capped_group_whose_listed_members_shift_is_the_same_finding():
+    before = {
+        "check": "c",
+        "entities": ["a", "b"],
+        "entities_complete": False,
+        "summary": "2 of 25",
+    }
+    after = {"check": "c", "entities": ["b", "z"], "entities_complete": False, "summary": "2 of 26"}
+    gone = fleet_module._gone(
+        {"findings": {_identity_of(before): "high"}}, {"findings": [after]}, True
+    )
+    assert gone == (0, 0, 0)
+
+
+def test_entities_in_common_are_the_same_finding_and_none_in_common_are_not():
+    was = {"check": "c", "entities": ["a", "b"]}
+    assert fleet_module._gone(
+        {"findings": {_identity_of(was): "high"}},
+        {"findings": [{"check": "c", "entities": ["b", "c"]}]},
+        True,
+    ) == (0, 0, 0)
+    assert fleet_module._gone(
+        {"findings": {_identity_of(was): "high"}},
+        {"findings": [{"check": "c", "entities": ["x"]}]},
+        True,
+    ) == (1, 0, 0)
+
+
+def test_being_blind_stays_a_doubt_after_the_first_day(home, monkeypatch):
+    monkeypatch.setattr(fleet_module, "_BLIND", REAL_BLIND)
+    gap = "no authentication log events: logins and sudo can't be checked"
+    analysed(home, "b1", 10, ROOTED)
+    second = analysed(home, "b2", 20, CLEAN)
+    analysed(home, "b3", 30, CLEAN)
+    blind = {"coverage": {"gaps": [*second["coverage"]["gaps"], gap]}}
+    patched(monkeypatch, {"b2": blind, "b3": blind})
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert gap in item.doubts and sort_key(item)[0] == 2
+
+
+def test_being_blind_at_the_first_analysis_is_a_doubt(home, monkeypatch):
+    monkeypatch.setattr(fleet_module, "_BLIND", REAL_BLIND)
+    gap = "no system journal events: kernel messages and shutdowns can't be checked"
+    analysed(home, "b1", 10, CLEAN)
+    patched(monkeypatch, {"b1": {"coverage": {"gaps": [gap]}}})
+    assert gap in fleet_host(home[1], "web01", identity_of(home), now=SOON).doubts
+
+
+def test_other_threat_packs_mean_a_finding_is_not_resolved(home, monkeypatch):
+    analysed(home, "b1", 10, ROOTED)
+    analysed(home, "b2", 20, CLEAN)
+    patched(monkeypatch, {"b1": {"packs": [{"id": "p1", "version": 1}]}})
+    item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
+    assert item.resolved == 0 and item.not_seen >= 1
+
+
+def test_a_removed_host_is_not_called_out_of_date_by_settings_it_no_longer_has(home):
+    analysed(home, "b1", 10, CLEAN)
+    item = fleet_host(
+        home[1],
+        "web01",
+        identity_of(home),
+        prior_for=lambda _: (0.5, "configuration"),
+        whitelist_for=lambda _: _Whitelist(),
+        now=SOON,
+        removed=True,
+    )
+    assert item.out_of_date == () and item.doubts == ()
+
+
 def patched(monkeypatch, changes):
     """Stored analyses with some fields changed, by bundle."""
     real = fleet_module.load_assessment
@@ -211,6 +291,17 @@ def test_seeing_less_than_before_is_a_doubt_and_its_findings_are_not_resolved(ho
     item = fleet_host(home[1], "web01", identity_of(home), now=SOON)
     assert any("no authentication log events" in d for d in item.doubts)
     assert item.resolved == 0 and item.not_seen >= 1
+
+
+def test_a_new_packs_own_note_is_not_seeing_less(home, monkeypatch):
+    analysed(home, "b1", 10, CLEAN)
+    second = analysed(home, "b2", 20, CLEAN)
+    gaps = [
+        *second["coverage"]["gaps"],
+        "pack p1 v1: mitigation m is in place in the settings read",
+    ]
+    patched(monkeypatch, {"b2": {"coverage": {"gaps": gaps}}})
+    assert fleet_host(home[1], "web01", identity_of(home), now=SOON).doubts == ()
 
 
 def test_a_gap_differing_only_in_a_number_is_not_new(home):

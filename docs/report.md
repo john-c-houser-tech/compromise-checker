@@ -130,7 +130,7 @@ reports folder that show a purged bundle; a report written elsewhere with
 2. Critical, then High;
 3. hosts with no result to go on, and Elevated or Low results that can't be relied on: the
    last collection failed or was partial, a newer one isn't analysed yet, a check couldn't
-   run, it can see less than before, the whitelist or threat packs have changed (so a report
+   run, it can see no login or system journal events at all, it can see less than before, the whitelist or threat packs have changed (so a report
    might now say something worse), or it is old. Old means over 3 days:
    `checker config set stale_after_days N` if you check less often than daily, or every host
    will say so;
@@ -144,8 +144,8 @@ have changed since", not that it can be ignored.
 For each host it shows the band and probability, threat packs it was exposed to, coverage
 gaps, and what changed since the analysis before. High and critical findings that went away
 are told apart: no longer found, now suppressed by a whitelist, or not seen. "No longer found"
-is said only between two whole collections, by the same checks, with nothing failed and no
-new gap: wiped logs make findings disappear too. An exposure known before stays listed when
+is said only between two whole collections, by the same checks and threat packs, with nothing
+failed and no new gap: wiped logs make findings disappear too. An exposure known before stays listed when
 later listings can't judge it, looking back up to 30 analyses.
 
 It reads what is stored, and collects, analyses and writes nothing: the database is opened

@@ -34,6 +34,11 @@ _EXPOSURE_LOOKBACK = 30
 _UNREADABLE, _UNKNOWN = -1, 2
 _ORDER = {"Critical": 0, "High": 1, "Elevated": 3, "Low": 4}
 
+# With these it can't see logins or the system's own log at all, whatever an
+# earlier analysis saw: wiped logs look like this, and from the second day on
+# there is nothing "new" about them. So they are always a doubt.
+_BLIND = ("no authentication log events", "no system journal events")
+
 # Why an analysis can't be read, in words for whoever is looking.
 UNREADABLE = {
     "mismatch": "its stored analysis doesn't match its recorded hash: it may have been"
@@ -166,10 +171,20 @@ def _known_exposure(store, assessment: dict, older: list, identity) -> dict[str,
     return exposed
 
 
-def _stable(key: str) -> str:
-    """A finding's identity without the summary kept for a group listed in part:
-    "3 of 40" becoming "3 of 41" is the same finding, still there."""
-    return json.dumps(json.loads(key)[:3])
+def _same_finding(one: list, other: list) -> bool:
+    """Two identities (schedule._identity_of) of one finding: the same check and
+    variant, and the same entities or some in common. A group listed in part
+    (its identity has a fourth part, the summary) keeps only some of its members,
+    so a new member can push a listed one out: it is the same finding still."""
+    if one[:2] != other[:2]:
+        return False
+    if len(one) > 3 or len(other) > 3 or one[2] == other[2]:
+        return True
+    return (
+        isinstance(one[2], list)
+        and isinstance(other[2], list)
+        and bool(set(one[2]) & set(other[2]))
+    )
 
 
 def _gone(before: dict | None, after: dict, comparable: bool) -> tuple[int, int, int]:
@@ -179,14 +194,14 @@ def _gone(before: dict | None, after: dict, comparable: bool) -> tuple[int, int,
     if not before:
         return 0, 0, 0
     findings = after.get("findings") or []
-    now = {_stable(_identity_of(f)) for f in findings if not f.get("suppressed_by")}
-    hidden = {_stable(_identity_of(f)) for f in findings if f.get("suppressed_by")}
+    now = [json.loads(_identity_of(f)) for f in findings if not f.get("suppressed_by")]
+    hidden = [json.loads(_identity_of(f)) for f in findings if f.get("suppressed_by")]
     resolved = suppressed = not_seen = 0
     for key, band in (before.get("findings") or {}).items():
-        stable = _stable(key)
-        if band not in SERIOUS or stable in now:
+        was = json.loads(key)
+        if band not in SERIOUS or any(_same_finding(was, n) for n in now):
             continue
-        if stable in hidden:
+        if any(_same_finding(was, h) for h in hidden):
             suppressed += 1
         elif comparable:
             resolved += 1
@@ -306,8 +321,10 @@ def _with_details(
     host, row, after = headline.host, found.row, found.after
     reasons: list[str] = []
     whitelist = None
-    check_whitelist = whitelist_for is not None
-    if whitelist_for is not None:
+    # A removed host has no group or settings of its own now, so comparing with
+    # them would call it out of date until it is purged.
+    check_whitelist = whitelist_for is not None and not headline.removed
+    if check_whitelist:
         try:
             whitelist = whitelist_for(host)
         except Exception:  # noqa: BLE001 - one broken file mustn't hide the others' results
@@ -316,7 +333,7 @@ def _with_details(
     packs, problems = packs_for(host) if packs_for else (None, None)
     analyse, rescore = out_of_date(
         after,
-        prior_for(host) if prior_for else None,
+        prior_for(host) if prior_for and not headline.removed else None,
         whitelist,
         packs,
         problems,
@@ -356,16 +373,26 @@ def _with_details(
             older = older_than_after
         before["exposed"] = _known_exposure(store, previous, older, identity)
     known = {_gap_kind(g) for g in _gaps(previous)}
-    new_gaps = [g for g in _gaps(after) if _gap_kind(g) not in known] if previous else []
-    if new_gaps:
-        # Wiped logs look like this: findings gone, and something it could see before it can't.
-        doubts.append(f"it can see less than before: {visible(new_gaps[0], 200)}")
+    # A pack's own note about what it couldn't judge isn't the host hiding anything.
+    new_gaps = [
+        g
+        for g in _gaps(after)
+        if previous and _gap_kind(g) not in known and not g.startswith(("pack ", "threat pack "))
+    ]
+    blind = [g for g in _gaps(after) if g.startswith(_BLIND)]
+    doubts += [visible(g, 200) for g in blind]
+    fresh = [g for g in new_gaps if g not in blind]
+    if fresh:
+        doubts.append(f"it can see less than before: {visible(fresh[0], 200)}")
     comparable = (
         row["status"] == "complete"
         and found.before is not None
         and found.before.get("versions") == after.get("versions")
+        and found.before.get("packs") == after.get("packs")
+        and found.before.get("packs_not_applied") == after.get("packs_not_applied")
         and not memory.get("failed")
         and not new_gaps
+        and not blind
     )
     resolved, suppressed, not_seen = _gone(before, after, comparable)
     rescored = (earlier.get("score") or {}).get("band") if earlier else None

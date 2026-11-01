@@ -4,6 +4,7 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.http import HttpResponse, HttpResponseRedirect
+from django.shortcuts import render
 from django.urls import reverse
 from django_otp import user_has_device
 
@@ -16,6 +17,9 @@ CSP = (
 def security_headers(get_response):
     def middleware(request):
         response = get_response(request)
+        if response.status_code == 405 and request.method == "GET":  # an address typed or reloaded
+            title = "That page only opens from its form"
+            response = render(request, "problem.html.j2", {"title": title}, status=405)
         response["Content-Security-Policy"] = CSP
         response["X-Content-Type-Options"] = "nosniff"
         response["X-Frame-Options"] = "DENY"

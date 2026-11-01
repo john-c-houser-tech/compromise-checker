@@ -6,8 +6,10 @@ password can cause that wait, and it falls on the account's owner too."""
 from __future__ import annotations
 
 import base64
+import math
 
 from django.db import transaction
+from django.utils import timezone
 from django_otp import devices_for_user, user_has_device, verify_token
 from django_otp.plugins.otp_static.models import StaticDevice, StaticToken
 from django_otp.plugins.otp_totp.models import TOTPDevice
@@ -69,20 +71,58 @@ def _clean(code: str) -> str:
     return "".join(code.split()).lower()
 
 
-def check_code(user, code: str):
-    """The device a code belongs to, or None. Six digits go only to the app and anything else only
-    to the recovery codes, so a recovery code doesn't count as a wrong code from the app."""
+def _kind_of(code: str):
+    """Six digits go only to the app and anything else only to the recovery codes, so a recovery
+    code doesn't count as a wrong code from the app."""
+    return TOTPDevice if code.isdigit() and len(code) == 6 else StaticDevice
+
+
+def minutes_to_wait(user, code: str) -> int:
+    """How long until this kind of code can be tried, in whole minutes; 0 if it can be now. A right
+    code during the wait isn't a wrong one, so nothing should count it as one."""
     for model in (TOTPDevice, StaticDevice):
         model.objects.filter(
             user=user, throttling_failure_count__gt=MOST_WRONG_CODES_COUNTED
         ).update(throttling_failure_count=MOST_WRONG_CODES_COUNTED)
+    kind = _kind_of(_clean(code))
+    for device in devices_for_user(user):
+        if isinstance(device, kind):
+            allowed, details = device.verify_is_allowed()
+            if not allowed:
+                left = (details["locked_until"] - timezone.now()).total_seconds()
+                return max(1, math.ceil(left / 60))
+    return 0
+
+
+def check_code(user, code: str):
+    """The device a code belongs to, or None."""
+    minutes_to_wait(user, code)  # brings the wait down to its limit first
     code = _clean(code)
-    six_digits = code.isdigit() and len(code) == 6
-    kind = TOTPDevice if six_digits else StaticDevice
+    kind = _kind_of(code)
     for device in devices_for_user(user):
         if isinstance(device, kind) and verify_token(user, device.persistent_id, code):
             return device
     return None
+
+
+def wait_words(minutes: int) -> str:
+    plural = "" if minutes == 1 else "s"
+    return (
+        f"Too many wrong codes have been tried, so codes can't be checked for {minutes} more"
+        f" minute{plural}. If those weren't yours, someone has your password: on the server, change"
+        " it with checker web-password."
+    )
+
+
+def code_needed(request) -> bool:
+    """At a confirmation. Not for someone who got in with their last recovery code: that took the
+    password and the code, and they'd otherwise have no way to make new ones from here."""
+    user = request.user
+    if not is_on(user):
+        return False
+    return not (
+        recovery_codes_left(user) == 0 and used_recovery_code(getattr(user, "otp_device", None))
+    )
 
 
 def used_recovery_code(device) -> bool:

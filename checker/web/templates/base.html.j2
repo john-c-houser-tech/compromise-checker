@@ -11,13 +11,15 @@
 <header>
   <strong>{{ product_name() }}</strong>
   <span>Find out if your server has been hacked</span>
-  {% if request.user is defined and request.user.is_authenticated %}
+  {% if request is defined and fully_signed_in(request) %}
   <nav aria-label="Main">
     <a href="{{ url('fleet') }}">Servers</a>
     <a href="{{ url('threats') }}">Known threats</a>
     <a href="{{ url('activity') }}">Activity</a>
     <a href="{{ url('two_factor_manage') }}">Sign-in security</a>
   </nav>
+  {% endif %}
+  {% if request.user is defined and request.user.is_authenticated %}
   <form method="post" action="{{ url('logout') }}">{{ csrf_input }}<button>Sign out</button></form>
   {% endif %}
 </header>

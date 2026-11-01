@@ -2687,7 +2687,39 @@ def test_wrong_codes_make_even_the_right_one_wait(web):
     device = with_app(account())
     past_the_password(client)
     client.post("/two-factor", {"code": "000000"})
-    assert client.post("/two-factor", {"code": code_from(device)}).status_code == 403
+    response = client.post("/two-factor", {"code": code_from(device)})
+    assert response.status_code == 403 and "more minute" in response.content.decode()
+
+
+def test_a_right_code_during_the_wait_isnt_called_wrong(web):
+    from checker.web.accounts import MAX_WRONG_CONFIRMATIONS
+
+    client, _ = web
+    device = with_app(account())
+    past_the_password(client)
+    client.post("/two-factor", {"code": "000000"})
+    lines = len(the_record())
+    for _ in range(MAX_WRONG_CONFIRMATIONS + 1):
+        response = client.post("/two-factor", {"code": code_from(device)})
+    assert response.status_code == 403 and "more minute" in response.content.decode()
+    assert len(the_record()) == lines  # nothing recorded, and still at the second step
+
+
+def test_a_wait_at_a_confirmation_isnt_counted_either(web):
+    from checker.web.accounts import MAX_WRONG_CONFIRMATIONS
+    from checker.web.models import WrongConfirmation
+
+    view, done = an_action(consequential=True)
+    user = account()
+    device = with_app(user)
+    key = request_for(user).session.session_key
+    data = {"confirm_password": PASSWORD, "confirm_code": "000000"}
+    view(request_for(user, data, session=key))
+    for _ in range(MAX_WRONG_CONFIRMATIONS):
+        response = view(request_for(user, data, session=key))
+    assert "more minute" in response.content.decode() and not done
+    assert WrongConfirmation.objects.filter(session_key=key).count() == 1
+    assert device.pk
 
 
 def test_a_code_works_only_once(web):
@@ -2805,7 +2837,9 @@ def test_turning_it_on_needs_the_password_then_a_right_code(web):
     start_two_factor(client)
     device = pending_device()
     wrong = client.post("/two-factor/turn-on", {"code": "000000"})
-    assert wrong.status_code == 400 and "<svg" in wrong.content.decode()  # the same code, to retry
+    text = wrong.content.decode()
+    assert wrong.status_code == 400 and 'name="code"' in text  # and the secret isn't sent again
+    assert "<svg" not in text and two_factor.secret_text(device) not in text
     assert not two_factor.is_on(user)
     before = client.cookies["checker_session"].value
     response = client.post("/two-factor/turn-on", {"code": fresh(device)})
@@ -2913,13 +2947,53 @@ def test_wrong_codes_end_the_session_and_stop_filling_the_record(web):
     from checker.web.accounts import MAX_WRONG_CONFIRMATIONS
 
     client, _ = web
-    with_app(account())
+    device = with_app(account())
     past_the_password(client)
     for _ in range(MAX_WRONG_CONFIRMATIONS):
+        fresh(device)  # past the wait: tries during it aren't counted
         response = client.post("/two-factor", {"code": "000000"})
     assert "signed out" in response.content.decode()
     assert client.post("/two-factor", {"code": "000000"}).status_code == 302  # to the login
     assert len(the_record()) == 1 + MAX_WRONG_CONFIRMATIONS
+
+
+def test_being_signed_out_for_wrong_tries_shows_the_way_back(web):
+    from checker.web.accounts import MAX_WRONG_CONFIRMATIONS
+
+    client, _ = web
+    device = with_app(account())
+    past_the_password(client)
+    for _ in range(MAX_WRONG_CONFIRMATIONS):
+        fresh(device)
+        response = client.post("/two-factor", {"code": "000000"})
+    assert 'href="/login"' in response.content.decode()
+    view, _ = an_action(consequential=True)
+    user = account_named("sam")
+    key = request_for(user).session.session_key
+    for _ in range(MAX_WRONG_CONFIRMATIONS):
+        response = view(request_for(user, {"confirm_password": "no"}, session=key))
+    assert 'href="/login"' in response.content.decode()
+
+
+def test_someone_with_no_setup_under_way_cant_fill_the_record(web):
+    from checker.web.accounts import MAX_WRONG_CONFIRMATIONS
+
+    client, _ = signed_in(web)
+    for _ in range(MAX_WRONG_CONFIRMATIONS):
+        response = client.post("/two-factor/turn-on", {"code": "000000"})
+    assert client.get("/activity").status_code == 302  # the session is over
+    assert 'href="/login"' in response.content.decode()
+
+
+def test_someone_kicked_out_of_setup_is_told_what_it_may_mean(web):
+    owner, _ = signed_in(web)
+    start_two_factor(owner)
+    device = pending_device()
+    thief = browser()
+    past_the_password(thief)
+    start_two_factor(thief)
+    text = owner.post("/two-factor/turn-on", {"code": code_from(device)}).content.decode()
+    assert "someone may have your password" in text and "web-password" in text
 
 
 def test_wrong_codes_while_setting_up_end_the_session_too(web):
@@ -2979,9 +3053,10 @@ def test_a_code_guessed_at_a_confirmation_ends_the_session_like_a_password(web):
 
     view, _ = an_action(consequential=True)
     user = account()
-    with_app(user)
+    device = with_app(user)
     key = request_for(user).session.session_key
     for _ in range(MAX_WRONG_CONFIRMATIONS):
+        fresh(device)  # past the wait: tries during it aren't counted
         data = {"confirm_password": PASSWORD, "confirm_code": "000000"}
         view(request_for(user, data, session=key))
     assert not Session.objects.filter(session_key=key).exists()
@@ -3102,6 +3177,97 @@ def test_required_with_no_device_the_record_doesnt_say_signed_in(web, settings_o
     assert the_record()[-1][0] == "password accepted"
 
 
+def test_a_stolen_password_learns_nothing_on_a_missing_page(web):
+    from checker.web import two_factor
+
+    client, _ = web
+    user = account()
+    with_app(user)
+    two_factor.new_recovery_codes(user)
+    past_the_password(client)
+    text = client.get("/no-such-page").content.decode()
+    assert "recovery codes" not in text and 'aria-label="Main"' not in text
+    assert "Sign out</button>" in text
+
+
+def test_the_last_recovery_code_can_make_new_ones(web):
+    from checker.web import two_factor
+    from checker.web.models import ActionRecord
+
+    client, _ = web
+    user = account()
+    with_app(user)
+    code = two_factor.new_recovery_codes(user)[0]
+    from django_otp.plugins.otp_static.models import StaticToken
+
+    StaticToken.objects.exclude(token=code).delete()
+    past_the_password(client)
+    assert client.post("/two-factor", {"code": code}).status_code == 302
+    text = client.get("/two-factor/manage").content.decode()
+    assert "no recovery codes left" in text and 'name="confirm_code"' not in text
+    response = client.post("/two-factor/new-codes", {"confirm_password": PASSWORD})
+    assert response.status_code == 200
+    assert ActionRecord.objects.order_by("-id").first().outcome == "done"
+
+
+def test_with_no_codes_left_and_the_app_the_code_is_still_needed(web):
+    from django_otp.plugins.otp_static.models import StaticToken
+
+    from checker.web import two_factor
+
+    client, user, device = verified_client(web)
+    two_factor.new_recovery_codes(user)
+    StaticToken.objects.all().delete()
+    assert client.post("/two-factor/new-codes", {"confirm_password": PASSWORD}).status_code == 403
+
+
+def test_codes_can_be_said_to_be_saved_from_sign_in_security(web):
+    client, _ = signed_in(web)
+    turn_on_two_factor(client)
+    text = client.get("/two-factor/manage").content.decode()
+    assert "/two-factor/codes-saved" in text
+
+
+def test_a_post_only_address_opened_directly_says_so(web):
+    client, _ = signed_in(web)
+    response = client.get("/two-factor/start")
+    assert response.status_code == 405 and "only opens from its form" in response.content.decode()
+    assert "Content-Security-Policy" in response
+
+
+def test_a_session_list_with_damage_in_it_still_ends_the_right_ones(web):
+    from django.contrib.sessions.models import Session
+    from django.utils import timezone
+
+    from checker.web.accounts import turn_off_two_factor
+
+    client, _ = web
+    with_app(account())
+    past_the_password(client)
+    Session.objects.create(
+        session_key="damaged",
+        session_data="not a session",
+        expire_date=timezone.now() + timedelta(hours=1),
+    )
+    Session.objects.create(
+        session_key="old", session_data="x", expire_date=timezone.now() - timedelta(hours=1)
+    )
+    assert turn_off_two_factor("jo") is None
+    assert list(Session.objects.values_list("session_key", flat=True)) == ["damaged"]
+
+
+BAD_IMPORT = """
+import sys
+from checker.cli import _web_extra_missing
+sys.exit(_web_extra_missing(ModuleNotFoundError("a bug", name="checker.nothing")))
+"""
+
+
+def test_a_bug_in_an_import_isnt_called_a_missing_extra():
+    run = subprocess.run([sys.executable, "-c", BAD_IMPORT], capture_output=True, text=True)
+    assert "Traceback" in run.stderr and "pip install" not in run.stderr
+
+
 def test_codes_not_said_to_be_saved_are_flagged_until_they_are(web):
     from checker.web import two_factor
 
@@ -3175,6 +3341,7 @@ def test_the_issuer_is_the_products_name(web):
 
 def test_a_port_that_doesnt_exist_is_refused_before_listening():
     assert "port" in web_app.listen_problem("127.0.0.1:99999", None, False)
+    assert "port" in web_app.listen_problem("127.0.0.1:0", None, False)
     assert web_app.listen_problem("127.0.0.1:8088", None, False) is None
 
 
@@ -3265,3 +3432,39 @@ TOTPDevice.objects.create(user=user, name="a", confirmed=True)
     assert "web-password" in done.stdout
     again = run(tmp_path)
     assert again.returncode == 1 and "already off" in again.stderr
+
+
+def test_the_second_step_refuses_a_session_out_of_tries_even_with_the_right_code(web):
+    """As when guesses sent at once used them up while this one was on its way."""
+    from django.contrib.sessions.models import Session
+
+    from checker.web.accounts import MAX_WRONG_CONFIRMATIONS, begin_confirmation
+
+    client, _ = web
+    device = with_app(account())
+    past_the_password(client)
+    key = Session.objects.get().session_key
+    for _ in range(MAX_WRONG_CONFIRMATIONS):
+        begin_confirmation(key)
+    response = client.post("/two-factor", {"code": code_from(device)})
+    assert response.status_code == 403 and "signed out" in response.content.decode()
+    assert client.get("/").status_code == 302
+
+
+def test_serving_tells_the_settings_who_can_reach_it(monkeypatch, tmp_path):
+    class Stop(Exception):
+        pass
+
+    seen = {}
+
+    def configure(home, public_url, tls, listens_beyond):
+        seen["listens_beyond"] = listens_beyond
+        raise Stop
+
+    monkeypatch.setattr(web_app, "configure", configure)
+    with pytest.raises(Stop):
+        web_app.serve(tmp_path, "0.0.0.0:443", "https://c.example", "cert", "key")
+    assert seen["listens_beyond"] is True
+    with pytest.raises(Stop):
+        web_app.serve(tmp_path, "127.0.0.1:8088")
+    assert seen["listens_beyond"] is False

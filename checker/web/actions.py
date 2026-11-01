@@ -72,11 +72,13 @@ def confirmation_refused(request, action: str, target: str) -> str | None:
         return _signed_out(request, action, target)
     user = request.user
     right_password = user.check_password(request.POST.get("confirm_password", ""))
-    code_needed = two_factor.is_on(user)
+    code_needed = two_factor.code_needed(request)
+    code = request.POST.get("confirm_code", "")
     # The password first: a code isn't used up on someone who doesn't know it.
-    if right_password and (
-        not code_needed or two_factor.check_code(user, request.POST.get("confirm_code", ""))
-    ):
+    if right_password and code_needed and (wait := two_factor.minutes_to_wait(user, code)):
+        accounts.forgive_one_confirmation(session)
+        return two_factor.wait_words(wait)
+    if right_password and (not code_needed or two_factor.check_code(user, code)):
         accounts.clear_confirmations(session)
         return None
     if accounts.confirmations_used_up(session):
@@ -97,6 +99,12 @@ def _signed_out(request, action: str, target: str) -> str:
     logout(request)
     # Not "nothing was changed": a double-click's other request may have gone through.
     return "Too many wrong tries, so you've been signed out. The Activity page shows what ran."
+
+
+def _refused_page(request, words: str, status: int = 403):
+    signed_out = not request.user.is_authenticated
+    context = {"title": words, "sign_in_again": signed_out}
+    return render(request, "problem.html.j2", context, status=status)
 
 
 def action(name: str, consequential: bool = False, target=lambda request, **kwargs: ""):
@@ -120,7 +128,7 @@ def action(name: str, consequential: bool = False, target=lambda request, **kwar
             if consequential:
                 refused = confirmation_refused(request, name, on)
                 if refused:
-                    return render(request, "problem.html.j2", {"title": refused}, status=403)
+                    return _refused_page(request, refused)
             record(request, name, on, "started")  # if this fails, nothing has happened
             try:
                 response = view(request, *args, **kwargs)
@@ -130,7 +138,7 @@ def action(name: str, consequential: bool = False, target=lambda request, **kwar
                     logout(request)
                 if exc.page is not None:
                     return exc.page
-                return render(request, "problem.html.j2", {"title": str(exc)}, status=400)
+                return _refused_page(request, str(exc), status=400)
             except Exception as exc:
                 record_if_possible(request, name, on, "failed", type(exc).__name__)
                 raise

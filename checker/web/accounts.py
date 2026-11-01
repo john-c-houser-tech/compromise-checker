@@ -11,6 +11,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.sessions.backends.db import SessionStore
 from django.contrib.sessions.models import Session
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -144,6 +145,13 @@ def begin_confirmation(session_key: str) -> bool:
     return True
 
 
+def forgive_one_confirmation(session_key: str) -> None:
+    """For a try the wait stopped: it was never checked, so it isn't a wrong one."""
+    latest = WrongConfirmation.objects.filter(session_key=session_key).order_by("-id").first()
+    if latest is not None:
+        latest.delete()
+
+
 def confirmations_used_up(session_key: str) -> bool:
     return (
         WrongConfirmation.objects.filter(session_key=session_key).count() >= MAX_WRONG_CONFIRMATIONS
@@ -179,9 +187,15 @@ def turn_off_two_factor(username: str) -> str | None:
 
 
 def _end_sessions(user) -> None:
-    for session in Session.objects.all():
-        if session.get_decoded().get("_auth_user_id") == str(user.pk):
-            session.delete()
+    Session.objects.filter(expire_date__lt=timezone.now()).delete()
+    rows = Session.objects.values_list("session_key", "session_data")
+    store = SessionStore()  # its decode treats a damaged row as empty
+    keys = [
+        key
+        for key, data in rows.iterator()
+        if store.decode(data).get("_auth_user_id") == str(user.pk)
+    ]
+    Session.objects.filter(session_key__in=keys).delete()
 
 
 def _record_from_command_line(action: str, username: str) -> None:

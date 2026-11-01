@@ -179,6 +179,14 @@ def configure(
     django.setup()
     call_command("migrate", verbosity=0, interactive=False)
     _protect_the_record()
+    _clear_old_sessions()
+
+
+def _clear_old_sessions() -> None:
+    from django.contrib.sessions.models import Session
+    from django.utils import timezone
+
+    Session.objects.filter(expire_date__lt=timezone.now()).delete()
 
 
 def _protect_the_record() -> None:
@@ -210,7 +218,7 @@ def listen_problem(bind: str, public_url: str | None, tls: bool) -> str | None:
         return f"--bind isn't an address: {bind} ({exc})"
     if isinstance(where, str | int | bytes):  # a unix socket or a file descriptor
         return f"--bind must be an address and a port: {bind}"
-    if not 0 <= where[1] <= 65535:
+    if not 1 <= where[1] <= 65535:
         return f"--bind has a port that doesn't exist: {bind}"
     if is_local(where[0]):
         return None

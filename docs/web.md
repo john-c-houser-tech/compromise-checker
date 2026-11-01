@@ -42,7 +42,9 @@ can reach that address, which is why it asks for a login even there.
   `checker web --public-url https://checker.example`. Only that address is accepted, and cookies
   are sent only over https. The proxy must add the client's address as the last entry of
   `X-Forwarded-For`, which Caddy and a normal nginx setup do, and should buffer request bodies. The
-  address in the activity record is only as good as that proxy.
+  address in the activity record is only as good as that proxy. Anyone with an account on this machine
+  can connect to the tool's port directly and claim any address, which gets around the limits on guessing
+  a login and puts a false address in the record, so use this on a machine only you can sign in to.
 - **From other machines, without a proxy:**
   `checker web --bind 0.0.0.0:443 --tls-cert CERT --tls-key KEY --public-url https://checker.example`.
   It refuses to listen beyond this machine without TLS, and refuses an http address for another
@@ -51,7 +53,7 @@ can reach that address, which is why it asks for a login even there.
 ## What it keeps
 
 `web.db` in the checker's home, owner-only: accounts with hashed passwords, sessions, failed
-logins for the last 15 minutes with their usernames and addresses, wrong passwords at a confirmation, and the activity record below. No evidence is ever copied
+logins for the last 15 minutes with their usernames and addresses, the times of wrong passwords at a confirmation (never the passwords), and the activity record below. No evidence is ever copied
 there. `keys/web-secret.txt` signs sessions; deleting it signs everyone out. Evidence is decrypted
 in memory for each page, with the same key the command line uses, and pages tell browsers not to
 keep them. There is no access log; only errors in the tool itself go to its standard error.
@@ -65,9 +67,10 @@ machine could still alter it, so it isn't protection against that. If an action 
 started, it doesn't happen. A line that says started with no result after it means the tool stopped, or
 couldn't write down how it ended, so check what it did.
 
-Two things go ahead even when the record can't be written, for example on a full disk: signing out, and
-viewing results and evidence, since you may need them most then. Those leave a line on the tool's
-standard error instead.
+Viewing results and evidence goes ahead even when the record can't be written, for example on a full
+disk, since you may need them most then. That leaves a line on the tool's standard error instead. Signing
+out goes ahead too, but on a full disk it only clears this browser: the session stays valid on the server
+until it expires, up to 8 hours, and the page says so. `checker web-password` ends it once there's space.
 
 Anything that changes what later findings mean, or removes data, asks for your password again, even
 when you're signed in. Five wrong passwords sign that session out. A browser's password manager may

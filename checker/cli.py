@@ -1680,15 +1680,26 @@ def cmd_web_password(args: argparse.Namespace) -> int:
     except ImportError:
         print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
         return 2
-    configure(home())
-
-    from checker.web.accounts import reset_password  # needs Django set up
-
-    password = getpass.getpass("New password: ")
-    if password != getpass.getpass("Again: "):
-        print("checker: the two passwords don't match", file=sys.stderr)
+    base = home()
+    if not (base / "web.db").exists():  # a mistyped home mustn't gain a new database
+        print(f"checker: no web interface has been run from {base}", file=sys.stderr)
         return 1
-    problems = reset_password(args.username, password)
+    configure(base)
+
+    from checker.web.accounts import no_such_account, reset_password  # needs Django set up
+
+    problems = [no_such_account(args.username)]
+    if problems[0] is None:
+        try:
+            password = getpass.getpass("New password: ")
+            if password != getpass.getpass("Again: "):
+                print("checker: the two passwords don't match", file=sys.stderr)
+                return 1
+        except (KeyboardInterrupt, EOFError):
+            print("\nchecker: nothing was changed", file=sys.stderr)
+            return 1
+        problems = reset_password(args.username, password)
+    problems = [problem for problem in problems if problem]
     for problem in problems:
         print(f"checker: {problem}", file=sys.stderr)
     if problems:

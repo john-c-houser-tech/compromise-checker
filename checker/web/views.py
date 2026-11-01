@@ -6,11 +6,13 @@ from __future__ import annotations
 import sys
 from urllib.parse import urlsplit
 
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.models import AnonymousUser
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import DatabaseError, transaction
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.urls import Resolver404, resolve, reverse
@@ -86,11 +88,15 @@ def setup_page(request, token: str) -> HttpResponse:
         except ValidationError as exc:
             errors.extend(exc.messages)
         if not errors:
-            with transaction.atomic():  # no account without its line in the record
-                user = accounts.create_first_account(token, username, password)
-                if user is not None:
-                    login(request, user, backend="django.contrib.auth.backends.ModelBackend")
-                    record(request, "created the first account")
+            try:
+                with transaction.atomic():  # no account without its line in the record
+                    user = accounts.create_first_account(token, username, password)
+                    if user is not None:
+                        login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+                        record(request, "created the first account")
+            except Exception:
+                request.user = AnonymousUser()  # the error page mustn't look signed in
+                raise
             if user is None:
                 return render(
                     request, "problem.html.j2", {"title": "This link isn't valid"}, status=404
@@ -113,9 +119,14 @@ def login_page(request) -> HttpResponse:
         else:
             user = authenticate(request, username=username, password=password)
             if user is not None:
-                accounts.clear_failures(username, address)
-                login(request, user)
-                record(request, "signed in")
+                try:
+                    with transaction.atomic():  # no sign-in without its line in the record
+                        accounts.clear_failures(username, address)
+                        login(request, user)
+                        record(request, "signed in")
+                except Exception:
+                    request.user = AnonymousUser()  # the error page mustn't look signed in
+                    raise
                 return HttpResponseRedirect(_safe_next(request))
     return render(
         request,
@@ -128,8 +139,28 @@ def login_page(request) -> HttpResponse:
 @require_POST
 def logout_page(request) -> HttpResponse:
     if request.user.is_authenticated:  # anyone can post here: only a real sign-out is kept
-        record_if_possible(request, "signed out")  # nothing may stop someone signing out
-    logout(request)
+        record_if_possible(request, "signed out")
+    try:
+        logout(request)
+    except DatabaseError as exc:
+        # On a full disk the session's row can't be removed: forget it in this browser, and say so.
+        print(f"checker web: session not ended: {type(exc).__name__}", file=sys.stderr)
+        request.user = AnonymousUser()
+        response = render(
+            request,
+            "problem.html.j2",
+            {
+                "title": "You're signed out of this browser only",
+                "detail": "The server couldn't save the change, usually because its disk is full,"
+                " so anyone holding a copy of this session could still use it for up to 8 hours."
+                " Free up space, then change the password with checker web-password to end it.",
+            },
+            status=503,
+        )
+        response.delete_cookie(
+            settings.SESSION_COOKIE_NAME, samesite=settings.SESSION_COOKIE_SAMESITE
+        )
+        return response
     return HttpResponseRedirect(reverse("login"))
 
 

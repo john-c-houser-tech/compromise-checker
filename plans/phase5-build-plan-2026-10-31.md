@@ -132,7 +132,9 @@ Reminds them to back up the evidence key, without which stored evidence can't be
 custody and purges proved to hold there as they do on SQLite.
 
 **5.15 Accounts and roles.** Login, roles (who may view, who may act), and the action
-record naming a person, not a machine. Reaching it from another machine comes with this.
+record naming a person, not a machine. Reaching it from another machine comes with this. So does
+trusting the proxy properly: today anyone with an account on the machine can connect to the port
+directly and claim any forwarded address (a Unix socket or a secret header from the proxy would stop it).
 
 ## Decisions to settle (one at a time)
 

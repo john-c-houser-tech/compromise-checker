@@ -2,6 +2,7 @@
 and host text that can do nothing in a logged-in browser."""
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1767,6 +1768,9 @@ def test_the_route_walk_catches_what_would_get_around_the_gate(web):
 
     looks_gated.checker_action = "x"
 
+    exempt_after = action("x")(ok)
+    exempt_after.csrf_exempt = True
+
     client, _ = signed_in(web)
     for route in (
         path("m", changes_on_get),
@@ -1774,6 +1778,7 @@ def test_the_route_walk_catches_what_would_get_around_the_gate(web):
         path("m", require_POST(ok), name="logout"),
         path("m", looks_gated),
         path("m", csrf_exempt(action("x")(ok))),
+        path("m", exempt_after),
     ):
         urls.urlpatterns.append(route)
         clear_url_caches()
@@ -1782,6 +1787,23 @@ def test_the_route_walk_catches_what_would_get_around_the_gate(web):
         finally:
             urls.urlpatterns.pop()
             clear_url_caches()
+
+
+def test_the_route_walk_passes_a_real_action(web):
+    from django.http import HttpResponse
+    from django.urls import clear_url_caches, path
+
+    from checker.web import urls
+    from checker.web.actions import action
+
+    client, _ = signed_in(web)
+    urls.urlpatterns.append(path("m", action("x")(lambda request: HttpResponse("ok"))))
+    clear_url_caches()
+    try:
+        assert route_problems(client) == []
+    finally:
+        urls.urlpatterns.pop()
+        clear_url_caches()
 
 
 def test_the_forms_before_the_gate_take_only_what_they_should(web):
@@ -1866,6 +1888,85 @@ def test_a_failure_the_view_reports_is_recorded_as_failed(web):
     assert ActionRecord.objects.order_by("-id").first().detail == "The server didn't answer."
 
 
+def test_a_returned_error_is_recorded_as_failed(web):
+    from django.http import HttpResponse
+
+    from checker.web.actions import action
+
+    @action("did a thing")
+    def view(request):
+        return HttpResponse("no", status=404)
+
+    assert view(request_for(account())).status_code == 404
+    assert the_record()[-1][2] == "failed: 404"
+
+
+def test_a_reported_failure_or_refusal_doesnt_need_its_line_written(web, monkeypatch):
+    from django.http import HttpResponse
+
+    from checker.web.actions import ActionFailed, action
+
+    calls = []
+
+    @action("did a thing")
+    def fails(request):
+        raise ActionFailed("It didn't work.")
+        return HttpResponse("ok")
+
+    view, done = an_action(consequential=True)
+    user = account()
+    wrong = request_for(user, {"confirm_password": "wrong"})
+    request = request_for(user)
+    broken_record(monkeypatch)
+    assert view(wrong).status_code == 403  # no 500: it's refused either way
+    assert not done
+
+    from checker.web import actions
+
+    monkeypatch.undo()
+    real = actions.ActionRecord.objects.create
+
+    def after_the_first(**kwargs):
+        calls.append(kwargs)
+        if len(calls) > 1:
+            raise OSError("disk full")
+        return real(**kwargs)
+
+    monkeypatch.setattr(actions.ActionRecord.objects, "create", after_the_first)
+    assert fails(request).status_code == 400
+
+
+def test_only_the_kind_of_failure_goes_to_the_error_output(web, monkeypatch, capfd):
+    from checker.web import actions
+
+    def broken(*args, **kwargs):
+        raise OSError("a settings file's secret")
+
+    client, _ = signed_in(web)
+    monkeypatch.setattr(actions.ActionRecord.objects, "create", broken)
+    client.post("/logout", {"x": "1"})
+    err = capfd.readouterr().err
+    assert "OSError" in err and "secret" not in err
+
+
+def test_a_record_that_cant_be_written_doesnt_undo_a_transaction_around_it(web, monkeypatch):
+    from django.db import transaction
+
+    from checker.web import actions
+    from checker.web.models import LoginAttempt
+
+    def broken(*args, **kwargs):
+        LoginAttempt.objects.create(username=None, address="", at=None)  # a real database error
+
+    request = request_for(account())
+    monkeypatch.setattr(actions.ActionRecord.objects, "create", broken)
+    with transaction.atomic():
+        LoginAttempt.objects.create(username="kept", address="y", at="2026-10-31T00:00:00Z")
+        actions.record_if_possible(request, "x")
+        assert LoginAttempt.objects.filter(username="kept").exists()
+    assert LoginAttempt.objects.filter(username="kept").exists()
+
+
 def test_the_outcome_not_being_written_doesnt_lie_about_the_work(web, monkeypatch, capfd):
     from checker.web import actions
 
@@ -1934,6 +2035,74 @@ def test_a_target_that_cant_be_named_is_still_recorded(web):
     assert the_record() == [("did a thing", "(couldn't be named)", "failed")]
 
 
+def test_a_sign_out_says_who_signed_out(web):
+    from checker.web.models import ActionRecord
+
+    client, _ = signed_in(web)
+    client.post("/logout", {"x": "1"})
+    row = ActionRecord.objects.order_by("-id").first()
+    assert (row.action, row.who) == ("signed out", "jo")
+
+
+def test_a_sign_out_that_cant_reach_the_database_clears_the_browser_and_says_so(
+    web, monkeypatch, capfd
+):
+    from django.conf import settings
+    from django.contrib.sessions.backends.db import SessionStore
+    from django.db import OperationalError
+
+    def full(*args, **kwargs):
+        raise OperationalError("database or disk is full")
+
+    client, _ = signed_in(web)
+    broken_record(monkeypatch)
+    monkeypatch.setattr(SessionStore, "delete", full)
+    monkeypatch.setattr(SessionStore, "save", full)
+    response = client.post("/logout", {"x": "1"})
+    text = response.content.decode()
+    assert response.status_code == 503
+    assert "signed out of this browser only" in text and "Sign out</button>" not in text
+    cookie = response.cookies[settings.SESSION_COOKIE_NAME]
+    assert cookie.value == "" and cookie["max-age"] == 0
+    assert "session not ended: OperationalError" in capfd.readouterr().err
+
+
+def test_a_sign_in_that_cant_be_recorded_doesnt_happen(web, monkeypatch):
+    from django.conf import settings
+    from django.contrib.sessions.models import Session
+
+    client, _ = web
+    account()
+    broken_record(monkeypatch)
+    response = client.post("/login", {"username": "jo", "password": PASSWORD})
+    assert response.status_code == 500
+    assert "Sign out</button>" not in response.content.decode()
+    assert settings.SESSION_COOKIE_NAME not in response.cookies
+    assert not Session.objects.exists()
+
+
+def test_right_sign_ins_never_add_up_to_a_lockout(web):
+    from checker.web.accounts import MAX_FAILURES_FOR_NAME
+
+    client, _ = web
+    account()
+    for _ in range(MAX_FAILURES_FOR_NAME * 2):
+        assert client.post("/login", {"username": "jo", "password": PASSWORD}).status_code == 302
+        client.post("/logout", {"x": "1"})
+
+
+def test_a_success_clears_only_its_own_name_and_address(web):
+    from checker.web.accounts import clear_failures, record_failure
+    from checker.web.models import LoginAttempt
+
+    record_failure("jo", "198.51.100.1")
+    record_failure("jo", "198.51.100.2")
+    record_failure("sam", "198.51.100.1")
+    clear_failures("jo", "198.51.100.1")
+    left = set(LoginAttempt.objects.values_list("username", "address"))
+    assert left == {("jo", "198.51.100.2"), ("sam", "198.51.100.1")}
+
+
 def test_a_sign_out_only_counts_if_someone_was_signed_in(web):
     client, _ = web
     assert client.post("/logout", {"x": "1"}).status_code == 302
@@ -1966,7 +2135,9 @@ def test_the_first_account_cant_exist_without_its_line_in_the_record(web, monkey
     link = accounts.setup_link("http://testserver")
     broken_record(monkeypatch)
     form = {"username": "jo", "password": PASSWORD, "password2": PASSWORD}
-    assert client.post(link.removeprefix("http://testserver"), form).status_code == 500
+    response = client.post(link.removeprefix("http://testserver"), form)
+    assert response.status_code == 500
+    assert "Sign out</button>" not in response.content.decode()
     assert not get_user_model().objects.exists()
     token = link.rsplit("/", 1)[1]
     assert accounts.setup_token_valid(token)  # the link isn't spent on nothing
@@ -1997,9 +2168,41 @@ def test_guessing_the_confirmation_ends_the_session(web):
     for _ in range(MAX_WRONG_CONFIRMATIONS - 1):
         response = view(request_for(user, {"confirm_password": "wrong"}, session=key))
         assert response.status_code == 403
-    assert "signed out" in response.content.decode()
+    text = response.content.decode()
+    assert "signed out" in text and "nothing was changed" not in text
     assert not Session.objects.filter(session_key=key).exists()
     assert not done
+
+
+def test_the_right_password_is_refused_once_the_tries_are_used_up(web):
+    """As when a guess is still running: the count comes first, so the password isn't looked at."""
+    from django.contrib.sessions.models import Session
+
+    from checker.web.accounts import MAX_WRONG_CONFIRMATIONS, begin_confirmation
+
+    view, done = an_action(consequential=True)
+    user = account()
+    key = request_for(user).session.session_key
+    for _ in range(MAX_WRONG_CONFIRMATIONS):
+        begin_confirmation(key)
+    response = view(request_for(user, {"confirm_password": PASSWORD}, session=key))
+    assert response.status_code == 403 and not done
+    assert not Session.objects.filter(session_key=key).exists()
+
+
+def test_one_sessions_wrong_passwords_dont_touch_another(web):
+    from checker.web.accounts import MAX_WRONG_CONFIRMATIONS
+
+    view, done = an_action(consequential=True)
+    user = account()
+    mine, theirs = (request_for(user).session.session_key for _ in range(2))
+    for _ in range(MAX_WRONG_CONFIRMATIONS - 1):
+        view(request_for(user, {"confirm_password": "wrong"}, session=mine))
+        view(request_for(user, {"confirm_password": "wrong"}, session=theirs))
+    view(request_for(user, {"confirm_password": PASSWORD}, session=mine))  # clears only mine
+    assert done == [1]
+    response = view(request_for(user, {"confirm_password": "wrong"}, session=theirs))
+    assert "signed out" in response.content.decode()
 
 
 def test_a_right_confirmation_clears_the_count(web):
@@ -2015,6 +2218,26 @@ def test_a_right_confirmation_clears_the_count(web):
     assert done == [1, 1, 1]
 
 
+def all_at_once(work, times=16):
+    """On real threads against the real database file, each with its own connection."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from django.db import connection
+
+    barrier = Barrier(times)
+
+    def one(_):
+        barrier.wait()
+        try:
+            return work()
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(times) as pool:
+        return list(pool.map(one, range(times)))  # a "database is locked" error is raised here
+
+
 def test_guesses_sent_at_once_cant_all_pass_the_count(web):
     from checker.web.accounts import (
         MAX_FAILURES_FOR_NAME,
@@ -2022,11 +2245,12 @@ def test_guesses_sent_at_once_cant_all_pass_the_count(web):
         begin_confirmation,
         begin_login,
     )
+    from checker.web.models import LoginAttempt, WrongConfirmation
 
-    assert all(begin_confirmation("s") for _ in range(MAX_WRONG_CONFIRMATIONS))
-    assert not begin_confirmation("s")
-    assert all(begin_login("jo", "198.51.100.1") for _ in range(MAX_FAILURES_FOR_NAME))
-    assert not begin_login("jo", "198.51.100.1")
+    assert sum(all_at_once(lambda: begin_confirmation("s"))) == MAX_WRONG_CONFIRMATIONS
+    assert WrongConfirmation.objects.count() == MAX_WRONG_CONFIRMATIONS
+    assert sum(all_at_once(lambda: begin_login("jo", "198.51.100.1"))) == MAX_FAILURES_FOR_NAME
+    assert LoginAttempt.objects.count() == MAX_FAILURES_FOR_NAME
 
 
 def test_bad_logins_from_a_shared_address_cant_block_a_confirmation(web):
@@ -2070,6 +2294,26 @@ def test_a_forwarded_address_that_isnt_one_is_ignored(web, settings_override):
     request.META["HTTP_X_FORWARDED_FOR"] = "198.51.100.7"
     assert client_address(request) == "198.51.100.7"
 
+
+MAKE_ACCOUNT = """
+import sys
+from pathlib import Path
+from checker.web.app import configure
+configure(Path(sys.argv[1]))
+from django.contrib.auth import get_user_model
+get_user_model().objects.create_user("jo", password="the first long password")
+"""
+
+CHECK_ACCOUNT = """
+import sys
+from pathlib import Path
+from checker.web.app import configure
+configure(Path(sys.argv[1]))
+from django.contrib.auth import authenticate
+from checker.web.models import ActionRecord
+last = ActionRecord.objects.order_by("-id").first()
+print(authenticate(username="jo", password=sys.argv[2]) is not None, last.action)
+"""
 
 TRIGGER_PROBE = """
 import json, sys
@@ -2139,17 +2383,20 @@ def test_the_record_stays_append_only_from_a_fresh_start_and_after_a_rebuild(tmp
 def test_a_lost_password_can_be_reset_and_the_record_says_so(web):
     from django.contrib.auth import authenticate
 
-    from checker.web.accounts import reset_password
-    from checker.web.models import ActionRecord
+    from checker.web.accounts import record_failure, reset_password
+    from checker.web.models import ActionRecord, LoginAttempt
 
     client, _ = signed_in(web)
     new = "a different long password"
+    record_failure("jo", "198.51.100.1")
+    record_failure("sam", "198.51.100.1")
     assert reset_password("nobody", new)[0].startswith("There's no account called nobody")
     assert reset_password("jo", "short")
     assert authenticate(username="jo", password=PASSWORD)
     assert reset_password("jo", new) == []
     assert authenticate(username="jo", password=new)
     assert client.get("/activity").status_code == 302  # old sessions are over
+    assert not LoginAttempt.objects.filter(username="jo").exists()
     row = ActionRecord.objects.order_by("-id").first()
     assert (row.action, row.target, row.address) == (
         "reset a password from the command line",
@@ -2158,13 +2405,67 @@ def test_a_lost_password_can_be_reset_and_the_record_says_so(web):
     )
 
 
-def test_the_password_command_asks_twice(web, monkeypatch, capsys):
+def test_a_password_cant_change_without_its_line_in_the_record(web, monkeypatch):
+    from django.contrib.auth import authenticate
+
+    from checker.web.accounts import reset_password
+
+    account()
+    broken_record(monkeypatch)
+    with pytest.raises(OSError):
+        reset_password("jo", "a different long password")
+    assert authenticate(username="jo", password=PASSWORD)
+
+
+def password_command(home, *answers):
+    """The real command, in its own process with no terminal, so getpass reads the answers."""
+    return subprocess.run(
+        [sys.executable, "-m", "checker", "web-password", "jo"],
+        input="".join(f"{answer}\n" for answer in answers),
+        capture_output=True,
+        text=True,
+        env={**os.environ, "CHECKER_HOME": str(home)},
+        start_new_session=True,  # no controlling terminal for getpass to open
+    )
+
+
+def test_the_password_command_from_start_to_finish(tmp_path):
+    missing = password_command(tmp_path / "typo", "x")
+    assert missing.returncode == 1 and "no web interface" in missing.stderr
+    assert not (tmp_path / "typo").exists()
+
+    (tmp_path / "web.db").touch()
+    unknown = password_command(tmp_path)  # no answers: it mustn't ask before checking the name
+    assert unknown.returncode == 1 and "no account called jo" in unknown.stderr
+
+    subprocess.run(
+        [sys.executable, "-c", MAKE_ACCOUNT, str(tmp_path)], check=True, capture_output=True
+    )
+    new = "a different long password"
+    eof = password_command(tmp_path, new)  # the second answer never comes
+    assert eof.returncode == 1 and "nothing was changed" in eof.stderr
+    assert "Traceback" not in eof.stderr
+    short = password_command(tmp_path, "short", "short")
+    assert short.returncode == 1 and "Password changed" not in short.stdout
+    done = password_command(tmp_path, new, new)
+    assert done.returncode == 0 and "Password changed" in done.stdout
+    probe = subprocess.run(
+        [sys.executable, "-c", CHECK_ACCOUNT, str(tmp_path), new],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.stdout.strip() == "True reset a password from the command line"
+
+
+def test_the_password_command_asks_twice(web, _django, monkeypatch, capsys):
     from argparse import Namespace
 
     from checker import cli
 
     account()
     monkeypatch.setattr(web_app, "configure", lambda home: None)
+    monkeypatch.setattr(cli, "home", lambda: _django)
     answers = iter(["one long password", "another long password"])
     monkeypatch.setattr("getpass.getpass", lambda prompt: next(answers))
     assert cli.cmd_web_password(Namespace(username="jo")) == 1

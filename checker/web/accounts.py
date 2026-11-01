@@ -153,13 +153,20 @@ def clear_confirmations(session_key: str) -> None:
     WrongConfirmation.objects.filter(session_key=session_key).delete()
 
 
+def no_such_account(username: str) -> str | None:
+    if get_user_model().objects.filter(username=username).exists():
+        return None
+    names = ", ".join(get_user_model().objects.values_list("username", flat=True))
+    return f"There's no account called {username}. The accounts are: {names or 'none yet'}"
+
+
 def reset_password(username: str, password: str) -> list[str]:
     """For the command line, when a password is lost. Why it can't be done, or nothing: the
     account's sessions end with its old password, and the record says it happened."""
-    user = get_user_model().objects.filter(username=username).first()
-    if user is None:
-        names = ", ".join(get_user_model().objects.values_list("username", flat=True))
-        return [f"There's no account called {username}. The accounts are: {names or 'none yet'}"]
+    problem = no_such_account(username)
+    if problem:
+        return [problem]
+    user = get_user_model().objects.get(username=username)
     try:
         validate_password(password, user)
     except ValidationError as exc:

@@ -15,7 +15,7 @@ from functools import wraps
 
 from django.contrib.auth import logout
 from django.contrib.auth.decorators import login_required
-from django.db import connection
+from django.db import connection, transaction
 from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
@@ -52,7 +52,8 @@ def record_if_possible(
 ) -> None:
     """For what must go ahead anyway: reading evidence on a full disk, or signing out."""
     try:
-        record(request, action, target, outcome, detail)
+        with transaction.atomic():  # a failure here can't undo a transaction around it
+            record(request, action, target, outcome, detail)
     except Exception as exc:  # noqa: BLE001 - whatever it is, the page still has to work
         print(f"checker web: not recorded: {action}: {type(exc).__name__}", file=sys.stderr)
 
@@ -75,7 +76,8 @@ def confirmation_refused(request, action: str, target: str) -> str | None:
 def _signed_out(request, action: str, target: str) -> str:
     record_if_possible(request, action, target, "refused", "too many wrong passwords: signed out")
     logout(request)
-    return "Too many wrong passwords, so nothing was changed and you've been signed out."
+    # Not "nothing was changed": a double-click's other request may have gone through.
+    return "Too many wrong passwords, so you've been signed out. The Activity page shows what ran."
 
 
 def action(name: str, consequential: bool = False, target=lambda request, **kwargs: ""):

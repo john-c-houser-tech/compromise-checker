@@ -147,9 +147,10 @@ copy of that file, or a backup of it, as you would a password.
 
 ## First setup
 
-The first time `checker web` starts, with no settings yet, it sets itself up: an evidence key, a
-database, and every choice at its most private, with nothing optional collected and the AI advisor off.
-It prints where the key is and the one-time link for the first account. `checker init` is still there
+The first time `checker web` starts, in an empty home, it sets itself up: an evidence key, a database,
+nothing optional collected and the AI advisor off. It prints where the key is and the one-time link for
+the first account. If settings go missing from a home with a key or evidence in it, it refuses, and says to
+restore them: a new key would make everything stored unreadable. `checker init` is still there
 for anyone who wants to answer its questions first, or keep the private key elsewhere (`--recipient`).
 
 The First setup page then goes through what's next, working out where you are from what's really there:
@@ -161,8 +162,9 @@ commands it gives you on that server, confirm its identity, and run a first chec
 - **This machine's key** is made only when you ask, in `keys/scanner_ed25519`, readable only by the tool's
   account. It has no passphrase, so daily checks can use it, which makes that file a credential for
   acting as an administrator on every server that accepts it. It's never replaced by the page.
-- **The commands** are for a plain account logging in with a key file, using one sudo rule. For anything else,
-  the page says so and points to [setting up a scanner account](scanner-account.md).
+- **The commands** are for a new, plainly named account logging in with a key file, using one sudo rule, and
+  stop without changing anything if that account already exists. For anything else, the page says so and
+  points to [setting up a scanner account](scanner-account.md).
 
 `tests/integration/first_setup_proof.py` runs the whole path against a real sshd in a container.
 

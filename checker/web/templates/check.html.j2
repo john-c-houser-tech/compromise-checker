@@ -12,6 +12,11 @@
 <p role="status">{{ run.state[:1] | upper }}{{ run.state[1:] }}.{% if run.state in ("finished", "finished with problems") %} <a href="{{ url('fleet') }}">See your servers</a>.{% endif %}</p>
 {% if from_decide %}<p><a href="{{ url('decide') }}?host={{ run.hosts | urlencode }}">See what it proposed</a></p>{% endif %}
 {% endif %}
+{% if try_these %}
+<h2>What to look at</h2>
+<ul>{% for words in try_these %}<li>{{ words | visible(2000) }}</li>{% endfor %}</ul>
+<ul>{% for name in check_hosts %}<li><a href="{{ url('manage_prepare') }}?host={{ name | urlencode }}">What to set up on {{ name }}</a></li>{% endfor %}</ul>
+{% endif %}
 {% if lines %}
 <h2>What it reported</h2>
 <div class="from-server">

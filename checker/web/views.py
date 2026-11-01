@@ -1062,6 +1062,13 @@ def _first_setup_page(request, problem="", status: int = 200) -> HttpResponse:
     return render(request, "first_setup.html.j2", context, status=status)
 
 
+def _setup_refused(request, words) -> ActionFailed:
+    try:
+        return ActionFailed(words, page=_first_setup_page(request, words, 400))
+    except Exception:  # noqa: BLE001 - the words are what matter
+        return ActionFailed(words)
+
+
 @login_required
 @require_GET
 def first_setup_page(request) -> HttpResponse:
@@ -1073,7 +1080,11 @@ def first_setup_page(request) -> HttpResponse:
         return _unavailable(request, "The settings or the evidence store can't be read.")
 
 
-@action(first_setup.KEY_SAVED)
+def _evidence_key_named(request, **kwargs) -> str:
+    return first_setup.this_key(home())
+
+
+@action(first_setup.KEY_SAVED, target=_evidence_key_named)
 def first_setup_key_saved(request) -> HttpResponse:
     """No password: it changes nothing but the reminder, and says who said so."""
     return HttpResponseRedirect(reverse("first_setup"))
@@ -1085,11 +1096,9 @@ def first_setup_choices(request) -> HttpResponse:
     try:
         changed = setting_forms.save(home(), request.POST)
     except setting_forms.ChangedMeanwhile as exc:
-        words = str(exc)
-        raise ActionFailed(words, page=_first_setup_page(request, words, 400)) from None
+        raise _setup_refused(request, str(exc)) from None
     except setting_forms.FormProblem as exc:
-        words = visible(str(exc), 800)
-        raise ActionFailed(words, page=_first_setup_page(request, words, 400)) from None
+        raise _setup_refused(request, visible(str(exc), 800)) from None
     except MANAGE_FAILURES as exc:
         print(f"checker web: first setup's choices failed: {type(exc).__name__}", file=sys.stderr)
         raise ActionFailed(CANT_CHANGE_SETTINGS) from None
@@ -1236,12 +1245,16 @@ def check_page(request, run_id: int) -> HttpResponse:
     run = CheckRun.objects.filter(pk=run_id).first()
     if run is None:
         return not_found(request)
+    lines = runs.output_lines(run.id)
+    checking = run.kind == "check" and not runs.is_running(run.id)
     return render(
         request,
         "check.html.j2",
         {
             "run": _run_row(run),
-            "lines": runs.output_lines(run.id),
+            "lines": lines,
+            "try_these": first_setup.what_to_try(lines) if checking else [],
+            "check_hosts": json.loads(run.hosts),
             "busy": "busy" in request.GET,
             "from_decide": run.kind == "advice",
         },

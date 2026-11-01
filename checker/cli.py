@@ -1726,9 +1726,27 @@ def _web_extra_missing(exc: ImportError) -> int:
 
 def _first_start(base: Path) -> None:
     """Someone who has never used a command line starts here, so the tool sets itself up, with
-    every choice at its most private: nothing optional collected, the AI advisor off. The first
-    setup page asks about them. What `checker init --recipient` does stays with `checker init`."""
-    _, identity_path = initialise(base)
+    nothing optional collected and the AI advisor off. The first setup page asks about them. What
+    `checker init --recipient` does stays with `checker init`. Only in a home with nothing in it,
+    since a missing settings file is no sign of a new install, and only where a home could be."""
+    traces = [
+        name
+        for name in ("keys/evidence-identity.txt", "checker.db", "evidence", "web.db")
+        if (base / name).exists()
+    ]
+    if traces:
+        raise EvidenceError(
+            f"{base} has {', '.join(traces)} but no settings: restore config.yaml from a backup,"
+            " or run `checker init` if you mean to start again"
+        )
+    if os.environ.get("CHECKER_HOME") and not base.parent.is_dir():
+        raise EvidenceError(f"CHECKER_HOME is {base}, whose folder doesn't exist: is that right?")
+    try:
+        _, identity_path = initialise(base)
+    except EvidenceError:
+        if config_file(base).exists():  # another start got there first, which is fine
+            return
+        raise
     print(f"Set up in {base}, with nothing optional collected and the AI advisor off.")
     if identity_path:
         print(f"The evidence key is in {identity_path}. BACK IT UP somewhere safe and separate:")
@@ -1738,7 +1756,7 @@ def _first_start(base: Path) -> None:
 def cmd_web(args: argparse.Namespace) -> int:
     """The web interface, until interrupted."""
     try:
-        from checker.web.app import serve
+        from checker.web.app import listen_problem, serve
     except ImportError:
         print(
             "checker: the web interface needs: pip install -e '.[web]'",
@@ -1746,16 +1764,20 @@ def cmd_web(args: argparse.Namespace) -> int:
         )
         return 2
     base = home()
+    if bool(args.tls_cert) != bool(args.tls_key):
+        print("checker: --tls-cert and --tls-key go together", file=sys.stderr)
+        return 2
+    problem = listen_problem(args.bind, args.public_url, bool(args.tls_cert))
+    if problem:  # before anything is set up, for a server that wouldn't have started
+        print(f"checker: {problem}", file=sys.stderr)
+        return 2
     try:
-        if not config_file(base).exists():
+        if not config_file(base).is_symlink() and not config_file(base).exists():
             _first_start(base)
         load_config(base)
     except (EvidenceError, ValidationError, yaml.YAMLError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
-    if bool(args.tls_cert) != bool(args.tls_key):
-        print("checker: --tls-cert and --tls-key go together", file=sys.stderr)
-        return 2
     try:
         return serve(base, args.bind, args.public_url, args.tls_cert, args.tls_key)
     except ImportError as exc:

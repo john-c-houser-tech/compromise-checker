@@ -407,6 +407,13 @@ def _initialise(
     advisor: Advisor | None = None,
 ) -> tuple[Config, Path | None]:
     identity_path = None
+    if (home / "keys" / "evidence-identity.txt").exists():
+        # Its settings may be gone, but evidence may be encrypted to this. Replacing it would make
+        # all of that unreadable, for good.
+        raise EvidenceError(
+            f"an evidence key is already in {home / 'keys'}, though the settings are missing:"
+            " restore config.yaml from a backup, rather than making a new key"
+        )
     if recipient:
         try:
             x25519.Recipient.from_str(recipient)

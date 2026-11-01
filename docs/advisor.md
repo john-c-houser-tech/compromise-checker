@@ -11,7 +11,8 @@ until your organization turns it on ([security and privacy policy
 ## Turning it on
 
 `checker init` asks, and says what would be sent and to whom; unattended
-setups pass `--advisor on|off` (off by default). Later:
+setups pass `--advisor on|off` (off by default). A first start of `checker web`
+leaves it off, and its First setup page asks. Later:
 
 ```
 checker config set advisor.enabled on

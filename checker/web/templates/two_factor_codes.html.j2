@@ -1,0 +1,13 @@
+{% extends "base.html.j2" %}
+{% block nudge %}{% endblock %}
+{% block main %}
+<h1>Save your recovery codes</h1>
+<p>If you lose your phone, each of these gets you in once. There's no help desk that can do it for you, and they won't be shown again, so print them or put them in a password manager now.</p>
+<ul class="recovery-codes">
+  {% for code in codes %}<li><code>{{ code }}</code></li>{% endfor %}
+</ul>
+<form method="post" action="{{ url('two_factor_codes_saved') }}">
+  {{ csrf_input }}
+  <button>I've saved them</button>
+</form>
+{% endblock %}

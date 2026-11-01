@@ -1,0 +1,31 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block nudge %}{% endblock %}
+{% block main %}
+<h1>Sign-in security</h1>
+{% if not on %}
+<p>Two-factor sign-in is off. <a href="{{ url('two_factor_setup') }}">Turn it on</a>.</p>
+{% else %}
+<p>Two-factor sign-in is on. You have {{ left }} recovery code{{ "" if left == 1 else "s" }} left.</p>
+{% if unsaved %}<p class="error">Your recovery codes may not have been saved: nobody has said they were. If you don't have them, make new ones now.</p>
+<form method="post" action="{{ url('two_factor_codes_saved') }}">
+  {{ csrf_input }}
+  <button>I have them saved</button>
+</form>{% endif %}
+{% if left == 0 %}<p class="error">You have no recovery codes left, so a lost phone would lock you out. Make new ones now.</p>{% elif left == 1 %}<p>With a lost phone it takes one code to sign in and one to change anything here, so make new ones soon.</p>{% endif %}
+<h2>New recovery codes</h2>
+<p>Replaces the ones you have, if you've used most of them or think someone has seen them.</p>
+<form method="post" action="{{ url('two_factor_new_codes') }}">
+  {{ csrf_input }}
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Make new recovery codes</button>
+</form>
+<h2>Moving to a new phone</h2>
+<p>{% if required %}Turn this off, and you'll be asked to set it up again on the new phone straight away.{% else %}Turn this off, then turn it on again with the new phone. While it's off, a stolen password is enough to get in.{% endif %}</p>
+<form method="post" action="{{ url('two_factor_turn_off') }}">
+  {{ csrf_input }}
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Turn off two-factor sign-in</button>
+</form>
+{% endif %}
+{% endblock %}

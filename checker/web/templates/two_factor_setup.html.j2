@@ -1,0 +1,36 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block nudge %}{% endblock %}
+{% block main %}
+<h1>Turn on two-factor sign-in</h1>
+{% if required %}<p>This server can be reached from other machines, so each account has to use two-factor sign-in before it can see anything.</p>{% endif %}
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% if retry %}
+<form method="post" action="{{ url('two_factor_turn_on') }}">
+  {{ csrf_input }}
+  <label>Code from the app <input name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus></label>
+  <button>Turn on two-factor sign-in</button>
+</form>
+<p><a href="{{ url('two_factor_setup') }}">Start again with a new code to scan</a></p>
+{% elif not qr %}
+<p>Signing in will take your password and a six-digit code from an app on your phone, so a stolen password isn't enough. Any authenticator app works: 1Password, Google Authenticator, Authy, or the Passwords app on an iPhone.</p>
+<form method="post" action="{{ url('two_factor_start') }}">
+  {{ csrf_input }}
+  {{ parts.confirm() }}
+  <button>Get started</button>
+</form>
+{% else %}
+<ol>
+  <li>In your authenticator app, add an account and scan this code.
+    <p class="qr">{{ qr }}</p>
+    <p>Can't scan it? Type this key in instead, as a time-based code: <code>{{ secret }}</code></p>
+  </li>
+  <li>Type the six digits the app now shows.</li>
+</ol>
+<form method="post" action="{{ url('two_factor_turn_on') }}">
+  {{ csrf_input }}
+  <label>Code from the app <input name="code" inputmode="numeric" autocomplete="one-time-code" required></label>
+  <button>Turn on two-factor sign-in</button>
+</form>
+{% endif %}
+{% endblock %}

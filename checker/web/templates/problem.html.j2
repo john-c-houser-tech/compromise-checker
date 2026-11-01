@@ -2,4 +2,5 @@
 {% block main %}
 <h1>{{ title }}</h1>
 {% if detail %}<p>{{ detail }}</p>{% endif %}
+{% if sign_in_again %}<p><a href="{{ url('login') }}">Sign in again</a></p>{% endif %}
 {% endblock %}

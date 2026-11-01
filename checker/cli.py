@@ -969,6 +969,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     web_password.add_argument("username")
     web_password.set_defaults(handler=cmd_web_password)
+    web_two_factor_off = commands.add_parser(
+        "web-two-factor-off",
+        help="turn off two-factor sign-in for a web account that lost its phone and recovery codes",
+    )
+    web_two_factor_off.add_argument("username")
+    web_two_factor_off.set_defaults(handler=cmd_web_two_factor_off)
     changed = commands.add_parser(
         "changes", help="what changed on a host since its previous bundle and its baseline"
     )
@@ -1649,6 +1655,14 @@ def cmd_fleet(args: argparse.Namespace) -> int:
     return 0
 
 
+def _web_extra_missing(exc: ImportError) -> int:
+    """Only for the extra's own packages: any other failed import is a bug, and should say so."""
+    if (exc.name or "").split(".")[0] not in ("django", "django_otp", "segno", "gunicorn"):
+        raise exc
+    print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+    return 2
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     """The web interface, until interrupted."""
     try:
@@ -1668,7 +1682,10 @@ def cmd_web(args: argparse.Namespace) -> int:
     if bool(args.tls_cert) != bool(args.tls_key):
         print("checker: --tls-cert and --tls-key go together", file=sys.stderr)
         return 2
-    return serve(base, args.bind, args.public_url, args.tls_cert, args.tls_key)
+    try:
+        return serve(base, args.bind, args.public_url, args.tls_cert, args.tls_key)
+    except ImportError as exc:
+        return _web_extra_missing(exc)
 
 
 def cmd_web_password(args: argparse.Namespace) -> int:
@@ -1682,9 +1699,16 @@ def cmd_web_password(args: argparse.Namespace) -> int:
         return 2
     base = home()
     if not (base / "web.db").exists():  # a mistyped home mustn't gain a new database
-        print(f"checker: no web interface has been run from {base}", file=sys.stderr)
+        print(
+            f"checker: no web interface has been run from {base}. Run this as the user who runs"
+            " it, with the same CHECKER_HOME.",
+            file=sys.stderr,
+        )
         return 1
-    configure(base)
+    try:
+        configure(base)
+    except ImportError as exc:
+        return _web_extra_missing(exc)
 
     from checker.web.accounts import no_such_account, reset_password  # needs Django set up
 
@@ -1705,6 +1729,39 @@ def cmd_web_password(args: argparse.Namespace) -> int:
     if problems:
         return 1
     print(f"Password changed for {args.username}. Anyone signed in as them has been signed out.")
+    print("If they can't get past the code at sign-in, run checker web-two-factor-off next.")
+    return 0
+
+
+def cmd_web_two_factor_off(args: argparse.Namespace) -> int:
+    """When a phone and its recovery codes are both gone. The record says so."""
+    try:
+        from checker.web.app import configure
+    except ImportError:
+        print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+        return 2
+    base = home()
+    if not (base / "web.db").exists():  # a mistyped home mustn't gain a new database
+        print(
+            f"checker: no web interface has been run from {base}. Run this as the user who runs"
+            " it, with the same CHECKER_HOME.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        configure(base)
+    except ImportError as exc:
+        return _web_extra_missing(exc)
+
+    from checker.web.accounts import turn_off_two_factor  # needs Django set up
+
+    problem = turn_off_two_factor(args.username)
+    if problem:
+        print(f"checker: {problem}", file=sys.stderr)
+        return 1
+    print(f"Two-factor sign-in is off for {args.username}, and their sessions have ended.")
+    print("Anyone who knows the password can now set it up with their own phone. If it might be")
+    print("known, change it right away with checker web-password.")
     return 0
 
 

@@ -52,8 +52,9 @@ can reach that address, which is why it asks for a login even there.
 
 ## What it keeps
 
-`web.db` in the checker's home, owner-only: accounts with hashed passwords, sessions, failed
-logins for the last 15 minutes with their usernames and addresses, the times of wrong passwords at a confirmation (never the passwords), and the activity record below. No evidence is ever copied
+`web.db` in the checker's home, owner-only: accounts with hashed passwords, two-factor secrets and
+recovery codes, sessions, failed
+logins for the last 15 minutes with their usernames and addresses, the times of wrong passwords and codes (never what was typed), and the activity record below. No evidence is ever copied
 there. `keys/web-secret.txt` signs sessions; deleting it signs everyone out. Evidence is decrypted
 in memory for each page, with the same key the command line uses, and pages tell browsers not to
 keep them. There is no access log; only errors in the tool itself go to its standard error.
@@ -76,8 +77,40 @@ Anything that changes what later findings mean, or removes data, asks for your p
 when you're signed in. Five wrong passwords sign that session out. A browser's password manager may
 fill the box in for whoever is at the keyboard, so don't leave a signed-in browser open.
 
+## Two-factor sign-in
+
+Signing in can take a six-digit code from an authenticator app as well as your password, so a stolen
+password isn't enough. Any app that does time-based codes works.
+
+- **When it's required:** whenever another machine can reach the server, which means it listens beyond
+  this machine or its `--public-url` isn't a name on this machine (`localhost`, `*.localhost`, a loopback
+  address). Until an account has set it up, it can't see anything.
+- **When it's optional:** when only this machine can reach the server. Every page asks you to turn it on
+  until you do, because anyone with an account on this machine can reach that address too.
+- **Lost your phone?** You get ten recovery codes when you turn it on, each good once, and they're shown
+  only then. Pages remind you until you say you've saved them. It takes one to sign in without your
+  phone and another to change anything, unless it was your last. If they're gone too, whoever owns the
+  checker's home can run `checker web-password USERNAME` and then `checker web-two-factor-off USERNAME`
+  on this machine, in that order, since anyone who knows the old password could otherwise set it up as
+  theirs. Both end the account's sessions, and the activity record notes them.
+- **Someone may have your password** if a sign-in asks for a code when you never set it up, if setup keeps
+  saying it has ended, if you're told to wait after wrong codes you didn't type, or if the Activity page
+  shows them. Each wrong code makes the next try wait longer, up to about 9 minutes, even with the right
+  code, so anyone with the password can slow you down. On the machine, as the user who runs the tool, run
+  `checker web-password USERNAME`, which ends that and their sessions. If you still can't get past the
+  code, because they set it up with their phone, run `checker web-two-factor-off USERNAME` next.
+- **Moving to a new phone:** Sign-in security, in the menu, turns it off so you can set it up again.
+
+With two-factor on, anything that asks for your password again asks for a code as well. A code works
+only once, so after using one, wait for the next. Five wrong codes end the session. With a stolen
+password, someone can try about 170 codes a day before that wait stops them, each one shown on the Activity
+page, so don't leave wrong codes you didn't type unexplained. The secrets and recovery codes are stored readable in `web.db`, since the tool has to check against them: treat a
+copy of that file, or a backup of it, as you would a password.
+
 ## How it protects you
 
+- **Two-factor sign-in,** above. With only a password so far, nothing opens but the second step, or
+  setting it up if that's still to be done.
 - **Passwords:** at least 12 characters, not common, not all digits, not like the username. Five
   failed logins for a name from one address, or twenty from one address, stop further tries from
   there for 15 minutes, even with the right password. Without a proxy, everyone on this machine

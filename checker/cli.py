@@ -2911,11 +2911,11 @@ def cmd_schedule_remove(args: argparse.Namespace) -> int:
     from checker import schedule
 
     try:
-        deleted = schedule.remove_timer(home())
+        deleted, stopped = schedule.remove_timer(home())
     except schedule.InstallFailed as exc:
         print(f"checker: not stopped: {exc}", file=sys.stderr)
         return 1
-    if not deleted:
+    if not stopped:
         print("No timer is installed.")
         return 0
     for path in deleted:

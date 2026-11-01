@@ -20,6 +20,7 @@ from checker.purge import execute, leftovers, parse_before
 from checker.purge import plan as purge_plan
 from checker.schedule import Busy, forget_hosts, run_lock
 from checker.web.manage import _shown
+from checker.web.runs import AlreadyRunning, none_may_start
 
 SHOWN = 100
 THE_WORD = "purge"  # noqa: S105 - what's typed to confirm, as on the command line
@@ -160,14 +161,12 @@ def _forget_emptied(base: Path, chosen: Any) -> None:
         print(f"checker web: the last run's memory stays: {type(exc).__name__}", file=sys.stderr)
 
 
-def run(base: Path, params, check_running: bool) -> dict[str, Any]:
+def run(base: Path, params) -> dict[str, Any]:
     """What was deleted. Refused unless the word was typed and it's still what was shown."""
     if params.get("word", "").strip() != THE_WORD:
         raise PurgeProblem(f"Type {THE_WORD} in the box to say you mean it. Nothing was deleted.")
-    if check_running:
-        raise PurgeProblem("A check is running. Try again when it has finished.")
     try:
-        with run_lock(base):
+        with none_may_start(), run_lock(base):
             store = Store(database_file(base))
             try:
                 chosen = _plan(store, base, params)
@@ -185,7 +184,7 @@ def run(base: Path, params, check_running: bool) -> dict[str, Any]:
             finally:
                 store.close()
             _forget_emptied(base, chosen)
-    except Busy:
+    except (Busy, AlreadyRunning):
         raise PurgeProblem("A check is running. Try again when it has finished.") from None
     except (
         EvidenceError,

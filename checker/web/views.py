@@ -901,7 +901,9 @@ def settings_save(request) -> HttpResponse:
 def _schedule_page(request, problem="", status: int = 200) -> HttpResponse:
     hosts = load_inventory().hosts
     time = schedule.timer_time(home())
-    installed = schedule.placement_exists(home())
+    running = schedule.timer_running()
+    # Its files can be gone while it's still loaded: that one's still there to stop.
+    installed = schedule.placement_exists(home()) or running is True
     # The timer's own environment, once there is one: it decides what a run can reach.
     environ = schedule.timer_environment_now(home()) if installed else None
     context = {
@@ -910,7 +912,7 @@ def _schedule_page(request, problem="", status: int = 200) -> HttpResponse:
         "time_known": time is not None,
         "at": time or "03:00",
         "on_a_mac": sys.platform == "darwin",
-        "running": schedule.timer_running() if installed else None,
+        "running": running if installed else None,
         "lingering": schedule.lingering(getpass.getuser()) if installed else None,
         "uses_agent": any(host.auth == "agent" for host in hosts),
         "stops": [
@@ -966,9 +968,9 @@ def schedule_save(request) -> HttpResponse:
     try:
         load_config(home())  # a timer on settings that can't be read would fail every day
         hosts = load_inventory().hosts
-        if schedule.timer_of_another_home(home()):
-            raise _timer_failed(request, ANOTHER_HOME)
-        schedule.install(home(), at, hosts)
+        schedule.install(home(), at, hosts, only_this_home=True)
+    except schedule.AnotherHome:
+        raise _timer_failed(request, ANOTHER_HOME) from None
     except schedule.InstallFailed as exc:
         raise _timer_failed(request, f"The daily check couldn't be set up: {exc}") from None
     except MANAGE_FAILURES as exc:
@@ -984,9 +986,9 @@ def schedule_save(request) -> HttpResponse:
 def schedule_stop(request) -> HttpResponse:
     """Password again: nobody would be told that checks had stopped."""
     try:
-        if schedule.timer_of_another_home(home()):
-            raise _timer_failed(request, ANOTHER_HOME)
-        gone = schedule.remove_timer(home())
+        _, stopped = schedule.remove_timer(home(), only_this_home=True)
+    except schedule.AnotherHome:
+        raise _timer_failed(request, ANOTHER_HOME) from None
     except schedule.InstallFailed as exc:
         raise _timer_failed(request, f"The daily check wasn't stopped: {exc}") from None
     except OSError as exc:
@@ -994,7 +996,7 @@ def schedule_stop(request) -> HttpResponse:
         raise ActionFailed(
             "That couldn't be done: this machine's files can't be changed."
         ) from None
-    request.action_detail = "stopped" if gone else "there was none"
+    request.action_detail = "stopped" if stopped else "there was none"
     return HttpResponseRedirect(reverse("manage_schedule"))
 
 
@@ -1027,7 +1029,7 @@ def _purge_target(request, **kwargs) -> str:
 def purge_confirm(request) -> HttpResponse:
     """Password again and the word typed: this can't be undone."""
     try:
-        done = purging.run(home(), request.POST, runs.any_running())
+        done = purging.run(home(), request.POST)
     except purging.PurgeProblem as exc:
         words = str(exc)
         try:
@@ -1116,6 +1118,8 @@ def _start_run(request, kind: str, hosts: list[str], passwords=None) -> HttpResp
             accounts.client_address(request),
             passwords,
         )
+    except runs.Held:
+        raise ActionFailed("Stored evidence is being deleted. Try again in a moment.") from None
     except runs.AlreadyRunning as exc:  # a double-click's other half, or someone else's
         where = reverse("check", kwargs={"run_id": exc.run_id}) + "?busy=1"
         raise ActionFailed(

@@ -38,6 +38,7 @@ from typing import Any
 
 import asyncssh
 
+from checker.files import LockBusy, locked
 from checker.transport import read_key_file
 
 BANDS = ("Low", "Elevated", "High", "Critical")
@@ -923,23 +924,49 @@ def _timer_command(command: list[str]) -> Any:
         raise InstallFailed(f"`{' '.join(command)}` failed: {exc.strerror}") from None
 
 
-def _put_back(where: Placement, earlier: dict[Path, bytes | None]) -> None:
+class AnotherHome(InstallFailed):
+    """The timer runs another copy of this tool, so it wasn't changed."""
+
+
+TIMER_LOCK_SECONDS = 10
+
+
+def _timer_lock(where: Placement):
+    """Per user, as the timer is, whichever copy of this tool is asking: one change at a time, from
+    looking at what's there to putting it back."""
+    folder = next(iter(where.files)).parent
+    return locked(folder / UNIT, wait=TIMER_LOCK_SECONDS)
+
+
+def _put_back(
+    where: Placement, earlier: dict[Path, bytes | None], was_on: bool | None, touched: bool
+) -> None:
     """After a failed start: the files as they were, and the timer as it was, as far as that goes.
-    It's best effort: what can't be restored shows on the next look at the timer."""
+    It's best effort: what can't be restored shows on the next look at the timer. If nothing was
+    asked of the scheduler yet, nothing is now, and one that was off is never switched on."""
     for path, content in earlier.items():
         with contextlib.suppress(OSError):
             if content is None:
                 path.unlink(missing_ok=True)
             else:
                 path.write_bytes(content)
+    if not touched:
+        return
     had_one = any(content is not None for content in earlier.values())
-    if sys.platform == "darwin":
-        steps = where.start if had_one else []  # the old agent was unloaded to load the new one
+    if not had_one:
+        steps = [] if sys.platform == "darwin" else where.stop
+    elif was_on:
+        steps = where.start
     else:
-        steps = where.start if had_one else where.stop
+        steps = [] if sys.platform == "darwin" else where.start[:1]  # its files changed back
     for command in steps:
         with contextlib.suppress(InstallFailed):
             _timer_command(command)
+
+
+def _refuse_another_home(base: Path) -> None:
+    if timer_of_another_home(base):
+        raise AnotherHome("the timer runs another copy of this tool")
 
 
 def install(
@@ -947,7 +974,8 @@ def install(
     at: tuple[int, int],
     hosts: list,
     say: Callable[[str], None] = lambda words: None,
-    pause: Callable[[float], None] = time.sleep,
+    pause: Callable[[float], None] | None = None,
+    only_this_home: bool = False,
 ) -> Placement:
     """Write the timer's files and start it, as `checker schedule install` and a page do. If it
     can't start, the files go back as they were: left there, they'd read as a timer that runs."""
@@ -959,9 +987,22 @@ def install(
         )
     where = placement(sys.platform, at, env, base, Path.home())
     try:
+        with _timer_lock(where):
+            if only_this_home:
+                _refuse_another_home(base)
+            _install_locked(base, where, say, pause or time.sleep)
+    except LockBusy:
+        raise InstallFailed("someone else is changing the timer: try again") from None
+    return where
+
+
+def _install_locked(base: Path, where: Placement, say, pause) -> None:
+    try:
         earlier = {path: path.read_bytes() if path.exists() else None for path in where.files}
     except OSError as exc:
         raise InstallFailed(f"the timer's files can't be read: {exc.strerror}") from None
+    was_on = timer_running()
+    touched = False
     try:
         for path, content in where.files.items():
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -969,8 +1010,10 @@ def install(
             say(f"Wrote {path}")
         if sys.platform == "darwin":
             (base / "logs").mkdir(exist_ok=True, mode=0o700)
+            touched = True
             _timer_command(where.stop[0])  # a reload
         for command in where.start:
+            touched = True
             # launchd may still be unloading the old agent: a few tries, a second apart.
             for _ in range(5 if sys.platform == "darwin" else 1):
                 done = _timer_command(command)
@@ -980,40 +1023,49 @@ def install(
             if done.returncode != 0:
                 raise InstallFailed(f"`{' '.join(command)}` failed: {(done.stderr or '').strip()}")
     except (InstallFailed, OSError) as exc:
-        _put_back(where, earlier)
+        _put_back(where, earlier, was_on, touched)
         why = exc.strerror if isinstance(exc, OSError) else exc
         raise InstallFailed(f"{why} (the timer's files were put back as they were)") from None
-    return where
 
 
 _NOT_LOADED = (3, 113)  # launchctl: no such process, or not loaded
 
 
-def remove_timer(base: Path) -> list[Path]:
-    """Stop the timer and delete its files. Returns those it deleted. If it can't be stopped, the
-    files stay: a timer that keeps running with nothing saying so is the worst outcome. With no
-    timer file there's nothing to stop, and what's left is only clearing up."""
+def remove_timer(base: Path, only_this_home: bool = False) -> tuple[list[Path], bool]:
+    """Stop the timer and delete its files. Returns those it deleted, and whether a timer was
+    running or there to stop. If it can't be stopped, the files stay: a timer that keeps running
+    with nothing saying so is the worst outcome. Its files can be gone while it's still loaded, so
+    the scheduler is asked, not just the folder."""
     where = placement(sys.platform, (3, 0), {}, base, Path.home())
+    try:
+        with _timer_lock(where):
+            if only_this_home:
+                _refuse_another_home(base)
+            return _remove_locked(where)
+    except LockBusy:
+        raise InstallFailed("someone else is changing the timer: try again") from None
+
+
+def _remove_locked(where: Placement) -> tuple[list[Path], bool]:
     present = [path for path in where.files if path.exists()]
-    if not present:
-        return []
+    if not present and timer_running() is not True:
+        return [], False
     stop, *after = where.stop  # stopped while its files are there; reloaded once they're gone
-    if any(path.suffix in (".timer", ".plist") for path in present):
-        done = _timer_command(stop)
-        words = (done.stderr or "").strip()
-        fine = (
-            done.returncode == 0
-            or (sys.platform == "darwin" and done.returncode in _NOT_LOADED)
-            or "does not exist" in words
-        )
-        if not fine:
-            raise InstallFailed(f"`{' '.join(stop)}` failed: {words}")
+    done = _timer_command(stop)
+    words = (done.stderr or "").strip()
+    fine = (
+        done.returncode == 0
+        or (sys.platform == "darwin" and done.returncode in _NOT_LOADED)
+        or "does not exist" in words
+    )
+    if not fine:
+        raise InstallFailed(f"`{' '.join(stop)}` failed: {words}")
     for path in present:
         path.unlink()
     for command in after:
         with contextlib.suppress(InstallFailed):  # it is stopped: this only tidies up
             _timer_command(command)
-    return present
+    return present, True
 
 
 def placement_exists(base: Path) -> bool:
@@ -1053,35 +1105,59 @@ def _plist(path: Path) -> dict[str, Any]:
     return found if isinstance(found, dict) else {}
 
 
-def _timer_env(base: Path) -> dict[str, str]:
-    """The environment the installed timer's run gets, as written."""
+def _systemd_environment(text: str) -> dict[str, str]:
+    """A service's Environment= lines as systemd reads them: indented or not, several assignments
+    to a line, quoted or not, later ones winning, and an empty one clearing what came before.
+    ValueError if one can't be read."""
+    env: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("Environment="):
+            continue
+        value = line.removeprefix("Environment=")
+        if not value:
+            env.clear()
+            continue
+        for word in shlex.split(value):
+            key, equals, setting = word.partition("=")
+            if equals:
+                env[key] = setting.replace("%%", "%")
+    return env
+
+
+def _timer_env(base: Path) -> dict[str, str] | None:
+    """The environment the installed timer's run gets, as written. None if there's nothing to read;
+    {} if there's something, and it can't be told or names nothing."""
     where = placement(sys.platform, (3, 0), {}, base, Path.home())
     for path in where.files:
         if path.suffix == ".plist" and path.exists():
             env = _plist(path).get("EnvironmentVariables")
-            return {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {}
+            return {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else None
         if path.suffix == ".service" and path.exists():
             try:
                 text = path.read_text(errors="replace")
             except OSError:
+                return None
+            if not text.strip():
+                return None
+            try:
+                return _systemd_environment(text)
+            except ValueError:
                 return {}
-            env = {}
-            for line in text.splitlines():
-                if line.startswith("Environment="):
-                    word = line.removeprefix("Environment=").strip().strip('"')
-                    key, _, value = word.partition("=")
-                    env[key] = value.replace('\\"', '"').replace("%%", "%")
-            return env
-    return {}
+    return None
 
 
 def timer_of_another_home(base: Path) -> bool:
     """The timer's name is fixed, so it may run another copy of this tool: stopping or replacing it
-    from here would stop that one's checks, and this one's servers aren't being checked by it. With
-    no home to read there's nothing to say it's another's, and nobody should be locked out."""
-    home = _timer_env(base).get("CHECKER_HOME")
-    if not home:
+    from here would stop that one's checks, and this one's servers aren't being checked by it. This
+    tool always writes the home, so a timer with a body that doesn't name it isn't taken for ours.
+    With nothing to read there's nothing to say it's another's, and nobody should be locked out."""
+    env = _timer_env(base)
+    if env is None:
         return False
+    home = env.get("CHECKER_HOME")
+    if not home:
+        return True
     try:
         return Path(home).resolve() != base.resolve()
     except (OSError, ValueError):
@@ -1090,7 +1166,7 @@ def timer_of_another_home(base: Path) -> bool:
 
 def timer_environment_now(base: Path) -> dict[str, str]:
     """What a scheduled run will have that decides what it can reach: its agent's socket."""
-    socket = _timer_env(base).get("SSH_AUTH_SOCK")
+    socket = (_timer_env(base) or {}).get("SSH_AUTH_SOCK")
     return {"SSH_AUTH_SOCK": socket} if socket else {}
 
 

@@ -6561,7 +6561,7 @@ class _Ran:
 @pytest.fixture
 def timer(monkeypatch, tmp_path):
     """Never this machine's real timer: a home of its own, and a stand-in for its commands."""
-    state = {"ran": [], "active": "active", "linger": "Linger=yes", "fail": None}
+    state = {"ran": [], "active": None, "linger": "Linger=yes", "fail": None}
 
     def run(command, **kwargs):
         state["ran"].append(command)
@@ -6570,7 +6570,9 @@ def timer(monkeypatch, tmp_path):
                 raise state["fail"]
             return _Ran(returncode=1, stderr=state["fail"])
         if "is-active" in command:
-            return _Ran(stdout=state["active"])
+            if state["active"] is not None:
+                return _Ran(stdout=state["active"])
+            return _Ran(stdout="active" if state["unit"].exists() else "inactive")
         if command[0] == "loginctl":
             return _Ran(stdout=state["linger"])
         return _Ran()
@@ -6802,7 +6804,7 @@ def test_nothing_is_deleted_while_a_check_runs(web, inventory, monkeypatch):
         response = client.post("/manage/delete/confirm", form)
     assert response.status_code == 400 and "A check is running" in said(response)
     with monkeypatch.context() as patched:  # one from a page
-        patched.setattr(runs, "any_running", lambda: True)
+        patched.setitem(runs._running, 999, object())
         response = client.post("/manage/delete/confirm", form)
     assert response.status_code == 400 and "A check is running" in said(response)
     assert bundles_of(home) == ["b1"]
@@ -7054,19 +7056,12 @@ def mac(monkeypatch, tmp_path):
 
 
 def test_a_failed_change_on_a_mac_loads_the_old_timer_again(web, inventory, mac):
-    from checker import schedule
-
     client, _ = signed_in(web)
     form = {"at": "02:15", "confirm_password": PASSWORD}
     assert client.post("/manage/schedule/save", form).status_code == 302
     mac["ran"].clear()
     mac["bootstrap"] = [1, 1, 1, 1, 1, 0]
-    original = schedule.install.__defaults__
-    schedule.install.__defaults__ = (original[0], lambda seconds: None)
-    try:
-        response = client.post("/manage/schedule/save", {**form, "at": "05:00"})
-    finally:
-        schedule.install.__defaults__ = original
+    response = client.post("/manage/schedule/save", {**form, "at": "05:00"})
     assert response.status_code == 400
     bootstraps = [c for c in mac["ran"] if c[:2] == ["launchctl", "bootstrap"]]
     assert len(bootstraps) == 6, "five tries, then the old one again"
@@ -7151,7 +7146,7 @@ def test_stale_files_can_be_cleared_with_no_timer_to_stop(web, inventory, timer)
     timer["ran"].clear()
     assert client.post("/manage/schedule/stop", {"confirm_password": PASSWORD}).status_code == 302
     assert not timer["unit"].with_suffix(".service").exists()
-    assert not [c for c in timer["ran"] if "disable" in c]
+    assert [c for c in timer["ran"] if "disable" in c], "it may still be loaded"
 
 
 def test_stopped_is_stopped_even_if_tidying_up_fails(web, inventory, timer, monkeypatch):
@@ -7231,3 +7226,139 @@ def test_the_record_s_date_is_what_the_plan_used(web, inventory):
     from checker.web.purging import named
 
     assert named({"what": "host", "host": "db02", "before": "   "}) == "db02"
+
+
+def test_a_failed_save_doesn_t_switch_on_a_timer_that_was_off(web, inventory, timer):
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    timer["active"] = "inactive"
+    timer["ran"].clear()
+    timer["fail"] = "busy"
+    assert (
+        client.post(
+            "/manage/schedule/save", {"at": "05:00", "confirm_password": PASSWORD}
+        ).status_code
+        == 400
+    )
+    enables = [c for c in timer["ran"] if "enable" in c]
+    assert len(enables) == 1, "only the attempt that failed, not one to put it back"
+    assert "02:15" in timer["unit"].read_text()
+
+
+def test_a_failed_save_puts_back_a_timer_that_was_on(web, inventory, timer):
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    timer["ran"].clear()
+    timer["fail"] = "busy"
+    client.post("/manage/schedule/save", {"at": "05:00", "confirm_password": PASSWORD})
+    assert len([c for c in timer["ran"] if "enable" in c]) == 2
+
+
+def test_a_write_failure_asks_nothing_of_the_scheduler(web, inventory, timer, monkeypatch):
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    timer["active"] = "inactive"
+    timer["ran"].clear()
+    real = Path.write_bytes
+
+    def full(self, data):
+        if b"05:00" in data or b"[Service]" in data:
+            raise OSError(28, "No space left on device")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", full)
+    client.post("/manage/schedule/save", {"at": "05:00", "confirm_password": PASSWORD})
+    monkeypatch.setattr(Path, "write_bytes", real)
+    assert not starts(timer["ran"])
+
+
+def test_only_one_change_to_the_timer_at_a_time(web, inventory, timer):
+    from checker import schedule
+    from checker.files import locked
+
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    original = schedule.TIMER_LOCK_SECONDS
+    schedule.TIMER_LOCK_SECONDS = 0.1
+    try:
+        with locked(timer["unit"].parent / "compromise-checker"):
+            for path, form in (("save", {"at": "05:00"}), ("stop", {})):
+                response = client.post(
+                    f"/manage/schedule/{path}", {**form, "confirm_password": PASSWORD}
+                )
+                assert response.status_code == 400 and "try again" in said(response)
+    finally:
+        schedule.TIMER_LOCK_SECONDS = original
+    assert "02:15" in timer["unit"].read_text()
+
+
+def test_a_timer_still_loaded_with_its_files_gone_can_be_stopped(web, inventory, timer):
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    timer["unit"].unlink()
+    timer["unit"].with_suffix(".service").unlink()
+    timer["active"] = "active"
+    text = said(client.get("/manage/schedule"))
+    assert "No daily check is set up" not in text and "Stop the daily check" in text
+    timer["ran"].clear()
+    assert client.post("/manage/schedule/stop", {"confirm_password": PASSWORD}).status_code == 302
+    assert [c for c in timer["ran"] if "disable" in c]
+    assert records_of("stopped the daily check")[-1].detail == "stopped"
+
+
+@pytest.mark.parametrize(
+    ("line", "other"),
+    [
+        ('Environment="SSH_AUTH_SOCK=/run/agent" "CHECKER_HOME=/srv/other"', True),
+        ('Environment="SSH_AUTH_SOCK=/run/agent" "CHECKER_HOME=/srv/ours"', False),
+        ("  Environment=CHECKER_HOME=/srv/other", True),
+        (
+            "Environment=CHECKER_HOME=/srv/ours\nEnvironment=\nEnvironment=CHECKER_HOME=/srv/other",
+            True,
+        ),
+        ("Environment=CHECKER_HOME=/srv/other\nEnvironment=CHECKER_HOME=/srv/ours", False),
+        ('Environment="CHECKER_HOME=/srv/ours"', False),
+        ("ExecStart=/bin/true", True),
+        ('Environment="CHECKER_HOME=/srv/un closed', True),
+    ],
+)
+def test_a_service_s_environment_is_read_as_systemd_reads_it(tmp_path, monkeypatch, line, other):
+    from checker import schedule
+
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user" / ".config"))
+    folder = tmp_path / "user" / ".config" / "systemd" / "user"
+    folder.mkdir(parents=True)
+    (folder / "compromise-checker.service").write_text(f"[Service]\n{line}\n")
+    assert schedule.timer_of_another_home(Path("/srv/ours")) is other
+
+
+def test_nothing_that_reads_evidence_starts_while_it_s_deleted(web, inventory, child, agent):
+    from checker.web import runs
+
+    client, _ = signed_in(web)
+    inventory(key_host())
+    with runs.none_may_start():
+        response = client.post("/checks/start", {"host": "web01"})
+    assert response.status_code == 400 and "being deleted" in said(response)
+    with pytest.raises(runs.Held):
+        with runs.none_may_start():
+            runs.start("analysis", ["web01"], "jo", "127.0.0.1")
+
+
+def test_deleting_holds_off_new_runs_until_it_s_done(web, inventory, monkeypatch):
+    from checker.web import purging, runs
+
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    form = purge_form(client, **ONE_SERVER)
+    real, seen = purging.execute, []
+
+    def looking(store, base, chosen):
+        seen.append(runs._held)
+        return real(store, base, chosen)
+
+    monkeypatch.setattr(purging, "execute", looking)
+    assert client.post("/manage/delete/confirm", form).status_code == 200
+    assert seen == [1] and runs._held == 0

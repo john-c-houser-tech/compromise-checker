@@ -81,7 +81,7 @@ def django_settings(home: Path, public_url: str | None = None, tls: bool = False
         "SECRET_KEY": secret_key(home),
         "ALLOWED_HOSTS": [host] if parts else LOCAL_NAMES,
         "CSRF_TRUSTED_ORIGINS": [f"{parts.scheme}://{parts.netloc}"] if parts else [],
-        # Behind a proxy every peer is the proxy: see views.client_address.
+        # Behind a proxy every peer is the proxy: see accounts.client_address.
         "CHECKER_BEHIND_PROXY": bool(parts),
         "ROOT_URLCONF": "checker.web.urls",
         "INSTALLED_APPS": [
@@ -159,6 +159,17 @@ def configure(home: Path, public_url: str | None = None, tls: bool = False) -> N
     settings.configure(**django_settings(home, public_url, tls))
     django.setup()
     call_command("migrate", verbosity=0, interactive=False)
+    _protect_the_record()
+
+
+def _protect_the_record() -> None:
+    from django.db import connection
+
+    from checker.web.models import ACTION_RECORD_TRIGGERS
+
+    with connection.cursor() as cursor:
+        for sql in ACTION_RECORD_TRIGGERS:
+            cursor.execute(sql)
 
 
 def listen_problem(bind: str, public_url: str | None, tls: bool) -> str | None:

@@ -1,4 +1,5 @@
-"""Pages. Viewing pages only read; the only writes here are to accounts and sessions."""
+"""Pages. Viewing pages read the results; the only writes here are to accounts, sessions and the
+record of who looked."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.urls import Resolver404, resolve, reverse
@@ -20,7 +22,7 @@ from checker.fleet import read_evidence, read_fleet, read_host, read_threats
 from checker.inventory import home
 from checker.report import visible
 from checker.web import accounts, wording
-from checker.web.actions import record
+from checker.web.actions import record, record_if_possible
 from checker.web.app import HERE
 from checker.web.models import ActionRecord
 
@@ -84,13 +86,15 @@ def setup_page(request, token: str) -> HttpResponse:
         except ValidationError as exc:
             errors.extend(exc.messages)
         if not errors:
-            user = accounts.create_first_account(token, username, password)
+            with transaction.atomic():  # no account without its line in the record
+                user = accounts.create_first_account(token, username, password)
+                if user is not None:
+                    login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+                    record(request, "created the first account")
             if user is None:
                 return render(
                     request, "problem.html.j2", {"title": "This link isn't valid"}, status=404
                 )
-            login(request, user, backend="django.contrib.auth.backends.ModelBackend")
-            record(request, "created the first account")
             return HttpResponseRedirect(reverse("fleet"))
     return render(request, "setup.html.j2", {"errors": errors, "username": username})
 
@@ -104,7 +108,7 @@ def login_page(request) -> HttpResponse:
         address = accounts.client_address(request)
         # One message for all of it: a page mustn't say which usernames exist.
         error = "That username and password didn't work."
-        if accounts.throttled(username, address):
+        if not accounts.begin_login(username, address):
             error = "Too many failed attempts. Wait 15 minutes and try again."
         else:
             user = authenticate(request, username=username, password=password)
@@ -113,7 +117,6 @@ def login_page(request) -> HttpResponse:
                 login(request, user)
                 record(request, "signed in")
                 return HttpResponseRedirect(_safe_next(request))
-            accounts.record_failure(username, address)
     return render(
         request,
         "login.html.j2",
@@ -124,7 +127,8 @@ def login_page(request) -> HttpResponse:
 
 @require_POST
 def logout_page(request) -> HttpResponse:
-    record(request, "signed out")
+    if request.user.is_authenticated:  # anyone can post here: only a real sign-out is kept
+        record_if_possible(request, "signed out")  # nothing may stop someone signing out
     logout(request)
     return HttpResponseRedirect(reverse("login"))
 
@@ -185,7 +189,7 @@ def host_page(request, name: str) -> HttpResponse:
         return _unavailable(request, "A settings file or the evidence key can't be read.")
     if found is None:
         return not_found(request)
-    record(request, "viewed a server's results", name)
+    record_if_possible(request, "viewed a server's results", name)
     host, assessment, advice, enabled = found
     return render(
         request,
@@ -210,7 +214,7 @@ def evidence_page(request, name: str) -> HttpResponse:
         return _unavailable(request, "A settings file or the evidence key can't be read.")
     if stored is None:
         return not_found(request)
-    record(request, "viewed a server's evidence", name)
+    record_if_possible(request, "viewed a server's evidence", name)
     return render(request, "evidence.html.j2", {"host": name, **wording.evidence_details(stored)})
 
 
@@ -233,17 +237,20 @@ ACTIVITY_PAGE = 200
 @login_required
 @require_GET
 def activity_page(request) -> HttpResponse:
+    rows = ActionRecord.objects.order_by("-id")
     try:
-        start = max(0, int(request.GET.get("from", 0)))
+        before = int(request.GET.get("before", ""))
     except ValueError:
-        start = 0
-    rows = list(ActionRecord.objects.order_by("-id")[start : start + ACTIVITY_PAGE + 1])
+        before = 0
+    if 0 < before < 2**63:  # by id, so new lines arriving don't shift the pages
+        rows = rows.filter(id__lt=before)
+    rows = list(rows[: ACTIVITY_PAGE + 1])
     return render(
         request,
         "activity.html.j2",
         {
             "rows": rows[:ACTIVITY_PAGE],
-            "older": start + ACTIVITY_PAGE if len(rows) > ACTIVITY_PAGE else None,
+            "older": rows[ACTIVITY_PAGE - 1].id if len(rows) > ACTIVITY_PAGE else None,
         },
     )
 

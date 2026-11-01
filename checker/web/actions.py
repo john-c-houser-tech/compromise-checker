@@ -1,17 +1,21 @@
 """The one way a page changes anything, and the record of it (plan 5.10).
 
 Viewing pages read. Anything else goes through `action`: signed in, POST, CSRF-checked by the
-middleware, and recorded whatever happens. If it can't be recorded, it doesn't happen. A
-consequential action, one that changes what later findings mean or removes data, also needs the
-password again, however recently its user signed in: a stolen session or an unattended browser
-mustn't be able to hide a break-in. Actions call what the command line calls; no logic of their
-own lives here."""
+middleware, and recorded from start to finish. If it can't be recorded as started, it doesn't
+happen. A consequential action, one that changes what later findings mean or removes data, also
+needs the password again, however recently its user signed in: someone with a stolen session or at
+a browser left open has to know it, unless a password manager fills it in for them. Actions call
+what the command line calls; no logic of their own lives here. They should keep their
+transactions short, since every page that records something waits for them."""
 
 from __future__ import annotations
 
+import sys
 from functools import wraps
 
+from django.contrib.auth import logout
 from django.contrib.auth.decorators import login_required
+from django.db import connection
 from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
@@ -19,6 +23,13 @@ from django.views.decorators.http import require_POST
 from checker.report import visible
 from checker.web import accounts
 from checker.web.models import ActionRecord
+
+GATED = set()  # every view `action` made: no attribute a view could set by hand gets in here
+
+
+class ActionFailed(Exception):
+    """An action's way to say it didn't work, in the tool's own words, for the page and the
+    record. Returning normally is what the record calls "done"."""
 
 
 def record(request, action: str, target: str = "", outcome: str = "done", detail: str = "") -> None:
@@ -36,30 +47,55 @@ def record(request, action: str, target: str = "", outcome: str = "done", detail
     )
 
 
+def record_if_possible(
+    request, action: str, target: str = "", outcome: str = "done", detail: str = ""
+) -> None:
+    """For what must go ahead anyway: reading evidence on a full disk, or signing out."""
+    try:
+        record(request, action, target, outcome, detail)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, the page still has to work
+        print(f"checker web: not recorded: {action}: {type(exc).__name__}", file=sys.stderr)
+
+
 def confirmation_refused(request, action: str, target: str) -> str | None:
-    """Why a consequential action can't go ahead, in words for the page; None if it can."""
-    name = accounts.normal_name(request.user.get_username())
-    address = accounts.client_address(request)
-    if accounts.throttled(name, address):
-        record(request, action, target, "refused", "too many failed confirmations")
-        return "Too many failed attempts. Wait 15 minutes and try again."
-    if not request.user.check_password(request.POST.get("confirm_password", "")):
-        accounts.record_failure(name, address)
-        record(request, action, target, "refused", "wrong password")
-        return "That password didn't work, so nothing was changed."
-    accounts.clear_failures(name, address)
-    return None
+    """Why a consequential action can't go ahead, in words for the page; None if it can. Too many
+    wrong passwords end the session, so whoever is guessing has to sign in to go on."""
+    session = request.session.session_key
+    if not accounts.begin_confirmation(session):
+        return _signed_out(request, action, target)
+    if request.user.check_password(request.POST.get("confirm_password", "")):
+        accounts.clear_confirmations(session)
+        return None
+    if accounts.confirmations_used_up(session):
+        return _signed_out(request, action, target)
+    record_if_possible(request, action, target, "refused", "wrong password")
+    return "That password didn't work, so nothing was changed."
+
+
+def _signed_out(request, action: str, target: str) -> str:
+    record_if_possible(request, action, target, "refused", "too many wrong passwords: signed out")
+    logout(request)
+    return "Too many wrong passwords, so nothing was changed and you've been signed out."
 
 
 def action(name: str, consequential: bool = False, target=lambda request, **kwargs: ""):
     """Make a view an action. `target` says what it acts on, for the record."""
 
     def decorate(view):
+        if getattr(view, "csrf_exempt", False):
+            raise TypeError(f"{name}: an action can't be exempt from the CSRF check")
+
         @login_required
         @require_POST
         @wraps(view)
         def wrapped(request, *args, **kwargs):
-            on = str(target(request, **kwargs))
+            if connection.in_atomic_block:
+                raise RuntimeError(f"{name}: in a transaction, its record would be undone with it")
+            try:
+                on = str(target(request, **kwargs))
+            except Exception as exc:
+                record(request, name, "(couldn't be named)", "failed", type(exc).__name__)
+                raise
             if consequential:
                 refused = confirmation_refused(request, name, on)
                 if refused:
@@ -67,15 +103,17 @@ def action(name: str, consequential: bool = False, target=lambda request, **kwar
             record(request, name, on, "started")  # if this fails, nothing has happened
             try:
                 response = view(request, *args, **kwargs)
+            except ActionFailed as exc:
+                record_if_possible(request, name, on, "failed", str(exc))
+                return render(request, "problem.html.j2", {"title": str(exc)}, status=400)
             except Exception as exc:
-                record(request, name, on, "failed", type(exc).__name__)
+                record_if_possible(request, name, on, "failed", type(exc).__name__)
                 raise
             done = "done" if response.status_code < 400 else f"failed: {response.status_code}"
-            record(request, name, on, done)
+            record_if_possible(request, name, on, done)  # it has happened: say what it did
             return response
 
-        wrapped.checker_action = name
-        wrapped.checker_consequential = consequential
+        GATED.add(wrapped)
         return wrapped
 
     return decorate

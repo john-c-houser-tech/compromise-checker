@@ -9,7 +9,12 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="ActionRecord",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
                 ("at", models.DateTimeField(db_index=True)),
                 ("who", models.CharField(max_length=150)),
                 ("address", models.CharField(max_length=64)),

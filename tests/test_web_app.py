@@ -1,7 +1,10 @@
 """The web interface's server (PR 5.2): accounts, one-time setup, throttling, headers,
 and host text that can do nothing in a logged-in browser."""
 
+import json
 import re
+import subprocess
+import sys
 import tempfile
 import unicodedata
 from datetime import timedelta
@@ -83,9 +86,9 @@ def web(_django, home):
     from django.contrib.auth import get_user_model
     from django.contrib.sessions.models import Session
 
-    from checker.web.models import LoginAttempt, SetupToken
+    from checker.web.models import LoginAttempt, SetupToken, WrongConfirmation
 
-    for model in (get_user_model(), Session, LoginAttempt, SetupToken):
+    for model in (get_user_model(), Session, LoginAttempt, SetupToken, WrongConfirmation):
         model.objects.all().delete()
     clear_the_record()
     return browser(), home
@@ -1652,12 +1655,25 @@ def the_record():
     return list(ActionRecord.objects.order_by("id").values_list("action", "target", "outcome"))
 
 
-def request_for(user, data=None, address="127.0.0.1"):
+def request_for(user, data=None, address="127.0.0.1", session=None):
+    from django.contrib.sessions.backends.db import SessionStore
     from django.test import RequestFactory
 
     request = RequestFactory().post("/x", data or {}, REMOTE_ADDR=address)
     request.user = user
+    request.session = SessionStore(session)
+    if session is None:
+        request.session.create()
     return request
+
+
+def broken_record(monkeypatch):
+    from checker.web import actions
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(actions.ActionRecord.objects, "create", broken)
 
 
 def an_action(consequential=False, then=None):
@@ -1677,23 +1693,111 @@ def an_action(consequential=False, then=None):
     return view, done
 
 
-def test_every_route_that_changes_anything_goes_through_the_gate(web, monkeypatch):
-    """Walks the routes: a POST to any of them must be refused unless it's an action or one of
-    the three forms that come before there's anyone to record."""
+def everything_but_the_record():
+    from django.db import connection
+
+    with connection.cursor() as cursor:
+        tables = [t for t in connection.introspection.table_names() if t != "web_actionrecord"]
+        found = {}
+        for table in tables:
+            cursor.execute(f"SELECT * FROM {table}")  # noqa: S608 - the database's own table names
+            found[table] = cursor.fetchall()
+    return found
+
+
+def send(client, method, path):
+    """With a form's body, or the size and type checks answer before the view is reached."""
+    return client.generic(method, path, b"x=1", content_type="application/x-www-form-urlencoded")
+
+
+def route_problems(client):
+    """What's wrong with the routes: only the gate, and these three forms by identity since they
+    come before there's anyone to record, may accept anything but a GET, and a GET may change
+    nothing but the record."""
     from django.urls import get_resolver
 
-    from checker import web as web_package
+    from checker.web import views
+    from checker.web.actions import GATED
 
-    assert web_package is not None
-    client, _ = signed_in(web)
-    forms = {"login", "logout", "setup"}
+    forms = {views.login_page, views.logout_page, views.setup_page}
+    problems = []
     for pattern in get_resolver("checker.web.urls").url_patterns:
-        name = pattern.name
-        if name in forms or getattr(pattern.callback, "checker_action", None):
+        view = pattern.callback
+        path = "/" + re.sub(r"<[^>]+>", "web01", str(pattern.pattern))
+        if getattr(view, "csrf_exempt", False):
+            problems.append((path, "exempt from the CSRF check"))
+        if view in GATED or view in forms:
             continue
-        path = str(pattern.pattern).replace("<path:name>", "web01").replace("<str:name>", "x")
-        response = client.post(f"/{path}", {"x": "1"})
-        assert response.status_code == 405, name
+        for method in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"):
+            if send(client, method, path).status_code != 405:
+                problems.append((path, method))
+        before = everything_but_the_record()
+        client.get(path)
+        if everything_but_the_record() != before:
+            problems.append((path, "a GET changed something"))
+    return problems
+
+
+def test_every_route_that_changes_anything_goes_through_the_gate(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    assert route_problems(client) == []
+
+
+def test_the_route_walk_catches_what_would_get_around_the_gate(web):
+    from django.http import HttpResponse
+    from django.urls import clear_url_caches, path
+    from django.views.decorators.csrf import csrf_exempt
+    from django.views.decorators.http import require_GET, require_http_methods, require_POST
+
+    from checker.web import urls
+    from checker.web.actions import action
+    from checker.web.models import LoginAttempt
+
+    def ok(request):
+        return HttpResponse("ok")
+
+    @require_GET
+    def changes_on_get(request):
+        LoginAttempt.objects.create(username="x", address="y", at="2026-10-31T00:00:00Z")
+        return HttpResponse("ok")
+
+    def looks_gated(request):
+        return HttpResponse("ok")
+
+    looks_gated.checker_action = "x"
+
+    client, _ = signed_in(web)
+    for route in (
+        path("m", changes_on_get),
+        path("m", require_http_methods(["GET", "PUT", "DELETE"])(ok)),
+        path("m", require_POST(ok), name="logout"),
+        path("m", looks_gated),
+        path("m", csrf_exempt(action("x")(ok))),
+    ):
+        urls.urlpatterns.append(route)
+        clear_url_caches()
+        try:
+            assert "/m" in [where for where, _ in route_problems(client)], route
+        finally:
+            urls.urlpatterns.pop()
+            clear_url_caches()
+
+
+def test_the_forms_before_the_gate_take_only_what_they_should(web):
+    client, _ = web
+    for path in ("/login", "/logout", "/setup/x"):
+        for method in ("PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"):
+            assert send(client, method, path).status_code == 405, (path, method)
+
+
+def test_an_action_cant_be_exempt_from_the_csrf_check(web):
+    from django.views.decorators.csrf import csrf_exempt
+
+    from checker.web.actions import action
+
+    with pytest.raises(TypeError):
+        action("x")(csrf_exempt(lambda request: None))
 
 
 def test_an_action_needs_a_signed_in_post(web):
@@ -1736,11 +1840,136 @@ def test_if_it_cant_be_recorded_it_doesnt_happen(web, monkeypatch):
         raise OSError("disk full")
 
     view, done = an_action()
-    user = account()
+    request = request_for(account())
     monkeypatch.setattr(actions.ActionRecord.objects, "create", broken)
     with pytest.raises(OSError):
-        view(request_for(user))
+        view(request)
     assert not done
+
+
+def test_a_failure_the_view_reports_is_recorded_as_failed(web):
+    from django.http import HttpResponse
+
+    from checker.web.actions import ActionFailed, action
+    from checker.web.models import ActionRecord
+
+    @action("did a thing")
+    def view(request):
+        raise ActionFailed("The server didn't answer.")
+        return HttpResponse("ok")
+
+    response = view(request_for(account()))
+    assert (
+        response.status_code == 400 and "The server didn&#39;t answer." in response.content.decode()
+    )
+    assert the_record()[-1][2] == "failed"
+    assert ActionRecord.objects.order_by("-id").first().detail == "The server didn't answer."
+
+
+def test_the_outcome_not_being_written_doesnt_lie_about_the_work(web, monkeypatch, capfd):
+    from checker.web import actions
+
+    real, calls = actions.ActionRecord.objects.create, []
+
+    def fails_after_the_first(**kwargs):
+        calls.append(kwargs)
+        if len(calls) > 1:
+            raise OSError("disk full")
+        return real(**kwargs)
+
+    view, done = an_action()
+    request = request_for(account())
+    monkeypatch.setattr(actions.ActionRecord.objects, "create", fails_after_the_first)
+    assert view(request).status_code == 200  # it happened: the user mustn't be told otherwise
+    assert done == [1]
+    assert the_record() == [("did a thing", "web01", "started")]
+    assert "not recorded" in capfd.readouterr().err
+
+
+def test_a_failed_outcome_that_cant_be_written_keeps_the_real_error(web, monkeypatch):
+    from checker.web import actions
+
+    real, calls = actions.ActionRecord.objects.create, []
+
+    def fails_after_the_first(**kwargs):
+        calls.append(kwargs)
+        if len(calls) > 1:
+            raise OSError("disk full")
+        return real(**kwargs)
+
+    def boom():
+        raise ValueError("the real one")
+
+    view, _ = an_action(then=boom)
+    request = request_for(account())
+    monkeypatch.setattr(actions.ActionRecord.objects, "create", fails_after_the_first)
+    with pytest.raises(ValueError, match="the real one"):
+        view(request)
+
+
+def test_an_action_refuses_to_run_inside_a_transaction(web):
+    from django.db import transaction
+
+    view, done = an_action()
+    request = request_for(account())
+    with pytest.raises(RuntimeError), transaction.atomic():
+        view(request)
+    assert not done
+
+
+def test_a_target_that_cant_be_named_is_still_recorded(web):
+    from django.http import HttpResponse
+
+    from checker.web.actions import action
+
+    def bad_target(request, **kwargs):
+        raise KeyError("x")
+
+    @action("did a thing", target=bad_target)
+    def view(request):
+        return HttpResponse("ran")
+
+    with pytest.raises(KeyError):
+        view(request_for(account()))
+    assert the_record() == [("did a thing", "(couldn't be named)", "failed")]
+
+
+def test_a_sign_out_only_counts_if_someone_was_signed_in(web):
+    client, _ = web
+    assert client.post("/logout", {"x": "1"}).status_code == 302
+    assert the_record() == []
+
+
+def test_a_sign_out_works_even_if_it_cant_be_recorded(web, monkeypatch, capfd):
+    client, _ = signed_in(web)
+    broken_record(monkeypatch)
+    assert client.post("/logout", {"x": "1"}).status_code == 302
+    assert client.get("/activity").status_code == 302
+    assert "not recorded: signed out" in capfd.readouterr().err
+
+
+def test_results_can_still_be_read_when_the_record_cant_be_written(web, monkeypatch, capfd):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    broken_record(monkeypatch)
+    assert client.get("/hosts/web01").status_code == 200
+    assert client.get("/hosts/web01/evidence").status_code == 200
+    assert capfd.readouterr().err.count("not recorded") == 2
+
+
+def test_the_first_account_cant_exist_without_its_line_in_the_record(web, monkeypatch):
+    from django.contrib.auth import get_user_model
+
+    from checker.web import accounts
+
+    client, _ = web
+    link = accounts.setup_link("http://testserver")
+    broken_record(monkeypatch)
+    form = {"username": "jo", "password": PASSWORD, "password2": PASSWORD}
+    assert client.post(link.removeprefix("http://testserver"), form).status_code == 500
+    assert not get_user_model().objects.exists()
+    token = link.rsplit("/", 1)[1]
+    assert accounts.setup_token_valid(token)  # the link isn't spent on nothing
 
 
 def test_a_consequential_action_needs_the_password_again(web):
@@ -1755,15 +1984,194 @@ def test_a_consequential_action_needs_the_password_again(web):
     assert outcomes == ["refused", "refused", "started", "done"]
 
 
-def test_guessing_the_confirmation_is_throttled(web):
-    from checker.web.accounts import MAX_FAILURES_FOR_NAME
+def test_guessing_the_confirmation_ends_the_session(web):
+    from django.contrib.sessions.models import Session
+
+    from checker.web.accounts import MAX_WRONG_CONFIRMATIONS
 
     view, done = an_action(consequential=True)
     user = account()
-    for _ in range(MAX_FAILURES_FOR_NAME):
-        view(request_for(user, {"confirm_password": "wrong"}))
-    assert view(request_for(user, {"confirm_password": PASSWORD})).status_code == 403
+    first = request_for(user, {"confirm_password": "wrong"})
+    key = first.session.session_key
+    view(first)
+    for _ in range(MAX_WRONG_CONFIRMATIONS - 1):
+        response = view(request_for(user, {"confirm_password": "wrong"}, session=key))
+        assert response.status_code == 403
+    assert "signed out" in response.content.decode()
+    assert not Session.objects.filter(session_key=key).exists()
     assert not done
+
+
+def test_a_right_confirmation_clears_the_count(web):
+    from checker.web.accounts import MAX_WRONG_CONFIRMATIONS
+
+    view, done = an_action(consequential=True)
+    user = account()
+    key = request_for(user).session.session_key
+    for _ in range(3):
+        for _ in range(MAX_WRONG_CONFIRMATIONS - 1):
+            view(request_for(user, {"confirm_password": "wrong"}, session=key))
+        view(request_for(user, {"confirm_password": PASSWORD}, session=key))
+    assert done == [1, 1, 1]
+
+
+def test_guesses_sent_at_once_cant_all_pass_the_count(web):
+    from checker.web.accounts import (
+        MAX_FAILURES_FOR_NAME,
+        MAX_WRONG_CONFIRMATIONS,
+        begin_confirmation,
+        begin_login,
+    )
+
+    assert all(begin_confirmation("s") for _ in range(MAX_WRONG_CONFIRMATIONS))
+    assert not begin_confirmation("s")
+    assert all(begin_login("jo", "198.51.100.1") for _ in range(MAX_FAILURES_FOR_NAME))
+    assert not begin_login("jo", "198.51.100.1")
+
+
+def test_bad_logins_from_a_shared_address_cant_block_a_confirmation(web):
+    client, _ = web
+    view, done = an_action(consequential=True)
+    user = account()
+    for n in range(25):
+        client.post("/login", {"username": f"made-up-{n}", "password": "no"})
+    assert view(request_for(user, {"confirm_password": PASSWORD})).status_code == 200
+    assert done == [1]
+
+
+def test_wrong_confirmations_cant_lock_the_login(web):
+    from checker.web.accounts import MAX_WRONG_CONFIRMATIONS
+
+    client, _ = web
+    view, _ = an_action(consequential=True)
+    user = account()
+    key = request_for(user).session.session_key
+    for _ in range(MAX_WRONG_CONFIRMATIONS):
+        view(request_for(user, {"confirm_password": "wrong"}, session=key))
+    response = client.post("/login", {"username": "jo", "password": PASSWORD})
+    assert response.status_code == 302
+
+
+def test_a_password_manager_is_asked_not_to_fill_the_confirmation(web):
+    from django.template.loader import get_template
+
+    box = get_template("parts.html.j2").template.module.confirm()
+    assert 'autocomplete="new-password"' in str(box)
+
+
+def test_a_forwarded_address_that_isnt_one_is_ignored(web, settings_override):
+    from checker.web.accounts import client_address
+
+    settings_override(CHECKER_BEHIND_PROXY=True)
+    for bad in ("garbage<script>", "1.2.3.4:5555", ""):
+        request = request_for(None)
+        request.META["HTTP_X_FORWARDED_FOR"] = bad
+        assert client_address(request) == "127.0.0.1"
+    request.META["HTTP_X_FORWARDED_FOR"] = "198.51.100.7"
+    assert client_address(request) == "198.51.100.7"
+
+
+TRIGGER_PROBE = """
+import json, sys
+from pathlib import Path
+from checker.web.app import configure
+configure(Path(sys.argv[1]))
+from django.db import DatabaseError, connection, transaction
+from django.utils import timezone
+from checker.web.models import ActionRecord
+
+def triggers():
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
+        return sorted(row[0] for row in cursor.fetchall())
+
+def holds():
+    ActionRecord.objects.create(at=timezone.now(), who="", address="", action="x", target="",
+                                outcome="", detail="")
+    for attempt in (ActionRecord.objects.all().delete,
+                    lambda: ActionRecord.objects.all().update(who="y")):
+        try:
+            with transaction.atomic():
+                attempt()
+        except DatabaseError:
+            continue
+        return False
+    return True
+
+result = {"triggers": triggers(), "holds": holds()}
+if sys.argv[2] == "rebuild":
+    old = ActionRecord._meta.get_field("target")
+    new = old.clone()
+    new.max_length = 201
+    new.set_attributes_from_name("target")
+    new.model = ActionRecord
+    with connection.schema_editor() as editor:
+        editor.alter_field(ActionRecord, old, new)
+    result["after"] = triggers()
+else:
+    from django.core.management import call_command
+    call_command("makemigrations", "--check", "--dry-run", verbosity=0)  # or a rebuild is coming
+print(json.dumps(result))
+"""
+
+
+def test_the_record_stays_append_only_from_a_fresh_start_and_after_a_rebuild(tmp_path):
+    """In its own process, with no help from this file's fixtures. A later migration that rebuilds
+    the table drops its triggers, so each start has to put them back."""
+
+    def start(mode):
+        run = subprocess.run(
+            [sys.executable, "-c", TRIGGER_PROBE, str(tmp_path), mode],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(run.stdout)
+
+    both = ["web_actionrecord_no_delete", "web_actionrecord_no_update"]
+    first = start("rebuild")
+    assert first["triggers"] == both and first["holds"]
+    assert first["after"] == []  # what a table rebuild does
+    second = start("look")
+    assert second["triggers"] == both and second["holds"]
+
+
+def test_a_lost_password_can_be_reset_and_the_record_says_so(web):
+    from django.contrib.auth import authenticate
+
+    from checker.web.accounts import reset_password
+    from checker.web.models import ActionRecord
+
+    client, _ = signed_in(web)
+    new = "a different long password"
+    assert reset_password("nobody", new)[0].startswith("There's no account called nobody")
+    assert reset_password("jo", "short")
+    assert authenticate(username="jo", password=PASSWORD)
+    assert reset_password("jo", new) == []
+    assert authenticate(username="jo", password=new)
+    assert client.get("/activity").status_code == 302  # old sessions are over
+    row = ActionRecord.objects.order_by("-id").first()
+    assert (row.action, row.target, row.address) == (
+        "reset a password from the command line",
+        "jo",
+        "this machine",
+    )
+
+
+def test_the_password_command_asks_twice(web, monkeypatch, capsys):
+    from argparse import Namespace
+
+    from checker import cli
+
+    account()
+    monkeypatch.setattr(web_app, "configure", lambda home: None)
+    answers = iter(["one long password", "another long password"])
+    monkeypatch.setattr("getpass.getpass", lambda prompt: next(answers))
+    assert cli.cmd_web_password(Namespace(username="jo")) == 1
+    assert "don't match" in capsys.readouterr().err
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "one long password")
+    assert cli.cmd_web_password(Namespace(username="jo")) == 0
+    assert the_record()[-1][0] == "reset a password from the command line"
 
 
 def test_the_record_cant_be_changed_or_emptied(web):
@@ -1840,6 +2248,10 @@ def test_the_record_pages_back(web, settings_override, monkeypatch):
     for n in range(5):
         record(request_for(user), f"thing-{n}")
     text = client.get("/activity").content.decode()
-    assert "thing-4" in text and "thing-1" not in text and "?from=2" in text
-    assert "thing-1" in client.get("/activity", {"from": "2"}).content.decode()
-    assert client.get("/activity", {"from": "x"}).status_code == 200
+    assert "thing-4" in text and "thing-2" not in text
+    older = re.search(r"\?before=(\d+)", text).group(1)
+    record(request_for(user), "thing-new")  # arriving lines don't shift the page
+    text = client.get("/activity", {"before": older}).content.decode()
+    assert "thing-2" in text and "thing-1" in text and "thing-3" not in text
+    for odd in ("x", "-1", "0", str(2**63), str(2**70), "1" * 5000):
+        assert client.get("/activity", {"before": odd}).status_code == 200, odd

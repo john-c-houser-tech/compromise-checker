@@ -1,4 +1,4 @@
-"""The first account's one-time link, and login throttling."""
+"""The first account's one-time link, and the limits on guessing a login or a confirmation."""
 
 from __future__ import annotations
 
@@ -10,16 +10,19 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
 from checker.web.app import is_local
-from checker.web.models import LoginAttempt, SetupToken
+from checker.web.models import ActionRecord, LoginAttempt, SetupToken, WrongConfirmation
 
 SETUP_LIFETIME = timedelta(hours=1)
 THROTTLE_WINDOW = timedelta(minutes=15)
 MAX_FAILURES_FOR_NAME = 5  # from one address: guessing one account's password
 MAX_FAILURES_FROM_ADDRESS = 20  # guessing across accounts
+MAX_WRONG_CONFIRMATIONS = 5  # then the session ends: it's the only way a thief can keep trying
 
 
 def _hash(token: str) -> str:
@@ -76,7 +79,7 @@ def client_address(request) -> str:
     address = request.META.get("REMOTE_ADDR", "")
     if settings.CHECKER_BEHIND_PROXY and is_local(address):
         forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "").rpartition(",")[2].strip()
-        address = forwarded or address
+        address = forwarded if _is_address(forwarded) else address
     try:
         parsed = ipaddress.ip_address(address)
     except ValueError:
@@ -86,6 +89,14 @@ def client_address(request) -> str:
     if parsed.ipv4_mapped:
         return str(parsed.ipv4_mapped)
     return str(ipaddress.ip_network(f"{parsed}/64", strict=False))
+
+
+def _is_address(text: str) -> bool:
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return True
 
 
 def _recent():
@@ -107,5 +118,63 @@ def record_failure(username: str, address: str) -> None:
     )
 
 
+def begin_login(username: str, address: str) -> bool:
+    """False if throttled. Counted as failed before the password is checked, under the write
+    lock, so guesses sent at once can't all pass the count; a success then clears it."""
+    with transaction.atomic():
+        if throttled(username, address):
+            return False
+        record_failure(username, address)
+    return True
+
+
 def clear_failures(username: str, address: str) -> None:
     LoginAttempt.objects.filter(username=username.lower(), address=address).delete()
+
+
+def begin_confirmation(session_key: str) -> bool:
+    """False if this session has used up its tries; counted first, as in `begin_login`."""
+    with transaction.atomic():
+        old = timezone.now() - timedelta(seconds=settings.SESSION_COOKIE_AGE)
+        WrongConfirmation.objects.filter(at__lte=old).delete()
+        if confirmations_used_up(session_key):
+            return False
+        WrongConfirmation.objects.create(session_key=session_key, at=timezone.now())
+    return True
+
+
+def confirmations_used_up(session_key: str) -> bool:
+    return (
+        WrongConfirmation.objects.filter(session_key=session_key).count() >= MAX_WRONG_CONFIRMATIONS
+    )
+
+
+def clear_confirmations(session_key: str) -> None:
+    WrongConfirmation.objects.filter(session_key=session_key).delete()
+
+
+def reset_password(username: str, password: str) -> list[str]:
+    """For the command line, when a password is lost. Why it can't be done, or nothing: the
+    account's sessions end with its old password, and the record says it happened."""
+    user = get_user_model().objects.filter(username=username).first()
+    if user is None:
+        names = ", ".join(get_user_model().objects.values_list("username", flat=True))
+        return [f"There's no account called {username}. The accounts are: {names or 'none yet'}"]
+    try:
+        validate_password(password, user)
+    except ValidationError as exc:
+        return list(exc.messages)
+    with transaction.atomic():
+        user.set_password(password)
+        user.save()
+        LoginAttempt.objects.filter(username=username.lower()).delete()
+        ActionRecord.objects.create(
+            at=timezone.now(),
+            who="",
+            address="this machine",
+            action="reset a password from the command line",
+            target=username,
+            outcome="done",
+            detail="",
+        )
+    return []

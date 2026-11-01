@@ -13,6 +13,8 @@ import hashlib
 import json
 import os
 import secrets
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -493,19 +495,20 @@ def write_report(
     advisor_enabled: bool = False,
     plain: bool = False,
     packs: Callable[[str], tuple[list, list[str]]] | None = None,
+    kind: str = "html",
 ) -> Path:
-    """Write the report, encrypted to the evidence key (`report-….html.age`;
-    read_report() reads it) unless `plain`, owner-only either way, and add
-    a `reported` entry, with the hash of the file as written, to each
+    """Write the report as HTML or PDF (`kind`), encrypted to the evidence key
+    (`report-….html.age`; read_report() reads the HTML) unless `plain`, owner-only either
+    way, and add a `reported` entry, with the hash of the file as written, to each
     bundle's custody. `packs` gives a host's threat packs and why any
     isn't applied (checker.packs.choice.for_host)."""
-    if output is not None and not plain and not output.name.endswith(".html.age"):
+    if output is not None and not plain and not output.name.endswith(f".{kind}.age"):
         raise EvidenceError(
-            f"an encrypted report's name ends in .html.age ({output.name}); --plain writes"
-            " plain HTML"
+            f"an encrypted report's name ends in .{kind}.age ({output.name}); --plain writes"
+            f" a plain {kind.upper()}"
         )
-    if output is not None and plain and output.suffix == ".age":
-        raise EvidenceError(f"a plain report's name can't end in .age ({output.name})")
+    if output is not None and plain and output.suffix != f".{kind}":
+        raise EvidenceError(f"a plain {kind.upper()} report's name ends in .{kind} ({output.name})")
     priors = priors or (lambda _: (DEFAULT_PRIOR, "default"))
     whitelists = whitelists or (lambda _: None)
     packs = packs or (lambda _: ([], []))
@@ -519,8 +522,10 @@ def write_report(
         directory.chmod(0o700)  # also when it was already there
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         name = hosts[0] if len(hosts) == 1 else f"{len(hosts)}-hosts"
-        output = directory / (f"report-{name}-{stamp}.html" + ("" if plain else ".age"))
+        output = directory / (f"report-{name}-{stamp}.{kind}" + ("" if plain else ".age"))
     data = html.encode("utf-8", "backslashreplace")  # never fails on stray text
+    if kind == "pdf":
+        data = pdf_from_html(html)
     if not plain:
         data = pyrage.encrypt(data, [x25519.Recipient.from_str(r) for r in recipients])
     # Written whole beside its place (mkstemp makes it owner-only) and then
@@ -543,6 +548,44 @@ def write_report(
             report.row["id"], "reported", {"report_sha256": digest, "encrypted": not plain}
         )
     return output
+
+
+PDF_MEMORY_BYTES = 4 * 1024 * 1024 * 1024
+PDF_SECONDS = 600
+PDF_INSTALL = "pip install -e '.[pdf]', and the Pango libraries"
+
+
+def pdf_from_html(html: str) -> bytes:
+    """The report as a PDF, for sending, made in a limited process of its own: a report's text
+    may be a compromised host's (checker/pdf_render.py). Anything going wrong there is an
+    EvidenceError naming no text from the report."""
+    script = Path(__file__).with_name("pdf_render.py")
+    try:
+        done = subprocess.run(  # noqa: S603 - this interpreter, the tool's own file
+            [sys.executable, "-I", str(script), str(PDF_MEMORY_BYTES), str(PDF_SECONDS)],
+            input=html.encode("utf-8", "backslashreplace"),
+            capture_output=True,
+            timeout=PDF_SECONDS + 30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise EvidenceError(
+            f"the PDF took over {PDF_SECONDS} seconds, so none was made: the report may be very"
+            " large. The HTML report still works."
+        ) from None
+    if done.returncode == 0 and done.stdout.startswith(b"%PDF"):
+        return done.stdout
+    if done.returncode == 3:
+        raise EvidenceError(f"PDF reports need: {PDF_INSTALL}")
+    if done.returncode < 0 and done.returncode != -signal.SIGXCPU:
+        raise EvidenceError(
+            "making the PDF crashed, so none was made. A machine with no fonts does this: install"
+            " one, such as fonts-dejavu or dejavu-sans-fonts. The HTML report still works."
+        )
+    raise EvidenceError(
+        "the PDF couldn't be made, so none was: the report may be very large. The HTML report"
+        " still works."
+    )
 
 
 def read_report(path: Path, identity: x25519.Identity | None) -> str:

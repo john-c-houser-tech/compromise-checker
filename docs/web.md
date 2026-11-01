@@ -2,7 +2,7 @@
 
 For people who won't use a command line. Install the extra and start it:
 
-    pip install 'checker[web]'
+    pip install -e '.[web]'
     checker web
 
 The first time, it prints a link that works once, for an hour. Open it and create your

@@ -143,9 +143,7 @@ def _reports(store: Store, base: Path, bundle_ids: list[str]) -> list[Path]:
     """Reports in the reports folder that show any of these bundles: found
     by the hash each report left in the custody of the bundles it covers. A
     report written elsewhere (`--output`) is the operator's to delete."""
-    return _derived(
-        store, base / "reports", "report-*.html*", bundle_ids, "reported", "report_sha256"
-    )
+    return _derived(store, base / "reports", "report-*", bundle_ids, "reported", "report_sha256")
 
 
 def _derived(
@@ -311,7 +309,8 @@ def _derived_left(base: Path, row: Any) -> list[Path]:
             continue
         folder_name, _, name = where.partition("/")
         patterns = {
-            "reports": ("report-*.html", "report-*.html.age"),  # plain, encrypted
+            # plain, encrypted
+            "reports": ("report-*.html", "report-*.html.age", "report-*.pdf", "report-*.pdf.age"),
             "proposals": ("*.yaml",),
         }.get(folder_name, ())
         if not any(_plain_name(name, pattern) for pattern in patterns):

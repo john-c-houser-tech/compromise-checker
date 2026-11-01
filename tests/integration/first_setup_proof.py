@@ -205,7 +205,9 @@ def main() -> int:
             journey(page, f"http://127.0.0.1:{WEB_PORT}", link, home, gateway, env)
     finally:
         if not all(results):
-            print(run("docker", "exec", CONTAINER, "tail", "-20", "/tmp/sshd.log", check=False).stdout)
+            print(
+                run("docker", "exec", CONTAINER, "tail", "-20", "/tmp/sshd.log", check=False).stdout
+            )
         run("docker", "rm", "-f", CONTAINER, check=False)
         if server:
             server.terminate()

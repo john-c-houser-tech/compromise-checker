@@ -7739,24 +7739,29 @@ def test_a_python_path_is_used_as_given_and_only_the_usual_gets_the_os_note(keye
     assert 'command="sudo -n -- /opt/py/bin/python3 -I -B -"' in text
 
 
+def check_step_done(home):
+    from checker.web import first_setup
+
+    return first_setup.progress(home[0])["done"]["check"]
+
+
 def test_a_failed_collection_isn_t_a_first_server_checked(keyed):
     from test_snapshot import add_bundle
 
     client, home = keyed
     add_bundle(home, "e1", 10, [], status="empty")
-    text = setup_page(client)
-    assert (
-        "Your first server is checked" not in text
-        and "Check your servers" not in text.split("(done)")[0]
-    )
+    assert check_step_done(home) is False
+    assert "Your first server is checked" not in setup_page(client)
+    add_bundle(home, "c1", 20, CLEAN)
+    assert check_step_done(home) is True
 
 
 def test_a_bundle_of_a_server_no_longer_listed_doesn_t_count(keyed):
     from test_purge import add
 
-    client, home = keyed
+    _, home = keyed
     add(home, "b1", 2, host="gone")
-    assert "Your first server is checked" not in setup_page(client)
+    assert check_step_done(home) is False
 
 
 def test_a_key_that_can_t_be_read_keeps_the_key_step_open(web, unconfirmed):

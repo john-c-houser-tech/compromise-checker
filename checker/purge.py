@@ -310,7 +310,9 @@ def _derived_left(base: Path, row: Any) -> list[Path]:
         folder_name, _, name = where.partition("/")
         patterns = {
             # plain, encrypted
-            "reports": ("report-*.html", "report-*.html.age", "report-*.pdf", "report-*.pdf.age"),
+            "reports": tuple(
+                f"report-*.{kind}{end}" for kind in ("html", "pdf", "json") for end in ("", ".age")
+            ),
             "proposals": ("*.yaml",),
         }.get(folder_name, ())
         if not any(_plain_name(name, pattern) for pattern in patterns):

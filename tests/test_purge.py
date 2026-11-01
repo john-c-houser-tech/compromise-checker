@@ -518,3 +518,20 @@ def test_purge_takes_pdf_reports_too(home, capsys):
     args = cli.build_parser().parse_args(["purge", "web01"])
     assert cli.cmd_purge(args, lambda _: "purge") == 0
     assert not any(p.exists() for p in written)
+
+
+def test_purge_takes_json_reports_too(home):
+    from checker.report import write_report
+
+    base, store, identity, config = home
+    add(home, "b1", 40)
+    written = [
+        write_report(store, ["web01"], identity, config.recipients, base / "reports", kind="json"),
+        write_report(
+            store, ["web01"], identity, config.recipients, base / "reports", kind="json", plain=True
+        ),
+    ]
+    assert all(p.exists() for p in written)
+    args = cli.build_parser().parse_args(["purge", "web01"])
+    assert cli.cmd_purge(args, lambda _: "purge") == 0
+    assert not any(p.exists() for p in written)

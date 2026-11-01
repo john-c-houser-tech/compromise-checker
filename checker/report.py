@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
 import signal
@@ -482,6 +483,117 @@ def render(
     )
 
 
+JSON_FORMAT = 1
+JSON_TEXT_LIMIT = 4000
+
+
+def _for_machines(value: Any) -> Any:
+    """A value for the JSON report: every string made visible, as in the HTML report, so a
+    host's invisible characters and control codes can't reach a log or a ticket as they are."""
+    if isinstance(value, str):
+        return str(visible(value, JSON_TEXT_LIMIT))
+    if isinstance(value, dict):
+        return {str(visible(k, 200)): _for_machines(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_for_machines(v) for v in value]
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return str(visible(value, JSON_TEXT_LIMIT))
+
+
+# What a finding says, without the references that only mean something inside one parse.
+_JSON_FINDING = (
+    "number",
+    "check",
+    "variant",
+    "title",
+    "category",
+    "band",
+    "summary",
+    "entities",
+    "entities_complete",
+    "first_seen",
+    "last_seen",
+    "new",
+    "uncertain",
+    "ratio",
+    "contribution",
+    "raised_by_pack",
+    "maintenance",
+    "suppressed_by",
+)
+_JSON_BUNDLE = (
+    "id",
+    "status",
+    "started_at",
+    "ended_at",
+    "plaintext_sha256",
+    "ciphertext_sha256",
+    "collector_version",
+)
+
+
+def _json_finding(finding: dict) -> dict:
+    shown = {key: finding.get(key) for key in _JSON_FINDING}
+    shown["excerpts"] = [
+        {k: e.get(k) for k in ("when", "where", "text")} for e in finding.get("excerpts") or []
+    ]
+    return shown
+
+
+def report_json(reports: list[HostReport], generated_by: tuple[str, str]) -> str:
+    """The report for machines: SIEMs and tickets (docs/report-json.md). The same findings and
+    the same masking as the HTML report. Text from a server is as untrusted here as there."""
+    hosts = []
+    for report in reports:
+        assessment = report.assessment
+        advice = {}
+        for role, entry in report.advice.items():
+            answered = entry.get("answered")
+            if answered:
+                advice[role] = {
+                    key: answered.get(key)
+                    for key in ("answer", "at", "model_answered", "stale", "warning", "redaction")
+                }
+        hosts.append(
+            {
+                "host": report.host,
+                "bundle": {key: report.row[key] for key in _JSON_BUNDLE},
+                "analysed_at": assessment.get("analysed_at"),
+                "versions": assessment.get("versions"),
+                "score": assessment.get("score"),
+                "findings": [
+                    _json_finding(f) for listed in report.findings.values() for f in listed
+                ],
+                "suppressed": [_json_finding(f) for f in report.suppressed],
+                "exposures": assessment.get("exposures") or [],
+                "packs": assessment.get("packs") or [],
+                "coverage": assessment.get("coverage"),
+                "timeline": [
+                    {k: e.get(k) for k in ("when", "type", "text", "findings")}
+                    for e in report.timeline
+                ],
+                # An AI model's words, never findings, and they don't change the score.
+                "advisor": advice,
+            }
+        )
+    who, where = generated_by
+    return json.dumps(
+        _for_machines(
+            {
+                "format": JSON_FORMAT,
+                "generated_at": datetime.now(UTC).isoformat(),
+                "generated_by": {"operator": who, "controller": where, "version": __version__},
+                "hosts": hosts,
+            }
+        ),
+        indent=1,
+        sort_keys=True,
+    )
+
+
 def write_report(
     store: Store,
     hosts: list[str],
@@ -497,7 +609,7 @@ def write_report(
     packs: Callable[[str], tuple[list, list[str]]] | None = None,
     kind: str = "html",
 ) -> Path:
-    """Write the report as HTML or PDF (`kind`), encrypted to the evidence key
+    """Write the report as HTML, PDF or JSON (`kind`), encrypted to the evidence key
     (`report-….html.age`; read_report() reads the HTML) unless `plain`, owner-only either
     way, and add a `reported` entry, with the hash of the file as written, to each
     bundle's custody. `packs` gives a host's threat packs and why any
@@ -516,7 +628,10 @@ def write_report(
         host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h), *packs(h))
         for h in hosts
     ]
-    html = render(reports, who_and_where(), advisor_enabled)
+    if kind == "json":
+        html = report_json(reports, who_and_where())
+    else:
+        html = render(reports, who_and_where(), advisor_enabled)
     if output is None:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         directory.chmod(0o700)  # also when it was already there

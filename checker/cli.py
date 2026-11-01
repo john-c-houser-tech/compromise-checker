@@ -937,7 +937,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reporting.add_argument("--bundle", help="this bundle rather than the host's latest")
     reporting.add_argument(
-        "--output", help="the file to write (default: reports/ in the home; .html.age or .pdf.age)"
+        "--output", help="the file to write (default: reports/ in the home; ends in .FORMAT.age)"
     )
     reporting.add_argument(
         "--plain", action="store_true", help="write it plain, not encrypted (to hand it on)"

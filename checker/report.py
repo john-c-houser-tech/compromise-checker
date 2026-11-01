@@ -540,43 +540,128 @@ def _json_finding(finding: dict) -> dict:
     shown["excerpts"] = [
         {k: e.get(k) for k in ("when", "where", "text")} for e in finding.get("excerpts") or []
     ]
+    rule = finding.get("suppressed_by")
+    if isinstance(rule, dict):  # not its file: that's a path on this machine
+        shown["suppressed_by"] = {k: rule.get(k) for k in ("layer", "rule", "reason", "owner")}
+    return shown
+
+
+def _json_score(score: dict) -> dict:
+    """The score, its references to findings given as the findings' numbers: its own are
+    positions in a list this report doesn't export. Events aren't exported at all."""
+    shown = dict(score or {})
+    shown["contributors"] = [
+        {k: (v + 1 if k == "finding" and isinstance(v, int) else v) for k, v in c.items()}
+        for c in shown.get("contributors") or []
+        if isinstance(c, dict)
+    ]
+    shown["chains"] = [
+        {
+            **{k: v for k, v in c.items() if k not in ("events", "findings")},
+            "findings": [n + 1 for n in c.get("findings") or [] if isinstance(n, int)],
+        }
+        for c in shown.get("chains") or []
+        if isinstance(c, dict)
+    ]
+    return shown
+
+
+def _json_advice(advice: dict) -> dict:
+    """What the report shows of the advisor. A proposal or a command it set aside stays out: a
+    steered model's words mustn't reach a ticket looking like advice."""
+    shown = {}
+    for role, entry in advice.items():
+        answered = entry.get("answered")
+        later = entry.get("later")
+        record = {}
+        if answered:
+            answer = answered.get("answer")
+            if isinstance(answer, dict) and role == "whitelist":
+                answer = {
+                    "judged": [
+                        {k: j.get(k) for k in ("id", "accepted", "hides", "reason")}
+                        for j in answer.get("judged") or []
+                    ]
+                }
+            elif isinstance(answer, dict) and role == "coverage":
+                judged = answer.get("judged") or []
+                answer = {
+                    "offered": [
+                        {k: j.get(k) for k in ("suggestion", "cited", "note", "action")}
+                        for j in judged
+                        if j.get("accepted")
+                    ],
+                    "set_aside": [j.get("reason") for j in judged if not j.get("accepted")],
+                }
+            record["answered"] = {
+                "answer": answer,
+                **{
+                    k: answered.get(k)
+                    for k in (
+                        "at",
+                        "assessed_at",
+                        "bundle_id",
+                        "model_asked",
+                        "model_answered",
+                        "declined_by",
+                        "redaction",
+                        "stale",
+                        "local",
+                        "warning",
+                    )
+                },
+            }
+        if later:
+            record["came_to_nothing"] = {k: later.get(k) for k in ("at", "model_asked", "note")}
+        if record:
+            shown[role] = record
     return shown
 
 
 def report_json(reports: list[HostReport], generated_by: tuple[str, str]) -> str:
     """The report for machines: SIEMs and tickets (docs/report-json.md). The same findings and
-    the same masking as the HTML report. Text from a server is as untrusted here as there."""
+    masking as the HTML report. Text from a server is as untrusted here as there."""
+    order = {band: i for i, band in enumerate(BANDS)}
+
+    def worst_first(findings: list[dict]) -> list[dict]:
+        return sorted(findings, key=lambda f: (order.get(f.get("band"), 9), f.get("number") or 0))
+
     hosts = []
     for report in reports:
         assessment = report.assessment
-        advice = {}
-        for role, entry in report.advice.items():
-            answered = entry.get("answered")
-            if answered:
-                advice[role] = {
-                    key: answered.get(key)
-                    for key in ("answer", "at", "model_answered", "stale", "warning", "redaction")
-                }
+        bundle = {key: report.row[key] for key in _JSON_BUNDLE}
+        bundle["collector_version"] = str(visible(bundle["collector_version"], 40))
+        whitelist = assessment.get("whitelist")
+        whitelist = whitelist if isinstance(whitelist, dict) else {}
+        in_effect = [f for listed in report.findings.values() for f in listed]
         hosts.append(
             {
                 "host": report.host,
-                "bundle": {key: report.row[key] for key in _JSON_BUNDLE},
+                "bundle": bundle,
                 "analysed_at": assessment.get("analysed_at"),
                 "versions": assessment.get("versions"),
-                "score": assessment.get("score"),
-                "findings": [
-                    _json_finding(f) for listed in report.findings.values() for f in listed
+                # Without these, a check that didn't run reads as one that found nothing.
+                "notes": assessment.get("notes") or [],
+                "checks_not_run": [
+                    {"check": c.get("check"), "status": c.get("status")}
+                    for c in assessment.get("checks") or []
+                    if isinstance(c, dict) and c.get("status") != "ran"
                 ],
-                "suppressed": [_json_finding(f) for f in report.suppressed],
+                "baseline_id": assessment.get("baseline_id"),
+                "baseline_set_now": assessment.get("baseline_set_now"),
+                "whitelist_rules_expired": whitelist.get("expired") or [],
+                "score": _json_score(assessment.get("score")),
+                "findings": [_json_finding(f) for f in worst_first(in_effect)],
+                "suppressed": [_json_finding(f) for f in worst_first(report.suppressed)],
                 "exposures": assessment.get("exposures") or [],
                 "packs": assessment.get("packs") or [],
                 "coverage": assessment.get("coverage"),
                 "timeline": [
-                    {k: e.get(k) for k in ("when", "type", "text", "findings")}
+                    {k: e.get(k) for k in ("when", "after", "type", "text", "findings")}
                     for e in report.timeline
                 ],
                 # An AI model's words, never findings, and they don't change the score.
-                "advisor": advice,
+                "advisor": _json_advice(report.advice),
             }
         )
     who, where = generated_by

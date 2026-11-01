@@ -6361,10 +6361,15 @@ def test_a_refused_settings_form_stays_stale_when_it_comes_back(web, inventory):
     client, _ = signed_in(web)
     form = settings_form(client)
     bad = client.post("/manage/settings/save", {**form, "retention_days": "soon"})
-    assert form["version"] in said(bad)
     change(checker_home(), "stale_after_days", "9")
-    retry = client.post("/manage/settings/save", {**form, "retention_days": "30"})
+    # What the refused page sends if saved again, with the mistake put right.
+    reader = _FormReader("/manage/settings/save")
+    reader.feed(bad.content.decode())
+    assert reader.fields["version"] == form["version"]
+    again = {**reader.fields, "retention_days": "30", "confirm_password": PASSWORD}
+    retry = client.post("/manage/settings/save", again)
     assert retry.status_code == 400 and config_now().retention_days != 30
+    assert config_now().stale_after_days == 9
 
 
 def test_a_saved_settings_page_says_so(web, inventory):

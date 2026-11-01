@@ -1,0 +1,18 @@
+{% extends "base.html.j2" %}
+{% block title %}Checks: {{ product_name() }}{% endblock %}
+{% block main %}
+<h1 class="page-title">Checks</h1>
+<p><a href="{{ url('check_new') }}">Check your servers now</a></p>
+{% if not rows %}<p>No checks have been started from here yet.</p>{% else %}
+<div class="record-wrap">
+<table class="record">
+  <thead><tr><th>Started</th><th>What</th><th>Servers</th><th>Who</th><th>How it went</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr><td><a href="{{ url('check', run_id=r.id) }}">{{ r.started.isoformat() | when }}</a></td><td>{{ r.kind }}</td><td>{{ r.hosts }}</td><td>{{ r.who }}</td><td>{{ r.state }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

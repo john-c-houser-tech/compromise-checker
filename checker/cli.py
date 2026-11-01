@@ -1170,6 +1170,12 @@ def build_parser() -> argparse.ArgumentParser:
     running.add_argument("--days", type=int, default=30, help="look-back window (default 30)")
     running.add_argument("--parallel", type=int, default=5, help="hosts at a time (default 5)")
     running.add_argument("--identity", help="the evidence private key file")
+    running.add_argument(
+        "--passwords-on-stdin",
+        action="store_true",
+        help="with --unattended: read this run's passwords from standard input, as JSON by host"
+        " (how the web interface hands them over; they stay out of arguments and the environment)",
+    )
     running.set_defaults(handler=cmd_run)
 
     scheduling = commands.add_parser("schedule", help="run `checker run --all` daily, on a timer")
@@ -2644,10 +2650,25 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not hosts:
         print("checker: no hosts selected", file=sys.stderr)
         return schedule.EXIT_SETUP
+    typed = None
+    if args.passwords_on_stdin:
+        if not args.unattended:
+            print("checker: --passwords-on-stdin goes with --unattended", file=sys.stderr)
+            return schedule.EXIT_SETUP
+        try:
+            typed = json.load(sys.stdin)
+        except ValueError:  # nothing of what was read goes in the message
+            typed = None
+        if not isinstance(typed, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in typed.items()
+        ):
+            print("checker: the passwords on standard input aren't JSON by host", file=sys.stderr)
+            return schedule.EXIT_SETUP
     try:
         result = schedule.run(
             base, config, hosts, identity, inventory,
             unattended=args.unattended, days=args.days, parallel=args.parallel,
+            typed_passwords=typed,
         )  # fmt: skip
     except schedule.Busy as exc:
         print(f"checker: {exc}", file=sys.stderr)

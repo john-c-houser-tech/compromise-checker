@@ -82,13 +82,18 @@ def run_lock(base: Path) -> Iterator[None]:
 # --- Unattended -----------------------------------------------------------------------------
 
 
-def host_problems(host, environ: dict[str, str] | None = None) -> list[str]:
-    """What would stop an unattended run at a prompt on this host. (An
-    agent that asks for its key's passphrase can't be seen from here: the
-    docs say to use a key already unlocked.)"""
+def needs_typed_password(host) -> bool:
+    return host.needs_password() and host.password_source != "keyring"  # noqa: S105
+
+
+def host_problems(host, environ: dict[str, str] | None = None, typed: bool = False) -> list[str]:
+    """What would stop an unattended run at a prompt on this host, `typed` if
+    someone has already given its password. (An agent that asks for its key's
+    passphrase can't be seen from here: the docs say to use a key already
+    unlocked.)"""
     environ = os.environ if environ is None else environ
     problems = []
-    if host.needs_password() and host.password_source != "keyring":  # noqa: S105
+    if needs_typed_password(host) and not typed:
         what = "logs in with a password" if host.auth == "password" else "uses sudo's password"
         problems.append(
             f"{host.name} {what} typed at a prompt: keep it in the OS keyring"
@@ -438,11 +443,13 @@ def run(
     say: Callable[[str], None] = print,
     collect: Callable | None = None,
     environ: dict[str, str] | None = None,
+    typed_passwords: dict[str, str] | None = None,
 ) -> RunResult:
     """Collect, analyze, report and purge what has expired; say what needs a
     look. Each step's trouble is caught and reported, so the later steps
     and the notification still happen. Raises Busy if another run holds the
-    lock."""
+    lock. `typed_passwords` are what someone gave for this run, by host, from
+    the web interface: an unattended run uses them and asks for nothing."""
     from checker.assess import analyze, prior_for
     from checker.baseline import USABLE
     from checker.collect import collect_hosts
@@ -454,6 +461,15 @@ def run(
     from checker.whitelist import for_host as whitelist_for_host
 
     collect = collect or collect_hosts
+    typed_passwords = typed_passwords or {}
+
+    def given_or_unattended(host) -> str:
+        return typed_passwords.get(host.name) or unattended_password(host)
+
+    if unattended:
+        provider = given_or_unattended if typed_passwords else unattended_password
+    else:
+        provider = password_for
     result = RunResult([])
     with run_lock(base):
         state = load_state(base, identity)
@@ -482,7 +498,7 @@ def run(
             refused = {}
             if unattended:
                 for host in hosts:
-                    if problems := host_problems(host, environ):
+                    if problems := host_problems(host, environ, host.name in typed_passwords):
                         refused[host.name] = "; ".join(problems)
             todo = [h for h in hosts if h.name not in refused]
             before = {
@@ -499,7 +515,7 @@ def run(
                             todo,
                             days=days,
                             parallel=parallel,
-                            password_provider=unattended_password if unattended else password_for,
+                            password_provider=provider,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 - every host shows as not collected

@@ -255,6 +255,11 @@ that may include access tokens, and sometimes secrets typed into commands.
   tool's error output instead; actions are refused. Signing out then clears
   only that browser: the session can stay valid on the server until it expires,
   up to 8 hours, and the page says so.
+- **Two-factor sign-in.** The web interface's file also holds each account's
+  authenticator secret and its unused recovery codes, in readable form, since
+  the tool has to check codes against them. The file is readable only by the
+  tool's owner, but a copy of it, or a backup, should be protected like a
+  password. They aren't sent anywhere.
 
 ## 9. The optional AI advisor
 

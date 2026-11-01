@@ -817,7 +817,7 @@ def test_the_stylesheet_only_asks_for_fonts_that_exist(web):
 
 def test_no_servers_says_what_to_do(web):
     client, _ = signed_in(web)
-    assert "Add your first server" in client.get("/").content.decode()
+    assert "Start with first setup" in client.get("/").content.decode()
 
 
 def test_hostile_text_from_a_real_finding_does_nothing(web):
@@ -7439,3 +7439,209 @@ def test_a_baseline_accepted_since_the_preview_means_looking_again(web, inventor
     response = client.post("/manage/delete/confirm", form)
     assert response.status_code == 400 and "changed since you looked" in said(response)
     assert sorted(bundles_of(home)) == ["b1", "b2"]
+
+
+# --- First setup (plan 5.13b) ---------------------------------------------------------------
+
+
+def test_the_web_interface_sets_itself_up_on_a_first_start(tmp_path, monkeypatch, capsys):
+    from checker import cli
+    from checker.evidence import load_config
+    from checker.web import app
+
+    home_path = tmp_path / "fresh"
+    monkeypatch.setenv("CHECKER_HOME", str(home_path))
+    monkeypatch.setattr(app, "serve", lambda *args: 0)
+    assert cli.main(["web"]) == 0
+    out = capsys.readouterr().out
+    assert "BACK IT UP" in out and "AI advisor off" in out
+    config = load_config(home_path)
+    assert config.advisor.enabled is False and config.home_text == "off"
+    assert config.web_access_logs is False
+    assert (home_path / "keys" / "evidence-identity.txt").exists()
+    before = (home_path / "keys" / "evidence-identity.txt").read_text()
+    assert cli.main(["web"]) == 0, "and leaves it alone after that"
+    assert (home_path / "keys" / "evidence-identity.txt").read_text() == before
+
+
+def setup_page(client):
+    response = client.get("/first-setup")
+    assert response.status_code == 200
+    return said(response)
+
+
+def test_first_setup_goes_step_by_step_from_what_s_really_there(web, inventory):
+    client, home = signed_in(web)
+    inventory()
+    text = setup_page(client)
+    assert "evidence-identity.txt" in text and "I've backed it up" in text
+    assert text.count("(done)") == 0
+    assert "Your stored evidence can't be read without its key" in said(client.get("/"))
+    assert client.post("/first-setup/key-saved", {"a": "b"}).status_code == 302
+    assert setup_page(client).count("(done)") == 1
+    assert "Your stored evidence can't be read" not in said(client.get("/"))
+    assert records_of("said the evidence key is backed up")[-1].who == "jo"
+
+
+def test_the_first_choices_are_confirmed_and_are_the_real_settings(web, inventory):
+    client, _ = signed_in(web)
+    reader = _FormReader("/first-setup/choices")
+    reader.feed(client.get("/first-setup").content.decode())
+    form = {**reader.fields, "web_access_logs": "on", "confirm_password": PASSWORD}
+    assert set(reader.fields) >= {"home_text", "web_access_logs", "advisor.enabled", "version"}
+    assert (
+        client.post("/first-setup/choices", {**form, "confirm_password": "no"}).status_code == 403
+    )
+    assert config_now().web_access_logs is False
+    assert client.post("/first-setup/choices", form).status_code == 302
+    assert config_now().web_access_logs is True
+    assert history_now()[-1]["setting"] == "web_access_logs"
+    assert "Save these choices" not in setup_page(client)
+
+
+def test_a_first_choice_that_s_wrong_says_so_and_changes_nothing(web, inventory):
+    client, _ = signed_in(web)
+    reader = _FormReader("/first-setup/choices")
+    reader.feed(client.get("/first-setup").content.decode())
+    form = {**reader.fields, "home_text": "everything", "confirm_password": PASSWORD}
+    response = client.post("/first-setup/choices", form)
+    assert response.status_code == 400 and "choose one" in said(response)
+    assert config_now().home_text == "off"
+    forged = {**reader.fields, "notify_command": "/bin/evil", "confirm_password": PASSWORD}
+    assert client.post("/first-setup/choices", forged).status_code == 302
+    assert config_now().notify_command is None
+
+
+def key_file_of(home):
+    return home[0] / "keys" / "scanner_ed25519"
+
+
+def test_this_machine_s_key_is_confirmed_private_and_never_replaced(web, inventory):
+    client, home = signed_in(web)
+    form = {"confirm_password": PASSWORD}
+    assert client.post("/first-setup/make-key", {"confirm_password": "no"}).status_code == 403
+    assert not key_file_of(home).exists()
+    assert client.post("/first-setup/make-key", form).status_code == 302
+    path = key_file_of(home)
+    assert path.stat().st_mode & 0o777 == 0o600
+    key = asyncssh.read_private_key(path)
+    fingerprint = key.get_fingerprint("sha256")
+    assert records_of("made this machine's SSH key")[-1].detail == fingerprint
+    text = setup_page(client)
+    assert "PRIVATE KEY" not in text and "act as an administrator" in text
+    again = client.post("/first-setup/make-key", form)
+    assert again.status_code == 400 and "replacing it would lock" in said(again)
+    assert asyncssh.read_private_key(path).get_fingerprint("sha256") == fingerprint
+
+
+def test_the_add_form_starts_with_this_machine_s_key(web, inventory):
+    client, home = signed_in(web)
+    assert 'value="scanner"' not in client.get("/manage/add").content.decode()
+    client.post("/first-setup/make-key", {"confirm_password": PASSWORD})
+    text = client.get("/manage/add").content.decode()
+    assert 'value="scanner"' in text and str(key_file_of(home)) in text
+
+
+def prepared(client, host="web01", **query):
+    response = client.get("/manage/server/prepare", {"host": host, **query})
+    assert response.status_code == 200
+    return said(response)
+
+
+@pytest.fixture
+def keyed(web, unconfirmed):
+    """A signed-in browser, and a server that logs in with this machine's key."""
+    from checker.inventory import Host
+
+    client, home = signed_in(web)
+    client.post("/first-setup/make-key", {"confirm_password": PASSWORD})
+    unconfirmed(
+        Host(
+            name="web01",
+            address="192.0.2.1",
+            user="scanner",
+            auth="key",
+            key_path=str(key_file_of(home)),
+        )
+    )
+    return client, home
+
+
+def test_the_commands_are_filled_in_with_the_real_key_and_nothing_private(keyed):
+    client, home = keyed
+    text = prepared(client, **{"from": "203.0.113.10"})
+    public = " ".join((home[0] / "keys" / "scanner_ed25519.pub").read_text().split()[:2])
+    assert public in text, "whole, not cut by the page's filter"
+    assert 'from="203.0.113.10"' in text
+    assert 'command="sudo -n -- python3 -I -B -"' in text
+    assert "scanner ALL=(root) NOPASSWD: /usr/bin/python3 -I -B -" in text
+    assert "act as an administrator" in text
+    assert "PRIVATE KEY" not in text
+
+
+def test_the_command_is_what_the_transport_really_sends(keyed):
+    """The forced command has to match, or the key would run something else."""
+    from checker.inventory import load_inventory
+    from checker.transport import remote_command
+
+    client, _ = keyed
+    host = load_inventory().get("web01")
+    assert f'command="{remote_command(host)}"' in prepared(client)
+
+
+@pytest.mark.parametrize(
+    "typed", ["not an address", '1.2.3.4"; rm -rf /', '1.1.1.1",command="evil']
+)
+def test_a_bad_address_goes_nowhere_near_the_commands(keyed, typed):
+    client, _ = keyed
+    text = prepared(client, **{"from": typed})
+    assert "That isn't an IP address" in text and "evil" not in text.split("On the server")[1]
+    assert "rm -rf" not in text.split("On the server")[1]
+
+
+def test_with_no_address_it_says_the_key_isn_t_limited(keyed):
+    client, _ = keyed
+    text = prepared(client)
+    assert "don't limit where the key" in text and "from=" not in text
+
+
+@pytest.mark.parametrize(
+    ("changes", "words"),
+    [
+        ({"sudo": "root"}, "log in as root"),
+        ({"sudo": "password"}, "sudo with a password"),
+        ({"user": "DOMAIN\\\\jo"}, "more than these commands can safely handle"),
+        ({"auth": "agent", "key_path": None}, "SSH agent"),
+        ({"key_path": "/nonexistent/key"}, "can't read one"),
+    ],
+)
+def test_what_these_commands_don_t_suit_says_so_instead(keyed, unconfirmed, changes, words):
+    from checker.inventory import Host
+
+    client, home = keyed
+    fields = {"name": "web01", "address": "192.0.2.1", "user": "scanner", "auth": "key",
+              "key_path": str(key_file_of(home)), **changes}  # fmt: skip
+    unconfirmed(Host(**fields))
+    text = prepared(client)
+    assert words in text and "useradd" not in text
+
+
+def test_the_prepare_page_is_for_listed_servers_and_contacts_nothing(keyed, monkeypatch):
+    from checker.web import manage
+
+    def must_not(host):
+        raise AssertionError("contacted a server")
+
+    monkeypatch.setattr(manage, "fetch_host_key", must_not)
+    client, _ = keyed
+    assert client.get("/manage/server/prepare", {"host": "nope"}).status_code == 404
+    assert client.get("/manage/server/prepare", {"host": "web01"}).status_code == 200
+
+
+def test_first_setup_needs_a_login(web, inventory):
+    client, _ = web
+    assert client.get("/first-setup").status_code == 302
+    assert client.get("/manage/server/prepare?host=web01").status_code == 302
+    for path in ("key-saved", "choices", "make-key"):
+        assert client.post(f"/first-setup/{path}", {"a": "b"}).status_code == 302
+        assert client.get(f"/first-setup/{path}").status_code in (302, 405)

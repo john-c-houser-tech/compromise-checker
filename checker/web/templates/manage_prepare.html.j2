@@ -1,0 +1,35 @@
+{% extends "base.html.j2" %}
+{% block title %}Set up {{ host.name }}: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage_server') }}?host={{ host.name | urlencode }}">Back to {{ host.name }}</a></p>
+<h1 class="page-title">What to set up on {{ host.name }}</h1>
+<p>This makes an account just for this tool, called {{ host.user }}. Someone who can already be an administrator on the server runs these there, from its provider's console or an SSH session.</p>
+<p class="error">This account can act as an administrator: it has to, to read what only an administrator can, such as the login records. Whoever has this machine's key can run anything on the server as an administrator. If someone looks after security at your organization, they should know about it and agree.</p>
+{% if not plain_account %}
+<p class="error">The account name {{ host.user }} is more than these commands can safely handle. <a href="{{ url('manage_server') }}?host={{ host.name | urlencode }}">Choose a plain one</a>, such as scanner, or follow the guide in <code>docs/scanner-account.md</code>.</p>
+{% elif not uses_sudo_rule %}
+<p>This server is set up to {% if host.sudo == "root" %}log in as root{% else %}use sudo with a password{% endif %}, which doesn't use these commands. See "Other set-ups" in <code>docs/scanner-account.md</code>, or <a href="{{ url('manage_server') }}?host={{ host.name | urlencode }}">change it to sudo with no password</a>.</p>
+{% elif not public %}
+<p class="error">This page needs the public part of the key this server logs in with, and it can't read one.{% if host.auth == "agent" %} This server logs in with an SSH agent, so its key isn't on this machine. Follow <code>docs/scanner-account.md</code> with your key.{% else %} <a href="{{ url('first_setup') }}">Make this machine's key</a>, or check the key file on <a href="{{ url('manage_server') }}?host={{ host.name | urlencode }}">its settings</a>.{% endif %}</p>
+{% else %}
+<h2>This machine's address</h2>
+<p>With this, the key works only from this machine, so it's worthless if copied elsewhere. Type the address your servers see this machine connecting from. If it can change, leave it empty.</p>
+{% if from_problem %}<p class="error" role="alert">{{ from_problem }}</p>{% endif %}
+<form method="get" action="{{ url('manage_prepare') }}">
+  <input type="hidden" name="host" value="{{ host.name }}">
+  <label>Address <input name="from" value="{{ typed_from }}"></label>
+  <button>Put it in the commands</button>
+</form>
+{% if not address %}<p class="note">These commands don't limit where the key can be used from.</p>{% endif %}
+<h2>On the server</h2>
+<pre class="command">{{ commands }}</pre>
+<p>The last command should say the file parses OK. If it doesn't, fix that before logging out: a broken file can lock administrators out of sudo.</p>
+<p class="note">This expects Python at {{ python }}, as on RHEL 9 and 10, Rocky, AlmaLinux and Ubuntu 22.04 or later.</p>
+<h2>Next</h2>
+<p><a href="{{ url('manage_server') }}?host={{ host.name | urlencode }}">Confirm it's really this server</a>, then <a href="{{ url('check_new') }}?host={{ host.name | urlencode }}">run a check</a>.</p>
+<details>
+  <summary>Taking this away again</summary>
+  <pre class="command">{{ removal }}</pre>
+</details>
+{% endif %}
+{% endblock %}

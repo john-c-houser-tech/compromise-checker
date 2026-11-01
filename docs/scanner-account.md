@@ -30,6 +30,8 @@ way. The protection is keeping that key and that machine safe.
 Your security team should know about the account and decide. Treat the
 controller and its key as root credentials for the servers it checks.
 
+The web interface's First setup page gives these same commands, filled in, for the usual case.
+
 ## On each server (as an administrator)
 
 Replace `203.0.113.10` with the controller's address and the key with the

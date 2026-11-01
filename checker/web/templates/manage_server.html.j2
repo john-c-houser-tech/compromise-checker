@@ -6,6 +6,8 @@
 <h1 class="page-title">{{ host.name }}</h1>
 {% if earlier %}<p><a href="{{ url('host', name=host.name) }}">See its results</a></p>{% endif %}
 
+<p><a href="{{ url('manage_prepare') }}?host={{ host.name | urlencode }}">What to set up on this server</a></p>
+
 <h2>Confirm it's really this server</h2>
 {% if key_problem %}<p class="error" role="alert">{{ key_problem }}</p>{% endif %}
 {% if trusted == "unreadable" %}

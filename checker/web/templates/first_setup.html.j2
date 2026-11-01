@@ -1,0 +1,91 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}First setup: {{ product_name() }}{% endblock %}
+{% macro state(step) %}{% if done[step] %} <span class="done">(done)</span>{% endif %}{% endmacro %}
+{% block main %}
+<h1 class="page-title">First setup</h1>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+{% if not current %}<p><strong>Your first server is checked.</strong> <a href="{{ url('fleet') }}">See the results</a>.</p>{% endif %}
+<ol class="steps">
+  <li>
+    <h2>Back up the evidence key{{ state("backup") }}</h2>
+    {% if evidence_key %}
+    <p>Everything this tool stores is encrypted to one key, which is on this machine. If it's lost, stored evidence can't be read by anyone. Copy this file somewhere safe and separate, such as a password manager, and not on this machine:</p>
+    <p class="command">{{ evidence_key | visible(2000) }}</p>
+    <p class="note">Anyone with that file and a copy of the evidence can read it, so keep it as private as the evidence.</p>
+    {% if not done.backup %}
+    <form method="post" action="{{ url('first_setup_key_saved') }}">
+      {{ csrf_input }}
+      <button>I've backed it up</button>
+    </form>
+    {% endif %}
+    {% else %}<p>The key isn't on this machine, so there's nothing to do here.</p>{% endif %}
+  </li>
+  <li>
+    <h2>Choose what's collected{{ state("choices") }}</h2>
+    {% if done.choices %}
+    <p><a href="{{ url('manage_settings') }}">Change these in Settings</a>.</p>
+    {% else %}
+    <p>Each of these starts at its most private. Collecting more finds more, and holds more of your organization's data.</p>
+    <p class="note">{{ choices.what_leaves | visible(3000) }}</p>
+    <form method="post" action="{{ url('first_setup_choices') }}">
+      {{ csrf_input }}
+      <input type="hidden" name="version" value="{{ choices.version }}">
+      {% for field in choices.fields %}{{ parts.setting_field(field) }}{% endfor %}
+      <p class="note">If you turn on the AI advisor, it needs an API key on this machine before it can be used. Whoever looks after this machine can set one: <code>checker config check-key</code> says whether it can be read.</p>
+      {{ parts.confirm(with_code=code_needed) }}
+      <button>Save these choices</button>
+    </form>
+    {% endif %}
+  </li>
+  <li>
+    <h2>Make this machine's key{{ state("key") }}</h2>
+    {% if made %}
+    <p>This machine logs in to your servers with this key. The tool keeps it in a file only its own account can read, with no passphrase, so daily checks can use it.</p>
+    <p class="error">Anyone who gets this file can act as an administrator on every server that accepts it. Protect this machine accordingly.</p>
+    <p class="command">{{ key_file | visible(2000) }}</p>
+    {% elif done.key %}
+    <p>Your servers already have their own way of logging in, so this isn't needed.</p>
+    {% else %}
+    <p>This machine needs a key to log in to your servers. The tool can make one, kept in a file only its own account can read. It has no passphrase, so daily checks can use it.</p>
+    <p class="error">Anyone who gets that file can act as an administrator on every server that accepts it, so this machine has to be kept safe.</p>
+    <form method="post" action="{{ url('first_setup_make_key') }}">
+      {{ csrf_input }}
+      {{ parts.confirm(with_code=code_needed) }}
+      <button>Make this machine's key</button>
+    </form>
+    <p class="note">If you already have a key for this, skip this step: name its file when you add a server.</p>
+    {% endif %}
+  </li>
+  <li>
+    <h2>Add your first server{{ state("server") }}</h2>
+    {% if hosts %}
+    <p><a href="{{ url('manage') }}">Your servers</a>: {{ hosts | join(", ") | visible(5000) }}.</p>
+    {% else %}
+    <p><a href="{{ url('manage_add') }}">Add a server</a>. You'll need its address.</p>
+    {% endif %}
+  </li>
+  <li>
+    <h2>Set it up, and confirm it's really that server{{ state("ready") }}</h2>
+    {% if unconfirmed %}
+    <p>Someone who can log in to the server runs a few commands there, then you confirm its identity here.</p>
+    <ul>{% for name in unconfirmed %}<li><a href="{{ url('manage_prepare') }}?host={{ name | urlencode }}">What to set up on {{ name }}</a></li>{% endfor %}</ul>
+    {% elif hosts %}<p>Done for every server.</p>{% else %}<p>This comes after adding a server.</p>{% endif %}
+  </li>
+  <li>
+    <h2>Run the first check{{ state("check") }}</h2>
+    {% if done.check %}
+    <p><a href="{{ url('fleet') }}">See the results</a>.</p>
+    {% elif done.ready %}
+    <p><a href="{{ url('check_new') }}">Check your servers</a>. It reads logs and settings without changing anything, and usually takes a few minutes. If it can't get in, it says why, and that's the sign something above needs another look.</p>
+    {% else %}<p>This comes last.</p>{% endif %}
+  </li>
+</ol>
+<h2>After that</h2>
+<ul>
+  <li><a href="{{ url('manage_threats') }}">Get the latest threat updates</a>, so known attacks are looked for.</li>
+  <li><a href="{{ url('manage_schedule') }}">Check every day</a>, so you find out without having to ask.</li>
+  <li><a href="{{ url('two_factor_manage') }}">Turn on two-factor sign-in</a>, if you haven't.</li>
+</ul>
+<p class="note">Evidence is kept for {{ retention_days }} days. Your first check is the baseline later ones are compared with: if a server may already have been broken into, what's there now counts as normal until you look at it.</p>
+{% endblock %}

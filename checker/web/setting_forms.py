@@ -255,6 +255,26 @@ def page(base: Path, typed=None, version: str | None = None) -> dict[str, Any]:
     }
 
 
+FIRST_CHOICES = (
+    "home_text",
+    "web_access_logs",
+    "exec_records",
+    "advisor.enabled",
+    "advisor.redaction",
+)
+
+
+def first_choices(base: Path) -> dict[str, Any]:
+    """The choices `checker init` asks about, as the settings page shows them."""
+    found = page(base)
+    fields = {field["key"]: field for section in found["sections"] for field in section["fields"]}
+    return {
+        "fields": [fields[key] for key in FIRST_CHOICES],
+        "version": found["version"],
+        "what_leaves": found["what_leaves"],
+    }
+
+
 def _command_line_only(config) -> list[tuple[str, str]]:
     """Whether they're set, not what they say: a command or an address can hold a secret."""
     advisor = config.advisor

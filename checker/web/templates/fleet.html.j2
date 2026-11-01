@@ -7,12 +7,13 @@
   <p>This is an estimate from what each server's logs and settings show, not proof either way. A
   server with no warnings can still have been broken into.</p>
 </div>
+{% if key_unsaved %}<p class="nudge">Your stored evidence can't be read without its key, so a lost key loses all of it. <a href="{{ url('first_setup') }}">Back it up</a>.</p>{% endif %}
 {% if threat_problem %}
 <p class="error" role="alert">A threat update couldn't be used, so a new threat may not be covered. Ask whoever runs this tool to look at its log.</p>
 {% endif %}
 {% if total %}<p><a href="{{ url('check_new') }}">Check your servers now</a></p>{% endif %}
 {% if not total %}
-<p><a href="{{ url('manage_add') }}">Add your first server</a> to check it.</p>
+<p><a href="{{ url('first_setup') }}">Start with first setup</a>: it goes through getting your first server checked, step by step.</p>
 {% else %}
 {% if groups or tones | length > 1 or group or tone %}
 <nav class="filters" aria-label="Filter servers">

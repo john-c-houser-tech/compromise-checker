@@ -147,8 +147,10 @@ def _used_before(base: Path, name: str) -> bool:
     return has_results(base, name) or (directory(base) / "hosts" / f"{name}.yaml").exists()
 
 
-def blank_form() -> dict[str, str]:
+def blank_form(key_path: str = "") -> dict[str, str]:
     return {**dict.fromkeys(FORM_FIELDS, ""), "port": "22", "python": "python3"} | {
+        "user": "scanner" if key_path else "",
+        "key_path": key_path,
         "auth": "key",
         "sudo": "nopasswd",
         "password_source": "prompt",

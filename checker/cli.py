@@ -1724,6 +1724,17 @@ def _web_extra_missing(exc: ImportError) -> int:
     return 2
 
 
+def _first_start(base: Path) -> None:
+    """Someone who has never used a command line starts here, so the tool sets itself up, with
+    every choice at its most private: nothing optional collected, the AI advisor off. The first
+    setup page asks about them. What `checker init --recipient` does stays with `checker init`."""
+    _, identity_path = initialise(base)
+    print(f"Set up in {base}, with nothing optional collected and the AI advisor off.")
+    if identity_path:
+        print(f"The evidence key is in {identity_path}. BACK IT UP somewhere safe and separate:")
+        print("without it, stored evidence cannot be read, by you or anyone else.")
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     """The web interface, until interrupted."""
     try:
@@ -1736,8 +1747,10 @@ def cmd_web(args: argparse.Namespace) -> int:
         return 2
     base = home()
     try:
+        if not config_file(base).exists():
+            _first_start(base)
         load_config(base)
-    except (EvidenceError, ValidationError, yaml.YAMLError) as exc:
+    except (EvidenceError, ValidationError, yaml.YAMLError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     if bool(args.tls_cert) != bool(args.tls_key):

@@ -2,6 +2,7 @@
 {% block title %}Manage: {{ product_name() }}{% endblock %}
 {% block main %}
 <h1 class="page-title">Manage your servers</h1>
+<p><a href="{{ url('first_setup') }}">First setup</a></p>
 <p><a href="{{ url('manage_add') }}">Add a server</a></p>
 <p><a href="{{ url('manage_threats') }}">Threat updates</a></p>
 <p><a href="{{ url('manage_settings') }}">Settings</a></p>

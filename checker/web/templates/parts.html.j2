@@ -53,3 +53,23 @@
   <label>Starting estimate, in percent <small>How likely it is to be hacked before any evidence. Leave it empty for the usual figure. A lower one makes the same findings look less worrying.</small> <input name="prior" value="{{ values.prior }}" inputmode="decimal"></label>
 </details>
 {% endmacro %}
+{% macro setting_field(field) %}
+  {% if not field.editable %}
+  <p><strong>{{ field.label }}:</strong> set on the command line, so it can't be changed here.</p>
+  {% elif field.kind == "choice" %}
+  <label>{{ field.label }}{% if field.help %} <small>{{ field.help }}</small>{% endif %}
+    <select name="{{ field.key }}">
+      {% for value, words in field.options %}<option value="{{ value }}"{% if field.value == value %} selected{% endif %}>{{ words }}</option>{% endfor %}
+    </select>
+  </label>
+  {% elif field.kind == "onoff" %}
+  <label>{{ field.label }}{% if field.help %} <small>{{ field.help }}</small>{% endif %}
+    <select name="{{ field.key }}">
+      <option value="on"{% if field.value == "on" %} selected{% endif %}>On</option>
+      <option value="off"{% if field.value == "off" %} selected{% endif %}>Off</option>
+    </select>
+  </label>
+  {% else %}
+  <label>{{ field.label }}{% if field.help %} <small>{{ field.help }}</small>{% endif %} <input name="{{ field.key }}" value="{{ field.value }}"></label>
+  {% endif %}
+{% endmacro %}

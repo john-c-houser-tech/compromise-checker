@@ -567,3 +567,15 @@ def test_the_bands_are_the_ones_scoring_gives():
 def test_rising_to_elevated_is_news():
     (line,) = schedule.alerts("web01", {"band": "Low"}, {"score": {"band": "Elevated"}})
     assert line == "web01: Low to Elevated"
+
+
+def test_a_stopped_collection_ends_the_run_cleanly(fleet, monkeypatch):
+    import asyncio
+
+    async def stopped(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    with pytest.raises(schedule.Stopped):
+        one_run(fleet, stopped)
+    with schedule.run_lock(fleet[0]):  # the lock went with it
+        pass

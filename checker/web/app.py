@@ -291,6 +291,9 @@ def serve(
 
     scheme = "https" if tls else "http"
     address = public_url or f"{scheme}://{bind}"
+    from checker.web import runs  # needs Django set up
+
+    runs.close_interrupted()
     link = setup_link(address)
     if link:
         print("No account yet. Open this link, once, within an hour, to create the first one:")

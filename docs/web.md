@@ -16,10 +16,12 @@ take that away. Pages that show results only read: the evidence store is opened 
 
 **Checks** starts a check from a page and shows how it's going. It's the same run as `checker run
 --unattended`, in a process of its own: it collects, analyzes, writes a report, purges what has expired
-and sends any notification. If you started it you can leave the page, or stop it. One runs at a time,
-including any on a timer, and one still going after 4 hours is ended, since it may be waiting for a prompt
-nobody can answer. A server's page can also work its results out again from what was last collected,
-connecting to nothing, which is useful after a threat update.
+and sends any notification. You can leave the page while it runs, and anyone signed in can stop it: what
+it has collected so far is kept and recorded, so a purge can find it. One check runs at a time, including
+any on a timer, and one still going after 4 hours is ended, since it may be waiting for a prompt nobody
+can answer. A restart of the web server stops a check that's running. A server's page can also work its
+results out again from what was last collected, connecting to nothing, which is useful after a threat
+update.
 
 A server that logs in with a typed password or uses sudo's asks for it on the page. It goes to that one
 check and isn't kept. One that uses a password in the system's keyring, or a key file with no passphrase,
@@ -67,9 +69,9 @@ can reach that address, which is why it asks for a login even there.
 
 `web.db` in the checker's home, owner-only: accounts with hashed passwords, two-factor secrets and
 recovery codes, sessions, failed
-logins for the last 15 minutes with their usernames and addresses, the times of wrong passwords and codes (never what was typed), the latest 50 checks started from a page, and the activity record below. Each
-of those checks' output is in the `checks` folder in the home, owner-only, and goes when the check is let go: it holds what the
-command line prints, which can quote an error a server sent, and never passwords. No evidence is ever copied
+logins for the last 15 minutes with their usernames and addresses, the times of wrong passwords and codes (never what was typed), when the latest 50 checks started from a page ran and how they ended, and the activity record below.
+What a check reports while it runs, which can quote an error a server sent but not findings or passwords,
+stays in the web server's memory, and goes when it restarts. No evidence is ever copied
 there. `keys/web-secret.txt` signs sessions; deleting it signs everyone out. Evidence is decrypted
 in memory for each page, with the same key the command line uses, and pages tell browsers not to
 keep them. There is no access log; only errors in the tool itself go to its standard error.

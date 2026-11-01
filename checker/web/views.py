@@ -33,7 +33,16 @@ from checker.web.middleware import before_second_step, setting_it_up
 from checker.web.models import ActionRecord, CheckRun
 
 # Where a login may go on to: not a form's address, which would land on an error.
-VIEWABLE = {"fleet", "host", "evidence", "threats", "activity", "checks", "two_factor_manage"}
+VIEWABLE = {
+    "fleet",
+    "host",
+    "evidence",
+    "threats",
+    "activity",
+    "checks",
+    "check",
+    "two_factor_manage",
+}
 
 
 def _safe_next(request) -> str:
@@ -473,7 +482,6 @@ def _unreadable_inventory(request, exc) -> HttpResponse:
 @login_required
 @require_GET
 def checks_page(request) -> HttpResponse:
-    runs.settle_interrupted()
     rows = list(CheckRun.objects.order_by("-id")[: runs.KEEP])
     return render(
         request,
@@ -489,7 +497,7 @@ def _run_row(run) -> dict:
         "hosts": ", ".join(json.loads(run.hosts)),
         "who": run.who,
         "started": run.started_at,
-        "state": run.ended or "running",
+        "state": runs.state_of(run),
         "running": runs.is_running(run.id),
     }
 
@@ -505,7 +513,12 @@ def check_new(request) -> HttpResponse:
     return render(
         request,
         "check_new.html.j2",
-        {"ready": ready, "asking": asking, "blocked": blocked, "names": names},
+        {
+            "ready": ready,
+            "asking": asking,
+            "blocked": blocked,
+            "unknown": bool(names) and not (ready or asking or blocked),
+        },
     )
 
 
@@ -540,8 +553,14 @@ def _start_run(request, kind: str, hosts: list[str], passwords=None) -> HttpResp
             accounts.client_address(request),
             passwords,
         )
-    except runs.AlreadyRunning as exc:  # show the one in progress, which is what was wanted
-        return HttpResponseRedirect(reverse("check", kwargs={"run_id": exc.run_id}))
+    except runs.AlreadyRunning as exc:  # a double-click's other half, or someone else's
+        where = reverse("check", kwargs={"run_id": exc.run_id}) + "?busy=1"
+        raise ActionFailed(
+            "another check was already running", page=HttpResponseRedirect(where)
+        ) from None
+    except OSError as exc:
+        print(f"checker web: a check didn't start: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed("The check couldn't be started.") from None
     return HttpResponseRedirect(reverse("check", kwargs={"run_id": run_id}))
 
 
@@ -565,14 +584,17 @@ def analyze_start(request) -> HttpResponse:
 def check_page(request, run_id: int) -> HttpResponse:
     if run_id >= 2**63:
         return not_found(request)
-    runs.settle_interrupted()
     run = CheckRun.objects.filter(pk=run_id).first()
     if run is None:
         return not_found(request)
     return render(
         request,
         "check.html.j2",
-        {"run": _run_row(run), "lines": runs.log_lines(home(), run.id)},
+        {
+            "run": _run_row(run),
+            "lines": runs.output_lines(run.id),
+            "busy": "busy" in request.GET and runs.is_running(run.id),
+        },
     )
 
 

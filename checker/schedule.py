@@ -16,12 +16,14 @@ last run, and alerts not yet delivered, are kept encrypted between runs,
 so an alert the command couldn't deliver is sent with the next one."""
 
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
 import plistlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -61,6 +63,29 @@ LAUNCHD_LABEL = "com.nouriloop.compromise-checker"
 
 class Busy(Exception):
     """Another `checker run` is in progress."""
+
+
+class Stopped(SystemExit):
+    """A run asked to stop, by SIGTERM. Not an Exception: no step's own trouble-handling should
+    catch it and carry on."""
+
+
+def stop_on_sigterm() -> None:
+    """So that cleaning up happens, and locks and databases close properly. Main thread only."""
+
+    def stop(*_) -> None:
+        raise Stopped(EXIT_FAILED)
+
+    signal.signal(signal.SIGTERM, stop)
+
+
+async def _cancelled_by_sigterm(work):
+    """While a collection runs, stopping cancels it, so each host's evidence is sealed and recorded
+    as far as it got: a file with no record of it is one a purge can't find."""
+    loop = asyncio.get_running_loop()
+    with contextlib.suppress(ValueError, RuntimeError, NotImplementedError):  # not the main thread
+        loop.add_signal_handler(signal.SIGTERM, asyncio.current_task().cancel)
+    return await work
 
 
 @contextmanager
@@ -507,21 +532,29 @@ def run(
             }
             outcomes = []
             if todo:
+                before_sigterm = signal.getsignal(signal.SIGTERM)
                 try:
                     outcomes = asyncio.run(
-                        collect(
-                            base,
-                            config,
-                            todo,
-                            days=days,
-                            parallel=parallel,
-                            password_provider=provider,
+                        _cancelled_by_sigterm(
+                            collect(
+                                base,
+                                config,
+                                todo,
+                                days=days,
+                                parallel=parallel,
+                                password_provider=provider,
+                            )
                         )
                     )
+                except asyncio.CancelledError:
+                    raise Stopped(EXIT_FAILED) from None
                 except Exception as exc:  # noqa: BLE001 - every host shows as not collected
                     result.problems.append(
                         f"collection failed ({type(exc).__name__}: {visible(str(exc), 300)})"
                     )
+                finally:
+                    if threading.current_thread() is threading.main_thread():
+                        signal.signal(signal.SIGTERM, before_sigterm)  # asyncio's went with it
             by_host = {o.host: o for o in outcomes}
             analysed = []
             for host in hosts:

@@ -402,6 +402,8 @@ async def _run(conn, host, program, sink, session, password, prompt_timeout) -> 
         for marker in (prompt, ready):
             if marker:
                 text = text.replace(marker.encode() + b"\n", b"").replace(marker.encode(), b"")
+        if password:  # a hostile sudo can repeat it, and this text is shown and stored
+            text = text.replace(password.encode("utf-8"), b"[password]")
         session.stderr = text.decode("utf-8", errors="replace")
 
     if host.sudo != "root" and session.exit_status == 1 and "sudo" in session.stderr.lower():

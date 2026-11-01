@@ -4,6 +4,7 @@ and host text that can do nothing in a logged-in browser."""
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlencode
 
+import asyncssh
 import pytest
 
 pytest.importorskip("django")
@@ -3605,7 +3607,7 @@ def test_a_stubborn_check_gets_told_after_being_asked(web, inventory, child, age
     location = client.post("/checks/start", {"host": "web01"})["Location"]
     run_id = int(location.rsplit("/", 1)[1])
     deadline = time.monotonic() + 10
-    while not runs.log_lines(home[0], run_id) and time.monotonic() < deadline:
+    while not runs.output_lines(run_id) and time.monotonic() < deadline:
         time.sleep(0.02)  # so the signal is set up before it's asked
     client.post(f"{location}/stop", {"x": "1"})
     assert finished().ended == "stopped"
@@ -3620,7 +3622,7 @@ def test_a_check_that_goes_on_too_long_is_ended(web, inventory, child, agent, mo
     client, _ = signed_in(web)
     inventory(key_host())
     client.post("/checks/start", {"host": "web01"})
-    assert finished().ended == "stopped"
+    assert finished().ended == runs.TOO_LONG
 
 
 def test_only_one_check_at_a_time(web, inventory, child, agent):
@@ -3631,8 +3633,11 @@ def test_only_one_check_at_a_time(web, inventory, child, agent):
     client, _ = signed_in(web)
     inventory(key_host())
     first = client.post("/checks/start", {"host": "web01"})["Location"]
-    assert client.post("/checks/start", {"host": "web01"})["Location"] == first
+    again = client.post("/checks/start", {"host": "web01"})
+    assert again["Location"] == f"{first}?busy=1"
+    assert "so yours didn" in client.get(again["Location"]).content.decode()
     assert CheckRun.objects.count() == 1
+    assert the_record()[-1][2] == "failed"
 
 
 def test_only_the_inventory_decides_what_a_check_connects_to(web, inventory, child, agent):
@@ -3650,9 +3655,7 @@ def test_a_password_goes_only_to_the_check(web, inventory, child):
     from checker.web.models import ActionRecord, CheckRun
 
     programs, _ = child
-    programs["code"] = (
-        "import json, sys; print(sorted(json.load(sys.stdin)['db01']) != [], flush=True)"
-    )
+    programs["code"] = "import json, sys; print(json.loads(sys.stdin.readline())['db01'] != '')"
     client, home = signed_in(web)
     inventory(password_host())
     form = client.get("/checks/new").content.decode()
@@ -3665,8 +3668,29 @@ def test_a_password_goes_only_to_the_check(web, inventory, child):
     assert run.ended == "finished"
     assert "True" in client.get(location).content.decode()
     kept = str(list(ActionRecord.objects.values())) + str(list(CheckRun.objects.values()))
-    kept += (home[0] / "checks" / f"{run.id}.log").read_text()
     assert secret not in kept
+    assert not (home[0] / "checks").exists()  # nothing on disk at all
+    from checker.web import runs
+
+    assert not any(child.passwords for child in runs._running.values())
+
+
+def test_each_host_gets_its_own_password_and_no_more(web, inventory, child):
+    programs, _ = child
+    programs["code"] = "import sys; print(sys.stdin.readline())"
+    client, _ = signed_in(web)
+    inventory(password_host("db01"), password_host("db02"), key_host("web01"))
+    body = urlencode(
+        [("host", "db01"), ("host", "db02"), ("password-db01", "one"), ("password-db02", "two"),
+         ("password-web01", "not asked for"), ("password-other", "not a host")]
+    )  # fmt: skip
+    location = client.generic(
+        "POST", "/checks/start", body.encode(), content_type="application/x-www-form-urlencoded"
+    )["Location"]
+    finished()
+    text = client.get(location).content.decode()
+    assert "one" in text and "two" in text
+    assert "not asked for" not in text and "not a host" not in text
 
 
 def test_what_cant_be_checked_says_why(web, inventory, monkeypatch):
@@ -3696,9 +3720,10 @@ def test_hostile_text_in_a_checks_log_is_only_text(web, inventory, child, agent)
     assert "<script>alert" not in text and BIDI not in text
 
 
-def test_a_check_cut_off_by_a_restart_says_so(web, inventory):
+def test_a_check_cut_off_by_a_restart_says_so_and_a_page_writes_nothing(web, inventory):
     from django.utils import timezone
 
+    from checker.web import runs
     from checker.web.models import CheckRun
 
     client, _ = signed_in(web)
@@ -3707,24 +3732,187 @@ def test_a_check_cut_off_by_a_restart_says_so(web, inventory):
     )
     text = client.get(f"/checks/{run.id}").content.decode()
     assert "restarted" in text and "http-equiv" not in text
+    assert "restarted" in client.get("/checks").content.decode()
+    run.refresh_from_db()
+    assert run.finished_at is None  # a page only looks
     assert client.post(f"/checks/{run.id}/stop", {"x": "1"}).status_code == 400
+    runs.close_interrupted()
+    run.refresh_from_db()
+    assert run.ended == runs.RESTARTED and run.finished_at
 
 
-def test_old_runs_and_their_logs_are_let_go(web, inventory, child, agent, monkeypatch):
+def test_a_page_never_calls_a_running_check_interrupted(web, inventory, child, agent):
+    programs, _ = child
+    programs["code"] = "import time; time.sleep(60)"
+    client, _ = signed_in(web)
+    inventory(key_host())
+    location = client.post("/checks/start", {"host": "web01"})["Location"]
+    for _ in range(5):
+        assert "restarted" not in client.get("/checks").content.decode()
+        assert "restarted" not in client.get(location).content.decode()
+
+
+def test_the_end_of_a_check_is_shown_even_if_it_cant_be_written(
+    web, inventory, child, agent, monkeypatch
+):
+    from checker.web import runs
+
+    client, _ = signed_in(web)
+    inventory(key_host())
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    real = runs.ActionRecord.objects.create
+    location = client.post("/checks/start", {"host": "web01"})["Location"]
+    monkeypatch.setattr(runs.ActionRecord.objects, "create", broken)
+    deadline = time.monotonic() + 20
+    while runs._running and time.monotonic() < deadline:
+        time.sleep(0.02)
+    text = client.get(location).content.decode()
+    assert "Finished" in text and "restarted" not in text
+    monkeypatch.setattr(runs.ActionRecord.objects, "create", real)
+    runs.close_interrupted()
+    assert the_record()[-1][0] == "finished a check"
+    assert not runs._unrecorded
+
+
+def test_a_check_that_cant_start_says_so(web, inventory, child, agent, monkeypatch):
+    from checker.web import runs
+    from checker.web.models import CheckRun
+
+    client, _ = signed_in(web)
+    inventory(key_host())
+
+    def cannot(*args, **kwargs):
+        raise OSError("no")
+
+    monkeypatch.setattr(runs.subprocess, "Popen", cannot)
+    response = client.post("/checks/start", {"host": "web01"})
+    assert response.status_code == 400 and "couldn" in response.content.decode()
+    assert CheckRun.objects.get().ended == "couldn't start"
+    assert not runs._running
+
+
+def test_old_runs_are_let_go(web, inventory, child, agent, monkeypatch):
     from checker.web import runs
     from checker.web.models import CheckRun
 
     monkeypatch.setattr(runs, "KEEP", 2)
-    client, home = signed_in(web)
+    client, _ = signed_in(web)
     inventory(key_host())
     made = []
     for _ in range(3):
         client.post("/checks/start", {"host": "web01"})
         made.append(finished().id)
-    assert list(CheckRun.objects.order_by("id").values_list("id", flat=True)) == made[1:]
-    assert not runs.log_path(home[0], made[0]).exists()
-    assert runs.log_path(home[0], made[1]).exists()
-    assert oct(runs.log_path(home[0], made[1]).stat().st_mode)[-3:] == "600"
+    client.post("/checks/start", {"host": "web01"})
+    finished()
+    kept = list(CheckRun.objects.order_by("id").values_list("id", flat=True))
+    assert kept[0] == made[-1] and len(kept) == 2
+    assert not runs.output_lines(made[0]) and runs.output_lines(made[-1])
+
+
+def test_output_is_bounded_and_copes_with_anything(web, inventory, child, agent):
+    from checker.web import runs
+
+    programs, _ = child
+    programs["code"] = (
+        "import sys; [sys.stdout.buffer.write(b'x' * 5000 + b'\\n') for _ in range(40)];"
+        " sys.stdout.buffer.write(b'bad \\xff byte\\n')"
+    )
+    client, _ = signed_in(web)
+    inventory(key_host())
+    location = client.post("/checks/start", {"host": "web01"})["Location"]
+    run = finished()
+    lines = runs.output_lines(run.id)
+    assert sum(len(line) for line in lines) <= runs.OUTPUT_KEPT_BYTES + runs.LONGEST_LINE_BYTES
+    assert "bad" in lines[-1]
+    assert client.get(location).status_code == 200
+
+
+def test_every_form_that_posts_carries_its_token(web, inventory, child, agent):
+    programs, _ = child
+    programs["code"] = "import time; time.sleep(60)"
+    client, home = signed_in(web)
+    inventory(key_host(), password_host())
+    analysed(home, "b1", 10, CLEAN)
+    location = client.post("/checks/start", {"host": "web01"})["Location"]
+    pages = ["/", "/checks", "/checks/new", location, "/hosts/web01", "/two-factor/setup"]
+    checked = 0
+    for page in pages:
+        for form in re.findall(
+            r"<form[^>]*method=\"post\".*?</form>", client.get(page).content.decode(), re.S
+        ):
+            assert "csrfmiddlewaretoken" in form, page
+            checked += 1
+    assert checked >= 5
+
+
+def test_every_page_but_the_open_ones_asks_who_you_are(web):
+    from django.urls import get_resolver
+
+    from checker.web import views
+
+    client, _ = web
+    open_ones = {
+        views.font,
+        views.stylesheet,
+        views.setup_page,
+        views.login_page,
+        views.logout_page,
+    }
+    for pattern in get_resolver("checker.web.urls").url_patterns:
+        if pattern.callback in open_ones:
+            continue
+        path = "/" + route_path(pattern)
+        for response in (client.get(path), client.post(path, {"x": "1"})):
+            assert response.status_code in (302, 405), path
+            if response.status_code == 302:
+                assert response["Location"].startswith("/login"), path
+
+
+def test_a_huge_check_number_is_only_not_found(web):
+    client, _ = signed_in(web)
+    assert client.get(f"/checks/{2**70}").status_code == 404
+    assert client.post(f"/checks/{2**70}/stop", {"x": "1"}).status_code == 400
+
+
+def test_a_password_box_hides_what_is_typed(web, inventory):
+    client, _ = signed_in(web)
+    inventory(password_host())
+    assert 'name="password-db01" type="password"' in client.get("/checks/new").content.decode()
+
+
+def test_a_server_not_in_the_list_has_no_check_button(web, inventory):
+    client, home = signed_in(web)
+    inventory(key_host("other"))
+    analysed(home, "b1", 10, CLEAN)
+    assert "Check this server now" not in client.get("/hosts/web01").content.decode()
+
+
+def test_an_unknown_server_is_named_as_that(web, inventory):
+    client, _ = signed_in(web)
+    inventory(key_host())
+    assert "isn&#39;t in the list" in client.get(
+        "/checks/new", {"host": "nope"}
+    ).content.decode() or (
+        "in the list of servers" in client.get("/checks/new", {"host": "nope"}).content.decode()
+    )
+
+
+def test_a_login_can_go_on_to_a_check(web):
+    from django.utils import timezone
+
+    from checker.web.models import CheckRun
+
+    client, _ = web
+    account()
+    run = CheckRun.objects.create(
+        kind="check", hosts="[]", who="jo", address="", started_at=timezone.now()
+    )
+    path = f"/checks/{run.id}"
+    response = client.post("/login", {"username": "jo", "password": PASSWORD, "next": path})
+    assert response["Location"] == path
 
 
 def test_working_it_out_again_connects_to_nothing_and_only_for_known_servers(
@@ -3746,60 +3934,147 @@ def test_working_it_out_again_connects_to_nothing_and_only_for_known_servers(
     ("kind", "status", "words"),
     [
         ("check", 0, "finished"),
+        ("check", 10, "finished"),
+        ("check", 11, "finished"),
         ("check", 12, "finished"),
         ("check", 1, "finished with problems"),
+        ("check", 120, "finished with problems"),
         ("check", 2, "couldn't start"),
-        ("check", 3, "another check was already running"),
+        ("check", 3, "another check was running"),
         ("check", -9, "ended unexpectedly"),
+        ("analysis", 0, "finished"),
         ("analysis", 1, "finished with problems"),
         ("analysis", 2, "finished with problems"),
+        ("analysis", 12, "finished with problems"),
     ],
 )
 def test_how_a_check_ended_in_words(web, kind, status, words):
     from checker.web.runs import ending_words
 
     assert ending_words(kind, status) == words
+    assert len(words) <= 32  # the record's limit
 
 
 def test_the_real_commands_are_what_gets_run():
     from checker.web.runs import _command
 
-    command = _command("check", ["web01"])
-    assert command[1:] == [
-        "-m",
-        "checker",
-        "run",
-        "--unattended",
-        "--passwords-on-stdin",
-        "--",
-        "web01",
-    ]
-    assert _command("analysis", ["web01"])[1:] == ["-m", "checker", "analyze", "--", "web01"]
+    assert _command("check", ["web01"])[1:] == [
+        "-P", "-m", "checker", "run", "--unattended", "--from-web-page", "--", "web01",
+    ]  # fmt: skip
+    assert _command("analysis", ["web01"])[1:] == ["-P", "-m", "checker", "analyze", "--", "web01"]
 
 
-def test_a_real_check_of_a_server_that_doesnt_answer_says_so(tmp_path):
-    """The real command, its real arguments and passwords, in a process of its own."""
+def checker_home_for_real(tmp_path):
     env = {**os.environ, "CHECKER_HOME": str(tmp_path), "SSH_AUTH_SOCK": ""}
     subprocess.run([sys.executable, "-m", "checker", "init"], env=env, check=True,
                    capture_output=True)  # fmt: skip
     (tmp_path / "hosts.yaml").write_text(
         "hosts:\n- name: db01\n  address: 127.0.0.1\n  port: 9\n  user: scan\n  auth: password\n"
     )
+    return env
+
+
+def from_a_page(env, typed):
     from checker.web.runs import _command
 
+    process = subprocess.Popen(
+        _command("check", ["db01"]), env=env, stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )  # fmt: skip
+    process.stdin.write(typed + "\n")
+    process.stdin.flush()
+    return process
+
+
+def test_a_real_check_of_a_server_that_doesnt_answer_says_so(tmp_path):
+    """The real command, its real arguments and passwords, in a process of its own."""
+    env = checker_home_for_real(tmp_path)
     secret = "the server password"  # noqa: S105
+    process = from_a_page(env, json.dumps({"db01": secret}))
+    output = process.stdout.read()
+    assert process.wait(120) == 1, output
+    assert "db01" in output and "not collected" in output
+    assert secret not in output
+    assert "Needs a look" not in output and "Report written" not in output
+    process.stdin.close()
+    bad = from_a_page(env, "not json")
+    output = bad.stdout.read()
+    assert bad.wait(60) == 2 and "aren't JSON" in output and "not json" not in output
+    bad.stdin.close()
+    wrong = from_a_page(env, '{"db01": 3}')
+    output = wrong.stdout.read()
+    assert wrong.wait(60) == 2 and "aren't JSON" in output
+    wrong.stdin.close()
+
+
+def test_a_check_stops_when_the_server_that_started_it_goes_and_a_purge_finds_what_it_left(
+    tmp_path,
+):
+    """A server that takes the connection and says nothing, so the check is really under way."""
+    from checker.inventory import Host
+    from checker.transport import _known_hosts_name
+
+    env = checker_home_for_real(tmp_path)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        host = Host(name="db01", address="127.0.0.1", port=port, user="scan", auth="password")
+        key = asyncssh.generate_private_key("ssh-ed25519").export_public_key().decode().strip()
+        (tmp_path / "known_hosts").write_text(f"{_known_hosts_name(host)} {key}\n")
+        (tmp_path / "hosts.yaml").write_text(
+            f"hosts:\n- name: db01\n  address: 127.0.0.1\n  port: {port}\n  user: scan\n"
+            "  auth: password\n"
+        )
+        process = from_a_page(env, json.dumps({"db01": "x"}))
+        time.sleep(3)
+        assert process.poll() is None  # it's waiting on the server
+        process.stdin.close()  # all a server's going away looks like from here
+        assert process.wait(30) == schedule_exit_failed()
+    assert "stopped" in process.stdout.read()
+    found = [p for p in tmp_path.rglob("*.age") if "db01" in p.name and "report" not in p.name]
+    assert found  # it left its evidence, so it must be able to find it
+    purge = subprocess.run(
+        [sys.executable, "-m", "checker", "purge", "db01", "--yes"],
+        env=env, capture_output=True, text=True,
+    )  # fmt: skip
+    assert purge.returncode == 0, purge.stderr
+    assert not [p for p in found if p.exists()]
+
+
+def schedule_exit_failed():
+    from checker.schedule import EXIT_FAILED
+
+    return EXIT_FAILED
+
+
+def test_the_flag_needs_unattended_and_works_only_from_a_page(tmp_path):
+    env = checker_home_for_real(tmp_path)
     run = subprocess.run(
-        _command("check", ["db01"]),
-        input=json.dumps({"db01": secret}),
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
+        [sys.executable, "-m", "checker", "run", "--from-web-page", "--", "db01"],
+        env=env, capture_output=True, text=True, input="{}\n",
+    )  # fmt: skip
+    assert run.returncode == 2 and "goes with --unattended" in run.stderr
+
+
+def test_nothing_in_the_servers_folder_runs_as_the_checker(tmp_path):
+    """-P: a planted checker/ or yaml.py where the server was started gets no passwords."""
+    from checker.web.runs import _command
+
+    env = checker_home_for_real(tmp_path)
+    planted = tmp_path / "planted"
+    (planted / "checker").mkdir(parents=True)
+    (planted / "checker" / "__init__.py").write_text("")
+    (planted / "checker" / "__main__.py").write_text("print('PLANTED')")
+    run = subprocess.run(
+        _command("analysis", ["db01"]), env=env, cwd=planted, capture_output=True, text=True
     )
-    assert run.returncode == 1, run.stderr
-    assert "db01" in run.stdout and "not collected" in run.stderr
-    assert secret not in run.stdout + run.stderr
-    bad = subprocess.run(
-        _command("check", ["db01"]), input="not json", env=env, capture_output=True, text=True
-    )
-    assert bad.returncode == 2 and "aren't JSON" in bad.stderr and "not json" not in bad.stderr
+    assert "PLANTED" not in run.stdout + run.stderr
+
+
+def test_a_password_a_server_repeats_is_taken_out_of_what_is_printed(capsys):
+    from checker import cli
+
+    stream = cli._WithoutThese(sys.stdout, ["hunter2", ""])
+    stream.write("sudo: bad thing hunter2 here\n")
+    assert capsys.readouterr().out == "sudo: bad thing [password] here\n"

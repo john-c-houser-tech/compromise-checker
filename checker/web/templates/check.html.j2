@@ -4,6 +4,7 @@
 {% block main %}
 <p class="back"><a href="{{ url('checks') }}">All checks</a></p>
 <h1 class="page-title">{{ run.kind }} of {{ run.hosts }}</h1>
+{% if busy %}<p class="error" role="alert">Another check was already running, so yours didn't start. This is that one: when it's done, start yours again.</p>{% endif %}
 {% if run.running %}
 <p role="status">Running. This page updates by itself, and you can leave it: the check carries on.</p>
 <form method="post" action="{{ url('check_stop', run_id=run.id) }}">{{ csrf_input }}<button>Stop this check</button></form>

@@ -15,3 +15,6 @@
 </ul>
 {% endif %}
 {% endmacro %}
+{% macro confirm() %}
+<label>Your password, to confirm <input name="confirm_password" type="password" autocomplete="new-password" required></label>
+{% endmacro %}

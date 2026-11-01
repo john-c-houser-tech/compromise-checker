@@ -41,7 +41,10 @@ can reach that address, which is why it asks for a login even there.
 - **Behind a proxy on this machine** that provides https (Caddy, nginx):
   `checker web --public-url https://checker.example`. Only that address is accepted, and cookies
   are sent only over https. The proxy must add the client's address as the last entry of
-  `X-Forwarded-For`, which Caddy and a normal nginx setup do, and should buffer request bodies.
+  `X-Forwarded-For`, which Caddy and a normal nginx setup do, and should buffer request bodies. The
+  address in the activity record is only as good as that proxy. Anyone with an account on this machine
+  can connect to the tool's port directly and claim any address, which gets around the limits on guessing
+  a login and puts a false address in the record, so use this on a machine only you can sign in to.
 - **From other machines, without a proxy:**
   `checker web --bind 0.0.0.0:443 --tls-cert CERT --tls-key KEY --public-url https://checker.example`.
   It refuses to listen beyond this machine without TLS, and refuses an http address for another
@@ -49,19 +52,38 @@ can reach that address, which is why it asks for a login even there.
 
 ## What it keeps
 
-`web.db` in the checker's home, owner-only: accounts with hashed passwords, sessions, and failed
-logins for the last 15 minutes, with their usernames and addresses. No evidence is ever copied
+`web.db` in the checker's home, owner-only: accounts with hashed passwords, sessions, failed
+logins for the last 15 minutes with their usernames and addresses, the times of wrong passwords at a confirmation (never the passwords), and the activity record below. No evidence is ever copied
 there. `keys/web-secret.txt` signs sessions; deleting it signs everyone out. Evidence is decrypted
 in memory for each page, with the same key the command line uses, and pages tell browsers not to
 keep them. There is no access log; only errors in the tool itself go to its standard error.
+
+## The activity record
+
+The Activity page lists who signed in and out, who viewed which server's results and evidence, and each
+action taken from these pages, with when and from which address. It's permanent and append-only, in the
+tool's own words, and holds no evidence. It tells you what happened; anyone with full control of this
+machine could still alter it, so it isn't protection against that. If an action can't be recorded as
+started, it doesn't happen. A line that says started with no result after it means the tool stopped, or
+couldn't write down how it ended, so check what it did.
+
+Viewing results and evidence goes ahead even when the record can't be written, for example on a full
+disk, since you may need them most then. That leaves a line on the tool's standard error instead. Signing
+out goes ahead too, but on a full disk it only clears this browser: the session stays valid on the server
+until it expires, up to 8 hours, and the page says so. `checker web-password` ends it once there's space.
+
+Anything that changes what later findings mean, or removes data, asks for your password again, even
+when you're signed in. Five wrong passwords sign that session out. A browser's password manager may
+fill the box in for whoever is at the keyboard, so don't leave a signed-in browser open.
 
 ## How it protects you
 
 - **Passwords:** at least 12 characters, not common, not all digits, not like the username. Five
   failed logins for a name from one address, or twenty from one address, stop further tries from
   there for 15 minutes, even with the right password. Without a proxy, everyone on this machine
-  counts as one address, so another local user could lock you out for that long. If you lose your
-  only password, delete `web.db` and start again: the next start gives a new setup link.
+  counts as one address, so another local user could lock you out for that long. If you lose a
+  password, `checker web-password USERNAME` sets a new one and notes it in the activity record. Don't
+  delete `web.db` for this: the activity record goes with it.
 - **Host text is treated as hostile.** A compromised server can put anything in its logs, and that
   text reaches a signed-in browser. Everything printed is escaped, invisible characters are shown,
   and the content security policy allows no scripts at all and nothing from other sites.

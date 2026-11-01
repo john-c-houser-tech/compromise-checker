@@ -244,6 +244,17 @@ that may include access tokens, and sometimes secrets typed into commands.
   failed logins for 15 minutes (with their usernames and addresses) in its own
   owner-only file, and never evidence. By default only this machine can reach
   it, and it won't listen more widely without TLS.
+- **The activity record.** The web interface keeps a permanent record of who
+  signed in and out, who viewed which server's results and evidence, and each
+  action taken from its pages, with the time and the address it came from. It
+  holds no evidence, and failed logins aren't in it. It can't be changed from
+  the pages, but anyone with full control of the machine could alter it. It
+  isn't removed by `purge` or by the retention period: to remove it, delete the
+  web interface's file. If the record can't be written, for example on a full
+  disk, viewing results and evidence still works, and those events go to the
+  tool's error output instead; actions are refused. Signing out then clears
+  only that browser: the session can stay valid on the server until it expires,
+  up to 8 hours, and the page says so.
 
 ## 9. The optional AI advisor
 

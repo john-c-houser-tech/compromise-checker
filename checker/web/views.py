@@ -1,16 +1,18 @@
-"""Pages. Viewing pages only read; the only writes here are to accounts and sessions."""
+"""Pages. Viewing pages read the results; the only writes here are to accounts, sessions and the
+record of who looked."""
 
 from __future__ import annotations
 
-import ipaddress
 import sys
 from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.models import AnonymousUser
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
+from django.db import DatabaseError, transaction
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.urls import Resolver404, resolve, reverse
@@ -22,30 +24,12 @@ from checker.fleet import read_evidence, read_fleet, read_host, read_threats
 from checker.inventory import home
 from checker.report import visible
 from checker.web import accounts, wording
-from checker.web.app import HERE, is_local
+from checker.web.actions import record, record_if_possible
+from checker.web.app import HERE
+from checker.web.models import ActionRecord
 
 # Where a login may go on to: not a form's address, which would land on an error.
-VIEWABLE = {"fleet", "host", "evidence", "threats"}
-
-
-def client_address(request) -> str:
-    """Whose failed logins these are, for throttling. Behind the proxy on this machine
-    every peer is the proxy, so one person could lock everyone out: there it is the last
-    forwarded address, the one the proxy added itself (earlier ones are whatever the
-    client sent). IPv6 counts by network, since one client can hold a whole /64."""
-    address = request.META.get("REMOTE_ADDR", "")
-    if settings.CHECKER_BEHIND_PROXY and is_local(address):
-        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "").rpartition(",")[2].strip()
-        address = forwarded or address
-    try:
-        parsed = ipaddress.ip_address(address)
-    except ValueError:
-        return address
-    if parsed.version == 4:
-        return str(parsed)
-    if parsed.ipv4_mapped:
-        return str(parsed.ipv4_mapped)
-    return str(ipaddress.ip_network(f"{parsed}/64", strict=False))
+VIEWABLE = {"fleet", "host", "evidence", "threats", "activity"}
 
 
 def _safe_next(request) -> str:
@@ -104,12 +88,19 @@ def setup_page(request, token: str) -> HttpResponse:
         except ValidationError as exc:
             errors.extend(exc.messages)
         if not errors:
-            user = accounts.create_first_account(token, username, password)
+            try:
+                with transaction.atomic():  # no account without its line in the record
+                    user = accounts.create_first_account(token, username, password)
+                    if user is not None:
+                        login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+                        record(request, "created the first account")
+            except Exception:
+                request.user = AnonymousUser()  # the error page mustn't look signed in
+                raise
             if user is None:
                 return render(
                     request, "problem.html.j2", {"title": "This link isn't valid"}, status=404
                 )
-            login(request, user, backend="django.contrib.auth.backends.ModelBackend")
             return HttpResponseRedirect(reverse("fleet"))
     return render(request, "setup.html.j2", {"errors": errors, "username": username})
 
@@ -120,18 +111,23 @@ def login_page(request) -> HttpResponse:
     if request.method == "POST":
         username = accounts.normal_name(request.POST.get("username", ""))[:150]
         password = request.POST.get("password", "")
-        address = client_address(request)
+        address = accounts.client_address(request)
         # One message for all of it: a page mustn't say which usernames exist.
         error = "That username and password didn't work."
-        if accounts.throttled(username, address):
+        if not accounts.begin_login(username, address):
             error = "Too many failed attempts. Wait 15 minutes and try again."
         else:
             user = authenticate(request, username=username, password=password)
             if user is not None:
-                accounts.clear_failures(username, address)
-                login(request, user)
+                try:
+                    with transaction.atomic():  # no sign-in without its line in the record
+                        accounts.clear_failures(username, address)
+                        login(request, user)
+                        record(request, "signed in")
+                except Exception:
+                    request.user = AnonymousUser()  # the error page mustn't look signed in
+                    raise
                 return HttpResponseRedirect(_safe_next(request))
-            accounts.record_failure(username, address)
     return render(
         request,
         "login.html.j2",
@@ -142,7 +138,29 @@ def login_page(request) -> HttpResponse:
 
 @require_POST
 def logout_page(request) -> HttpResponse:
-    logout(request)
+    if request.user.is_authenticated:  # anyone can post here: only a real sign-out is kept
+        record_if_possible(request, "signed out")
+    try:
+        logout(request)
+    except DatabaseError as exc:
+        # On a full disk the session's row can't be removed: forget it in this browser, and say so.
+        print(f"checker web: session not ended: {type(exc).__name__}", file=sys.stderr)
+        request.user = AnonymousUser()
+        response = render(
+            request,
+            "problem.html.j2",
+            {
+                "title": "You're signed out of this browser only",
+                "detail": "The server couldn't save the change, usually because its disk is full,"
+                " so anyone holding a copy of this session could still use it for up to 8 hours."
+                " Free up space, then change the password with checker web-password to end it.",
+            },
+            status=503,
+        )
+        response.delete_cookie(
+            settings.SESSION_COOKIE_NAME, samesite=settings.SESSION_COOKIE_SAMESITE
+        )
+        return response
     return HttpResponseRedirect(reverse("login"))
 
 
@@ -202,6 +220,7 @@ def host_page(request, name: str) -> HttpResponse:
         return _unavailable(request, "A settings file or the evidence key can't be read.")
     if found is None:
         return not_found(request)
+    record_if_possible(request, "viewed a server's results", name)
     host, assessment, advice, enabled = found
     return render(
         request,
@@ -226,6 +245,7 @@ def evidence_page(request, name: str) -> HttpResponse:
         return _unavailable(request, "A settings file or the evidence key can't be read.")
     if stored is None:
         return not_found(request)
+    record_if_possible(request, "viewed a server's evidence", name)
     return render(request, "evidence.html.j2", {"host": name, **wording.evidence_details(stored)})
 
 
@@ -240,6 +260,30 @@ def threats_page(request) -> HttpResponse:
         print(f"checker web: can't read the results: {type(exc).__name__}", file=sys.stderr)
         return _unavailable(request, "A settings file or the evidence key can't be read.")
     return render(request, "threats.html.j2", wording.threat_details(stored))
+
+
+ACTIVITY_PAGE = 200
+
+
+@login_required
+@require_GET
+def activity_page(request) -> HttpResponse:
+    rows = ActionRecord.objects.order_by("-id")
+    try:
+        before = int(request.GET.get("before", ""))
+    except ValueError:
+        before = 0
+    if 0 < before < 2**63:  # by id, so new lines arriving don't shift the pages
+        rows = rows.filter(id__lt=before)
+    rows = list(rows[: ACTIVITY_PAGE + 1])
+    return render(
+        request,
+        "activity.html.j2",
+        {
+            "rows": rows[:ACTIVITY_PAGE],
+            "older": rows[ACTIVITY_PAGE - 1].id if len(rows) > ACTIVITY_PAGE else None,
+        },
+    )
 
 
 def _unavailable(request, detail: str) -> HttpResponse:

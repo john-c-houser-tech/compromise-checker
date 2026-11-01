@@ -964,6 +964,11 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--tls-cert", help="certificate file, to serve https directly")
     web.add_argument("--tls-key", help="its private key file")
     web.set_defaults(handler=cmd_web)
+    web_password = commands.add_parser(
+        "web-password", help="set a new password for a web interface account"
+    )
+    web_password.add_argument("username")
+    web_password.set_defaults(handler=cmd_web_password)
     changed = commands.add_parser(
         "changes", help="what changed on a host since its previous bundle and its baseline"
     )
@@ -1664,6 +1669,43 @@ def cmd_web(args: argparse.Namespace) -> int:
         print("checker: --tls-cert and --tls-key go together", file=sys.stderr)
         return 2
     return serve(base, args.bind, args.public_url, args.tls_cert, args.tls_key)
+
+
+def cmd_web_password(args: argparse.Namespace) -> int:
+    """When a password is lost. Whoever owns the home can do this, and the record says so."""
+    import getpass
+
+    try:
+        from checker.web.app import configure
+    except ImportError:
+        print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+        return 2
+    base = home()
+    if not (base / "web.db").exists():  # a mistyped home mustn't gain a new database
+        print(f"checker: no web interface has been run from {base}", file=sys.stderr)
+        return 1
+    configure(base)
+
+    from checker.web.accounts import no_such_account, reset_password  # needs Django set up
+
+    problems = [no_such_account(args.username)]
+    if problems[0] is None:
+        try:
+            password = getpass.getpass("New password: ")
+            if password != getpass.getpass("Again: "):
+                print("checker: the two passwords don't match", file=sys.stderr)
+                return 1
+        except (KeyboardInterrupt, EOFError):
+            print("\nchecker: nothing was changed", file=sys.stderr)
+            return 1
+        problems = reset_password(args.username, password)
+    problems = [problem for problem in problems if problem]
+    for problem in problems:
+        print(f"checker: {problem}", file=sys.stderr)
+    if problems:
+        return 1
+    print(f"Password changed for {args.username}. Anyone signed in as them has been signed out.")
+    return 0
 
 
 def _open_report(args: argparse.Namespace, base: Path) -> int:

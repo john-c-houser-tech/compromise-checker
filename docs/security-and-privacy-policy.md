@@ -249,9 +249,14 @@ that may include access tokens, and sometimes secrets typed into commands.
   password, and a code if two-factor sign-in is on. That includes naming any key
   file the web server can read and which Python runs as administrator on a
   server. So someone with an account could use those keys to log in elsewhere,
-  or send the next typed password to a machine they control. Each such change is
-  recorded, but the record doesn't prevent it. Give accounts only to people you
-  would trust with the servers themselves.
+  or send the next typed password to a machine they control. The same
+  confirmation lets an account change what is collected and how long evidence is
+  kept, turn the AI advisor on, choose how much is hidden from it, and stop threat
+  packs or keep them off a server. Asking for the latest signed packs needs no
+  confirmation. Anything that runs a command on this machine, or sends data or
+  keys to another address, can only be changed on the command line. Each such
+  change is recorded, but the record doesn't prevent it. Give accounts only to
+  people you would trust with the servers themselves.
   If you start a check from its pages, the web server starts the same run the
   command line does, connecting to your servers with the same settings. What
   that check reports is held in memory, not on disk, and holds no findings. A
@@ -282,9 +287,11 @@ coverage, and advise on remediation. It works fully without it.
 - **Your choice at setup.** When the tool is set up, it asks whether to turn
   the advisor on and explains what would be sent and to whom. Installations
   set up without anyone answering questions leave it off unless the
-  configuration file turns it on. `checker config` changes the choice later,
-  and every change made with it is recorded with who made it and when. Edits
-  made to the configuration file by hand are not recorded.
+  configuration file turns it on. `checker config` or the web interface's
+  Settings page changes the choice later, and every change made with either is
+  recorded with when it was made. The command line records the machine account
+  that made it, and the page's activity record names the person. Edits made to
+  the configuration file by hand are not recorded.
 - **Your account, your provider.** The advisor uses your organization's own
   account with the AI provider, or a model you run yourself on your own
   hardware. Data sent goes from your machine to that provider under your
@@ -375,8 +382,9 @@ Nothing, unless you choose one of these:
 
 The tool has no telemetry, usage reporting or licence check, and it never
 contacts NouriLoop LLC on its own. Threat packs (section 11) are downloaded
-only when an operator runs `checker packs pull`, over HTTPS, from NouriLoop's
-public repository on GitHub or from a mirror you name. That request carries
+only when someone runs `checker packs pull` or asks for them on a page of the
+web interface, over HTTPS, from NouriLoop's public repository on GitHub or from
+a mirror you name. That request carries
 what any web request does, such as your address, and none of your evidence.
 
 ## 11. Threat packs and trust
@@ -405,8 +413,9 @@ within fixed limits.
 
 **Which servers.** Every pack in force applies to every server unless you say
 otherwise. You can keep packs off a server, a group or all servers. Changes made
-with the tool's commands are recorded, with who made them and when; edits made
-to its files by hand are not. An analysis says which packs it applied, and which
+with the tool's commands or pages are recorded, with when they were made; pages
+also record the person. Stopping a pack or putting it back from a page is in the
+activity record. Edits made to its files by hand are not recorded. An analysis says which packs it applied, and which
 it held back and why.
 
 **Staying current.** The index of packs is signed again at least monthly, and

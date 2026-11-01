@@ -2352,9 +2352,9 @@ def cmd_packs_check(args: argparse.Namespace) -> int:
 
 
 def _packs_lock(base: Path):
-    from checker.files import locked
+    from checker.packs.store import packs_lock
 
-    return locked(base / "packs" / "state")
+    return packs_lock(base)
 
 
 def cmd_packs_add(args: argparse.Namespace) -> int:
@@ -2475,8 +2475,12 @@ def cmd_packs_retire(args: argparse.Namespace) -> int:
 
     base = home()
     try:
+        organization = load_config(base).packs.trusted_keys
+    except (EvidenceError, ValidationError, yaml.YAMLError, OSError, UnicodeError):
+        organization = None  # retiring still has to work: it's what's done when things go wrong
+    try:
         with _packs_lock(base):
-            names = retire(base, args.id, f"retired by hand: {args.reason}", by_hand=True)
+            names = retire(base, args.id, f"retired by hand: {args.reason}", True, organization)
     except (StoreError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1

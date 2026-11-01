@@ -91,7 +91,7 @@ CAUTIONS = [
     ({"doubts": ("no system journal events: x",)}, "can't see this server's logs", "Ask"),
     ({"doubts": ("it can see less than before: x",)}, "don't rely", "Ask"),
     ({"doubts": ("checks that couldn't run: x",)}, "don't rely", "Ask"),
-    ({"doubts": ("the threat packs in force have changed",)}, "new threat information", "fresh"),
+    ({"doubts": ("the threat packs in force have changed",)}, "current threat updates", "fresh"),
     ({"doubts": ("collected more than 3 days ago",)}, "don't rely", "fresh"),
 ]
 
@@ -252,7 +252,7 @@ def test_the_last_readable_result_is_not_shown_as_the_current_one():
         ("no system journal events: y", "own log"),
         ("the whitelist has changed", "Settings have changed"),
         ("a whitelist rule has expired", "Settings have changed"),
-        ("the threat packs in force have changed", "New threat information"),
+        ("the threat packs in force have changed", "which ones apply here, have changed"),
         ("the host's starting probability has changed", "Settings have changed"),
         ("its whitelist can't be read", "accepted activity"),
         ("part of its analysis couldn't be worked out", "couldn't be worked out"),

@@ -1,0 +1,43 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}Settings: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage') }}">Back to Manage</a></p>
+<h1 class="page-title">Settings</h1>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+{% if saved %}<p role="status"><strong>Saved.</strong></p>{% endif %}
+<form method="post" action="{{ url('settings_save') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="version" value="{{ version }}">
+  {% for section in sections %}
+  <h2>{{ section.title }}</h2>
+  {% if section.note %}<p class="note">{{ section.note }}</p>{% endif %}
+  {% if section.title == "AI advisor" %}<p class="note">{{ what_leaves | visible(3000) }}</p>{% endif %}
+  {% for field in section.fields %}
+  {% if not field.editable %}
+  <p><strong>{{ field.label }}:</strong> set on the command line, so it can't be changed here.</p>
+  {% elif field.kind == "choice" %}
+  <label>{{ field.label }}{% if field.help %} <small>{{ field.help }}</small>{% endif %}
+    <select name="{{ field.key }}">
+      {% for value, words in field.options %}<option value="{{ value }}"{% if field.value == value %} selected{% endif %}>{{ words }}</option>{% endfor %}
+    </select>
+  </label>
+  {% elif field.kind == "onoff" %}
+  <label>{{ field.label }}{% if field.help %} <small>{{ field.help }}</small>{% endif %}
+    <select name="{{ field.key }}">
+      <option value="on"{% if field.value == "on" %} selected{% endif %}>On</option>
+      <option value="off"{% if field.value == "off" %} selected{% endif %}>Off</option>
+    </select>
+  </label>
+  {% else %}
+  <label>{{ field.label }}{% if field.help %} <small>{{ field.help }}</small>{% endif %} <input name="{{ field.key }}" value="{{ field.value }}"></label>
+  {% endif %}
+  {% endfor %}
+  {% endfor %}
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Save these settings</button>
+</form>
+<h2>Changed only on the command line</h2>
+<p class="note">These run a command on this machine, or send data or keys to another address, so a web account can't change them. <code>checker config show</code> shows them, and <code>checker config set</code> changes them.</p>
+<ul>{% for label, state in elsewhere %}<li>{{ label }}: {{ state }}.</li>{% endfor %}</ul>
+{% endblock %}

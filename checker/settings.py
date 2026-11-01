@@ -8,6 +8,8 @@ append-only `config_changes` table. The file is written back whole, so
 comments added to it by hand don't survive a change.
 """
 
+import hashlib
+import json
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,14 +105,16 @@ def recipients(advisor) -> str:
     return to
 
 
-def advisor_question(redaction: str, to: str = ANTHROPIC) -> str:
+def advisor_question(
+    redaction: str, to: str = ANTHROPIC, when: str = "you run `checker advise`"
+) -> str:
     """What `init` says before asking, and `config set advisor.enabled on`
     after turning it on: what would leave, under this redaction mode, and
     to whom."""
     text = (
         "The optional AI advisor can explain findings, propose whitelist rules for you"
-        " to review, suggest better coverage and advise on remediation. When you run"
-        f" `checker advise`, it sends {SENT[redaction]} {to}. {SENT_DETAIL[redaction]}"
+        f" to review, suggest better coverage and advise on remediation. When {when},"
+        f" it sends {SENT[redaction]} {to}. {SENT_DETAIL[redaction]}"
         " It never connects to your servers and never changes a score or a setting."
         " Everything else in the tool works without it (security and privacy policy §9)."
     )
@@ -250,6 +254,8 @@ def _on_decline(advisor) -> str:
 
 # --- Changing a setting ----------------------------------------------------------
 
+MOST_RETENTION_DAYS = 36500  # far beyond this, the date a purge works out can't be represented
+
 
 def _bool(text: str) -> bool:
     words = {"on": True, "yes": True, "true": True, "off": False, "no": False, "false": False}
@@ -260,6 +266,13 @@ def _bool(text: str) -> bool:
 
 def _optional(text: str) -> str | None:
     return None if text.lower() in ("", "none") else text
+
+
+def _retention(text: str) -> int:
+    days = int(text)
+    if days > MOST_RETENTION_DAYS:
+        raise ValueError(f"at most {MOST_RETENTION_DAYS} days, which is 100 years")
+    return days
 
 
 @dataclass(frozen=True)
@@ -275,7 +288,7 @@ SETTABLE: dict[str, Setting] = {
         Setting(("home_text",), str, "off, privileged or all"),
         Setting(("web_access_logs",), _bool, "on or off"),
         Setting(("exec_records",), str, "web, privileged or all"),
-        Setting(("retention_days",), int, "days evidence is kept (default 90)"),
+        Setting(("retention_days",), _retention, "days evidence is kept (default 90)"),
         Setting(
             ("stale_after_days",),
             int,
@@ -361,10 +374,14 @@ def _setting(key: str) -> Setting | None:
     )
 
 
-def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
+def change(
+    home: Path, key: str, text: str, unchanged_from: str | None = None
+) -> tuple[Any, Any, Config]:
     """Set `key` to the value `text` names: validated against the whole
     configuration, recorded, then written. Returns (old, new, config); a
-    value equal to the current one changes and records nothing."""
+    value equal to the current one changes and records nothing.
+    `unchanged_from`: refuse if the value isn't that (no value: ""), checked
+    under the lock the write holds."""
     setting = _setting(key)
     if setting is None:
         raise EvidenceError(
@@ -380,6 +397,8 @@ def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
         data = current.model_dump()
         parent = _get(data, setting.path[:-1])
         old = parent.get(setting.path[-1])
+        if unchanged_from is not None and (old or "") != unchanged_from:
+            raise ConfigChangedMeanwhile
         if value is None and key.startswith(GROUP_APPLY):
             parent.pop(setting.path[-1], None)
         else:
@@ -404,6 +423,61 @@ def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
         finally:
             store.close()
     return old, new, config
+
+
+class ConfigChangedMeanwhile(Exception):
+    """The configuration isn't as it was when the change was asked for."""
+
+
+def config_version(config: Config) -> str:
+    """Changes when any setting does: what a form was filled in against."""
+    text = json.dumps(config.model_dump(mode="json"), sort_keys=True)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def change_many(home: Path, texts: dict[str, str], expected: str) -> dict[str, tuple[Any, Any]]:
+    """Several settings as one change: validated together, recorded together, all or none, and
+    only if the configuration is still the version they were worked out from. Returns each that
+    changed, as (old, new)."""
+    path = config_file(home)
+    with locked(path):
+        current = load_config(home)
+        if config_version(current) != expected:
+            raise ConfigChangedMeanwhile
+        data = current.model_dump()
+        for key, text in texts.items():
+            setting = SETTABLE.get(key)
+            if setting is None:
+                raise EvidenceError(f"no setting {key!r}")
+            try:
+                value = setting.parse(text)
+            except ValueError as exc:
+                raise EvidenceError(f"{key}: {exc}") from None
+            _get(data, setting.path[:-1])[setting.path[-1]] = value
+        try:
+            config = Config.model_validate(data)
+        except ValidationError as exc:
+            error = exc.errors()[0]
+            where = ".".join(str(part) for part in error["loc"])
+            raise EvidenceError(f"{where}: {error['msg'].removeprefix('Value error, ')}") from None
+        changed = {
+            key: (value_of(current, key), value_of(config, key))
+            for key in texts
+            if value_of(current, key) != value_of(config, key)
+        }
+        if not changed:
+            return {}
+        before = path.read_text(encoding="utf-8")
+        store = Store(database_file(home))
+        try:
+            store.record_config_changes(
+                [(key, old, new) for key, (old, new) in changed.items()],
+                lambda: atomic_write(path, yaml.safe_dump(config.model_dump(), sort_keys=False)),
+                lambda: atomic_write(path, before),
+            )
+        finally:
+            store.close()
+    return changed
 
 
 def remove_host(home: Path, name: str) -> None:
@@ -463,17 +537,22 @@ def add_host(home: Path, new, refuse_if_listed) -> None:
             store.close()
 
 
-def change_host_packs(home: Path, name: str, rule: str | None) -> tuple[Any, Any]:
+def change_host_packs(
+    home: Path, name: str, rule: str | None, unchanged_from: str | None = None
+) -> tuple[Any, Any]:
     """Set a host's own threat-pack rule in the inventory (None: its
     group's or the configuration's), recorded like a setting
     (`hosts.<name>.packs` in `checker config history`): who turned a pack
-    off for a host, and when, stays known. Returns (old, new)."""
+    off for a host, and when, stays known. Returns (old, new). `unchanged_from`:
+    refuse if its rule isn't that (no rule: ""), checked under the write's lock."""
     from checker.inventory import Host, hosts_file, load_inventory, save_inventory
 
     path = hosts_file(home)
     with locked(path):
         inventory = load_inventory(path)
         host = inventory.get(name)
+        if unchanged_from is not None and (host.packs or "") != unchanged_from:
+            raise HostChangedMeanwhile(name)
         new = Host.model_validate(host.model_dump() | {"packs": rule}).packs
         old = host.packs
         if new == old:

@@ -5,7 +5,7 @@
 <p class="note">Known attacks this tool has been told to look for, from signed updates. A server with no sign of exposure may still have other problems: this page is only about these threats.</p>
 <p class="note">Before updating or restarting a server you think was broken into, get advice: what's running on it may be evidence.</p>
 {% if threat_problem %}<p class="error" role="alert">A threat update couldn't be used, so a new threat may not be covered. Ask whoever runs this tool to look at its log.</p>{% endif %}
-{% if not threats %}<p>No threat updates in use yet. For now they're added from the command line, with <code>checker packs pull</code>.</p>{% endif %}
+{% if not threats %}<p>{% if retired %}No threat updates in use right now. <a href="{{ url('manage_threats') }}">See them</a>.{% else %}No threat updates in use yet. <a href="{{ url('manage_threats') }}">Get them</a>.{% endif %}</p>{% endif %}
 {% for t in threats %}
 <article class="threat" id="{{ t.id }}">
   <h2>{{ t.title }}</h2>
@@ -34,7 +34,7 @@
 <section class="findings">
   <details>
     <summary>{{ retired | length }} no longer in use</summary>
-    <ul>{% for name, version, why in retired %}<li>{{ name }}, version {{ version }}{% if why %}: {{ why }}{% endif %}</li>{% endfor %}</ul>
+    <ul>{% for name, version, why in retired %}<li>{{ name }}, version {{ version }}{% if why %}: {{ why | replace("\n", " ") | visible(20000) }}{% endif %}</li>{% endfor %}</ul>
   </details>
 </section>
 {% endif %}

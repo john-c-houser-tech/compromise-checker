@@ -1,0 +1,101 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}Threat updates: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage') }}">Back to Manage</a></p>
+<h1 class="page-title">Threat updates</h1>
+<p class="note">Each update teaches this tool about one known attack. They're signed, and only ever read here: they run nothing on your servers. <a href="{{ url('threats') }}">See what they found</a>.</p>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+{% if outcome %}
+<section role="status">
+  {% if outcome.up_to_date %}<p><strong>You already have the latest.</strong></p>
+  {% elif outcome.changed %}<h2>What changed</h2>
+  {% elif outcome.problems %}<p><strong>Not everything could be taken.</strong></p>
+  {% else %}<p><strong>Nothing new.</strong></p>{% endif %}
+  <ul>
+    {% if outcome.key_list %}<li>A new list of trusted signing keys is in use.</li>{% endif %}
+    {% for id, version, how in outcome.added %}<li>{{ id }} version {{ version }}: {{ how }}.</li>{% endfor %}
+    {% for name in outcome.withdrawn %}<li>{{ name }} was withdrawn by its publisher, so it's no longer used.</li>{% endfor %}
+    {% for name in outcome.retired_by_keys %}<li>{{ name }} is no longer used, because its signing key isn't trusted any more.</li>{% endfor %}
+    {% for note in outcome.notes %}<li>{{ note }}</li>{% endfor %}
+  </ul>
+  {% for words in outcome.problems %}<p class="error">{{ words }}</p>{% endfor %}
+  {% if outcome.changed %}<p class="note">This applies the next time results are worked out, from each server's page.</p>{% endif %}
+</section>
+{% endif %}
+<form method="post" action="{{ url('threats_pull') }}">
+  {{ csrf_input }}
+  <button>Get the latest threat updates</button>
+</form>
+{% if last_pull %}<p class="note">{{ last_pull }}</p>{% endif %}
+
+<h2>In use</h2>
+{% if state_problem %}<p class="error">The record of threat updates can't be read, so what was stopped by hand may not show here.</p>{% endif %}
+{% for words in problems %}<p class="error">Not usable: {{ words }}</p>{% endfor %}
+{% if not packs %}<p>{% if retired or held %}None in use right now.{% else %}None yet. Get the latest to start.{% endif %}</p>{% endif %}
+{% for pack in packs %}
+<section class="finding">
+  <h3>{{ pack.title }}</h3>
+  <p class="note">{{ pack.id }}, version {{ pack.version }}, published {{ pack.published | string }}.</p>
+  <details>
+    <summary>Stop using this one</summary>
+    <p>It won't be looked for on any server, and later updates won't bring it back until you put it back.</p>
+    <form method="post" action="{{ url('threat_retire') }}">
+      {{ csrf_input }}
+      <input type="hidden" name="pack" value="{{ pack.id }}">
+      <label>Why <input name="reason" required maxlength="500"></label>
+      {{ parts.confirm(with_code=code_needed) }}
+      <button>Stop using it</button>
+    </form>
+  </details>
+</section>
+{% endfor %}
+
+{% if held %}
+<h2>Stopped by hand</h2>
+{% for id, version in held %}
+<section class="finding">
+  <h3>{{ id }}, version {{ version }}</h3>
+  <form method="post" action="{{ url('threat_put_back') }}">
+    {{ csrf_input }}
+    <input type="hidden" name="pack" value="{{ id }}">
+    {{ parts.confirm(with_code=code_needed) }}
+    <button>Put it back</button>
+  </form>
+</section>
+{% endfor %}
+{% endif %}
+
+<h2>Which servers they apply to</h2>
+<p class="note">A server's own choice comes first, then its group's, then the one for all servers. Keeping an update off a server means it isn't looked for there.</p>
+<p><strong>All servers:</strong> {{ all_rule | visible(20000) }}. <a href="{{ url('threat_rule') }}?for=all">Change</a></p>
+{% if groups %}
+<ul>
+  {% for group in groups %}<li><strong>Group {{ group.name }}</strong>: {{ (group.rule or "follows the rule for all servers") | visible(20000) }}. <a href="{{ url('threat_rule') }}?for=group:{{ group.name | urlencode }}">Change</a></li>{% endfor %}
+</ul>
+{% endif %}
+{% if servers %}
+<div class="record-wrap">
+<table class="record">
+  <thead><tr><th scope="col">Server</th><th scope="col">Follows</th><th scope="col">Applies to it</th><th scope="col"></th></tr></thead>
+  <tbody>
+  {% for server in servers %}
+  <tr>
+    <td>{{ server.name }}</td>
+    <td>{{ server.from }}</td>
+    <td>{{ (server.applied | join(", ") or "Nothing") | visible(20000) }}</td>
+    <td><a href="{{ url('threat_rule') }}?for=host:{{ server.name | urlencode }}">Change</a></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% if retired %}
+<details>
+  <summary>{{ retired | length }} no longer in use</summary>
+  <ul>{% for name, version, why in retired %}<li>{{ name }}, version {{ version }}{% if why %}: {{ why | visible(20000) }}{% endif %}</li>{% endfor %}</ul>
+</details>
+{% endif %}
+<p class="note">Adding an update from a file, and trusting your organization's own signing key, are done on the command line, with <code>checker packs add</code> and <code>checker packs trust add</code>.</p>
+{% endblock %}

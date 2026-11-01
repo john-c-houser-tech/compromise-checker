@@ -1,0 +1,31 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}Which threat updates apply: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage_threats') }}">Back to Threat updates</a></p>
+<h1 class="page-title">{% if kind == "all" %}Threat updates for all servers{% elif kind == "group" %}Threat updates for group {{ name }}{% else %}Threat updates for {{ name }}{% endif %}</h1>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+<p>{% if following %}This decides it for: {{ following | join(", ") | visible(20000) }}.{% else %}No server follows this right now.{% endif %}</p>
+<p class="note">Keeping an update off a server means it isn't looked for there, so a server exposed to that attack won't be flagged for it.</p>
+<form method="post" action="{{ url('threat_rule_save') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="for" value="{{ scope_field }}">
+  <input type="hidden" name="current" value="{{ current }}">
+  <fieldset>
+    <legend>Which apply</legend>
+    {% if kind != "all" %}<label class="tick"><input type="radio" name="rule_kind" value="default"{% if rule_kind == "default" %} checked{% endif %}> Follow {% if kind == "host" %}its group or {% endif %}the rule for all servers</label>{% endif %}
+    <label class="tick"><input type="radio" name="rule_kind" value="all"{% if rule_kind == "all" %} checked{% endif %}> Every update</label>
+    <label class="tick"><input type="radio" name="rule_kind" value="none"{% if rule_kind == "none" %} checked{% endif %}> None</label>
+    <label class="tick"><input type="radio" name="rule_kind" value="only"{% if rule_kind == "only" %} checked{% endif %}> Only the ones ticked below</label>
+    <label class="tick"><input type="radio" name="rule_kind" value="except"{% if rule_kind == "except" %} checked{% endif %}> Every update except the ones ticked below</label>
+  </fieldset>
+  {% if choices %}
+  <fieldset>
+    <legend>Threat updates</legend>
+    {% for choice in choices %}<label class="tick"><input type="checkbox" name="ids" value="{{ choice.id }}"{% if choice.ticked %} checked{% endif %}> {{ choice.title or "Not in use right now" }} ({{ choice.id }})</label>{% endfor %}
+  </fieldset>
+  {% endif %}
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Save this choice</button>
+</form>
+{% endblock %}

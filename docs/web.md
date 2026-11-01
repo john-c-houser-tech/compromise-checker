@@ -178,6 +178,27 @@ Asking for a key and comparing it are the only things on these pages that contac
 one in the list. Keys listed in the file by hand as hashed lines aren't recognized by these pages:
 keep to the keys the tool wrote there.
 
+## Threat updates and settings
+
+Manage also gets the latest threat updates, stops using one and puts it back, and chooses which apply
+to all servers, a group or one server. Getting updates contacts only the source in the settings, takes
+only what a trusted key signed, and needs no password, like starting a check. It can also stop using an
+update, if its publisher withdrew it or its signing key is no longer trusted, and the page says so. It
+applies the next time results are worked out. The rest needs your password again.
+
+The Settings page covers what's collected, how long it's kept, the starting estimate and the AI
+advisor. Several changes saved together go in or fail together, and each is in `checker config history`.
+
+Some things stay on the command line, and the pages only say whether they're set, never what they say:
+
+- what runs a command on this machine: the notify command, and an API key read by running a command;
+- what sends data or keys to another address: another advisor server, a second model for declined
+  requests, and another source of threat updates;
+- adding a threat update from a file, and trusting your organization's own signing key.
+
+From a form, these would let anyone with an account run programs here, collect the API key, or choose
+who may sign what the tool believes.
+
 ## How it protects you
 
 - **Two-factor sign-in,** above. With only a password so far, nothing opens but the second step, or

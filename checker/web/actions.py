@@ -5,7 +5,8 @@ middleware, and recorded from start to finish. If it can't be recorded as starte
 happen. A consequential action, one that changes what later findings mean or removes data, also
 needs the password again, and a code if two-factor is on, however recently its user signed in:
 someone with a stolen session or at a browser left open has to know them, unless a password manager
-fills them in. Actions call
+fills them in. (Getting signed threat updates is the exception: whoever holds a session can't choose
+what comes in, from where, or which version, and nothing goes out.) Actions call
 what the command line calls; no logic of their own lives here. They should keep their
 transactions short, since every page that records something waits for them."""
 

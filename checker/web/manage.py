@@ -205,6 +205,10 @@ def _prior(text: str, kept: Host | None) -> float | None:
         raise FormProblem(f"{LABELS['prior']}: {PLAIN['prior']}.") from None
 
 
+def groups_for_the_page(groups: list[str]) -> list[Markup]:
+    return [escape(_shown(group)) for group in groups]
+
+
 def _left_alone(post, kept: Host | None, field: str) -> bool:
     """A browser sends a text box's line endings as CRLF, so that alone isn't a change."""
     return kept is not None and post.get(field, "").replace("\r\n", "\n") == form_of(kept)[field]
@@ -300,7 +304,7 @@ _RECORD_ORDER = ("group", "prior", "python", "address", "port", "user", "sudo", 
 _LONGEST_RECORDED = 120
 
 
-def _recorded(field: str, value: Any) -> str:
+def recorded(field: str, value: Any) -> str:
     """Quoted, so a value can't pass for another clause, and short, so the rest still fits."""
     if value is None:
         return "none"
@@ -318,8 +322,8 @@ def changes_in_words(changed: dict[str, tuple[Any, Any]]) -> str:
     if not changed:
         return "nothing changed"
     return "; ".join(
-        f"{LABELS.get(field, field)}: {_recorded(field, changed[field][0])}"
-        f" to {_recorded(field, changed[field][1])}"
+        f"{LABELS.get(field, field)}: {recorded(field, changed[field][0])}"
+        f" to {recorded(field, changed[field][1])}"
         for field in _in_record_order(changed)
     )
 
@@ -328,7 +332,7 @@ def settings_in_words(host: Host) -> str:
     """Everything set on it that isn't the default, for the record of adding or removing it."""
     settings = host.model_dump(mode="json", exclude_defaults=True, exclude={"name"})
     return "; ".join(
-        f"{LABELS.get(field, field)}: {_recorded(field, settings[field])}"
+        f"{LABELS.get(field, field)}: {recorded(field, settings[field])}"
         for field in _in_record_order(settings)
     )
 

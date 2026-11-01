@@ -60,10 +60,16 @@ def small_forms_only(get_response):
 
 
 BEFORE_SECOND_STEP = set()  # what can be used with only a password so far, kept by identity
+SETTING_IT_UP = set()  # and these too, with no second step set up yet
 
 
 def before_second_step(view):
     BEFORE_SECOND_STEP.add(view)
+    return view
+
+
+def setting_it_up(view):
+    SETTING_IT_UP.add(view)
     return view
 
 
@@ -85,6 +91,6 @@ class TwoFactorGate:
             wanted = request.get_full_path() if request.method == "GET" else ""
             query = f"?{urlencode({'next': wanted})}" if wanted else ""
             return HttpResponseRedirect(reverse("two_factor") + query)
-        if settings.CHECKER_TWO_FACTOR_REQUIRED:
+        if settings.CHECKER_TWO_FACTOR_REQUIRED and view not in SETTING_IT_UP:
             return HttpResponseRedirect(reverse("two_factor_setup"))
         return None

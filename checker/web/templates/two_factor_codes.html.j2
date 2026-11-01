@@ -6,5 +6,8 @@
 <ul class="recovery-codes">
   {% for code in codes %}<li><code>{{ code }}</code></li>{% endfor %}
 </ul>
-<p><a href="{{ url('two_factor_manage') }}">I've saved them</a></p>
+<form method="post" action="{{ url('two_factor_codes_saved') }}">
+  {{ csrf_input }}
+  <button>I've saved them</button>
+</form>
 {% endblock %}

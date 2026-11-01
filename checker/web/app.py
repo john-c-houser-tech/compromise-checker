@@ -191,6 +191,12 @@ def _protect_the_record() -> None:
             cursor.execute(sql)
 
 
+def listens_beyond(bind: str) -> bool:
+    from gunicorn.util import parse_address
+
+    return not is_local(parse_address(bind)[0])
+
+
 def listen_problem(bind: str, public_url: str | None, tls: bool) -> str | None:
     """Why this address mustn't be listened on. The host is read the way the server
     will read it, so an odd spelling can't pass here and listen everywhere there."""
@@ -204,6 +210,8 @@ def listen_problem(bind: str, public_url: str | None, tls: bool) -> str | None:
         return f"--bind isn't an address: {bind} ({exc})"
     if isinstance(where, str | int | bytes):  # a unix socket or a file descriptor
         return f"--bind must be an address and a port: {bind}"
+    if not 0 <= where[1] <= 65535:
+        return f"--bind has a port that doesn't exist: {bind}"
     if is_local(where[0]):
         return None
     if not tls:
@@ -267,9 +275,7 @@ def serve(
     if problem:
         print(f"checker: {problem}", file=sys.stderr)
         return 2
-    from gunicorn.util import parse_address
-
-    configure(home, public_url, tls, listens_beyond=not is_local(parse_address(bind)[0]))
+    configure(home, public_url, tls, listens_beyond=listens_beyond(bind))
 
     from django.core.wsgi import get_wsgi_application
 

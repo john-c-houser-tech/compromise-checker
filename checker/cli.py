@@ -1674,7 +1674,11 @@ def cmd_web(args: argparse.Namespace) -> int:
     if bool(args.tls_cert) != bool(args.tls_key):
         print("checker: --tls-cert and --tls-key go together", file=sys.stderr)
         return 2
-    return serve(base, args.bind, args.public_url, args.tls_cert, args.tls_key)
+    try:
+        return serve(base, args.bind, args.public_url, args.tls_cert, args.tls_key)
+    except ImportError:
+        print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+        return 2
 
 
 def cmd_web_password(args: argparse.Namespace) -> int:
@@ -1690,7 +1694,11 @@ def cmd_web_password(args: argparse.Namespace) -> int:
     if not (base / "web.db").exists():  # a mistyped home mustn't gain a new database
         print(f"checker: no web interface has been run from {base}", file=sys.stderr)
         return 1
-    configure(base)
+    try:
+        configure(base)
+    except ImportError:
+        print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+        return 2
 
     from checker.web.accounts import no_such_account, reset_password  # needs Django set up
 
@@ -1725,7 +1733,11 @@ def cmd_web_two_factor_off(args: argparse.Namespace) -> int:
     if not (base / "web.db").exists():  # a mistyped home mustn't gain a new database
         print(f"checker: no web interface has been run from {base}", file=sys.stderr)
         return 1
-    configure(base)
+    try:
+        configure(base)
+    except ImportError:
+        print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+        return 2
 
     from checker.web.accounts import turn_off_two_factor  # needs Django set up
 
@@ -1733,7 +1745,9 @@ def cmd_web_two_factor_off(args: argparse.Namespace) -> int:
     if problem:
         print(f"checker: {problem}", file=sys.stderr)
         return 1
-    print(f"Two-factor sign-in is off for {args.username}. Set it up again when they next sign in.")
+    print(f"Two-factor sign-in is off for {args.username}, and their sessions have ended.")
+    print("Anyone who knows the password can now set it up with their own phone. If it might be")
+    print("known, change it right away with checker web-password.")
     return 0
 
 

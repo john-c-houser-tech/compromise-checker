@@ -16,6 +16,7 @@ urlpatterns = [
     path("two-factor/turn-on", views.two_factor_turn_on, name="two_factor_turn_on"),
     path("two-factor/manage", views.two_factor_manage, name="two_factor_manage"),
     path("two-factor/new-codes", views.two_factor_new_codes, name="two_factor_new_codes"),
+    path("two-factor/codes-saved", views.two_factor_codes_saved, name="two_factor_codes_saved"),
     path("two-factor/turn-off", views.two_factor_turn_off, name="two_factor_turn_off"),
     path("setup/<str:token>", views.setup_page, name="setup"),
     path("style.css", views.stylesheet, name="style"),

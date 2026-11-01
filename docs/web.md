@@ -88,13 +88,18 @@ password isn't enough. Any app that does time-based codes works.
 - **When it's optional:** when only this machine can reach the server. Every page asks you to turn it on
   until you do, because anyone with an account on this machine can reach that address too.
 - **Lost your phone?** You get ten recovery codes when you turn it on, each good once, and they're shown
-  only then. If they're gone too, whoever owns the checker's home can run
-  `checker web-two-factor-off USERNAME` on this machine, and the activity record notes it.
+  only then. Pages remind you until you say you've saved them. If they're gone too, whoever owns the
+  checker's home can run `checker web-password USERNAME` and then `checker web-two-factor-off USERNAME`
+  on this machine, in that order, since anyone who knows the old password could otherwise set it up as
+  theirs. Both end the account's sessions, and the activity record notes them.
+- **Someone may have your password** if a sign-in asks for codes you can't get past, or for a code when you
+  never set it up, or if the Activity page shows wrong codes you didn't type. Each wrong code makes the next
+  try wait longer, up to about 10 minutes, even with the right code, so anyone with the password can slow
+  you down. `checker web-password USERNAME` ends that and their sessions.
 - **Moving to a new phone:** Sign-in security, in the menu, turns it off so you can set it up again.
 
 With two-factor on, anything that asks for your password again asks for a code as well. A code works
-only once, so after using one, wait for the next. Each wrong code makes the next try wait longer. The
-secrets and recovery codes are stored readable in `web.db`, since the tool has to check against them: treat a
+only once, so after using one, wait for the next. Five wrong codes end the session. The secrets and recovery codes are stored readable in `web.db`, since the tool has to check against them: treat a
 copy of that file, or a backup of it, as you would a password.
 
 ## How it protects you

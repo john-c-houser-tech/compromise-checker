@@ -11,6 +11,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.sessions.models import Session
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -167,10 +168,20 @@ def turn_off_two_factor(username: str) -> str | None:
     problem = no_such_account(username)
     if problem:
         return problem
+    user = get_user_model().objects.get(username=username)
+    if not two_factor.is_on(user):
+        return f"Two-factor sign-in is already off for {username}."
     with transaction.atomic():
-        two_factor.turn_off(get_user_model().objects.get(username=username))
+        two_factor.turn_off(user)
+        _end_sessions(user)  # or a thief's half-finished sign-in could set it up as theirs
         _record_from_command_line("turned off two-factor from the command line", username)
     return None
+
+
+def _end_sessions(user) -> None:
+    for session in Session.objects.all():
+        if session.get_decoded().get("_auth_user_id") == str(user.pk):
+            session.delete()
 
 
 def _record_from_command_line(action: str, username: str) -> None:
@@ -188,6 +199,8 @@ def _record_from_command_line(action: str, username: str) -> None:
 def reset_password(username: str, password: str) -> list[str]:
     """For the command line, when a password is lost. Why it can't be done, or nothing: the
     account's sessions end with its old password, and the record says it happened."""
+    from checker.web import two_factor  # it needs Django set up further than this module does
+
     problem = no_such_account(username)
     if problem:
         return [problem]
@@ -199,6 +212,8 @@ def reset_password(username: str, password: str) -> list[str]:
     with transaction.atomic():
         user.set_password(password)
         user.save()
+        two_factor.forget_pending(user)  # a thief may have started one with the old password
+        two_factor.forgive_wrong_codes(user)
         LoginAttempt.objects.filter(username=username.lower()).delete()
         _record_from_command_line("reset a password from the command line", username)
     return []

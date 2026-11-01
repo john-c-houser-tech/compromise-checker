@@ -30,7 +30,12 @@ GATED = set()  # every view `action` made: no attribute a view could set by hand
 
 class ActionFailed(Exception):
     """An action's way to say it didn't work, in the tool's own words, for the page and the
-    record. Returning normally is what the record calls "done"."""
+    record. Returning normally is what the record calls "done". `page` shows something better than
+    the words alone, and `sign_out` ends the session once the record has said who it was."""
+
+    def __init__(self, words: str, page=None, sign_out: bool = False):
+        super().__init__(words)
+        self.page, self.sign_out = page, sign_out
 
 
 def record(request, action: str, target: str = "", outcome: str = "done", detail: str = "") -> None:
@@ -66,28 +71,32 @@ def confirmation_refused(request, action: str, target: str) -> str | None:
     if not accounts.begin_confirmation(session):
         return _signed_out(request, action, target)
     user = request.user
-    if user.check_password(request.POST.get("confirm_password", "")) and (
-        not two_factor.is_on(user)
-        or two_factor.check_code(user, request.POST.get("confirm_code", ""))
+    right_password = user.check_password(request.POST.get("confirm_password", ""))
+    code_needed = two_factor.is_on(user)
+    # The password first: a code isn't used up on someone who doesn't know it.
+    if right_password and (
+        not code_needed or two_factor.check_code(user, request.POST.get("confirm_code", ""))
     ):
         accounts.clear_confirmations(session)
         return None
     if accounts.confirmations_used_up(session):
         return _signed_out(request, action, target)
-    record_if_possible(request, action, target, "refused", "wrong password")
-    if two_factor.is_on(user):
+    wrong = "wrong code" if right_password else "wrong password"
+    record_if_possible(request, action, target, "refused", wrong)
+    if code_needed:  # not "nothing was changed": a double-click's other request may have worked
         return (
-            "That password or code didn't work, so nothing was changed. A code works only once:"
-            " if you just used one, wait for the next."
+            "That password or code didn't work. A code works only once, so if you just used one,"
+            " wait for the next. If you clicked twice, the first click may have gone through: the"
+            " Activity page shows what ran."
         )
     return "That password didn't work, so nothing was changed."
 
 
 def _signed_out(request, action: str, target: str) -> str:
-    record_if_possible(request, action, target, "refused", "too many wrong passwords: signed out")
+    record_if_possible(request, action, target, "refused", "too many wrong tries: signed out")
     logout(request)
     # Not "nothing was changed": a double-click's other request may have gone through.
-    return "Too many wrong passwords, so you've been signed out. The Activity page shows what ran."
+    return "Too many wrong tries, so you've been signed out. The Activity page shows what ran."
 
 
 def action(name: str, consequential: bool = False, target=lambda request, **kwargs: ""):
@@ -117,6 +126,10 @@ def action(name: str, consequential: bool = False, target=lambda request, **kwar
                 response = view(request, *args, **kwargs)
             except ActionFailed as exc:
                 record_if_possible(request, name, on, "failed", str(exc))
+                if exc.sign_out:
+                    logout(request)
+                if exc.page is not None:
+                    return exc.page
                 return render(request, "problem.html.j2", {"title": str(exc)}, status=400)
             except Exception as exc:
                 record_if_possible(request, name, on, "failed", type(exc).__name__)

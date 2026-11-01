@@ -27,7 +27,7 @@ from checker.report import visible
 from checker.web import accounts, two_factor, wording
 from checker.web.actions import ActionFailed, action, record, record_if_possible
 from checker.web.app import HERE
-from checker.web.middleware import before_second_step
+from checker.web.middleware import before_second_step, setting_it_up
 from checker.web.models import ActionRecord
 
 # Where a login may go on to: not a form's address, which would land on an error.
@@ -130,7 +130,8 @@ def login_page(request) -> HttpResponse:
                         accounts.clear_failures(username, address)
                         login(request, user)
                         # With a second step to come, this isn't signing in yet.
-                        words = "password accepted" if two_factor.is_on(user) else "signed in"
+                        to_come = two_factor.is_on(user) or settings.CHECKER_TWO_FACTOR_REQUIRED
+                        words = "password accepted" if to_come else "signed in"
                         record(request, words)
                 except Exception:
                     request.user = AnonymousUser()  # the error page mustn't look signed in
@@ -185,10 +186,13 @@ def two_factor_page(request) -> HttpResponse:
         return HttpResponseRedirect(reverse("two_factor_setup"))
     error = None
     if request.method == "POST":
-        device = two_factor.check_code(user, request.POST.get("code", ""))
-        if device is not None:
+        session = request.session.session_key
+        allowed = accounts.begin_confirmation(session)
+        device = allowed and two_factor.check_code(user, request.POST.get("code", ""))
+        if device:
             try:
                 with transaction.atomic():  # no sign-in without its line in the record
+                    accounts.clear_confirmations(session)
                     otp_login(request, device)
                     request.session.cycle_key()
                     how = "with a recovery code" if two_factor.used_recovery_code(device) else ""
@@ -197,9 +201,19 @@ def two_factor_page(request) -> HttpResponse:
                 request.user = AnonymousUser()  # the error page mustn't look signed in
                 raise
             return HttpResponseRedirect(_safe_next(request))
+        if not allowed or accounts.confirmations_used_up(session):
+            record_if_possible(
+                request, "wrong code at sign-in", outcome="refused", detail="signed out"
+            )
+            logout(request)
+            return _error(request, TOO_MANY_WRONG_CODES, 403)
         record_if_possible(request, "wrong code at sign-in", outcome="refused")
-        # One message: each wrong code makes the next wait longer, and saying so helps a guesser.
-        error = "That code didn't work. A code works only once: wait for the next and try again."
+        error = (
+            "That code didn't work. A code works only once, so wait for the next. After several"
+            " wrong codes each try has to wait, up to about 10 minutes, even with the right code."
+            " If you didn't make them, someone has your password: on the server, change it with"
+            " checker web-password."
+        )
     return render(
         request,
         "two_factor.html.j2",
@@ -208,50 +222,65 @@ def two_factor_page(request) -> HttpResponse:
     )
 
 
-@before_second_step
-@login_required
-@require_GET
-def two_factor_setup(request) -> HttpResponse:
-    user = request.user
-    if two_factor.is_on(user):
-        return HttpResponseRedirect(
-            reverse("two_factor_manage" if user.is_verified() else "two_factor")
-        )
-    device = two_factor.pending(user)
+TOO_MANY_WRONG_CODES = "Too many wrong codes, so you've been signed out"
+
+
+def _setup_page(request, device=None, error=None, status=200) -> HttpResponse:
+    """The secret goes out only in answer to the password, never from a page a stolen session can
+    just open."""
     return render(
         request,
         "two_factor_setup.html.j2",
         {
             "required": settings.CHECKER_TWO_FACTOR_REQUIRED,
+            "error": error,
             "qr": two_factor.qr_code(device) if device else None,
             "secret": two_factor.secret_text(device) if device else None,
         },
+        status=status,
     )
 
 
-@before_second_step
-@action("started setting up two-factor")
+@setting_it_up
+@login_required
+@require_GET
+def two_factor_setup(request) -> HttpResponse:
+    if two_factor.is_on(request.user):
+        return HttpResponseRedirect(reverse("two_factor_manage"))
+    return _setup_page(request)
+
+
+@setting_it_up
+@action("started setting up two-factor", consequential=True)
 def two_factor_start(request) -> HttpResponse:
     if two_factor.is_on(request.user):
         raise ActionFailed("Two-factor sign-in is already on.")
-    two_factor.start(request.user)
-    return HttpResponseRedirect(reverse("two_factor_setup"))
+    return _setup_page(request, two_factor.start(request))
 
 
-@before_second_step
-@action("turned on two-factor", consequential=True)
+@setting_it_up
+@action("turned on two-factor")
 def two_factor_turn_on(request) -> HttpResponse:
-    """The password as well: a stolen session mustn't be able to lock its owner out."""
-    done = two_factor.turn_on(request.user, request.POST.get("code", ""))
-    if done is None:
-        raise ActionFailed(
-            "That code didn't work. Go back, check that your phone's clock is right, and try the"
-            " next one."
-        )
-    device, codes = done
-    otp_login(request, device)
-    request.session.cycle_key()
-    return render(request, "two_factor_codes.html.j2", {"codes": codes})
+    """Only the session that gave the password holds a secret to confirm, so no password here."""
+    user = request.user
+    if two_factor.is_on(user):  # a double-click's other request: the first one did it
+        return HttpResponseRedirect(reverse("two_factor_manage"))
+    device = two_factor.pending(request)
+    if device is None:
+        raise ActionFailed("That setup has ended. Go to Sign-in security and start again.")
+    session = request.session.session_key
+    allowed = accounts.begin_confirmation(session)
+    done = allowed and two_factor.turn_on(request, request.POST.get("code", ""))
+    if done:
+        accounts.clear_confirmations(session)
+        device, codes = done
+        otp_login(request, device)
+        request.session.cycle_key()
+        return render(request, "two_factor_codes.html.j2", {"codes": codes})
+    if not allowed or accounts.confirmations_used_up(session):
+        raise ActionFailed(TOO_MANY_WRONG_CODES, sign_out=True)
+    words = "That code didn't work. Check that your phone's clock is right, and try the next one."
+    raise ActionFailed(words, page=_setup_page(request, device, words, 400))
 
 
 @login_required
@@ -264,6 +293,7 @@ def two_factor_manage(request) -> HttpResponse:
         {
             "on": two_factor.is_on(user),
             "left": two_factor.recovery_codes_left(user),
+            "unsaved": two_factor.codes_unsaved(user),
             "required": settings.CHECKER_TWO_FACTOR_REQUIRED,
         },
     )
@@ -275,6 +305,12 @@ def two_factor_new_codes(request) -> HttpResponse:
         raise ActionFailed("Two-factor sign-in is off, so there are no recovery codes to replace.")
     codes = two_factor.new_recovery_codes(request.user)
     return render(request, "two_factor_codes.html.j2", {"codes": codes})
+
+
+@action("said the recovery codes are saved")
+def two_factor_codes_saved(request) -> HttpResponse:
+    two_factor.mark_codes_saved(request.user)
+    return HttpResponseRedirect(reverse("two_factor_manage"))
 
 
 @action("turned off two-factor", consequential=True)

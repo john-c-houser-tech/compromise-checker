@@ -22,8 +22,10 @@
   {% endif %}
 </header>
 <main>
-{% block nudge %}{% if request is defined and two_factor_is_off(request) %}
+{% block nudge %}{% set nudge = two_factor_nudge(request) if request is defined else none %}{% if nudge == "off" %}
 <p class="nudge">Your results describe weaknesses an attacker could use, and a password alone can be stolen. <a href="{{ url('two_factor_setup') }}">Turn on two-factor sign-in</a>: it takes about two minutes and an authenticator app on your phone.</p>
+{% elif nudge == "unsaved" %}
+<p class="nudge">Your recovery codes may not have been saved, and without them a lost phone locks you out. <a href="{{ url('two_factor_manage') }}">Make new ones in Sign-in security</a>.</p>
 {% endif %}{% endblock %}
 {% block main %}{% endblock %}
 </main>

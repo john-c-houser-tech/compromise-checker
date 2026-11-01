@@ -3,7 +3,6 @@ invisible characters shown, whether or not the template asked. Host text can't o
 
 from django.db import DatabaseError
 from django.urls import NoReverseMatch, reverse
-from django_otp import user_has_device
 from jinja2 import Environment, Undefined
 
 from checker.product import product_name
@@ -28,15 +27,20 @@ def _finalize_page(value):
     return value if hasattr(value, "__html__") else _finalize(value)
 
 
-def two_factor_is_off(request) -> bool:
-    """For the reminder on every page. An error page mustn't fail for want of it."""
+def two_factor_nudge(request) -> str | None:
+    """What the reminder on every page should say, if anything: "off" or "unsaved". An error page
+    mustn't fail for want of it."""
+    from checker.web import two_factor  # it needs Django set up further than this module does
+
     user = getattr(request, "user", None)
     if user is None or not user.is_authenticated:
-        return False
+        return None
     try:
-        return not user_has_device(user)
+        if not two_factor.is_on(user):
+            return "off"
+        return "unsaved" if two_factor.codes_unsaved(user) else None
     except DatabaseError:
-        return False
+        return None
 
 
 def environment(**options) -> Environment:
@@ -47,6 +51,6 @@ def environment(**options) -> Environment:
     env.filters["when"] = when
     env.globals["url"] = lambda view, **kwargs: reverse(view, kwargs=kwargs or None)
     env.globals["product_name"] = product_name
-    env.globals["two_factor_is_off"] = two_factor_is_off
+    env.globals["two_factor_nudge"] = two_factor_nudge
     env.globals["host_url"] = host_url
     return env

@@ -17,5 +17,5 @@
 {% endmacro %}
 {% macro confirm(with_code=False) %}
 <label>Your password, to confirm <input name="confirm_password" type="password" autocomplete="new-password" required></label>
-{% if with_code %}<label>A code from your authenticator app <input name="confirm_code" inputmode="numeric" autocomplete="one-time-code" required></label>{% endif %}
+{% if with_code %}<label>A code from your authenticator app, or a recovery code <input name="confirm_code" autocomplete="one-time-code" required></label>{% endif %}
 {% endmacro %}

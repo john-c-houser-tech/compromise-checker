@@ -168,12 +168,14 @@ def drive(home: Path, password: str, env: dict, done: list) -> None:
     where = anywhere_in(home, password)
     checks(done, "the password is nowhere in the home's plain files", not where, ", ".join(where))
     shown = subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "checker", "bundle", "list", "web-proof"],
+        [sys.executable, "-m", "checker", "bundle", "list", "--host", "web-proof"],
         env=env,
         capture_output=True,
         text=True,
     ).stdout
-    checks(done, "every check is recorded, the stopped one too", len(shown.splitlines()) >= 3)
+    # A wrong password, the right one, the stopped one and the last: four collections.
+    rows = [line for line in shown.splitlines() if "web-proof" in line]
+    checks(done, "every check is recorded, the stopped one too", len(rows) == 4, str(len(rows)))
     purge = subprocess.run(  # noqa: S603
         [sys.executable, "-m", "checker", "purge", "web-proof", "--yes"],
         env=env,

@@ -3539,6 +3539,8 @@ def finished(run_id=None, seconds=20):
     while runs._running and time.monotonic() < deadline:
         time.sleep(0.02)
     assert not runs._running
+    with runs._lock:  # held while the ending is written down, as the pages rely on
+        pass
     query = CheckRun.objects.order_by("-id")
     return query.get(pk=run_id) if run_id else query.first()
 

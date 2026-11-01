@@ -62,7 +62,7 @@
 <p><a href="{{ url('threat_rule') }}?for=host:{{ host.name | urlencode }}">Choose which threat updates apply to {{ host.name }}</a></p>
 
 <h2>Remove it</h2>
-<p>This stops checks of it. Its results stay until a purge after their retention period, and without it on the list, its baseline can go then too. Its whitelist rules and confirmed key stay, in case it comes back.</p>
+<p>This stops checks of it. Its results stay until a purge after their retention period, and without it on the list, its baseline can go then too. Its whitelist rules and confirmed key stay, in case it comes back. To delete its results, <a href="{{ url('manage_purge') }}?what=host&amp;host={{ host.name | urlencode }}">delete its stored evidence</a>.</p>
 <form method="post" action="{{ url('server_remove') }}">
   {{ csrf_input }}
   <input type="hidden" name="host" value="{{ host.name }}">

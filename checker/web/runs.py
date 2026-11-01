@@ -15,6 +15,8 @@ import sys
 import threading
 import time
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from django.db import DatabaseError, close_old_connections, connection
 from django.utils import timezone
@@ -40,6 +42,7 @@ _running: dict[int, _Child] = {}
 _output: dict[int, _Output] = {}
 _unrecorded: dict[int, tuple[object, str]] = {}  # when and how it ended, until that's written down
 _lock = threading.Lock()
+_held = 0
 
 
 class AlreadyRunning(Exception):
@@ -86,6 +89,8 @@ def _command(kind: str, hosts: list[str]) -> list[str]:
 def start(kind: str, hosts: list[str], who: str, address: str, passwords=None) -> int:
     """The new run's id. Raises AlreadyRunning. `passwords` reach only the child."""
     with _lock:
+        if _held:
+            raise Held
         if _running:
             raise AlreadyRunning(next(iter(_running)))
         close_interrupted()
@@ -271,6 +276,27 @@ def stop(run_id: int) -> bool:
         return False
     _stop_child(child)
     return True
+
+
+class Held(Exception):
+    """Evidence is being deleted, so nothing that reads it may start."""
+
+
+@contextmanager
+def none_may_start() -> Iterator[None]:
+    """While evidence is deleted: raises AlreadyRunning if something's running, and from here until
+    it ends, `start` raises Held. A check's lock doesn't cover analyses and advice, and a look at
+    what's running beforehand wouldn't stop one starting a moment after."""
+    global _held
+    with _lock:
+        if _running:
+            raise AlreadyRunning(next(iter(_running)))
+        _held += 1
+    try:
+        yield
+    finally:
+        with _lock:
+            _held -= 1
 
 
 def is_running(run_id: int) -> bool:

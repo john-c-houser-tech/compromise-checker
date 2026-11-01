@@ -223,9 +223,10 @@ that may include access tokens, and sometimes secrets typed into commands.
   collected it, when, from which machine and from which server. Stored
   collections are never modified.
 - **Retention.** Evidence, snapshots and reports are kept for 90 days by
-  default. You can change the period. A `purge` command deletes everything for
-  a server or a date range, and `purge --expired`, which you can run on a
-  schedule, deletes whatever is past its retention period; the tool reminds
+  default. You can change the period. A `purge` command or a page of the
+  web interface deletes everything stored for a server or a date range, and can
+  delete whatever is past its retention period, which a daily check also does. An
+  alert not yet delivered stays until it is; the tool reminds
   you when anything is due. One exception: a server's current baseline, the
   collection later checks compare against, is kept until a newer one is
   accepted, because deleting it would hide changes made since. Data for a
@@ -251,16 +252,20 @@ that may include access tokens, and sometimes secrets typed into commands.
   server. So someone with an account could use those keys to log in elsewhere,
   or send the next typed password to a machine they control. The same
   confirmation lets an account change what is collected and how long evidence is
-  kept, turn the AI advisor on, choose how much is hidden from it, and stop threat
+  kept, delete stored evidence, set or stop a daily check, turn the AI advisor on, choose how much is hidden from it, and stop threat
   packs or keep them off a server. Asking for the latest signed packs needs no
-  confirmation. Anything that runs a command on this machine, or sends data or
-  keys to another address, can only be changed on the command line. Each such
+  confirmation. Apart from the daily check, which
+  runs the tool's own fixed command and any notify command already set, anything
+  that runs a command on this machine, or sends data or keys to another address,
+  can only be changed on the command line. Each such
   change is recorded, but the record doesn't prevent it. Give accounts only to
   people you would trust with the servers themselves.
   If you start a check from its pages, the web server starts the same run the
   command line does, connecting to your servers with the same settings. What
   that check reports is held in memory, not on disk, and holds no findings. A
-  restart of the web server stops it.
+  restart of the web server stops it. A daily check set from a page is different:
+  it connects to your servers with nobody there, and keeps running when the web
+  server is stopped, until someone stops it.
 - **The activity record.** The web interface keeps a permanent record of who
   signed in and out, who viewed which server's results and evidence, and each
   action taken from its pages, with the time and the address it came from. It

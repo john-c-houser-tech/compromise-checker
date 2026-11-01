@@ -2210,7 +2210,22 @@ def _expired_notice(base: Path) -> None:
 
 
 def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> int:
-    """Delete stored evidence (policy §8), after showing what goes."""
+    """Delete stored evidence (policy §8), after showing what goes. Not during a run: it would keep
+    its own view of what's stored, and save it over what this forgets."""
+    from checker import schedule
+
+    if args.dry_run:
+        return _purge(args, ask)
+    try:
+        with schedule.run_lock(home()):
+            return _purge(args, ask)
+    except schedule.Busy:
+        print("checker: `checker run` is in progress: try again when it has finished",
+              file=sys.stderr)  # fmt: skip
+        return 1
+
+
+def _purge(args: argparse.Namespace, ask: Callable[[str], str]) -> int:
     base = home()
     try:
         config = load_config(base)
@@ -2287,6 +2302,7 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
     finally:
         store.close()
     print(f"Purged {outcome.counts['bundles']} bundle(s); {len(outcome.deleted)} file(s) deleted.")
+    _forget_emptied(base, chosen, config)
     for path, reason in outcome.failed:
         print(
             f"checker: couldn't delete {path} ({reason}); the next purge tries again",
@@ -2299,6 +2315,18 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
             file=sys.stderr,
         )
     return 1 if outcome.failed else 0
+
+
+def _forget_emptied(base: Path, chosen, config) -> None:
+    from checker import schedule
+
+    emptied = [host for host, what in chosen.baselines.items() if what == "emptied"]
+    try:
+        if emptied and config.identity_file:
+            identity = load_identity(Path(config.identity_file))
+            schedule.forget_hosts(base, emptied, identity, config.recipients)
+    except Exception as exc:  # noqa: BLE001 - the purge did happen, and a run starts it again
+        print(f"checker: the last run's memory of them stays: {exc}", file=sys.stderr)
 
 
 def _read_untrusted(name: str, limit: int) -> bytes:
@@ -2828,7 +2856,6 @@ def cmd_schedule_install(
 ) -> int:
     import getpass
     import os
-    import subprocess
     import time
 
     from checker import schedule
@@ -2863,27 +2890,11 @@ def cmd_schedule_install(
         )
     if sys.platform == "darwin" and os.environ.get("SSH_CONNECTION"):
         print("A launchd agent runs while you are logged in at the Mac (not over SSH).")
-    where = schedule.placement(sys.platform, at, env, base, Path.home())
-    for path, content in where.files.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-        print(f"Wrote {path}")
-    if sys.platform == "darwin":
-        (base / "logs").mkdir(exist_ok=True, mode=0o700)
-        subprocess.run(where.stop[0], capture_output=True, check=False)  # noqa: S603 - a reload
-    for command in where.start:
-        # launchd may still be unloading the old agent: a few tries, a second apart.
-        for _ in range(5 if sys.platform == "darwin" else 1):
-            done = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
-            if done.returncode == 0:
-                break
-            pause(1.0)
-        if done.returncode != 0:
-            print(
-                f"checker: `{' '.join(command)}` failed: {(done.stderr or '').strip()}",
-                file=sys.stderr,
-            )
-            return 1
+    try:
+        where = schedule.install(base, at, hosts, say=print, pause=pause)
+    except schedule.InstallFailed as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
     print(
         f"`checker run --all --unattended` will run every day at {args.at} (this machine's time)."
     )
@@ -2897,22 +2908,18 @@ def cmd_schedule_install(
 
 
 def cmd_schedule_remove(args: argparse.Namespace) -> int:
-    import subprocess
-
     from checker import schedule
 
-    where = schedule.placement(sys.platform, (3, 0), {}, home(), Path.home())
-    present = [path for path in where.files if path.exists()]
-    if not present:
+    try:
+        deleted, stopped = schedule.remove_timer(home())
+    except schedule.InstallFailed as exc:
+        print(f"checker: not stopped: {exc}", file=sys.stderr)
+        return 1
+    if not stopped:
         print("No timer is installed.")
         return 0
-    stop, *after = where.stop  # stopped while its files are there; reloaded once they're gone
-    subprocess.run(stop, capture_output=True, check=False)  # noqa: S603
-    for path in present:
-        path.unlink()
+    for path in deleted:
         print(f"Deleted {path}")
-    for command in after:
-        subprocess.run(command, capture_output=True, check=False)  # noqa: S603
     print("Scheduled runs stopped.")
     return 0
 

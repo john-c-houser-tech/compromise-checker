@@ -527,7 +527,8 @@ def test_install_and_remove(fleet, tmp_path, monkeypatch, capsys):
 
 
 def test_install_on_a_mac_waits_for_the_old_agent_to_go(fleet, tmp_path, monkeypatch):
-    answers = iter([Done(), Done(5), Done(5), Done()])  # bootout, then two busy bootstraps
+    # Whether one's loaded, then bootout, then two busy bootstraps.
+    answers = iter([Done(), Done(), Done(5), Done(5), Done()])
     ran, waited = [], []
     monkeypatch.setattr(
         "subprocess.run", lambda command, **kw: ran.append(command) or next(answers)
@@ -536,7 +537,7 @@ def test_install_on_a_mac_waits_for_the_old_agent_to_go(fleet, tmp_path, monkeyp
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
     assert cli.main(["schedule", "install"]) == 0
-    assert [c[1] for c in ran] == ["bootout", "bootstrap", "bootstrap", "bootstrap"]
+    assert [c[1] for c in ran] == ["print", "bootout", "bootstrap", "bootstrap", "bootstrap"]
     assert waited == [1.0, 1.0]
     agents = tmp_path / "user" / "Library" / "LaunchAgents"
     assert (agents / "com.nouriloop.compromise-checker.plist").exists()

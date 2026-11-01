@@ -3,6 +3,7 @@ record of who looked."""
 
 from __future__ import annotations
 
+import getpass
 import json
 import sqlite3
 import sys
@@ -25,7 +26,7 @@ from django_otp import login as otp_login
 from pydantic import ValidationError as InvalidSettings
 
 from checker import schedule
-from checker.evidence import EvidenceError
+from checker.evidence import EvidenceError, load_config
 from checker.fleet import read_evidence, read_fleet, read_host, read_threats
 from checker.inventory import home, load_inventory
 from checker.report import visible
@@ -34,6 +35,7 @@ from checker.web import (
     accounts,
     decide,
     manage,
+    purging,
     runs,
     setting_forms,
     threat_updates,
@@ -62,6 +64,8 @@ VIEWABLE = {
     "manage_threats",
     "threat_rule",
     "manage_settings",
+    "manage_schedule",
+    "manage_purge",
     "two_factor_manage",
 }
 
@@ -617,7 +621,7 @@ def server_add(request) -> HttpResponse:
         manage.add(home(), host, same_server=request.POST.get("same_server") == "on")
         request.action_detail = manage.settings_in_words(host)
     except manage.FormProblem as exc:
-        words = str(visible(str(exc), 600))
+        words = visible(str(exc), 800)
         same = isinstance(exc, manage.EarlierResults)
         page = _add_form(request, values, words, 400, ask_same=same)
         raise ActionFailed(words, page=page) from None
@@ -654,7 +658,7 @@ def server_change(request) -> HttpResponse:
         raise ActionFailed(words, page=page) from None
     except manage.FormProblem as exc:
         # What they typed, against what they started from: if that's old, saving again is refused.
-        words = str(visible(str(exc), 600))
+        words = visible(str(exc), 800)
         page = _server_page(
             request, name, values=values, version=version, problem=words, status=400
         )
@@ -691,7 +695,7 @@ def _key_offered(request, name: str):
     try:
         return host, manage.ask_for_key(host)
     except manage.KeyUnavailable as exc:
-        words = str(visible(str(exc), 600))
+        words = visible(str(exc), 800)
         page = _server_page(request, name, key_problem=words, status=400)
         raise ActionFailed(words, page=page) from None
 
@@ -716,7 +720,7 @@ def server_key_trust(request) -> HttpResponse:
             host, check, request.POST.get("pasted", ""), request.POST.get("replace") == "on"
         )
     except manage.FormProblem as exc:
-        words = str(visible(str(exc), 600))
+        words = visible(str(exc), 800)
         offer = manage.offer_of(check)
         page = _server_page(request, name, key_problem=words, offer=offer, status=400)
         # Only its start: the Activity page shows this, and the whole of it could be pasted.
@@ -794,7 +798,7 @@ def threat_retire(request) -> HttpResponse:
             request.user.get_username(),
         )
     except threat_updates.UpdateProblem as exc:
-        raise ActionFailed(str(visible(str(exc), 600))) from None
+        raise ActionFailed(visible(str(exc), 800)) from None
     request.action_detail = " ".join(request.POST.get("reason", "").split())
     return _back_to_threats()
 
@@ -804,7 +808,7 @@ def threat_put_back(request) -> HttpResponse:
     try:
         threat_updates.put_back_by_hand(home(), request.POST.get("pack", ""))
     except threat_updates.UpdateProblem as exc:
-        raise ActionFailed(str(visible(str(exc), 600))) from None
+        raise ActionFailed(visible(str(exc), 800)) from None
     return _back_to_threats()
 
 
@@ -836,7 +840,7 @@ def threat_rule_save(request) -> HttpResponse:
     try:
         request.action_detail = threat_updates.save_rule(home(), scope, request.POST)
     except threat_updates.UpdateProblem as exc:
-        words = str(visible(str(exc), 600))
+        words = visible(str(exc), 800)
         try:
             page = _rule_page(request, scope, problem=words, status=400)
         except Exception:  # noqa: BLE001 - the words are what matter
@@ -881,7 +885,7 @@ def settings_save(request) -> HttpResponse:
         words = str(exc)  # the settings as they are now: saving again can't undo someone else's
         raise ActionFailed(words, page=_settings_page(request, problem=words, status=400)) from None
     except setting_forms.FormProblem as exc:
-        words = str(visible(str(exc), 600))
+        words = visible(str(exc), 800)
         version = request.POST.get("version", "")
         page = _settings_page(
             request, typed=request.POST, version=version, problem=words, status=400
@@ -892,6 +896,153 @@ def settings_save(request) -> HttpResponse:
         raise ActionFailed(CANT_CHANGE_SETTINGS) from None
     request.action_detail = setting_forms.changes_in_words(changed)
     return HttpResponseRedirect(f"{reverse('manage_settings')}?saved=1")
+
+
+def _schedule_page(request, problem="", status: int = 200) -> HttpResponse:
+    hosts = load_inventory().hosts
+    time = schedule.timer_time(home())
+    running = schedule.timer_running()
+    # Its files can be gone while it's still loaded: that one's still there to stop.
+    installed = schedule.placement_exists(home()) or running is True
+    # The timer's own environment, once there is one: it decides what a run can reach.
+    environ = schedule.timer_environment_now(home()) if installed else None
+    context = {
+        "installed": installed,
+        "another_home": installed and schedule.timer_of_another_home(home()),
+        "time_known": time is not None,
+        "at": time or "03:00",
+        "on_a_mac": sys.platform == "darwin",
+        "running": running if installed else None,
+        "lingering": schedule.lingering(getpass.getuser()) if installed else None,
+        "uses_agent": any(host.auth == "agent" for host in hosts),
+        "stops": [
+            (host.name, " ".join(found))
+            for host in hosts
+            if (found := manage.check_blockers(host, unattended=True, environ=environ))
+        ],
+        "problem": problem,
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_schedule.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def manage_schedule(request) -> HttpResponse:
+    try:
+        return _schedule_page(request)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        return _unreadable_inventory(request, exc)
+
+
+ANOTHER_HOME = (
+    "That timer runs another copy of this tool, so it can't be changed from here. Whoever looks"
+    " after this machine can use `checker schedule` there."
+)
+NO_SESSION = (
+    "This web server can't reach this machine's timers, usually because it wasn't started from a"
+    " logged-in session. Start it from one, or use `checker schedule install` there."
+)
+
+
+def _timer_failed(request, words) -> ActionFailed:
+    """This machine's own command's words, on one line, for whoever looks after it."""
+    text = " ".join(str(words).split())
+    if "connect to bus" in text or "D-Bus" in text or "XDG_RUNTIME_DIR" in text:
+        text = f"{NO_SESSION} ({text})"
+    said = visible(text, 800)
+    try:
+        return ActionFailed(said, page=_schedule_page(request, said, 400))
+    except Exception:  # noqa: BLE001 - the words are what matter
+        return ActionFailed(said)
+
+
+@action("set the daily check", consequential=True)
+def schedule_save(request) -> HttpResponse:
+    """Password again: from then on this machine connects to every server and deletes what's past
+    its retention period, every day, with nobody there."""
+    try:
+        at = schedule.parse_time(request.POST.get("at", ""))
+    except ValueError:
+        raise _timer_failed(request, "Type a time of day, such as 03:00.") from None
+    try:
+        load_config(home())  # a timer on settings that can't be read would fail every day
+        hosts = load_inventory().hosts
+        schedule.install(home(), at, hosts, only_this_home=True)
+    except schedule.AnotherHome:
+        raise _timer_failed(request, ANOTHER_HOME) from None
+    except schedule.InstallFailed as exc:
+        raise _timer_failed(request, f"The daily check couldn't be set up: {exc}") from None
+    except MANAGE_FAILURES as exc:
+        print(f"checker web: setting the timer failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(
+            "That couldn't be done: the settings or the servers can't be read."
+        ) from None
+    request.action_detail = f"every day at {at[0]:02}:{at[1]:02}"
+    return HttpResponseRedirect(reverse("manage_schedule"))
+
+
+@action("stopped the daily check", consequential=True)
+def schedule_stop(request) -> HttpResponse:
+    """Password again: nobody would be told that checks had stopped."""
+    try:
+        _, stopped = schedule.remove_timer(home(), only_this_home=True)
+    except schedule.AnotherHome:
+        raise _timer_failed(request, ANOTHER_HOME) from None
+    except schedule.InstallFailed as exc:
+        raise _timer_failed(request, f"The daily check wasn't stopped: {exc}") from None
+    except OSError as exc:
+        print(f"checker web: removing the timer failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(
+            "That couldn't be done: this machine's files can't be changed."
+        ) from None
+    request.action_detail = "stopped" if stopped else "there was none"
+    return HttpResponseRedirect(reverse("manage_schedule"))
+
+
+def _purge_page(request, done=None, problem: str = "", status: int = 200) -> HttpResponse:
+    context = {
+        **purging.page(home(), request.GET if request.method == "GET" else request.POST),
+        "done": done,
+        "problem": problem,
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_purge.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def manage_purge(request) -> HttpResponse:
+    """Works out what would go, and changes nothing."""
+    try:
+        return _purge_page(request)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't work out a purge: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The settings or the evidence store can't be read.")
+
+
+def _purge_target(request, **kwargs) -> str:
+    return purging.named(request.POST)
+
+
+@action("deleted stored evidence", consequential=True, target=_purge_target)
+def purge_confirm(request) -> HttpResponse:
+    """Password again and the word typed: this can't be undone."""
+    try:
+        done = purging.run(home(), request.POST)
+    except purging.PurgeProblem as exc:
+        words = str(exc)
+        try:
+            page = _purge_page(request, problem=words, status=400)
+        except Exception:  # noqa: BLE001 - the words are what matter
+            page = None
+        raise ActionFailed(words, page=page) from None
+    request.action_detail = done["summary"]
+    try:
+        return _purge_page(request, done=done)
+    except Exception as exc:  # noqa: BLE001 - it did happen: a plain page, and the record says so
+        print(f"checker web: can't show the purge: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The evidence was deleted, but this page can't be shown.")
 
 
 @login_required
@@ -967,6 +1118,8 @@ def _start_run(request, kind: str, hosts: list[str], passwords=None) -> HttpResp
             accounts.client_address(request),
             passwords,
         )
+    except runs.Held:
+        raise ActionFailed("Stored evidence is being deleted. Try again in a moment.") from None
     except runs.AlreadyRunning as exc:  # a double-click's other half, or someone else's
         where = reverse("check", kwargs={"run_id": exc.run_id}) + "?busy=1"
         raise ActionFailed(
@@ -1082,7 +1235,7 @@ def _deciding(request, work) -> HttpResponse:
     except ActionFailed:
         raise
     except (ValueError, EvidenceError) as exc:
-        raise ActionFailed(str(visible(str(exc), 600))) from None
+        raise ActionFailed(visible(str(exc), 800)) from None
     except (OSError, sqlite3.Error, yaml.YAMLError, WhitelistError) as exc:
         print(f"checker web: a decision failed: {type(exc).__name__}", file=sys.stderr)
         raise ActionFailed(CANT_DECIDE) from None

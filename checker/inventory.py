@@ -3,6 +3,8 @@
 Only hosts listed here are ever contacted (security and privacy policy §3).
 """
 
+import hashlib
+import json
 import os
 import re
 from collections.abc import Iterator
@@ -17,6 +19,8 @@ from checker.files import atomic_write, locked
 from checker.protocol import check_web_roots
 
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
+_ADDRESS = re.compile(r"[A-Za-z0-9:][A-Za-z0-9._:%-]{0,252}")  # names, IPv4, IPv6 with a zone
+_ACCOUNT = re.compile(r"[^\s\x00-\x1f\x7f-][^\s\x00-\x1f\x7f]{0,255}")  # DOMAIN\\user, user@domain
 
 
 def home() -> Path:
@@ -71,6 +75,38 @@ class Host(BaseModel):
             raise ValueError("letters, digits, '.', '_' and '-' only; at most 63 characters")
         return value
 
+    @field_validator("address")
+    @classmethod
+    def _valid_address(cls, value: str) -> str:
+        # Written as one word of a known_hosts line: anything else could add a trusted key.
+        if not _ADDRESS.fullmatch(value):
+            raise ValueError("a host name or IP address, with no spaces")
+        return value
+
+    @field_validator("user")
+    @classmethod
+    def _valid_user(cls, value: str) -> str:
+        if not _ACCOUNT.fullmatch(value):
+            raise ValueError("an account name, with no spaces")
+        return value
+
+    @field_validator("group")
+    @classmethod
+    def _valid_group(cls, value: str | None) -> str | None:
+        # A group's whitelist is a file named after it.
+        if value is not None and not _NAME.fullmatch(value):
+            raise ValueError("letters, digits, '.', '_' and '-' only; at most 63 characters")
+        return value
+
+    @field_validator("key_path")
+    @classmethod
+    def _valid_key_path(cls, value: str | None) -> str | None:
+        if value is not None and (
+            not value.startswith(("/", "~/")) or any(ord(c) < 32 or ord(c) == 127 for c in value)
+        ):
+            raise ValueError("a full path, starting with / or ~/")
+        return value
+
     @field_validator("python")
     @classmethod
     def _valid_python(cls, value: str) -> str:
@@ -93,6 +129,11 @@ class Host(BaseModel):
 
     def needs_password(self) -> bool:
         return self.auth == "password" or self.sudo == "password"
+
+    def version(self) -> str:
+        """Changes when anything about the host does: what a form was filled in against."""
+        text = json.dumps(self.model_dump(mode="json"), sort_keys=True)
+        return hashlib.sha256(text.encode()).hexdigest()
 
 
 class Inventory(BaseModel):

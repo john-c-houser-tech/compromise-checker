@@ -119,6 +119,10 @@ suppress, as `checker whitelist test` does, before it can be confirmed.
 
 **5.13 Manage.** Hosts, groups, trust of a new host key (shown for checking, never
 accepted blind), packs, settings, scheduled checks, purge.
+As built, in three PRs. Servers first: add, change, remove, groups and host keys. A key is trusted only
+when the person pastes the fingerprint from the server and it matches a fresh answer, so the page
+doesn't show the offered fingerprint first. Groups stay a label on each server, with no rename.
+Then packs and settings, then the schedule and purge.
 
 **5.13b First setup and adding a server.** A guided path for someone who has never
 done this: create the keys and settings the policy's choices depend on (`checker

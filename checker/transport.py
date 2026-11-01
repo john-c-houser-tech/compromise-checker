@@ -511,6 +511,16 @@ def _read_known(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
 
+def trusted_fingerprints(host: Host, known_hosts: Path | None = None) -> list[str]:
+    """The keys trusted for this host, without contacting it."""
+    name = _known_hosts_name(host)
+    return [
+        asyncssh.import_public_key(" ".join(parts[1:3])).get_fingerprint("sha256")
+        for parts in (line.split() for line in _read_known(known_hosts or known_hosts_file()))
+        if len(parts) >= 3 and parts[0] == name
+    ]
+
+
 async def fetch_host_key(host: Host, known_hosts: Path | None = None) -> HostKeyCheck:
     """Ask the server for its host key, and compare it with what we know:
     a known key's kind first, so a host trusted by its RSA key isn't

@@ -1,0 +1,16 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}Add a server: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage') }}">Back to Manage</a></p>
+<h1 class="page-title">Add a server</h1>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+<form method="post" action="{{ url('server_add') }}">
+  {{ csrf_input }}
+  <label>Name <small>Your own short name for it. It can't be changed later, since its results are kept under it.</small> <input name="name" value="{{ values.name }}" required></label>
+  {{ parts.server_fields(values, groups) }}
+  {% if ask_same %}<label class="tick"><input type="checkbox" name="same_server"> This is the same server as the earlier results under this name</label>{% endif %}
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Add this server</button>
+</form>
+{% endblock %}

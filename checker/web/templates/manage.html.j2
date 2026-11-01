@@ -1,0 +1,32 @@
+{% extends "base.html.j2" %}
+{% block title %}Manage: {{ product_name() }}{% endblock %}
+{% block main %}
+<h1 class="page-title">Manage your servers</h1>
+<p><a href="{{ url('manage_add') }}">Add a server</a></p>
+{% if not rows %}
+<p>There are no servers yet. Add one to check it.</p>
+{% else %}
+<div class="record-wrap">
+<table class="record">
+  <thead><tr><th scope="col">Server</th><th scope="col">Logs in as</th><th scope="col">Group</th><th scope="col">Identity</th></tr></thead>
+  <tbody>
+  {% for row in rows %}
+  <tr>
+    <td><a href="{{ url('manage_server') }}?host={{ row.name | urlencode }}">{{ row.name }}</a></td>
+    <td>{{ row.where }}</td>
+    <td>{{ row.group or "None" }}</td>
+    <td>{% if row.unreadable %}<span class="error">Can't be read</span>{% elif row.trusted %}Confirmed{% else %}<span class="error">Not confirmed yet, so it can't be checked</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% if groups %}
+<h2>Groups</h2>
+<p class="note">Servers in a group share its whitelist rules and threat update settings. A group exists while a server is in it: choose it on the server's page.</p>
+<ul>
+  {% for group in groups %}<li><strong>{{ group.name }}</strong>: {{ group.members | join(", ") }}</li>{% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

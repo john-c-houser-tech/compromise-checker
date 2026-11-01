@@ -205,6 +205,10 @@ def _prior(text: str, kept: Host | None) -> float | None:
         raise FormProblem(f"{LABELS['prior']}: {PLAIN['prior']}.") from None
 
 
+def groups_for_the_page(groups: list[str]) -> list[Markup]:
+    return [escape(_shown(group)) for group in groups]
+
+
 def _left_alone(post, kept: Host | None, field: str) -> bool:
     """A browser sends a text box's line endings as CRLF, so that alone isn't a change."""
     return kept is not None and post.get(field, "").replace("\r\n", "\n") == form_of(kept)[field]

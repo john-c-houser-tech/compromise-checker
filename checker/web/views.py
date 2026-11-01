@@ -22,7 +22,6 @@ from django.urls import Resolver404, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_otp import login as otp_login
-from markupsafe import escape
 from pydantic import ValidationError as InvalidSettings
 
 from checker import schedule
@@ -529,7 +528,7 @@ def _add_form(request, values=None, problem: str = "", status: int = 200, ask_sa
         "values": manage.for_the_page(values if values is not None else manage.blank_form()),
         "problem": problem,
         "ask_same": ask_same,
-        "groups": [escape(group) for group in groups],
+        "groups": manage.groups_for_the_page(groups),
         "code_needed": two_factor.code_needed(request),
     }
     return render(request, "manage_add.html.j2", context, status=status)
@@ -570,7 +569,7 @@ def _server_page(
         "trusted": manage.trust_of(host),
         "stops": schedule.host_problems_in_plain_words(host),
         "earlier": earlier,
-        "groups": [escape(group) for group in manage.group_names(home())],
+        "groups": manage.groups_for_the_page(manage.group_names(home())),
         "code_needed": two_factor.code_needed(request),
     }
     return render(request, "manage_server.html.j2", context, status=status)

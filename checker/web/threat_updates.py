@@ -5,6 +5,7 @@ takes plain forms only, and which keys may sign is not a decision for a form."""
 
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,7 @@ from checker.settings import (
 )
 from checker.web.manage import recorded
 
+_ADDRESS = re.compile(r"https?://\S*?(?=:?(?:\s|$))", re.IGNORECASE)
 _pulling = threading.Lock()  # a pull can take a while, and a second adds nothing
 _WAIT_SECONDS = 5  # for the packs lock: a pull holds it for minutes, and pages mustn't queue up
 _BUSY = "Threat updates are being fetched or changed. Try again in a moment."
@@ -102,7 +104,6 @@ def overview(base: Path) -> dict[str, Any]:
                 "own": host.packs is not None,
                 "from": SCOPE_WORDS.get(source, source),
                 "applied": [pack.id for pack in applied],
-                "kept_off": [pack.id for pack in packs if pack not in applied],
             }
         )
     state_problem = False
@@ -133,25 +134,21 @@ def overview(base: Path) -> dict[str, Any]:
     }
 
 
-def _without_source(words: str, source: str | None) -> str:
-    """A source's address can hold a secret, and the settings page doesn't show it. Errors cut an
-    address at 200 characters, which can leave a long one's start."""
-    if not source:
-        return words
-    return words.replace(source, "the source: ").replace(source[:200], "the source: ")
+def _without_addresses(words: str) -> str:
+    """A source's address can hold a secret, and the settings page doesn't show it. Any address, as
+    errors can cut it short, or name where it redirected to, which can repeat the secret."""
+    return _ADDRESS.sub("the source", words)
 
 
-def _outcome(done, source: str | None) -> dict[str, Any]:
-    def plain(words: str) -> str:
-        return _without_source(words, source)
-
+def _outcome(done) -> dict[str, Any]:
     # Already in force isn't news: it's how a pull reads when the state lost its record.
     added = [item for item in done.added if item[2] != "already in force"]
     changed = bool(added or done.withdrawn or done.key_list or done.retired_by_keys)
     notes = [
-        plain(note).replace("`checker packs add` brings it back", _PUT_BACK) for note in done.notes
+        _without_addresses(note).replace("`checker packs add` brings it back", _PUT_BACK)
+        for note in done.notes
     ]
-    problems = [plain(words) for words in done.problems]
+    problems = [_without_addresses(words) for words in done.problems]
     return {
         "key_list": done.key_list,
         "added": added,
@@ -170,13 +167,13 @@ def _outcome(done, source: str | None) -> dict[str, Any]:
     }
 
 
-def _part_way(exc: Exception, source: str | None) -> dict[str, Any] | None:
+def _part_way(exc: Exception) -> dict[str, Any] | None:
     """What a pull that stopped had already done, if anything: an empty result isn't news, and
     would read as being up to date."""
     done = getattr(exc, "pulled", None)
     if done is None:
         return None
-    outcome = _outcome(done, source)
+    outcome = _outcome(done)
     return None if outcome["up_to_date"] else outcome
 
 
@@ -185,21 +182,19 @@ def pull_now(base: Path) -> dict[str, Any]:
 
     if not _pulling.acquire(blocking=False):
         raise UpdateProblem(_BUSY)
-    source = None
     try:
         with packs_lock(base, _WAIT_SECONDS):
             config = load_config(base)
-            source = config.packs.source
-            done = pull(base, config.packs.trusted_keys, load_checks(), source)
+            done = pull(base, config.packs.trusted_keys, load_checks(), config.packs.source)
     except LockBusy:
         raise UpdateProblem(_BUSY) from None
     except PullError as exc:
-        raise UpdateProblem(_without_source(str(exc), source), _part_way(exc, source)) from None
+        raise UpdateProblem(_without_addresses(str(exc)), _part_way(exc)) from None
     except _DAMAGED as exc:
-        raise UpdateProblem(_CANT_READ, _part_way(exc, source)) from None
+        raise UpdateProblem(_CANT_READ, _part_way(exc)) from None
     finally:
         _pulling.release()
-    return _outcome(done, source)
+    return _outcome(done)
 
 
 def retire_by_hand(base: Path, pack_id: str, reason: str, who: str) -> None:

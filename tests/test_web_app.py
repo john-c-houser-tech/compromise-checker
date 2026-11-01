@@ -6426,7 +6426,7 @@ def test_a_failed_fetch_doesn_t_show_the_source_s_address(web, inventory, monkey
     failure = PullError(f"{source}keys.yaml: the server answered 500")
     failure.pulled = Pulled(problems=[f"a pack: {source}packs/x: the server answered 500"])
     text = said(pulled_page(client, monkeypatch, error=failure))
-    assert "SeCrEtToken" not in text and "the source: keys.yaml" in text
+    assert "SeCrEtToken" not in text and "the source: the server answered 500" in text
 
 
 def test_a_failure_part_way_doesn_t_claim_nothing_changed(web, inventory, monkeypatch):
@@ -6530,3 +6530,21 @@ def test_retiring_on_the_command_line_works_with_a_damaged_config(team_pack, cap
     path.write_text(path.read_text() + damage)
     assert cli.main(["packs", "retire", PACK, "--reason", "x"]) == 0
     assert "Retired" in capsys.readouterr().out
+
+
+def test_a_redirect_s_address_stays_off_the_page_too(web, inventory, monkeypatch):
+    from checker.packs.pull import PullError
+
+    client, _ = signed_in(web)
+    failure = PullError("refused a redirect to http://mirror.example/SeCrEtToken/keys.yaml")
+    text = said(pulled_page(client, monkeypatch, error=failure))
+    assert "SeCrEtToken" not in text and "refused a redirect to the source" in text
+
+
+def test_a_group_s_invisible_characters_don_t_reach_the_form(web, unconfirmed):
+    from checker.inventory import Host
+
+    client, _ = signed_in(web)
+    unconfirmed(Host(name="web01", address="192.0.2.1", user="s", group="a" + BIDI + "b"))
+    for path in ("/manage/add", "/manage/server?host=web01"):
+        assert BIDI not in client.get(path).content.decode()

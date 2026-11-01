@@ -154,7 +154,8 @@ so do adding and removing one, with its settings.
 
 A server's name can't change, since its results are filed under it. Adding a name that has earlier
 results takes saying it's the same server, because new results would be compared with the old ones.
-Removing a server stops its checks and keeps its results until a purge after their retention period.
+Removing a server stops its checks and keeps its results, until a purge after their retention period or
+you delete them.
 Its whitelist rules and confirmed key stay too, and a name with rules kept counts as earlier results.
 
 A group exists while a server is in it. There's no separate list of groups to keep up. Moving a
@@ -204,13 +205,18 @@ who may sign what the tool believes.
 Manage can set a check to run every day at a time you choose, and stop it. That's the same run as
 `checker schedule install`: it checks every server, works out results, writes a report, and deletes what's
 past its retention period. It uses a timer on this machine, under the account the web server runs as,
-which on Linux needs a user session or lingering; the page says when it won't run with nobody logged
-in, and lists servers that a daily check can't reach.
+and keeps running when the web server is stopped, until someone stops it. On Linux that needs a user
+session, so a web server started as a system service can't set it, and lingering to run with nobody
+logged in. On a Mac it runs only while someone is logged in there. The page says so, and lists servers
+a daily check can't reach.
 
 Manage can also delete stored evidence, for one server, before a date, or past its retention period. It
-shows exactly what would go first, then needs your password and the word `purge` typed. If what would
-go has changed since you looked, it asks you to look again. It won't start while a check is running.
-The record of what was deleted stays. See [retention](retention.md).
+shows what would go first, then needs your password and the word `purge` typed. If what would go has
+changed since you looked, it asks you to look again. It won't start during a check started from a page,
+a daily check, or `checker run`. The record of what was deleted stays. See [retention](retention.md).
+
+If you think a server was broken into, stop the daily check and raise the days kept in Settings: a daily
+check, and any check started from a page, delete what's past them.
 
 ## How it protects you
 

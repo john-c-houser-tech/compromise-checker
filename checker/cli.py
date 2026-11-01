@@ -2287,6 +2287,7 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
     finally:
         store.close()
     print(f"Purged {outcome.counts['bundles']} bundle(s); {len(outcome.deleted)} file(s) deleted.")
+    _forget_emptied(base, chosen, config)
     for path, reason in outcome.failed:
         print(
             f"checker: couldn't delete {path} ({reason}); the next purge tries again",
@@ -2299,6 +2300,18 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
             file=sys.stderr,
         )
     return 1 if outcome.failed else 0
+
+
+def _forget_emptied(base: Path, chosen, config) -> None:
+    from checker import schedule
+
+    emptied = [host for host, what in chosen.baselines.items() if what == "emptied"]
+    try:
+        if config.identity_file:
+            identity = load_identity(Path(config.identity_file))
+            schedule.forget_hosts(base, emptied, identity, config.recipients)
+    except Exception as exc:  # noqa: BLE001 - the purge did happen, and a run starts it again
+        print(f"checker: the last run's memory of them stays: {exc}", file=sys.stderr)
 
 
 def _read_untrusted(name: str, limit: int) -> bytes:
@@ -2882,7 +2895,11 @@ def cmd_schedule_install(
 def cmd_schedule_remove(args: argparse.Namespace) -> int:
     from checker import schedule
 
-    deleted = schedule.remove_timer(home())
+    try:
+        deleted = schedule.remove_timer(home())
+    except schedule.InstallFailed as exc:
+        print(f"checker: not stopped: {exc}", file=sys.stderr)
+        return 1
     if not deleted:
         print("No timer is installed.")
         return 0

@@ -36,7 +36,7 @@ class ActionFailed(Exception):
 
     def __init__(self, words: str, page=None, sign_out: bool = False):
         super().__init__(words)
-        self.page, self.sign_out = page, sign_out
+        self.words, self.page, self.sign_out = words, page, sign_out
 
 
 def record(request, action: str, target: str = "", outcome: str = "done", detail: str = "") -> None:
@@ -134,12 +134,12 @@ def action(name: str, consequential: bool = False, target=lambda request, **kwar
             try:
                 response = view(request, *args, **kwargs)
             except ActionFailed as exc:
-                record_if_possible(request, name, on, "failed", str(exc))
+                record_if_possible(request, name, on, "failed", exc.words)
                 if exc.sign_out:
                     logout(request)
                 if exc.page is not None:
                     return exc.page
-                return _refused_page(request, str(exc), status=400)
+                return _refused_page(request, exc.words, status=400)
             except Exception as exc:
                 record_if_possible(request, name, on, "failed", type(exc).__name__)
                 raise

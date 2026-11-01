@@ -120,7 +120,7 @@ def trust_of(host: Host) -> str:
         return "unreadable"
 
 
-def check_blockers(host: Host, unattended: bool = False) -> list[str]:
+def check_blockers(host: Host, unattended: bool = False, environ=None) -> list[str]:
     """Why a check started from a page can't go ahead, or a scheduled one, where nobody is there to
     type a password, in words for it."""
     state = trust_of(host)
@@ -129,7 +129,7 @@ def check_blockers(host: Host, unattended: bool = False) -> list[str]:
         "unreadable": ["The file of trusted keys on this machine can't be read."],
     }.get(state, [])
     rest = unattended_in_plain_words if unattended else host_problems_in_plain_words
-    return first + rest(host)
+    return first + rest(host, environ)
 
 
 def has_results(base: Path, name: str) -> bool:

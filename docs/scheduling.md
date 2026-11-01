@@ -2,7 +2,9 @@
 
 `checker run` does a whole pass in one command; `checker schedule install`
 starts it every day on a timer. Run them on a machine that stays on (a
-small server or a desktop that doesn't sleep), not a laptop.
+small server or a desktop that doesn't sleep), not a laptop. The web interface's
+Check every day page sets the same timer, under the account the web server runs
+as: that needs a user session, and the SSH agent it uses is the web server's.
 
 ## One pass
 

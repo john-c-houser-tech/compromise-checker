@@ -170,7 +170,10 @@ def unattended_in_plain_words(host, environ: dict[str, str] | None = None) -> li
     """What stops a scheduled check, where nobody is there to type: `host_problems`' conditions, for
     someone who isn't at a command line."""
     typing = (
-        ["It needs a password typed. Choose the keyring for its password, or give it a key file."]
+        [
+            "It needs a password typed. Give it a key file, or choose the keyring for its password"
+            " (which has to be unlocked when the check runs)."
+        ]
         if needs_typed_password(host)
         else []
     )
@@ -903,7 +906,21 @@ def placement(
 
 
 class InstallFailed(Exception):
-    """Why the timer couldn't be set up, and whether its files were written."""
+    """Why the timer couldn't be set up or stopped. Its files are as they were before."""
+
+
+TIMER_COMMAND_SECONDS = 60  # a hung systemctl mustn't hold a page, or the command, for ever
+
+
+def _timer_command(command: list[str]) -> Any:
+    try:
+        return subprocess.run(  # noqa: S603
+            command, capture_output=True, text=True, check=False, timeout=TIMER_COMMAND_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        raise InstallFailed(f"`{' '.join(command)}` didn't finish") from None
+    except OSError as exc:
+        raise InstallFailed(f"`{' '.join(command)}` failed: {exc.strerror}") from None
 
 
 def install(
@@ -913,7 +930,8 @@ def install(
     say: Callable[[str], None] = lambda words: None,
     pause: Callable[[float], None] = time.sleep,
 ) -> Placement:
-    """Write the timer's files and start it, as `checker schedule install` and a page do."""
+    """Write the timer's files and start it, as `checker schedule install` and a page do. If it
+    can't start, the files go back as they were: left there, they'd read as a timer that runs."""
     env = timer_environment(base, hosts)
     if sys.platform != "darwin" and (unsafe := systemd_unsafe(env)):
         raise InstallFailed(
@@ -921,40 +939,49 @@ def install(
             " characters): " + ", ".join(repr(word) for word in unsafe)
         )
     where = placement(sys.platform, at, env, base, Path.home())
-    for path, content in where.files.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-        say(f"Wrote {path}")
-    if sys.platform == "darwin":
-        (base / "logs").mkdir(exist_ok=True, mode=0o700)
-        subprocess.run(where.stop[0], capture_output=True, check=False)  # noqa: S603 - a reload
-    for command in where.start:
-        # launchd may still be unloading the old agent: a few tries, a second apart.
-        for _ in range(5 if sys.platform == "darwin" else 1):
-            try:
-                done = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
-            except OSError as exc:
-                raise InstallFailed(f"`{' '.join(command)}` failed: {exc.strerror}") from None
-            if done.returncode == 0:
-                break
-            pause(1.0)
-        if done.returncode != 0:
-            raise InstallFailed(f"`{' '.join(command)}` failed: {(done.stderr or '').strip()}")
+    earlier = {path: path.read_bytes() if path.exists() else None for path in where.files}
+    try:
+        for path, content in where.files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            say(f"Wrote {path}")
+        if sys.platform == "darwin":
+            (base / "logs").mkdir(exist_ok=True, mode=0o700)
+            _timer_command(where.stop[0])  # a reload
+        for command in where.start:
+            # launchd may still be unloading the old agent: a few tries, a second apart.
+            for _ in range(5 if sys.platform == "darwin" else 1):
+                done = _timer_command(command)
+                if done.returncode == 0:
+                    break
+                pause(1.0)
+            if done.returncode != 0:
+                raise InstallFailed(f"`{' '.join(command)}` failed: {(done.stderr or '').strip()}")
+    except InstallFailed:
+        for path, content in earlier.items():
+            if content is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(content)
+        raise
     return where
 
 
 def remove_timer(base: Path) -> list[Path]:
-    """Stop the timer and delete its files. Returns those it deleted."""
+    """Stop the timer and delete its files. Returns those it deleted. If it can't be stopped, the
+    files stay: a timer that keeps running with nothing saying so is the worst outcome."""
     where = placement(sys.platform, (3, 0), {}, base, Path.home())
     present = [path for path in where.files if path.exists()]
     if not present:
         return []
     stop, *after = where.stop  # stopped while its files are there; reloaded once they're gone
-    subprocess.run(stop, capture_output=True, check=False)  # noqa: S603
+    done = _timer_command(stop)
+    if done.returncode != 0 and sys.platform != "darwin":  # launchd: fails if it wasn't loaded
+        raise InstallFailed(f"`{' '.join(stop)}` failed: {(done.stderr or '').strip()}")
     for path in present:
         path.unlink()
     for command in after:
-        subprocess.run(command, capture_output=True, check=False)  # noqa: S603
+        _timer_command(command)
     return present
 
 
@@ -964,7 +991,8 @@ def placement_exists(base: Path) -> bool:
 
 
 def timer_time(base: Path) -> str | None:
-    """The installed timer's time of day, HH:MM; None if there's none, or it can't be read."""
+    """The installed timer's time of day, HH:MM, if it's the daily one this tool writes; None if
+    there's none, or a person changed it to something this can't state."""
     where = placement(sys.platform, (3, 0), {}, base, Path.home())
     for path in where.files:
         if path.suffix == ".plist" and path.exists():
@@ -975,11 +1003,41 @@ def timer_time(base: Path) -> str | None:
                 return None
         if path.suffix == ".timer" and path.exists():
             try:
-                found = re.search(r"^OnCalendar=.*?(\d\d):(\d\d)", path.read_text(), re.M)
+                text = path.read_text()
             except (OSError, UnicodeError):
                 return None
-            return f"{found[1]}:{found[2]}" if found else None
+            lines = [line for line in text.splitlines() if line.startswith(("OnCalendar=", "On"))]
+            found = (
+                re.fullmatch(r"OnCalendar=\*-\*-\* (\d\d):(\d\d):00", lines[0]) if lines else None
+            )
+            return f"{found[1]}:{found[2]}" if found and len(lines) == 1 else None
     return None
+
+
+def _timer_text(base: Path) -> str | None:
+    """What the installed timer runs with, as text: its service, or its launchd file."""
+    where = placement(sys.platform, (3, 0), {}, base, Path.home())
+    for path in where.files:
+        if path.suffix in (".service", ".plist") and path.exists():
+            try:
+                return path.read_text(errors="replace")
+            except OSError:
+                return None
+    return None
+
+
+def timer_of_another_home(base: Path) -> bool:
+    """The timer's name is fixed, so it may run another copy of this tool: stopping or replacing it
+    from here would stop that one's checks, and this one's servers aren't being checked by it."""
+    text = _timer_text(base)
+    return text is not None and str(base) not in text
+
+
+def timer_environment_now(base: Path) -> dict[str, str]:
+    """What a scheduled run will have that decides what it can reach: its agent's socket."""
+    text = _timer_text(base) or ""
+    found = re.search(r"SSH_AUTH_SOCK(?:=|</key>\s*<string>)([^\s<\"]+)", text)
+    return {"SSH_AUTH_SOCK": found[1]} if found else {}
 
 
 def timer_running() -> bool | None:
@@ -1001,6 +1059,25 @@ def timer_running() -> bool | None:
     if state in ("active", "activating"):
         return True
     return False if state in ("inactive", "failed", "deactivating") else None
+
+
+def forget_hosts(base: Path, hosts: list[str], identity, recipients: list[str]) -> None:
+    """What the last run remembered of hosts whose evidence is all gone: it's derived from that
+    evidence, and it would hide their next run's findings as not new."""
+    if not hosts or not (base / STATE_FILE).exists():
+        return
+    state = load_state(base, identity)
+    if not state:  # unreadable: nothing here to edit, and a run starts it again
+        return
+    seen = state.get("hosts")
+    if isinstance(seen, dict):
+        state["hosts"] = {name: value for name, value in seen.items() if name not in hosts}
+    pending = state.get("pending")
+    if isinstance(pending, list):
+        state["pending"] = [
+            line for line in pending if not str(line).startswith(tuple(f"{h}:" for h in hosts))
+        ]
+    save_state(base, state, recipients)
 
 
 def lingering(user: str) -> bool | None:

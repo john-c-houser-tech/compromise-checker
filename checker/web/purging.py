@@ -11,13 +11,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import yaml
 from markupsafe import escape
 
-from checker.evidence import EvidenceError, Store, database_file, load_config
+from checker.evidence import EvidenceError, Store, database_file, load_config, load_identity
 from checker.inventory import hosts_file, load_inventory
 from checker.purge import execute, leftovers, parse_before
 from checker.purge import plan as purge_plan
-from checker.schedule import Busy, run_lock
+from checker.schedule import Busy, forget_hosts, run_lock
+from checker.web.manage import _shown
 
 SHOWN = 100
 THE_WORD = "purge"  # noqa: S105 - what's typed to confirm, as on the command line
@@ -32,10 +34,11 @@ class PurgeProblem(Exception):
 
 def named(params) -> str:
     """What it's asked to delete, for the record."""
-    what = params.get("what", "")
+    what, host, before = params.get("what", ""), params.get("host", ""), params.get("before", "")
     if what == "expired":
         return "past the retention period"
-    host, before = params.get("host", ""), params.get("before", "")
+    if what == "before":
+        return f"every server, before {before}"
     return " ".join(part for part in (host, f"before {before}" if before else "") if part)
 
 
@@ -59,6 +62,8 @@ def _plan(store: Store, base: Path, params) -> Any:
             )
         return purge_plan(store, base, inventory, config.retention_days, expired=True)
     if what == "host":
+        if not host:
+            raise PurgeProblem("Choose a server.")
         if host not in store.hosts():
             raise PurgeProblem("There's no stored evidence for that server.")
         return purge_plan(store, base, inventory, config.retention_days, host, before)
@@ -77,7 +82,9 @@ def _sight(chosen: Any, left: list[Path]) -> str:
                 [row["id"] for row in chosen.bundles],
                 sorted(chosen.baselines.items()),
                 [row["id"] for row in chosen.kept],
-                len(left),
+                sorted(str(path) for path in left),
+                sorted(str(path) for path in chosen.files),
+                sorted((str(path), digest) for path, digest in chosen.digests.items()),
             ]
         ).encode()
     ).hexdigest()
@@ -105,11 +112,15 @@ def page(base: Path, params) -> dict[str, Any]:
     """The choices, and if one is made, what it would delete. Nothing here changes anything."""
     config = load_config(base)
     what = params.get("what", "")
+    # Only what the choice uses goes on: what's left over from another choice mustn't be recorded
+    # as what was deleted, or read as part of it.
+    host = params.get("host", "") if what == "host" else ""
+    before = params.get("before", "") if what in ("host", "before") else ""
     context: dict[str, Any] = {
         "retention_days": config.retention_days,
         "what": what,
-        "host": escape(params.get("host", "")),
-        "before": escape(params.get("before", "")),
+        "host": escape(host),
+        "before": escape(before),
         "preview": None,
         "cant": "",
         "hosts": [],
@@ -120,8 +131,11 @@ def page(base: Path, params) -> dict[str, Any]:
     try:
         listed = {host.name for host in load_inventory(hosts_file(base)).hosts}
         context["hosts"] = [
-            {"value": escape(name), "listed": name in listed} for name in sorted(store.hosts())
+            {"value": escape(name), "label": _shown(name), "listed": name in listed}
+            for name in sorted(store.hosts())
         ]
+        if not what and (params.get("host") or params.get("before")):
+            context["cant"] = "Choose what to delete."
         if what:
             try:
                 chosen = _plan(store, base, params)
@@ -131,6 +145,18 @@ def page(base: Path, params) -> dict[str, Any]:
     finally:
         store.close()
     return context
+
+
+def _forget_emptied(base: Path, chosen: Any) -> None:
+    emptied = [host for host, what in chosen.baselines.items() if what == "emptied"]
+    try:
+        config = load_config(base)
+        if emptied and config.identity_file:
+            forget_hosts(
+                base, emptied, load_identity(Path(config.identity_file)), config.recipients
+            )
+    except Exception as exc:  # noqa: BLE001 - the purge did happen, and a run starts it again
+        print(f"checker web: the last run's memory stays: {type(exc).__name__}", file=sys.stderr)
 
 
 def run(base: Path, params, check_running: bool) -> dict[str, Any]:
@@ -157,12 +183,22 @@ def run(base: Path, params, check_running: bool) -> dict[str, Any]:
                 outcome = execute(store, base, chosen)
             finally:
                 store.close()
+            _forget_emptied(base, chosen)
     except Busy:
         raise PurgeProblem("A check is running. Try again when it has finished.") from None
-    except (EvidenceError, OSError, sqlite3.Error, ValueError) as exc:
+    except (
+        EvidenceError,
+        OSError,
+        sqlite3.Error,
+        ValueError,
+        TypeError,
+        KeyError,
+        AttributeError,
+        yaml.YAMLError,
+    ) as exc:
         print(f"checker web: a purge failed: {type(exc).__name__}", file=sys.stderr)
         raise PurgeProblem(
-            "That couldn't be done, or what it would delete changed as it started. Look again."
+            "That couldn't be finished, so some of it may have gone. Look again to see what's left."
         ) from None
     return {
         "checks": outcome.counts.get("bundles", 0),

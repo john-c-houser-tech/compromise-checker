@@ -1,7 +1,8 @@
 # Retention and purge
 
 Stored evidence is kept for 90 days by default (`retention_days` in
-`config.yaml`), then deleted with `checker purge` (policy §8). Purge is the
+`config.yaml`), then deleted with `checker purge` or the web interface's Delete
+stored evidence page, which does the same (policy §8). Purge is the
 only way anything stored is deleted: the bundles, custody, baselines and
 assessments tables are otherwise append-only, enforced by the database.
 

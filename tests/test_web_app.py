@@ -6834,3 +6834,190 @@ def test_the_new_action_pages_need_a_login(web, inventory):
     for path in ("/manage/schedule/save", "/manage/schedule/stop", "/manage/delete/confirm"):
         assert client.post(path, {"a": "b"}).status_code == 302
         assert client.get(path).status_code in (302, 405)
+
+
+def test_a_timer_that_fails_to_start_leaves_nothing_saying_it_runs(web, inventory, timer):
+    client, _ = signed_in(web)
+    timer["fail"] = "Failed to connect to bus: No medium found"
+    response = client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    text = said(response)
+    assert response.status_code == 400 and "wasn't started from a logged-in session" in text
+    assert not timer["unit"].exists()
+    assert "No daily check is set up" in said(client.get("/manage/schedule"))
+
+
+def test_a_failed_change_of_time_keeps_the_timer_it_had(web, inventory, timer):
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    timer["fail"] = "busy"
+    assert (
+        client.post(
+            "/manage/schedule/save", {"at": "05:00", "confirm_password": PASSWORD}
+        ).status_code
+        == 400
+    )
+    assert "02:15" in timer["unit"].read_text()
+
+
+def test_a_timer_that_can_t_be_read_isn_t_said_to_run(web, inventory, timer):
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    timer["active"] = ""
+    text = said(client.get("/manage/schedule"))
+    assert "can't tell whether" in text and "A daily check runs at" not in text
+
+
+def test_stopping_a_timer_that_won_t_stop_says_so_and_keeps_its_files(
+    web, inventory, timer, monkeypatch
+):
+    import subprocess
+
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    real = subprocess.run
+
+    def refusing(command, **kwargs):
+        if "disable" in command:
+            return _Ran(returncode=1, stderr="Failed to connect to bus")
+        return real(command, **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr("subprocess.run", refusing)
+        response = client.post("/manage/schedule/stop", {"confirm_password": PASSWORD})
+    assert response.status_code == 400 and "wasn't stopped" in said(response)
+    assert timer["unit"].exists()
+    assert records_of("stopped the daily check")[-1].outcome == "failed"
+
+
+def test_a_timer_of_another_home_is_said_and_left_alone(web, inventory, timer):
+    client, _ = signed_in(web)
+    timer["unit"].parent.mkdir(parents=True)
+    timer["unit"].write_text("[Timer]\nOnCalendar=*-*-* 02:15:00\n")
+    timer["unit"].with_suffix(".service").write_text(
+        "[Service]\nEnvironment=CHECKER_HOME=/srv/other\n"
+    )
+    text = said(client.get("/manage/schedule"))
+    assert "another copy of this tool" in text and "A daily check runs" not in text
+    for path, form in (("save", {"at": "04:00"}), ("stop", {})):
+        response = client.post(f"/manage/schedule/{path}", {**form, "confirm_password": PASSWORD})
+        assert response.status_code == 400
+    assert "02:15" in timer["unit"].read_text()
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["OnCalendar=daily", "OnCalendar=Mon *-*-* 02:15:00",
+     "#OnCalendar=*-*-* 02:15:00\nOnBootSec=1h",
+     "OnCalendar=*-*-* 02:15:00\nOnCalendar=*-*-* 09:00:00"],
+)  # fmt: skip
+def test_a_timer_changed_by_hand_isn_t_given_a_time_it_doesn_t_have(web, inventory, timer, line):
+    from checker.inventory import home as checker_home
+
+    client, _ = signed_in(web)
+    timer["unit"].parent.mkdir(parents=True)
+    timer["unit"].write_text(f"[Timer]\n{line}\n")
+    timer["unit"].with_suffix(".service").write_text(f"CHECKER_HOME={checker_home()}\n")
+    text = said(client.get("/manage/schedule"))
+    assert "A daily check runs at" not in text and "set up by hand" in text
+
+
+def test_the_list_uses_the_timer_s_agent_not_the_web_server_s(web, unconfirmed, timer, monkeypatch):
+    from checker.inventory import home as checker_home
+
+    client, _ = signed_in(web)
+    unconfirmed(key_host())
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/web-server-agent")  # noqa: S108
+    timer["unit"].parent.mkdir(parents=True)
+    timer["unit"].write_text("OnCalendar=*-*-* 02:15:00\n")
+    timer["unit"].with_suffix(".service").write_text(f"Environment=CHECKER_HOME={checker_home()}\n")
+    assert "can't reach one" in said(client.get("/manage/schedule"))
+    timer["unit"].with_suffix(".service").write_text(
+        f"Environment=CHECKER_HOME={checker_home()}\nEnvironment=SSH_AUTH_SOCK=/run/agent\n"
+    )
+    assert "can't reach one" not in said(client.get("/manage/schedule"))
+
+
+def test_a_timer_error_shows_once_filtered_and_on_one_line(web, inventory, timer):
+    client, _ = signed_in(web)
+    timer["fail"] = "C:\\x bad\nHint: second line"
+    response = client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    text = said(response)
+    assert "C:\\\\x bad Hint: second line" in text and "\\u000a" not in text
+
+
+def test_a_damaged_list_of_servers_is_words_on_every_new_action(web, inventory, timer):
+    from checker.inventory import hosts_file
+
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    form = purge_form(client, **ONE_SERVER)
+    hosts_file().write_text("hosts: [not: right\n")
+    for path, data in (
+        ("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD}),
+        ("/manage/delete/confirm", form),
+    ):
+        assert client.post(path, data).status_code == 400, path
+    assert bundles_of(home) == ["b1"] and not timer["unit"].exists()
+
+
+def test_the_record_names_every_server_when_every_server_s_went(web, inventory):
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    form = purge_form(client, what="before", before="2100-01-01", host="web01")
+    assert "host" not in form or form["host"] == ""
+    assert client.post("/manage/delete/confirm", {**form, "host": "web01"}).status_code == 200
+    assert records_of("deleted stored evidence")[-1].target == "every server, before 2100-01-01"
+
+
+def test_what_goes_can_t_grow_without_being_shown_again(web, inventory):
+    from checker.purge import plan as real_plan
+    from checker.web import purging
+
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    form = purge_form(client, **ONE_SERVER)
+
+    def with_another_report(store, base, *args, **kwargs):
+        chosen = real_plan(store, base, *args, **kwargs)
+        chosen.digests[Path("/x/report.html")] = "abc"
+        return chosen
+
+    original = purging.purge_plan
+    purging.purge_plan = with_another_report
+    try:
+        response = client.post("/manage/delete/confirm", form)
+    finally:
+        purging.purge_plan = original
+    assert response.status_code == 400 and "changed since you looked" in said(response)
+    assert bundles_of(home) == ["b1"]
+
+
+def test_emptying_a_server_says_what_its_next_check_means(web, inventory):
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    text = said(client.get("/manage/delete", ONE_SERVER))
+    assert "Its next check becomes the new baseline" in text
+
+
+def test_a_server_emptied_is_forgotten_by_the_last_run_s_memory(web, inventory):
+    from checker.schedule import load_state, save_state
+
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    state = {
+        "hosts": {"web01": {"findings": ["user:toor"]}, "db01": {"findings": []}},
+        "pending": ["web01: new critical", "db01: something"],
+    }
+    save_state(home[0], state, home[3].recipients)
+    assert (
+        client.post("/manage/delete/confirm", purge_form(client, **ONE_SERVER)).status_code == 200
+    )
+    kept = load_state(home[0], identity_of(home))
+    assert set(kept["hosts"]) == {"db01"} and kept["pending"] == ["db01: something"]
+
+
+def test_a_choice_without_a_kind_says_so(web, inventory):
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    assert "Choose what to delete" in said(client.get("/manage/delete", {"host": "web01"}))
+    assert "Choose a server" in said(client.get("/manage/delete", {"what": "host"}))

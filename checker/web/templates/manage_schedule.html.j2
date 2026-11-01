@@ -7,16 +7,21 @@
 {% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
 {% if not installed %}
 <p>No daily check is set up, so servers are only checked when someone asks.</p>
+{% elif another_home %}
+<p class="error">The daily check on this machine runs another copy of this tool, so this one's servers aren't being checked by it, and it can't be changed from here.</p>
 {% elif running is sameas false %}
-<p class="error">A daily check is set up for {{ at }}, but its timer isn't running, so it won't happen. Save the time again to start it.</p>
+<p class="error">A daily check is set up{% if time_known %} for {{ at }}{% endif %}, but its timer isn't running, so it won't happen. Save the time again to start it.</p>
+{% elif running is none and not on_a_mac %}
+<p class="error">A daily check is set up{% if time_known %} for {{ at }}{% endif %}, but this page can't tell whether its timer is running. Whoever looks after this machine can check with <code>checker schedule show</code>.</p>
 {% else %}
-<p>A daily check runs at {{ at }}, this machine's time.</p>
+{% if time_known %}<p>A daily check runs at {{ at }}, this machine's time.</p>{% else %}<p>A timer is set up by hand, at a time this page can't read. Saving a time here replaces it.</p>{% endif %}
+{% if on_a_mac %}<p class="note">On a Mac it runs only while someone is logged in at this machine.</p>{% endif %}
 {% if lingering is sameas false %}<p class="error">It runs only while someone is logged in to this machine. To run it with nobody logged in, whoever looks after this machine needs to run <code>sudo loginctl enable-linger</code> for the account this web server uses.</p>{% endif %}
 {% endif %}
-<p class="note">Each day it checks every server, works out the results, writes a report, and deletes evidence past its retention period, keeping each server's baseline. Keep this machine switched on: a laptop that's asleep misses it. A notify command, if one is set on the command line, is told what needs a look. The AI advisor isn't asked.</p>
+<p class="note">Each day it checks every server, works out the results, writes a report, and deletes evidence past its retention period, keeping each server's baseline. Keep this machine switched on: if it's off or asleep at that time, the check runs late. A notify command, if one is set on the command line, is told what needs a look. The AI advisor isn't asked.</p>
 {% if stops %}
 <h2>Servers it can't check</h2>
-<p class="note">It leaves these out and says so, until they're put right.</p>
+<p class="note">It leaves these out until they're put right, so they show as out of date on the Servers page.</p>
 <ul>{% for name, why in stops %}<li><a href="{{ url('manage_server') }}?host={{ name | urlencode }}"><strong>{{ name }}</strong></a>: {{ why }}</li>{% endfor %}</ul>
 {% endif %}
 <form method="post" action="{{ url('schedule_save') }}">
@@ -25,9 +30,10 @@
   {{ parts.confirm(with_code=code_needed) }}
   <button>{% if installed %}Save this time{% else %}Check every day at this time{% endif %}</button>
 </form>
-{% if installed %}
+{% if uses_agent %}<p class="note">A server that logs in with an SSH agent needs its key already unlocked when the check runs, since nobody is there to type a passphrase.</p>{% endif %}
+{% if installed and not another_home %}
 <h2>Stop it</h2>
-<p>Nobody is told if checks stop, so servers could go unchecked unnoticed.</p>
+<p>Nobody is told if checks stop, so servers could go unchecked unnoticed. If you think a server was broken into, stopping this also stops evidence past its retention period from being deleted each day, but a check started from a page still deletes it: raise the days kept in Settings too.</p>
 <form method="post" action="{{ url('schedule_stop') }}">
   {{ csrf_input }}
   {{ parts.confirm(with_code=code_needed) }}

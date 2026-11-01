@@ -95,16 +95,17 @@ findings.
 
 ## 6. Credentials
 
-- SSH keys are used through an SSH agent wherever possible. The tool never
-  stores keys or passwords in readable form.
+- SSH keys are used through an SSH agent, or from a key file you name. The tool
+  never stores keys or passwords in readable form.
 - Passwords come from a prompt, a page of the web interface, the operating
   system's keyring, or your secrets manager. They are kept in memory only for the run, never written to
   logs, and never placed on a command line, where other users and audit logs
   could see them. A sudo password travels inside the encrypted SSH session.
-- Every server's identity is checked on every connection. The first
-  connection shows the server's key fingerprint and requires someone to
-  accept it, and a changed key stops the run. This check cannot be switched
-  off.
+- Every server's identity is checked on every connection. Someone has to
+  accept a server's key the first time: on the command line by comparing the
+  fingerprint it shows, and in the web interface by pasting the fingerprint from
+  the server itself, which the tool compares with what the server offers. A
+  changed key stops the run. This check cannot be switched off.
 - The recommended setup is a dedicated scanner account that can log in only
   with a key, and whose sudo permission is limited to running the Python
   interpreter. That permission is equivalent to full administrator access.
@@ -244,6 +245,13 @@ that may include access tokens, and sometimes secrets typed into commands.
   failed logins for 15 minutes (with their usernames and addresses) in its own
   owner-only file, and never evidence. By default only this machine can reach
   it, and it won't listen more widely without TLS.
+  An account can also add and change servers, after confirming with its
+  password, and a code if two-factor sign-in is on. That includes naming any key
+  file the web server can read and which Python runs as administrator on a
+  server. So someone with an account could use those keys to log in elsewhere,
+  or send the next typed password to a machine they control. Each such change is
+  recorded, but the record doesn't prevent it. Give accounts only to people you
+  would trust with the servers themselves.
   If you start a check from its pages, the web server starts the same run the
   command line does, connecting to your servers with the same settings. What
   that check reports is held in memory, not on disk, and holds no findings. A

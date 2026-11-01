@@ -16,12 +16,14 @@ last run, and alerts not yet delivered, are kept encrypted between runs,
 so an alert the command couldn't deliver is sent with the next one."""
 
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
 import plistlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -63,6 +65,40 @@ class Busy(Exception):
     """Another `checker run` is in progress."""
 
 
+EXIT_STOPPED = 143  # by SIGTERM, as a shell reports it
+
+
+class Stopped(SystemExit):
+    """A run asked to stop, by SIGTERM. Not an Exception: no step's own trouble-handling should
+    catch it and carry on."""
+
+
+def stop_on_sigterm() -> None:
+    """So that cleaning up happens, and locks and databases close properly. Main thread only."""
+
+    def stop(*_) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # once: cleaning up mustn't be interrupted
+        raise Stopped(EXIT_STOPPED)
+
+    signal.signal(signal.SIGTERM, stop)
+
+
+async def _cancelled_by_sigterm(work):
+    """While a collection runs, stopping cancels it, so each host's evidence is sealed and recorded
+    as far as it got: a file with no record of it is one a purge can't find."""
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+
+    def stop_once() -> None:
+        loop.remove_signal_handler(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        task.cancel()
+
+    with contextlib.suppress(ValueError, RuntimeError, NotImplementedError):  # not the main thread
+        loop.add_signal_handler(signal.SIGTERM, stop_once)
+    return await work
+
+
 @contextmanager
 def run_lock(base: Path) -> Iterator[None]:
     """One run at a time: a second one started while the first is still
@@ -82,13 +118,18 @@ def run_lock(base: Path) -> Iterator[None]:
 # --- Unattended -----------------------------------------------------------------------------
 
 
-def host_problems(host, environ: dict[str, str] | None = None) -> list[str]:
-    """What would stop an unattended run at a prompt on this host. (An
-    agent that asks for its key's passphrase can't be seen from here: the
-    docs say to use a key already unlocked.)"""
+def needs_typed_password(host) -> bool:
+    return host.needs_password() and host.password_source != "keyring"  # noqa: S105
+
+
+def host_problems(host, environ: dict[str, str] | None = None, typed: bool = False) -> list[str]:
+    """What would stop an unattended run at a prompt on this host, `typed` if
+    someone has already given its password. (An agent that asks for its key's
+    passphrase can't be seen from here: the docs say to use a key already
+    unlocked.)"""
     environ = os.environ if environ is None else environ
     problems = []
-    if host.needs_password() and host.password_source != "keyring":  # noqa: S105
+    if needs_typed_password(host) and not typed:
         what = "logs in with a password" if host.auth == "password" else "uses sudo's password"
         problems.append(
             f"{host.name} {what} typed at a prompt: keep it in the OS keyring"
@@ -438,11 +479,13 @@ def run(
     say: Callable[[str], None] = print,
     collect: Callable | None = None,
     environ: dict[str, str] | None = None,
+    typed_passwords: dict[str, str] | None = None,
 ) -> RunResult:
     """Collect, analyze, report and purge what has expired; say what needs a
     look. Each step's trouble is caught and reported, so the later steps
     and the notification still happen. Raises Busy if another run holds the
-    lock."""
+    lock. `typed_passwords` are what someone gave for this run, by host, from
+    the web interface: an unattended run uses them and asks for nothing."""
     from checker.assess import analyze, prior_for
     from checker.baseline import USABLE
     from checker.collect import collect_hosts
@@ -454,6 +497,15 @@ def run(
     from checker.whitelist import for_host as whitelist_for_host
 
     collect = collect or collect_hosts
+    typed_passwords = typed_passwords or {}
+
+    def given_or_unattended(host) -> str:
+        return typed_passwords.get(host.name) or unattended_password(host)
+
+    if unattended:
+        provider = given_or_unattended if typed_passwords else unattended_password
+    else:
+        provider = password_for
     result = RunResult([])
     with run_lock(base):
         state = load_state(base, identity)
@@ -482,7 +534,7 @@ def run(
             refused = {}
             if unattended:
                 for host in hosts:
-                    if problems := host_problems(host, environ):
+                    if problems := host_problems(host, environ, host.name in typed_passwords):
                         refused[host.name] = "; ".join(problems)
             todo = [h for h in hosts if h.name not in refused]
             before = {
@@ -491,21 +543,29 @@ def run(
             }
             outcomes = []
             if todo:
+                before_sigterm = signal.getsignal(signal.SIGTERM)
                 try:
                     outcomes = asyncio.run(
-                        collect(
-                            base,
-                            config,
-                            todo,
-                            days=days,
-                            parallel=parallel,
-                            password_provider=unattended_password if unattended else password_for,
+                        _cancelled_by_sigterm(
+                            collect(
+                                base,
+                                config,
+                                todo,
+                                days=days,
+                                parallel=parallel,
+                                password_provider=provider,
+                            )
                         )
                     )
+                except asyncio.CancelledError:
+                    raise Stopped(EXIT_STOPPED) from None
                 except Exception as exc:  # noqa: BLE001 - every host shows as not collected
                     result.problems.append(
                         f"collection failed ({type(exc).__name__}: {visible(str(exc), 300)})"
                     )
+                finally:
+                    if threading.current_thread() is threading.main_thread():
+                        signal.signal(signal.SIGTERM, before_sigterm)  # asyncio's went with it
             by_host = {o.host: o for o in outcomes}
             analysed = []
             for host in hosts:
@@ -571,6 +631,16 @@ def run(
                     )
                     result.run_alerts.append("the report couldn't be written")
             _purge_expired(store, base, config, inventory, say, result)
+        except Stopped:
+            # What this run found mustn't be lost to the next: it would compare against this run's
+            # results and see nothing new to say.
+            with contextlib.suppress(OSError):
+                save_state(
+                    base,
+                    {"hosts": seen, "pending": result.alerting, "pack_problems": pack_problems},
+                    config.recipients,
+                )
+            raise
         finally:
             store.close()
         pending: list[str] = []
@@ -713,8 +783,8 @@ def systemd_units(at: tuple[int, int], env: dict[str, str]) -> dict[str, str]:
             "Type=oneshot",
             *lines,
             "ExecStart=" + " ".join(_systemd_word(w) for w in command_line()),
-            # Exit statuses 10-12 are the worst band, not a failure to run.
-            "SuccessExitStatus=10 11 12",
+            # Exit statuses 10-12 are the worst band, not a failure to run; 143 is being stopped.
+            "SuccessExitStatus=10 11 12 143",
             # A run waiting on something forever would keep the timer from starting it again.
             "TimeoutStartSec=4h",
             "Nice=10",

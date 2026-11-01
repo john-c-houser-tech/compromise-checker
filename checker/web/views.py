@@ -3,6 +3,7 @@ record of who looked."""
 
 from __future__ import annotations
 
+import json
 import sys
 from urllib.parse import urlsplit
 
@@ -20,18 +21,28 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_otp import login as otp_login
 
+from checker import schedule
 from checker.evidence import EvidenceError
 from checker.fleet import read_evidence, read_fleet, read_host, read_threats
-from checker.inventory import home
+from checker.inventory import home, load_inventory
 from checker.report import visible
-from checker.web import accounts, two_factor, wording
+from checker.web import accounts, runs, two_factor, wording
 from checker.web.actions import ActionFailed, action, record, record_if_possible
 from checker.web.app import HERE
 from checker.web.middleware import before_second_step, setting_it_up
-from checker.web.models import ActionRecord
+from checker.web.models import ActionRecord, CheckRun
 
 # Where a login may go on to: not a form's address, which would land on an error.
-VIEWABLE = {"fleet", "host", "evidence", "threats", "activity", "two_factor_manage"}
+VIEWABLE = {
+    "fleet",
+    "host",
+    "evidence",
+    "threats",
+    "activity",
+    "checks",
+    "check",
+    "two_factor_manage",
+}
 
 
 def _safe_next(request) -> str:
@@ -396,11 +407,16 @@ def host_page(request, name: str) -> HttpResponse:
         return not_found(request)
     record_if_possible(request, "viewed a server's results", name)
     host, assessment, advice, enabled = found
+    try:
+        can_check = any(h.name == name for h in load_inventory().hosts)
+    except Exception:  # noqa: BLE001 - a broken inventory only loses the button here
+        can_check = False
     return render(
         request,
         "host.html.j2",
         {
             "row": wording.row(host),
+            "can_check": can_check,
             **wording.host_details(assessment),
             **wording.advice_details(advice, enabled),
         },
@@ -434,6 +450,158 @@ def threats_page(request) -> HttpResponse:
         print(f"checker web: can't read the results: {type(exc).__name__}", file=sys.stderr)
         return _unavailable(request, "A settings file or the evidence key can't be read.")
     return render(request, "threats.html.j2", wording.threat_details(stored))
+
+
+def _inventory_hosts(request, names: list[str]) -> list:
+    """Those of the inventory's hosts named, or all of them if none are. Anything else in `names` is
+    dropped: only the inventory decides what a check connects to."""
+    hosts = load_inventory().hosts
+    return [host for host in hosts if not names or host.name in names]
+
+
+def _check_plan(request, names: list[str]) -> tuple[list, list, list]:
+    """What can go ahead as it is, what needs a password typed, and what can't, and why."""
+    ready, asking, blocked = [], [], []
+    for host in _inventory_hosts(request, names):
+        typed = schedule.needs_typed_password(host)
+        problems = schedule.host_problems(host, typed=typed)
+        if problems:
+            blocked.append((host.name, str(visible("; ".join(problems), 600))))
+        elif typed:
+            asking.append(host)
+        else:
+            ready.append(host)
+    return ready, asking, blocked
+
+
+def _unreadable_inventory(request, exc) -> HttpResponse:
+    print(f"checker web: can't read the servers: {type(exc).__name__}", file=sys.stderr)
+    return _unavailable(request, "The list of servers can't be read.")
+
+
+@login_required
+@require_GET
+def checks_page(request) -> HttpResponse:
+    rows = list(CheckRun.objects.order_by("-id")[: runs.KEEP])
+    return render(
+        request,
+        "checks.html.j2",
+        {"rows": [_run_row(run) for run in rows]},
+    )
+
+
+def _run_row(run) -> dict:
+    return {
+        "id": run.id,
+        "kind": "Analysis" if run.kind == "analysis" else "Check",
+        "hosts": ", ".join(json.loads(run.hosts)),
+        "who": run.who,
+        "started": run.started_at,
+        "state": runs.state_of(run),
+        "running": runs.is_running(run.id),
+    }
+
+
+@login_required
+@require_GET
+def check_new(request) -> HttpResponse:
+    names = request.GET.getlist("host")
+    try:
+        ready, asking, blocked = _check_plan(request, names)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        return _unreadable_inventory(request, exc)
+    return render(
+        request,
+        "check_new.html.j2",
+        {
+            "ready": ready,
+            "asking": asking,
+            "blocked": blocked,
+            "unknown": bool(names) and not (ready or asking or blocked),
+        },
+    )
+
+
+def _names_of(request, **kwargs) -> str:
+    return ", ".join(request.POST.getlist("host")) or "every server"
+
+
+@action("started a check", target=_names_of)
+def check_start(request) -> HttpResponse:
+    try:
+        ready, asking, _ = _check_plan(request, request.POST.getlist("host"))
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't read the servers: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed("The list of servers can't be read.") from None
+    passwords = {host.name: request.POST.get(f"password-{host.name}", "") for host in asking}
+    missing = [name for name, password in passwords.items() if not password]
+    if missing:
+        raise ActionFailed(f"Type the password for {', '.join(missing)} and try again.")
+    hosts = [host.name for host in [*ready, *asking]]
+    if not hosts:
+        raise ActionFailed("None of those servers can be checked from here yet.")
+    return _start_run(request, "check", hosts, passwords)
+
+
+def _start_run(request, kind: str, hosts: list[str], passwords=None) -> HttpResponse:
+    try:
+        run_id = runs.start(
+            kind,
+            hosts,
+            request.user.get_username(),
+            accounts.client_address(request),
+            passwords,
+        )
+    except runs.AlreadyRunning as exc:  # a double-click's other half, or someone else's
+        where = reverse("check", kwargs={"run_id": exc.run_id}) + "?busy=1"
+        raise ActionFailed(
+            "another check was already running", page=HttpResponseRedirect(where)
+        ) from None
+    except OSError as exc:
+        print(f"checker web: a check didn't start: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed("The check couldn't be started.") from None
+    return HttpResponseRedirect(reverse("check", kwargs={"run_id": run_id}))
+
+
+@action("started an analysis", target=lambda request, **kwargs: request.POST.get("host", ""))
+def analyze_start(request) -> HttpResponse:
+    """Runs the checks again on what was last collected, connecting to nothing: after a new threat
+    pack or a changed rule, say."""
+    name = request.POST.get("host", "")
+    try:
+        known = any(host.name == name for host in _inventory_hosts(request, [name]))
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't read the servers: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed("The list of servers can't be read.") from None
+    if not name or not known:
+        raise ActionFailed("That server isn't in the list of servers.")
+    return _start_run(request, "analysis", [name])
+
+
+@login_required
+@require_GET
+def check_page(request, run_id: int) -> HttpResponse:
+    if run_id >= 2**63:
+        return not_found(request)
+    run = CheckRun.objects.filter(pk=run_id).first()
+    if run is None:
+        return not_found(request)
+    return render(
+        request,
+        "check.html.j2",
+        {
+            "run": _run_row(run),
+            "lines": runs.output_lines(run.id),
+            "busy": "busy" in request.GET,
+        },
+    )
+
+
+@action("stopped a check", target=lambda request, run_id, **kwargs: str(run_id))
+def check_stop(request, run_id: int) -> HttpResponse:
+    if run_id >= 2**63 or not runs.stop(run_id):
+        raise ActionFailed("That check isn't running any more.")
+    return HttpResponseRedirect(reverse("check", kwargs={"run_id": run_id}))
 
 
 ACTIVITY_PAGE = 200

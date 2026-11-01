@@ -97,8 +97,8 @@ findings.
 
 - SSH keys are used through an SSH agent wherever possible. The tool never
   stores keys or passwords in readable form.
-- Passwords come from a prompt, the operating system's keyring, or your
-  secrets manager. They are kept in memory only for the run, never written to
+- Passwords come from a prompt, a page of the web interface, the operating
+  system's keyring, or your secrets manager. They are kept in memory only for the run, never written to
   logs, and never placed on a command line, where other users and audit logs
   could see them. A sudo password travels inside the encrypted SSH session.
 - Every server's identity is checked on every connection. The first
@@ -244,6 +244,10 @@ that may include access tokens, and sometimes secrets typed into commands.
   failed logins for 15 minutes (with their usernames and addresses) in its own
   owner-only file, and never evidence. By default only this machine can reach
   it, and it won't listen more widely without TLS.
+  If you start a check from its pages, the web server starts the same run the
+  command line does, connecting to your servers with the same settings. What
+  that check reports is held in memory, not on disk, and holds no findings. A
+  restart of the web server stops it.
 - **The activity record.** The web interface keeps a permanent record of who
   signed in and out, who viewed which server's results and evidence, and each
   action taken from its pages, with the time and the address it came from. It

@@ -10,6 +10,14 @@
     {% if row.action %}<p class="action">{{ row.action }}</p>{% endif %}
     {% if row.checked %}<p class="note">{{ row.checked }}</p>{% endif %}
     {{ notes(row) }}
+    {% if can_check %}
+    <p><a href="{{ url('check_new') }}?host={{ row.host.host | urlencode }}">Check this server now</a></p>
+    <form method="post" action="{{ url('analyze_start') }}">
+      {{ csrf_input }}
+      <input type="hidden" name="host" value="{{ row.host.host }}">
+      <button>Work it out again from what was last collected</button>
+    </form>
+    {% endif %}
   </div>
   <div class="chance">
     {% if row.host.probability is not none and row.host.state == "analysed" %}

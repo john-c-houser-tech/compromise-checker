@@ -10,6 +10,7 @@
 {% if threat_problem %}
 <p class="error" role="alert">A threat update couldn't be used, so a new threat may not be covered. Ask whoever runs this tool to look at its log.</p>
 {% endif %}
+{% if total %}<p><a href="{{ url('check_new') }}">Check your servers now</a></p>{% endif %}
 {% if not total %}
 <p>Add your first server to check it. For now that's done from the command line, with <code>checker hosts add</code>.</p>
 {% else %}

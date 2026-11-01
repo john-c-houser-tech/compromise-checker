@@ -6,6 +6,7 @@
 <meta name="robots" content="noindex">
 <title>{% block title %}{{ product_name() }}{% endblock %}</title>
 <link rel="stylesheet" href="{{ url('style') }}">
+{% block head %}{% endblock %}
 </head>
 <body>
 <header>
@@ -14,6 +15,7 @@
   {% if request is defined and fully_signed_in(request) %}
   <nav aria-label="Main">
     <a href="{{ url('fleet') }}">Servers</a>
+    <a href="{{ url('checks') }}">Checks</a>
     <a href="{{ url('threats') }}">Known threats</a>
     <a href="{{ url('activity') }}">Activity</a>
     <a href="{{ url('two_factor_manage') }}">Sign-in security</a>

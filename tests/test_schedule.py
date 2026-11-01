@@ -218,6 +218,23 @@ def test_an_unattended_run_never_prompts(fleet):
         schedule.unattended_password(Host(name="a", address="192.0.2.1", user="u", sudo="password"))
 
 
+def test_a_password_given_for_this_run_is_used_and_nothing_is_refused(fleet):
+    base, *_ = fleet
+    inventory = load_inventory()
+    host = inventory.hosts[0].model_copy(update={"auth": "password"})
+    collect = collector(fleet, CLEAN)
+    config = load_config(base)
+    identity = fleet[2]
+    schedule.run(
+        base, config, [host], identity, inventory, unattended=True, collect=collect,
+        say=lambda line: None, environ={}, typed_passwords={host.name: "given"},
+    )  # fmt: skip
+    assert collect.calls and collect.calls[0][1]["password_provider"](host) == "given"
+    other = host.model_copy(update={"name": "other"})
+    with pytest.raises(RuntimeError, match="doesn't ask"):
+        collect.calls[0][1]["password_provider"](other)
+
+
 def test_a_keyring_that_doesnt_answer_isnt_waited_for(monkeypatch):
     monkeypatch.setattr("checker.credentials.password_for", lambda host: time.sleep(5))
     host = Host(name="a", address="192.0.2.1", user="u", auth="password", password_source="keyring")
@@ -550,3 +567,34 @@ def test_the_bands_are_the_ones_scoring_gives():
 def test_rising_to_elevated_is_news():
     (line,) = schedule.alerts("web01", {"band": "Low"}, {"score": {"band": "Elevated"}})
     assert line == "web01: Low to Elevated"
+
+
+def test_a_stopped_collection_ends_the_run_cleanly(fleet, monkeypatch):
+    import asyncio
+
+    async def stopped(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    with pytest.raises(schedule.Stopped):
+        one_run(fleet, stopped)
+    with schedule.run_lock(fleet[0]):  # the lock went with it
+        pass
+
+
+def test_a_stop_after_finding_something_keeps_it_for_the_next_run(fleet, monkeypatch):
+    collect = collector(fleet, ROOTED)
+
+    def stop(*args, **kwargs):
+        raise schedule.Stopped(schedule.EXIT_STOPPED)
+
+    monkeypatch.setattr(schedule, "_purge_expired", stop)
+    with pytest.raises(schedule.Stopped):
+        one_run(fleet, collect)
+    monkeypatch.undo()
+    state = schedule.load_state(fleet[0], fleet[2])
+    assert state["pending"]  # sent with the next run's, as a failed notify's would be
+
+
+def test_the_timer_counts_being_stopped_as_clean():
+    units = schedule.systemd_units((3, 0), {})
+    assert any("SuccessExitStatus=10 11 12 143" in text for text in units.values())

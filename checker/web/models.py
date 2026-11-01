@@ -26,6 +26,19 @@ class WrongConfirmation(models.Model):
     at = models.DateTimeField(db_index=True)
 
 
+class CheckRun(models.Model):
+    """A check started from a page, for showing it and how it ended. Only the latest are kept; the
+    activity record is what lasts."""
+
+    kind = models.CharField(max_length=16)  # "check" or "analysis"
+    hosts = models.TextField()  # JSON
+    who = models.CharField(max_length=150)
+    address = models.CharField(max_length=64)
+    started_at = models.DateTimeField(db_index=True)
+    finished_at = models.DateTimeField(null=True)
+    ended = models.CharField(max_length=200, default="")
+
+
 class ActionRecord(models.Model):
     """Who did what from these pages, and who viewed which results: permanent, and in the tool's
     own words, never evidence. The triggers keep it append-only."""

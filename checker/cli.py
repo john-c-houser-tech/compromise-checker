@@ -2,9 +2,14 @@
 
 import argparse
 import asyncio
+import contextlib
 import json
+import os
+import re
+import signal
 import sqlite3
 import sys
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -1170,6 +1175,13 @@ def build_parser() -> argparse.ArgumentParser:
     running.add_argument("--days", type=int, default=30, help="look-back window (default 30)")
     running.add_argument("--parallel", type=int, default=5, help="hosts at a time (default 5)")
     running.add_argument("--identity", help="the evidence private key file")
+    running.add_argument(
+        "--from-web-page",
+        action="store_true",
+        help="with --unattended, how the web interface runs a check: reads this run's passwords"
+        " as one line of JSON by host on standard input, stops when that closes, and prints no"
+        " findings",
+    )
     running.set_defaults(handler=cmd_run)
 
     scheduling = commands.add_parser("schedule", help="run `checker run --all` daily, on a timer")
@@ -2625,6 +2637,54 @@ def cmd_packs_trust_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def _passwords_from_page() -> dict[str, str] | None:
+    """One line, read from the descriptor: the rest of standard input is watched for its closing,
+    and a Python file object shared with a daemon thread can stop the interpreter exiting."""
+    line = b""
+    while not line.endswith(b"\n"):
+        chunk = os.read(0, 4096)
+        if not chunk:
+            break
+        line += chunk
+    try:
+        typed = json.loads(line)
+    except ValueError:  # nothing of what was read goes in a message
+        return None
+    if not isinstance(typed, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in typed.items()
+    ):
+        return None
+    return typed
+
+
+def _stop_when_stdin_closes() -> None:
+    """The web server holds it open, so this can't outlive the server and keep the run's lock."""
+    with contextlib.suppress(OSError):
+        while os.read(0, 4096):
+            pass
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+class _WithoutThese:
+    """Output with these strings taken out, whatever a server managed to make the tool repeat."""
+
+    def __init__(self, stream, secrets):
+        self._stream = stream
+        found = {secret for secret in secrets if secret}
+        found |= {str(visible(secret)) for secret in found}
+        # In one pass, longest first, so a short one can't break up a long one or the placeholder.
+        ordered = sorted(found, key=len, reverse=True)
+        self._secrets = re.compile("|".join(map(re.escape, ordered))) if ordered else None
+
+    def write(self, text: str) -> int:
+        if self._secrets:
+            text = self._secrets.sub("[password]", text)
+        return self._stream.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """One pass, as a timer starts it: collect, analyze, report, purge what
     has expired, and alert on hosts that got worse (checker.schedule)."""
@@ -2644,14 +2704,32 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not hosts:
         print("checker: no hosts selected", file=sys.stderr)
         return schedule.EXIT_SETUP
+    typed = None
+    if args.from_web_page:
+        if not args.unattended:
+            print("checker: --from-web-page goes with --unattended", file=sys.stderr)
+            return schedule.EXIT_SETUP
+        typed = _passwords_from_page()
+        if typed is None:
+            print("checker: the passwords on standard input aren't JSON by host", file=sys.stderr)
+            return schedule.EXIT_SETUP
+        sys.stdout = _WithoutThese(sys.stdout, typed.values())
+        sys.stderr = _WithoutThese(sys.stderr, typed.values())
+    schedule.stop_on_sigterm()
+    if args.from_web_page:
+        threading.Thread(target=_stop_when_stdin_closes, daemon=True).start()
     try:
         result = schedule.run(
             base, config, hosts, identity, inventory,
             unattended=args.unattended, days=args.days, parallel=args.parallel,
+            typed_passwords=typed,
         )  # fmt: skip
     except schedule.Busy as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return schedule.EXIT_BUSY
+    except schedule.Stopped:
+        print("checker: stopped", file=sys.stderr)
+        return schedule.EXIT_STOPPED
     except Exception as exc:  # noqa: BLE001 - unforeseen: say so, and tell someone
         print(f"checker: the run stopped: {type(exc).__name__}: {exc}", file=sys.stderr)
         failed = schedule.notify_crash(config, exc)
@@ -2661,11 +2739,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     for item in result.hosts:
         band = item.band or "-"
         shown = f" ({percent(item.probability)})" if item.probability is not None else ""
-        print(f"{item.host:20} {item.collected:12} {band}{shown}")
+        if args.from_web_page:  # results stay encrypted: the page points to where they're shown
+            print(f"{item.host:20} {item.collected}")
+        else:
+            print(f"{item.host:20} {item.collected:12} {band}{shown}")
         if item.problem:
             print(f"checker: {item.host}: {item.problem}", file=sys.stderr)
     for problem in result.problems:
         print(f"checker: {problem}", file=sys.stderr)
+    if args.from_web_page:
+        if result.notified:
+            print(f"checker: the notify command failed: {result.notified}", file=sys.stderr)
+        return result.exit_status()
     if result.report:
         print(f"Report written to {result.report}")
     if result.alerting:

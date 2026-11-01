@@ -1,0 +1,31 @@
+{% extends "base.html.j2" %}
+{% block title %}Check your servers: {{ product_name() }}{% endblock %}
+{% block main %}
+<h1 class="page-title">Check your servers</h1>
+{% if unknown %}
+<p>That server isn't in the list of servers. <a href="{{ url('check_new') }}">Check all of them</a>.</p>
+{% elif not ready and not asking and not blocked %}
+<p>There are no servers to check yet. For now they're added from the command line, with <code>checker hosts add</code>.</p>
+{% else %}
+{% if ready or asking %}
+<p>This connects to each server, reads its logs and settings without changing anything, and works out what they show. It usually takes a few minutes. You can leave this page while it runs.</p>
+<form method="post" action="{{ url('check_start') }}">
+  {{ csrf_input }}
+  {% for host in ready %}<input type="hidden" name="host" value="{{ host.name }}">{% endfor %}
+  {% if ready %}<p>Ready to check: {% for host in ready %}{{ host.name }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
+  {% for host in asking %}
+  <input type="hidden" name="host" value="{{ host.name }}">
+  <label>Password for {{ host.user }} on {{ host.name }} <input name="password-{{ host.name }}" type="password" autocomplete="off" required></label>
+  {% endfor %}
+  {% if asking %}<p class="note">Passwords are used for this check only, and aren't kept.</p>{% endif %}
+  <button>Start checking</button>
+</form>
+{% endif %}
+{% if blocked %}
+<h2>Can't be checked from here</h2>
+<ul>
+  {% for name, why in blocked %}<li><strong>{{ name }}</strong>: {{ why }}</li>{% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+{% endblock %}

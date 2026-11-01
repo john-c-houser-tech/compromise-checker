@@ -233,7 +233,34 @@ async def collect(
             password = await _ask_password(password_provider, host)
         except Exception as exc:
             raise TransportError(f"{host.name}: cannot get a password: {exc}") from exc
+    try:
+        return await _connect_and_run(
+            host, program, sink, session, known, password, timeout, connect_timeout,
+            prompt_timeout, agent_path,
+        )  # fmt: skip
+    except TransportError as exc:
+        _take_out_password(exc, session, password)
+        raise
 
+
+def _take_out_password(exc: TransportError, session: Session, password: str | None) -> None:
+    """A hostile server can repeat it in anything it sends: a disconnect's reason, sudo's errors.
+    Here, before anything cuts the text short or stores it."""
+    if not password:
+        return
+    exc.args = tuple(
+        arg.replace(password, "[password]") if isinstance(arg, str) else arg for arg in exc.args
+    )
+    if session.error:
+        session.error = session.error.replace(password, "[password]")
+    if session.stderr:
+        session.stderr = session.stderr.replace(password, "[password]")
+
+
+async def _connect_and_run(
+    host, program, sink, session, known, password, timeout, connect_timeout, prompt_timeout,
+    agent_path,
+) -> Session:  # fmt: skip
     keys, agent = await _client_keys(host, agent_path)
     client = _Client(keys, password if host.auth == "password" else None)
     # The agent may ask its user for a passphrase before it signs the
@@ -432,7 +459,11 @@ async def collect_many(
                 error.__cause__ = exc
                 results[host.name] = error
 
-    await asyncio.gather(*(one(host) for host in hosts))
+    # Every host's to the end, even when cancelled: each is sealing and recording what it has, and
+    # without return_exceptions the first to stop would take the others' records with it.
+    for ended in await asyncio.gather(*(one(host) for host in hosts), return_exceptions=True):
+        if isinstance(ended, BaseException):
+            raise ended
     return results
 
 

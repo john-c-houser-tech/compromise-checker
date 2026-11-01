@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import signal
 import sqlite3
 import sys
@@ -2669,12 +2670,15 @@ class _WithoutThese:
 
     def __init__(self, stream, secrets):
         self._stream = stream
-        self._secrets = [secret for secret in secrets if secret]
-        self._secrets += [str(visible(secret)) for secret in self._secrets]
+        found = {secret for secret in secrets if secret}
+        found |= {str(visible(secret)) for secret in found}
+        # In one pass, longest first, so a short one can't break up a long one or the placeholder.
+        ordered = sorted(found, key=len, reverse=True)
+        self._secrets = re.compile("|".join(map(re.escape, ordered))) if ordered else None
 
     def write(self, text: str) -> int:
-        for secret in self._secrets:
-            text = text.replace(secret, "[password]")
+        if self._secrets:
+            text = self._secrets.sub("[password]", text)
         return self._stream.write(text)
 
     def __getattr__(self, name):
@@ -2711,8 +2715,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             return schedule.EXIT_SETUP
         sys.stdout = _WithoutThese(sys.stdout, typed.values())
         sys.stderr = _WithoutThese(sys.stderr, typed.values())
-        threading.Thread(target=_stop_when_stdin_closes, daemon=True).start()
     schedule.stop_on_sigterm()
+    if args.from_web_page:
+        threading.Thread(target=_stop_when_stdin_closes, daemon=True).start()
     try:
         result = schedule.run(
             base, config, hosts, identity, inventory,
@@ -2724,7 +2729,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return schedule.EXIT_BUSY
     except schedule.Stopped:
         print("checker: stopped", file=sys.stderr)
-        return schedule.EXIT_FAILED
+        return schedule.EXIT_STOPPED
     except Exception as exc:  # noqa: BLE001 - unforeseen: say so, and tell someone
         print(f"checker: the run stopped: {type(exc).__name__}: {exc}", file=sys.stderr)
         failed = schedule.notify_crash(config, exc)
@@ -2743,6 +2748,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     for problem in result.problems:
         print(f"checker: {problem}", file=sys.stderr)
     if args.from_web_page:
+        if result.notified:
+            print(f"checker: the notify command failed: {result.notified}", file=sys.stderr)
         return result.exit_status()
     if result.report:
         print(f"Report written to {result.report}")

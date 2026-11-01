@@ -33,6 +33,7 @@ from checker.evidence import (
 )
 from checker.inventory import Host
 from checker.protocol import MAX_RECORD, Limits, Settings, StreamReader, build_program
+from checker.transport import TransportError
 
 LIMITS = Limits(overall_seconds=60, module_seconds=30, source_bytes=1 << 20)
 # One light module: the fake target runs the collector on the machine hosting
@@ -681,3 +682,94 @@ async def test_each_host_gets_its_own_web_roots(server, checker_home, monkeypatc
         modules=MODULES,
     )
     assert [s.web_roots for s in sent] == [["/srv/app"]]
+
+
+@pytest.fixture
+def hanging_collection(monkeypatch):
+    async def hang(host, program, sink, **kwargs):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr("checker.collect.collect", hang)
+
+
+def many_hosts(count):
+    return [Host(name=f"h{n}", address="192.0.2.1", user="u", auth="agent") for n in range(count)]
+
+
+def recorded_and_on_disk(home_path, store, count):
+    ids = {row["id"] for n in range(count) for row in store.bundles(f"h{n}")}
+    files = list((home_path / "evidence").rglob("*.age"))
+    return ids, files
+
+
+async def test_stopping_many_hosts_keeps_a_record_of_all_that_started(home, hanging_collection):
+    """More hosts than run at once: the queued ones ending first mustn't lose others' records."""
+    path, store, _, config = home
+    task = asyncio.create_task(collect_hosts(path, config, many_hosts(7), parallel=5))
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    ids, files = recorded_and_on_disk(path, store, 7)
+    assert len(ids) == 5 and len(files) == 5
+
+
+async def test_a_stop_during_sealing_still_records_it(home, monkeypatch):
+    from checker.collect import BundleWriter
+
+    async def quick(host, program, sink, **kwargs):
+        raise TransportError(f"{host.name}: nope", None)
+
+    real = BundleWriter.seal
+
+    def slow(self):
+        time.sleep(0.5)
+        return real(self)
+
+    monkeypatch.setattr("checker.collect.collect", quick)
+    monkeypatch.setattr(BundleWriter, "seal", slow)
+    path, store, _, config = home
+    task = asyncio.create_task(collect_hosts(path, config, many_hosts(2), parallel=5))
+    await asyncio.sleep(0.2)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    task.cancel()  # and again, as a second Stop or a restart would
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    ids, files = recorded_and_on_disk(path, store, 2)
+    assert len(ids) == 2 and len(files) == 2
+
+
+async def test_a_host_failing_doesnt_cancel_the_rest(home, monkeypatch):
+    async def quick(host, program, sink, **kwargs):
+        raise TransportError(f"{host.name}: nope", None)
+
+    monkeypatch.setattr("checker.collect.collect", quick)
+    path, store, _, config = home
+    outcomes = await collect_hosts(path, config, many_hosts(3), parallel=2)
+    assert len(outcomes) == 3
+
+
+async def test_a_password_a_server_repeats_is_taken_out_before_anything_cuts_it(home, monkeypatch):
+    """A disconnect's reason, say, long enough that the shown part would end inside it."""
+    from checker import transport
+
+    secret = "CorrectHorseBatteryStaple"  # noqa: S105
+    seen = {}
+
+    async def hostile(host, program, sink, session, *rest):
+        session.error = f"bye {secret}"
+        session.stderr = f"sudo: {secret}"
+        seen["session"] = session
+        raise TransportError(f"{host.name}: {'x' * 262} {secret}", session)
+
+    monkeypatch.setattr(transport, "_connect_and_run", hostile)
+    path = home[0]
+    (path / "known_hosts").touch()
+    host = Host(name="h", address="192.0.2.1", user="u", auth="password")
+    with pytest.raises(TransportError) as caught:
+        await transport.collect(
+            host, "", lambda data: None, timeout=1, password_provider=lambda h: secret
+        )
+    assert secret not in str(caught.value) and "[password]" in str(caught.value)
+    assert secret not in seen["session"].error and secret not in seen["session"].stderr

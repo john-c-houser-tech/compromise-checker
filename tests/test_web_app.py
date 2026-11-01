@@ -3593,6 +3593,92 @@ def test_a_running_check_updates_itself_and_can_be_stopped(web, inventory, child
     assert the_record()[-1][2] == "stopped"
 
 
+def test_stopping_twice_only_asks_once(web, inventory, child, agent, monkeypatch):
+    from checker.web import runs
+
+    programs, _ = child
+    programs["code"] = "import time; time.sleep(60)"
+    client, _ = signed_in(web)
+    inventory(key_host())
+    sent = []
+    real = runs._signal
+    monkeypatch.setattr(runs, "_signal", lambda c, s: (sent.append(s), real(c, s)))
+    location = client.post("/checks/start", {"host": "web01"})["Location"]
+    client.post(f"{location}/stop", {"x": "1"})
+    client.post(f"{location}/stop", {"x": "1"})
+    finished()
+    assert sent.count(runs.signal.SIGTERM) == 1
+
+
+def test_no_band_or_score_is_kept_about_a_check(web, inventory, child, agent):
+    from checker.web.models import CheckRun
+
+    programs, _ = child
+    programs["code"] = "import sys; sys.exit(12)"
+    client, _ = signed_in(web)
+    inventory(key_host())
+    client.post("/checks/start", {"host": "web01"})
+    run = finished()
+    assert run.ended == "finished"
+    assert "exit_status" not in {field.name for field in CheckRun._meta.get_fields()}
+
+
+def test_an_analysis_cut_off_by_a_restart_doesnt_claim_it_was_stopped(web):
+    from django.utils import timezone
+
+    from checker.web.models import CheckRun
+
+    client, _ = signed_in(web)
+    run = CheckRun.objects.create(
+        kind="analysis", hosts='["web01"]', who="jo", address="", started_at=timezone.now()
+    )
+    assert "isn" in client.get(f"/checks/{run.id}").content.decode()
+
+
+def test_a_dead_watcher_cant_block_every_later_check(web, inventory, child, agent, monkeypatch):
+    from checker.web import runs
+
+    programs, _ = child
+    programs["code"] = "import time; time.sleep(60)"
+
+    def broken(*args):
+        raise ValueError("watcher trouble")
+
+    monkeypatch.setattr(runs, "_hand_over", broken)
+    client, _ = signed_in(web)
+    inventory(key_host())
+    client.post("/checks/start", {"host": "web01"})
+    finished()
+    assert not runs._running
+
+
+def test_output_keeps_counting_right_after_many_short_lines():
+    from checker.web.runs import OUTPUT_KEPT_BYTES, _Output
+
+    output = _Output()
+    for _ in range(200_000):
+        output.add(b"ab\n")
+    lines = output.lines()
+    assert OUTPUT_KEPT_BYTES / 4 < len(lines) <= OUTPUT_KEPT_BYTES / 3
+
+
+def test_the_end_of_a_check_is_when_it_ended_not_when_it_was_written(
+    web, inventory, child, agent, monkeypatch
+):
+    from django.utils import timezone
+
+    from checker.web import runs
+    from checker.web.models import CheckRun
+
+    client, _ = signed_in(web)
+    inventory(key_host())
+    client.post("/checks/start", {"host": "web01"})
+    run = finished()
+    assert (timezone.now() - run.finished_at).total_seconds() < 30
+    assert CheckRun.objects.get(pk=run.id).finished_at == run.finished_at
+    assert not runs._unrecorded
+
+
 def test_a_stubborn_check_gets_told_after_being_asked(web, inventory, child, agent, monkeypatch):
     from checker.web import runs
 
@@ -4030,7 +4116,7 @@ def test_a_check_stops_when_the_server_that_started_it_goes_and_a_purge_finds_wh
         time.sleep(3)
         assert process.poll() is None  # it's waiting on the server
         process.stdin.close()  # all a server's going away looks like from here
-        assert process.wait(30) == schedule_exit_failed()
+        assert process.wait(30) == schedule_exit_stopped()
     assert "stopped" in process.stdout.read()
     found = [p for p in tmp_path.rglob("*.age") if "db01" in p.name and "report" not in p.name]
     assert found  # it left its evidence, so it must be able to find it
@@ -4042,10 +4128,10 @@ def test_a_check_stops_when_the_server_that_started_it_goes_and_a_purge_finds_wh
     assert not [p for p in found if p.exists()]
 
 
-def schedule_exit_failed():
-    from checker.schedule import EXIT_FAILED
+def schedule_exit_stopped():
+    from checker.schedule import EXIT_STOPPED
 
-    return EXIT_FAILED
+    return EXIT_STOPPED
 
 
 def test_the_flag_needs_unattended_and_works_only_from_a_page(tmp_path):
@@ -4078,3 +4164,22 @@ def test_a_password_a_server_repeats_is_taken_out_of_what_is_printed(capsys):
     stream = cli._WithoutThese(sys.stdout, ["hunter2", ""])
     stream.write("sudo: bad thing hunter2 here\n")
     assert capsys.readouterr().out == "sudo: bad thing [password] here\n"
+    stream = cli._WithoutThese(sys.stdout, ["pass", "password123"])
+    stream.write("pass password123\n")
+    assert capsys.readouterr().out == "[password] [password]\n"
+
+
+def test_a_failed_notify_says_so_on_the_page(tmp_path):
+    env = checker_home_for_real(tmp_path)
+    (tmp_path / "hosts.yaml").write_text(
+        "hosts:\n- name: db01\n  address: 127.0.0.1\n  port: 9\n  user: scan\n  auth: password\n"
+    )
+    subprocess.run(
+        [sys.executable, "-m", "checker", "config", "set", "notify_command", "/nonexistent-notify"],
+        env=env, capture_output=True,
+    )  # fmt: skip
+    process = from_a_page(env, json.dumps({"db01": "x"}))
+    output = process.stdout.read()
+    process.wait(120)
+    process.stdin.close()
+    assert "notify command failed" in output, output

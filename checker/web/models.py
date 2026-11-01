@@ -36,7 +36,6 @@ class CheckRun(models.Model):
     address = models.CharField(max_length=64)
     started_at = models.DateTimeField(db_index=True)
     finished_at = models.DateTimeField(null=True)
-    exit_status = models.IntegerField(null=True)
     ended = models.CharField(max_length=200, default="")
 
 

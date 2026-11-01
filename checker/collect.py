@@ -3,6 +3,7 @@
 import asyncio
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -62,6 +63,18 @@ class Outcome:
     status: str  # complete / partial / refused / incomplete / broken / empty / not_recorded
     error: str | None
     bytes: int
+
+
+async def _uninterrupted(work: Callable):
+    """Its result, and whether a cancel came meanwhile. Sealing finishes whatever happens: evidence
+    with no record of it is what a purge can't find."""
+    future = asyncio.get_running_loop().run_in_executor(None, work)
+    cancelled = False
+    while True:
+        try:
+            return await asyncio.shield(future), cancelled
+        except asyncio.CancelledError:
+            cancelled = True
 
 
 async def collect_hosts(
@@ -129,7 +142,8 @@ async def collect_hosts(
             stopped = True
         finally:
             # Joining the encryptor and fsync can be slow: keep other hosts moving.
-            sealed = await asyncio.to_thread(writer.seal)
+            sealed, stopped_meanwhile = await _uninterrupted(writer.seal)
+            stopped = stopped or stopped_meanwhile
         manifest = sealed.summary.manifest or {}
         status, verdict = judge(
             sealed.status,

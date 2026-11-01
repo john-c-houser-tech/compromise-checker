@@ -593,7 +593,7 @@ def check_page(request, run_id: int) -> HttpResponse:
         {
             "run": _run_row(run),
             "lines": runs.output_lines(run.id),
-            "busy": "busy" in request.GET and runs.is_running(run.id),
+            "busy": "busy" in request.GET,
         },
     )
 

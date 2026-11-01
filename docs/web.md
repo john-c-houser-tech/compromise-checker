@@ -19,7 +19,7 @@ take that away. Pages that show results only read: the evidence store is opened 
 and sends any notification. You can leave the page while it runs, and anyone signed in can stop it: what
 it has collected so far is kept and recorded, so a purge can find it. One check runs at a time, including
 any on a timer, and one still going after 4 hours is ended, since it may be waiting for a prompt nobody
-can answer. A restart of the web server stops a check that's running. A server's page can also work its
+can answer. A restart of the web server stops a check that's running, keeping what it collected. A server's page can also work its
 results out again from what was last collected, connecting to nothing, which is useful after a threat
 update.
 

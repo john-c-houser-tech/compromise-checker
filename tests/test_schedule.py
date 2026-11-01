@@ -579,3 +579,22 @@ def test_a_stopped_collection_ends_the_run_cleanly(fleet, monkeypatch):
         one_run(fleet, stopped)
     with schedule.run_lock(fleet[0]):  # the lock went with it
         pass
+
+
+def test_a_stop_after_finding_something_keeps_it_for_the_next_run(fleet, monkeypatch):
+    collect = collector(fleet, ROOTED)
+
+    def stop(*args, **kwargs):
+        raise schedule.Stopped(schedule.EXIT_STOPPED)
+
+    monkeypatch.setattr(schedule, "_purge_expired", stop)
+    with pytest.raises(schedule.Stopped):
+        one_run(fleet, collect)
+    monkeypatch.undo()
+    state = schedule.load_state(fleet[0], fleet[2])
+    assert state["pending"]  # sent with the next run's, as a failed notify's would be
+
+
+def test_the_timer_counts_being_stopped_as_clean():
+    units = schedule.systemd_units((3, 0), {})
+    assert any("SuccessExitStatus=10 11 12 143" in text for text in units.values())

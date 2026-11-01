@@ -59,13 +59,15 @@ def wait_until_finished(page, seconds: int = 900) -> str:
     raise TimeoutError("still running")
 
 
-def child_holds(password: str, pid_pattern: str) -> bool:
-    """Whether a running check shows the password in its arguments or environment."""
+def child_holds(password: str, pid_pattern: str) -> bool | None:
+    """Whether a running check shows the password in its arguments or environment; None if there
+    was no running check to look at."""
     listing = subprocess.run(["ps", "-eo", "pid,args"], capture_output=True, text=True).stdout  # noqa: S607
-    found = False
+    found = None
     for line in listing.splitlines():
         if pid_pattern in line and "ps -eo" not in line:
             pid = line.split()[0]
+            found = bool(found)
             for part in ("cmdline", "environ"):
                 try:
                     found |= password.encode() in Path(f"/proc/{pid}/{part}").read_bytes()
@@ -124,16 +126,18 @@ def drive(home: Path, password: str, env: dict, done: list) -> None:
             checks(done, "and what it reported says not collected", "not collected" in words)
 
             start(password)
-            checks(done, "the check runs in its own process", True)
-            checks(
-                done,
-                "the password isn't in its arguments or environment",
-                not child_holds(password, "checker run --unattended"),
-            )
+            held = child_holds(password, "checker run --unattended")
+            checks(done, "the check runs in its own process", held is not None)
+            checks(done, "the password isn't in its arguments or environment", held is False)
             state = wait_until_finished(page)
             checks(done, "the right password finishes", state.startswith("Finished."), state)
+            shown = page.inner_text("main")
+            checks(done, "the password isn't on the page", password not in shown)
+            checks(done, "and neither are results", "High" not in shown and "%" not in shown)
             page.goto(f"{base}/")
-            checks(done, "the server shows results", "web-proof" in page.inner_text("main"))
+            checks(
+                done, "the server shows results", page.query_selector(".fleet .server") is not None
+            )
             page.goto(f"{base}/hosts/web-proof")
             checks(done, "its page opens", "Check this server now" in page.inner_text("main"))
 
@@ -162,7 +166,14 @@ def drive(home: Path, password: str, env: dict, done: list) -> None:
         server.wait()
         log.close()
     where = anywhere_in(home, password)
-    checks(done, "the password is nowhere in the home", not where, ", ".join(where))
+    checks(done, "the password is nowhere in the home's plain files", not where, ", ".join(where))
+    shown = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "checker", "bundle", "list", "web-proof"],
+        env=env,
+        capture_output=True,
+        text=True,
+    ).stdout
+    checks(done, "every check is recorded, the stopped one too", len(shown.splitlines()) >= 3)
     purge = subprocess.run(  # noqa: S603
         [sys.executable, "-m", "checker", "purge", "web-proof", "--yes"],
         env=env,

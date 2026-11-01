@@ -273,6 +273,11 @@ def stop(run_id: int) -> bool:
     return True
 
 
+def any_running() -> bool:
+    with _lock:
+        return bool(_running)
+
+
 def is_running(run_id: int) -> bool:
     return run_id in _running
 

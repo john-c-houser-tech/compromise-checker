@@ -6548,3 +6548,289 @@ def test_a_group_s_invisible_characters_don_t_reach_the_form(web, unconfirmed):
     unconfirmed(Host(name="web01", address="192.0.2.1", user="s", group="a" + BIDI + "b"))
     for path in ("/manage/add", "/manage/server?host=web01"):
         assert BIDI not in client.get(path).content.decode()
+
+
+# --- The daily check and deleting evidence from a page (plan 5.13) --------------------------
+
+
+class _Ran:
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+
+@pytest.fixture
+def timer(monkeypatch, tmp_path):
+    """Never this machine's real timer: a home of its own, and a stand-in for its commands."""
+    state = {"ran": [], "active": "active", "linger": "Linger=yes", "fail": None}
+
+    def run(command, **kwargs):
+        state["ran"].append(command)
+        if state["fail"] and command[-1].endswith(".timer") and "enable" in command:
+            if isinstance(state["fail"], OSError):
+                raise state["fail"]
+            return _Ran(returncode=1, stderr=state["fail"])
+        if "is-active" in command:
+            return _Ran(stdout=state["active"])
+        if command[0] == "loginctl":
+            return _Ran(stdout=state["linger"])
+        return _Ran()
+
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user" / ".config"))
+    state["unit"] = tmp_path / "user" / ".config" / "systemd" / "user" / "compromise-checker.timer"
+    return state
+
+
+def starts(ran):
+    return [c for c in ran if "enable" in c or "disable" in c or "daemon-reload" in c]
+
+
+def test_the_daily_check_page_starts_nothing(web, inventory, timer):
+    client, _ = signed_in(web)
+    text = said(client.get("/manage/schedule"))
+    assert "No daily check is set up" in text and not starts(timer["ran"])
+    assert not timer["unit"].exists()
+    assert client.get("/manage/schedule/save").status_code == 405
+
+
+def test_setting_the_daily_check_is_confirmed_and_recorded(web, inventory, timer):
+    client, _ = signed_in(web)
+    form = {"at": "02:15", "confirm_password": PASSWORD}
+    assert (
+        client.post("/manage/schedule/save", {**form, "confirm_password": "no"}).status_code == 403
+    )
+    assert not timer["unit"].exists() and not starts(timer["ran"])
+    assert client.post("/manage/schedule/save", form).status_code == 302
+    assert "OnCalendar=*-*-* 02:15:00" in timer["unit"].read_text()
+    assert ["systemctl", "--user", "enable", "--now", "compromise-checker.timer"] in timer["ran"]
+    assert records_of("set the daily check")[-1].detail == "every day at 02:15"
+    assert "A daily check runs at 02:15" in said(client.get("/manage/schedule"))
+
+
+@pytest.mark.parametrize("at", ["soon", "25:00", "", "3", "12:99"])
+def test_a_bad_time_sets_nothing(web, inventory, timer, at):
+    client, _ = signed_in(web)
+    response = client.post("/manage/schedule/save", {"at": at, "confirm_password": PASSWORD})
+    assert response.status_code == 400 and "Type a time of day" in said(response)
+    assert not timer["unit"].exists()
+
+
+def test_stopping_the_daily_check_is_confirmed_and_recorded(web, inventory, timer):
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    assert client.post("/manage/schedule/stop", {"confirm_password": "no"}).status_code == 403
+    assert timer["unit"].exists()
+    assert client.post("/manage/schedule/stop", {"confirm_password": PASSWORD}).status_code == 302
+    assert not timer["unit"].exists()
+    assert records_of("stopped the daily check")[-1].detail == "stopped"
+    assert "No daily check is set up" in said(client.get("/manage/schedule"))
+
+
+def test_a_timer_that_can_t_start_says_so(web, inventory, timer):
+    client, _ = signed_in(web)
+    form = {"at": "02:15", "confirm_password": PASSWORD}
+    timer["fail"] = "Failed to connect to bus " + HOSTILE
+    response = client.post("/manage/schedule/save", form)
+    text = response.content.decode()
+    assert response.status_code == 400 and "couldn" in text and "connect to bus" in text
+    assert "<script>alert" not in text and BIDI not in text
+    assert records_of("set the daily check")[-1].outcome == "failed"
+    timer["fail"] = FileNotFoundError(2, "No such file or directory")
+    assert client.post("/manage/schedule/save", form).status_code == 400
+
+
+def test_a_timer_that_isn_t_running_is_said_plainly(web, inventory, timer):
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    timer["active"] = "inactive"
+    assert "isn't running, so it won't happen" in said(client.get("/manage/schedule"))
+    timer["active"], timer["linger"] = "active", "Linger=no"
+    assert "only while someone is logged in" in said(client.get("/manage/schedule"))
+
+
+def test_the_daily_check_lists_servers_it_can_t_reach(web, unconfirmed, timer):
+    from checker.inventory import Host
+
+    client, _ = signed_in(web)
+    unconfirmed(Host(name="db01", address="192.0.2.2", user="s", auth="password"))
+    text = said(client.get("/manage/schedule"))
+    assert "db01" in text and "needs a password typed" in text and "hasn't been confirmed" in text
+
+
+def stored(home, name, days_ago):
+    """A check filed where a real one is, so a purge finds its files, and worked out, so the first
+    becomes the baseline."""
+    from test_purge import add
+
+    add(home, name, days_ago)
+    return analyze(home[1], "web01", identity_of(home), home[3].recipients, name)
+
+
+def bundles_of(home, host="web01"):
+    from checker.evidence import Store, database_file
+
+    store = Store(database_file(home[0]), read_only=True)
+    try:
+        return [row["id"] for row in store.bundles(host)]
+    finally:
+        store.close()
+
+
+def purge_form(client, **query):
+    response = client.get("/manage/delete", query)
+    assert response.status_code == 200
+    reader = _FormReader("/manage/delete/confirm")
+    reader.feed(response.content.decode())
+    return {**reader.fields, "word": "purge", "confirm_password": PASSWORD}
+
+
+ONE_SERVER = {"what": "host", "host": "web01"}
+
+
+def test_the_delete_page_shows_what_would_go_and_deletes_nothing(web, inventory):
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    stored(home, "b2", 2)
+    assert "What this would delete" not in said(client.get("/manage/delete"))
+    text = said(client.get("/manage/delete", ONE_SERVER))
+    assert "2 checks" in text and "All of web01's evidence goes" in text
+    assert sorted(bundles_of(home)) == ["b1", "b2"]
+
+
+def test_deleting_needs_the_password_and_the_word_and_is_recorded(web, inventory):
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    form = purge_form(client, **ONE_SERVER)
+    for wrong, status in (
+        ({"confirm_password": "no"}, 403),
+        ({"word": "yes"}, 400),
+        ({"word": ""}, 400),
+    ):
+        assert client.post("/manage/delete/confirm", {**form, **wrong}).status_code == status
+        assert bundles_of(home) == ["b1"]
+    response = client.post("/manage/delete/confirm", form)
+    assert response.status_code == 200 and "Deleted 1 check" in said(response)
+    assert bundles_of(home) == []
+    last = records_of("deleted stored evidence")[-1]
+    assert last.target == "web01" and last.outcome == "done" and "1 checks" in last.detail
+    assert home[1].purges(), "the tool's own record of it stays"
+
+
+def test_only_what_was_shown_is_deleted(web, inventory):
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    form = purge_form(client, **ONE_SERVER)
+    stored(home, "b2", 2)
+    response = client.post("/manage/delete/confirm", form)
+    assert response.status_code == 400 and "changed since you looked" in said(response)
+    assert sorted(bundles_of(home)) == ["b1", "b2"]
+
+
+def test_expiry_keeps_a_listed_server_s_baseline_and_says_so(web, inventory):
+    from checker.inventory import home as checker_home
+    from checker.settings import change
+
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    stored(home, "b0", 20)
+    stored(home, "b2", 2)
+    change(checker_home(), "retention_days", "10")
+    text = said(client.get("/manage/delete", {"what": "expired"}))
+    assert "web01's current baseline stays" in text and "1 check</strong>" in text
+    form = purge_form(client, what="expired")
+    assert client.post("/manage/delete/confirm", form).status_code == 200
+    assert sorted(bundles_of(home)) == ["b1", "b2"]
+
+
+def test_expiry_won_t_run_with_no_servers_listed(web, inventory):
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    inventory()
+    assert "no servers in the list" in said(client.get("/manage/delete", {"what": "expired"}))
+    form = {"what": "expired", "word": "purge", "sight": "x", "confirm_password": PASSWORD}
+    assert client.post("/manage/delete/confirm", form).status_code == 400
+    assert bundles_of(home) == ["b1"]
+
+
+def test_deleting_part_of_a_server_warns_that_its_baseline_goes(web, inventory):
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    stored(home, "b2", 2)
+    query = {"what": "before", "before": "2100-01-01"}
+    assert "All of web01" in said(client.get("/manage/delete", query))
+    from checker.evidence import Store, database_file
+
+    store = Store(database_file(home[0]), read_only=True)
+    try:
+        middle = store.bundle("b2")["started_at"]
+    finally:
+        store.close()
+    text = said(client.get("/manage/delete", {"what": "before", "before": middle}))
+    assert "baseline goes too" in text and "1 check</strong>" in text
+
+
+@pytest.mark.parametrize(
+    ("query", "words"),
+    [
+        ({"what": "host", "host": "nobody"}, "no stored evidence"),
+        ({"what": "before"}, "Choose a date"),
+        ({"what": "before", "before": "soon"}, "Choose a date"),
+        ({"what": "nonsense"}, "Choose what to delete"),
+    ],
+)
+def test_what_can_t_be_asked_says_so_and_deletes_nothing(web, inventory, query, words):
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    assert words in said(client.get("/manage/delete", query))
+    form = {**query, "word": "purge", "sight": "x", "confirm_password": PASSWORD}
+    response = client.post("/manage/delete/confirm", form)
+    assert response.status_code == 400 and words in said(response)
+    assert bundles_of(home) == ["b1"]
+
+
+def test_nothing_is_deleted_while_a_check_runs(web, inventory, monkeypatch):
+    from checker.inventory import home as checker_home
+    from checker.schedule import run_lock
+    from checker.web import runs
+
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    form = purge_form(client, **ONE_SERVER)
+    with run_lock(checker_home()):  # a scheduled one, or the command line's
+        response = client.post("/manage/delete/confirm", form)
+    assert response.status_code == 400 and "A check is running" in said(response)
+    with monkeypatch.context() as patched:  # one from a page
+        patched.setattr(runs, "any_running", lambda: True)
+        response = client.post("/manage/delete/confirm", form)
+    assert response.status_code == 400 and "A check is running" in said(response)
+    assert bundles_of(home) == ["b1"]
+
+
+def test_files_that_can_t_be_deleted_are_said(web, inventory, monkeypatch):
+    from checker import purge
+    from checker.web import purging
+
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    form = purge_form(client, **ONE_SERVER)
+    real = purge.execute
+
+    def partly(store, base, chosen):
+        outcome = real(store, base, chosen)
+        outcome.failed.append((Path("/x"), "read-only"))
+        return outcome
+
+    monkeypatch.setattr(purging, "execute", partly)
+    response = client.post("/manage/delete/confirm", form)
+    assert response.status_code == 200 and "1 file couldn't be deleted" in said(response)
+
+
+def test_the_new_action_pages_need_a_login(web, inventory):
+    client, _ = web
+    for path in ("/manage/schedule", "/manage/delete"):
+        assert client.get(path).status_code == 302
+    for path in ("/manage/schedule/save", "/manage/schedule/stop", "/manage/delete/confirm"):
+        assert client.post(path, {"a": "b"}).status_code == 302
+        assert client.get(path).status_code in (302, 405)

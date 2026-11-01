@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -163,6 +164,17 @@ def host_problems_in_plain_words(host, environ: dict[str, str] | None = None) ->
         if problem:
             problems.append(f"Its key file can't be used: {problem}.")
     return problems
+
+
+def unattended_in_plain_words(host, environ: dict[str, str] | None = None) -> list[str]:
+    """What stops a scheduled check, where nobody is there to type: `host_problems`' conditions, for
+    someone who isn't at a command line."""
+    typing = (
+        ["It needs a password typed. Choose the keyring for its password, or give it a key file."]
+        if needs_typed_password(host)
+        else []
+    )
+    return typing + host_problems_in_plain_words(host, environ)
 
 
 def unattended_problems(hosts: list, environ: dict[str, str] | None = None) -> list[str]:
@@ -888,6 +900,107 @@ def placement(
         ],
         f"journalctl --user -u {UNIT}.service",
     )
+
+
+class InstallFailed(Exception):
+    """Why the timer couldn't be set up, and whether its files were written."""
+
+
+def install(
+    base: Path,
+    at: tuple[int, int],
+    hosts: list,
+    say: Callable[[str], None] = lambda words: None,
+    pause: Callable[[float], None] = time.sleep,
+) -> Placement:
+    """Write the timer's files and start it, as `checker schedule install` and a page do."""
+    env = timer_environment(base, hosts)
+    if sys.platform != "darwin" and (unsafe := systemd_unsafe(env)):
+        raise InstallFailed(
+            "a systemd unit can't hold these paths (quotes, backslashes, $, ` or control"
+            " characters): " + ", ".join(repr(word) for word in unsafe)
+        )
+    where = placement(sys.platform, at, env, base, Path.home())
+    for path, content in where.files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        say(f"Wrote {path}")
+    if sys.platform == "darwin":
+        (base / "logs").mkdir(exist_ok=True, mode=0o700)
+        subprocess.run(where.stop[0], capture_output=True, check=False)  # noqa: S603 - a reload
+    for command in where.start:
+        # launchd may still be unloading the old agent: a few tries, a second apart.
+        for _ in range(5 if sys.platform == "darwin" else 1):
+            try:
+                done = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+            except OSError as exc:
+                raise InstallFailed(f"`{' '.join(command)}` failed: {exc.strerror}") from None
+            if done.returncode == 0:
+                break
+            pause(1.0)
+        if done.returncode != 0:
+            raise InstallFailed(f"`{' '.join(command)}` failed: {(done.stderr or '').strip()}")
+    return where
+
+
+def remove_timer(base: Path) -> list[Path]:
+    """Stop the timer and delete its files. Returns those it deleted."""
+    where = placement(sys.platform, (3, 0), {}, base, Path.home())
+    present = [path for path in where.files if path.exists()]
+    if not present:
+        return []
+    stop, *after = where.stop  # stopped while its files are there; reloaded once they're gone
+    subprocess.run(stop, capture_output=True, check=False)  # noqa: S603
+    for path in present:
+        path.unlink()
+    for command in after:
+        subprocess.run(command, capture_output=True, check=False)  # noqa: S603
+    return present
+
+
+def placement_exists(base: Path) -> bool:
+    where = placement(sys.platform, (3, 0), {}, base, Path.home())
+    return any(path.exists() for path in where.files)
+
+
+def timer_time(base: Path) -> str | None:
+    """The installed timer's time of day, HH:MM; None if there's none, or it can't be read."""
+    where = placement(sys.platform, (3, 0), {}, base, Path.home())
+    for path in where.files:
+        if path.suffix == ".plist" and path.exists():
+            try:
+                when = plistlib.loads(path.read_bytes())["StartCalendarInterval"]
+                return f"{int(when['Hour']):02}:{int(when['Minute']):02}"
+            except (OSError, ValueError, KeyError, TypeError, plistlib.InvalidFileException):
+                return None
+        if path.suffix == ".timer" and path.exists():
+            try:
+                found = re.search(r"^OnCalendar=.*?(\d\d):(\d\d)", path.read_text(), re.M)
+            except (OSError, UnicodeError):
+                return None
+            return f"{found[1]}:{found[2]}" if found else None
+    return None
+
+
+def timer_running() -> bool | None:
+    """Whether the timer is switched on (None: can't tell here). Files alone don't say: enabling
+    it can fail, and someone can switch it off."""
+    if sys.platform == "darwin":
+        return None
+    try:
+        done = subprocess.run(  # noqa: S603
+            ["systemctl", "--user", "is-active", f"{UNIT}.timer"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    state = done.stdout.strip()
+    if state in ("active", "activating"):
+        return True
+    return False if state in ("inactive", "failed", "deactivating") else None
 
 
 def lingering(user: str) -> bool | None:

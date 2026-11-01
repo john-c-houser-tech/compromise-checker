@@ -3,6 +3,7 @@ record of who looked."""
 
 from __future__ import annotations
 
+import getpass
 import json
 import sqlite3
 import sys
@@ -34,6 +35,7 @@ from checker.web import (
     accounts,
     decide,
     manage,
+    purging,
     runs,
     setting_forms,
     threat_updates,
@@ -62,6 +64,8 @@ VIEWABLE = {
     "manage_threats",
     "threat_rule",
     "manage_settings",
+    "manage_schedule",
+    "manage_purge",
     "two_factor_manage",
 }
 
@@ -892,6 +896,118 @@ def settings_save(request) -> HttpResponse:
         raise ActionFailed(CANT_CHANGE_SETTINGS) from None
     request.action_detail = setting_forms.changes_in_words(changed)
     return HttpResponseRedirect(f"{reverse('manage_settings')}?saved=1")
+
+
+def _schedule_page(request, problem: str = "", status: int = 200) -> HttpResponse:
+    hosts = load_inventory().hosts
+    time = schedule.timer_time(home())
+    installed = time is not None or schedule.placement_exists(home())
+    context = {
+        "installed": installed,
+        "at": time or "03:00",
+        "running": schedule.timer_running() if installed else None,
+        "lingering": schedule.lingering(getpass.getuser()) if installed else None,
+        "stops": [
+            (host.name, " ".join(manage.check_blockers(host, unattended=True)))
+            for host in hosts
+            if manage.check_blockers(host, unattended=True)
+        ],
+        "problem": problem,
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_schedule.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def manage_schedule(request) -> HttpResponse:
+    try:
+        return _schedule_page(request)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        return _unreadable_inventory(request, exc)
+
+
+@action("set the daily check", consequential=True)
+def schedule_save(request) -> HttpResponse:
+    """Password again: from then on this machine connects to every server and deletes what's past
+    its retention period, every day, with nobody there."""
+    typed = request.POST.get("at", "")
+    try:
+        at = schedule.parse_time(typed)
+        schedule.install(home(), at, load_inventory().hosts)
+    except ValueError:
+        words = "Type a time of day, such as 03:00."
+        raise ActionFailed(words, page=_schedule_page(request, words, 400)) from None
+    except schedule.InstallFailed as exc:
+        # This machine's own command's words, for whoever looks after it: not a server's.
+        words = str(visible(f"The daily check couldn't be set up: {exc}", 600))
+        raise ActionFailed(words, page=_schedule_page(request, words, 400)) from None
+    except MANAGE_FAILURES as exc:
+        print(f"checker web: setting the timer failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(
+            "That couldn't be done: this machine's files can't be written."
+        ) from None
+    request.action_detail = f"every day at {at[0]:02}:{at[1]:02}"
+    return HttpResponseRedirect(reverse("manage_schedule"))
+
+
+@action("stopped the daily check", consequential=True)
+def schedule_stop(request) -> HttpResponse:
+    """Password again: nobody would be told that checks had stopped."""
+    try:
+        gone = schedule.remove_timer(home())
+    except OSError as exc:
+        print(f"checker web: removing the timer failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(
+            "That couldn't be done: this machine's files can't be changed."
+        ) from None
+    request.action_detail = "stopped" if gone else "there was none"
+    return HttpResponseRedirect(reverse("manage_schedule"))
+
+
+def _purge_page(request, done=None, problem: str = "", status: int = 200) -> HttpResponse:
+    context = {
+        **purging.page(home(), request.GET if request.method == "GET" else request.POST),
+        "done": done,
+        "problem": problem,
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_purge.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def manage_purge(request) -> HttpResponse:
+    """Works out what would go, and changes nothing."""
+    try:
+        return _purge_page(request)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't work out a purge: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The settings or the evidence store can't be read.")
+
+
+def _purge_target(request, **kwargs) -> str:
+    return purging.named(request.POST)
+
+
+@action("deleted stored evidence", consequential=True, target=_purge_target)
+def purge_confirm(request) -> HttpResponse:
+    """Password again and the word typed: this can't be undone."""
+    try:
+        done = purging.run(home(), request.POST, runs.any_running())
+    except purging.PurgeProblem as exc:
+        words = str(exc)
+        try:
+            page = _purge_page(request, problem=words, status=400)
+        except Exception:  # noqa: BLE001 - the words are what matter
+            page = None
+        raise ActionFailed(words, page=page) from None
+    request.action_detail = done["summary"]
+    try:
+        return _purge_page(request, done=done)
+    except Exception as exc:  # noqa: BLE001 - it did happen: a plain page, and the record says so
+        print(f"checker web: can't show the purge: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The evidence was deleted, but this page can't be shown.")
 
 
 @login_required

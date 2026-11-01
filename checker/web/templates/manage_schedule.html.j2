@@ -1,0 +1,37 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}Check every day: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage') }}">Back to Manage</a></p>
+<h1 class="page-title">Check every day</h1>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+{% if not installed %}
+<p>No daily check is set up, so servers are only checked when someone asks.</p>
+{% elif running is sameas false %}
+<p class="error">A daily check is set up for {{ at }}, but its timer isn't running, so it won't happen. Save the time again to start it.</p>
+{% else %}
+<p>A daily check runs at {{ at }}, this machine's time.</p>
+{% if lingering is sameas false %}<p class="error">It runs only while someone is logged in to this machine. To run it with nobody logged in, whoever looks after this machine needs to run <code>sudo loginctl enable-linger</code> for the account this web server uses.</p>{% endif %}
+{% endif %}
+<p class="note">Each day it checks every server, works out the results, writes a report, and deletes evidence past its retention period, keeping each server's baseline. Keep this machine switched on: a laptop that's asleep misses it. A notify command, if one is set on the command line, is told what needs a look. The AI advisor isn't asked.</p>
+{% if stops %}
+<h2>Servers it can't check</h2>
+<p class="note">It leaves these out and says so, until they're put right.</p>
+<ul>{% for name, why in stops %}<li><a href="{{ url('manage_server') }}?host={{ name | urlencode }}"><strong>{{ name }}</strong></a>: {{ why }}</li>{% endfor %}</ul>
+{% endif %}
+<form method="post" action="{{ url('schedule_save') }}">
+  {{ csrf_input }}
+  <label>Time of day <small>This machine's time.</small> <input type="time" name="at" value="{{ at }}" required></label>
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>{% if installed %}Save this time{% else %}Check every day at this time{% endif %}</button>
+</form>
+{% if installed %}
+<h2>Stop it</h2>
+<p>Nobody is told if checks stop, so servers could go unchecked unnoticed.</p>
+<form method="post" action="{{ url('schedule_stop') }}">
+  {{ csrf_input }}
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Stop the daily check</button>
+</form>
+{% endif %}
+{% endblock %}

@@ -2828,7 +2828,6 @@ def cmd_schedule_install(
 ) -> int:
     import getpass
     import os
-    import subprocess
     import time
 
     from checker import schedule
@@ -2863,27 +2862,11 @@ def cmd_schedule_install(
         )
     if sys.platform == "darwin" and os.environ.get("SSH_CONNECTION"):
         print("A launchd agent runs while you are logged in at the Mac (not over SSH).")
-    where = schedule.placement(sys.platform, at, env, base, Path.home())
-    for path, content in where.files.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-        print(f"Wrote {path}")
-    if sys.platform == "darwin":
-        (base / "logs").mkdir(exist_ok=True, mode=0o700)
-        subprocess.run(where.stop[0], capture_output=True, check=False)  # noqa: S603 - a reload
-    for command in where.start:
-        # launchd may still be unloading the old agent: a few tries, a second apart.
-        for _ in range(5 if sys.platform == "darwin" else 1):
-            done = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
-            if done.returncode == 0:
-                break
-            pause(1.0)
-        if done.returncode != 0:
-            print(
-                f"checker: `{' '.join(command)}` failed: {(done.stderr or '').strip()}",
-                file=sys.stderr,
-            )
-            return 1
+    try:
+        where = schedule.install(base, at, hosts, say=print, pause=pause)
+    except schedule.InstallFailed as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
     print(
         f"`checker run --all --unattended` will run every day at {args.at} (this machine's time)."
     )
@@ -2897,22 +2880,14 @@ def cmd_schedule_install(
 
 
 def cmd_schedule_remove(args: argparse.Namespace) -> int:
-    import subprocess
-
     from checker import schedule
 
-    where = schedule.placement(sys.platform, (3, 0), {}, home(), Path.home())
-    present = [path for path in where.files if path.exists()]
-    if not present:
+    deleted = schedule.remove_timer(home())
+    if not deleted:
         print("No timer is installed.")
         return 0
-    stop, *after = where.stop  # stopped while its files are there; reloaded once they're gone
-    subprocess.run(stop, capture_output=True, check=False)  # noqa: S603
-    for path in present:
-        path.unlink()
+    for path in deleted:
         print(f"Deleted {path}")
-    for command in after:
-        subprocess.run(command, capture_output=True, check=False)  # noqa: S603
     print("Scheduled runs stopped.")
     return 0
 

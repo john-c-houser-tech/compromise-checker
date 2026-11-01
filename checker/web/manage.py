@@ -23,7 +23,7 @@ from checker.baseline import usable_bundles
 from checker.evidence import Store, database_file
 from checker.inventory import Host, hosts_file, load_inventory, new_host_problems
 from checker.report import visible
-from checker.schedule import host_problems_in_plain_words
+from checker.schedule import host_problems_in_plain_words, unattended_in_plain_words
 from checker.settings import HostChangedMeanwhile, add_host, change_host
 from checker.transport import (
     HostKeyCheck,
@@ -120,14 +120,16 @@ def trust_of(host: Host) -> str:
         return "unreadable"
 
 
-def check_blockers(host: Host) -> list[str]:
-    """Why a check started from a page can't go ahead, in words for it."""
+def check_blockers(host: Host, unattended: bool = False) -> list[str]:
+    """Why a check started from a page can't go ahead, or a scheduled one, where nobody is there to
+    type a password, in words for it."""
     state = trust_of(host)
     first = {
         "none": ["Its identity hasn't been confirmed yet. Open it to do that."],
         "unreadable": ["The file of trusted keys on this machine can't be read."],
     }.get(state, [])
-    return first + host_problems_in_plain_words(host)
+    rest = unattended_in_plain_words if unattended else host_problems_in_plain_words
+    return first + rest(host)
 
 
 def has_results(base: Path, name: str) -> bool:

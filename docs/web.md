@@ -199,6 +199,19 @@ Some things stay on the command line, and the pages only say whether they're set
 From a form, these would let anyone with an account run programs here, collect the API key, or choose
 who may sign what the tool believes.
 
+## Checking every day, and deleting evidence
+
+Manage can set a check to run every day at a time you choose, and stop it. That's the same run as
+`checker schedule install`: it checks every server, works out results, writes a report, and deletes what's
+past its retention period. It uses a timer on this machine, under the account the web server runs as,
+which on Linux needs a user session or lingering; the page says when it won't run with nobody logged
+in, and lists servers that a daily check can't reach.
+
+Manage can also delete stored evidence, for one server, before a date, or past its retention period. It
+shows exactly what would go first, then needs your password and the word `purge` typed. If what would
+go has changed since you looked, it asks you to look again. It won't start while a check is running.
+The record of what was deleted stays. See [retention](retention.md).
+
 ## How it protects you
 
 - **Two-factor sign-in,** above. With only a password so far, nothing opens but the second step, or

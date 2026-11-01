@@ -124,7 +124,7 @@ when the person pastes the fingerprint from the server and it matches a fresh an
 doesn't show the offered fingerprint first. Groups stay a label on each server, with no rename.
 Packs and settings came next. A setting that runs a command or sends data or keys elsewhere stays on the
 command line, as do pack files and organization keys, and a pack retired from a page can be put back from
-one. Then the schedule and purge.
+one. Then the schedule and purge, which shows what would go, then needs the password and the word typed.
 
 **5.13b First setup and adding a server.** A guided path for someone who has never
 done this: create the keys and settings the policy's choices depend on (`checker

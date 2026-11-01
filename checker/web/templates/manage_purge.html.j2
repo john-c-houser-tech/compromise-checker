@@ -1,0 +1,65 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}Delete stored evidence: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage') }}">Back to Manage</a></p>
+<h1 class="page-title">Delete stored evidence</h1>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+{% if done %}
+<section role="status">
+  <p><strong>Deleted {{ done.checks }} check{{ "" if done.checks == 1 else "s" }} and {{ done.files }} file{{ "" if done.files == 1 else "s" }}.</strong></p>
+  {% if done.failed %}<p class="error">{{ done.failed }} file{{ "" if done.failed == 1 else "s" }} couldn't be deleted. The next time evidence is deleted, it tries again.</p>{% endif %}
+  {% if done.changed %}<p class="error">{{ done.changed }} report or proposal file{{ "" if done.changed == 1 else "s" }} had changed, so they were left as they are. Someone should look at them on this machine, since they may show what was deleted.</p>{% endif %}
+  {% for host in done.moved %}<p>{{ host }}'s baseline went too. Its oldest remaining check becomes the baseline when results are next worked out.</p>{% endfor %}
+</section>
+{% else %}
+<p class="note">This can't be undone. A record that it happened stays. A check that's stored here is evidence: if you think a server was broken into, get advice before deleting anything.</p>
+<form method="get" action="{{ url('manage_purge') }}">
+  <fieldset>
+    <legend>What to delete</legend>
+    <label class="tick"><input type="radio" name="what" value="expired"{% if what == "expired" %} checked{% endif %}> Everything older than the {{ retention_days }} days it's kept for</label>
+    <label class="tick"><input type="radio" name="what" value="host"{% if what == "host" %} checked{% endif %}> One server's</label>
+    <label class="tick"><input type="radio" name="what" value="before"{% if what == "before" %} checked{% endif %}> Every server's, before a date</label>
+  </fieldset>
+  <label>Server <small>For one server's.</small>
+    <select name="host">
+      <option value=""></option>
+      {% for option in hosts %}<option value="{{ option.value }}"{% if option.value == host %} selected{% endif %}>{{ option.value }}{% if not option.listed %} (not in the list of servers now){% endif %}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Before this date <small>Needed for every server's. Optional for one server's: empty means all of it.</small> <input type="date" name="before" value="{{ before }}"></label>
+  <button>Show what this would delete</button>
+</form>
+{% if cant %}<p class="error" role="alert">{{ cant }}</p>{% endif %}
+{% if preview %}
+<h2>What this would delete</h2>
+{% if preview.nothing %}
+<p>Nothing to delete.</p>
+{% elif preview.outside %}
+<p class="error">Some of this is stored outside the evidence folder, so it can't be deleted here. Whoever looks after this machine needs to look at it.</p>
+{% else %}
+<p><strong>{{ preview.checks }} check{{ "" if preview.checks == 1 else "s" }}</strong>, each with its events, results and record of who handled it, and {{ preview.reports }} report{{ "" if preview.reports == 1 else "s" }} and {{ preview.proposals }} whitelist proposal file{{ "" if preview.proposals == 1 else "s" }}.{% if preview.leftovers %} Also {{ preview.leftovers }} file{{ "" if preview.leftovers == 1 else "s" }} an earlier deletion couldn't remove.{% endif %}</p>
+{% for host in preview.moved %}<p class="error">{{ host }}'s baseline goes too. Its oldest remaining check becomes the baseline, and changes made before that check, accepted or not, will no longer show.</p>{% endfor %}
+{% for host in preview.emptied %}<p class="error">All of {{ host }}'s evidence goes, including its baseline.</p>{% endfor %}
+{% for host in preview.kept %}<p>{{ host }}'s current baseline stays, though it's older: it goes when a newer one is accepted.</p>{% endfor %}
+{% if preview.shown %}
+<details>
+  <summary>The checks</summary>
+  <ul>{% for at, name in preview.shown %}<li>{{ name }}, {{ at }}</li>{% endfor %}</ul>
+  {% if preview.more %}<p>And {{ preview.more }} more.</p>{% endif %}
+</details>
+{% endif %}
+<form method="post" action="{{ url('purge_confirm') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="what" value="{{ what }}">
+  <input type="hidden" name="host" value="{{ host }}">
+  <input type="hidden" name="before" value="{{ before }}">
+  <input type="hidden" name="sight" value="{{ preview.sight }}">
+  <label>Type purge to say you mean it <input name="word" autocomplete="off" required></label>
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Delete this permanently</button>
+</form>
+{% endif %}
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -251,8 +251,10 @@ that may include access tokens, and sometimes secrets typed into commands.
   the pages, but anyone with full control of the machine could alter it. It
   isn't removed by `purge` or by the retention period: to remove it, delete the
   web interface's file. If the record can't be written, for example on a full
-  disk, signing out and viewing results and evidence still work, and those
-  events go to the tool's error output instead; actions are refused.
+  disk, viewing results and evidence still works, and those events go to the
+  tool's error output instead; actions are refused. Signing out then clears
+  only that browser: the session can stay valid on the server until it expires,
+  up to 8 hours, and the page says so.
 
 ## 9. The optional AI advisor
 

@@ -3,6 +3,8 @@
 {% block main %}
 <h1 class="page-title">Manage your servers</h1>
 <p><a href="{{ url('manage_add') }}">Add a server</a></p>
+<p><a href="{{ url('manage_threats') }}">Threat updates</a></p>
+<p><a href="{{ url('manage_settings') }}">Settings</a></p>
 {% if not rows %}
 <p>There are no servers yet. Add one to check it.</p>
 {% else %}

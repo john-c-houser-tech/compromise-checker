@@ -5770,16 +5770,18 @@ def test_a_server_removed_while_its_key_is_fetched_is_words(web, unconfirmed, mo
 class _FormReader(HTMLParser):
     """The change form's fields, as a browser would send them."""
 
-    def __init__(self):
+    def __init__(self, action="/manage/server/change"):
         super().__init__(convert_charrefs=True)
+        self.action = action
         self.fields, self.inside, self.area, self.select = {}, False, None, None
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "form":
-            self.inside = attrs.get("action") == "/manage/server/change"
+            self.inside = attrs.get("action") == self.action
         elif self.inside and tag == "input" and attrs.get("name"):
-            self.fields[attrs["name"]] = attrs.get("value") or ""
+            if attrs.get("type") not in ("checkbox", "radio") or "checked" in attrs:
+                self.fields[attrs["name"]] = attrs.get("value") or ""
         elif self.inside and tag == "textarea":
             self.area = attrs["name"]
             self.fields[self.area] = ""
@@ -5830,3 +5832,371 @@ def test_saving_the_form_as_the_page_shows_it_changes_nothing(web, unconfirmed, 
     assert client.post("/manage/server/change", form_on_the_page(client)).status_code == 302
     assert hosts_now()["web01"] == was
     assert records_of("changed a server's settings")[-1].detail == "nothing changed"
+
+
+# --- Threat updates and settings from a page (plan 5.13) ------------------------------------
+
+
+@pytest.fixture
+def team_pack(web, inventory, tmp_path, capsys):
+    """A signed-in browser, and a pack in force, signed by a trusted organization key."""
+    from test_pack_format import GOOD
+    from test_pack_trust import Key, pack
+
+    from checker import cli
+
+    client, _ = signed_in(web)
+    key = Key()
+    assert cli.main(["packs", "trust", "add", "team", str(key.pub_file(tmp_path / "k.pub"))]) == 0
+
+    def add(text=GOOD):
+        assert cli.main(["packs", "add", str(pack(tmp_path, key, text))]) == 0
+        capsys.readouterr()
+
+    add()
+    return client, add
+
+
+PACK = "example-2026-10"
+
+
+def config_now():
+    from checker.evidence import load_config
+    from checker.inventory import home as checker_home
+
+    return load_config(checker_home())
+
+
+def history_now():
+    from checker.evidence import Store, database_file
+    from checker.inventory import home as checker_home
+
+    store = Store(database_file(checker_home()))
+    try:
+        return store.config_changes()
+    finally:
+        store.close()
+
+
+def test_the_threat_updates_page_contacts_nothing(team_pack, monkeypatch):
+    from checker.web import threat_updates
+
+    def must_not(*args, **kwargs):
+        raise AssertionError("contacted the source")
+
+    monkeypatch.setattr(threat_updates, "pull", must_not)
+    client, _ = team_pack
+    text = said(client.get("/manage/threats"))
+    assert PACK in text and "Get the latest" in text
+    assert client.get("/manage/threats/pull").status_code == 405
+
+
+def test_getting_updates_says_what_changed_and_records_only_our_words(web, inventory, monkeypatch):
+    from checker.packs.pull import Pulled
+    from checker.web import threat_updates
+
+    client, _ = signed_in(web)
+    done = Pulled(added=[("new-one", 2, "added")], problems=[HOSTILE], notes=[HOSTILE])
+    monkeypatch.setattr(threat_updates, "pull", lambda *args: done)
+    response = client.post("/manage/threats/pull", {"a": "b"})
+    text = response.content.decode()
+    assert response.status_code == 200 and "new-one version 2: added" in said(response)
+    assert "<script>alert" not in text and BIDI not in text
+    detail = records_of("asked for threat updates")[-1].detail
+    assert detail == "1 added or updated, 0 withdrawn, 0 retired, 1 problems"
+
+
+def test_a_failed_fetch_says_so_and_keeps_the_source_s_words_out_of_the_record(
+    web, inventory, monkeypatch
+):
+    from checker.packs.pull import PullError
+    from checker.web import threat_updates
+
+    def fail(*args):
+        raise PullError(f"https://x/ {HOSTILE}")
+
+    monkeypatch.setattr(threat_updates, "pull", fail)
+    client, _ = signed_in(web)
+    response = client.post("/manage/threats/pull", {"a": "b"})
+    assert response.status_code == 400 and "couldn't be fetched" in said(response)
+    assert "<script>alert" not in response.content.decode()
+    last = records_of("asked for threat updates")[-1]
+    assert last.outcome == "failed" and "evil" not in last.detail
+
+
+def test_retiring_needs_the_password_and_a_reason_and_can_be_undone(team_pack):
+    from checker.inventory import home as checker_home
+    from checker.packs.store import active
+
+    client, _ = team_pack
+    in_use = lambda: [s.pack.id for s in active(checker_home(), config_now().packs.trusted_keys)[0]]  # noqa: E731
+    form = {"pack": PACK, "reason": "too noisy", "confirm_password": PASSWORD}
+    assert (
+        client.post("/manage/threats/retire", {**form, "confirm_password": "no"}).status_code == 403
+    )
+    assert client.post("/manage/threats/retire", {**form, "reason": "  "}).status_code == 400
+    assert in_use() == [PACK]
+    assert client.post("/manage/threats/retire", form).status_code == 302
+    assert in_use() == []
+    assert records_of("retired a threat update")[-1].detail == "too noisy"
+    text = said(client.get("/manage/threats"))
+    assert "Put it back" in text and "by jo: too noisy" in text
+    back = {"pack": PACK, "confirm_password": PASSWORD}
+    assert (
+        client.post("/manage/threats/put-back", {**back, "confirm_password": "no"}).status_code
+        == 403
+    )
+    assert client.post("/manage/threats/put-back", back).status_code == 302
+    assert in_use() == [PACK] and "Put it back" not in said(client.get("/manage/threats"))
+
+
+def test_only_a_pack_retired_by_hand_can_be_put_back(team_pack):
+    client, _ = team_pack
+    form = {"pack": PACK, "confirm_password": PASSWORD}
+    assert client.post("/manage/threats/put-back", form).status_code == 400
+    assert client.post("/manage/threats/put-back", {**form, "pack": "../x"}).status_code == 400
+
+
+def test_a_changed_retired_file_can_t_be_put_back(team_pack):
+    from checker.inventory import home as checker_home
+
+    client, _ = team_pack
+    form = {"pack": PACK, "reason": "x", "confirm_password": PASSWORD}
+    client.post("/manage/threats/retire", form)
+    [kept] = (checker_home() / "packs" / "retired").glob("*.yaml")
+    kept.write_text(kept.read_text().replace("likelihood_ratio: 5", "likelihood_ratio: 2"))
+    assert client.post("/manage/threats/put-back", form).status_code == 400
+    assert "Put it back" not in said(client.get("/manage/threats")), "nothing fit to put back"
+
+
+def rule_form_of(client, scope):
+    reader = _FormReader("/manage/threats/rule/save")
+    response = client.get("/manage/threats/rule", {"for": scope})
+    assert response.status_code == 200
+    reader.feed(response.content.decode())
+    return {**reader.fields, "for": scope, "confirm_password": PASSWORD}
+
+
+def test_the_rule_for_all_servers_is_confirmed_and_recorded(team_pack):
+    client, _ = team_pack
+    form = rule_form_of(client, "all")
+    refused = client.post(
+        "/manage/threats/rule/save", {**form, "rule_kind": "none", "confirm_password": "no"}
+    )
+    assert refused.status_code == 403 and config_now().packs.apply == "all"
+    done = client.post("/manage/threats/rule/save", {**form, "rule_kind": "none"})
+    assert done.status_code == 302 and config_now().packs.apply == "none"
+    assert history_now()[-1]["setting"] == "packs.apply"
+    last = records_of("changed which threat updates apply")[-1]
+    assert last.target == "all" and last.detail == '"all" to "none"'
+
+
+def test_a_server_s_own_rule_and_going_back_to_default(team_pack):
+    client, _ = team_pack
+    form = rule_form_of(client, "host:web01")
+    assert form["rule_kind"] == "default"
+    saved = client.post("/manage/threats/rule/save", {**form, "rule_kind": "except", "ids": PACK})
+    assert saved.status_code == 302 and hosts_now()["web01"].packs == f"except: {PACK}"
+    assert "Nothing" not in said(client.get("/manage/threats")).split("Kept off it")[1]
+    form = rule_form_of(client, "host:web01")
+    assert (
+        client.post("/manage/threats/rule/save", {**form, "rule_kind": "default"}).status_code
+        == 302
+    )
+    assert hosts_now()["web01"].packs is None
+
+
+def test_a_group_s_rule(team_pack, inventory):
+    from checker.inventory import Host
+
+    client, _ = team_pack
+    inventory(Host(name="web01", address="192.0.2.1", user="s", group="prod"))
+    form = rule_form_of(client, "group:prod")
+    assert (
+        client.post("/manage/threats/rule/save", {**form, "rule_kind": "none"}).status_code == 302
+    )
+    assert config_now().packs.group_apply == {"prod": "none"}
+    form = rule_form_of(client, "group:prod")
+    assert (
+        client.post("/manage/threats/rule/save", {**form, "rule_kind": "default"}).status_code
+        == 302
+    )
+    assert config_now().packs.group_apply == {}
+
+
+@pytest.mark.parametrize(
+    "scope",
+    ["host:nope", "group:nope", "nonsense", "host:", "group:../x", ""],
+)
+def test_a_rule_only_for_what_exists(team_pack, scope):
+    client, _ = team_pack
+    assert client.get("/manage/threats/rule", {"for": scope}).status_code == 404
+    form = {"for": scope, "rule_kind": "none", "current": "", "confirm_password": PASSWORD}
+    assert client.post("/manage/threats/rule/save", form).status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("changes", "words"),
+    [
+        ({"rule_kind": "only"}, "Tick at least one"),
+        ({"rule_kind": "only", "ids": "not an id!"}, "aren't threat updates"),
+        ({"rule_kind": "nonsense"}, "Choose one"),
+        ({"rule_kind": "default"}, "nothing to fall back on"),
+        ({"rule_kind": "none", "current": "none"}, "changed since this page opened"),
+    ],
+)
+def test_a_bad_rule_changes_nothing(team_pack, changes, words):
+    client, _ = team_pack
+    form = {**rule_form_of(client, "all"), **changes}
+    response = client.post("/manage/threats/rule/save", form)
+    assert response.status_code == 400 and words in said(response)
+    assert config_now().packs.apply == "all"
+
+
+def settings_form(client):
+    reader = _FormReader("/manage/settings/save")
+    reader.feed(client.get("/manage/settings").content.decode())
+    return {**reader.fields, "confirm_password": PASSWORD}
+
+
+def test_saving_the_settings_as_the_page_shows_them_changes_nothing(web, inventory):
+    client, _ = signed_in(web)
+    before = len(history_now())
+    assert client.post("/manage/settings/save", settings_form(client)).status_code == 302
+    assert len(history_now()) == before
+    assert records_of("changed settings")[-1].detail == "nothing changed"
+
+
+def test_changing_settings_is_confirmed_recorded_and_all_at_once(web, inventory):
+    client, _ = signed_in(web)
+    form = {**settings_form(client), "retention_days": "30", "prior": "5", "web_access_logs": "on"}
+    refused = client.post("/manage/settings/save", {**form, "confirm_password": "no"})
+    assert refused.status_code == 403 and config_now().retention_days != 30
+    assert client.post("/manage/settings/save", form).status_code == 302
+    config = config_now()
+    assert config.retention_days == 30 and config.prior == 0.05 and config.web_access_logs is True
+    assert {row["setting"] for row in history_now()[-3:]} == {
+        "retention_days",
+        "prior",
+        "web_access_logs",
+    }
+    detail = records_of("changed settings")[-1].detail
+    assert "Days evidence is kept: 90 to 30" in detail and "to 5%" in detail
+
+
+@pytest.mark.parametrize(
+    ("changes", "words"),
+    [
+        ({"retention_days": "soon"}, "whole number"),
+        ({"retention_days": "0"}, "Days evidence is kept"),
+        ({"retention_days": "-1"}, "whole number"),
+        ({"prior": "150"}, "above 0 and below 100"),
+        ({"prior": "nan"}, "type a number"),
+        ({"advisor.max_cost_per_run": "inf"}, "type a number"),
+        ({"home_text": "everything"}, "choose one"),
+        ({"web_access_logs": "maybe"}, "on or off"),
+        ({"advisor.model": "two words"}, "name this can use"),
+        ({"advisor.model": ""}, "this is needed"),
+        ({"advisor.inference_geo": "a b"}, "name this can use"),
+        ({"advisor.api_key_source": "command:/bin/sh -c evil"}, "choose one"),
+        ({"advisor.fallback": "model"}, "choose one"),
+    ],
+)
+def test_a_bad_setting_changes_nothing_at_all(web, inventory, changes, words):
+    client, _ = signed_in(web)
+    before = config_now()
+    form = {**settings_form(client), "stale_after_days": "9", **changes}
+    response = client.post("/manage/settings/save", form)
+    assert response.status_code == 400 and words in said(response)
+    assert config_now() == before, "the good setting beside it didn't go in either"
+
+
+def test_what_runs_a_command_or_sends_elsewhere_can_t_be_set_from_a_page(web, inventory):
+    client, _ = signed_in(web)
+    before = config_now()
+    form = {
+        **settings_form(client),
+        "notify_command": "/bin/sh -c evil",
+        "advisor.base_url": "https://evil.example/",
+        "advisor.api": "openai",
+        "advisor.fallback_model.base_url": "https://evil.example/",
+        "advisor.fallback_model.api_key_source": "command:/bin/evil",
+        "packs.source": "https://evil.example/",
+        "packs.apply": "none",
+        "recipients": "x",
+    }
+    assert client.post("/manage/settings/save", form).status_code == 302
+    assert config_now() == before
+
+
+def test_the_list_of_settings_on_the_page_has_nothing_dangerous_in_it():
+    from checker.web.setting_forms import BY_KEY
+
+    assert not {
+        key for key in BY_KEY if "notify" in key or "base_url" in key or key.endswith("api")
+    }
+    assert "packs.source" not in BY_KEY and not any("fallback_model" in key for key in BY_KEY)
+    offered = {value for value, _ in BY_KEY["advisor.api_key_source"].options}
+    assert offered == {"env", "keyring"}
+
+
+def test_a_key_command_stays_as_it_is_and_isn_t_shown(web, inventory):
+    from checker.inventory import home as checker_home
+    from checker.settings import change
+
+    secret = "/usr/bin/fetch-key --token sekrit"
+    change(checker_home(), "advisor.api_key_source", f"command:{secret}")
+    change(checker_home(), "notify_command", "/usr/bin/tell --token sekrit")
+    client, _ = signed_in(web)
+    text = said(client.get("/manage/settings"))
+    assert "sekrit" not in text and "set on the command line" in text
+    form = {**settings_form(client), "retention_days": "30"}
+    assert "advisor.api_key_source" not in form
+    forged = {**form, "advisor.api_key_source": "env"}
+    assert client.post("/manage/settings/save", forged).status_code == 302
+    assert config_now().advisor.api_key_source == f"command:{secret}"
+    assert config_now().retention_days == 30
+
+
+def test_stale_settings_change_nothing_and_saving_again_can_t_undo_the_other_change(web, inventory):
+    from checker.inventory import home as checker_home
+    from checker.settings import change
+
+    client, _ = signed_in(web)
+    stale = {**settings_form(client), "retention_days": "30"}
+    change(checker_home(), "stale_after_days", "9")
+    response = client.post("/manage/settings/save", stale)
+    assert response.status_code == 400 and "wasn't saved" in said(response)
+    assert config_now().retention_days != 30
+    assert 'value="9"' in response.content.decode(), "shows them as they are now"
+
+
+def test_turning_the_advisor_on_says_what_would_leave(web, inventory):
+    client, _ = signed_in(web)
+    assert "placeholders" in said(client.get("/manage/settings"))
+    form = {**settings_form(client), "advisor.enabled": "on"}
+    assert client.post("/manage/settings/save", form).status_code == 302
+    assert config_now().advisor.enabled is True
+
+
+def test_the_new_pages_contact_nothing_and_need_a_login(web, inventory):
+    client, _ = web
+    for path in ("/manage/threats", "/manage/threats/rule?for=all", "/manage/settings"):
+        assert client.get(path).status_code == 302
+    for path in (
+        "threats/pull",
+        "threats/retire",
+        "threats/put-back",
+        "threats/rule/save",
+        "settings/save",
+    ):
+        assert client.post(f"/manage/{path}", {"a": "b"}).status_code == 302
+
+
+def test_text_for_a_terminal_reads_properly_on_the_pages(team_pack):
+    """The display filter shows a line break as an escape, and a date as JSON."""
+    client, _ = team_pack
+    settings_page = client.get("/manage/settings").content.decode()
+    assert "\\u000a" not in settings_page and "whitelist rules" in settings_page
+    threats = said(client.get("/manage/threats"))
+    assert 'published "' not in threats and "published 20" in threats

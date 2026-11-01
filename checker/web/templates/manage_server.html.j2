@@ -58,6 +58,9 @@
   <button>Save these settings</button>
 </form>
 
+<h2>Threat updates</h2>
+<p><a href="{{ url('threat_rule') }}?for=host:{{ host.name | urlencode }}">Choose which threat updates apply to {{ host.name }}</a></p>
+
 <h2>Remove it</h2>
 <p>This stops checks of it. Its results stay until a purge after their retention period, and without it on the list, its baseline can go then too. Its whitelist rules and confirmed key stay, in case it comes back.</p>
 <form method="post" action="{{ url('server_remove') }}">

@@ -2352,9 +2352,9 @@ def cmd_packs_check(args: argparse.Namespace) -> int:
 
 
 def _packs_lock(base: Path):
-    from checker.files import locked
+    from checker.packs.store import packs_lock
 
-    return locked(base / "packs" / "state")
+    return packs_lock(base)
 
 
 def cmd_packs_add(args: argparse.Namespace) -> int:

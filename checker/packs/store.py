@@ -143,6 +143,47 @@ def in_force_read_only(home: Path, organization: list[Any]) -> tuple[list[Pack],
     return [s.pack for s in usable], problems
 
 
+def packs_lock(home: Path):
+    """Held by anything that changes the packs."""
+    return locked(home / "packs" / "state")
+
+
+def held_back(home: Path) -> list[tuple[str, int]]:
+    """(id, version) of what a person retired, which can be put back: the newest version accepted,
+    if its signed file is still kept."""
+    state = read_state(home)
+    found = []
+    for pack_id, record in sorted(state["packs"].items()):
+        if record.get("held") and _kept_retired(home, pack_id, record["highest"]):
+            found.append((pack_id, record["highest"]))
+    return found
+
+
+def _kept_retired(home: Path, pack_id: str, version: int) -> tuple[bytes, bytes] | None:
+    """The retired file of that version that matches what was accepted, and its signature."""
+    state = read_state(home)
+    digest = state["packs"].get(pack_id, {}).get("seen", {}).get(str(version))
+    for named, path in _files(home / "packs" / "retired", _RETIRED):
+        if named["id"] == pack_id and int(named["version"]) == version:
+            signature = path.with_name(path.name + ".minisig")
+            data = _capped(path, MAX_BYTES)
+            if signature.is_file() and hashlib.sha256(data).hexdigest() == digest:
+                return data, _capped(signature, MAX_SIGNATURE_BYTES)
+    return None
+
+
+def put_back(home: Path, organization: list[Any], pack_id: str, checks: dict[str, Any]) -> str:
+    """A pack a person retired, in force again, through every check a new one gets. The caller
+    holds the packs lock. Returns what happened."""
+    record = read_state(home)["packs"].get(pack_id)
+    if not record or not record.get("held"):
+        raise StoreError(f"{pack_id} wasn't retired by hand")
+    kept = _kept_retired(home, pack_id, record["highest"])
+    if kept is None:
+        raise StoreError(f"{pack_id}'s signed file isn't kept any more")
+    return add(home, organization, kept[0], kept[1], checks)[1]
+
+
 def retired(home: Path) -> list[tuple[str, int, str]]:
     """(id, version, why) for each retired pack."""
     found = []

@@ -8,6 +8,8 @@ append-only `config_changes` table. The file is written back whole, so
 comments added to it by hand don't survive a change.
 """
 
+import hashlib
+import json
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -404,6 +406,61 @@ def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
         finally:
             store.close()
     return old, new, config
+
+
+class ConfigChangedMeanwhile(Exception):
+    """The configuration isn't as it was when the change was asked for."""
+
+
+def config_version(config: Config) -> str:
+    """Changes when any setting does: what a form was filled in against."""
+    text = json.dumps(config.model_dump(mode="json"), sort_keys=True)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def change_many(home: Path, texts: dict[str, str], expected: str) -> dict[str, tuple[Any, Any]]:
+    """Several settings as one change: validated together, recorded together, all or none, and
+    only if the configuration is still the version they were worked out from. Returns each that
+    changed, as (old, new)."""
+    path = config_file(home)
+    with locked(path):
+        current = load_config(home)
+        if config_version(current) != expected:
+            raise ConfigChangedMeanwhile
+        data = current.model_dump()
+        for key, text in texts.items():
+            setting = SETTABLE.get(key)
+            if setting is None:
+                raise EvidenceError(f"no setting {key!r}")
+            try:
+                value = setting.parse(text)
+            except ValueError as exc:
+                raise EvidenceError(f"{key}: {exc}") from None
+            _get(data, setting.path[:-1])[setting.path[-1]] = value
+        try:
+            config = Config.model_validate(data)
+        except ValidationError as exc:
+            error = exc.errors()[0]
+            where = ".".join(str(part) for part in error["loc"])
+            raise EvidenceError(f"{where}: {error['msg'].removeprefix('Value error, ')}") from None
+        changed = {
+            key: (value_of(current, key), value_of(config, key))
+            for key in texts
+            if value_of(current, key) != value_of(config, key)
+        }
+        if not changed:
+            return {}
+        before = path.read_text(encoding="utf-8")
+        store = Store(database_file(home))
+        try:
+            store.record_config_changes(
+                [(key, old, new) for key, (old, new) in changed.items()],
+                lambda: atomic_write(path, yaml.safe_dump(config.model_dump(), sort_keys=False)),
+                lambda: atomic_write(path, before),
+            )
+        finally:
+            store.close()
+    return changed
 
 
 def remove_host(home: Path, name: str) -> None:

@@ -30,7 +30,16 @@ from checker.fleet import read_evidence, read_fleet, read_host, read_threats
 from checker.inventory import home, load_inventory
 from checker.report import visible
 from checker.settings import remove_host
-from checker.web import accounts, decide, manage, runs, two_factor, wording
+from checker.web import (
+    accounts,
+    decide,
+    manage,
+    runs,
+    setting_forms,
+    threat_updates,
+    two_factor,
+    wording,
+)
 from checker.web.actions import ActionFailed, action, record, record_if_possible
 from checker.web.app import HERE
 from checker.web.middleware import before_second_step, setting_it_up
@@ -50,6 +59,9 @@ VIEWABLE = {
     "manage",
     "manage_add",
     "manage_server",
+    "manage_threats",
+    "threat_rule",
+    "manage_settings",
     "two_factor_manage",
 }
 
@@ -714,6 +726,154 @@ def server_key_trust(request) -> HttpResponse:
         raise ActionFailed(CANT_MANAGE) from None
     request.action_detail = check.fingerprint + ("" if wrote else ": already trusted")
     return _back_to_server(name)
+
+
+def _threats_page(request, outcome=None, problem: str = "", status: int = 200) -> HttpResponse:
+    context = {
+        **threat_updates.overview(home()),
+        "outcome": outcome,
+        "problem": problem,
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_threats.html.j2", context, status=status)
+
+
+def _back_to_threats() -> HttpResponse:
+    return HttpResponseRedirect(reverse("manage_threats"))
+
+
+@login_required
+@require_GET
+def manage_threats(request) -> HttpResponse:
+    """Read from this machine's files alone: asking for updates is its own action."""
+    try:
+        return _threats_page(request)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        return _unreadable_inventory(request, exc)
+
+
+@action("asked for threat updates")
+def threats_pull(request) -> HttpResponse:
+    """A POST, since it makes this machine contact the source. No password: it takes only what's
+    signed by a trusted key, from the one source the settings name, and a stolen session gets
+    nothing from it, like starting a check."""
+    try:
+        outcome = threat_updates.pull_now(home())
+    except threat_updates.UpdateProblem as exc:
+        words = "The updates couldn't be fetched, so nothing more was added."
+        page = _threats_page(request, problem=f"{words} {visible(str(exc), 500)}", status=400)
+        raise ActionFailed(words, page=page) from None
+    request.action_detail = outcome["summary"]
+    return _threats_page(request, outcome=outcome)
+
+
+def _posted_pack(request, **kwargs) -> str:
+    return request.POST.get("pack", "")
+
+
+@action("retired a threat update", consequential=True, target=_posted_pack)
+def threat_retire(request) -> HttpResponse:
+    """Password again: what it looks for stops being looked for, on every server."""
+    try:
+        threat_updates.retire_by_hand(
+            home(),
+            request.POST.get("pack", ""),
+            request.POST.get("reason", ""),
+            request.user.get_username(),
+        )
+    except threat_updates.UpdateProblem as exc:
+        raise ActionFailed(str(visible(str(exc), 600))) from None
+    request.action_detail = str(visible(request.POST.get("reason", ""), 300))
+    return _back_to_threats()
+
+
+@action("put back a threat update", consequential=True, target=_posted_pack)
+def threat_put_back(request) -> HttpResponse:
+    try:
+        threat_updates.put_back_by_hand(home(), request.POST.get("pack", ""))
+    except threat_updates.UpdateProblem as exc:
+        raise ActionFailed(str(visible(str(exc), 600))) from None
+    return _back_to_threats()
+
+
+def _rule_page(request, scope: str, problem: str = "", status: int = 200) -> HttpResponse:
+    found = threat_updates.rule_form(home(), scope)
+    if found is None:
+        return not_found(request)
+    context = {**found, "problem": problem, "code_needed": two_factor.code_needed(request)}
+    return render(request, "manage_rule.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def threat_rule_page(request) -> HttpResponse:
+    try:
+        return _rule_page(request, request.GET.get("for", "all"))
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        return _unreadable_inventory(request, exc)
+
+
+def _posted_scope(request, **kwargs) -> str:
+    return request.POST.get("for", "")
+
+
+@action("changed which threat updates apply", consequential=True, target=_posted_scope)
+def threat_rule_save(request) -> HttpResponse:
+    """Password again: keeping an update off a server stops it being looked for there."""
+    scope = request.POST.get("for", "")
+    try:
+        request.action_detail = threat_updates.save_rule(home(), scope, request.POST)
+    except threat_updates.UpdateProblem as exc:
+        words = str(visible(str(exc), 600))
+        try:
+            page = _rule_page(request, scope, problem=words, status=400)
+        except Exception:  # noqa: BLE001 - the words are what matter
+            page = None
+        if page is not None and page.status_code == 404:  # it's gone: say so, not "not found"
+            page = None
+        raise ActionFailed(words, page=page) from None
+    except MANAGE_FAILURES as exc:
+        print(f"checker web: changing a rule failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(CANT_MANAGE) from None
+    return _back_to_threats()
+
+
+def _settings_page(request, typed=None, problem: str = "", status: int = 200) -> HttpResponse:
+    context = {
+        **setting_forms.page(home(), typed),
+        "problem": problem,
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_settings.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def manage_settings(request) -> HttpResponse:
+    try:
+        return _settings_page(request)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't read the settings: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The settings file can't be read.")
+
+
+@action("changed settings", consequential=True)
+def settings_save(request) -> HttpResponse:
+    """Password again: these decide what's collected, what's kept, and what leaves."""
+    try:
+        changed = setting_forms.save(home(), request.POST)
+    except setting_forms.ChangedMeanwhile as exc:
+        words = str(exc)  # the settings as they are now: saving again can't undo someone else's
+        raise ActionFailed(words, page=_settings_page(request, problem=words, status=400)) from None
+    except setting_forms.FormProblem as exc:
+        words = str(visible(str(exc), 600))
+        page = _settings_page(request, typed=request.POST, problem=words, status=400)
+        raise ActionFailed(words, page=page) from None
+    except MANAGE_FAILURES as exc:
+        print(f"checker web: changing settings failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(CANT_MANAGE) from None
+    request.action_detail = setting_forms.changes_in_words(changed)
+    return HttpResponseRedirect(reverse("manage_settings"))
 
 
 @login_required

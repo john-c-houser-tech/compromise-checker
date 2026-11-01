@@ -937,13 +937,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reporting.add_argument("--bundle", help="this bundle rather than the host's latest")
     reporting.add_argument(
-        "--output", help="the file to write (default: reports/ in the home; .html.age or .pdf.age)"
+        "--output", help="the file to write (default: reports/ in the home; ends in .FORMAT.age)"
     )
     reporting.add_argument(
         "--plain", action="store_true", help="write it plain, not encrypted (to hand it on)"
     )
     reporting.add_argument(
-        "--format", choices=("html", "pdf"), default="html", help="html (the default) or pdf"
+        "--format",
+        choices=("html", "pdf", "json"),
+        default="html",
+        help="html (the default), pdf, or json for SIEMs and tickets",
     )
     reporting.add_argument("--identity", help="the evidence private key file")
     reporting.set_defaults(handler=cmd_report)
@@ -1551,9 +1554,10 @@ def cmd_report(args: argparse.Namespace) -> int:
             " an attacker could use. Keep it out of backups and synced folders, and delete it"
             " when it has been read."
         )
-    elif args.format == "pdf":
+    elif args.format != "html":
         print(
-            f"Encrypted to the evidence key. To read it: age -d -i KEY -o report.pdf {path},"
+            f"Encrypted to the evidence key. To read it: age -d -i KEY -o report.{args.format}"
+            f" {path},"
             " which leaves a plain copy to protect and delete. To send it to someone, write it"
             " with --plain and send it securely."
         )
@@ -1667,7 +1671,7 @@ def _open_report(args: argparse.Namespace, base: Path) -> int:
 
     clashing = [f for f, given in (("--plain", args.plain), ("--output", args.output),
                                    ("--bundle", args.bundle),
-                                   ("--format pdf", args.format == "pdf")) if given]  # fmt: skip
+                                   ("--format", args.format != "html")) if given]  # fmt: skip
     if clashing:
         print(f"checker: --open shows a report; {', '.join(clashing)} write one", file=sys.stderr)
         return 2
@@ -1675,7 +1679,7 @@ def _open_report(args: argparse.Namespace, base: Path) -> int:
         path = Path(args.open) if args.open else latest_report(base / "reports")
         if path is None:
             raise EvidenceError(
-                "no HTML report yet: `checker report HOST` writes one (--open doesn't show PDFs)"
+                "no HTML report yet: `checker report HOST` writes one (--open shows only HTML)"
             )
         if not path.name.endswith((".html", ".html.age")):
             raise EvidenceError(f"not a report (its name ends in .html.age or .html): {path}")

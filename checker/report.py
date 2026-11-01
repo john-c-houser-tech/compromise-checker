@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
 import signal
@@ -482,6 +483,202 @@ def render(
     )
 
 
+JSON_FORMAT = 1
+JSON_TEXT_LIMIT = 4000
+
+
+def _for_machines(value: Any) -> Any:
+    """A value for the JSON report: every string made visible, as in the HTML report, so a
+    host's invisible characters and control codes can't reach a log or a ticket as they are."""
+    if isinstance(value, str):
+        return str(visible(value, JSON_TEXT_LIMIT))
+    if isinstance(value, dict):
+        return {str(visible(k, 200)): _for_machines(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_for_machines(v) for v in value]
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return str(visible(value, JSON_TEXT_LIMIT))
+
+
+# What a finding says, without the references that only mean something inside one parse.
+_JSON_FINDING = (
+    "number",
+    "check",
+    "variant",
+    "title",
+    "category",
+    "band",
+    "summary",
+    "entities",
+    "entities_complete",
+    "first_seen",
+    "last_seen",
+    "new",
+    "uncertain",
+    "ratio",
+    "contribution",
+    "raised_by_pack",
+    "maintenance",
+    "suppressed_by",
+)
+_JSON_BUNDLE = (
+    "id",
+    "status",
+    "started_at",
+    "ended_at",
+    "plaintext_sha256",
+    "ciphertext_sha256",
+    "collector_version",
+)
+
+
+def _json_finding(finding: dict) -> dict:
+    shown = {key: finding.get(key) for key in _JSON_FINDING}
+    shown["excerpts"] = [
+        {k: e.get(k) for k in ("when", "where", "text")} for e in finding.get("excerpts") or []
+    ]
+    rule = finding.get("suppressed_by")
+    if isinstance(rule, dict):  # not its file: that's a path on this machine
+        shown["suppressed_by"] = {k: rule.get(k) for k in ("layer", "rule", "reason", "owner")}
+    return shown
+
+
+def _json_score(score: dict) -> dict:
+    """The score, its references to findings given as the findings' numbers: its own are
+    positions in a list this report doesn't export. Events aren't exported at all."""
+    shown = dict(score or {})
+    shown["contributors"] = [
+        {k: (v + 1 if k == "finding" and isinstance(v, int) else v) for k, v in c.items()}
+        for c in shown.get("contributors") or []
+        if isinstance(c, dict)
+    ]
+    shown["chains"] = [
+        {
+            **{k: v for k, v in c.items() if k not in ("events", "findings")},
+            "findings": [n + 1 for n in c.get("findings") or [] if isinstance(n, int)],
+        }
+        for c in shown.get("chains") or []
+        if isinstance(c, dict)
+    ]
+    return shown
+
+
+def _json_advice(advice: dict) -> dict:
+    """What the report shows of the advisor. A proposal or a command it set aside stays out: a
+    steered model's words mustn't reach a ticket looking like advice."""
+    shown = {}
+    for role, entry in advice.items():
+        answered = entry.get("answered")
+        later = entry.get("later")
+        record = {}
+        if answered:
+            answer = answered.get("answer")
+            if isinstance(answer, dict) and role == "whitelist":
+                answer = {
+                    "judged": [
+                        {k: j.get(k) for k in ("id", "accepted", "hides", "reason")}
+                        for j in answer.get("judged") or []
+                    ]
+                }
+            elif isinstance(answer, dict) and role == "coverage":
+                judged = answer.get("judged") or []
+                answer = {
+                    "offered": [
+                        {k: j.get(k) for k in ("suggestion", "cited", "note", "action")}
+                        for j in judged
+                        if j.get("accepted")
+                    ],
+                    "set_aside": [j.get("reason") for j in judged if not j.get("accepted")],
+                }
+            record["answered"] = {
+                "answer": answer,
+                **{
+                    k: answered.get(k)
+                    for k in (
+                        "at",
+                        "assessed_at",
+                        "bundle_id",
+                        "model_asked",
+                        "model_answered",
+                        "declined_by",
+                        "redaction",
+                        "stale",
+                        "local",
+                        "warning",
+                    )
+                },
+            }
+        if later:
+            record["came_to_nothing"] = {k: later.get(k) for k in ("at", "model_asked", "note")}
+        if record:
+            shown[role] = record
+    return shown
+
+
+def report_json(reports: list[HostReport], generated_by: tuple[str, str]) -> str:
+    """The report for machines: SIEMs and tickets (docs/report-json.md). The same findings and
+    masking as the HTML report. Text from a server is as untrusted here as there."""
+    order = {band: i for i, band in enumerate(BANDS)}
+
+    def worst_first(findings: list[dict]) -> list[dict]:
+        return sorted(findings, key=lambda f: (order.get(f.get("band"), 9), f.get("number") or 0))
+
+    hosts = []
+    for report in reports:
+        assessment = report.assessment
+        bundle = {key: report.row[key] for key in _JSON_BUNDLE}
+        bundle["collector_version"] = str(visible(bundle["collector_version"], 40))
+        whitelist = assessment.get("whitelist")
+        whitelist = whitelist if isinstance(whitelist, dict) else {}
+        in_effect = [f for listed in report.findings.values() for f in listed]
+        hosts.append(
+            {
+                "host": report.host,
+                "bundle": bundle,
+                "analysed_at": assessment.get("analysed_at"),
+                "versions": assessment.get("versions"),
+                # Without these, a check that didn't run reads as one that found nothing.
+                "notes": assessment.get("notes") or [],
+                "checks_not_run": [
+                    {"check": c.get("check"), "status": c.get("status")}
+                    for c in assessment.get("checks") or []
+                    if isinstance(c, dict) and c.get("status") != "ran"
+                ],
+                "baseline_id": assessment.get("baseline_id"),
+                "baseline_set_now": assessment.get("baseline_set_now"),
+                "whitelist_rules_expired": whitelist.get("expired") or [],
+                "score": _json_score(assessment.get("score")),
+                "findings": [_json_finding(f) for f in worst_first(in_effect)],
+                "suppressed": [_json_finding(f) for f in worst_first(report.suppressed)],
+                "exposures": assessment.get("exposures") or [],
+                "packs": assessment.get("packs") or [],
+                "coverage": assessment.get("coverage"),
+                "timeline": [
+                    {k: e.get(k) for k in ("when", "after", "type", "text", "findings")}
+                    for e in report.timeline
+                ],
+                # An AI model's words, never findings, and they don't change the score.
+                "advisor": _json_advice(report.advice),
+            }
+        )
+    who, where = generated_by
+    return json.dumps(
+        _for_machines(
+            {
+                "format": JSON_FORMAT,
+                "generated_at": datetime.now(UTC).isoformat(),
+                "generated_by": {"operator": who, "controller": where, "version": __version__},
+                "hosts": hosts,
+            }
+        ),
+        indent=1,
+        sort_keys=True,
+    )
+
+
 def write_report(
     store: Store,
     hosts: list[str],
@@ -497,7 +694,7 @@ def write_report(
     packs: Callable[[str], tuple[list, list[str]]] | None = None,
     kind: str = "html",
 ) -> Path:
-    """Write the report as HTML or PDF (`kind`), encrypted to the evidence key
+    """Write the report as HTML, PDF or JSON (`kind`), encrypted to the evidence key
     (`report-….html.age`; read_report() reads the HTML) unless `plain`, owner-only either
     way, and add a `reported` entry, with the hash of the file as written, to each
     bundle's custody. `packs` gives a host's threat packs and why any
@@ -516,7 +713,10 @@ def write_report(
         host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h), *packs(h))
         for h in hosts
     ]
-    html = render(reports, who_and_where(), advisor_enabled)
+    if kind == "json":
+        html = report_json(reports, who_and_where())
+    else:
+        html = render(reports, who_and_where(), advisor_enabled)
     if output is None:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         directory.chmod(0o700)  # also when it was already there

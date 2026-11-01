@@ -4183,3 +4183,28 @@ def test_a_failed_notify_says_so_on_the_page(tmp_path):
     process.wait(120)
     process.stdin.close()
     assert "notify command failed" in output, output
+
+
+def test_relative_paths_mean_what_they_mean_on_the_command_line(tmp_path):
+    """A check runs where the server was started, so a relative home or key file still works."""
+    from checker.web.runs import _command
+
+    (tmp_path / "rel").mkdir()
+    env = {**os.environ, "CHECKER_HOME": "rel", "SSH_AUTH_SOCK": ""}
+    subprocess.run(
+        [sys.executable, "-m", "checker", "init"], env=env, cwd=tmp_path, check=True,
+        capture_output=True,
+    )  # fmt: skip
+    (tmp_path / "rel" / "hosts.yaml").write_text(
+        "hosts:\n- name: db01\n  address: 127.0.0.1\n  port: 9\n  user: scan\n  auth: key\n"
+        "  key_path: rel-key\n"
+    )
+    (tmp_path / "rel-key").write_text(
+        asyncssh.generate_private_key("ssh-ed25519").export_private_key().decode()
+    )
+    run = subprocess.run(
+        _command("check", ["db01"]), env=env, cwd=tmp_path, input="{}\n", capture_output=True,
+        text=True, timeout=120,
+    )  # fmt: skip
+    output = run.stdout + run.stderr
+    assert "not set up yet" not in output and "can't be read" not in output, output

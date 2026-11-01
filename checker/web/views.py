@@ -546,7 +546,6 @@ def check_start(request) -> HttpResponse:
 def _start_run(request, kind: str, hosts: list[str], passwords=None) -> HttpResponse:
     try:
         run_id = runs.start(
-            home(),
             kind,
             hosts,
             request.user.get_username(),

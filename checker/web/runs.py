@@ -15,7 +15,6 @@ import sys
 import threading
 import time
 from collections import deque
-from pathlib import Path
 
 from django.db import DatabaseError, close_old_connections, connection
 from django.utils import timezone
@@ -77,7 +76,7 @@ def _command(kind: str, hosts: list[str]) -> list[str]:
     return [*checker, "run", "--unattended", "--from-web-page", "--", *hosts]
 
 
-def start(base: Path, kind: str, hosts: list[str], who: str, address: str, passwords=None) -> int:
+def start(kind: str, hosts: list[str], who: str, address: str, passwords=None) -> int:
     """The new run's id. Raises AlreadyRunning. `passwords` reach only the child."""
     with _lock:
         if _running:
@@ -98,7 +97,6 @@ def start(base: Path, kind: str, hosts: list[str], who: str, address: str, passw
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE if reading_all else subprocess.DEVNULL,
                 stderr=subprocess.STDOUT if reading_all else subprocess.PIPE,
-                cwd=base,
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
                 start_new_session=True,  # so stopping it reaches all it started
             )

@@ -1046,6 +1046,15 @@ def remove_timer(base: Path, only_this_home: bool = False) -> tuple[list[Path], 
         raise InstallFailed("someone else is changing the timer: try again") from None
 
 
+def _stop_with_no_file(stop: list[str]) -> None:
+    """`disable` couldn't find the unit file, which says nothing about a timer still loaded from
+    it: that takes a stop of its own, and only seeing it inactive says it's stopped."""
+    if timer_running() is True:
+        _timer_command(["systemctl", "--user", "stop", f"{UNIT}.timer"])
+        if timer_running() is True:
+            raise InstallFailed(f"`{' '.join(stop)}` couldn't stop the timer still loaded")
+
+
 def _remove_locked(where: Placement) -> tuple[list[Path], bool]:
     present = [path for path in where.files if path.exists()]
     if not present and timer_running() is not True:
@@ -1053,12 +1062,9 @@ def _remove_locked(where: Placement) -> tuple[list[Path], bool]:
     stop, *after = where.stop  # stopped while its files are there; reloaded once they're gone
     done = _timer_command(stop)
     words = (done.stderr or "").strip()
-    fine = (
-        done.returncode == 0
-        or (sys.platform == "darwin" and done.returncode in _NOT_LOADED)
-        or "does not exist" in words
-    )
-    if not fine:
+    if "does not exist" in words:
+        _stop_with_no_file(stop)
+    elif done.returncode != 0 and not (sys.platform == "darwin" and done.returncode in _NOT_LOADED):
         raise InstallFailed(f"`{' '.join(stop)}` failed: {words}")
     for path in present:
         path.unlink()
@@ -1081,7 +1087,14 @@ def timer_time(base: Path) -> str | None:
         if path.suffix == ".plist" and path.exists():
             when = _plist(path).get("StartCalendarInterval")
             if isinstance(when, dict) and set(when) == {"Hour", "Minute"}:
-                return f"{int(when['Hour']):02}:{int(when['Minute']):02}"
+                hour, minute = when["Hour"], when["Minute"]
+                if (
+                    type(hour) is int
+                    and type(minute) is int
+                    and 0 <= hour < 24
+                    and 0 <= minute < 60
+                ):
+                    return f"{hour:02}:{minute:02}"
             return None
         if path.suffix == ".timer" and path.exists():
             try:
@@ -1131,8 +1144,11 @@ def _timer_env(base: Path) -> dict[str, str] | None:
     where = placement(sys.platform, (3, 0), {}, base, Path.home())
     for path in where.files:
         if path.suffix == ".plist" and path.exists():
-            env = _plist(path).get("EnvironmentVariables")
-            return {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else None
+            body = _plist(path)
+            if not body:
+                return None
+            env = body.get("EnvironmentVariables")
+            return {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {}
         if path.suffix == ".service" and path.exists():
             try:
                 text = path.read_text(errors="replace")

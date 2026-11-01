@@ -87,7 +87,9 @@ def _sight(chosen: Any, left: list[Path]) -> str:
                 sorted(str(path) for path in left),
                 sorted(str(path) for path in chosen.files),
                 sorted((str(path), digest) for path, digest in chosen.digests.items()),
-            ]
+                sorted(chosen.expect.items()),  # a baseline accepted since, among other things
+            ],
+            default=str,
         ).encode()
     ).hexdigest()
 

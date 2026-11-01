@@ -7362,3 +7362,80 @@ def test_deleting_holds_off_new_runs_until_it_s_done(web, inventory, monkeypatch
     monkeypatch.setattr(purging, "execute", looking)
     assert client.post("/manage/delete/confirm", form).status_code == 200
     assert seen == [1] and runs._held == 0
+
+
+def test_a_timer_with_no_file_is_only_called_stopped_once_it_s_inactive(
+    web, inventory, timer, monkeypatch
+):
+    import subprocess
+
+    client, _ = signed_in(web)
+    timer["active"] = "active"
+    real = subprocess.run
+
+    def no_unit_file(command, **kwargs):
+        if "disable" in command:
+            return _Ran(returncode=1, stderr="Unit file compromise-checker.timer does not exist.")
+        if "stop" in command:
+            timer["ran"].append(command)
+            if timer.get("stops"):
+                timer["active"] = "inactive"
+            return _Ran()
+        return real(command, **kwargs)
+
+    monkeypatch.setattr("subprocess.run", no_unit_file)
+    refused = client.post("/manage/schedule/stop", {"confirm_password": PASSWORD})
+    assert refused.status_code == 400 and "wasn't stopped" in said(refused)
+    timer["stops"] = True
+    done = client.post("/manage/schedule/stop", {"confirm_password": PASSWORD})
+    assert done.status_code == 302 and records_of("stopped the daily check")[-1].detail == "stopped"
+
+
+def test_a_plist_that_can_t_establish_whose_it_is_isn_t_taken_for_this_one_s(tmp_path, monkeypatch):
+    import plistlib
+
+    from checker import schedule
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    folder = tmp_path / "user" / "Library" / "LaunchAgents"
+    folder.mkdir(parents=True)
+    path = folder / f"{schedule.LAUNCHD_LABEL}.plist"
+    path.write_bytes(plistlib.dumps({"ProgramArguments": ["/usr/bin/env", "CHECKER_HOME=/x"]}))
+    assert schedule.timer_of_another_home(tmp_path) is True
+    path.write_bytes(plistlib.dumps({}))
+    assert schedule.timer_of_another_home(tmp_path) is False, "nothing to read: nobody locked out"
+    path.write_bytes(b"not a plist")
+    assert schedule.timer_of_another_home(tmp_path) is False
+
+
+@pytest.mark.parametrize(
+    "when",
+    [{"Hour": "two", "Minute": 15}, {"Hour": 99, "Minute": 15}, {"Hour": 2, "Minute": True},
+     {"Hour": 2, "Minute": 15, "Weekday": 1}, "daily"],
+)  # fmt: skip
+def test_a_plist_changed_by_hand_gives_no_time_and_no_error(tmp_path, monkeypatch, when):
+    import plistlib
+
+    from checker import schedule
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    folder = tmp_path / "user" / "Library" / "LaunchAgents"
+    folder.mkdir(parents=True)
+    path = folder / f"{schedule.LAUNCHD_LABEL}.plist"
+    path.write_bytes(plistlib.dumps({"StartCalendarInterval": when}))
+    assert schedule.timer_time(tmp_path) is None
+
+
+def test_a_baseline_accepted_since_the_preview_means_looking_again(web, inventory):
+    from checker.baseline import accept
+
+    client, home = signed_in(web)
+    stored(home, "b1", 30)
+    stored(home, "b2", 20)
+    form = purge_form(client, **ONE_SERVER)
+    accept(home[1], "web01", "ours", identity_of(home), home[3].recipients, "b2")
+    response = client.post("/manage/delete/confirm", form)
+    assert response.status_code == 400 and "changed since you looked" in said(response)
+    assert sorted(bundles_of(home)) == ["b1", "b2"]

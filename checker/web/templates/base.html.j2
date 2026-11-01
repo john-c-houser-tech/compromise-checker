@@ -16,11 +16,15 @@
     <a href="{{ url('fleet') }}">Servers</a>
     <a href="{{ url('threats') }}">Known threats</a>
     <a href="{{ url('activity') }}">Activity</a>
+    <a href="{{ url('two_factor_manage') }}">Sign-in security</a>
   </nav>
   <form method="post" action="{{ url('logout') }}">{{ csrf_input }}<button>Sign out</button></form>
   {% endif %}
 </header>
 <main>
+{% block nudge %}{% if request is defined and two_factor_is_off(request) %}
+<p class="nudge">Your results describe weaknesses an attacker could use, and a password alone can be stolen. <a href="{{ url('two_factor_setup') }}">Turn on two-factor sign-in</a>: it takes about two minutes and an authenticator app on your phone.</p>
+{% endif %}{% endblock %}
 {% block main %}{% endblock %}
 </main>
 </body>

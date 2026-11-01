@@ -44,6 +44,14 @@ def is_local(host: str) -> bool:
     return bool(found) and all(ipaddress.ip_address(a.partition("%")[0]).is_loopback for a in found)
 
 
+def two_factor_required(public_url: str | None, listens_beyond: bool) -> bool:
+    """Whenever another machine can reach it. A .localhost name never leaves this machine."""
+    if listens_beyond:
+        return True
+    host = urlsplit(public_url).hostname if public_url else None
+    return bool(host) and not (is_local(host) or host.endswith(".localhost"))
+
+
 def public_url_problem(public_url: str) -> str | None:
     """What's wrong with the address people use. Plain http to another machine would
     send passwords and evidence in the clear; a wildcard would turn off the Host check."""
@@ -66,7 +74,9 @@ def public_url_problem(public_url: str) -> str | None:
     return None
 
 
-def django_settings(home: Path, public_url: str | None = None, tls: bool = False) -> dict:
+def django_settings(
+    home: Path, public_url: str | None = None, tls: bool = False, listens_beyond: bool = False
+) -> dict:
     """Every setting in one place. Behind a proxy, `public_url` is the address people use:
     only it is accepted as a Host and as a form's origin, and over https cookies are
     https-only."""
@@ -83,11 +93,16 @@ def django_settings(home: Path, public_url: str | None = None, tls: bool = False
         "CSRF_TRUSTED_ORIGINS": [f"{parts.scheme}://{parts.netloc}"] if parts else [],
         # Behind a proxy every peer is the proxy: see accounts.client_address.
         "CHECKER_BEHIND_PROXY": bool(parts),
+        "CHECKER_TWO_FACTOR_REQUIRED": two_factor_required(public_url, listens_beyond),
+        "OTP_TOTP_ISSUER": product_name(),
         "ROOT_URLCONF": "checker.web.urls",
         "INSTALLED_APPS": [
             "django.contrib.contenttypes",
             "django.contrib.auth",
             "django.contrib.sessions",
+            "django_otp",
+            "django_otp.plugins.otp_totp",
+            "django_otp.plugins.otp_static",
             "checker.web",
         ],
         "MIDDLEWARE": [
@@ -97,6 +112,8 @@ def django_settings(home: Path, public_url: str | None = None, tls: bool = False
             "django.middleware.common.CommonMiddleware",
             "django.middleware.csrf.CsrfViewMiddleware",
             "django.contrib.auth.middleware.AuthenticationMiddleware",
+            "django_otp.middleware.OTPMiddleware",
+            "checker.web.middleware.TwoFactorGate",
         ],
         "DATABASES": {
             "default": {
@@ -141,7 +158,9 @@ def django_settings(home: Path, public_url: str | None = None, tls: bool = False
     }
 
 
-def configure(home: Path, public_url: str | None = None, tls: bool = False) -> None:
+def configure(
+    home: Path, public_url: str | None = None, tls: bool = False, listens_beyond: bool = False
+) -> None:
     """Once per process. The accounts database is made or brought up to date, owner-only."""
     import django
     from django.conf import settings
@@ -156,7 +175,7 @@ def configure(home: Path, public_url: str | None = None, tls: bool = False) -> N
     # say nothing, and paths (which can hold a setup link) stay out of it.
     logging.getLogger("django.request").setLevel(logging.ERROR)
     logging.getLogger("django.security").setLevel(logging.CRITICAL)
-    settings.configure(**django_settings(home, public_url, tls))
+    settings.configure(**django_settings(home, public_url, tls, listens_beyond))
     django.setup()
     call_command("migrate", verbosity=0, interactive=False)
     _protect_the_record()
@@ -248,7 +267,9 @@ def serve(
     if problem:
         print(f"checker: {problem}", file=sys.stderr)
         return 2
-    configure(home, public_url, tls)
+    from gunicorn.util import parse_address
+
+    configure(home, public_url, tls, listens_beyond=not is_local(parse_address(bind)[0]))
 
     from django.core.wsgi import get_wsgi_application
 

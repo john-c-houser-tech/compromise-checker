@@ -18,18 +18,20 @@ from django.shortcuts import render
 from django.urls import Resolver404, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
+from django_otp import login as otp_login
 
 from checker.evidence import EvidenceError
 from checker.fleet import read_evidence, read_fleet, read_host, read_threats
 from checker.inventory import home
 from checker.report import visible
-from checker.web import accounts, wording
-from checker.web.actions import record, record_if_possible
+from checker.web import accounts, two_factor, wording
+from checker.web.actions import ActionFailed, action, record, record_if_possible
 from checker.web.app import HERE
+from checker.web.middleware import before_second_step
 from checker.web.models import ActionRecord
 
 # Where a login may go on to: not a form's address, which would land on an error.
-VIEWABLE = {"fleet", "host", "evidence", "threats", "activity"}
+VIEWABLE = {"fleet", "host", "evidence", "threats", "activity", "two_factor_manage"}
 
 
 def _safe_next(request) -> str:
@@ -51,6 +53,7 @@ FONTS = (
 )
 
 
+@before_second_step
 @require_GET
 def font(request, name: str) -> HttpResponse:
     """Only these files, by exact name: nothing typed in a URL reaches the file system."""
@@ -62,6 +65,7 @@ def font(request, name: str) -> HttpResponse:
     return response
 
 
+@before_second_step
 @require_GET
 def stylesheet(request) -> HttpResponse:
     response = HttpResponse((HERE / "static" / "style.css").read_bytes(), content_type="text/css")
@@ -69,6 +73,7 @@ def stylesheet(request) -> HttpResponse:
     return response
 
 
+@before_second_step
 @require_http_methods(["GET", "POST"])
 def setup_page(request, token: str) -> HttpResponse:
     """Creates the first account, once. An invalid link says nothing about why."""
@@ -105,6 +110,7 @@ def setup_page(request, token: str) -> HttpResponse:
     return render(request, "setup.html.j2", {"errors": errors, "username": username})
 
 
+@before_second_step
 @require_http_methods(["GET", "POST"])
 def login_page(request) -> HttpResponse:
     error = None
@@ -123,7 +129,9 @@ def login_page(request) -> HttpResponse:
                     with transaction.atomic():  # no sign-in without its line in the record
                         accounts.clear_failures(username, address)
                         login(request, user)
-                        record(request, "signed in")
+                        # With a second step to come, this isn't signing in yet.
+                        words = "password accepted" if two_factor.is_on(user) else "signed in"
+                        record(request, words)
                 except Exception:
                     request.user = AnonymousUser()  # the error page mustn't look signed in
                     raise
@@ -136,6 +144,7 @@ def login_page(request) -> HttpResponse:
     )
 
 
+@before_second_step
 @require_POST
 def logout_page(request) -> HttpResponse:
     if request.user.is_authenticated:  # anyone can post here: only a real sign-out is kept
@@ -162,6 +171,116 @@ def logout_page(request) -> HttpResponse:
         )
         return response
     return HttpResponseRedirect(reverse("login"))
+
+
+@before_second_step
+@require_http_methods(["GET", "POST"])
+@login_required
+def two_factor_page(request) -> HttpResponse:
+    """The second step, with only a password so far. A form and not an action, like signing in."""
+    user = request.user
+    if user.is_verified():
+        return HttpResponseRedirect(_safe_next(request))
+    if not two_factor.is_on(user):
+        return HttpResponseRedirect(reverse("two_factor_setup"))
+    error = None
+    if request.method == "POST":
+        device = two_factor.check_code(user, request.POST.get("code", ""))
+        if device is not None:
+            try:
+                with transaction.atomic():  # no sign-in without its line in the record
+                    otp_login(request, device)
+                    request.session.cycle_key()
+                    how = "with a recovery code" if two_factor.used_recovery_code(device) else ""
+                    record(request, "signed in", detail=how)
+            except Exception:
+                request.user = AnonymousUser()  # the error page mustn't look signed in
+                raise
+            return HttpResponseRedirect(_safe_next(request))
+        record_if_possible(request, "wrong code at sign-in", outcome="refused")
+        # One message: each wrong code makes the next wait longer, and saying so helps a guesser.
+        error = "That code didn't work. A code works only once: wait for the next and try again."
+    return render(
+        request,
+        "two_factor.html.j2",
+        {"error": error, "next": request.POST.get("next") or request.GET.get("next", "")},
+        status=200 if error is None else 403,
+    )
+
+
+@before_second_step
+@login_required
+@require_GET
+def two_factor_setup(request) -> HttpResponse:
+    user = request.user
+    if two_factor.is_on(user):
+        return HttpResponseRedirect(
+            reverse("two_factor_manage" if user.is_verified() else "two_factor")
+        )
+    device = two_factor.pending(user)
+    return render(
+        request,
+        "two_factor_setup.html.j2",
+        {
+            "required": settings.CHECKER_TWO_FACTOR_REQUIRED,
+            "qr": two_factor.qr_code(device) if device else None,
+            "secret": two_factor.secret_text(device) if device else None,
+        },
+    )
+
+
+@before_second_step
+@action("started setting up two-factor")
+def two_factor_start(request) -> HttpResponse:
+    if two_factor.is_on(request.user):
+        raise ActionFailed("Two-factor sign-in is already on.")
+    two_factor.start(request.user)
+    return HttpResponseRedirect(reverse("two_factor_setup"))
+
+
+@before_second_step
+@action("turned on two-factor", consequential=True)
+def two_factor_turn_on(request) -> HttpResponse:
+    """The password as well: a stolen session mustn't be able to lock its owner out."""
+    done = two_factor.turn_on(request.user, request.POST.get("code", ""))
+    if done is None:
+        raise ActionFailed(
+            "That code didn't work. Go back, check that your phone's clock is right, and try the"
+            " next one."
+        )
+    device, codes = done
+    otp_login(request, device)
+    request.session.cycle_key()
+    return render(request, "two_factor_codes.html.j2", {"codes": codes})
+
+
+@login_required
+@require_GET
+def two_factor_manage(request) -> HttpResponse:
+    user = request.user
+    return render(
+        request,
+        "two_factor_manage.html.j2",
+        {
+            "on": two_factor.is_on(user),
+            "left": two_factor.recovery_codes_left(user),
+            "required": settings.CHECKER_TWO_FACTOR_REQUIRED,
+        },
+    )
+
+
+@action("made new recovery codes", consequential=True)
+def two_factor_new_codes(request) -> HttpResponse:
+    if not two_factor.is_on(request.user):
+        raise ActionFailed("Two-factor sign-in is off, so there are no recovery codes to replace.")
+    codes = two_factor.new_recovery_codes(request.user)
+    return render(request, "two_factor_codes.html.j2", {"codes": codes})
+
+
+@action("turned off two-factor", consequential=True)
+def two_factor_turn_off(request) -> HttpResponse:
+    two_factor.turn_off(request.user)
+    return HttpResponseRedirect(reverse("two_factor_manage"))
 
 
 @login_required

@@ -160,6 +160,31 @@ def no_such_account(username: str) -> str | None:
     return f"There's no account called {username}. The accounts are: {names or 'none yet'}"
 
 
+def turn_off_two_factor(username: str) -> str | None:
+    """For the command line, when a phone and its recovery codes are both gone."""
+    from checker.web import two_factor  # it needs Django set up further than this module does
+
+    problem = no_such_account(username)
+    if problem:
+        return problem
+    with transaction.atomic():
+        two_factor.turn_off(get_user_model().objects.get(username=username))
+        _record_from_command_line("turned off two-factor from the command line", username)
+    return None
+
+
+def _record_from_command_line(action: str, username: str) -> None:
+    ActionRecord.objects.create(
+        at=timezone.now(),
+        who="",
+        address="this machine",
+        action=action,
+        target=username,
+        outcome="done",
+        detail="",
+    )
+
+
 def reset_password(username: str, password: str) -> list[str]:
     """For the command line, when a password is lost. Why it can't be done, or nothing: the
     account's sessions end with its old password, and the record says it happened."""
@@ -175,13 +200,5 @@ def reset_password(username: str, password: str) -> list[str]:
         user.set_password(password)
         user.save()
         LoginAttempt.objects.filter(username=username.lower()).delete()
-        ActionRecord.objects.create(
-            at=timezone.now(),
-            who="",
-            address="this machine",
-            action="reset a password from the command line",
-            target=username,
-            outcome="done",
-            detail="",
-        )
+        _record_from_command_line("reset a password from the command line", username)
     return []

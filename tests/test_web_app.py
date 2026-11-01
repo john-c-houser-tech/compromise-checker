@@ -1712,15 +1712,15 @@ def send(client, method, path):
 
 
 def route_problems(client):
-    """What's wrong with the routes: only the gate, and these three forms by identity since they
-    come before there's anyone to record, may accept anything but a GET, and a GET may change
-    nothing but the record."""
+    """What's wrong with the routes: only the gate, and these forms by identity since they come
+    before there's anyone fully signed in to record, may accept anything but a GET, and a GET may
+    change nothing but the record."""
     from django.urls import get_resolver
 
     from checker.web import views
     from checker.web.actions import GATED
 
-    forms = {views.login_page, views.logout_page, views.setup_page}
+    forms = {views.login_page, views.logout_page, views.setup_page, views.two_factor_page}
     problems = []
     for pattern in get_resolver("checker.web.urls").url_patterns:
         view = pattern.callback
@@ -1808,7 +1808,7 @@ def test_the_route_walk_passes_a_real_action(web):
 
 def test_the_forms_before_the_gate_take_only_what_they_should(web):
     client, _ = web
-    for path in ("/login", "/logout", "/setup/x"):
+    for path in ("/login", "/logout", "/setup/x", "/two-factor"):
         for method in ("PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"):
             assert send(client, method, path).status_code == 405, (path, method)
 
@@ -2556,3 +2556,428 @@ def test_the_record_pages_back(web, settings_override, monkeypatch):
     assert "thing-2" in text and "thing-1" in text and "thing-3" not in text
     for odd in ("x", "-1", "0", str(2**63), str(2**70), "1" * 5000):
         assert client.get("/activity", {"before": odd}).status_code == 200, odd
+
+
+# --- Two-factor sign-in -----------------------------------------------------------------------
+
+
+def with_app(user):
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    return TOTPDevice.objects.create(user=user, name="authenticator", confirmed=True)
+
+
+def code_from(device, later=0):
+    from django_otp.oath import totp
+
+    return f"{totp(device.bin_key, t0=device.t0 - later * device.step):06d}"
+
+
+def fresh(device):
+    """The app's next code, without waiting 30 seconds or for the back-off to pass."""
+    type(device).objects.filter(pk=device.pk).update(
+        last_t=-1, throttling_failure_count=0, throttling_failure_timestamp=None
+    )
+    device.refresh_from_db()
+    return code_from(device)
+
+
+def past_the_password(client, name="jo"):
+    response = client.post("/login", {"username": name, "password": PASSWORD})
+    assert response.status_code == 302
+    return response
+
+
+def turn_on_two_factor(client):
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    assert client.post("/two-factor/start", {"x": "1"}).status_code == 302
+    device = TOTPDevice.objects.get(confirmed=False)
+    return client.post(
+        "/two-factor/turn-on", {"code": code_from(device), "confirm_password": PASSWORD}
+    ), device
+
+
+def test_with_only_a_password_nothing_opens_but_the_second_step(web):
+    """Every route but those named here, by walking them: a new page can't forget this."""
+    from django.urls import get_resolver
+
+    from checker.web import views
+    from checker.web.actions import GATED
+    from checker.web.middleware import BEFORE_SECOND_STEP
+
+    assert BEFORE_SECOND_STEP == {
+        views.font,
+        views.stylesheet,
+        views.setup_page,
+        views.login_page,
+        views.logout_page,
+        views.two_factor_page,
+        views.two_factor_setup,
+        views.two_factor_start,
+        views.two_factor_turn_on,
+    }
+    client, home = web
+    with_app(account())
+    analysed(home, "b1", 10, CLEAN)
+    past_the_password(client)
+    walked = 0
+    for pattern in get_resolver("checker.web.urls").url_patterns:
+        if pattern.callback in BEFORE_SECOND_STEP:
+            continue
+        walked += 1
+        path = "/" + re.sub(r"<[^>]+>", "web01", str(pattern.pattern))
+        method = client.post if pattern.callback in GATED else client.get
+        response = method(path, {"x": "1"})
+        assert response.status_code == 302, path
+        assert response["Location"].startswith("/two-factor"), path
+    assert walked >= 7
+
+
+def test_signing_in_takes_the_password_then_the_code(web):
+    from checker.web.models import ActionRecord
+
+    client, _ = web
+    device = with_app(account())
+    response = past_the_password(client)
+    assert client.get("/").status_code == 302
+    before = client.cookies["checker_session"].value
+    response = client.post("/two-factor", {"code": code_from(device), "next": "/activity"})
+    assert response.status_code == 302 and response["Location"] == "/activity"
+    assert client.get("/activity").status_code == 200
+    assert client.cookies["checker_session"].value != before  # a new session at the new level
+    assert [row[0] for row in the_record()] == ["password accepted", "signed in"]
+    assert ActionRecord.objects.order_by("-id").first().who == "jo"
+
+
+def test_the_page_a_login_was_going_to_survives_the_second_step(web):
+    client, _ = web
+    device = with_app(account())
+    response = client.post("/login?next=/activity", {"username": "jo", "password": PASSWORD,
+                                                     "next": "/activity"})  # fmt: skip
+    response = client.get(response["Location"])
+    assert response.status_code == 302 and "next=%2Factivity" in response["Location"]
+    assert 'value="/activity"' in client.get(response["Location"]).content.decode()
+    response = client.post("/two-factor", {"code": code_from(device), "next": "//evil.example/"})
+    assert response["Location"] == "/"
+
+
+def test_a_wrong_code_doesnt_get_in_and_is_recorded(web):
+    client, _ = web
+    with_app(account())
+    past_the_password(client)
+    response = client.post("/two-factor", {"code": "000000"})
+    assert response.status_code == 403
+    assert client.get("/").status_code == 302
+    assert the_record()[-1] == ("wrong code at sign-in", "", "refused")
+
+
+def test_wrong_codes_make_even_the_right_one_wait(web):
+    client, _ = web
+    device = with_app(account())
+    past_the_password(client)
+    client.post("/two-factor", {"code": "000000"})
+    assert client.post("/two-factor", {"code": code_from(device)}).status_code == 403
+
+
+def test_a_code_works_only_once(web):
+    client, _ = web
+    device = with_app(account())
+    code = code_from(device)
+    past_the_password(client)
+    assert client.post("/two-factor", {"code": code}).status_code == 302
+    second = browser()
+    past_the_password(second)
+    assert second.post("/two-factor", {"code": code}).status_code == 403
+
+
+def test_a_recovery_code_works_once_and_doesnt_touch_the_apps_count(web):
+    from checker.web import two_factor
+    from checker.web.models import ActionRecord
+
+    client, _ = web
+    user = account()
+    device = with_app(user)
+    codes = two_factor.new_recovery_codes(user)
+    assert len(set(codes)) == two_factor.RECOVERY_CODES
+    past_the_password(client)
+    typed = " ".join((codes[0][:8].upper(), codes[0][8:]))  # as a person reads it off paper
+    assert client.post("/two-factor", {"code": typed}).status_code == 302
+    assert ActionRecord.objects.order_by("-id").first().detail == "with a recovery code"
+    assert two_factor.recovery_codes_left(user) == two_factor.RECOVERY_CODES - 1
+    device.refresh_from_db()
+    assert device.throttling_failure_count == 0
+    second = browser()
+    past_the_password(second)
+    assert second.post("/two-factor", {"code": codes[0]}).status_code == 403
+
+
+def test_another_accounts_code_doesnt_work(web):
+    client, _ = web
+    with_app(account())
+    other = with_app(account_named("sam"))
+    past_the_password(client)
+    assert client.post("/two-factor", {"code": code_from(other)}).status_code == 403
+
+
+def test_someone_elses_recovery_code_doesnt_work(web):
+    from checker.web import two_factor
+
+    client, _ = web
+    with_app(account())
+    codes = two_factor.new_recovery_codes(account_named("sam"))
+    past_the_password(client)
+    assert client.post("/two-factor", {"code": codes[0]}).status_code == 403
+
+
+def test_a_sign_in_that_cant_be_recorded_stops_at_the_second_step_too(web, monkeypatch):
+    client, _ = web
+    device = with_app(account())
+    past_the_password(client)
+    broken_record(monkeypatch)
+    response = client.post("/two-factor", {"code": code_from(device)})
+    assert response.status_code == 500
+    assert "Sign out</button>" not in response.content.decode()
+    monkeypatch.undo()
+    assert client.get("/").status_code == 302
+
+
+def test_when_another_machine_can_reach_it_setup_comes_first(web, settings_override):
+    settings_override(CHECKER_TWO_FACTOR_REQUIRED=True)
+    client, home = web
+    account()
+    analysed(home, "b1", 10, CLEAN)
+    past_the_password(client)
+    for path in ("/", "/hosts/web01", "/hosts/web01/evidence", "/activity", "/threats"):
+        response = client.get(path)
+        assert response.status_code == 302 and response["Location"] == "/two-factor/setup", path
+    text = client.get("/two-factor/setup").content.decode()
+    assert "can be reached from other machines" in text
+    response, device = turn_on_two_factor(client)
+    assert response.status_code == 200
+    assert client.get("/").status_code == 200  # the code just given counts as the second step
+
+
+def test_on_this_machine_only_it_is_optional_and_strongly_prompted(web):
+    client, _ = signed_in(web)
+    text = client.get("/").content.decode()
+    assert client.get("/").status_code == 200 and "Turn on two-factor sign-in" in text
+    response, _ = turn_on_two_factor(client)
+    assert "Turn on two-factor sign-in" not in client.get("/").content.decode()
+    assert "recovery" in response.content.decode()
+
+
+def test_requiring_it_follows_who_can_reach_the_server(tmp_path):
+    required = web_app.two_factor_required
+    assert not required(None, False)
+    assert not required("https://localhost:8443", False)
+    assert not required("http://127.0.0.1:8088", False)
+    assert not required("https://checker.localhost:8443", False)
+    assert required("https://checker.example", False)
+    assert required(None, True)
+    assert required("https://localhost:8443", True)
+    assert required("https://localhost.example", False)
+    made = web_app.django_settings(tmp_path, "https://checker.example")
+    assert made["CHECKER_TWO_FACTOR_REQUIRED"]
+    assert not web_app.django_settings(tmp_path)["CHECKER_TWO_FACTOR_REQUIRED"]
+    assert web_app.django_settings(tmp_path, listens_beyond=True)["CHECKER_TWO_FACTOR_REQUIRED"]
+
+
+def test_turning_it_on_needs_the_password_and_a_right_code(web):
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    from checker.web import two_factor
+    from checker.web.models import ActionRecord
+
+    client, _ = signed_in(web)
+    client.post("/two-factor/start", {"x": "1"})
+    device = TOTPDevice.objects.get(confirmed=False)
+    no_password = client.post("/two-factor/turn-on", {"code": code_from(device)})
+    assert no_password.status_code == 403
+    wrong = client.post("/two-factor/turn-on", {"code": "000000", "confirm_password": PASSWORD})
+    assert wrong.status_code == 400
+    user = device.user
+    assert not two_factor.is_on(user)
+    right = {"code": fresh(device), "confirm_password": PASSWORD}
+    response = client.post("/two-factor/turn-on", right)
+    assert response.status_code == 200 and two_factor.is_on(user)
+    assert two_factor.recovery_codes_left(user) == two_factor.RECOVERY_CODES
+    assert "no-store" in response["Cache-Control"]
+    assert ActionRecord.objects.order_by("-id").first().outcome == "done"
+    again = client.post("/two-factor/turn-on", right)
+    assert again.status_code in (302, 400, 403)
+
+
+def test_turning_it_on_shows_a_code_that_works_under_the_page_rules(web):
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    from checker.web import two_factor
+
+    client, _ = signed_in(web)
+    assert "<svg" not in client.get("/two-factor/setup").content.decode()
+    assert TOTPDevice.objects.count() == 0  # a GET changes nothing
+    client.post("/two-factor/start", {"x": "1"})
+    device = TOTPDevice.objects.get()
+    response = client.get("/two-factor/setup")
+    text = response.content.decode()
+    assert "<svg" in text and two_factor.secret_text(device) in text
+    assert "<script" not in text and not re.search(r"<svg[^>]*style=", text)
+    assert "unsafe-inline" not in response["Content-Security-Policy"]
+    assert "no-store" in response["Cache-Control"]
+
+
+def test_starting_again_makes_a_new_secret(web):
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    client, _ = signed_in(web)
+    client.post("/two-factor/start", {"x": "1"})
+    first = TOTPDevice.objects.get().key
+    client.post("/two-factor/start", {"x": "1"})
+    assert TOTPDevice.objects.get().key != first
+
+
+def test_secrets_and_codes_stay_out_of_the_record(web):
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    from checker.web.models import ActionRecord
+
+    client, _ = signed_in(web)
+    response, device = turn_on_two_factor(client)
+    codes = re.findall(r"<code>(\w+)</code>", response.content.decode())
+    assert len(codes) == 10
+    words = str(list(ActionRecord.objects.values()))
+    key = TOTPDevice.objects.get().key
+    assert key not in words and not any(code in words for code in codes)
+
+
+def test_a_consequential_action_needs_the_code_as_well_when_it_is_on(web):
+    view, done = an_action(consequential=True)
+    user = account()
+    device = with_app(user)
+    bare = {"confirm_password": PASSWORD}
+    assert view(request_for(user, bare)).status_code == 403
+    assert view(request_for(user, {**bare, "confirm_code": "000000"})).status_code == 403
+    wrong_password = {"confirm_password": "wrong", "confirm_code": fresh(device)}
+    assert view(request_for(user, wrong_password)).status_code == 403
+    assert not done
+    right = {**bare, "confirm_code": fresh(device)}
+    assert view(request_for(user, right)).status_code == 200
+    assert done == [1]
+
+
+def test_a_code_guessed_at_a_confirmation_ends_the_session_like_a_password(web):
+    from django.contrib.sessions.models import Session
+
+    from checker.web.accounts import MAX_WRONG_CONFIRMATIONS
+
+    view, _ = an_action(consequential=True)
+    user = account()
+    with_app(user)
+    key = request_for(user).session.session_key
+    for _ in range(MAX_WRONG_CONFIRMATIONS):
+        data = {"confirm_password": PASSWORD, "confirm_code": "000000"}
+        view(request_for(user, data, session=key))
+    assert not Session.objects.filter(session_key=key).exists()
+
+
+def verified_client(web):
+    client, _ = web
+    user = account()
+    device = with_app(user)
+    past_the_password(client)
+    client.post("/two-factor", {"code": fresh(device)})
+    return client, user, device
+
+
+def test_new_recovery_codes_replace_the_old_and_need_the_code(web):
+    from checker.web import two_factor
+
+    client, user, device = verified_client(web)
+    old = two_factor.new_recovery_codes(user)
+    bare = {"confirm_password": PASSWORD}
+    assert client.post("/two-factor/new-codes", bare).status_code == 403
+    assert two_factor.recovery_codes_left(user) == len(old)
+    data = {**bare, "confirm_code": fresh(device)}
+    response = client.post("/two-factor/new-codes", data)
+    text = response.content.decode()
+    assert response.status_code == 200 and old[0] not in text
+    assert len(re.findall(r"<code>(\w+)</code>", text)) == two_factor.RECOVERY_CODES
+    manage = client.get("/two-factor/manage").content.decode()
+    assert f"{two_factor.RECOVERY_CODES} recovery codes left" in manage
+
+
+def test_turning_it_off_needs_the_code_and_leaves_no_way_round_when_required(
+    web, settings_override
+):
+    from checker.web import two_factor
+
+    client, user, device = verified_client(web)
+    assert client.post("/two-factor/turn-off", {"confirm_password": PASSWORD}).status_code == 403
+    assert two_factor.is_on(user)
+    settings_override(CHECKER_TWO_FACTOR_REQUIRED=True)
+    data = {"confirm_password": PASSWORD, "confirm_code": fresh(device)}
+    assert client.post("/two-factor/turn-off", data).status_code == 302
+    assert not two_factor.is_on(user)
+    response = client.get("/")
+    assert response.status_code == 302 and response["Location"] == "/two-factor/setup"
+
+
+def test_a_stolen_session_with_no_device_cant_turn_it_on(web):
+    from django.contrib.auth import get_user_model
+
+    from checker.web import two_factor
+
+    client, _ = signed_in(web)
+    client.post("/two-factor/start", {"x": "1"})
+    device = two_factor.pending(get_user_model().objects.get(username="jo"))
+    response = client.post("/two-factor/turn-on", {"code": code_from(device)})
+    assert response.status_code == 403 and not two_factor.is_on(device.user)
+
+
+def test_with_only_a_password_the_turn_on_route_cant_replace_a_device(web):
+    from checker.web import two_factor
+
+    client, _ = web
+    user = account()
+    device = with_app(user)
+    past_the_password(client)
+    assert client.post("/two-factor/start", {"x": "1"}).status_code == 400
+    assert not two_factor.pending(user)
+    data = {"code": code_from(device), "confirm_password": PASSWORD}
+    assert client.post("/two-factor/turn-on", data).status_code == 403
+    data["confirm_code"] = fresh(device)
+    assert client.post("/two-factor/turn-on", data).status_code == 400
+    assert client.get("/").status_code == 302
+
+
+def test_two_factor_can_be_turned_off_from_the_command_line(web):
+    from checker.web import two_factor
+    from checker.web.accounts import turn_off_two_factor
+
+    user = account()
+    with_app(user)
+    two_factor.new_recovery_codes(user)
+    assert "no account called nobody" in turn_off_two_factor("nobody")
+    assert turn_off_two_factor("jo") is None
+    assert not two_factor.is_on(user)
+    assert the_record()[-1][:2] == ("turned off two-factor from the command line", "jo")
+
+
+def test_the_two_factor_command_for_real(tmp_path):
+    def run(home):
+        return subprocess.run(
+            [sys.executable, "-m", "checker", "web-two-factor-off", "jo"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "CHECKER_HOME": str(home)},
+        )
+
+    missing = run(tmp_path / "typo")
+    assert missing.returncode == 1 and not (tmp_path / "typo").exists()
+    (tmp_path / "web.db").touch()
+    assert "no account called jo" in run(tmp_path).stderr
+    subprocess.run(
+        [sys.executable, "-c", MAKE_ACCOUNT, str(tmp_path)], check=True, capture_output=True
+    )
+    done = run(tmp_path)
+    assert done.returncode == 0 and "is off for jo" in done.stdout

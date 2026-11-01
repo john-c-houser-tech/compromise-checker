@@ -1,6 +1,11 @@
 """What applies to every request, before anything else reads it."""
 
-from django.http import HttpResponse
+from urllib.parse import urlencode
+
+from django.conf import settings
+from django.http import HttpResponse, HttpResponseRedirect
+from django.urls import reverse
+from django_otp import user_has_device
 
 CSP = (
     "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; form-action 'self'; "
@@ -52,3 +57,34 @@ def small_forms_only(get_response):
         return get_response(request)
 
     return middleware
+
+
+BEFORE_SECOND_STEP = set()  # what can be used with only a password so far, kept by identity
+
+
+def before_second_step(view):
+    BEFORE_SECOND_STEP.add(view)
+    return view
+
+
+class TwoFactorGate:
+    """Here and not on each page, so a new page can't forget it. With only a password so far,
+    nothing but the second step and signing out is reachable."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        return self.get_response(request)
+
+    def process_view(self, request, view, args, kwargs):
+        user = request.user
+        if not user.is_authenticated or user.is_verified() or view in BEFORE_SECOND_STEP:
+            return None
+        if user_has_device(user):
+            wanted = request.get_full_path() if request.method == "GET" else ""
+            query = f"?{urlencode({'next': wanted})}" if wanted else ""
+            return HttpResponseRedirect(reverse("two_factor") + query)
+        if settings.CHECKER_TWO_FACTOR_REQUIRED:
+            return HttpResponseRedirect(reverse("two_factor_setup"))
+        return None

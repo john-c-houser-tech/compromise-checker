@@ -969,6 +969,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     web_password.add_argument("username")
     web_password.set_defaults(handler=cmd_web_password)
+    web_two_factor_off = commands.add_parser(
+        "web-two-factor-off",
+        help="turn off two-factor sign-in for a web account that lost its phone and recovery codes",
+    )
+    web_two_factor_off.add_argument("username")
+    web_two_factor_off.set_defaults(handler=cmd_web_two_factor_off)
     changed = commands.add_parser(
         "changes", help="what changed on a host since its previous bundle and its baseline"
     )
@@ -1705,6 +1711,29 @@ def cmd_web_password(args: argparse.Namespace) -> int:
     if problems:
         return 1
     print(f"Password changed for {args.username}. Anyone signed in as them has been signed out.")
+    return 0
+
+
+def cmd_web_two_factor_off(args: argparse.Namespace) -> int:
+    """When a phone and its recovery codes are both gone. The record says so."""
+    try:
+        from checker.web.app import configure
+    except ImportError:
+        print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+        return 2
+    base = home()
+    if not (base / "web.db").exists():  # a mistyped home mustn't gain a new database
+        print(f"checker: no web interface has been run from {base}", file=sys.stderr)
+        return 1
+    configure(base)
+
+    from checker.web.accounts import turn_off_two_factor  # needs Django set up
+
+    problem = turn_off_two_factor(args.username)
+    if problem:
+        print(f"checker: {problem}", file=sys.stderr)
+        return 1
+    print(f"Two-factor sign-in is off for {args.username}. Set it up again when they next sign in.")
     return 0
 
 

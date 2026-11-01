@@ -52,7 +52,8 @@ can reach that address, which is why it asks for a login even there.
 
 ## What it keeps
 
-`web.db` in the checker's home, owner-only: accounts with hashed passwords, sessions, failed
+`web.db` in the checker's home, owner-only: accounts with hashed passwords, two-factor secrets and
+recovery codes, sessions, failed
 logins for the last 15 minutes with their usernames and addresses, the times of wrong passwords at a confirmation (never the passwords), and the activity record below. No evidence is ever copied
 there. `keys/web-secret.txt` signs sessions; deleting it signs everyone out. Evidence is decrypted
 in memory for each page, with the same key the command line uses, and pages tell browsers not to
@@ -76,8 +77,29 @@ Anything that changes what later findings mean, or removes data, asks for your p
 when you're signed in. Five wrong passwords sign that session out. A browser's password manager may
 fill the box in for whoever is at the keyboard, so don't leave a signed-in browser open.
 
+## Two-factor sign-in
+
+Signing in can take a six-digit code from an authenticator app as well as your password, so a stolen
+password isn't enough. Any app that does time-based codes works.
+
+- **When it's required:** whenever another machine can reach the server, which means it listens beyond
+  this machine or its `--public-url` isn't a name on this machine (`localhost`, `*.localhost`, a loopback
+  address). Until an account has set it up, it can't see anything.
+- **When it's optional:** when only this machine can reach the server. Every page asks you to turn it on
+  until you do, because anyone with an account on this machine can reach that address too.
+- **Lost your phone?** You get ten recovery codes when you turn it on, each good once, and they're shown
+  only then. If they're gone too, whoever owns the checker's home can run
+  `checker web-two-factor-off USERNAME` on this machine, and the activity record notes it.
+- **Moving to a new phone:** Sign-in security, in the menu, turns it off so you can set it up again.
+
+With two-factor on, anything that asks for your password again asks for a code as well. A code works
+only once, so after using one, wait for the next. Each wrong code makes the next try wait longer. The
+secrets and recovery codes are stored readable in `web.db`, since the tool has to check against them: treat a
+copy of that file, or a backup of it, as you would a password.
+
 ## How it protects you
 
+- **Two-factor sign-in,** above. With only a password so far, nothing opens but the second step.
 - **Passwords:** at least 12 characters, not common, not all digits, not like the username. Five
   failed logins for a name from one address, or twenty from one address, stop further tries from
   there for 15 minutes, even with the right password. Without a proxy, everyone on this machine

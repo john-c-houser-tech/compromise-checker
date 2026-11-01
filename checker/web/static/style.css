@@ -208,3 +208,7 @@ code { font-size: 0.9em; overflow-wrap: anywhere; }
   .host-head { grid-template-columns: minmax(0, 1fr); }
   .facts { grid-template-columns: minmax(0, 1fr); }
 }
+
+.nudge { border-left: 4px solid var(--critical); padding: 0.5rem 0.75rem; max-width: 62ch; }
+.qr svg { display: block; }
+.recovery-codes { columns: 2; max-width: 28rem; }

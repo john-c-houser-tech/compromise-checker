@@ -1,4 +1,4 @@
-"""What the web interface keeps of its own. Never evidence."""
+"""What the web interface keeps of its own, with django-otp's tables. Never evidence."""
 
 from django.db import models
 

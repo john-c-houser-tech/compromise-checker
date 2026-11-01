@@ -1,7 +1,9 @@
 """Pages use Jinja2, with the report's rule: every printed value is escaped and has its
 invisible characters shown, whether or not the template asked. Host text can't opt out."""
 
+from django.db import DatabaseError
 from django.urls import NoReverseMatch, reverse
+from django_otp import user_has_device
 from jinja2 import Environment, Undefined
 
 from checker.product import product_name
@@ -26,6 +28,17 @@ def _finalize_page(value):
     return value if hasattr(value, "__html__") else _finalize(value)
 
 
+def two_factor_is_off(request) -> bool:
+    """For the reminder on every page. An error page mustn't fail for want of it."""
+    user = getattr(request, "user", None)
+    if user is None or not user.is_authenticated:
+        return False
+    try:
+        return not user_has_device(user)
+    except DatabaseError:
+        return False
+
+
 def environment(**options) -> Environment:
     options.update(autoescape=True, finalize=_finalize_page, trim_blocks=True, lstrip_blocks=True)
     env = Environment(**options)  # noqa: S701 - autoescape is set just above
@@ -34,5 +47,6 @@ def environment(**options) -> Environment:
     env.filters["when"] = when
     env.globals["url"] = lambda view, **kwargs: reverse(view, kwargs=kwargs or None)
     env.globals["product_name"] = product_name
+    env.globals["two_factor_is_off"] = two_factor_is_off
     env.globals["host_url"] = host_url
     return env

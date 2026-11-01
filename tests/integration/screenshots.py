@@ -113,9 +113,12 @@ def main() -> int:
 
     from django.contrib.auth import get_user_model
     from django.core.wsgi import get_wsgi_application
+    from django_otp.oath import totp
+    from django_otp.plugins.otp_totp.models import TOTPDevice
 
     password = secrets.token_urlsafe(24)
-    get_user_model().objects.create_user("demo", password=password)
+    user = get_user_model().objects.create_user("demo", password=password)
+    device = TOTPDevice.objects.create(user=user, name="demo", confirmed=True)
     seen: list[str] = []
     server = make_server(
         "127.0.0.1", 0, scrubbing(get_wsgi_application(), protect, seen), handler_class=Quiet
@@ -138,6 +141,10 @@ def main() -> int:
             page.goto(f"{base}/login")
             page.fill("input[name=username]", "demo")
             page.fill("input[name=password]", password)
+            page.click("main button")
+            page.wait_for_load_state()
+            TOTPDevice.objects.filter(pk=device.pk).update(last_t=-1)  # the next code still counts
+            page.fill("input[name=code]", f"{totp(device.bin_key):06d}")
             page.click("main button")
             page.wait_for_load_state()
             response = page.goto(base + path)

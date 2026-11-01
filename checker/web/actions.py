@@ -3,8 +3,9 @@
 Viewing pages read. Anything else goes through `action`: signed in, POST, CSRF-checked by the
 middleware, and recorded from start to finish. If it can't be recorded as started, it doesn't
 happen. A consequential action, one that changes what later findings mean or removes data, also
-needs the password again, however recently its user signed in: someone with a stolen session or at
-a browser left open has to know it, unless a password manager fills it in for them. Actions call
+needs the password again, and a code if two-factor is on, however recently its user signed in:
+someone with a stolen session or at a browser left open has to know them, unless a password manager
+fills them in. Actions call
 what the command line calls; no logic of their own lives here. They should keep their
 transactions short, since every page that records something waits for them."""
 
@@ -21,7 +22,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from checker.report import visible
-from checker.web import accounts
+from checker.web import accounts, two_factor
 from checker.web.models import ActionRecord
 
 GATED = set()  # every view `action` made: no attribute a view could set by hand gets in here
@@ -64,12 +65,21 @@ def confirmation_refused(request, action: str, target: str) -> str | None:
     session = request.session.session_key
     if not accounts.begin_confirmation(session):
         return _signed_out(request, action, target)
-    if request.user.check_password(request.POST.get("confirm_password", "")):
+    user = request.user
+    if user.check_password(request.POST.get("confirm_password", "")) and (
+        not two_factor.is_on(user)
+        or two_factor.check_code(user, request.POST.get("confirm_code", ""))
+    ):
         accounts.clear_confirmations(session)
         return None
     if accounts.confirmations_used_up(session):
         return _signed_out(request, action, target)
     record_if_possible(request, action, target, "refused", "wrong password")
+    if two_factor.is_on(user):
+        return (
+            "That password or code didn't work, so nothing was changed. A code works only once:"
+            " if you just used one, wait for the next."
+        )
     return "That password didn't work, so nothing was changed."
 
 

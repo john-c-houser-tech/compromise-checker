@@ -3,7 +3,7 @@
 > **Status: DRAFT 1, 2026-10-31.** Order set by John: the web interface and fleet
 > view first, then PDF and JSON, then actions and PostgreSQL. All of it is in this
 > phase: John plans to finish the application within days (2026-10-31). All decisions (W1 to
-> W5) settled. Nothing built yet.
+> W5) settled. Stages 1 and 2, and 5.10, are merged to dev.
 
 **Goal (DESIGN.md §13, §14, §18):** a person can see a whole fleet in a browser,
 most worrying first, with what changed since the last run, and go from any host

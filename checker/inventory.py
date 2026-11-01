@@ -114,16 +114,20 @@ def new_host_problems(host: Host, before: Host | None = None) -> list[tuple[str,
     problems = []
     address = host.address
     if changed("address") and (
-        not address or len(address) > 253 or address[0] == "-" or UNSAFE_IN_ADDRESS.search(address)
+        not address
+        or len(address) > 253
+        or address[0] == "-"
+        or UNSAFE_IN_ADDRESS.search(address)
+        or not address.isprintable()
     ):
-        problems.append(("address", "a host name or IP address, with nothing else around it"))
+        problems.append(("address", "a host name or IP address, and nothing else"))
     user = host.user
     if changed("user") and (
         not user
         or len(user) > 256
         or user != user.strip()
         or user[0] == "-"
-        or any(ord(c) < 32 or ord(c) == 127 for c in user)
+        or not user.isprintable()  # it's printed in a terminal by `checker hosts list`
     ):
         problems.append(("user", "an account name, as the server knows it"))
     if changed("group") and host.group is not None and not _NAME.fullmatch(host.group):
@@ -133,7 +137,7 @@ def new_host_problems(host: Host, before: Host | None = None) -> list[tuple[str,
     if (
         changed("key_path")
         and path is not None
-        and (not path.startswith(("/", "~/")) or any(ord(c) < 32 or ord(c) == 127 for c in path))
+        and (not path.startswith(("/", "~/")) or len(path) > 4096 or not path.isprintable())
     ):
         problems.append(("key_path", "a full path, starting with / or ~/"))
     return problems

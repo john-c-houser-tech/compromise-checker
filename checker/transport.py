@@ -9,6 +9,7 @@ a command line.
 import asyncio
 import errno
 import json
+import os
 import secrets
 import shlex
 import stat
@@ -174,18 +175,23 @@ MOST_KEY_FILE_BYTES = 1024 * 1024
 
 
 def read_key_file(path: str):
-    """A private key file. Looked at first: a pipe would hang whatever is reading it, and a device
-    would fill the memory, and the path may come from a form."""
+    """A private key file, opened before it's looked at, and read no further than a key could be:
+    a pipe would hang whatever is reading it, a device would fill the memory, and /proc's files say
+    they're empty. The path may come from a form."""
     try:
-        file = Path(path).expanduser()
+        descriptor = os.open(Path(path).expanduser(), os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     except RuntimeError as exc:  # ~nobody/...
         raise OSError(errno.ENOENT, "that user's home isn't known") from exc
-    info = file.stat()
-    if not stat.S_ISREG(info.st_mode):
+    except ValueError as exc:  # a NUL, which only a file edited by hand can have
+        raise OSError(errno.EINVAL, "it isn't a path") from exc
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
         raise OSError(errno.EINVAL, "it isn't an ordinary file")
-    if info.st_size > MOST_KEY_FILE_BYTES:
+    with os.fdopen(descriptor, "rb") as file:
+        data = file.read(MOST_KEY_FILE_BYTES + 1)
+    if data is None or len(data) > MOST_KEY_FILE_BYTES:
         raise OSError(errno.EFBIG, "it's too big to be a key")
-    return asyncssh.read_private_key(file)
+    return asyncssh.import_private_key(data)
 
 
 def _fingerprint(key) -> str:

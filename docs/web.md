@@ -149,7 +149,8 @@ copy of that file, or a backup of it, as you would a password.
 
 The Manage page lists every server, and adds, changes and removes them. Each of those needs your
 password again, and a code if two-factor sign-in is on, and goes in the activity record. A change to
-a server's settings also goes in `checker config history`, as `hosts.<name>` with what changed.
+a server's settings also goes in `checker config history`, as `hosts.<name>` with what changed, and
+so do adding and removing one, with its settings.
 
 A server's name can't change, since its results are filed under it. Adding a name that has earlier
 results takes saying it's the same server, because new results would be compared with the old ones.
@@ -162,7 +163,7 @@ can hide findings.
 
 ### Confirming a server's identity
 
-A server can't be checked until its SSH host key is confirmed, so that nothing is sent to a machine
+A server can't be checked from these pages until its SSH host key is confirmed, so that nothing is sent to a machine
 pretending to be it. The page asks the server which kind of key it has and gives you a command to
 run on the server. Paste what it prints, and the tool compares that with a fresh answer from the
 server. The page doesn't show the fingerprint it received until then: copying it from here into the

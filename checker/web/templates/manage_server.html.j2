@@ -32,7 +32,7 @@
 {% if trusted == "trusted" %}
 <p>Its identity is confirmed. If the server was rebuilt, ask it for its key again.</p>
 {% else %}
-<p class="error">Not confirmed yet, so it can't be checked. This stops a check from sending anything to a machine pretending to be your server.</p>
+<p class="error">Not confirmed yet, so it can't be checked from here. This stops a check from sending anything to a machine pretending to be your server.</p>
 {% endif %}
 <form method="post" action="{{ url('server_key_ask') }}">
   {{ csrf_input }}

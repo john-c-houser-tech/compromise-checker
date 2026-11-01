@@ -599,7 +599,7 @@ def server_add(request) -> HttpResponse:
     try:
         host = manage.host_from_form(request.POST)
         manage.add(home(), host, same_server=request.POST.get("same_server") == "on")
-        request.action_detail = manage.where_it_is(host)
+        request.action_detail = manage.settings_in_words(host)
     except manage.FormProblem as exc:
         words = str(visible(str(exc), 600))
         same = isinstance(exc, manage.EarlierResults)
@@ -656,6 +656,7 @@ def server_change(request) -> HttpResponse:
 def server_remove(request) -> HttpResponse:
     name = _listed(request)
     try:
+        request.action_detail = manage.settings_in_words(load_inventory().get(name))
         remove_host(home(), name)
     except KeyError:
         raise ActionFailed(GONE) from None

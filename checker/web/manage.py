@@ -8,6 +8,7 @@ nothing, and someone in the middle would have sent it."""
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import socket
 import threading
@@ -19,15 +20,9 @@ from pydantic import ValidationError
 
 from checker.baseline import usable_bundles
 from checker.evidence import Store, database_file
-from checker.inventory import (
-    Host,
-    hosts_file,
-    inventory_transaction,
-    load_inventory,
-    new_host_problems,
-)
+from checker.inventory import Host, hosts_file, load_inventory, new_host_problems
 from checker.schedule import host_problems_in_plain_words
-from checker.settings import HostChangedMeanwhile, change_host
+from checker.settings import HostChangedMeanwhile, add_host, change_host
 from checker.transport import (
     HostKeyCheck,
     TransportError,
@@ -59,7 +54,9 @@ PLAIN = {
 }
 _FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
 # From a page this names what runs as root on a server, so it has to be Python by name at least.
-_PYTHON = re.compile(r"(?:/[A-Za-z0-9._-]+)*/?python3(?:\.[0-9]+)?")
+_PYTHON = re.compile(
+    r"(?:/[A-Za-z0-9._-]+)*/?(?:python(?:3(?:\.[0-9]+t?)?)?|platform-python|pypy3)"
+)
 LONGEST_PASTE = 16 * 1024
 ANY_KEY_COMMAND = 'for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done'
 _asking = threading.BoundedSemaphore(2)  # a server that doesn't answer holds a page for 15 seconds
@@ -254,10 +251,7 @@ def add(base: Path, host: Host, same_server: bool = False) -> None:
             " is that same server, tick the box to say so. If not, give it another name, since new"
             " results would be compared with the old ones and those rules would hide its findings."
         )
-    with inventory_transaction(hosts_file(base)) as inventory:
-        if any(existing.name == host.name for existing in inventory.hosts):
-            raise FormProblem(f"There's already a server named {host.name}.")
-        inventory.add(host)
+    add_host(base, host, FormProblem(f"There's already a server named {host.name}."))
 
 
 def change(base: Path, name: str, post, version: str) -> dict[str, tuple[Any, Any]]:
@@ -275,11 +269,41 @@ def change(base: Path, name: str, post, version: str) -> dict[str, tuple[Any, An
         raise ChangedMeanwhile(meanwhile) from None
 
 
+# What hides findings first: the record is cut at its limit, and only it names the person.
+_RECORD_ORDER = ("group", "prior", "python", "address", "port", "user", "sudo", "auth")
+_LONGEST_RECORDED = 120
+
+
+def _recorded(field: str, value: Any) -> str:
+    """Quoted, so a value can't pass for another clause, and short, so the rest still fits."""
+    if value is None:
+        return "none"
+    if field == "prior":
+        return f"{_percent(value)}%"
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= _LONGEST_RECORDED else f"{text[:_LONGEST_RECORDED]}...(cut)"
+
+
+def _in_record_order(fields) -> list[str]:
+    return sorted(fields, key=lambda f: _RECORD_ORDER.index(f) if f in _RECORD_ORDER else 99)
+
+
 def changes_in_words(changed: dict[str, tuple[Any, Any]]) -> str:
     if not changed:
         return "nothing changed"
     return "; ".join(
-        f"{LABELS.get(field, field)}: {old} to {new}" for field, (old, new) in changed.items()
+        f"{LABELS.get(field, field)}: {_recorded(field, changed[field][0])}"
+        f" to {_recorded(field, changed[field][1])}"
+        for field in _in_record_order(changed)
+    )
+
+
+def settings_in_words(host: Host) -> str:
+    """Everything set on it that isn't the default, for the record of adding or removing it."""
+    settings = host.model_dump(mode="json", exclude_defaults=True, exclude={"name"})
+    return "; ".join(
+        f"{LABELS.get(field, field)}: {_recorded(field, settings[field])}"
+        for field in _in_record_order(settings)
     )
 
 

@@ -5240,7 +5240,7 @@ def test_changing_a_server_is_confirmed_recorded_and_keeps_what_the_form_lacks(w
     host = hosts_now()["web01"]
     assert host.group == "db" and host.packs == "none", "the form has no packs field"
     assert host.prior == 0.0123456, "shown rounded, and leaving it alone doesn't change it"
-    assert records_of("changed a server's settings")[-1].detail == "Group: None to db"
+    assert records_of("changed a server's settings")[-1].detail == 'Group: none to "db"'
     store = Store(database_file(home[0]))
     try:
         row = store.config_changes()[-1]
@@ -5343,12 +5343,19 @@ def test_the_manage_pages_contact_nothing_and_need_a_login(web, unconfirmed, mon
         assert client.get(path).status_code == 200
 
 
-def test_hostile_values_do_nothing_on_the_manage_pages(web, unconfirmed, home):
+def test_hostile_values_do_nothing_on_the_manage_pages(web, unconfirmed):
     client, _ = signed_in(web)
-    response = client.post("/manage/adding", server_form(key_path="/x" + HOSTILE, name="h1"))
-    text = client.get("/manage/server", {"host": "h1"}).content.decode()
-    assert response.status_code == 302 and "<script>alert" not in text and "<img src=x" not in text
-    assert BIDI not in text
+    refused = client.post("/manage/adding", server_form(key_path="/x" + HOSTILE, name="h1"))
+    assert refused.status_code == 400
+    typed = client.post("/manage/adding", server_form(address=HOSTILE)).content.decode()
+    for text in (refused.content.decode(), typed):
+        assert "<script>alert" not in text and "<img src=x" not in text and BIDI not in text
+    from checker.inventory import Host
+
+    unconfirmed(Host(name="h1", address="192.0.2.1", user="<b>" + BIDI, key_path="/x" + HOSTILE))
+    for text in (client.get("/manage/server?host=h1"), client.get("/manage")):
+        shown = text.content.decode()
+        assert "<script>alert" not in shown and "<b>" not in shown and BIDI not in shown
 
 
 # --- Whose key is it ---
@@ -5577,4 +5584,85 @@ def test_a_key_path_can_t_hang_or_fill_the_server(tmp_path, kind):
 def test_the_record_says_where_an_added_server_points(web, unconfirmed):
     client, _ = signed_in(web)
     client.post("/manage/adding", server_form())
-    assert records_of("added a server")[-1].detail == "scan@192.0.2.50"
+    detail = records_of("added a server")[-1].detail
+    assert '"192.0.2.50"' in detail and '"scan"' in detail and '"/etc/scan-key"' in detail
+
+
+def test_removing_and_adding_again_leaves_every_setting_on_the_record(web, unconfirmed):
+    from checker.evidence import Store, database_file
+
+    client, home = signed_in(web)
+    form = {"host": "web01", "confirm_password": PASSWORD}
+    assert client.post("/manage/server/remove", form).status_code == 302
+    again = server_form(name="web01", group="quiet", prior="0.01", python="/tmp/x/python3")  # noqa: S108
+    assert client.post("/manage/adding", {**again, "same_server": "on"}).status_code == 302
+    detail = records_of("added a server")[-1].detail
+    assert detail.startswith('Group: "quiet"; Starting estimate: 0.01%; Python on the server:')
+    assert '"192.0.2.1"' in records_of("removed a server")[-1].detail
+    store = Store(database_file(home[0]))
+    try:
+        rows = store.config_changes()
+    finally:
+        store.close()
+    assert [row["setting"] for row in rows[-2:]] == ["hosts.web01", "hosts.web01"]
+    assert json.loads(rows[-1]["new"])["group"] == "quiet" and rows[-2]["new"] == "null"
+
+
+def test_a_value_can_t_cut_the_record_or_pass_for_another_change(web, unconfirmed):
+    client, _ = signed_in(web)
+    form = page_form(
+        client,
+        key_path="/k2; Group: prod to prod" + "/a" * 600,
+        group="prod",
+        prior="0.01",
+    )
+    assert client.post("/manage/server/change", form).status_code == 302
+    detail = records_of("changed a server's settings")[-1].detail
+    assert detail.startswith('Group: none to "prod"; Starting estimate: none to 0.01%')
+    assert '"/k2; Group: prod to prod' in detail and "(cut)" in detail
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"user": "scan" + chr(0x9B) + "2J"},
+        {"address": "ex" + chr(0x202E) + "ample.com"},
+        {"key_path": "/k" + chr(0x202E)},
+        {"key_path": "/" + "a" * 4100},
+    ],
+)
+def test_nothing_new_can_reach_a_terminal_as_control_characters(web, unconfirmed, changes):
+    client, _ = signed_in(web)
+    assert client.post("/manage/adding", server_form(**changes)).status_code == 400
+    assert "new01" not in hosts_now()
+
+
+@pytest.mark.parametrize(
+    "python",
+    ["python3", "python3.12", "/usr/bin/python3", "/usr/bin/python", "/usr/libexec/platform-python",
+     "/usr/bin/python3.12t", "/usr/bin/pypy3"],
+)  # fmt: skip
+def test_the_usual_pythons_are_accepted(web, unconfirmed, python):
+    client, _ = signed_in(web)
+    assert client.post("/manage/adding", server_form(python=python)).status_code == 302
+
+
+def test_a_stored_nul_in_a_key_path_stops_only_that_server(web, unconfirmed, agent):
+    from checker.inventory import Host
+
+    client, _ = signed_in(web)
+    unconfirmed(
+        Host(name="web01", address="192.0.2.1", user="s", auth="key", key_path="/k" + chr(0) + "x")
+    )
+    assert client.get("/checks/new").status_code == 200
+
+
+def test_a_key_file_is_read_no_further_than_a_key_could_be(tmp_path):
+    from checker.transport import read_key_file
+
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    path = tmp_path / "key"
+    path.write_bytes(key.export_private_key())
+    assert read_key_file(str(path)).get_fingerprint("sha256") == key.get_fingerprint("sha256")
+    with pytest.raises(asyncssh.KeyImportError):
+        read_key_file("/proc/self/status")

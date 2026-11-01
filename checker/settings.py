@@ -415,20 +415,50 @@ def remove_host(home: Path, name: str) -> None:
     path = hosts_file(home)
     with locked(path):
         inventory = load_inventory(path)
-        rule = inventory.get(name).packs
+        host = inventory.get(name)
+        rule = host.packs
+        settings = host.model_dump(mode="json", exclude_defaults=True)
         inventory.remove(name)
-        if rule is None:
+        if not database_file(home).exists():  # not set up yet, so nothing to keep the record in
             save_inventory(inventory, path)
             return
         before = path.read_text(encoding="utf-8")
         store = Store(database_file(home))
         try:
+            write = lambda: save_inventory(inventory, path)  # noqa: E731
+            undo = lambda: atomic_write(path, before)  # noqa: E731
+            if rule is None:
+                store.record_config_change(f"hosts.{name}", settings, None, write, undo)
+            else:  # its settings first, and the change itself with the last line of the record
+                store.record_config_change(
+                    f"hosts.{name}", settings, None, lambda: None, lambda: None
+                )
+                store.record_config_change(f"hosts.{name}.packs", rule, None, write, undo)
+        finally:
+            store.close()
+
+
+def add_host(home: Path, new, refuse_if_listed) -> None:
+    """Add a host with its settings recorded (`hosts.<name>`), since going round by removing and
+    adding it again would otherwise set what `change_host` records. `refuse_if_listed` is raised
+    if the name is in the list."""
+    from checker.inventory import hosts_file, load_inventory, save_inventory
+
+    path = hosts_file(home)
+    with locked(path):
+        inventory = load_inventory(path)
+        if any(host.name == new.name for host in inventory.hosts):
+            raise refuse_if_listed
+        inventory.add(new)
+        before = path.read_text(encoding="utf-8") if path.exists() else None
+        store = Store(database_file(home))
+        try:
             store.record_config_change(
-                f"hosts.{name}.packs",
-                rule,
+                f"hosts.{new.name}",
                 None,
+                new.model_dump(mode="json", exclude_defaults=True),
                 lambda: save_inventory(inventory, path),
-                lambda: atomic_write(path, before),
+                lambda: path.unlink() if before is None else atomic_write(path, before),
             )
         finally:
             store.close()

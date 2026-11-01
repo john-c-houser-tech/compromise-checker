@@ -15,7 +15,7 @@
     <td><a href="{{ url('manage_server') }}?host={{ row.name | urlencode }}">{{ row.name }}</a></td>
     <td>{{ row.where }}</td>
     <td>{{ row.group or "None" }}</td>
-    <td>{% if row.unreadable %}<span class="error">Can't be read</span>{% elif row.trusted %}Confirmed{% else %}<span class="error">Not confirmed yet, so it can't be checked</span>{% endif %}</td>
+    <td>{% if row.unreadable %}<span class="error">Can't be read</span>{% elif row.trusted %}Confirmed{% else %}<span class="error">Not confirmed yet, so it can't be checked from here</span>{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>

@@ -153,7 +153,8 @@ a server's settings also goes in `checker config history`, as `hosts.<name>` wit
 
 A server's name can't change, since its results are filed under it. Adding a name that has earlier
 results takes saying it's the same server, because new results would be compared with the old ones.
-Removing a server stops its checks and keeps its results, until their retention period ends.
+Removing a server stops its checks and keeps its results until a purge after their retention period.
+Its whitelist rules and confirmed key stay too, and a name with rules kept counts as earlier results.
 
 A group exists while a server is in it. There's no separate list of groups to keep up. Moving a
 server into a group brings in that group's whitelist rules and threat update settings, and those
@@ -169,9 +170,12 @@ box would prove nothing, because someone in the middle would have sent it.
 
 Run the command on the server itself, from its provider's console or through someone who already
 looks after it. A key that differs from the one confirmed before gets a warning, and replacing it
-takes saying that you know why it changed. A new address or port means confirming the key again.
+takes saying that you know why it changed. Keys are kept per address, so a new address or port needs
+confirming unless a server there has been confirmed already.
 
-Asking for a key is the only thing on these pages that contacts a server, and only one in the list.
+Asking for a key and comparing it are the only things on these pages that contact a server, and only
+one in the list. Keys listed in the file by hand as hashed lines aren't recognized by these pages:
+keep to the keys the tool wrote there.
 
 ## How it protects you
 

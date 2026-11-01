@@ -48,7 +48,7 @@
 
 <h2>Settings</h2>
 {% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
-<p class="note">A new address or port means confirming its key again. A group brings in that group's rules, which can hide findings.</p>
+<p class="note">A new address or port is checked against the keys confirmed for that address, and new results are still compared with this server's old baseline. A group brings in that group's rules, and a lower starting estimate makes the same findings look less worrying: both can hide what matters.</p>
 <form method="post" action="{{ url('server_change') }}">
   {{ csrf_input }}
   <input type="hidden" name="host" value="{{ host.name }}">
@@ -59,7 +59,7 @@
 </form>
 
 <h2>Remove it</h2>
-<p>This stops checks of it. Its results stay until their retention period ends, and without it on the list, its baseline can then go too.</p>
+<p>This stops checks of it. Its results stay until a purge after their retention period, and without it on the list, its baseline can go then too. Its whitelist rules and confirmed key stay, in case it comes back.</p>
 <form method="post" action="{{ url('server_remove') }}">
   {{ csrf_input }}
   <input type="hidden" name="host" value="{{ host.name }}">

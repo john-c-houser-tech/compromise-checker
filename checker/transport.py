@@ -7,9 +7,11 @@ a command line.
 """
 
 import asyncio
+import errno
 import json
 import secrets
 import shlex
+import stat
 import threading
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -20,7 +22,7 @@ import asyncssh
 from asyncssh.public_key import decode_ssh_public_key
 
 from checker.files import atomic_write, locked
-from checker.inventory import Host, known_hosts_file
+from checker.inventory import UNSAFE_IN_ADDRESS, Host, known_hosts_file
 
 STDERR_LIMIT = 64 * 1024
 READ_SIZE = 64 * 1024
@@ -168,6 +170,24 @@ class _Client(asyncssh.SSHClient):
             self.key_fingerprint = _fingerprint(self._offered_key)
 
 
+MOST_KEY_FILE_BYTES = 1024 * 1024
+
+
+def read_key_file(path: str):
+    """A private key file. Looked at first: a pipe would hang whatever is reading it, and a device
+    would fill the memory, and the path may come from a form."""
+    try:
+        file = Path(path).expanduser()
+    except RuntimeError as exc:  # ~nobody/...
+        raise OSError(errno.ENOENT, "that user's home isn't known") from exc
+    info = file.stat()
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError(errno.EINVAL, "it isn't an ordinary file")
+    if info.st_size > MOST_KEY_FILE_BYTES:
+        raise OSError(errno.EFBIG, "it's too big to be a key")
+    return asyncssh.read_private_key(file)
+
+
 def _fingerprint(key) -> str:
     """SHA256 fingerprint of a private key or agent key pair, as sshd logs it."""
     return decode_ssh_public_key(key.public_data).get_fingerprint("sha256")
@@ -178,7 +198,7 @@ async def _client_keys(host: Host, agent_path: str | None) -> tuple[list, object
         if not host.key_path:
             raise TransportError(f"{host.name}: auth is 'key' but no key_path is set")
         try:
-            return [asyncssh.read_private_key(Path(host.key_path).expanduser())], None
+            return [read_key_file(host.key_path)], None
         except (OSError, asyncssh.KeyImportError) as exc:
             raise TransportError(f"{host.name}: cannot read key {host.key_path}: {exc}") from exc
     if host.auth == "agent":
@@ -222,7 +242,8 @@ async def collect(
     known = known_hosts or known_hosts_file()
     if not known.exists():
         raise UnknownHostKey(
-            f"{host.name}: no known host keys yet; run `checker trust {host.name}`"
+            f"{host.name}: no known host keys yet; run `checker trust {host.name}`,"
+            " or confirm its key on its Manage page"
         )
 
     password = None
@@ -283,9 +304,14 @@ async def _connect_and_run(
             wait,
         )
     except asyncssh.HostKeyNotVerifiable as exc:
+        try:
+            first_time = not trusted_fingerprints(host, known)
+        except (OSError, ValueError, asyncssh.Error):
+            first_time = False
+        command = f"checker trust {host.name}" + ("" if first_time else " --replace")
         raise UnknownHostKey(
             f"{host.name}: host key not trusted ({exc.reason}). If you expected this, check the"
-            f" new key and run `checker trust {host.name} --replace`."
+            f" new key and run `{command}`, or confirm it on its Manage page."
         ) from exc
     except asyncssh.PermissionDenied as exc:
         # A refused login still leaves sshd records: keep what was tried.
@@ -558,6 +584,8 @@ def trust_host_key(host: Host, check: HostKeyCheck, known_hosts: Path | None = N
     """Record `check.key` as the only trusted key for this host. The whole
     read-modify-write holds a lock, so concurrent `trust` commands can't
     lose each other's entries."""
+    if UNSAFE_IN_ADDRESS.search(host.address):
+        raise TransportError(f"{host.name}: its address can't go in the file of trusted keys")
     path = known_hosts or known_hosts_file()
     name = _known_hosts_name(host)
     entry = check.key.export_public_key("openssh").decode("ascii").split()

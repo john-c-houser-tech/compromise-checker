@@ -37,6 +37,8 @@ from typing import Any
 
 import asyncssh
 
+from checker.transport import read_key_file
+
 BANDS = ("Low", "Elevated", "High", "Critical")
 FINDING_BANDS = ("info", "low", "medium", "high", "critical")
 SERIOUS = ("high", "critical")
@@ -171,7 +173,7 @@ def _key_problem(path: str | None) -> str | None:
     if not path:
         return "no key file is named"
     try:
-        asyncssh.read_private_key(Path(path).expanduser())
+        read_key_file(path)
     except asyncssh.KeyImportError as exc:
         if "passphrase" in str(exc).lower():
             return "it has a passphrase, which a check nobody is typing at can't enter"

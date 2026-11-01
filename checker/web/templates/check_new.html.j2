@@ -24,7 +24,7 @@
 {% if blocked %}
 <h2>Can't be checked from here</h2>
 <ul>
-  {% for name, why in blocked %}<li><strong>{{ name }}</strong>: {{ why }}</li>{% endfor %}
+  {% for name, why in blocked %}<li><a href="{{ url('manage_server') }}?host={{ name | urlencode }}"><strong>{{ name }}</strong></a>: {{ why }}</li>{% endfor %}
 </ul>
 {% endif %}
 {% endif %}

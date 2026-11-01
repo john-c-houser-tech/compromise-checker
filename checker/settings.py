@@ -469,12 +469,13 @@ class HostChangedMeanwhile(Exception):
     """The host isn't as it was when the change was asked for."""
 
 
-def change_host(home: Path, new, expected: str) -> list[str]:
+def change_host(home: Path, new, expected: str) -> dict[str, tuple[Any, Any]]:
     """Replace a host's settings, recorded like a setting (`hosts.<name>` in `checker config
     history`, with only what changed): its group, address and starting estimate change what its
-    findings mean, so who changed them and when stays known. `expected` is the version the change
-    was worked out from. Its name can't change, since its evidence is filed under it. Returns the
-    settings that changed."""
+    findings mean, so what changed and when stays known. The history names this machine's account;
+    a page's activity record names the person. `expected` is the version the change was worked out
+    from. Its name can't change, since its evidence is filed under it. Returns each setting that
+    changed, as (old, new)."""
     from checker.inventory import hosts_file, load_inventory, save_inventory
 
     path = hosts_file(home)
@@ -486,7 +487,7 @@ def change_host(home: Path, new, expected: str) -> list[str]:
         was, now = current.model_dump(mode="json"), new.model_dump(mode="json")
         changed = [key for key in now if was[key] != now[key]]
         if not changed:
-            return []
+            return {}
         inventory.hosts = [new if host.name == new.name else host for host in inventory.hosts]
         before = path.read_text(encoding="utf-8")
         store = Store(database_file(home))
@@ -500,7 +501,7 @@ def change_host(home: Path, new, expected: str) -> list[str]:
             )
         finally:
             store.close()
-    return changed
+    return {key: (was[key], now[key]) for key in changed}
 
 
 def change_trusted_keys(home: Path, update) -> tuple[Any, Any, Config]:

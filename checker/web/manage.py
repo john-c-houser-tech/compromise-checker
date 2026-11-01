@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+import socket
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +19,13 @@ from pydantic import ValidationError
 
 from checker.baseline import usable_bundles
 from checker.evidence import Store, database_file
-from checker.inventory import Host, hosts_file, inventory_transaction, load_inventory
+from checker.inventory import (
+    Host,
+    hosts_file,
+    inventory_transaction,
+    load_inventory,
+    new_host_problems,
+)
 from checker.schedule import host_problems_in_plain_words
 from checker.settings import HostChangedMeanwhile, change_host
 from checker.transport import (
@@ -27,6 +35,7 @@ from checker.transport import (
     trust_host_key,
     trusted_fingerprints,
 )
+from checker.whitelist import directory
 
 LABELS = {
     "name": "Name",
@@ -43,9 +52,17 @@ LABELS = {
     "prior": "Starting estimate",
 }
 FORM_FIELDS = tuple(LABELS)
+# Words of ours, in place of a validator's, which can repeat what was typed or speak in fractions.
+PLAIN = {
+    "prior": "type a percentage above 0 and below 100",
+    "web_roots": "full paths, starting with /, without ..",
+}
 _FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
+# From a page this names what runs as root on a server, so it has to be Python by name at least.
+_PYTHON = re.compile(r"(?:/[A-Za-z0-9._-]+)*/?python3(?:\.[0-9]+)?")
 LONGEST_PASTE = 16 * 1024
 ANY_KEY_COMMAND = 'for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done'
+_asking = threading.BoundedSemaphore(2)  # a server that doesn't answer holds a page for 15 seconds
 
 
 class FormProblem(ValueError):
@@ -53,7 +70,11 @@ class FormProblem(ValueError):
 
 
 class EarlierResults(FormProblem):
-    """The name has results already: the form then asks whether it's the same server."""
+    """The name was used before: the form then asks whether it's the same server."""
+
+
+class ChangedMeanwhile(FormProblem):
+    """Someone changed the server since the form was opened."""
 
 
 class KeyUnavailable(Exception):
@@ -63,22 +84,28 @@ class KeyUnavailable(Exception):
 def rows(base: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Every server, and which are in each group."""
     hosts = load_inventory(hosts_file(base)).hosts
-    found = [
-        {
-            "name": host.name,
-            "where": f"{host.user}@{host.address}" + (f":{host.port}" if host.port != 22 else ""),
-            "group": host.group,
-            "trusted": trust_of(host) == "trusted",
-            "unreadable": trust_of(host) == "unreadable",
-        }
-        for host in hosts
-    ]
+    found = []
+    for host in hosts:
+        state = trust_of(host)
+        found.append(
+            {
+                "name": host.name,
+                "where": where_it_is(host),
+                "group": host.group,
+                "trusted": state == "trusted",
+                "unreadable": state == "unreadable",
+            }
+        )
     names = sorted({host.group for host in hosts if host.group})
     groups = [
         {"name": name, "members": [host.name for host in hosts if host.group == name]}
         for name in names
     ]
     return found, groups
+
+
+def where_it_is(host: Host) -> str:
+    return f"{host.user}@{host.address}" + (f":{host.port}" if host.port != 22 else "")
 
 
 def group_names(base: Path) -> list[str]:
@@ -93,8 +120,14 @@ def trust_of(host: Host) -> str:
         return "unreadable"
 
 
-def what_stops_it(host: Host) -> list[str]:
-    return host_problems_in_plain_words(host)
+def check_blockers(host: Host) -> list[str]:
+    """Why a check started from a page can't go ahead, in words for it."""
+    state = trust_of(host)
+    first = {
+        "none": ["Its identity hasn't been confirmed yet. Open it to do that."],
+        "unreadable": ["The file of trusted keys on this machine can't be read."],
+    }.get(state, [])
+    return first + host_problems_in_plain_words(host)
 
 
 def has_results(base: Path, name: str) -> bool:
@@ -105,6 +138,11 @@ def has_results(base: Path, name: str) -> bool:
         return bool(usable_bundles(store, name))
     finally:
         store.close()
+
+
+def _used_before(base: Path, name: str) -> bool:
+    """Results would be compared with a new server's, and rules would hide its findings."""
+    return has_results(base, name) or (directory(base) / "hosts" / f"{name}.yaml").exists()
 
 
 def blank_form() -> dict[str, str]:
@@ -149,37 +187,50 @@ def _prior(text: str, kept: Host | None) -> float | None:
     try:
         return float(text) / 100
     except ValueError:
-        raise FormProblem(f"{LABELS['prior']}: type a percentage, such as 2.") from None
+        raise FormProblem(f"{LABELS['prior']}: {PLAIN['prior']}.") from None
+
+
+def _web_roots(text: str, kept: Host | None) -> list[str] | None:
+    roots = [line.strip() for line in text.splitlines() if line.strip()]
+    if not roots and kept is not None and kept.web_roots == []:
+        return []  # none at all, set on purpose, which the empty box also shows
+    return roots or None
 
 
 def host_from_form(post, kept: Host | None = None) -> Host:
     """A valid host, or FormProblem. Settings the form doesn't show stay as they are."""
     text = {field: post.get(field, "").strip() for field in FORM_FIELDS}
-    auth = text["auth"]
     try:
         port = int(text["port"] or "22")
     except ValueError:
         raise FormProblem(f"{LABELS['port']}: type a number, usually 22.") from None
+    if text["auth"] == "key" and not text["key_path"]:
+        raise FormProblem(f"{LABELS['key_path']}: this is needed when it logs in with a key file.")
     data = {
         **(kept.model_dump() if kept else {}),
         "name": kept.name if kept else text["name"],
         "address": text["address"],
         "port": port,
         "user": text["user"],
-        "auth": auth,
-        "key_path": text["key_path"] or None if auth == "key" else None,
+        "auth": text["auth"],
+        "key_path": text["key_path"] or None,
         "sudo": text["sudo"],
         "password_source": text["password_source"] or "prompt",
         "group": text["group"] or None,
         "python": text["python"] or "python3",
-        "web_roots": [line.strip() for line in text["web_roots"].splitlines() if line.strip()]
-        or None,
+        "web_roots": _web_roots(post.get("web_roots", ""), kept),
         "prior": _prior(text["prior"], kept),
     }
     try:
-        return Host.model_validate(data)
+        host = Host.model_validate(data)
     except ValidationError as exc:
         raise FormProblem(_words(exc)) from None
+    problems = new_host_problems(host, kept)
+    if (kept is None or kept.python != host.python) and not _PYTHON.fullmatch(host.python):
+        problems.append(("python", "python3, python3.12 or a full path ending in one of those"))
+    if problems:
+        raise FormProblem(" ".join(f"{LABELS[field]}: {words}." for field, words in problems))
+    return host
 
 
 def _words(exc: ValidationError) -> str:
@@ -187,52 +238,79 @@ def _words(exc: ValidationError) -> str:
     said = []
     for error in exc.errors():
         field = str(error["loc"][0]) if error["loc"] else ""
-        message = str(error["msg"]).removeprefix("Value error, ")
-        if error["type"] == "missing" or (error["type"] == "string_type"):
+        message = PLAIN.get(field) or str(error["msg"]).removeprefix("Value error, ")
+        if error["type"] in ("missing", "string_type"):
             message = "this is needed"
         said.append(f"{LABELS.get(field, field)}: {message}")
     return " ".join(f"{line}." for line in said)
 
 
 def add(base: Path, host: Host, same_server: bool = False) -> None:
-    """A name with results already means those results would be taken for this server's, so it
-    takes saying that it's the same one."""
-    if not same_server and has_results(base, host.name):
+    """A name used before takes saying it's the same server: its old results and rules would be
+    taken for this one's."""
+    if not same_server and _used_before(base, host.name):
         raise EarlierResults(
-            f"There are earlier results for a server named {host.name}. If this is that same"
-            " server, tick the box to say so. If not, give it another name, since new results would"
-            " be compared with the old ones."
+            f"There are earlier results or whitelist rules for a server named {host.name}. If this"
+            " is that same server, tick the box to say so. If not, give it another name, since new"
+            " results would be compared with the old ones and those rules would hide its findings."
         )
-    try:
-        with inventory_transaction(hosts_file(base)) as inventory:
-            inventory.add(host)
-    except ValueError as exc:
-        if isinstance(exc, ValidationError):
-            raise
-        raise FormProblem(f"There's already a server named {host.name}.") from None
+    with inventory_transaction(hosts_file(base)) as inventory:
+        if any(existing.name == host.name for existing in inventory.hosts):
+            raise FormProblem(f"There's already a server named {host.name}.")
+        inventory.add(host)
 
 
-def change(base: Path, name: str, post, version: str) -> list[str]:
-    """The settings that changed."""
+def change(base: Path, name: str, post, version: str) -> dict[str, tuple[Any, Any]]:
+    """Each setting that changed, as (old, new)."""
     kept = load_inventory(hosts_file(base)).get(name)
-    new = host_from_form(post, kept)
+    meanwhile = (
+        "Someone changed this server's settings since this page opened, so what you typed wasn't"
+        " saved. These are its settings now."
+    )
+    if kept.version() != version:
+        raise ChangedMeanwhile(meanwhile)
     try:
-        return change_host(base, new, version)
-    except (HostChangedMeanwhile, KeyError):
-        raise FormProblem(
-            "This server's settings changed since this page opened. Look again."
-        ) from None
+        return change_host(base, host_from_form(post, kept), version)
+    except HostChangedMeanwhile:
+        raise ChangedMeanwhile(meanwhile) from None
+
+
+def changes_in_words(changed: dict[str, tuple[Any, Any]]) -> str:
+    if not changed:
+        return "nothing changed"
+    return "; ".join(
+        f"{LABELS.get(field, field)}: {old} to {new}" for field, (old, new) in changed.items()
+    )
+
+
+def _why_not(cause: BaseException | None) -> str:
+    """Fixed words: what a server says about itself isn't for the permanent record."""
+    if isinstance(cause, TimeoutError):
+        return "It didn't answer in time. Check its address and port, and that it's running."
+    if isinstance(cause, socket.gaierror):
+        return "That name can't be found. Check its address."
+    if isinstance(cause, ConnectionRefusedError):
+        return "It refused the connection. Check the port, and that SSH is running there."
+    if isinstance(cause, asyncssh.Error):
+        return "Something answered, but it didn't finish as an SSH server would. Check the port."
+    return "It couldn't be reached. Check its address and port, and that it's running."
 
 
 def ask_for_key(host: Host) -> HostKeyCheck:
     try:
-        return asyncio.run(fetch_host_key(host))
-    except TransportError as exc:
-        raise KeyUnavailable(
-            f"It didn't answer, so check its address and port and that it's running. ({exc})"
-        ) from None
+        trusted_fingerprints(host)
     except (OSError, ValueError, asyncssh.Error):  # a damaged key line is a ValueError
         raise KeyUnavailable("The file of trusted keys on this machine can't be read.") from None
+    if not _asking.acquire(blocking=False):
+        raise KeyUnavailable("Other servers are being asked for their keys. Try again in a moment.")
+    try:
+        return asyncio.run(fetch_host_key(host))
+    except TransportError as exc:
+        raise KeyUnavailable(_why_not(exc.__cause__)) from None
+    except (OSError, ValueError):  # an address that can't be a name, such as a..b
+        raise KeyUnavailable("That address can't be used. Check it.") from None
+    finally:
+        _asking.release()
 
 
 def _key_file_word(algorithm: str) -> str | None:
@@ -257,10 +335,11 @@ def offer_of(check: HostKeyCheck) -> dict[str, Any]:
     }
 
 
-def trust(host: Host, check: HostKeyCheck, pasted: str, replace: bool) -> None:
-    """Only the key the person has seen on the server, and a changed one only when they say so."""
+def trust(host: Host, check: HostKeyCheck, pasted: str, replace: bool) -> bool:
+    """Only the key the person has seen on the server, and a changed one only when they say so.
+    Whether anything was written: a key already trusted needs nothing."""
     if check.status == "same":
-        return
+        return False
     if len(pasted) > LONGEST_PASTE:
         raise FormProblem("That's too long to be what the command printed.")
     found = _FINGERPRINT.findall(pasted)
@@ -277,4 +356,8 @@ def trust(host: Host, check: HostKeyCheck, pasted: str, replace: bool) -> None:
         )
     if check.status == "changed" and not replace:
         raise FormProblem("This replaces the key trusted before: tick the box to say you mean it.")
-    trust_host_key(host, check)
+    try:
+        trust_host_key(host, check)
+    except TransportError:
+        raise FormProblem("This server's address can't go in the file of trusted keys.") from None
+    return True

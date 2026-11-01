@@ -473,7 +473,7 @@ def _check_plan(request, names: list[str]) -> tuple[list, list, list]:
     ready, asking, blocked = [], [], []
     for host in _inventory_hosts(request, names):
         typed = schedule.needs_typed_password(host)
-        problems = schedule.host_problems_in_plain_words(host)
+        problems = manage.check_blockers(host)
         if problems:
             blocked.append((host.name, str(visible(" ".join(problems), 600))))
         elif typed:
@@ -529,19 +529,31 @@ def manage_add(request) -> HttpResponse:
 
 
 def _server_page(
-    request, name: str, values=None, problem="", key_problem="", offer=None, status=200
+    request,
+    name: str,
+    values=None,
+    version=None,
+    problem="",
+    key_problem="",
+    offer=None,
+    status=200,
 ):
     host = load_inventory().get(name)
+    try:
+        earlier = manage.has_results(home(), name)
+    except Exception as exc:  # noqa: BLE001 - only a link depends on it
+        print(f"checker web: can't read the results: {type(exc).__name__}", file=sys.stderr)
+        earlier = False
     context = {
         "host": host,
         "values": values if values is not None else manage.form_of(host),
-        "version": host.version(),
+        "version": version or host.version(),
         "problem": problem,
         "key_problem": key_problem,
         "offer": offer,
         "trusted": manage.trust_of(host),
-        "stops": manage.what_stops_it(host),
-        "earlier": manage.has_results(home(), name),
+        "stops": schedule.host_problems_in_plain_words(host),
+        "earlier": earlier,
         "groups": manage.group_names(home()),
         "code_needed": two_factor.code_needed(request),
     }
@@ -565,6 +577,15 @@ def _back_to_server(name: str) -> HttpResponse:
 
 
 CANT_MANAGE = "That couldn't be done: the list of servers or the evidence store can't be written."
+GONE = "That server isn't in the list of servers any more."
+MANAGE_FAILURES = (
+    OSError,
+    sqlite3.Error,
+    yaml.YAMLError,
+    InvalidSettings,
+    EvidenceError,
+    UnicodeError,
+)
 
 
 def _posted_name(request, **kwargs) -> str:
@@ -578,12 +599,13 @@ def server_add(request) -> HttpResponse:
     try:
         host = manage.host_from_form(request.POST)
         manage.add(home(), host, same_server=request.POST.get("same_server") == "on")
+        request.action_detail = manage.where_it_is(host)
     except manage.FormProblem as exc:
         words = str(visible(str(exc), 600))
         same = isinstance(exc, manage.EarlierResults)
         page = _add_form(request, values, words, 400, ask_same=same)
         raise ActionFailed(words, page=page) from None
-    except (OSError, sqlite3.Error, yaml.YAMLError, InvalidSettings, EvidenceError) as exc:
+    except MANAGE_FAILURES as exc:
         print(f"checker web: adding a server failed: {type(exc).__name__}", file=sys.stderr)
         raise ActionFailed(CANT_MANAGE) from None
     return _back_to_server(host.name)
@@ -607,15 +629,26 @@ def server_change(request) -> HttpResponse:
     name = _listed(request)
     values = manage.form_values(request.POST)
     try:
-        changed = manage.change(home(), name, request.POST, request.POST.get("version", ""))
-    except manage.FormProblem as exc:
-        words = str(visible(str(exc), 600))
-        page = _server_page(request, name, values=values, problem=words, status=400)
+        version = request.POST.get("version", "")
+        changed = manage.change(home(), name, request.POST, version)
+    except manage.ChangedMeanwhile as exc:
+        # The settings as they are now, so saving again can't undo what someone else did unseen.
+        words = str(exc)
+        page = _server_page(request, name, problem=words, status=400)
         raise ActionFailed(words, page=page) from None
-    except (OSError, sqlite3.Error, yaml.YAMLError, InvalidSettings, EvidenceError) as exc:
+    except manage.FormProblem as exc:
+        # What they typed, against what they started from: if that's old, saving again is refused.
+        words = str(visible(str(exc), 600))
+        page = _server_page(
+            request, name, values=values, version=version, problem=words, status=400
+        )
+        raise ActionFailed(words, page=page) from None
+    except KeyError:
+        raise ActionFailed(GONE) from None
+    except MANAGE_FAILURES as exc:
         print(f"checker web: changing a server failed: {type(exc).__name__}", file=sys.stderr)
         raise ActionFailed(CANT_MANAGE) from None
-    request.action_detail = "changed: " + ", ".join(changed) if changed else "nothing changed"
+    request.action_detail = manage.changes_in_words(changed)
     return _back_to_server(name)
 
 
@@ -624,7 +657,9 @@ def server_remove(request) -> HttpResponse:
     name = _listed(request)
     try:
         remove_host(home(), name)
-    except (OSError, sqlite3.Error, yaml.YAMLError, InvalidSettings, EvidenceError) as exc:
+    except KeyError:
+        raise ActionFailed(GONE) from None
+    except MANAGE_FAILURES as exc:
         print(f"checker web: removing a server failed: {type(exc).__name__}", file=sys.stderr)
         raise ActionFailed(CANT_MANAGE) from None
     return HttpResponseRedirect(reverse("manage"))
@@ -632,7 +667,10 @@ def server_remove(request) -> HttpResponse:
 
 def _key_offered(request, name: str):
     """(host, what it offers), or the server's page saying why it couldn't be asked."""
-    host = load_inventory().get(name)
+    try:
+        host = load_inventory().get(name)
+    except KeyError:
+        raise ActionFailed(GONE) from None
     try:
         return host, manage.ask_for_key(host)
     except manage.KeyUnavailable as exc:
@@ -657,18 +695,20 @@ def server_key_trust(request) -> HttpResponse:
     name = _listed(request)
     host, check = _key_offered(request, name)
     try:
-        manage.trust(
+        wrote = manage.trust(
             host, check, request.POST.get("pasted", ""), request.POST.get("replace") == "on"
         )
     except manage.FormProblem as exc:
         words = str(visible(str(exc), 600))
         offer = manage.offer_of(check)
         page = _server_page(request, name, key_problem=words, offer=offer, status=400)
-        raise ActionFailed(f"{words} It offered {check.fingerprint}.", page=page) from None
+        # Only its start: the Activity page shows this, and the whole of it could be pasted.
+        said = f"{words} It offered a key starting {check.fingerprint[:15]}."
+        raise ActionFailed(said, page=page) from None
     except OSError as exc:
         print(f"checker web: trusting a key failed: {type(exc).__name__}", file=sys.stderr)
         raise ActionFailed(CANT_MANAGE) from None
-    request.action_detail = check.fingerprint
+    request.action_detail = check.fingerprint + ("" if wrote else ": already trusted")
     return _back_to_server(name)
 
 

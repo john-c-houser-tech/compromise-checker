@@ -143,7 +143,8 @@ def action(name: str, consequential: bool = False, target=lambda request, **kwar
                 record_if_possible(request, name, on, "failed", type(exc).__name__)
                 raise
             done = "done" if response.status_code < 400 else f"failed: {response.status_code}"
-            record_if_possible(request, name, on, done)  # it has happened: say what it did
+            # It has happened: say what it did. A view can add the tool's own words about it.
+            record_if_possible(request, name, on, done, getattr(request, "action_detail", ""))
             return response
 
         GATED.add(wrapped)

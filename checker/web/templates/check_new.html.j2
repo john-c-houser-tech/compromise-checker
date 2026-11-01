@@ -5,7 +5,7 @@
 {% if unknown %}
 <p>That server isn't in the list of servers. <a href="{{ url('check_new') }}">Check all of them</a>.</p>
 {% elif not ready and not asking and not blocked %}
-<p>There are no servers to check yet. For now they're added from the command line, with <code>checker hosts add</code>.</p>
+<p>There are no servers to check yet. <a href="{{ url('manage_add') }}">Add one</a>.</p>
 {% else %}
 {% if ready or asking %}
 <p>This connects to each server, reads its logs and settings without changing anything, and works out what they show. It usually takes a few minutes. You can leave this page while it runs.</p>
@@ -24,7 +24,7 @@
 {% if blocked %}
 <h2>Can't be checked from here</h2>
 <ul>
-  {% for name, why in blocked %}<li><strong>{{ name }}</strong>: {{ why }}</li>{% endfor %}
+  {% for name, why in blocked %}<li><a href="{{ url('manage_server') }}?host={{ name | urlencode }}"><strong>{{ name }}</strong></a>: {{ why }}</li>{% endfor %}
 </ul>
 {% endif %}
 {% endif %}

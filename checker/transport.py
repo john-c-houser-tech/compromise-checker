@@ -7,9 +7,12 @@ a command line.
 """
 
 import asyncio
+import errno
 import json
+import os
 import secrets
 import shlex
+import stat
 import threading
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -20,7 +23,7 @@ import asyncssh
 from asyncssh.public_key import decode_ssh_public_key
 
 from checker.files import atomic_write, locked
-from checker.inventory import Host, known_hosts_file
+from checker.inventory import UNSAFE_IN_ADDRESS, Host, known_hosts_file
 
 STDERR_LIMIT = 64 * 1024
 READ_SIZE = 64 * 1024
@@ -168,6 +171,29 @@ class _Client(asyncssh.SSHClient):
             self.key_fingerprint = _fingerprint(self._offered_key)
 
 
+MOST_KEY_FILE_BYTES = 1024 * 1024
+
+
+def read_key_file(path: str):
+    """A private key file, opened before it's looked at, and read no further than a key could be:
+    a pipe would hang whatever is reading it, a device would fill the memory, and /proc's files say
+    they're empty. The path may come from a form."""
+    try:
+        descriptor = os.open(Path(path).expanduser(), os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    except RuntimeError as exc:  # ~nobody/...
+        raise OSError(errno.ENOENT, "that user's home isn't known") from exc
+    except ValueError as exc:  # a NUL, which only a file edited by hand can have
+        raise OSError(errno.EINVAL, "it isn't a path") from exc
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise OSError(errno.EINVAL, "it isn't an ordinary file")
+    with os.fdopen(descriptor, "rb") as file:
+        data = file.read(MOST_KEY_FILE_BYTES + 1)
+    if data is None or len(data) > MOST_KEY_FILE_BYTES:
+        raise OSError(errno.EFBIG, "it's too big to be a key")
+    return asyncssh.import_private_key(data)
+
+
 def _fingerprint(key) -> str:
     """SHA256 fingerprint of a private key or agent key pair, as sshd logs it."""
     return decode_ssh_public_key(key.public_data).get_fingerprint("sha256")
@@ -178,7 +204,7 @@ async def _client_keys(host: Host, agent_path: str | None) -> tuple[list, object
         if not host.key_path:
             raise TransportError(f"{host.name}: auth is 'key' but no key_path is set")
         try:
-            return [asyncssh.read_private_key(Path(host.key_path).expanduser())], None
+            return [read_key_file(host.key_path)], None
         except (OSError, asyncssh.KeyImportError) as exc:
             raise TransportError(f"{host.name}: cannot read key {host.key_path}: {exc}") from exc
     if host.auth == "agent":
@@ -222,7 +248,8 @@ async def collect(
     known = known_hosts or known_hosts_file()
     if not known.exists():
         raise UnknownHostKey(
-            f"{host.name}: no known host keys yet; run `checker trust {host.name}`"
+            f"{host.name}: no known host keys yet; run `checker trust {host.name}`,"
+            " or confirm its key on its Manage page"
         )
 
     password = None
@@ -283,9 +310,14 @@ async def _connect_and_run(
             wait,
         )
     except asyncssh.HostKeyNotVerifiable as exc:
+        try:
+            first_time = not trusted_fingerprints(host, known)
+        except (OSError, ValueError, asyncssh.Error):
+            first_time = False
+        command = f"checker trust {host.name}" + ("" if first_time else " --replace")
         raise UnknownHostKey(
             f"{host.name}: host key not trusted ({exc.reason}). If you expected this, check the"
-            f" new key and run `checker trust {host.name} --replace`."
+            f" new key and run `{command}`, or confirm it on its Manage page."
         ) from exc
     except asyncssh.PermissionDenied as exc:
         # A refused login still leaves sshd records: keep what was tried.
@@ -511,6 +543,16 @@ def _read_known(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
 
+def trusted_fingerprints(host: Host, known_hosts: Path | None = None) -> list[str]:
+    """The keys trusted for this host, without contacting it."""
+    name = _known_hosts_name(host)
+    return [
+        asyncssh.import_public_key(" ".join(parts[1:3])).get_fingerprint("sha256")
+        for parts in (line.split() for line in _read_known(known_hosts or known_hosts_file()))
+        if len(parts) >= 3 and parts[0] == name
+    ]
+
+
 async def fetch_host_key(host: Host, known_hosts: Path | None = None) -> HostKeyCheck:
     """Ask the server for its host key, and compare it with what we know:
     a known key's kind first, so a host trusted by its RSA key isn't
@@ -544,14 +586,26 @@ async def fetch_host_key(host: Host, known_hosts: Path | None = None) -> HostKey
     )
 
 
-def trust_host_key(host: Host, check: HostKeyCheck, known_hosts: Path | None = None) -> None:
+class TrustedKeysChanged(TransportError):
+    """The trusted keys aren't what the decision to trust this one was based on."""
+
+
+def trust_host_key(
+    host: Host, check: HostKeyCheck, known_hosts: Path | None = None, unchanged: bool = False
+) -> None:
     """Record `check.key` as the only trusted key for this host. The whole
     read-modify-write holds a lock, so concurrent `trust` commands can't
-    lose each other's entries."""
+    lose each other's entries. `unchanged` also refuses if the trusted keys
+    aren't those `check` saw: two people confirming at once mustn't replace
+    each other's key without anyone having agreed to a replacement."""
+    if UNSAFE_IN_ADDRESS.search(host.address):
+        raise TransportError(f"{host.name}: its address can't go in the file of trusted keys")
     path = known_hosts or known_hosts_file()
     name = _known_hosts_name(host)
     entry = check.key.export_public_key("openssh").decode("ascii").split()
     with locked(path):
+        if unchanged and set(trusted_fingerprints(host, path)) != set(check.known_fingerprints):
+            raise TrustedKeysChanged(f"{host.name}: its trusted keys changed meanwhile")
         kept = [line for line in _read_known(path) if line.split()[:1] != [name]]
         kept.append(f"{name} {entry[0]} {entry[1]}")
         atomic_write(path, "\n".join(kept) + "\n")

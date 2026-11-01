@@ -1,6 +1,7 @@
 """The web interface's server (PR 5.2): accounts, one-time setup, throttling, headers,
 and host text that can do nothing in a logged-in browser."""
 
+import html
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import tempfile
 import time
 import unicodedata
 from datetime import timedelta
+from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlencode
@@ -3496,13 +3498,18 @@ def test_serving_tells_the_settings_who_can_reach_it(monkeypatch, tmp_path):
 
 @pytest.fixture
 def inventory(home):
-    from checker.inventory import Host, Inventory, hosts_file, save_inventory
+    from checker.inventory import Host, Inventory, hosts_file, known_hosts_file, save_inventory
+    from checker.transport import _known_hosts_name
 
     saved = []
 
-    def write(*hosts):
+    key = asyncssh.generate_private_key("ssh-ed25519").export_public_key("openssh").decode()
+
+    def write(*hosts, confirmed=True):
         saved[:] = hosts
         save_inventory(Inventory(hosts=list(hosts)), hosts_file())
+        lines = [f"{_known_hosts_name(host)} {' '.join(key.split()[:2])}" for host in hosts]
+        known_hosts_file().write_text("\n".join(lines) + "\n" if confirmed else "")
 
     write(Host(name="web01", address="192.0.2.1", user="scan", auth="key", key_path="/none"))
     return write
@@ -3794,7 +3801,7 @@ def test_what_cant_be_checked_says_why(web, inventory, monkeypatch):
 
 def test_with_no_servers_the_page_says_what_to_do(web):
     client, _ = signed_in(web)
-    assert "checker hosts add" in client.get("/checks/new").content.decode()
+    assert "Add one" in client.get("/checks/new").content.decode()
 
 
 def test_hostile_text_in_a_checks_log_is_only_text(web, inventory, child, agent):
@@ -5029,3 +5036,797 @@ def test_from_a_page_a_key_in_a_settings_error_stays_off_it(tmp_path):
         env=env, capture_output=True, text=True,
     )  # fmt: skip
     assert rejected.returncode == 2
+
+
+# --- Managing servers (plan 5.13) ----------------------------------------------------------
+
+
+def said(response):
+    """The page as a person reads it: a value's apostrophe is escaped in the source."""
+    return html.unescape(response.content.decode())
+
+
+@pytest.fixture
+def unconfirmed(inventory, home):
+    """The list of servers, with no key confirmed for any of them."""
+    (home[0] / "known_hosts").write_text("")
+    return lambda *hosts: inventory(*hosts, confirmed=False)
+
+
+def server_form(**changes):
+    return {
+        "name": "new01",
+        "address": "192.0.2.50",
+        "port": "22",
+        "user": "scan",
+        "auth": "key",
+        "key_path": "/etc/scan-key",
+        "sudo": "nopasswd",
+        "password_source": "prompt",
+        "group": "",
+        "python": "python3",
+        "web_roots": "",
+        "prior": "",
+        "confirm_password": PASSWORD,
+        **changes,
+    }
+
+
+def hosts_now():
+    from checker.inventory import load_inventory
+
+    return {host.name: host for host in load_inventory().hosts}
+
+
+def records_of(action):
+    from checker.web.models import ActionRecord
+
+    return list(ActionRecord.objects.filter(action=action).order_by("id"))
+
+
+def server_page(client, name="web01"):
+    response = client.get("/manage/server", {"host": name})
+    assert response.status_code == 200
+    return said(response)
+
+
+def page_form(client, server="web01", **changes):
+    """What the server's page would send, left as it is apart from `changes`."""
+    from checker.web import manage
+
+    host = hosts_now()[server]
+    return {
+        **manage.form_of(host),
+        "host": server,
+        "version": host.version(),
+        "confirm_password": PASSWORD,
+        **changes,
+    }
+
+
+def test_adding_a_server_needs_the_password_and_is_recorded(web, unconfirmed):
+    client, _ = signed_in(web)
+    refused = client.post("/manage/adding", server_form(confirm_password="wrong"))
+    assert refused.status_code == 403 and "new01" not in hosts_now()
+    added = client.post("/manage/adding", server_form(group="web-servers"))
+    assert added.status_code == 302 and added["Location"] == "/manage/server?host=new01"
+    assert hosts_now()["new01"].group == "web-servers"
+    assert [r.outcome for r in records_of("added a server")] == ["refused", "started", "done"]
+    text = client.get("/manage").content.decode()
+    assert "new01" in text and "Not confirmed yet" in text and "web-servers" in text
+
+
+@pytest.mark.parametrize(
+    ("changes", "words"),
+    [
+        ({"name": "bad name"}, "Name:"),
+        ({"name": "../../etc/x"}, "Name:"),
+        ({"address": "192.0.2.1 ssh-ed25519 AAAA"}, "Address:"),
+        ({"address": "evil\nexample ssh-ed25519 AAAA"}, "Address:"),
+        ({"address": "-oProxyCommand=x"}, "Address:"),
+        ({"user": "a" + chr(1) + "b"}, "Account:"),
+        ({"user": "-oops"}, "Account:"),
+        ({"group": "../hosts/web01"}, "Group:"),
+        ({"key_path": "relative/key"}, "Key file:"),
+        ({"key_path": "/etc/key\nmore"}, "Key file:"),
+        ({"port": "99999"}, "SSH port:"),
+        ({"port": "twenty"}, "SSH port:"),
+        ({"python": "python3; reboot"}, "Python on the server:"),
+        ({"web_roots": "relative/path"}, "Website folders:"),
+        ({"prior": "150"}, "Starting estimate:"),
+        ({"prior": "lots"}, "Starting estimate:"),
+        ({"auth": "telepathy"}, "How it logs in:"),
+        ({"python": "/usr/sbin/whatever"}, "Python on the server:"),
+        ({"key_path": ""}, "Key file:"),
+    ],
+)
+def test_a_bad_form_says_what_is_wrong_and_keeps_what_was_typed(web, unconfirmed, changes, words):
+    client, _ = signed_in(web)
+    before = hosts_now()
+    response = client.post("/manage/adding", server_form(**changes))
+    text = response.content.decode()
+    assert response.status_code == 400 and words in text
+    assert hosts_now().keys() == before.keys()
+    assert 'value="/etc/scan-key"' in text or "key_path" in changes
+    assert PASSWORD not in text
+    assert records_of("added a server")[-1].outcome == "failed"
+
+
+def test_no_known_hosts_line_can_be_added_through_an_address():
+    from checker.inventory import Host, new_host_problems
+
+    for address in ("a b", "a\nb", "a#b", "[a]", "a,b", "|1|x", "@revoked", "a\tb", "-x", "a/b"):
+        host = Host(name="x", address=address, user="scan")
+        assert [field for field, _ in new_host_problems(host)] == ["address"]
+    for address in ("web.example.org", "192.0.2.1", "2001:db8::1", "::1", "fe80::1%eth0"):
+        assert not new_host_problems(Host(name="x", address=address, user="scan"))
+    assert not new_host_problems(Host(name="x", address=chr(252) + ".example", user="scan"))
+
+
+def test_trusting_refuses_an_address_from_the_file_that_could_add_a_line(tmp_path):
+    from checker.inventory import Host
+    from checker.transport import HostKeyCheck, TransportError, trust_host_key
+
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    check = HostKeyCheck(key.convert_to_public(), key.get_fingerprint("sha256"), "ssh-ed25519")
+    host = Host(name="x", address="a ssh-ed25519 AAAA\nb", user="scan")
+    with pytest.raises(TransportError):
+        trust_host_key(host, check, tmp_path / "known_hosts")
+    assert not (tmp_path / "known_hosts").exists()
+
+
+@pytest.mark.parametrize(
+    "old",
+    [
+        {"group": "Web Servers"},
+        {"key_path": "keys/id_ed25519"},
+        {"address": chr(252) + "ber.example"},
+        {"user": "DOMAIN\\Jane Doe"},
+    ],
+)
+def test_one_old_value_stops_nothing_and_a_save_keeps_it(web, unconfirmed, agent, old):
+    """Written before these rules, or by hand. Pages and other servers go on working."""
+    from checker.inventory import Host
+
+    client, _ = signed_in(web)
+    fields = {"address": "192.0.2.1", "user": "scan", **old}
+    unconfirmed(Host(name="web01", **fields), Host(name="db01", address="192.0.2.2", user="scan"))
+    assert client.get("/manage").status_code == 200
+    assert client.get("/checks/new").status_code == 200
+    assert client.get("/").status_code == 200
+    form = page_form(client, sudo="root", auth="key" if "key_path" in old else "agent")
+    assert client.post("/manage/server/change", form).status_code == 302
+    host = hosts_now()["web01"]
+    assert host.sudo == "root" and all(getattr(host, k) == v for k, v in old.items())
+
+
+def test_the_command_line_refuses_the_same_new_values(home, capsys):
+    from checker.cli import main as cli
+
+    code = cli(["hosts", "add", "x", "--address", "a b", "--user", "scan"])
+    assert code == 2 and "address" in capsys.readouterr().err
+
+
+def test_a_name_with_earlier_results_takes_saying_it_is_the_same_server(web, unconfirmed):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN, host="old01")
+    refused = client.post("/manage/adding", server_form(name="old01"))
+    assert refused.status_code == 400 and "earlier results" in said(refused)
+    assert 'name="same_server"' in said(refused)
+    assert "old01" not in hosts_now()
+    done = client.post("/manage/adding", server_form(name="old01", same_server="on"))
+    assert done.status_code == 302 and "old01" in hosts_now()
+
+
+def test_adding_a_name_in_use_says_so(web, unconfirmed):
+    client, _ = signed_in(web)
+    was = hosts_now()["web01"]
+    response = client.post("/manage/adding", server_form(name="web01", same_server="on"))
+    assert response.status_code == 400 and "already a server named" in said(response)
+    assert hosts_now()["web01"] == was
+
+
+def test_changing_a_server_is_confirmed_recorded_and_keeps_what_the_form_lacks(web, unconfirmed):
+    from checker.evidence import Store, database_file
+    from checker.inventory import Host
+
+    client, home = signed_in(web)
+    unconfirmed(Host(name="web01", address="192.0.2.1", user="scan", packs="none", prior=0.0123456))
+    refused = client.post(
+        "/manage/server/change", page_form(client, group="db", confirm_password="no")
+    )
+    assert refused.status_code == 403 and hosts_now()["web01"].group is None
+    done = client.post("/manage/server/change", page_form(client, group="db"))
+    assert done.status_code == 302
+    host = hosts_now()["web01"]
+    assert host.group == "db" and host.packs == "none", "the form has no packs field"
+    assert host.prior == 0.0123456, "shown rounded, and leaving it alone doesn't change it"
+    assert records_of("changed a server's settings")[-1].detail == 'Group: none to "db"'
+    store = Store(database_file(home[0]))
+    try:
+        row = store.config_changes()[-1]
+    finally:
+        store.close()
+    assert row["setting"] == "hosts.web01" and json.loads(row["new"]) == {"group": "db"}
+
+
+def test_a_stale_form_changes_nothing_and_saving_again_can_t_undo_the_other_change(
+    web, unconfirmed
+):
+    client, _ = signed_in(web)
+    stale = page_form(client, address="192.0.2.99")
+    client.post("/manage/server/change", page_form(client, group="db"))
+    response = client.post("/manage/server/change", stale)
+    text = said(response)
+    assert response.status_code == 400 and "wasn't saved" in text
+    assert hosts_now()["web01"].address == "192.0.2.1"
+    assert 'value="db"' in text and 'value="192.0.2.99"' not in text, "shows it as it is now"
+
+
+def test_a_bad_stale_form_stays_stale_when_it_comes_back(web, unconfirmed):
+    client, _ = signed_in(web)
+    stale = page_form(client)
+    client.post("/manage/server/change", page_form(client, group="db"))
+    version = hosts_now()["web01"].version()
+    bad = client.post("/manage/server/change", {**stale, "port": "x"})
+    assert bad.status_code == 400 and version in said(bad), "it's refused as stale first"
+
+
+def test_leaving_a_form_alone_changes_nothing(web, unconfirmed):
+    from checker.inventory import Host
+
+    client, _ = signed_in(web)
+    unconfirmed(
+        Host(
+            name="web01",
+            address="192.0.2.1",
+            user="scan",
+            auth="agent",
+            key_path="/k",
+            web_roots=[],
+        )
+    )
+    was = hosts_now()["web01"]
+    assert client.post("/manage/server/change", page_form(client)).status_code == 302
+    assert hosts_now()["web01"] == was
+    assert records_of("changed a server's settings")[-1].detail == "nothing changed"
+
+
+def test_a_name_cannot_be_changed_by_the_form(web, unconfirmed):
+    client, _ = signed_in(web)
+    client.post("/manage/server/change", page_form(client, name="other", group="db"))
+    assert set(hosts_now()) == {"web01"} and hosts_now()["web01"].group == "db"
+
+
+def test_removing_a_server_is_confirmed_and_keeps_its_results(web, unconfirmed):
+    from checker.baseline import usable_bundles
+    from checker.evidence import Store, database_file
+
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    refused = client.post("/manage/server/remove", {"host": "web01", "confirm_password": "no"})
+    assert refused.status_code == 403 and "web01" in hosts_now()
+    done = client.post("/manage/server/remove", {"host": "web01", "confirm_password": PASSWORD})
+    assert done.status_code == 302 and "web01" not in hosts_now()
+    store = Store(database_file(home[0]), read_only=True)
+    try:
+        assert usable_bundles(store, "web01")
+    finally:
+        store.close()
+
+
+def test_unlisted_servers_can_t_be_acted_on(web, unconfirmed, monkeypatch):
+    from checker.web import manage
+
+    def must_not(host):
+        raise AssertionError(f"contacted {host}")
+
+    monkeypatch.setattr(manage, "fetch_host_key", must_not)
+    client, _ = signed_in(web)
+    form = {"host": "nope", "confirm_password": PASSWORD, "pasted": "x"}
+    for path in ("ask-key", "trust-key", "remove", "change"):
+        assert client.post(f"/manage/server/{path}", form).status_code == 400
+    assert client.get("/manage/server", {"host": "nope"}).status_code == 404
+
+
+def test_the_manage_pages_contact_nothing_and_need_a_login(web, unconfirmed, monkeypatch):
+    from checker.web import manage
+
+    def must_not(host):
+        raise AssertionError(f"contacted {host}")
+
+    monkeypatch.setattr(manage, "fetch_host_key", must_not)
+    client, _ = web
+    for path in ("/manage", "/manage/add", "/manage/server?host=web01"):
+        assert client.get(path).status_code == 302
+    signed_in(web)
+    for path in ("/manage", "/manage/add", "/manage/server?host=web01"):
+        assert client.get(path).status_code == 200
+
+
+def test_hostile_values_do_nothing_on_the_manage_pages(web, unconfirmed):
+    client, _ = signed_in(web)
+    refused = client.post("/manage/adding", server_form(key_path="/x" + HOSTILE, name="h1"))
+    assert refused.status_code == 400
+    typed = client.post("/manage/adding", server_form(address=HOSTILE)).content.decode()
+    for text in (refused.content.decode(), typed):
+        assert "<script>alert" not in text and "<img src=x" not in text and BIDI not in text
+    from checker.inventory import Host
+
+    unconfirmed(Host(name="h1", address="192.0.2.1", user="<b>" + BIDI, key_path="/x" + HOSTILE))
+    for text in (client.get("/manage/server?host=h1"), client.get("/manage")):
+        shown = text.content.decode()
+        assert "<script>alert" not in shown and "<b>" not in shown and BIDI not in shown
+
+
+# --- Whose key is it ---
+
+
+@pytest.fixture
+def offered(monkeypatch):
+    """The server's answer, through the real comparison and the real known_hosts file."""
+    from checker.transport import HostKeyCheck, trusted_fingerprints
+    from checker.web import manage
+
+    state = {"key": asyncssh.generate_private_key("ssh-ed25519"), "asked": 0}
+
+    async def fetch(host):
+        state["asked"] += 1
+        key = state["key"]
+        return HostKeyCheck(
+            key=key.convert_to_public(),
+            fingerprint=key.get_fingerprint("sha256"),
+            key_type=key.get_algorithm(),
+            known_fingerprints=trusted_fingerprints(host),
+        )
+
+    monkeypatch.setattr(manage, "fetch_host_key", fetch)
+    return state
+
+
+def printed(key):
+    return f"256 {key.get_fingerprint('sha256')} root@web01 (ED25519)"
+
+
+def trust_form(pasted, **changes):
+    return {"host": "web01", "pasted": pasted, "confirm_password": PASSWORD, **changes}
+
+
+def trusted_now(name="web01"):
+    from checker.transport import trusted_fingerprints
+
+    return trusted_fingerprints(hosts_now()[name])
+
+
+def test_asking_shows_where_to_look_and_not_the_fingerprint(web, unconfirmed, offered):
+    client, _ = signed_in(web)
+    response = client.post("/manage/server/ask-key", {"host": "web01"})
+    text = response.content.decode()
+    assert response.status_code == 200
+    assert "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub" in text
+    assert offered["key"].get_fingerprint("sha256") not in text
+    assert trusted_now() == [], "asking trusts nothing"
+
+
+def test_asking_is_a_post_so_a_link_can_t_make_this_machine_connect(web, unconfirmed, offered):
+    client, _ = signed_in(web)
+    assert client.get("/manage/server/ask-key", {"host": "web01"}).status_code == 405
+    assert offered["asked"] == 0
+
+
+def test_a_key_is_trusted_only_when_what_was_pasted_matches(web, unconfirmed, offered):
+    client, _ = signed_in(web)
+    other = asyncssh.generate_private_key("ssh-ed25519")
+    wrong = client.post("/manage/server/trust-key", trust_form(printed(other)))
+    assert wrong.status_code == 400 and "not the key this server is offering" in said(wrong)
+    assert offered["key"].get_fingerprint("sha256") not in said(wrong)
+    assert trusted_now() == []
+    failed = records_of("trusted a server's host key")[-1]
+    whole = offered["key"].get_fingerprint("sha256")
+    assert failed.outcome == "failed" and whole[:15] in failed.detail and whole not in failed.detail
+    assert whole not in said(client.get("/activity")), "or it could be pasted from there"
+    empty = client.post("/manage/server/trust-key", trust_form("yes, trust it"))
+    assert empty.status_code == 400 and "doesn't contain a fingerprint" in said(empty)
+    assert trusted_now() == []
+    right = client.post("/manage/server/trust-key", trust_form(printed(offered["key"])))
+    assert right.status_code == 302
+    assert trusted_now() == [offered["key"].get_fingerprint("sha256")]
+    done = records_of("trusted a server's host key")[-1]
+    assert done.outcome == "done" and done.detail == offered["key"].get_fingerprint("sha256")
+
+
+def test_trusting_needs_the_password_before_anything_is_contacted(web, unconfirmed, offered):
+    client, _ = signed_in(web)
+    form = trust_form(printed(offered["key"]), confirm_password="no")
+    assert client.post("/manage/server/trust-key", form).status_code == 403
+    assert offered["asked"] == 0 and trusted_now() == []
+
+
+def test_a_key_is_compared_with_a_fresh_answer_from_the_server(web, unconfirmed, offered):
+    """A page opened earlier proves nothing about who answers now."""
+    client, _ = signed_in(web)
+    real = offered["key"]
+    client.post("/manage/server/ask-key", {"host": "web01"})
+    offered["key"] = asyncssh.generate_private_key("ssh-ed25519")
+    response = client.post("/manage/server/trust-key", trust_form(printed(real)))
+    assert response.status_code == 400 and trusted_now() == []
+
+
+def test_a_changed_key_warns_and_takes_saying_so(web, unconfirmed, offered):
+    client, _ = signed_in(web)
+    first = offered["key"]
+    client.post("/manage/server/trust-key", trust_form(printed(first)))
+    offered["key"] = asyncssh.generate_private_key("ssh-ed25519")
+    new = offered["key"]
+    shown = client.post("/manage/server/ask-key", {"host": "web01"}).content.decode()
+    assert "different key" in shown and first.get_fingerprint("sha256") in shown
+    assert new.get_fingerprint("sha256") not in shown
+    unticked = client.post("/manage/server/trust-key", trust_form(printed(new)))
+    assert unticked.status_code == 400 and trusted_now() == [first.get_fingerprint("sha256")]
+    done = client.post("/manage/server/trust-key", trust_form(printed(new), replace="on"))
+    assert done.status_code == 302 and trusted_now() == [new.get_fingerprint("sha256")]
+
+
+def test_a_key_already_trusted_needs_nothing(web, unconfirmed, offered):
+    client, _ = signed_in(web)
+    client.post("/manage/server/trust-key", trust_form(printed(offered["key"])))
+    shown = client.post("/manage/server/ask-key", {"host": "web01"}).content.decode()
+    assert "nothing to do" in shown and offered["key"].get_fingerprint("sha256") in shown
+
+
+def test_a_new_address_needs_its_key_confirmed_again(web, unconfirmed, offered):
+    client, _ = signed_in(web)
+    client.post("/manage/server/trust-key", trust_form(printed(offered["key"])))
+    assert "Not confirmed yet" not in server_page(client)
+    client.post("/manage/server/change", page_form(client, address="192.0.2.77"))
+    assert "Not confirmed yet" in server_page(client) and trusted_now() == []
+
+
+def test_a_server_that_doesn_t_answer_says_so(web, unconfirmed, monkeypatch):
+    from checker.transport import TransportError
+    from checker.web import manage
+
+    async def fail(host):
+        raise TransportError("web01: cannot fetch the host key: refused")
+
+    monkeypatch.setattr(manage, "fetch_host_key", fail)
+    client, _ = signed_in(web)
+    response = client.post("/manage/server/ask-key", {"host": "web01"})
+    assert response.status_code == 400 and "couldn't be reached" in said(response)
+    assert records_of("asked a server for its host key")[-1].outcome == "failed"
+
+
+def test_a_damaged_known_hosts_file_is_a_plain_page(web, unconfirmed, home):
+    client, _ = signed_in(web)
+    (home[0] / "known_hosts").write_text("192.0.2.1 ssh-ed25519 notakey\n")
+    assert "Can't be read" in said(client.get("/manage"))
+    assert "can't be read" in server_page(client)
+    response = client.post("/manage/server/ask-key", {"host": "web01"})
+    assert response.status_code == 400 and "can't be read" in said(response)
+
+
+def test_what_stops_a_check_is_in_plain_words(web, unconfirmed, monkeypatch):
+    client, _ = signed_in(web)
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    unconfirmed(key_host())
+    for text in (server_page(client), said(client.get("/checks/new"))):
+        assert "can't reach one" in text and "SSH_AUTH_SOCK" not in text
+
+
+def test_a_hostile_server_s_words_stay_out_of_the_record(web, unconfirmed, monkeypatch):
+    from checker.transport import TransportError
+    from checker.web import manage
+
+    async def fail(host):
+        raise TransportError(
+            f"web01: cannot fetch the host key: {HOSTILE}"
+        ) from asyncssh.ProtocolError(1, HOSTILE)
+
+    monkeypatch.setattr(manage, "fetch_host_key", fail)
+    client, _ = signed_in(web)
+    response = client.post("/manage/server/ask-key", {"host": "web01"})
+    assert response.status_code == 400 and "evil" not in said(response).split("<main>")[1]
+    assert "evil" not in records_of("asked a server for its host key")[-1].detail
+
+
+def test_rules_kept_under_a_name_count_as_used_before(web, unconfirmed):
+    client, home = signed_in(web)
+    folder = home[0] / "whitelist" / "hosts"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "old01.yaml").write_text("rules: []\n")
+    refused = client.post("/manage/adding", server_form(name="old01"))
+    assert refused.status_code == 400 and "whitelist rules" in said(refused)
+
+
+def test_an_unconfirmed_server_can_t_be_started_and_says_where_to_go(web, unconfirmed, agent):
+    client, _ = signed_in(web)
+    unconfirmed(key_host())
+    text = said(client.get("/checks/new"))
+    assert "identity hasn't been confirmed" in text and "/manage/server?host=web01" in text
+    assert "Ready to check" not in text
+    assert client.post("/checks/start", {"host": "web01"}).status_code == 400
+
+
+def test_a_paste_when_already_trusted_doesn_t_read_as_trusting(web, unconfirmed, offered):
+    client, _ = signed_in(web)
+    client.post("/manage/server/trust-key", trust_form(printed(offered["key"])))
+    client.post("/manage/server/trust-key", trust_form("garbage"))
+    assert records_of("trusted a server's host key")[-1].detail.endswith(": already trusted")
+
+
+def test_a_server_removed_meanwhile_is_words_not_an_error_page(web, unconfirmed, monkeypatch):
+    from checker.web import manage
+
+    client, _ = signed_in(web)
+    form = page_form(client)
+
+    def gone(*args):
+        raise KeyError("web01")
+
+    monkeypatch.setattr(manage, "change", gone)
+    assert client.post("/manage/server/change", form).status_code == 400
+
+
+@pytest.mark.parametrize("kind", ["fifo", "dir", "big"])
+def test_a_key_path_can_t_hang_or_fill_the_server(tmp_path, kind):
+    from checker.transport import MOST_KEY_FILE_BYTES, read_key_file
+
+    path = tmp_path / "key"
+    if kind == "fifo":
+        os.mkfifo(path)
+    elif kind == "dir":
+        path.mkdir()
+    else:
+        path.write_bytes(b"x" * (MOST_KEY_FILE_BYTES + 1))
+    with pytest.raises(OSError, match="ordinary file|too big"):
+        read_key_file(str(path))
+
+
+def test_the_record_says_where_an_added_server_points(web, unconfirmed):
+    client, _ = signed_in(web)
+    client.post("/manage/adding", server_form())
+    detail = records_of("added a server")[-1].detail
+    assert '"192.0.2.50"' in detail and '"scan"' in detail and '"/etc/scan-key"' in detail
+
+
+def test_removing_and_adding_again_leaves_every_setting_on_the_record(web, unconfirmed):
+    from checker.evidence import Store, database_file
+
+    client, home = signed_in(web)
+    form = {"host": "web01", "confirm_password": PASSWORD}
+    assert client.post("/manage/server/remove", form).status_code == 302
+    again = server_form(name="web01", group="quiet", prior="0.01", python="/tmp/x/python3")  # noqa: S108
+    assert client.post("/manage/adding", {**again, "same_server": "on"}).status_code == 302
+    detail = records_of("added a server")[-1].detail
+    assert detail.startswith('Group: "quiet"; Starting estimate: 0.01%; Python on the server:')
+    assert '"192.0.2.1"' in records_of("removed a server")[-1].detail
+    store = Store(database_file(home[0]))
+    try:
+        rows = store.config_changes()
+    finally:
+        store.close()
+    assert [row["setting"] for row in rows[-2:]] == ["hosts.web01", "hosts.web01"]
+    assert json.loads(rows[-1]["new"])["group"] == "quiet" and rows[-2]["new"] == "null"
+
+
+def test_a_value_can_t_cut_the_record_or_pass_for_another_change(web, unconfirmed):
+    client, _ = signed_in(web)
+    form = page_form(
+        client,
+        key_path="/k2; Group: prod to prod" + "/a" * 600,
+        group="prod",
+        prior="0.01",
+    )
+    assert client.post("/manage/server/change", form).status_code == 302
+    detail = records_of("changed a server's settings")[-1].detail
+    assert detail.startswith('Group: none to "prod"; Starting estimate: none to 0.01%')
+    assert '"/k2; Group: prod to prod' in detail and "(cut)" in detail
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"user": "scan" + chr(0x9B) + "2J"},
+        {"address": "ex" + chr(0x202E) + "ample.com"},
+        {"key_path": "/k" + chr(0x202E)},
+        {"key_path": "/" + "a" * 4100},
+    ],
+)
+def test_nothing_new_can_reach_a_terminal_as_control_characters(web, unconfirmed, changes):
+    client, _ = signed_in(web)
+    assert client.post("/manage/adding", server_form(**changes)).status_code == 400
+    assert "new01" not in hosts_now()
+
+
+@pytest.mark.parametrize(
+    "python",
+    ["python3", "python3.12", "/usr/bin/python3", "/usr/bin/python", "/usr/libexec/platform-python",
+     "/usr/bin/python3.12t", "/usr/bin/pypy3"],
+)  # fmt: skip
+def test_the_usual_pythons_are_accepted(web, unconfirmed, python):
+    client, _ = signed_in(web)
+    assert client.post("/manage/adding", server_form(python=python)).status_code == 302
+
+
+def test_a_stored_nul_in_a_key_path_stops_only_that_server(web, unconfirmed, agent):
+    from checker.inventory import Host
+
+    client, _ = signed_in(web)
+    unconfirmed(
+        Host(name="web01", address="192.0.2.1", user="s", auth="key", key_path="/k" + chr(0) + "x")
+    )
+    assert client.get("/checks/new").status_code == 200
+
+
+def test_a_key_file_is_read_no_further_than_a_key_could_be(tmp_path):
+    from checker.transport import read_key_file
+
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    path = tmp_path / "key"
+    path.write_bytes(key.export_private_key())
+    assert read_key_file(str(path)).get_fingerprint("sha256") == key.get_fingerprint("sha256")
+    with pytest.raises(asyncssh.KeyImportError):
+        read_key_file("/proc/self/status")
+
+
+def test_two_confirmations_at_once_can_t_replace_a_key_nobody_agreed_to(web, unconfirmed, offered):
+    """Both saw an untrusted address. The second would overwrite the first with no tick."""
+    from checker.transport import trust_host_key
+    from checker.web import manage
+
+    client, _ = signed_in(web)
+    first = asyncssh.generate_private_key("ssh-ed25519")
+    host = hosts_now()["web01"]
+    real = manage.trust_host_key
+
+    def someone_else_first(host_, check, **kwargs):
+        from checker.transport import HostKeyCheck
+
+        trust_host_key(
+            host_,
+            HostKeyCheck(first.convert_to_public(), first.get_fingerprint("sha256"), "ssh-ed25519"),
+        )
+        real(host_, check, **kwargs)
+
+    manage.trust_host_key = someone_else_first
+    try:
+        response = client.post("/manage/server/trust-key", trust_form(printed(offered["key"])))
+    finally:
+        manage.trust_host_key = real
+    assert response.status_code == 400 and "just now" in said(response)
+    assert trusted_now(host.name) == [first.get_fingerprint("sha256")]
+
+
+def test_a_failed_removal_leaves_nothing_on_the_record(web, unconfirmed, monkeypatch):
+    from checker.evidence import Store, database_file
+    from checker.inventory import Host
+
+    client, home = signed_in(web)
+    unconfirmed(Host(name="web01", address="192.0.2.1", user="scan", packs="none"))
+    store = Store(database_file(home[0]))
+    try:
+        before = len(store.config_changes())
+    finally:
+        store.close()
+
+    def full_disk(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    form = {"host": "web01", "confirm_password": PASSWORD}
+    with monkeypatch.context() as patched:  # undo() would undo the test home's setting too
+        patched.setattr("checker.inventory.save_inventory", full_disk)
+        assert client.post("/manage/server/remove", form).status_code == 400
+    assert "web01" in hosts_now()
+    store = Store(database_file(home[0]))
+    try:
+        assert len(store.config_changes()) == before
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("python", ["/usr/bin/not-python3", "not-python3", "/tmp/evilpython"])  # noqa: S108
+def test_python_has_to_be_the_whole_name(web, unconfirmed, python):
+    client, _ = signed_in(web)
+    assert client.post("/manage/adding", server_form(python=python)).status_code == 400
+
+
+def test_saving_something_else_leaves_old_odd_values_exactly_as_they_are(web, unconfirmed):
+    from checker.inventory import Host
+
+    client, _ = signed_in(web)
+    was = Host(
+        name="web01",
+        address="192.0.2.1",
+        user="scan",
+        auth="key",
+        group=" Web Servers ",
+        key_path="/k/with space ",
+        web_roots=["/srv/a ", "/srv/b"],
+    )
+    unconfirmed(was)
+    form = page_form(client, sudo="root")
+    form["web_roots"] = form["web_roots"].replace("\n", "\r\n")  # as a browser sends a text box
+    assert client.post("/manage/server/change", form).status_code == 302
+    assert hosts_now()["web01"] == was.model_copy(update={"sudo": "root"})
+
+
+def test_a_server_removed_while_its_key_is_fetched_is_words(web, unconfirmed, monkeypatch):
+    from checker.inventory import Inventory, hosts_file, save_inventory
+    from checker.transport import HostKeyCheck
+    from checker.web import manage
+
+    key = asyncssh.generate_private_key("ssh-ed25519")
+
+    async def removed_meanwhile(host):
+        save_inventory(Inventory(hosts=[]), hosts_file())
+        return HostKeyCheck(key.convert_to_public(), key.get_fingerprint("sha256"), "ssh-ed25519")
+
+    monkeypatch.setattr(manage, "fetch_host_key", removed_meanwhile)
+    client, _ = signed_in(web)
+    response = client.post("/manage/server/ask-key", {"host": "web01"})
+    assert response.status_code == 400 and "any more" in said(response)
+
+
+class _FormReader(HTMLParser):
+    """The change form's fields, as a browser would send them."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.fields, self.inside, self.area, self.select = {}, False, None, None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form":
+            self.inside = attrs.get("action") == "/manage/server/change"
+        elif self.inside and tag == "input" and attrs.get("name"):
+            self.fields[attrs["name"]] = attrs.get("value") or ""
+        elif self.inside and tag == "textarea":
+            self.area = attrs["name"]
+            self.fields[self.area] = ""
+        elif self.inside and tag == "select":
+            self.select = attrs["name"]
+        elif self.inside and tag == "option" and self.select and "selected" in attrs:
+            self.fields[self.select] = attrs["value"]
+
+    def handle_endtag(self, tag):
+        if tag == "form":
+            self.inside = False
+        elif tag == "textarea":
+            self.area = None
+        elif tag == "select":
+            self.select = None
+
+    def handle_data(self, data):
+        if self.area:
+            self.fields[self.area] += data
+
+
+def form_on_the_page(client, name="web01"):
+    reader = _FormReader()
+    reader.feed(client.get("/manage/server", {"host": name}).content.decode())
+    return {**reader.fields, "confirm_password": PASSWORD}
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        {"user": "DOMAIN\\Jane Doe"},
+        {"web_roots": ["/srv/one", "/srv/two", "/srv/three"]},
+        {"auth": "key", "key_path": "/k/" + "a" * 700},
+        {"prior": 0.0123456789},
+        {"user": "<b>&\\"},
+        {"user": "scan" + chr(0x202E)},
+        {"auth": "key", "key_path": "/k" + chr(0x9B) + "\\x"},
+        {"group": "Web Servers"},
+    ],
+)
+def test_saving_the_form_as_the_page_shows_it_changes_nothing(web, unconfirmed, stored):
+    """Through the rendered page, where a display filter could change what comes back."""
+    from checker.inventory import Host
+
+    client, _ = signed_in(web)
+    was = Host(**{"name": "web01", "address": "192.0.2.1", "user": "scan", **stored})
+    unconfirmed(was)
+    assert client.post("/manage/server/change", form_on_the_page(client)).status_code == 302
+    assert hosts_now()["web01"] == was
+    assert records_of("changed a server's settings")[-1].detail == "nothing changed"

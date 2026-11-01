@@ -50,7 +50,14 @@ from checker.evidence import (
     open_bundle,
     open_text,
 )
-from checker.inventory import Host, home, hosts_file, inventory_transaction, load_inventory
+from checker.inventory import (
+    Host,
+    home,
+    hosts_file,
+    inventory_transaction,
+    load_inventory,
+    new_host_problems,
+)
 from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
 from checker.report import visible, write_report
@@ -96,6 +103,8 @@ def cmd_hosts_add(args: argparse.Namespace) -> int:
             web_roots=args.web_root,
             prior=args.prior,
         )
+        if problems := new_host_problems(host):
+            raise ValueError("; ".join(f"{field}: {words}" for field, words in problems))
         with inventory_transaction() as inventory:
             inventory.add(host)
     except (ValidationError, ValueError) as exc:

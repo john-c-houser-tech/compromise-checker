@@ -1,0 +1,69 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}{{ host.name }}: manage: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage') }}">Back to Manage</a></p>
+<h1 class="page-title">{{ host.name }}</h1>
+{% if earlier %}<p><a href="{{ url('host', name=host.name) }}">See its results</a></p>{% endif %}
+
+<h2>Confirm it's really this server</h2>
+{% if key_problem %}<p class="error" role="alert">{{ key_problem }}</p>{% endif %}
+{% if trusted == "unreadable" %}
+<p class="error">The file of trusted keys on this machine can't be read.</p>
+{% elif offer and offer.status == "same" %}
+<p>It's offering the key already confirmed, <code>{{ offer.fingerprint }}</code>, so there's nothing to do.</p>
+{% elif offer %}
+{% if offer.status == "changed" %}
+<p class="error" role="alert">This server is offering a different key from the one confirmed before. It may have been rebuilt, or something between here and the server may be pretending to be it. Checks stay stopped until you've found out which.</p>
+<p>Confirmed before:</p>
+<ul>{% for fingerprint in offer.known %}<li><code>{{ fingerprint }}</code></li>{% endfor %}</ul>
+{% endif %}
+<p>Run this on the server itself, from its provider's console or through someone who already looks after it, and paste what it prints. Don't do this over the connection you're checking.</p>
+<p><code>{{ offer.command }}</code></p>
+<form method="post" action="{{ url('server_key_trust') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="host" value="{{ host.name }}">
+  <label>What it printed <input name="pasted" autocomplete="off" required></label>
+  {% if offer.status == "changed" %}<label class="tick"><input type="checkbox" name="replace"> I know why the key changed. Replace the old one.</label>{% endif %}
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Compare and confirm</button>
+</form>
+{% else %}
+{% if trusted == "trusted" %}
+<p>Its identity is confirmed. If the server was rebuilt, ask it for its key again.</p>
+{% else %}
+<p class="error">Not confirmed yet, so it can't be checked from here. This stops a check from sending anything to a machine pretending to be your server.</p>
+{% endif %}
+<form method="post" action="{{ url('server_key_ask') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="host" value="{{ host.name }}">
+  <button>Ask the server for its key</button>
+</form>
+{% endif %}
+
+{% if stops %}
+<h2>What would stop a check</h2>
+<ul>{% for stop in stops %}<li>{{ stop }}</li>{% endfor %}</ul>
+{% endif %}
+
+<h2>Settings</h2>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+<p class="note">A new address or port is checked against the keys confirmed for that address, and new results are still compared with this server's old baseline. A group brings in that group's rules, and a lower starting estimate makes the same findings look less worrying: both can hide what matters.</p>
+<form method="post" action="{{ url('server_change') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="host" value="{{ host.name }}">
+  <input type="hidden" name="version" value="{{ version }}">
+  {{ parts.server_fields(values, groups) }}
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Save these settings</button>
+</form>
+
+<h2>Remove it</h2>
+<p>This stops checks of it. Its results stay until a purge after their retention period, and without it on the list, its baseline can go then too. Its whitelist rules and confirmed key stay, in case it comes back.</p>
+<form method="post" action="{{ url('server_remove') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="host" value="{{ host.name }}">
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Remove {{ host.name }}</button>
+</form>
+{% endblock %}

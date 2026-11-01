@@ -22,13 +22,15 @@ from django.urls import Resolver404, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_otp import login as otp_login
+from pydantic import ValidationError as InvalidSettings
 
 from checker import schedule
 from checker.evidence import EvidenceError
 from checker.fleet import read_evidence, read_fleet, read_host, read_threats
 from checker.inventory import home, load_inventory
 from checker.report import visible
-from checker.web import accounts, decide, runs, two_factor, wording
+from checker.settings import remove_host
+from checker.web import accounts, decide, manage, runs, two_factor, wording
 from checker.web.actions import ActionFailed, action, record, record_if_possible
 from checker.web.app import HERE
 from checker.web.middleware import before_second_step, setting_it_up
@@ -45,6 +47,9 @@ VIEWABLE = {
     "checks",
     "check",
     "decide",
+    "manage",
+    "manage_add",
+    "manage_server",
     "two_factor_manage",
 }
 
@@ -468,9 +473,9 @@ def _check_plan(request, names: list[str]) -> tuple[list, list, list]:
     ready, asking, blocked = [], [], []
     for host in _inventory_hosts(request, names):
         typed = schedule.needs_typed_password(host)
-        problems = schedule.host_problems(host, typed=typed)
+        problems = manage.check_blockers(host)
         if problems:
-            blocked.append((host.name, str(visible("; ".join(problems), 600))))
+            blocked.append((host.name, str(visible(" ".join(problems), 600))))
         elif typed:
             asking.append(host)
         else:
@@ -481,6 +486,234 @@ def _check_plan(request, names: list[str]) -> tuple[list, list, list]:
 def _unreadable_inventory(request, exc) -> HttpResponse:
     print(f"checker web: can't read the servers: {type(exc).__name__}", file=sys.stderr)
     return _unavailable(request, "The list of servers can't be read.")
+
+
+def _known_host(name: str) -> bool:
+    return bool(name) and any(host.name == name for host in load_inventory().hosts)
+
+
+def _posted_host(request, **kwargs) -> str:
+    return request.POST.get("host", "")
+
+
+@login_required
+@require_GET
+def manage_page(request) -> HttpResponse:
+    """Read from this machine's files alone: no server is contacted to show this."""
+    try:
+        rows, groups = manage.rows(home())
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        return _unreadable_inventory(request, exc)
+    return render(request, "manage.html.j2", {"rows": rows, "groups": groups})
+
+
+def _add_form(request, values=None, problem: str = "", status: int = 200, ask_same: bool = False):
+    try:
+        groups = manage.group_names(home())
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        return _unreadable_inventory(request, exc)
+    context = {
+        "values": manage.for_the_page(values if values is not None else manage.blank_form()),
+        "problem": problem,
+        "ask_same": ask_same,
+        "groups": groups,
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_add.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def manage_add(request) -> HttpResponse:
+    return _add_form(request)
+
+
+def _server_page(
+    request,
+    name: str,
+    values=None,
+    version=None,
+    problem="",
+    key_problem="",
+    offer=None,
+    status=200,
+):
+    try:
+        host = load_inventory().get(name)
+    except KeyError:  # removed meanwhile: asking a server for its key takes a while
+        raise ActionFailed(GONE) from None
+    try:
+        earlier = manage.has_results(home(), name)
+    except Exception as exc:  # noqa: BLE001 - only a link depends on it
+        print(f"checker web: can't read the results: {type(exc).__name__}", file=sys.stderr)
+        earlier = False
+    context = {
+        "host": host,
+        "values": manage.for_the_page(values if values is not None else manage.form_of(host)),
+        "version": version or host.version(),
+        "problem": problem,
+        "key_problem": key_problem,
+        "offer": offer,
+        "trusted": manage.trust_of(host),
+        "stops": schedule.host_problems_in_plain_words(host),
+        "earlier": earlier,
+        "groups": manage.group_names(home()),
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_server.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def manage_server(request) -> HttpResponse:
+    name = request.GET.get("host", "")
+    try:
+        if not _known_host(name):
+            return not_found(request)
+        return _server_page(request, name)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        return _unreadable_inventory(request, exc)
+
+
+def _back_to_server(name: str) -> HttpResponse:
+    return HttpResponseRedirect(f"{reverse('manage_server')}?{urlencode({'host': name})}")
+
+
+CANT_MANAGE = "That couldn't be done: the list of servers or the evidence store can't be written."
+GONE = "That server isn't in the list of servers any more."
+MANAGE_FAILURES = (
+    OSError,
+    sqlite3.Error,
+    yaml.YAMLError,
+    InvalidSettings,
+    EvidenceError,
+    UnicodeError,
+)
+
+
+def _posted_name(request, **kwargs) -> str:
+    return request.POST.get("name", "")
+
+
+@action("added a server", consequential=True, target=_posted_name)
+def server_add(request) -> HttpResponse:
+    """Password again: every later check connects to what this names, as root."""
+    values = manage.form_values(request.POST)
+    try:
+        host = manage.host_from_form(request.POST)
+        manage.add(home(), host, same_server=request.POST.get("same_server") == "on")
+        request.action_detail = manage.settings_in_words(host)
+    except manage.FormProblem as exc:
+        words = str(visible(str(exc), 600))
+        same = isinstance(exc, manage.EarlierResults)
+        page = _add_form(request, values, words, 400, ask_same=same)
+        raise ActionFailed(words, page=page) from None
+    except MANAGE_FAILURES as exc:
+        print(f"checker web: adding a server failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(CANT_MANAGE) from None
+    return _back_to_server(host.name)
+
+
+def _listed(request) -> str:
+    name = request.POST.get("host", "")
+    try:
+        known = _known_host(name)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, words and not a stack trace
+        print(f"checker web: can't read the servers: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed("The list of servers can't be read.") from None
+    if not known:
+        raise ActionFailed("That server isn't in the list of servers.")
+    return name
+
+
+@action("changed a server's settings", consequential=True, target=_posted_host)
+def server_change(request) -> HttpResponse:
+    """Password again: its group, for one, decides which rules hide its findings."""
+    name = _listed(request)
+    values = manage.form_values(request.POST)
+    try:
+        version = request.POST.get("version", "")
+        changed = manage.change(home(), name, request.POST, version)
+    except manage.ChangedMeanwhile as exc:
+        # The settings as they are now, so saving again can't undo what someone else did unseen.
+        words = str(exc)
+        page = _server_page(request, name, problem=words, status=400)
+        raise ActionFailed(words, page=page) from None
+    except manage.FormProblem as exc:
+        # What they typed, against what they started from: if that's old, saving again is refused.
+        words = str(visible(str(exc), 600))
+        page = _server_page(
+            request, name, values=values, version=version, problem=words, status=400
+        )
+        raise ActionFailed(words, page=page) from None
+    except KeyError:
+        raise ActionFailed(GONE) from None
+    except MANAGE_FAILURES as exc:
+        print(f"checker web: changing a server failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(CANT_MANAGE) from None
+    request.action_detail = manage.changes_in_words(changed)
+    return _back_to_server(name)
+
+
+@action("removed a server", consequential=True, target=_posted_host)
+def server_remove(request) -> HttpResponse:
+    name = _listed(request)
+    try:
+        request.action_detail = manage.settings_in_words(load_inventory().get(name))
+        remove_host(home(), name)
+    except KeyError:
+        raise ActionFailed(GONE) from None
+    except MANAGE_FAILURES as exc:
+        print(f"checker web: removing a server failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(CANT_MANAGE) from None
+    return HttpResponseRedirect(reverse("manage"))
+
+
+def _key_offered(request, name: str):
+    """(host, what it offers), or the server's page saying why it couldn't be asked."""
+    try:
+        host = load_inventory().get(name)
+    except KeyError:
+        raise ActionFailed(GONE) from None
+    try:
+        return host, manage.ask_for_key(host)
+    except manage.KeyUnavailable as exc:
+        words = str(visible(str(exc), 600))
+        page = _server_page(request, name, key_problem=words, status=400)
+        raise ActionFailed(words, page=page) from None
+
+
+@action("asked a server for its host key", target=_posted_host)
+def server_key_ask(request) -> HttpResponse:
+    """A POST, though it changes nothing here: it makes this machine contact a server, which a link
+    on someone else's page mustn't be able to do."""
+    name = _listed(request)
+    _, check = _key_offered(request, name)
+    return _server_page(request, name, offer=manage.offer_of(check))
+
+
+@action("trusted a server's host key", consequential=True, target=_posted_host)
+def server_key_trust(request) -> HttpResponse:
+    """The key is fetched again, and has to be the one the person pasted from the server itself:
+    what a page showed them proves nothing, since whoever is in the middle would have sent that."""
+    name = _listed(request)
+    host, check = _key_offered(request, name)
+    try:
+        wrote = manage.trust(
+            host, check, request.POST.get("pasted", ""), request.POST.get("replace") == "on"
+        )
+    except manage.FormProblem as exc:
+        words = str(visible(str(exc), 600))
+        offer = manage.offer_of(check)
+        page = _server_page(request, name, key_problem=words, offer=offer, status=400)
+        # Only its start: the Activity page shows this, and the whole of it could be pasted.
+        said = f"{words} It offered a key starting {check.fingerprint[:15]}."
+        raise ActionFailed(said, page=page) from None
+    except OSError as exc:
+        print(f"checker web: trusting a key failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(CANT_MANAGE) from None
+    request.action_detail = check.fingerprint + ("" if wrote else ": already trusted")
+    return _back_to_server(name)
 
 
 @login_required
@@ -607,14 +840,6 @@ def check_stop(request, run_id: int) -> HttpResponse:
     if run_id >= 2**63 or not runs.stop(run_id):
         raise ActionFailed("That check isn't running any more.")
     return HttpResponseRedirect(reverse("check", kwargs={"run_id": run_id}))
-
-
-def _known_host(name: str) -> bool:
-    return bool(name) and any(host.name == name for host in load_inventory().hosts)
-
-
-def _posted_host(request, **kwargs) -> str:
-    return request.POST.get("host", "")
 
 
 def _posted_rule(request, **kwargs) -> str:

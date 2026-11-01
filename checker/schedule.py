@@ -37,6 +37,8 @@ from typing import Any
 
 import asyncssh
 
+from checker.transport import read_key_file
+
 BANDS = ("Low", "Elevated", "High", "Critical")
 FINDING_BANDS = ("info", "low", "medium", "high", "critical")
 SERIOUS = ("high", "critical")
@@ -146,6 +148,23 @@ def host_problems(host, environ: dict[str, str] | None = None, typed: bool = Fal
     return problems
 
 
+def host_problems_in_plain_words(host, environ: dict[str, str] | None = None) -> list[str]:
+    """What stops a check started from a page, where a typed password can be given: the same
+    conditions as `host_problems`, for someone who isn't at a command line."""
+    environ = os.environ if environ is None else environ
+    problems = []
+    if host.auth == "agent" and not environ.get("SSH_AUTH_SOCK"):
+        problems.append(
+            "It logs in with an SSH agent, and this web server can't reach one. Give it a key file"
+            " instead, or start the web server from a session that has an agent."
+        )
+    if host.auth == "key":
+        problem = _key_problem(host.key_path)
+        if problem:
+            problems.append(f"Its key file can't be used: {problem}.")
+    return problems
+
+
 def unattended_problems(hosts: list, environ: dict[str, str] | None = None) -> list[str]:
     return [problem for host in hosts for problem in host_problems(host, environ)]
 
@@ -154,10 +173,10 @@ def _key_problem(path: str | None) -> str | None:
     if not path:
         return "no key file is named"
     try:
-        asyncssh.read_private_key(Path(path).expanduser())
+        read_key_file(path)
     except asyncssh.KeyImportError as exc:
         if "passphrase" in str(exc).lower():
-            return "it has a passphrase, which an unattended run can't type"
+            return "it has a passphrase, which a check nobody is typing at can't enter"
         return f"it can't be read ({exc})"
     except OSError as exc:
         return f"it can't be read ({exc.strerror or exc})"

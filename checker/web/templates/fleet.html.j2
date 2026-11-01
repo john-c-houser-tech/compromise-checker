@@ -12,7 +12,7 @@
 {% endif %}
 {% if total %}<p><a href="{{ url('check_new') }}">Check your servers now</a></p>{% endif %}
 {% if not total %}
-<p>Add your first server to check it. For now that's done from the command line, with <code>checker hosts add</code>.</p>
+<p><a href="{{ url('manage_add') }}">Add your first server</a> to check it.</p>
 {% else %}
 {% if groups or tones | length > 1 or group or tone %}
 <nav class="filters" aria-label="Filter servers">

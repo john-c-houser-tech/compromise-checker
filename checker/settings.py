@@ -415,20 +415,49 @@ def remove_host(home: Path, name: str) -> None:
     path = hosts_file(home)
     with locked(path):
         inventory = load_inventory(path)
-        rule = inventory.get(name).packs
+        host = inventory.get(name)
+        rule = host.packs
+        settings = host.model_dump(mode="json", exclude_defaults=True)
         inventory.remove(name)
-        if rule is None:
+        if not database_file(home).exists():  # not set up yet, so nothing to keep the record in
             save_inventory(inventory, path)
             return
         before = path.read_text(encoding="utf-8")
         store = Store(database_file(home))
         try:
-            store.record_config_change(
-                f"hosts.{name}.packs",
-                rule,
-                None,
+            changes = [(f"hosts.{name}", settings, None)]
+            if rule is not None:
+                changes.append((f"hosts.{name}.packs", rule, None))
+            store.record_config_changes(
+                changes,
                 lambda: save_inventory(inventory, path),
                 lambda: atomic_write(path, before),
+            )
+        finally:
+            store.close()
+
+
+def add_host(home: Path, new, refuse_if_listed) -> None:
+    """Add a host with its settings recorded (`hosts.<name>`), since going round by removing and
+    adding it again would otherwise set what `change_host` records. `refuse_if_listed` is raised
+    if the name is in the list."""
+    from checker.inventory import hosts_file, load_inventory, save_inventory
+
+    path = hosts_file(home)
+    with locked(path):
+        inventory = load_inventory(path)
+        if any(host.name == new.name for host in inventory.hosts):
+            raise refuse_if_listed
+        inventory.add(new)
+        before = path.read_text(encoding="utf-8") if path.exists() else None
+        store = Store(database_file(home))
+        try:
+            store.record_config_change(
+                f"hosts.{new.name}",
+                None,
+                new.model_dump(mode="json", exclude_defaults=True),
+                lambda: save_inventory(inventory, path),
+                lambda: path.unlink() if before is None else atomic_write(path, before),
             )
         finally:
             store.close()
@@ -463,6 +492,45 @@ def change_host_packs(home: Path, name: str, rule: str | None) -> tuple[Any, Any
         finally:
             store.close()
     return old, new
+
+
+class HostChangedMeanwhile(Exception):
+    """The host isn't as it was when the change was asked for."""
+
+
+def change_host(home: Path, new, expected: str) -> dict[str, tuple[Any, Any]]:
+    """Replace a host's settings, recorded like a setting (`hosts.<name>` in `checker config
+    history`, with only what changed): its group, address and starting estimate change what its
+    findings mean, so what changed and when stays known. The history names this machine's account;
+    a page's activity record names the person. `expected` is the version the change was worked out
+    from. Its name can't change, since its evidence is filed under it. Returns each setting that
+    changed, as (old, new)."""
+    from checker.inventory import hosts_file, load_inventory, save_inventory
+
+    path = hosts_file(home)
+    with locked(path):
+        inventory = load_inventory(path)
+        current = inventory.get(new.name)
+        if current.version() != expected:
+            raise HostChangedMeanwhile(new.name)
+        was, now = current.model_dump(mode="json"), new.model_dump(mode="json")
+        changed = [key for key in now if was[key] != now[key]]
+        if not changed:
+            return {}
+        inventory.hosts = [new if host.name == new.name else host for host in inventory.hosts]
+        before = path.read_text(encoding="utf-8")
+        store = Store(database_file(home))
+        try:
+            store.record_config_change(
+                f"hosts.{new.name}",
+                {key: was[key] for key in changed},
+                {key: now[key] for key in changed},
+                lambda: save_inventory(inventory, path),
+                lambda: atomic_write(path, before),
+            )
+        finally:
+            store.close()
+    return {key: (was[key], now[key]) for key in changed}
 
 
 def change_trusted_keys(home: Path, update) -> tuple[Any, Any, Config]:

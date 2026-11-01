@@ -104,6 +104,11 @@ confirmation for anything that changes what later findings mean, and each action
 an append-only record. Who viewed which evidence pages goes in it too, since the command
 line records views in the chain of custody and pages, being read-only, can't.
 
+**5.10a Two-factor login (John, 2026-10-31).** Authenticator-app codes through `django-otp`, as in
+Auditor, with one-time recovery codes, since a small business has no help desk when a phone is lost.
+Required whenever the server can be reached from another machine; optional but strongly prompted on
+one only this machine can reach. It comes before any page that can act.
+
 **5.11 Run.** Start a collection or analysis, and watch it. The server needs SSH
 credentials for this, which the viewing pages never touch: agent and password prompts
 have to work without a terminal.

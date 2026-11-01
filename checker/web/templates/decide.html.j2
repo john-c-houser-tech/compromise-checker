@@ -18,17 +18,19 @@
 {% elif choice.problem %}
 <p class="error">{{ choice.problem }}</p>
 {% else %}
+{% for note in choice.notes %}<p class="error">{{ note }}</p>{% endfor %}
 {% if not choice.changes %}<p>Nothing has changed since the current baseline.</p>{% else %}
 <h3>What would stop being reported</h3>
 {% for change in choice.changes %}
 <details>
-  <summary>{{ change.name }}: {{ change.counts.added }} added, {{ change.counts.removed }} removed, {{ change.counts.changed }} changed</summary>
+  <summary>{{ change.name }}: {{ change.counts.added }} added, {{ change.counts.removed }} removed, {{ change.counts.changed }} changed{% if change.notes %}, and part of it can't be compared{% endif %}</summary>
   <div class="from-server">
   {% for item in change.added %}<p>+ {{ item }}</p>{% endfor %}
   {% for item in change.removed %}<p>- {{ item }}</p>{% endfor %}
   {% for item in change.changed %}<p>~ {{ item }}</p>{% endfor %}
   </div>
-  {% for note in change.notes %}<p class="note">Not comparable: {{ note }}</p>{% endfor %}
+  {% if change.more %}<p class="error">And {{ change.more }} more not listed here. Look at them in the server's evidence before accepting.</p>{% endif %}
+  {% for note in change.notes %}<p class="error">Not comparable: {{ note }}</p>{% endfor %}
 </details>
 {% endfor %}
 {% endif %}
@@ -49,26 +51,27 @@
 <form method="post" action="{{ url('rules_ask') }}">
   {{ csrf_input }}
   <input type="hidden" name="host" value="{{ name }}">
+  {{ parts.confirm(with_code=code_needed) }}
   <button>Ask the AI advisor for rules</button>
 </form>
 {% endif %}
 {% if not rules %}<p>None waiting.</p>{% endif %}
 {% for rule in rules %}
 <section class="finding">
-  <h3>{{ rule.id }}</h3>
+  <h3>{{ rule.id or rule.file }}</h3>
   {% if rule.rule.reason %}<p>The advisor's reason: <span class="from-server">{{ rule.rule.reason }}</span></p>{% endif %}
-  {% if rule.rule.match %}<p>Matches: <span class="from-server">{{ rule.rule.match }}</span></p>{% endif %}
+  {% if rule.rule.match %}<p>Matches:</p><ul>{% for key, value in rule.rule.match.items() %}<li>{{ key }}: <span class="from-server">{{ value | string }}</span></li>{% endfor %}</ul>{% endif %}
   {% if rule.rule.expires %}<p>Expires: {{ rule.rule.expires | string }}. Applies to: {{ rule.hosts | join(", ") if rule.hosts else name }}.</p>{% endif %}
   {% if rule.hides %}
   <p><strong>It would hide:</strong></p>
   <div class="from-server">{% for line in rule.hides %}<p>{{ line }}</p>{% endfor %}</div>
-  {% elif not rule.problem %}<p class="note">It wouldn't hide anything in the last 30 days' results.</p>{% endif %}
+  {% elif not rule.problem %}<p>It wouldn't hide anything in the results it could compare from the last 30 days, but it would hide anything like this from now on.</p>{% endif %}
   {% if rule.reveals %}<p><strong>It would bring back:</strong></p><div class="from-server">{% for line in rule.reveals %}<p>{{ line }}</p>{% endfor %}</div>{% endif %}
   {% if rule.before and rule.after and rule.before != rule.after %}<p>{{ name }}'s estimate would go from {{ "%.0f" | format(rule.before[0] * 100) }}% {{ rule.before[1] }} to {{ "%.0f" | format(rule.after[0] * 100) }}% {{ rule.after[1] }}.</p>{% endif %}
   {% if rule.problem %}<p class="error">It can't be approved: {{ rule.problem }}.</p>{% else %}
   <form method="post" action="{{ url('rule_approve') }}">
     {{ csrf_input }}
-    <input type="hidden" name="host" value="{{ name }}"><input type="hidden" name="file" value="{{ rule.file }}"><input type="hidden" name="rule" value="{{ rule.id }}"><input type="hidden" name="digest" value="{{ rule.digest }}">
+    <input type="hidden" name="host" value="{{ name }}"><input type="hidden" name="file" value="{{ rule.file }}"><input type="hidden" name="rule" value="{{ rule.id }}"><input type="hidden" name="digest" value="{{ rule.digest }}"><input type="hidden" name="sight" value="{{ rule.sight }}">
     {{ parts.confirm(with_code=code_needed) }}
     <button>Approve this rule, in my name</button>
   </form>
@@ -79,8 +82,15 @@
     <input type="hidden" name="host" value="{{ name }}"><input type="hidden" name="file" value="{{ rule.file }}"><input type="hidden" name="rule" value="{{ rule.id }}"><input type="hidden" name="digest" value="{{ rule.digest }}">
     <button>Refuse it</button>
   </form>
+  {% else %}
+  <form method="post" action="{{ url('rule_discard') }}">
+    {{ csrf_input }}
+    <input type="hidden" name="host" value="{{ name }}"><input type="hidden" name="file" value="{{ rule.file }}">
+    <button>Discard this file</button>
+  </form>
   {% endif %}
 </section>
 {% endfor %}
+{% if more_rules %}<p>And {{ more_rules }} more, once you've dealt with these.</p>{% endif %}
 <p class="note">Decisions take effect the next time results are worked out: <a href="{{ url('host', name=name) }}">do that from the server's page</a>.</p>
 {% endblock %}

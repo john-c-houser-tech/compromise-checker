@@ -4214,21 +4214,34 @@ def test_relative_paths_mean_what_they_mean_on_the_command_line(tmp_path):
 
 # --- Decisions ---------------------------------------------------------------------------------
 
+CHANGED = host_records(
+    accounts=(("root", 0), ("newuser", 1000)),
+    listening=(("tcp", ["0.0.0.0", 22], "listen", 700), ("tcp", ["0.0.0.0", 4444], "listen", 701)),
+)
+ROOTED_AND_CHANGED = host_records(
+    accounts=(("root", 0), ("jch", 1000), ("toor", 0)),
+    listening=(("tcp", ["0.0.0.0", 22], "listen", 700), ("tcp", ["0.0.0.0", 4444], "listen", 701)),
+)
 
-def findings_of(assessment):
-    return [f for f in assessment["findings"] if not f.get("suppressed_by")]
+
+@pytest.fixture(autouse=True)
+def _decisions_look_back_far_enough(request, monkeypatch):
+    """The test bundles have fixed dates."""
+    if "web" in request.fixturenames:
+        from checker.web import decide
+
+        monkeypatch.setattr(decide, "LOOK_BACK", timedelta(days=36500))
 
 
-def proposal_rule(rule_id="routine-thing", check="ssh.authorized_keys", expires=None, **extra):
+def proposal_rule(rule_id="routine-thing", check="net.listener", expires=None, **extra):
     from datetime import date
 
     return {
         "id": rule_id,
-        "match": {"check": check},
+        "match": {"check": check, "account": "root"},
         "reason": "routine here",
         "owner": "",
-        "expires": expires or date(2099, 1, 1),
-        "broad": True,
+        "expires": expires or date.today() + timedelta(days=30),
         **extra,
     }
 
@@ -4254,8 +4267,31 @@ def two_checks(web, inventory):
     client, home = signed_in(web)
     inventory(key_host())
     analysed(home, "b1", 10, CLEAN)
-    second = analysed(home, "b2", 20, host_records(accounts=(("root", 0), ("newuser", 1000))))
+    second = analysed(home, "b2", 20, CHANGED)
     return client, home, second
+
+
+def decide_text(client, host="web01"):
+    response = client.get("/decide", {"host": host})
+    assert response.status_code == 200
+    return response.content.decode()
+
+
+def rule_form(home_path, host="web01", owner="jo"):
+    from checker.web import decide
+
+    [proposed], _ = decide.previews(home_path, host, owner)
+    return {
+        "host": host,
+        "file": proposed.file,
+        "rule": proposed.id,
+        "digest": proposed.digest,
+        "sight": proposed.sight,
+    }
+
+
+def layer_of(home_path, host="web01"):
+    return home_path / "whitelist" / "hosts" / f"{host}.yaml"
 
 
 def test_accepting_shows_what_it_hides_then_needs_a_reason_and_the_password(two_checks):
@@ -4263,7 +4299,7 @@ def test_accepting_shows_what_it_hides_then_needs_a_reason_and_the_password(two_
     from checker.evidence import Store, database_file
 
     client, home, _ = two_checks
-    text = client.get("/decide", {"host": "web01"}).content.decode()
+    text = decide_text(client)
     assert "stops being reported as changed" in text and "newuser" in text
     form = {"host": "web01", "bundle": "b2", "reason": "our new deploy account"}
     assert client.post("/decide/baseline", form).status_code == 403
@@ -4279,7 +4315,63 @@ def test_accepting_shows_what_it_hides_then_needs_a_reason_and_the_password(two_
     store.close()
     assert now["bundle_id"] == "b2" and now["how"] == "accepted"
     assert ("accepted a baseline", "web01", "done") in the_record()
-    assert "already is the baseline" in client.get("/decide", {"host": "web01"}).content.decode()
+    assert "viewed what could be decided about a server" in [row[0] for row in the_record()]
+    assert "already is the baseline" in decide_text(client)
+
+
+def test_a_changed_thing_shows_how_it_changed(web, inventory):
+    client, home = signed_in(web)
+    inventory(key_host())
+    analysed(home, "b1", 10, CLEAN)
+    analysed(home, "b2", 20, host_records(accounts=(("root", 0), ("jch", 0))))
+    assert "uid" in decide_text(client).lower()
+
+
+def test_a_long_list_of_changes_says_how_many_more(web, inventory, monkeypatch):
+    from checker.web import decide
+
+    monkeypatch.setattr(decide, "SHOWN_PER_KIND", 1)
+    client, home = signed_in(web)
+    inventory(key_host())
+    analysed(home, "b1", 10, CLEAN)
+    analysed(home, "b2", 20, host_records(accounts=(("root", 0), ("aaa", 1000), ("zzz", 1001))))
+    text = decide_text(client)
+    assert "And 1 more not listed" in text and "zzz" not in text
+
+
+def test_what_couldnt_be_compared_or_was_partial_is_shown_not_called_unchanged(
+    web, inventory, monkeypatch
+):
+    from checker.web import decide
+
+    client, home = signed_in(web)
+    inventory(key_host())
+    analysed(home, "b1", 10, CLEAN)
+    analysed(home, "b2", 20, CLEAN)
+    real = decide.compare
+
+    def uncomparable(old, new):
+        found = real(old, new)
+        some = next(iter(found)) if found else "ssh"
+        found[some] = {"added": {}, "removed": {}, "changed": {}, "notes": ["it timed out"]}
+        return found
+
+    monkeypatch.setattr(decide, "compare", uncomparable)
+    text = decide_text(client)
+    assert "it timed out" in text and "Nothing has changed" not in text
+
+
+def test_a_check_not_worked_out_yet_is_said_and_a_page_stores_nothing(two_checks):
+    client, home, _ = two_checks
+    add_bundle(home, "b3", 30, CHANGED)
+
+    def files():
+        return sorted(str(p) for p in home[0].rglob("*") if p.is_file() and p.suffix != ".db")
+
+    before = files()
+    for _ in range(3):
+        assert "Work this server" in decide_text(client)
+    assert files() == before
 
 
 def test_only_servers_in_the_list_can_be_decided_about(web, inventory):
@@ -4289,10 +4381,11 @@ def test_only_servers_in_the_list_can_be_decided_about(web, inventory):
     assert client.get("/decide").status_code == 404
     form = {"host": "nope", "bundle": "b", "reason": "r", "confirm_password": PASSWORD}
     assert client.post("/decide/baseline", form).status_code == 400
-    assert client.post("/decide/ask", {"host": "nope"}).status_code == 400
-    form = {"host": "nope", "file": "f", "rule": "r", "digest": "d", "confirm_password": PASSWORD}
+    assert client.post("/decide/ask", form).status_code == 400
+    form = {"host": "nope", "file": "f", "digest": "d", "sight": "s", "confirm_password": PASSWORD}
     assert client.post("/decide/approve", form).status_code == 400
     assert client.post("/decide/refuse", form).status_code == 400
+    assert client.post("/decide/discard", form).status_code == 400
 
 
 def test_looking_at_a_decision_changes_nothing_but_the_record(two_checks):
@@ -4304,58 +4397,48 @@ def test_looking_at_a_decision_changes_nothing_but_the_record(two_checks):
     def everything():
         store = Store(database_file(home[0]), read_only=True)
         try:
-            return [dict(row) for row in store.bundles()], list(
-                store._db.execute("SELECT * FROM baselines").fetchall()
-            )
+            return [dict(row) for row in store.bundles()], [
+                tuple(row) for row in store.baselines("web01")
+            ]
         finally:
             store.close()
 
     files = sorted(str(p) for p in home[0].rglob("*") if p.is_file() and p.suffix != ".db")
     before, web_before = everything(), everything_but_the_record()
-    assert client.get("/decide", {"host": "web01"}).status_code == 200
-    assert [dict(r) for r in before[0]] == [dict(r) for r in everything()[0]]
+    decide_text(client)
+    assert before == everything()
     assert web_before == everything_but_the_record()
     assert files == sorted(str(p) for p in home[0].rglob("*") if p.is_file() and p.suffix != ".db")
-
-
-def a_routine_finding(second):
-    found = [f for f in findings_of(second) if f["band"].lower() not in ("critical",)]
-    assert found
-    return found[0]
-
-
-def rule_form(client, home_path, host="web01"):
-    from checker.web import decide
-
-    [proposed] = decide.proposals(home_path, host)
-    return {
-        "host": host,
-        "file": proposed.file,
-        "rule": proposed.id,
-        "digest": proposed.digest,
-    }
 
 
 def test_a_rule_shows_what_it_hides_and_goes_in_only_with_the_password(two_checks):
     from checker.whitelist import read_layer
 
     client, home, second = two_checks
-    finding = a_routine_finding(second)
-    write_proposals(home[0], "web01", [proposal_rule(check=finding["check"])])
-    text = client.get("/decide", {"host": "web01"}).content.decode()
-    assert "It would hide" in text and finding["check"] in text
-    form = rule_form(client, home[0])
+    write_proposals(home[0], "web01", [proposal_rule()])
+    text = decide_text(client)
+    assert "It would hide" in text and "net.listener" in text and "4444" in text
+    assert "account:" in text and "root" in text
+    form = rule_form(home[0])
     assert client.post("/decide/approve", form).status_code == 403
-    layer = home[0] / "whitelist" / "hosts" / "web01.yaml"
-    assert not layer.exists()
+    assert not layer_of(home[0]).exists()
     response = client.post("/decide/approve", {**form, "confirm_password": PASSWORD})
     assert response.status_code == 302
-    [rule] = read_layer(layer).rules
+    [rule] = read_layer(layer_of(home[0])).rules
     assert rule.owner == "jo" and rule.id == "routine-thing"
     assert not list((home[0] / "proposals").glob("web01-*"))
     assert ("approved a whitelist rule", "web01: routine-thing", "done") in the_record()
-    assert "None waiting" in client.get("/decide", {"host": "web01"}).content.decode()
-    assert oct(layer.stat().st_mode)[-3:] == "600"
+    assert "None waiting" in decide_text(client)
+    assert oct(layer_of(home[0]).stat().st_mode)[-3:] == "600"
+
+
+def test_the_owner_is_whoever_approves_never_the_file(two_checks):
+    from checker.whitelist import read_layer
+
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule(owner="someone else")])
+    client.post("/decide/approve", {**rule_form(home[0]), "confirm_password": PASSWORD})
+    assert read_layer(layer_of(home[0])).rules[0].owner == "jo"
 
 
 def test_what_a_person_wrote_in_a_layer_file_stays_as_it_was(two_checks):
@@ -4373,12 +4456,12 @@ def test_what_a_person_wrote_in_a_layer_file_stays_as_it_was(two_checks):
 
 
 def test_a_file_that_cant_be_added_to_says_to_edit_it_by_hand(two_checks):
-    client, home, second = two_checks
-    layer = home[0] / "whitelist" / "hosts" / "web01.yaml"
+    client, home, _ = two_checks
+    layer = layer_of(home[0])
     layer.parent.mkdir(parents=True)
     layer.write_text("rules: []\n")
-    write_proposals(home[0], "web01", [proposal_rule(check=a_routine_finding(second)["check"])])
-    form = {**rule_form(client, home[0]), "confirm_password": PASSWORD}
+    write_proposals(home[0], "web01", [proposal_rule()])
+    form = {**rule_form(home[0]), "confirm_password": PASSWORD}
     response = client.post("/decide/approve", form)
     assert response.status_code == 400 and "by hand" in response.content.decode()
     assert layer.read_text() == "rules: []\n"
@@ -4388,97 +4471,246 @@ def test_a_file_that_cant_be_added_to_says_to_edit_it_by_hand(two_checks):
 def test_a_rule_changed_since_it_was_shown_isnt_approved(two_checks):
     client, home, _ = two_checks
     path = write_proposals(home[0], "web01", [proposal_rule()])
-    form = {**rule_form(client, home[0]), "confirm_password": PASSWORD}
-    path.write_text(path.read_text().replace("ssh.authorized_keys", "account.uid0"))
+    form = {**rule_form(home[0]), "confirm_password": PASSWORD}
+    path.write_text(path.read_text().replace("net.listener", "net.peer"))
     response = client.post("/decide/approve", form)
     assert response.status_code == 400 and "changed or gone" in response.content.decode()
-    assert not (home[0] / "whitelist" / "hosts" / "web01.yaml").exists()
+    assert not layer_of(home[0]).exists()
 
 
-def test_refusing_takes_out_only_that_rule_and_is_recorded(two_checks):
+def test_a_rule_that_would_now_hide_more_than_was_shown_makes_you_look_again(two_checks):
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule()])
+    form = {**rule_form(home[0]), "confirm_password": PASSWORD}
+    analysed(home, "b3", 30, host_records(listening=(("tcp", ["0.0.0.0", 5555], "listen", 702),)))
+    response = client.post("/decide/approve", form)
+    assert response.status_code == 400 and "Look again" in response.content.decode()
+    assert not layer_of(home[0]).exists()
+
+
+def test_a_rule_filed_twice_for_different_layers_is_told_apart(two_checks):
+    from checker.web import decide
+
+    _, home, _ = two_checks
+    path = write_proposals(home[0], "web01", [proposal_rule()])
+    write_proposals(
+        home[0], "web01", [proposal_rule()], layer="groups", name="web", stem="20261031T120001Z"
+    )
+    found = decide.proposals(home[0], "web01")
+    assert len(found) == 2 and found[0].digest != found[1].digest
+    assert path.exists()
+
+
+def test_refusing_takes_out_only_that_rule_and_keeps_the_others_layer(two_checks):
     from checker.web import decide
 
     client, home, _ = two_checks
     write_proposals(home[0], "web01", [proposal_rule("one"), proposal_rule("two")])
-    [first, second] = decide.proposals(home[0], "web01")
-    form = {"host": "web01", "file": first.file, "rule": first.id, "digest": first.digest}
+    first, second = decide.proposals(home[0], "web01")
+    form = {"host": "web01", "file": first.file, "rule": "one", "digest": first.digest}
     assert client.post("/decide/refuse", form).status_code == 302
-    assert [p.id for p in decide.proposals(home[0], "web01")] == ["two"]
+    left = decide.proposals(home[0], "web01")
+    assert [p.id for p in left] == ["two"] and left[0].named == "web01"
     assert client.post("/decide/refuse", form).status_code == 400
     assert ("refused a whitelist rule", "web01: one", "done") in the_record()
-    left = decide.proposals(home[0], "web01")[0]
-    form = {"host": "web01", "file": left.file, "rule": left.id, "digest": left.digest}
+    form = {"host": "web01", "file": left[0].file, "rule": "two", "digest": left[0].digest}
     assert client.post("/decide/refuse", form).status_code == 302
     assert not list((home[0] / "proposals").glob("web01-*"))
     assert not (home[0] / "whitelist").exists()
 
 
-def test_a_rule_that_would_hide_a_critical_finding_cant_be_approved(web, inventory):
+def test_a_rule_with_an_odd_name_can_still_be_refused(two_checks):
+    from checker.web import decide
+
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule(f"odd{BIDI}id")])
+    [found] = decide.proposals(home[0], "web01")
+    form = {"host": "web01", "file": found.file, "digest": found.digest}
+    assert client.post("/decide/refuse", form).status_code == 302
+    assert decide.proposals(home[0], "web01") == []
+
+
+def test_the_rule_on_a_worrying_server_cant_be_approved_even_if_it_hides_little(web, inventory):
     client, home = signed_in(web)
     inventory(key_host())
     analysed(home, "b1", 10, CLEAN)
-    second = analysed(home, "b2", 20, ROOTED)
-    found = next(f for f in second["findings"] if f["band"].lower() == "critical")
-    write_proposals(home[0], "web01", [proposal_rule(check=found["check"])])
-    text = client.get("/decide", {"host": "web01"}).content.decode()
-    assert "can&#39;t be approved" in text or "t be approved" in text
-    assert "Approve this rule" not in text
+    analysed(home, "b2", 20, ROOTED_AND_CHANGED)
+    write_proposals(home[0], "web01", [proposal_rule()])
+    text = decide_text(client)
+    assert "assessed" in text and "Approve this rule" not in text
     assert "worrying" in text
-    form = {**rule_form(client, home[0]), "confirm_password": PASSWORD}
+    form = {**rule_form(home[0]), "confirm_password": PASSWORD}
     assert client.post("/decide/approve", form).status_code == 400
-    assert not (home[0] / "whitelist" / "hosts" / "web01.yaml").exists()
+    assert not layer_of(home[0]).exists()
 
 
-def test_an_expired_or_invalid_rule_cant_be_approved(two_checks):
+def test_a_critical_finding_cant_be_hidden_whatever_else_lets_it(web, inventory, monkeypatch):
+    from checker.web import decide
+
+    monkeypatch.setattr(decide, "HAND_ONLY", frozenset())
+    monkeypatch.setattr(decide, "TOO_WORRYING", ())
+    client, home = signed_in(web)
+    inventory(key_host())
+    analysed(home, "b1", 10, CLEAN)
+    analysed(home, "b2", 20, ROOTED)
+    rule = proposal_rule(check="account.uid0")
+    rule["match"] = {"check": "account.uid0", "account": "toor"}
+    write_proposals(home[0], "web01", [rule])
+    assert "would hide a critical finding" in decide_text(client)
+
+
+@pytest.mark.parametrize(
+    ("rule", "words"),
+    [
+        ({"id": "BAD ID!"}, "valid rule"),
+        ({"match": {"check": "account.uid0", "account": "toor"}}, "written by hand"),
+        ({"match": {"check": "net.listener"}, "broad": True}, "every finding"),
+        ({"expires": "never"}, "never expires"),
+    ],
+)
+def test_what_the_advisors_own_checks_turn_down_cant_be_approved(two_checks, rule, words):
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [{**proposal_rule(), **rule}])
+    text = decide_text(client)
+    assert words in text and "Approve this rule" not in text
+
+
+def test_an_expired_or_far_off_rule_cant_be_approved(two_checks):
     from datetime import date
 
     client, home, _ = two_checks
     write_proposals(home[0], "web01", [proposal_rule("old", expires=date(2020, 1, 1))])
-    assert "passed its expiry" in client.get("/decide", {"host": "web01"}).content.decode()
-    write_proposals(home[0], "web01", [proposal_rule("BAD ID!")], stem="20261031T120001Z")
-    text = client.get("/decide", {"host": "web01"}).content.decode()
-    assert "isn" in text and "valid rule" in text
+    assert "passed its expiry" in decide_text(client)
+    far = date.today() + timedelta(days=400)
+    write_proposals(home[0], "web01", [proposal_rule("far", expires=far)], stem="20261031T120001Z")
+    assert "more than 90 days" in decide_text(client)
 
 
-def test_a_damaged_proposal_file_doesnt_stop_the_page(two_checks):
-    client, home, _ = two_checks
+def test_when_nothing_can_be_compared_it_blocks_and_doesnt_reassure(web, inventory, monkeypatch):
+    from checker import whitelist_review
+
+    client, home = signed_in(web)
+    inventory(key_host())
+    analysed(home, "b1", 10, CLEAN)
+    analysed(home, "b2", 20, CHANGED)
     write_proposals(home[0], "web01", [proposal_rule()])
-    (home[0] / "proposals" / "web01-20261031T120002Z.yaml").write_text("rules: [unclosed\n")
-    response = client.get("/decide", {"host": "web01"})
-    assert (
-        response.status_code == 200
-        and "can&#39;t be read" in response.content.decode()
-        or ("be read" in response.content.decode())
+    monkeypatch.setattr(whitelist_review, "current_versions", lambda: {"checks": -1})
+    text = decide_text(client)
+    assert "wouldn" not in text.split("Rules the AI")[1].split("Decisions take")[0] or (
+        "work its results out again" in text
     )
+    assert "Approve this rule" not in text
+
+
+def test_older_than_the_window_blocks_too(two_checks, monkeypatch):
+    from checker.web import decide
+
+    client, home, _ = two_checks
+    monkeypatch.setattr(decide, "LOOK_BACK", timedelta(days=-36500))  # the bundles' dates are fixed
+    write_proposals(home[0], "web01", [proposal_rule()])
+    text = decide_text(client)
+    assert "Approve this rule" not in text and "work its results out again" in text
+
+
+def test_a_newer_check_not_yet_worked_out_blocks(two_checks):
+    client, home, _ = two_checks
+    add_bundle(home, "b3", 30, ROOTED)
+    write_proposals(home[0], "web01", [proposal_rule()])
+    text = decide_text(client)
+    assert "Approve this rule" not in text and "work its results out again" in text
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["rules: [unclosed\n", "- a\n- b\n", "just text\n", "rules: 5\n", "1: 2\n",
+     "a: &a [x]\nrules: *a\n"],
+)  # fmt: skip
+def test_a_damaged_proposal_file_doesnt_stop_the_page_and_can_be_discarded(two_checks, content):
+    client, home, _ = two_checks
+    path = home[0] / "proposals" / "web01-20261031T120002Z.yaml"
+    path.parent.mkdir()
+    path.write_text(content)
+    text = decide_text(client)
+    assert "file can" in text and "Discard this file" in text and "Accept how it is" in text
+    form = {"host": "web01", "file": path.name}
+    assert client.post("/decide/discard", form).status_code == 302
+    assert not path.exists()
+
+
+def test_a_huge_proposal_file_isnt_read(two_checks):
+    client, home, _ = two_checks
+    path = home[0] / "proposals" / "web01-20261031T120002Z.yaml"
+    path.parent.mkdir()
+    path.write_text("rules: []\n" + "# x\n" * 100_000)
+    assert "Discard this file" in decide_text(client)
+
+
+def test_a_rules_own_text_cant_pass_for_the_comment_saying_where_it_goes(two_checks):
+    from checker.web import decide
+
+    _, home, _ = two_checks
+    reason = "looks fine\n# for whitelist/groups/x.yaml\nreally"
+    write_proposals(home[0], "web01", [proposal_rule(reason=reason)])
+    [found] = decide.proposals(home[0], "web01")
+    assert found.problem is None and found.layer == "host" and found.named == "web01"
+
+
+def test_a_rule_for_too_many_shows_a_page_of_them_and_says_how_many_more(two_checks, monkeypatch):
+    from checker.web import decide
+
+    monkeypatch.setattr(decide, "MOST_RULES_SHOWN", 1)
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule("one"), proposal_rule("two")])
+    assert "And 1 more" in decide_text(client)
+
+
+def test_each_servers_analyses_are_read_once_however_many_rules(two_checks, monkeypatch):
+    from checker.web import decide
+
+    calls = []
+    real = decide.load_analyses
+    monkeypatch.setattr(decide, "load_analyses", lambda *a: (calls.append(a[1]), real(*a))[1])
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule("one"), proposal_rule("two")])
+    decide_text(client)
+    assert calls == ["web01"]
 
 
 def test_another_servers_proposals_arent_this_ones(two_checks):
     from checker.web import decide
 
     client, home, _ = two_checks
-    write_proposals(home[0], "web01-2", [proposal_rule("other")], stem="20261031T120000Z")
+    write_proposals(home[0], "web01-2", [proposal_rule("other")])
     assert decide.proposals(home[0], "web01") == []
-    assert "None waiting" in client.get("/decide", {"host": "web01"}).content.decode()
+    assert "None waiting" in decide_text(client)
 
 
-def test_a_rule_for_a_group_shows_every_server_and_goes_in_the_groups_file(web, inventory):
+def test_a_rule_naming_another_server_cant_be_approved_here(two_checks):
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule()], name="other")
+    assert "for another server" in decide_text(client)
+
+
+def grouped(web, inventory, group="web"):
     from checker.inventory import Host
-    from checker.whitelist import read_layer
 
     client, home = signed_in(web)
     inventory(
-        Host(name="web01", address="192.0.2.1", user="u", auth="agent", group="web"),
-        Host(name="web02", address="192.0.2.2", user="u", auth="agent", group="web"),
+        Host(name="web01", address="192.0.2.1", user="u", auth="agent", group=group),
+        Host(name="web02", address="192.0.2.2", user="u", auth="agent", group=group),
     )
     analysed(home, "b1", 10, CLEAN)
-    second = analysed(home, "b2", 20, host_records(accounts=(("root", 0), ("newuser", 1000))))
-    write_proposals(
-        home[0], "web01", [proposal_rule(check=a_routine_finding(second)["check"])],
-        layer="groups", name="web",
-    )  # fmt: skip
-    text = client.get("/decide", {"host": "web01"}).content.decode()
-    assert "web01, web02" in text
-    form = {**rule_form(client, home[0]), "confirm_password": PASSWORD}
+    analysed(home, "b2", 20, CHANGED)
+    return client, home
+
+
+def test_a_rule_for_a_group_shows_every_server_and_goes_in_the_groups_file(web, inventory):
+    from checker.whitelist import read_layer
+
+    client, home = grouped(web, inventory)
+    write_proposals(home[0], "web01", [proposal_rule()], layer="groups", name="web")
+    assert "web01, web02" in decide_text(client)
+    form = {**rule_form(home[0]), "confirm_password": PASSWORD}
     assert client.post("/decide/approve", form).status_code == 302
     assert read_layer(home[0] / "whitelist" / "groups" / "web.yaml").rules[0].owner == "jo"
 
@@ -4486,35 +4718,143 @@ def test_a_rule_for_a_group_shows_every_server_and_goes_in_the_groups_file(web, 
 def test_a_rule_for_a_group_on_a_server_with_none_says_so(two_checks):
     client, home, _ = two_checks
     write_proposals(home[0], "web01", [proposal_rule()], layer="groups", name="web")
-    assert "for a group" in client.get("/decide", {"host": "web01"}).content.decode()
+    assert "for a group" in decide_text(client)
+
+
+def test_refusing_one_of_a_groups_rules_keeps_the_groups_name(web, inventory):
+    from checker.web import decide
+
+    client, home = grouped(web, inventory)
+    write_proposals(home[0], "web01", [proposal_rule("one"), proposal_rule("two")],
+                    layer="groups", name="web")  # fmt: skip
+    first = decide.proposals(home[0], "web01")[0]
+    form = {"host": "web01", "file": first.file, "digest": first.digest}
+    client.post("/decide/refuse", form)
+    assert decide.proposals(home[0], "web01")[0].named == "web"
+
+
+def test_a_group_with_a_path_in_its_name_writes_nothing_outside(web, inventory, tmp_path):
+    from checker.web.decide import _layer_path
+    from checker.whitelist import WhitelistError
+
+    with pytest.raises(WhitelistError):
+        _layer_path(tmp_path, "web01", "../../escaped", "group")
+    assert _layer_path(tmp_path, "web01", "web", "group").name == "web.yaml"
+
+
+def test_a_link_on_the_way_to_the_file_is_refused(two_checks, tmp_path):
+    client, home, _ = two_checks
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (home[0] / "whitelist").mkdir()
+    (home[0] / "whitelist" / "hosts").symlink_to(outside)
+    write_proposals(home[0], "web01", [proposal_rule()])
+    form = {**rule_form(home[0]), "confirm_password": PASSWORD}
+    response = client.post("/decide/approve", form)
+    assert response.status_code == 400 and "link" in response.content.decode()
+    assert not list(outside.iterdir())
+
+
+def test_a_linked_proposal_file_or_folder_isnt_read(two_checks, tmp_path):
+    from checker.web import decide
+
+    _, home, _ = two_checks
+    (tmp_path / "elsewhere").mkdir()
+    real = write_proposals(tmp_path / "elsewhere", "web01", [proposal_rule()])
+    folder = home[0] / "proposals"
+    folder.mkdir()
+    (folder / real.name).symlink_to(real)
+    assert decide.proposals(home[0], "web01") == []
+    (folder / real.name).unlink()
+    folder.rmdir()
+    folder.symlink_to(real.parent)
+    assert decide.proposals(home[0], "web01") == []
+
+
+def test_a_write_that_fails_says_so_in_words_and_the_record_agrees(two_checks, monkeypatch):
+    from checker.web import decide
+
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule()])
+    form = {**rule_form(home[0]), "confirm_password": PASSWORD}
+
+    def full(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(decide, "atomic_write", full)
+    response = client.post("/decide/approve", form)
+    assert response.status_code == 400 and "couldn" in response.content.decode()
+    assert the_record()[-1][2] == "failed"
+
+
+def test_a_rule_that_went_in_is_done_even_if_it_cant_be_taken_out_of_the_proposals(
+    two_checks, monkeypatch
+):
+    from checker.web import decide
+
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule()])
+    form = {**rule_form(home[0]), "confirm_password": PASSWORD}
+
+    def stuck(*args, **kwargs):
+        raise PermissionError("no")
+
+    monkeypatch.setattr(decide, "_take_out", stuck)
+    assert client.post("/decide/approve", form).status_code == 302
+    assert layer_of(home[0]).exists()
+    assert the_record()[-1][2] == "done"
+
+
+def test_a_locked_store_or_broken_list_is_words_not_a_bare_error(two_checks, monkeypatch):
+    import sqlite3
+
+    from checker.web import decide
+
+    client, home, _ = two_checks
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(decide, "accept_baseline", locked)
+    form = {"host": "web01", "bundle": "b2", "reason": "r", "confirm_password": PASSWORD}
+    response = client.post("/decide/baseline", form)
+    assert response.status_code == 400 and "couldn" in response.content.decode()
+    monkeypatch.undo()
+    (home[0] / "hosts.yaml").write_text("hosts: [unclosed\n")
+    response = client.post("/decide/baseline", form)
+    assert response.status_code == 400
 
 
 def test_hostile_text_in_a_proposal_is_only_text(two_checks):
     client, home, _ = two_checks
     write_proposals(home[0], "web01", [proposal_rule(reason=HOSTILE)])
-    text = client.get("/decide", {"host": "web01"}).content.decode()
+    text = decide_text(client)
     assert "<script>alert" not in text and BIDI not in text
 
 
-def test_the_advisor_is_only_asked_when_it_is_on(two_checks, child, agent):
-    from checker.evidence import load_config
-    from checker.settings import change
+def test_the_advisor_is_only_offered_when_it_is_on_and_asking_takes_the_password(
+    two_checks, child, agent, monkeypatch
+):
+    from checker.web import decide
 
     client, home, _ = two_checks
-    assert "Ask the AI advisor" not in client.get("/decide", {"host": "web01"}).content.decode()
+    assert "Ask the AI advisor" not in decide_text(client)
+    assert client.post("/decide/ask", {"host": "web01"}).status_code == 403
     _, seen = child
-    assert client.post("/decide/ask", {"host": "web01"}).status_code == 302
+    form = {"host": "web01", "confirm_password": PASSWORD}
+    location = client.post("/decide/ask", form)["Location"]
     run = finished()
     assert seen == {"kind": "advice", "hosts": ["web01"]} and run.kind == "advice"
     assert ("the AI advisor's request ended", "web01", "finished") in the_record()
-    assert load_config(home[0]).advisor.enabled is False and change is not None
+    assert "See what it proposed" in client.get(location).content.decode()
+    assert decide is not None
 
 
 def test_asking_the_advisor_runs_its_real_command():
     from checker.web.runs import _command
 
     assert _command("advice", ["web01"])[3:] == [
-        "checker", "advise", "--role", "whitelist", "--", "web01",
+        "checker", "advise", "--role", "whitelist", "--from-web-page", "--", "web01",
     ]  # fmt: skip
 
 
@@ -4523,15 +4863,29 @@ def test_only_a_check_keeps_its_pipe_open(web, inventory, child, agent):
     programs["code"] = "import sys; print('saw', repr(sys.stdin.read()), file=sys.stderr)"
     client, _ = signed_in(web)
     inventory(key_host())
-    location = client.post("/decide/ask", {"host": "web01"})["Location"]
+    form = {"host": "web01", "confirm_password": PASSWORD}
+    location = client.post("/decide/ask", form)["Location"]
     finished()
-    assert "saw" in client.get(location).content.decode()  # it didn't wait for an answer
+    assert "saw" in client.get(location).content.decode()
+
+
+def test_from_a_page_the_advisor_says_only_how_it_went(tmp_path):
+    env = {**os.environ, "CHECKER_HOME": str(tmp_path)}
+    subprocess.run([sys.executable, "-m", "checker", "init"], env=env, check=True,
+                   capture_output=True)  # fmt: skip
+    from checker.web.runs import _command
+
+    run = subprocess.run(
+        _command("advice", ["web01"]), env=env, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL,
+    )  # fmt: skip
+    assert run.returncode != 0 and "Traceback" not in run.stderr
+    assert not run.stdout
 
 
 def test_a_consequential_decision_takes_a_code_too_when_two_factor_is_on(web, inventory):
     client, user, device = verified_client(web)
     inventory(key_host())
-    response = client.get("/decide", {"host": "web01"})
-    assert response.status_code == 200
+    assert client.get("/decide", {"host": "web01"}).status_code == 200
     form = {"host": "web01", "bundle": "b", "reason": "r", "confirm_password": PASSWORD}
     assert client.post("/decide/baseline", form).status_code == 403

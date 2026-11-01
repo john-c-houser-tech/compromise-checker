@@ -12,6 +12,7 @@ urlpatterns = [
     path("decide/baseline", views.baseline_accept, name="baseline_accept"),
     path("decide/approve", views.rule_approve, name="rule_approve"),
     path("decide/refuse", views.rule_refuse, name="rule_refuse"),
+    path("decide/discard", views.rule_discard, name="rule_discard"),
     path("decide/ask", views.rules_ask, name="rules_ask"),
     path("checks", views.checks_page, name="checks"),
     path("checks/new", views.check_new, name="check_new"),

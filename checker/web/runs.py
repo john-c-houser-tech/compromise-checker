@@ -79,7 +79,7 @@ def _command(kind: str, hosts: list[str]) -> list[str]:
     if kind == "analysis":
         return [*checker, "analyze", "--", *hosts]
     if kind == "advice":
-        return [*checker, "advise", "--role", "whitelist", "--", *hosts]
+        return [*checker, "advise", "--role", "whitelist", "--from-web-page", "--", *hosts]
     return [*checker, "run", "--unattended", "--from-web-page", "--", *hosts]
 
 

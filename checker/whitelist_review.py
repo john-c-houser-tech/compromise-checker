@@ -33,7 +33,14 @@ def compare(
     whitelist, and the findings the proposal would hide, reveal, or move
     into or out of a maintenance window. The stored assessments are read,
     never changed."""
-    results = []
+    return compare_loaded(load_analyses(store, host, identity, since), current, proposed)
+
+
+def load_analyses(store: Store, host: str, identity, since: datetime) -> list[dict[str, Any]]:
+    """What comparing needs, decrypted once however many rules are then compared. Read only: a
+    bundle not parsed yet isn't parsed here (that would store its events); correlated rules and
+    chains then see none."""
+    loaded = []
     for row in usable_bundles(store, host):
         if datetime.fromisoformat(row["started_at"]) < since:
             continue
@@ -43,13 +50,24 @@ def compare(
         if stored.get("versions") != current_versions():
             # Its findings cite events by number in an older parse: they
             # can't be paired with today's events. `analyze` makes it current.
-            results.append({"bundle": row["id"], "skipped": "analysed with older checks"})
+            loaded.append({"row": row, "skipped": "analysed with older checks"})
             continue
-        prior = stored["score"]["prior"]
-        # Read only: a bundle not parsed yet isn't parsed here (that would
-        # store its events); correlated rules and chains then see none.
         parsed = load_events(store, row, identity)
-        events = parsed.events if parsed else []
+        loaded.append({"row": row, "stored": stored, "events": parsed.events if parsed else []})
+    return loaded
+
+
+def compare_loaded(
+    loaded: list[dict[str, Any]], current: Whitelist | None, proposed: Whitelist | None
+) -> list[dict[str, Any]]:
+    results = []
+    for item in loaded:
+        row = item["row"]
+        if "skipped" in item:
+            results.append({"bundle": row["id"], "skipped": item["skipped"]})
+            continue
+        stored, events = item["stored"], item["events"]
+        prior = stored["score"]["prior"]
         before = json.loads(json.dumps(stored["findings"]))
         after = json.loads(json.dumps(stored["findings"]))
         reapply(before, current, events=events)

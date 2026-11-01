@@ -4,9 +4,11 @@ record of who looked."""
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from urllib.parse import urlencode, urlsplit
 
+import yaml
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.contrib.auth.decorators import login_required
@@ -31,6 +33,7 @@ from checker.web.actions import ActionFailed, action, record, record_if_possible
 from checker.web.app import HERE
 from checker.web.middleware import before_second_step, setting_it_up
 from checker.web.models import ActionRecord, CheckRun
+from checker.whitelist import WhitelistError
 
 # Where a login may go on to: not a form's address, which would land on an error.
 VIEWABLE = {
@@ -594,6 +597,7 @@ def check_page(request, run_id: int) -> HttpResponse:
             "run": _run_row(run),
             "lines": runs.output_lines(run.id),
             "busy": "busy" in request.GET,
+            "from_decide": run.kind == "advice",
         },
     )
 
@@ -614,7 +618,8 @@ def _posted_host(request, **kwargs) -> str:
 
 
 def _posted_rule(request, **kwargs) -> str:
-    return f"{request.POST.get('host', '')}: {request.POST.get('rule', '')}"
+    what = request.POST.get("rule") or request.POST.get("file", "")
+    return f"{request.POST.get('host', '')}: {what}"
 
 
 @login_required
@@ -628,7 +633,7 @@ def decide_page(request) -> HttpResponse:
         found = read_host(home(), name)
         choice = decide.baseline_choice(home(), name)
         owner = request.user.get_username()
-        rules = [decide.preview(home(), name, one, owner) for one in decide.proposals(home(), name)]
+        rules, more_rules = decide.previews(home(), name, owner)
         enabled = found[3] if found else False
     except EvidenceError as exc:
         return _unavailable(request, str(exc))
@@ -644,6 +649,7 @@ def decide_page(request) -> HttpResponse:
             "row": wording.row(found[0]) if found else None,
             "choice": choice,
             "rules": rules,
+            "more_rules": more_rules,
             "advisor_on": enabled,
             "code_needed": two_factor.code_needed(request),
             "worried": bool(found) and found[0].band in decide.TOO_WORRYING,
@@ -655,57 +661,75 @@ def _back_to_decide(name: str) -> HttpResponse:
     return HttpResponseRedirect(f"{reverse('decide')}?{urlencode({'host': name})}")
 
 
-@action("accepted a baseline", consequential=True, target=_posted_host)
-def baseline_accept(request) -> HttpResponse:
-    name = _posted_host(request)
+def _rule_from_form(request) -> tuple[str, str, str]:
+    post = request.POST
+    return post.get("host", ""), post.get("file", ""), post.get("digest", "")
+
+
+CANT_DECIDE = "That couldn't be done: a file or the evidence store can't be read or written."
+
+
+def _deciding(request, work) -> HttpResponse:
+    """Whatever stands in its way, in words, and the record says it failed."""
+    name = request.POST.get("host", "")
     try:
         if not _known_host(name):
             raise ActionFailed("That server isn't in the list of servers.")
-        decide.accept_baseline(
+        work(name)
+    except ActionFailed:
+        raise
+    except (ValueError, EvidenceError) as exc:
+        raise ActionFailed(str(visible(str(exc), 600))) from None
+    except (OSError, sqlite3.Error, yaml.YAMLError, WhitelistError) as exc:
+        print(f"checker web: a decision failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(CANT_DECIDE) from None
+    return _back_to_decide(name)
+
+
+@action("accepted a baseline", consequential=True, target=_posted_host)
+def baseline_accept(request) -> HttpResponse:
+    return _deciding(
+        request,
+        lambda name: decide.accept_baseline(
             home(),
             name,
             request.POST.get("bundle", ""),
             request.POST.get("reason", ""),
             request.user.get_username(),
-        )
-    except EvidenceError as exc:
-        raise ActionFailed(str(visible(str(exc), 300))) from None
-    return _back_to_decide(name)
-
-
-def _rule_from_form(request) -> tuple[str, str, str, str]:
-    post = request.POST
-    return post.get("host", ""), post.get("file", ""), post.get("rule", ""), post.get("digest", "")
+        ),
+    )
 
 
 @action("approved a whitelist rule", consequential=True, target=_posted_rule)
 def rule_approve(request) -> HttpResponse:
-    name, file, rule, digest = _rule_from_form(request)
-    try:
-        if not _known_host(name):
-            raise ActionFailed("That server isn't in the list of servers.")
-        decide.approve(home(), name, file, rule, digest, request.user.get_username())
-    except ValueError as exc:
-        raise ActionFailed(str(visible(str(exc), 600))) from None
-    return _back_to_decide(name)
+    _, file, digest = _rule_from_form(request)
+    sight = request.POST.get("sight", "")
+    who = request.user.get_username()
+    return _deciding(request, lambda name: decide.approve(home(), name, file, digest, sight, who))
 
 
 @action("refused a whitelist rule", target=_posted_rule)
 def rule_refuse(request) -> HttpResponse:
-    name, file, rule, digest = _rule_from_form(request)
-    try:
-        if not _known_host(name):
-            raise ActionFailed("That server isn't in the list of servers.")
-        decide.refuse(home(), name, file, rule, digest)
-    except ValueError as exc:
-        raise ActionFailed(str(exc)) from None
-    return _back_to_decide(name)
+    _, file, digest = _rule_from_form(request)
+    return _deciding(request, lambda name: decide.refuse(home(), name, file, digest))
 
 
-@action("asked the AI advisor for rules", target=_posted_host)
+@action("discarded a proposal file", target=_posted_rule)
+def rule_discard(request) -> HttpResponse:
+    _, file, _ = _rule_from_form(request)
+    return _deciding(request, lambda name: decide.discard(home(), name, file))
+
+
+@action("asked the AI advisor for rules", consequential=True, target=_posted_host)
 def rules_ask(request) -> HttpResponse:
+    """The password, since this spends the organization's money."""
     name = _posted_host(request)
-    if not _known_host(name):
+    try:
+        known = _known_host(name)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't read the servers: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed("The list of servers can't be read.") from None
+    if not known:
         raise ActionFailed("That server isn't in the list of servers.")
     return _start_run(request, "advice", [name])
 

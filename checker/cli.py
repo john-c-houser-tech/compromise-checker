@@ -1141,6 +1141,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["pseudonymize", "strict", "none"],
         help="preview another redaction mode than the configured one",
     )
+    advising.add_argument(
+        "--from-web-page",
+        action="store_true",
+        help="how the web interface asks: prints only how it went, on standard error",
+    )
     advising.add_argument("--bundle", help="a given bundle instead of the latest")
     advising.add_argument("--identity", help="the evidence private key file")
     advising.set_defaults(handler=cmd_advise)
@@ -1498,6 +1503,11 @@ def cmd_advise(args: argparse.Namespace) -> int:
         def confirm(question: str) -> bool:
             if args.yes:
                 return True
+            if args.from_web_page:
+                print("Not sent: it may cost more than advisor.max_cost_per_run, or its price isn't"
+                      " known. Raise that setting, or ask from the command line with"
+                      " checker advise.", file=sys.stderr)  # fmt: skip
+                return False
             if not sys.stdin.isatty():
                 print("checker: not sent: confirm with --yes, or raise advisor.max_cost_per_run",
                       file=sys.stderr)  # fmt: skip
@@ -1513,7 +1523,9 @@ def cmd_advise(args: argparse.Namespace) -> int:
             role=args.role, bundle_id=args.bundle, confirm=confirm, home=base, packs=packs,
         )  # fmt: skip
     except (EvidenceError, OSError, AdvisorError) as exc:
-        print(f"checker: {exc}", file=sys.stderr)
+        # A model server's answer can quote the request: a page shows only the kind of failure.
+        shown = type(exc).__name__ if args.from_web_page else exc
+        print(f"checker: {shown}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         sent = requests_recorded() > recorded_before
@@ -1525,7 +1537,16 @@ def cmd_advise(args: argparse.Namespace) -> int:
         return 130
     finally:
         store.close()
-    _print_advice(advice, args.role)
+    if args.from_web_page:
+        judged = advice.judged or []
+        accepted = sum(1 for item in judged if item.accepted)
+        print(
+            f"The advisor's answer: {advice.status}. {accepted} rule(s) to review,"
+            f" {len(judged) - accepted} set aside by the tool's checks.",
+            file=sys.stderr,
+        )
+    else:
+        _print_advice(advice, args.role)
     return 0 if advice.status == "answered" else 1
 
 

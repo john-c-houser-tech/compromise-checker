@@ -38,6 +38,7 @@
   {{ csrf_input }}
   <input type="hidden" name="host" value="{{ name }}">
   <input type="hidden" name="bundle" value="{{ choice.bundle }}">
+  <input type="hidden" name="sight" value="{{ choice.sight }}">
   <label>Why these changes are expected <input name="reason" required></label>
   {{ parts.confirm(with_code=code_needed) }}
   <button>Accept this as the baseline</button>
@@ -60,8 +61,9 @@
 <section class="finding">
   <h3>{{ rule.id or rule.file }}</h3>
   {% if rule.rule.reason %}<p>The advisor's reason: <span class="from-server">{{ rule.rule.reason }}</span></p>{% endif %}
-  {% if rule.rule.match %}<p>Matches:</p><ul>{% for key, value in rule.rule.match.items() %}<li>{{ key }}: <span class="from-server">{{ value | string }}</span></li>{% endfor %}</ul>{% endif %}
+  {% if rule.rule.match is mapping %}<p>Matches:</p><ul>{% for key, value in rule.rule.match.items() %}<li>{{ key }}: <span class="from-server">{{ value | string }}</span></li>{% endfor %}</ul>{% endif %}
   {% if rule.rule.expires %}<p>Expires: {{ rule.rule.expires | string }}. Applies to: {{ rule.hosts | join(", ") if rule.hosts else name }}.</p>{% endif %}
+  {% if rule.of %}<p class="note">Compared with {{ rule.compared }} of {{ rule.of }} checks from the last 30 days.{% if rule.compared < rule.of %} The others weren't worked out with these checks, so it may hide more than this.{% endif %}</p>{% endif %}
   {% if rule.hides %}
   <p><strong>It would hide:</strong></p>
   <div class="from-server">{% for line in rule.hides %}<p>{{ line }}</p>{% endfor %}</div>

@@ -59,6 +59,7 @@ class BaselineChoice:
     changes: list[dict[str, Any]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     problem: str | None = None
+    sight: str = ""  # what was shown, to compare with when it's confirmed
 
 
 @dataclass
@@ -76,6 +77,8 @@ class Proposed:
     after: tuple | None = None
     hosts: list[str] = field(default_factory=list)
     sight: str = ""  # what was shown, to compare with when it's confirmed
+    compared: int = 0
+    of: int = 0
 
 
 def _described(kind: str, items: Any) -> tuple[list[str], int]:
@@ -109,12 +112,13 @@ def baseline_choice(base: Path, host: str) -> BaselineChoice | None:
             baseline["bundle_id"] if baseline else None,
             baseline["at"] if baseline else None,
         )
+        _see(choice)
         if latest["status"] != "complete":
             choice.notes.append(
                 f"This check is {latest['status']}: what it couldn't see can't be compared later."
             )
         if baseline is None or baseline["bundle_id"] == latest["id"]:
-            return choice
+            return _see(choice)
         accepted = store.bundle(baseline["bundle_id"])
         if accepted["started_at"] > latest["started_at"]:
             choice.notes.append("This check is older than the baseline it would replace.")
@@ -122,7 +126,7 @@ def baseline_choice(base: Path, host: str) -> BaselineChoice | None:
         new = load_snapshot(store, latest, settings.identity)
         if old is None or new is None:
             choice.problem = "Work this server's results out again first, so this can be compared."
-            return choice
+            return _see(choice)
         for name, diff in compare(old, new).items():
             counts = {kind: len(diff[kind]) for kind in ("added", "removed", "changed")}
             notes = [str(note) for note in diff["notes"]]
@@ -140,13 +144,30 @@ def baseline_choice(base: Path, host: str) -> BaselineChoice | None:
                     "notes": notes,
                 }
             )
-        return choice
+        return _see(choice)
     finally:
         store.close()
 
 
-def accept_baseline(base: Path, host: str, bundle: str, reason: str, who: str) -> None:
-    """Only the collection that was shown: anything newer hasn't been looked at."""
+def _see(choice: BaselineChoice) -> BaselineChoice:
+    choice.sight = hashlib.sha256(
+        json.dumps(
+            [choice.bundle, choice.current, choice.changes, choice.notes, choice.problem],
+            sort_keys=True,
+            default=str,
+        ).encode()
+    ).hexdigest()
+    return choice
+
+
+def accept_baseline(base: Path, host: str, bundle: str, sight: str, reason: str, who: str) -> None:
+    """Only the collection that was shown, against the baseline that was shown: worked out again,
+    since anything else hasn't been looked at."""
+    choice = baseline_choice(base, host)
+    if choice is None or choice.bundle != bundle or choice.sight != sight:
+        raise EvidenceError("That's changed since this page opened. Look again.")
+    if choice.problem:
+        raise EvidenceError(choice.problem)
     settings = _settings(base)
     store = Store(database_file(base))
     try:
@@ -343,7 +364,16 @@ class _Previewing:
         ):
             proposed.problem = "it would hide a critical finding"
         proposed.sight = hashlib.sha256(
-            json.dumps([proposed.hides, proposed.reveals, proposed.after]).encode()
+            json.dumps(
+                [
+                    proposed.hides,
+                    proposed.reveals,
+                    proposed.after,
+                    proposed.hosts,
+                    proposed.compared,
+                    proposed.of,
+                ]
+            ).encode()
         ).hexdigest()
         return proposed
 
@@ -352,11 +382,17 @@ class _Previewing:
         has to look clean."""
         rows = usable_bundles(self.store, name)
         if not rows:
+            proposed.problem = proposed.problem or (
+                f"{name} has no check to compare, so what the rule would hide there isn't known"
+            )
             return 0
         current = self.settings.whitelist_for(name)
         changed = _set_with(self.base, name, self.groups.get(name), proposed.layer, rule)
         results = compare_loaded(self._analyses(name), current, changed)
         scored = [r for r in results if not r.get("skipped")]
+        since = datetime.now(UTC) - LOOK_BACK
+        proposed.compared += len(scored)
+        proposed.of += sum(1 for r in rows if datetime.fromisoformat(r["started_at"]) >= since)
         if not scored or scored[-1]["bundle"] != rows[-1]["id"]:
             proposed.problem = proposed.problem or (
                 f"{name}'s latest check hasn't been worked out with these checks, so what the rule"
@@ -370,11 +406,18 @@ class _Previewing:
         if scored:
             if name == self.host:
                 proposed.before, proposed.after = scored[-1]["before"], scored[-1]["after"]
-            band = scored[-1]["before"][1]
-            if band in TOO_WORRYING:
+            newest = scored[-1]
+            band = newest["before"][1]
+            if band in TOO_WORRYING or newest["chained"]:
+                said = band if band in TOO_WORRYING else "with a chain of findings"
                 proposed.problem = proposed.problem or (
-                    f"{name} is assessed {band}: rules for routine activity are for a server that"
+                    f"{name} is assessed {said}: rules for routine activity are for a server that"
                     " looks clean"
+                )
+            if newest["events_missing"]:
+                proposed.problem = proposed.problem or (
+                    f"{name}'s latest events can't be read, so what the rule would hide isn't"
+                    " known: work its results out again first"
                 )
         return len(scored)
 
@@ -461,7 +504,8 @@ def approve(base: Path, host: str, file: str, digest: str, sight: str, who: str)
         atomic_write(target, text)
         try:
             _take_out(base, host, file, digest)
-        except OSError as exc:  # it did go in, which is what matters: it shows as a clash for now
+        except Exception as exc:  # noqa: BLE001 - it did go in, which is what matters: it shows
+            # as a clash for now, and can be refused
             print(f"checker web: a proposal not taken out: {type(exc).__name__}", file=sys.stderr)
 
 

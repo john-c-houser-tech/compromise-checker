@@ -4301,7 +4301,12 @@ def test_accepting_shows_what_it_hides_then_needs_a_reason_and_the_password(two_
     client, home, _ = two_checks
     text = decide_text(client)
     assert "stops being reported as changed" in text and "newuser" in text
-    form = {"host": "web01", "bundle": "b2", "reason": "our new deploy account"}
+    form = {
+        "host": "web01",
+        "bundle": "b2",
+        "sight": re.search(r'name="sight" value="(\w+)"', text)[1],
+        "reason": "our new deploy account",
+    }
     assert client.post("/decide/baseline", form).status_code == 403
     store = Store(database_file(home[0]), read_only=True)
     assert current_baseline(store, "web01")["bundle_id"] == "b1"
@@ -4708,6 +4713,7 @@ def test_a_rule_for_a_group_shows_every_server_and_goes_in_the_groups_file(web, 
     from checker.whitelist import read_layer
 
     client, home = grouped(web, inventory)
+    analysed(home, "c1", 10, CLEAN, host="web02")
     write_proposals(home[0], "web01", [proposal_rule()], layer="groups", name="web")
     assert "web01, web02" in decide_text(client)
     form = {**rule_form(home[0]), "confirm_password": PASSWORD}
@@ -4889,3 +4895,137 @@ def test_a_consequential_decision_takes_a_code_too_when_two_factor_is_on(web, in
     assert client.get("/decide", {"host": "web01"}).status_code == 200
     form = {"host": "web01", "bundle": "b", "reason": "r", "confirm_password": PASSWORD}
     assert client.post("/decide/baseline", form).status_code == 403
+
+
+def test_a_stale_baseline_form_cant_accept_what_it_never_showed(two_checks):
+    from checker.baseline import current_baseline
+    from checker.evidence import Store, database_file
+
+    client, home, _ = two_checks
+    text = decide_text(client)
+    form = {
+        "host": "web01",
+        "bundle": "b2",
+        "sight": re.search(r'name="sight" value="(\w+)"', text)[1],
+        "reason": "r",
+        "confirm_password": PASSWORD,
+    }
+    assert client.post("/decide/baseline", {**form, "sight": "other"}).status_code == 400
+    store = Store(database_file(home[0]))
+    store.record_baseline("web01", "b2", "accepted", None)  # the comparison moves underneath it
+    store.close()
+    response = client.post("/decide/baseline", form)
+    assert response.status_code == 400 and "Look again" in response.content.decode()
+    store = Store(database_file(home[0]), read_only=True)
+    assert current_baseline(store, "web01")["bundle_id"] == "b2"
+    store.close()
+
+
+def test_a_groups_rule_is_blocked_when_a_server_it_reaches_has_no_check(web, inventory):
+    client, home = grouped(web, inventory)
+    write_proposals(home[0], "web01", [proposal_rule()], layer="groups", name="web")
+    (home[0] / "hosts.yaml").write_text(
+        "hosts:\n- name: web01\n  address: 192.0.2.1\n  user: u\n  auth: agent\n  group: web\n"
+        "- name: web02\n  address: 192.0.2.2\n  user: u\n  auth: agent\n  group: web\n"
+    )
+    text = decide_text(client)
+    assert "web02 has no check" in text and "Approve this rule" not in text
+
+
+def test_a_server_joining_the_group_after_looking_means_looking_again(web, inventory):
+    from checker.inventory import Host
+    from checker.web import decide
+
+    client, home = signed_in(web)
+    one = Host(name="web01", address="192.0.2.1", user="u", auth="agent", group="web")
+    inventory(one)
+    analysed(home, "b1", 10, CLEAN)
+    analysed(home, "b2", 20, CHANGED)
+    write_proposals(home[0], "web01", [proposal_rule()], layer="groups", name="web")
+    [first], _ = decide.previews(home[0], "web01", "jo")
+    assert first.hosts == ["web01"] and not first.problem and first.sight
+    inventory(one, Host(name="web02", address="192.0.2.2", user="u", auth="agent", group="web"))
+    [second], _ = decide.previews(home[0], "web01", "jo")
+    assert second.hosts == ["web01", "web02"] and second.sight != first.sight
+
+
+def test_a_rule_says_how_many_checks_it_could_compare(two_checks, monkeypatch):
+    from checker.web import decide
+
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule()])
+    assert "Compared with 2 of 2 checks" in decide_text(client)
+    real = decide.load_analyses
+
+    def older_one_skipped(*args):
+        found = real(*args)
+        found[0] = {"row": found[0]["row"], "skipped": "analysed with older checks"}
+        return found
+
+    monkeypatch.setattr(decide, "load_analyses", older_one_skipped)
+    text = decide_text(client)
+    assert "Compared with 1 of 2 checks" in text and "may hide more" in text
+
+
+def test_a_server_with_a_chain_or_missing_events_cant_get_a_rule(two_checks, monkeypatch):
+    from checker.web import decide
+
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule()])
+    real = decide.compare_loaded
+
+    def changed(**extra):
+        def compare(*args):
+            found = real(*args)
+            found[-1].update(extra)
+            return found
+
+        return compare
+
+    monkeypatch.setattr(decide, "compare_loaded", changed(chained=True))
+    assert "with a chain of findings" in decide_text(client)
+    monkeypatch.setattr(decide, "compare_loaded", changed(events_missing=True))
+    assert "events can" in decide_text(client)
+
+
+def test_a_rule_with_a_strange_match_doesnt_stop_the_page(two_checks):
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [{**proposal_rule(), "match": "a string"}])
+    text = decide_text(client)
+    assert "Refuse it" in text and "Approve this rule" not in text
+
+
+def test_a_rule_that_went_in_is_done_whatever_stops_taking_it_out(two_checks, monkeypatch):
+    from checker.web import decide
+
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule()])
+    form = {**rule_form(home[0]), "confirm_password": PASSWORD}
+
+    def odd(*args, **kwargs):
+        raise ValueError("edited meanwhile")
+
+    monkeypatch.setattr(decide, "_take_out", odd)
+    assert client.post("/decide/approve", form).status_code == 302
+    assert the_record()[-1][2] == "done"
+
+
+def test_from_a_page_a_key_in_a_settings_error_stays_off_it(tmp_path):
+    env = {**os.environ, "CHECKER_HOME": str(tmp_path)}
+    subprocess.run([sys.executable, "-m", "checker", "init"], env=env, check=True,
+                   capture_output=True)  # fmt: skip
+    config = tmp_path / "config.yaml"
+    config.write_text(config.read_text() + "\nadvisor: {api_key: SECRETVALUE}\n")
+    from checker.web.runs import _command
+
+    run = subprocess.run(
+        _command("advice", ["web01"]), env=env, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL,
+    )  # fmt: skip
+    assert "SECRETVALUE" not in run.stdout + run.stderr
+    assert "Traceback" not in run.stderr and "couldn" in run.stderr
+    rejected = subprocess.run(
+        [sys.executable, "-m", "checker", "advise", "--all", "--from-web-page"],
+        env=env, capture_output=True, text=True,
+    )  # fmt: skip
+    assert rejected.returncode == 2

@@ -1431,6 +1431,17 @@ def _print_proposals(advice, shown) -> None:
         print("a person reviews them, sets each owner and copies them into the whitelist.")
 
 
+def _advice_failed_on_page(exc: Exception) -> int:
+    """A model server's answer can quote the request, and a settings error a key: a page gets only
+    the kind of failure, and where to find out more."""
+    print(
+        f"The advisor couldn't answer ({type(exc).__name__}). On the command line,"
+        " checker advise HOST --role whitelist says why.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def cmd_advise(args: argparse.Namespace) -> int:
     """The advisor's answer about a host's latest assessment (sent), or the
     request exactly as it would be sent (--show, sends nothing)."""
@@ -1441,6 +1452,9 @@ def cmd_advise(args: argparse.Namespace) -> int:
 
     if args.all == bool(args.host):
         print("checker: name a host, or --all", file=sys.stderr)
+        return 2
+    if args.from_web_page and (args.all or args.show):
+        print("checker: --from-web-page is for asking about one host", file=sys.stderr)
         return 2
     if args.all and (args.show or args.bundle or args.redaction):
         print("checker: --show, --bundle and --redaction are for one host", file=sys.stderr)
@@ -1505,8 +1519,9 @@ def cmd_advise(args: argparse.Namespace) -> int:
                 return True
             if args.from_web_page:
                 print("Not sent: it may cost more than advisor.max_cost_per_run, or its price isn't"
-                      " known. Raise that setting, or ask from the command line with"
-                      " checker advise.", file=sys.stderr)  # fmt: skip
+                      " known. Ask from the command line with checker advise, which can confirm"
+                      " it.",
+                      file=sys.stderr)  # fmt: skip
                 return False
             if not sys.stdin.isatty():
                 print("checker: not sent: confirm with --yes, or raise advisor.max_cost_per_run",
@@ -1523,10 +1538,14 @@ def cmd_advise(args: argparse.Namespace) -> int:
             role=args.role, bundle_id=args.bundle, confirm=confirm, home=base, packs=packs,
         )  # fmt: skip
     except (EvidenceError, OSError, AdvisorError) as exc:
-        # A model server's answer can quote the request: a page shows only the kind of failure.
-        shown = type(exc).__name__ if args.from_web_page else exc
-        print(f"checker: {shown}", file=sys.stderr)
+        if args.from_web_page:
+            return _advice_failed_on_page(exc)
+        print(f"checker: {exc}", file=sys.stderr)
         return 1
+    except Exception as exc:  # noqa: BLE001 - a settings error can quote a key: only for a page
+        if not args.from_web_page:
+            raise
+        return _advice_failed_on_page(exc)
     except KeyboardInterrupt:
         sent = requests_recorded() > recorded_before
         print(

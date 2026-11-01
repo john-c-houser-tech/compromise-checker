@@ -53,7 +53,14 @@ def load_analyses(store: Store, host: str, identity, since: datetime) -> list[di
             loaded.append({"row": row, "skipped": "analysed with older checks"})
             continue
         parsed = load_events(store, row, identity)
-        loaded.append({"row": row, "stored": stored, "events": parsed.events if parsed else []})
+        loaded.append(
+            {
+                "row": row,
+                "stored": stored,
+                "events": parsed.events if parsed else [],
+                "events_missing": parsed is None,
+            }
+        )
     return loaded
 
 
@@ -73,7 +80,8 @@ def compare_loaded(
         reapply(before, current, events=events)
         reapply(after, proposed, events=events)
         previous = stored.get("previous_time")
-        was = score(before, prior, find_chains(before, events, previous))
+        chains = find_chains(before, events, previous)
+        was = score(before, prior, chains)
         now = score(after, prior, find_chains(after, events, previous))
         hidden, revealed, rebanded = [], [], []
         for b, a in zip(before, after, strict=True):
@@ -92,6 +100,8 @@ def compare_loaded(
                 "hidden": hidden,
                 "revealed": revealed,
                 "rebanded": rebanded,
+                "chained": bool(chains),
+                "events_missing": item.get("events_missing", False),
             }
         )
     return results

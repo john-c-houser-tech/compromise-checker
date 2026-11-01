@@ -73,10 +73,11 @@ again when you confirm it: if that differs from what you saw, you're asked to lo
   the old one stops being reported as changed. It has to be the check you were shown: a newer one means
   looking again. A server assessed High or Critical gets a warning, not a refusal, since you may know why.
 - **The AI advisor's whitelist rules.** A rule hides findings from then on. Each shows what it would hide
-  in the last 30 days' results, on every server it would reach. It can't be approved if what it would hide
-  can't be worked out, if it would hide a critical finding, if a server it reaches is assessed High or
-  Critical, or if the advisor's own checks would now turn it down: a rule for a check only ever written by
-  hand, one with no narrowing, one that has expired or lasts over 90 days. An approved rule goes in the same
+  in the last 30 days' results that could be compared, on every server it would reach, and says how many
+  that was. It can't be approved if a server it reaches has no check, or its latest can't be compared; if
+  it would hide a critical finding; if a server it reaches is assessed High or Critical or has a chain of
+  findings; or if it's a rule for a check only ever written by hand, has no narrowing, has expired or lasts
+  over 90 days. An approved rule goes in the same
   file you'd edit by hand ([whitelists](whitelists.md)), in your name, with what's already there left as it
   was; if the tool can't add to that file safely, it says so and changes nothing. Refusing one takes it out
   of the proposals, and a file that can't be read can be discarded. If the advisor is on, you can ask it for

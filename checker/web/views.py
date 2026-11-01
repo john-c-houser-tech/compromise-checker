@@ -694,6 +694,7 @@ def baseline_accept(request) -> HttpResponse:
             home(),
             name,
             request.POST.get("bundle", ""),
+            request.POST.get("sight", ""),
             request.POST.get("reason", ""),
             request.user.get_username(),
         ),

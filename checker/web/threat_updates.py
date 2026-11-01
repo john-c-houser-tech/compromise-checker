@@ -36,7 +36,10 @@ from checker.web.manage import recorded
 _pulling = threading.Lock()  # a pull can take a while, and a second adds nothing
 _WAIT_SECONDS = 5  # for the packs lock: a pull holds it for minutes, and pages mustn't queue up
 _BUSY = "Threat updates are being fetched or changed. Try again in a moment."
-_CANT_READ = "The threat updates' files or the settings can't be read, so nothing was changed."
+_CANT_READ = (
+    "The threat updates' files or the settings couldn't be read or written, so this stopped."
+)
+_PUT_BACK = "put it back on this page, if it's offered there"
 # What damaged files raise on the way: the page says so in words.
 _DAMAGED = (
     EvidenceError,
@@ -124,30 +127,44 @@ def overview(base: Path) -> dict[str, Any]:
     }
 
 
-def _outcome(done, base: Path) -> dict[str, Any]:
-    try:
-        last = staleness(read_state(base)) or ""
-    except _DAMAGED:
-        last = ""
-    old_source = "older than expected" in last or "ahead of" in last
-    notes = [note.replace("`checker packs add`", "the Put it back button") for note in done.notes]
+def _outcome(done, source: str | None) -> dict[str, Any]:
+    def plain(words: str) -> str:
+        """A source's address can hold a secret, and the settings page doesn't show it."""
+        return words.replace(source, "the source: ") if source else words
+
+    # Already in force isn't news: it's how a pull reads when the state lost its record.
+    added = [item for item in done.added if item[2] != "already in force"]
+    changed = bool(added or done.withdrawn or done.key_list or done.retired_by_keys)
+    notes = [
+        plain(note).replace("`checker packs add` brings it back", _PUT_BACK) for note in done.notes
+    ]
+    problems = [plain(words) for words in done.problems]
     return {
         "key_list": done.key_list,
-        "added": done.added,
+        "added": added,
         "withdrawn": done.withdrawn,
         "retired_by_keys": done.retired_by_keys,
         "notes": notes,
-        "problems": done.problems,
-        "changed": done.changed(),
-        "up_to_date": not (done.changed() or done.problems or notes or old_source),
-        "old_source": old_source,
+        "problems": problems,
+        "changed": changed,
+        "up_to_date": not (changed or problems or notes),
         # Our own words: what a source says about itself isn't for the permanent record.
         "summary": (
-            f"{len(done.added)} added or updated, {len(done.withdrawn)} withdrawn,"
-            f" {len(done.retired_by_keys)} retired, {len(done.problems)} problems"
+            f"{len(added)} added or updated, {len(done.withdrawn)} withdrawn,"
+            f" {len(done.retired_by_keys)} retired, {len(problems)} problems"
             + (", new signing key list" if done.key_list else "")
         ),
     }
+
+
+def _part_way(exc: Exception, source: str | None) -> dict[str, Any] | None:
+    """What a pull that stopped had already done, if anything: an empty result isn't news, and
+    would read as being up to date."""
+    done = getattr(exc, "pulled", None)
+    if done is None:
+        return None
+    outcome = _outcome(done, source)
+    return None if outcome["up_to_date"] else outcome
 
 
 def pull_now(base: Path) -> dict[str, Any]:
@@ -155,21 +172,22 @@ def pull_now(base: Path) -> dict[str, Any]:
 
     if not _pulling.acquire(blocking=False):
         raise UpdateProblem(_BUSY)
+    source = None
     try:
         with packs_lock(base, _WAIT_SECONDS):
             config = load_config(base)
-            done = pull(base, config.packs.trusted_keys, load_checks(), config.packs.source)
+            source = config.packs.source
+            done = pull(base, config.packs.trusted_keys, load_checks(), source)
     except LockBusy:
         raise UpdateProblem(_BUSY) from None
     except PullError as exc:
-        pulled = getattr(exc, "pulled", None)
-        raise UpdateProblem(str(exc), _outcome(pulled, base) if pulled else None) from None
+        words = str(exc).replace(source, "the source: ") if source else str(exc)
+        raise UpdateProblem(words, _part_way(exc, source)) from None
     except _DAMAGED as exc:
-        pulled = getattr(exc, "pulled", None)
-        raise UpdateProblem(_CANT_READ, _outcome(pulled, base) if pulled else None) from None
+        raise UpdateProblem(_CANT_READ, _part_way(exc, source)) from None
     finally:
         _pulling.release()
-    return _outcome(done, base)
+    return _outcome(done, source)
 
 
 def retire_by_hand(base: Path, pack_id: str, reason: str, who: str) -> None:

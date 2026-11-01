@@ -45,7 +45,10 @@ MAX_CHANGES_SHOWN = 3
 FRESH_CHECK = "Run a fresh check."
 ASK_WHY = "Ask whoever runs this server why."
 SETTINGS_CHANGED = "Settings have changed since this result, so it may change at the next check."
-NEW_THREAT = "The threat updates in use have changed since this result, so it may be out of date."
+NEW_THREAT = (
+    "The threat updates, or which ones apply here, have changed since this result, so it may be"
+    " out of date."
+)
 LOGS_MISSING = " Logs can go missing when someone covers their tracks."
 
 # The tool's reasons for doubt, by how they start: what a reader should hear, and whether

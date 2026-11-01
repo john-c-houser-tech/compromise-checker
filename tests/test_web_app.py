@@ -5997,7 +5997,7 @@ def test_a_server_s_own_rule_and_going_back_to_default(team_pack):
     assert form["rule_kind"] == "default"
     saved = client.post("/manage/threats/rule/save", {**form, "rule_kind": "except", "ids": PACK})
     assert saved.status_code == 302 and hosts_now()["web01"].packs == f"except: {PACK}"
-    assert PACK not in said(client.get("/manage/threats")).split("Looked for on it")[1]
+    assert PACK not in said(client.get("/manage/threats")).split("Applies to it")[1]
     form = rule_form_of(client, "host:web01")
     assert (
         client.post("/manage/threats/rule/save", {**form, "rule_kind": "default"}).status_code
@@ -6247,9 +6247,12 @@ def test_the_latest_is_only_said_when_it_s_true(web, inventory, monkeypatch):
     client, _ = signed_in(web)
     latest = "already have the latest"
     assert latest in said(pulled_page(client, monkeypatch, Pulled()))
-    for done in (Pulled(problems=["no file"]), Pulled(notes=["offered, but retired"])):
-        text = said(pulled_page(client, monkeypatch, done))
-        assert latest not in text and "Not everything could be taken" in text
+    text = said(pulled_page(client, monkeypatch, Pulled(problems=["no file"])))
+    assert latest not in text and "Not everything could be taken" in text
+    text = said(pulled_page(client, monkeypatch, Pulled(notes=["the index is 45 days old"])))
+    assert latest not in text and "Not everything" not in text and "Nothing new" in text
+    text = said(pulled_page(client, monkeypatch, Pulled(added=[("a-pack", 1, "already in force")])))
+    assert latest in text and "What changed" not in text
     text = said(pulled_page(client, monkeypatch, Pulled(key_list=(2, 1))))
     assert latest not in text and "new list of trusted signing keys" in text
 
@@ -6311,7 +6314,7 @@ def test_damaged_files_are_words_on_every_threat_update_action(team_pack):
         ("/manage/threats/pull", {"a": "b"}),
     ):
         response = client.post(path, data)
-        assert response.status_code == 400 and "can't be read" in said(response), path
+        assert response.status_code == 400 and "couldn't be read" in said(response), path
     assert client.get("/manage/threats").status_code == 503
 
 
@@ -6354,15 +6357,24 @@ def test_retiring_holds_a_pack_back_even_if_the_state_lost_its_record(team_pack)
     assert read_state(checker_home())["packs"][PACK]["held"] is True
 
 
-def test_a_refused_settings_form_stays_stale_when_it_comes_back(web, inventory):
+def test_a_refused_settings_form_stays_stale_when_it_comes_back(web, inventory, monkeypatch):
+    """Someone else's change lands between the check and the page. The refused page has to keep
+    the version it started from, or saving again would undo that change unseen."""
     from checker.inventory import home as checker_home
     from checker.settings import change
+    from checker.web import setting_forms
 
     client, _ = signed_in(web)
     form = settings_form(client)
-    bad = client.post("/manage/settings/save", {**form, "retention_days": "soon"})
-    change(checker_home(), "stale_after_days", "9")
-    # What the refused page sends if saved again, with the mistake put right.
+
+    def refused_as_someone_else_saves(base, post):
+        change(checker_home(), "stale_after_days", "9")
+        raise setting_forms.FormProblem("Days evidence is kept: type a whole number of days.")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(setting_forms, "save", refused_as_someone_else_saves)
+        bad = client.post("/manage/settings/save", {**form, "retention_days": "soon"})
+    assert bad.status_code == 400
     reader = _FormReader("/manage/settings/save")
     reader.feed(bad.content.decode())
     assert reader.fields["version"] == form["version"]
@@ -6387,4 +6399,77 @@ def test_a_rule_naming_what_isn_t_in_use_says_so(team_pack):
     change(checker_home(), "packs.apply", "only: gone-away")
     text = said(client.get("/manage/threats"))
     assert "gone-away not in use right now" in text
-    assert "Nothing" in text.split("Looked for on it")[1]
+    assert "Nothing" in text.split("Applies to it")[1]
+
+
+def test_a_fetch_that_failed_never_says_the_latest(web, inventory, monkeypatch):
+    """A failed pull still carries a result, empty, which would read as being up to date."""
+    from checker.packs.pull import Pulled, PullError
+
+    client, _ = signed_in(web)
+    failure = PullError("the server answered 500")
+    failure.pulled = Pulled()
+    response = pulled_page(client, monkeypatch, error=failure)
+    text = said(response)
+    assert response.status_code == 400 and "couldn't be fetched" in text
+    assert "already have the latest" not in text and "What changed" not in text
+
+
+def test_a_failed_fetch_doesn_t_show_the_source_s_address(web, inventory, monkeypatch):
+    from checker.inventory import home as checker_home
+    from checker.packs.pull import Pulled, PullError
+    from checker.settings import change
+
+    source = "https://mirror.example/SeCrEtToken/"
+    change(checker_home(), "packs.source", source)
+    client, _ = signed_in(web)
+    failure = PullError(f"{source}keys.yaml: the server answered 500")
+    failure.pulled = Pulled(problems=[f"a pack: {source}packs/x: the server answered 500"])
+    text = said(pulled_page(client, monkeypatch, error=failure))
+    assert "SeCrEtToken" not in text and "the source: keys.yaml" in text
+
+
+def test_a_failure_part_way_doesn_t_claim_nothing_changed(web, inventory, monkeypatch):
+    from checker.packs.pull import Pulled
+
+    client, _ = signed_in(web)
+    failure = OSError(28, "No space left on device")
+    failure.pulled = Pulled(added=[("a-pack", 1, "added")])
+    text = said(pulled_page(client, monkeypatch, error=failure))
+    assert "nothing was changed" not in text and "a-pack version 1: added" in text
+
+
+def test_with_another_server_redaction_and_geography_stay_with_the_owner(web, inventory):
+    from checker.inventory import home as checker_home
+    from checker.settings import change
+
+    change(checker_home(), "advisor.base_url", "https://llm.example/")
+    client, _ = signed_in(web)
+    form = settings_form(client)
+    assert "advisor.redaction" not in form and "advisor.inference_geo" not in form
+    forged = {**form, "advisor.redaction": "none"}
+    assert client.post("/manage/settings/save", forged).status_code == 302
+    assert config_now().advisor.redaction == "pseudonymize"
+
+
+def test_the_command_line_holds_back_a_pack_whose_record_was_lost(team_pack, capsys):
+    from checker import cli
+    from checker.inventory import home as checker_home
+    from checker.packs.state import read_state, write_state
+
+    state = read_state(checker_home())
+    del state["packs"][PACK]
+    write_state(checker_home(), state)
+    assert cli.main(["packs", "retire", PACK, "--reason", "x"]) == 0
+    assert read_state(checker_home())["packs"][PACK]["held"] is True
+
+
+def test_a_note_about_a_pack_held_back_reads_as_a_sentence(web, inventory, monkeypatch):
+    from checker.packs.pull import Pulled
+
+    client, _ = signed_in(web)
+    note = "a-pack: the pack was retired here by hand: `checker packs add` brings it back"
+    text = said(pulled_page(client, monkeypatch, Pulled(notes=[note])))
+    assert (
+        "retired here by hand: put it back on this page" in text and "packs add` brings" not in text
+    )

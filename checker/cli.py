@@ -2475,8 +2475,12 @@ def cmd_packs_retire(args: argparse.Namespace) -> int:
 
     base = home()
     try:
+        organization = load_config(base).packs.trusted_keys
+    except EvidenceError:  # retiring still has to work: it's what's done when things go wrong
+        organization = None
+    try:
         with _packs_lock(base):
-            names = retire(base, args.id, f"retired by hand: {args.reason}", by_hand=True)
+            names = retire(base, args.id, f"retired by hand: {args.reason}", True, organization)
     except (StoreError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1

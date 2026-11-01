@@ -34,7 +34,7 @@
 <section class="findings">
   <details>
     <summary>{{ retired | length }} no longer in use</summary>
-    <ul>{% for name, version, why in retired %}<li>{{ name }}, version {{ version }}{% if why %}: {{ why | replace("\n", " ") | visible(2000) }}{% endif %}</li>{% endfor %}</ul>
+    <ul>{% for name, version, why in retired %}<li>{{ name }}, version {{ version }}{% if why %}: {{ why | replace("\n", " ") | visible(20000) }}{% endif %}</li>{% endfor %}</ul>
   </details>
 </section>
 {% endif %}

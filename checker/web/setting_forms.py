@@ -183,15 +183,22 @@ def _as_text(field: Field, value: Any) -> str:
     return "" if value is None else str(value)
 
 
-# With the advisor pointed at another server, these decide what reaches it: the keyring holds the
-# same key for every server, so choosing it from a form could send Anthropic's key there.
-_ANTHROPIC_ONLY = ("advisor.api_key_source", "advisor.fallback")
+# With the advisor pointed at another server, these decide what reaches it. The keyring holds the
+# same key for every server, so choosing it from a form could send Anthropic's key there, and how
+# much is hidden from a server the owner chose is the owner's to say. The geography is Anthropic's.
+_ANTHROPIC_ONLY = (
+    "advisor.api_key_source",
+    "advisor.fallback",
+    "advisor.redaction",
+    "advisor.inference_geo",
+)
 
 
 def _can_edit(field: Field, value: Any, config) -> bool:
     """A value the form can't offer was set on the command line, and stays there."""
     advisor = config.advisor
-    if field.key in _ANTHROPIC_ONLY and (advisor.base_url or advisor.api != "anthropic"):
+    elsewhere = advisor.base_url or advisor.api != "anthropic" or advisor.fallback == "model"
+    if field.key in _ANTHROPIC_ONLY and elsewhere:
         return False
     return field.kind != "choice" or str(value) in {option for option, _ in field.options}
 

@@ -252,7 +252,7 @@ def test_the_last_readable_result_is_not_shown_as_the_current_one():
         ("no system journal events: y", "own log"),
         ("the whitelist has changed", "Settings have changed"),
         ("a whitelist rule has expired", "Settings have changed"),
-        ("the threat packs in force have changed", "threat updates in use have changed"),
+        ("the threat packs in force have changed", "which ones apply here, have changed"),
         ("the host's starting probability has changed", "Settings have changed"),
         ("its whitelist can't be read", "accepted activity"),
         ("part of its analysis couldn't be worked out", "couldn't be worked out"),

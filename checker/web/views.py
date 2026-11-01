@@ -513,7 +513,7 @@ def _add_form(request, values=None, problem: str = "", status: int = 200, ask_sa
     except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
         return _unreadable_inventory(request, exc)
     context = {
-        "values": values if values is not None else manage.blank_form(),
+        "values": manage.for_the_page(values if values is not None else manage.blank_form()),
         "problem": problem,
         "ask_same": ask_same,
         "groups": groups,
@@ -549,7 +549,7 @@ def _server_page(
         earlier = False
     context = {
         "host": host,
-        "values": values if values is not None else manage.form_of(host),
+        "values": manage.for_the_page(values if values is not None else manage.form_of(host)),
         "version": version or host.version(),
         "problem": problem,
         "key_problem": key_problem,

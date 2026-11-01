@@ -16,11 +16,13 @@ from pathlib import Path
 from typing import Any
 
 import asyncssh
+from markupsafe import Markup, escape
 from pydantic import ValidationError
 
 from checker.baseline import usable_bundles
 from checker.evidence import Store, database_file
 from checker.inventory import Host, hosts_file, load_inventory, new_host_problems
+from checker.report import visible
 from checker.schedule import host_problems_in_plain_words
 from checker.settings import HostChangedMeanwhile, add_host, change_host
 from checker.transport import (
@@ -155,21 +157,36 @@ def _percent(prior: float | None) -> str:
     return "" if prior is None else f"{prior * 100:.6g}"
 
 
+def _shown(text: str) -> str:
+    """A value as a form holds it: as it is, so that saving sends it back unchanged, unless it has
+    characters that shouldn't reach a page. Those show escaped, and `_left_alone` keeps the stored
+    value when the escaped form comes back."""
+    if all(line.isprintable() for line in text.split("\n")):
+        return text
+    return str(visible(text, len(text) * 10 + 1))
+
+
 def form_of(host: Host) -> dict[str, str]:
     return {
         "name": host.name,
-        "address": host.address,
+        "address": _shown(host.address),
         "port": str(host.port),
-        "user": host.user,
+        "user": _shown(host.user),
         "auth": host.auth,
-        "key_path": host.key_path or "",
+        "key_path": _shown(host.key_path or ""),
         "sudo": host.sudo,
         "password_source": host.password_source,
-        "group": host.group or "",
-        "python": host.python,
-        "web_roots": "\n".join(host.web_roots or []),
+        "group": _shown(host.group or ""),
+        "python": _shown(host.python),
+        "web_roots": _shown("\n".join(host.web_roots or [])),
         "prior": _percent(host.prior),
     }
+
+
+def for_the_page(values: dict[str, str]) -> dict[str, Markup]:
+    """Escaped here and marked so, since the pages' filter for server text would change the value:
+    it doubles backslashes, flattens lines and cuts long text, and the form would save that."""
+    return {field: escape(_shown(value)) for field, value in values.items()}
 
 
 def form_values(post) -> dict[str, str]:
@@ -205,7 +222,7 @@ def host_from_form(post, kept: Host | None = None) -> Host:
     # An old value with spaces around it stays exactly as it is unless someone changes it.
     for field in ("address", "user", "key_path", "group", "python"):
         if _left_alone(post, kept, field):
-            text[field] = form_of(kept)[field]
+            text[field] = getattr(kept, field) or ""
     try:
         port = int(text["port"] or "22")
     except ValueError:

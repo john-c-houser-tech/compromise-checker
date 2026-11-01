@@ -12,6 +12,7 @@ import tempfile
 import time
 import unicodedata
 from datetime import timedelta
+from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlencode
@@ -5764,3 +5765,68 @@ def test_a_server_removed_while_its_key_is_fetched_is_words(web, unconfirmed, mo
     client, _ = signed_in(web)
     response = client.post("/manage/server/ask-key", {"host": "web01"})
     assert response.status_code == 400 and "any more" in said(response)
+
+
+class _FormReader(HTMLParser):
+    """The change form's fields, as a browser would send them."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.fields, self.inside, self.area, self.select = {}, False, None, None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form":
+            self.inside = attrs.get("action") == "/manage/server/change"
+        elif self.inside and tag == "input" and attrs.get("name"):
+            self.fields[attrs["name"]] = attrs.get("value") or ""
+        elif self.inside and tag == "textarea":
+            self.area = attrs["name"]
+            self.fields[self.area] = ""
+        elif self.inside and tag == "select":
+            self.select = attrs["name"]
+        elif self.inside and tag == "option" and self.select and "selected" in attrs:
+            self.fields[self.select] = attrs["value"]
+
+    def handle_endtag(self, tag):
+        if tag == "form":
+            self.inside = False
+        elif tag == "textarea":
+            self.area = None
+        elif tag == "select":
+            self.select = None
+
+    def handle_data(self, data):
+        if self.area:
+            self.fields[self.area] += data
+
+
+def form_on_the_page(client, name="web01"):
+    reader = _FormReader()
+    reader.feed(client.get("/manage/server", {"host": name}).content.decode())
+    return {**reader.fields, "confirm_password": PASSWORD}
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        {"user": "DOMAIN\\Jane Doe"},
+        {"web_roots": ["/srv/one", "/srv/two", "/srv/three"]},
+        {"auth": "key", "key_path": "/k/" + "a" * 700},
+        {"prior": 0.0123456789},
+        {"user": "<b>&\\"},
+        {"user": "scan" + chr(0x202E)},
+        {"auth": "key", "key_path": "/k" + chr(0x9B) + "\\x"},
+        {"group": "Web Servers"},
+    ],
+)
+def test_saving_the_form_as_the_page_shows_it_changes_nothing(web, unconfirmed, stored):
+    """Through the rendered page, where a display filter could change what comes back."""
+    from checker.inventory import Host
+
+    client, _ = signed_in(web)
+    was = Host(**{"name": "web01", "address": "192.0.2.1", "user": "scan", **stored})
+    unconfirmed(was)
+    assert client.post("/manage/server/change", form_on_the_page(client)).status_code == 302
+    assert hosts_now()["web01"] == was
+    assert records_of("changed a server's settings")[-1].detail == "nothing changed"

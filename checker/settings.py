@@ -374,10 +374,14 @@ def _setting(key: str) -> Setting | None:
     )
 
 
-def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
+def change(
+    home: Path, key: str, text: str, unchanged_from: str | None = None
+) -> tuple[Any, Any, Config]:
     """Set `key` to the value `text` names: validated against the whole
     configuration, recorded, then written. Returns (old, new, config); a
-    value equal to the current one changes and records nothing."""
+    value equal to the current one changes and records nothing.
+    `unchanged_from`: refuse if the value isn't that (no value: ""), checked
+    under the lock the write holds."""
     setting = _setting(key)
     if setting is None:
         raise EvidenceError(
@@ -393,6 +397,8 @@ def change(home: Path, key: str, text: str) -> tuple[Any, Any, Config]:
         data = current.model_dump()
         parent = _get(data, setting.path[:-1])
         old = parent.get(setting.path[-1])
+        if unchanged_from is not None and (old or "") != unchanged_from:
+            raise ConfigChangedMeanwhile
         if value is None and key.startswith(GROUP_APPLY):
             parent.pop(setting.path[-1], None)
         else:
@@ -531,17 +537,22 @@ def add_host(home: Path, new, refuse_if_listed) -> None:
             store.close()
 
 
-def change_host_packs(home: Path, name: str, rule: str | None) -> tuple[Any, Any]:
+def change_host_packs(
+    home: Path, name: str, rule: str | None, unchanged_from: str | None = None
+) -> tuple[Any, Any]:
     """Set a host's own threat-pack rule in the inventory (None: its
     group's or the configuration's), recorded like a setting
     (`hosts.<name>.packs` in `checker config history`): who turned a pack
-    off for a host, and when, stays known. Returns (old, new)."""
+    off for a host, and when, stays known. Returns (old, new). `unchanged_from`:
+    refuse if its rule isn't that (no rule: ""), checked under the write's lock."""
     from checker.inventory import Host, hosts_file, load_inventory, save_inventory
 
     path = hosts_file(home)
     with locked(path):
         inventory = load_inventory(path)
         host = inventory.get(name)
+        if unchanged_from is not None and (host.packs or "") != unchanged_from:
+            raise HostChangedMeanwhile(name)
         new = Host.model_validate(host.model_dump() | {"packs": rule}).packs
         old = host.packs
         if new == old:

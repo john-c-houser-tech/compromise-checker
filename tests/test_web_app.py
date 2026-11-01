@@ -6473,3 +6473,60 @@ def test_a_note_about_a_pack_held_back_reads_as_a_sentence(web, inventory, monke
     assert (
         "retired here by hand: put it back on this page" in text and "packs add` brings" not in text
     )
+
+
+@pytest.mark.parametrize("scope", ["all", "group:prod", "host:web01"])
+def test_a_stale_rule_is_refused_at_the_write_for_every_scope(team_pack, inventory, scope):
+    from checker.inventory import Host
+
+    client, _ = team_pack
+    inventory(Host(name="web01", address="192.0.2.1", user="s", group="prod"))
+    form = rule_form_of(client, scope)
+    assert (
+        client.post("/manage/threats/rule/save", {**form, "rule_kind": "none"}).status_code == 302
+    )
+    stale = {**form, "rule_kind": "all"}
+    response = client.post("/manage/threats/rule/save", stale)
+    assert response.status_code == 400 and "changed since this page opened" in said(response)
+    settings = config_now().packs
+    now = {
+        "all": settings.apply,
+        "group:prod": settings.group_apply.get("prod"),
+        "host:web01": hosts_now()["web01"].packs,
+    }
+    assert now[scope] == "none"
+
+
+def test_the_check_of_a_rule_is_made_under_the_lock_that_writes_it(home):
+    from checker.settings import ConfigChangedMeanwhile, change
+
+    change(home[0], "packs.apply", "none")
+    with pytest.raises(ConfigChangedMeanwhile):
+        change(home[0], "packs.apply", "all", "all")
+
+
+def test_a_long_source_s_address_stays_off_the_page_when_an_error_cuts_it(
+    web, inventory, monkeypatch
+):
+    from checker.inventory import home as checker_home
+    from checker.packs.pull import PullError
+    from checker.settings import change
+
+    source = "https://mirror.example/SeCrEtToken/" + "x" * 300 + "/"
+    change(checker_home(), "packs.source", source)
+    client, _ = signed_in(web)
+    failure = PullError(f"{(source + 'keys.yaml')[:200]}: the server answered 500")
+    text = said(pulled_page(client, monkeypatch, error=failure))
+    assert "SeCrEtToken" not in text and "the server answered 500" in text
+
+
+@pytest.mark.parametrize("damage", ["not_a_setting: 1\n", ": : not yaml {\n"])
+def test_retiring_on_the_command_line_works_with_a_damaged_config(team_pack, capsys, damage):
+    from checker import cli
+    from checker.evidence import config_file
+    from checker.inventory import home as checker_home
+
+    path = config_file(checker_home())
+    path.write_text(path.read_text() + damage)
+    assert cli.main(["packs", "retire", PACK, "--reason", "x"]) == 0
+    assert "Retired" in capsys.readouterr().out

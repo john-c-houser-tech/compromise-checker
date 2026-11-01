@@ -2476,8 +2476,8 @@ def cmd_packs_retire(args: argparse.Namespace) -> int:
     base = home()
     try:
         organization = load_config(base).packs.trusted_keys
-    except EvidenceError:  # retiring still has to work: it's what's done when things go wrong
-        organization = None
+    except (EvidenceError, ValidationError, yaml.YAMLError, OSError, UnicodeError):
+        organization = None  # retiring still has to work: it's what's done when things go wrong
     try:
         with _packs_lock(base):
             names = retire(base, args.id, f"retired by hand: {args.reason}", True, organization)

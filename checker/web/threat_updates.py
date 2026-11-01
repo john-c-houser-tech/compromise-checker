@@ -30,7 +30,13 @@ from checker.packs.store import (
     retired,
 )
 from checker.packs.trust import TrustError
-from checker.settings import GROUP_APPLY, change, change_host_packs
+from checker.settings import (
+    GROUP_APPLY,
+    ConfigChangedMeanwhile,
+    HostChangedMeanwhile,
+    change,
+    change_host_packs,
+)
 from checker.web.manage import recorded
 
 _pulling = threading.Lock()  # a pull can take a while, and a second adds nothing
@@ -127,10 +133,17 @@ def overview(base: Path) -> dict[str, Any]:
     }
 
 
+def _without_source(words: str, source: str | None) -> str:
+    """A source's address can hold a secret, and the settings page doesn't show it. Errors cut an
+    address at 200 characters, which can leave a long one's start."""
+    if not source:
+        return words
+    return words.replace(source, "the source: ").replace(source[:200], "the source: ")
+
+
 def _outcome(done, source: str | None) -> dict[str, Any]:
     def plain(words: str) -> str:
-        """A source's address can hold a secret, and the settings page doesn't show it."""
-        return words.replace(source, "the source: ") if source else words
+        return _without_source(words, source)
 
     # Already in force isn't news: it's how a pull reads when the state lost its record.
     added = [item for item in done.added if item[2] != "already in force"]
@@ -181,8 +194,7 @@ def pull_now(base: Path) -> dict[str, Any]:
     except LockBusy:
         raise UpdateProblem(_BUSY) from None
     except PullError as exc:
-        words = str(exc).replace(source, "the source: ") if source else str(exc)
-        raise UpdateProblem(words, _part_way(exc, source)) from None
+        raise UpdateProblem(_without_source(str(exc), source), _part_way(exc, source)) from None
     except _DAMAGED as exc:
         raise UpdateProblem(_CANT_READ, _part_way(exc, source)) from None
     finally:
@@ -295,13 +307,8 @@ def save_rule(base: Path, scope: str, post) -> str:
     if found is None:
         raise UpdateProblem("That server or group isn't in the list any more.")
     kind, name = found
-    try:
-        current = _current(base, kind, name)
-    except KeyError:
-        raise UpdateProblem("That server isn't in the list any more.") from None
-    if (current or "") != post.get("current", ""):
-        raise UpdateProblem("This rule changed since this page opened. Look again.")
     wanted = post.get("rule_kind", "")
+    seen = post.get("current", "")  # compared under the lock each change holds as it writes
     ids = list(dict.fromkeys(post.getlist("ids")))
     if wanted == "default":
         if kind == "all":
@@ -323,11 +330,13 @@ def save_rule(base: Path, scope: str, post) -> str:
         raise UpdateProblem("Those aren't threat updates this tool knows.") from None
     try:
         if kind == "all":
-            old, new, _ = change(base, "packs.apply", rule)
+            old, new, _ = change(base, "packs.apply", rule, seen)
         elif kind == "group":
-            old, new, _ = change(base, f"{GROUP_APPLY}{name}", rule or "default")
+            old, new, _ = change(base, f"{GROUP_APPLY}{name}", rule or "default", seen)
         else:
-            old, new = change_host_packs(base, name, rule)
+            old, new = change_host_packs(base, name, rule, seen)
+    except (ConfigChangedMeanwhile, HostChangedMeanwhile):
+        raise UpdateProblem("This rule changed since this page opened. Look again.") from None
     except KeyError:
         raise UpdateProblem("That server isn't in the list any more.") from None
     except EvidenceError as exc:

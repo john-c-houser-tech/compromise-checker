@@ -2582,6 +2582,15 @@ def fresh(device):
     return code_from(device)
 
 
+def in_the_wait(device):
+    """Well inside the wait after wrong codes, however slowly this test runs."""
+    from django.utils import timezone
+
+    type(device).objects.filter(pk=device.pk).update(
+        throttling_failure_count=10, throttling_failure_timestamp=timezone.now()
+    )
+
+
 def past_the_password(client, name="jo"):
     response = client.post("/login", {"username": name, "password": PASSWORD})
     assert response.status_code == 302
@@ -2686,7 +2695,10 @@ def test_wrong_codes_make_even_the_right_one_wait(web):
     client, _ = web
     device = with_app(account())
     past_the_password(client)
-    client.post("/two-factor", {"code": "000000"})
+    assert client.post("/two-factor", {"code": "000000"}).status_code == 403
+    device.refresh_from_db()
+    assert device.throttling_failure_count == 1
+    in_the_wait(device)
     response = client.post("/two-factor", {"code": code_from(device)})
     assert response.status_code == 403 and "more minute" in response.content.decode()
 
@@ -2697,7 +2709,7 @@ def test_a_right_code_during_the_wait_isnt_called_wrong(web):
     client, _ = web
     device = with_app(account())
     past_the_password(client)
-    client.post("/two-factor", {"code": "000000"})
+    in_the_wait(device)
     lines = len(the_record())
     for _ in range(MAX_WRONG_CONFIRMATIONS + 1):
         response = client.post("/two-factor", {"code": code_from(device)})
@@ -2715,11 +2727,11 @@ def test_a_wait_at_a_confirmation_isnt_counted_either(web):
     key = request_for(user).session.session_key
     data = {"confirm_password": PASSWORD, "confirm_code": "000000"}
     view(request_for(user, data, session=key))
+    in_the_wait(device)
     for _ in range(MAX_WRONG_CONFIRMATIONS):
         response = view(request_for(user, data, session=key))
     assert "more minute" in response.content.decode() and not done
     assert WrongConfirmation.objects.filter(session_key=key).count() == 1
-    assert device.pk
 
 
 def test_a_code_works_only_once(web):

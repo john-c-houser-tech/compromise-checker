@@ -13,7 +13,7 @@ from typing import Any
 
 from markupsafe import escape
 
-from checker.evidence import EvidenceError, load_config
+from checker.evidence import MODEL_NAME, EvidenceError, is_local, load_config
 from checker.settings import (
     ANTHROPIC,
     EXEC_RECORDS,
@@ -22,14 +22,14 @@ from checker.settings import (
     advisor_question,
     change_many,
     config_version,
-    recipient,
-    recipients,
     value_of,
 )
 from checker.web.manage import FormProblem, _shown, recorded
 
-_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
-_GEOGRAPHY = re.compile(r"[A-Za-z0-9-]{1,32}")
+_MODEL = re.compile(MODEL_NAME)
+_GEOGRAPHY = re.compile(r"[a-z]{2,16}")
+_NUMBER = re.compile(r"[0-9]+(\.[0-9]+)?")
+_LONGEST_WHOLE = 7  # the digits a number of days could need
 
 
 class ChangedMeanwhile(FormProblem):
@@ -98,7 +98,7 @@ SECTIONS: tuple[tuple[str, str, tuple[Field, ...]], ...] = (
                 "prior",
                 "Starting estimate, in percent",
                 "How likely a server is to be hacked before any evidence. A lower one makes the"
-                " same findings look less worrying.",
+                " same findings look less worrying. A group's or a server's own comes first.",
                 "percent",
             ),
         ),
@@ -111,7 +111,7 @@ SECTIONS: tuple[tuple[str, str, tuple[Field, ...]], ...] = (
             Field(
                 "advisor.redaction",
                 "What's hidden before sending",
-                "The note above says what this choice sends.",
+                "The note above describes the choice saved now.",
                 "choice",
                 (
                     ("pseudonymize", "Names and addresses replaced with placeholders"),
@@ -183,19 +183,42 @@ def _as_text(field: Field, value: Any) -> str:
     return "" if value is None else str(value)
 
 
-def _can_edit(field: Field, value: Any) -> bool:
+# With the advisor pointed at another server, these decide what reaches it: the keyring holds the
+# same key for every server, so choosing it from a form could send Anthropic's key there.
+_ANTHROPIC_ONLY = ("advisor.api_key_source", "advisor.fallback")
+
+
+def _can_edit(field: Field, value: Any, config) -> bool:
     """A value the form can't offer was set on the command line, and stays there."""
+    advisor = config.advisor
+    if field.key in _ANTHROPIC_ONLY and (advisor.base_url or advisor.api != "anthropic"):
+        return False
     return field.kind != "choice" or str(value) in {option for option, _ in field.options}
 
 
-def page(base: Path, typed=None) -> dict[str, Any]:
+def _going_to(advisor) -> str:
+    """Who receives a request, in fixed words: an address can hold a secret."""
+    if not advisor.base_url and advisor.api == "anthropic":
+        to = ANTHROPIC
+    elif is_local(advisor.base_url):
+        to = "to a server on this machine"
+    else:
+        to = "to another server, set on the command line"
+    if advisor.fallback == "model":
+        to += ", and, when a request is declined, to a second model set on the command line"
+    return to
+
+
+def page(base: Path, typed=None, version: str | None = None) -> dict[str, Any]:
+    """`typed` and `version`: what a refused form held, and what it started from. If that's old,
+    saving again is refused, rather than undoing what someone else did."""
     config = load_config(base)
     sections = []
     for title, note, fields in SECTIONS:
         shown = []
         for field in fields:
             value = value_of(config, field.key)
-            editable = _can_edit(field, value)
+            editable = _can_edit(field, value, config)
             text = _as_text(field, value)
             if typed is not None and editable and field.key in typed:
                 text = typed.get(field.key, "")
@@ -214,9 +237,13 @@ def page(base: Path, typed=None) -> dict[str, Any]:
     advisor = config.advisor
     return {
         "sections": sections,
-        "version": config_version(config),
+        "version": version or config_version(config),
         # One line, as a page flows it: the text is wrapped for a terminal.
-        "what_leaves": " ".join(advisor_question(advisor.redaction, recipients(advisor)).split()),
+        "what_leaves": " ".join(
+            advisor_question(
+                advisor.redaction, _going_to(advisor), "someone asks it to look at a server"
+            ).split()
+        ),
         "elsewhere": _command_line_only(config),
     }
 
@@ -224,13 +251,16 @@ def page(base: Path, typed=None) -> dict[str, Any]:
 def _command_line_only(config) -> list[tuple[str, str]]:
     """Whether they're set, not what they say: a command or an address can hold a secret."""
     advisor = config.advisor
-    to = recipient(advisor.api, advisor.base_url)
+    goes_to = (
+        "Anthropic"
+        if not advisor.base_url and advisor.api == "anthropic"
+        else "this machine"
+        if is_local(advisor.base_url)
+        else "another server"
+    )
     return [
         ("Notify command", "set" if config.notify_command else "not set"),
-        (
-            "Where the AI advisor's requests go",
-            "Anthropic" if to == ANTHROPIC else "another server",
-        ),
+        ("Where the AI advisor's requests go", goes_to),
         (
             "A second model for declined requests",
             "set" if advisor.fallback == "model" else "not set",
@@ -241,7 +271,8 @@ def _command_line_only(config) -> list[tuple[str, str]]:
 
 
 def _is_command(advisor) -> bool:
-    return str(advisor.api_key_source).startswith("command:")
+    sources = (advisor.api_key_source, advisor.fallback_model.api_key_source)
+    return any(str(source).startswith("command:") for source in sources)
 
 
 def _source_changed(config) -> bool:
@@ -259,15 +290,14 @@ def _typed_value(field: Field, text: str) -> str:
         if text not in ("on", "off"):
             raise FormProblem(wrong + "choose on or off.")
     elif field.kind == "whole":
-        if not text.isascii() or not text.isdigit():
+        if not text.isascii() or not text.isdigit() or len(text) > _LONGEST_WHOLE:
             raise FormProblem(wrong + "type a whole number of days.")
     elif field.kind in ("percent", "money"):
-        try:
-            number = float(text)
-        except ValueError:
-            raise FormProblem(wrong + "type a number.") from None
-        if not math.isfinite(number) or number < 0:
-            raise FormProblem(wrong + "type a number, 0 or more.")
+        if not _NUMBER.fullmatch(text):
+            raise FormProblem(wrong + "type a number.")
+        number = float(text)
+        if not math.isfinite(number):
+            raise FormProblem(wrong + "type a number.")
         if field.kind == "percent":
             if not 0 < number < 100:
                 raise FormProblem(wrong + "type a percentage above 0 and below 100.")
@@ -276,7 +306,11 @@ def _typed_value(field: Field, text: str) -> str:
         if not field.optional:
             raise FormProblem(wrong + "this is needed.")
         return "none"
-    elif not (_MODEL if field.kind == "model" else _GEOGRAPHY).fullmatch(text):
+    elif field.kind == "geography":
+        text = text.lower()
+        if not _GEOGRAPHY.fullmatch(text):
+            raise FormProblem(wrong + "a short name in letters, such as us.")
+    elif not _MODEL.fullmatch(text):
         raise FormProblem(wrong + "that doesn't look like a name this can use.")
     return text
 
@@ -296,7 +330,7 @@ def save(base: Path, post) -> dict[str, tuple[Any, Any]]:
         if key not in post:
             continue
         value = value_of(config, key)
-        if not _can_edit(field, value):
+        if not _can_edit(field, value, config):
             continue
         typed = post.get(key, "")
         if typed == _shown(_as_text(field, value)):

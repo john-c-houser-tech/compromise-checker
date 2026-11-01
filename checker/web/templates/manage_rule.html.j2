@@ -5,11 +5,11 @@
 <p class="back"><a href="{{ url('manage_threats') }}">Back to Threat updates</a></p>
 <h1 class="page-title">{% if kind == "all" %}Threat updates for all servers{% elif kind == "group" %}Threat updates for group {{ name }}{% else %}Threat updates for {{ name }}{% endif %}</h1>
 {% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
-<p>{% if following %}This decides it for: {{ following | join(", ") }}.{% else %}No server follows this right now.{% endif %}</p>
+<p>{% if following %}This decides it for: {{ following | join(", ") | visible(20000) }}.{% else %}No server follows this right now.{% endif %}</p>
 <p class="note">Keeping an update off a server means it isn't looked for there, so a server exposed to that attack won't be flagged for it.</p>
 <form method="post" action="{{ url('threat_rule_save') }}">
   {{ csrf_input }}
-  <input type="hidden" name="for" value="{{ scope }}">
+  <input type="hidden" name="for" value="{{ scope_field }}">
   <input type="hidden" name="current" value="{{ current }}">
   <fieldset>
     <legend>Which apply</legend>

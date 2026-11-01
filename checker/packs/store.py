@@ -143,9 +143,9 @@ def in_force_read_only(home: Path, organization: list[Any]) -> tuple[list[Pack],
     return [s.pack for s in usable], problems
 
 
-def packs_lock(home: Path):
+def packs_lock(home: Path, wait: float | None = None):
     """Held by anything that changes the packs."""
-    return locked(home / "packs" / "state")
+    return locked(home / "packs" / "state", wait)
 
 
 def held_back(home: Path) -> list[tuple[str, int]]:
@@ -185,9 +185,15 @@ def put_back(home: Path, organization: list[Any], pack_id: str, checks: dict[str
 
 
 def retired(home: Path) -> list[tuple[str, int, str]]:
-    """(id, version, why) for each retired pack."""
+    """(id, version, why) for each retired pack, leaving out one that's back in force."""
     found = []
+    in_force = {
+        (named["id"], int(named["version"]))
+        for named, _ in _files(home / "packs" / "active", _ACTIVE)
+    }
     for named, path in _files(home / "packs" / "retired", _RETIRED):
+        if (named["id"], int(named["version"])) in in_force:
+            continue
         why = path.with_name(path.name + ".why")
         text = why.read_text(errors="replace").strip() if why.is_file() else ""
         found.append((named["id"], int(named["version"]), text))
@@ -320,13 +326,26 @@ def add(
     return Stored(pack, path, signer, digest), outcome
 
 
-def retire(home: Path, pack_id: str, why: str, by_hand: bool = False) -> list[str]:
+def retire(
+    home: Path, pack_id: str, why: str, by_hand: bool = False, organization: list[Any] | None = None
+) -> list[str]:
     """Take a pack out of use, every version in force; returns their names.
     One retired `by_hand` is held back from pulls, whatever version they
-    offer, until a person adds it again (`checker packs add`)."""
+    offer, until a person adds it again (`checker packs add`). With
+    `organization`, a pack the state has lost its record of (a restore from
+    an older backup) gets one, or nothing would hold it back."""
     held = False
     if by_hand:  # first, so a crash part way leaves it held, never pulled back
         state = read_state(home)
+        if pack_id not in state["packs"] and organization is not None:
+            for stored in active(home, organization)[0]:
+                if stored.pack.id == pack_id:
+                    version = stored.pack.version
+                    state["packs"][pack_id] = {
+                        "domain": stored.signed_by.domain,
+                        "highest": version,
+                        "seen": {str(version): stored.sha256},
+                    }
         if pack_id in state["packs"]:
             state["packs"][pack_id]["held"] = held = True
             write_state(home, state)

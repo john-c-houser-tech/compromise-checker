@@ -5997,7 +5997,7 @@ def test_a_server_s_own_rule_and_going_back_to_default(team_pack):
     assert form["rule_kind"] == "default"
     saved = client.post("/manage/threats/rule/save", {**form, "rule_kind": "except", "ids": PACK})
     assert saved.status_code == 302 and hosts_now()["web01"].packs == f"except: {PACK}"
-    assert "Nothing" not in said(client.get("/manage/threats")).split("Kept off it")[1]
+    assert PACK not in said(client.get("/manage/threats")).split("Looked for on it")[1]
     form = rule_form_of(client, "host:web01")
     assert (
         client.post("/manage/threats/rule/save", {**form, "rule_kind": "default"}).status_code
@@ -6097,7 +6097,9 @@ def test_changing_settings_is_confirmed_recorded_and_all_at_once(web, inventory)
         ({"web_access_logs": "maybe"}, "on or off"),
         ({"advisor.model": "two words"}, "name this can use"),
         ({"advisor.model": ""}, "this is needed"),
-        ({"advisor.inference_geo": "a b"}, "name this can use"),
+        ({"advisor.inference_geo": "a b"}, "short name in letters"),
+        ({"prior": "1_0"}, "type a number"),
+        ({"retention_days": "9999999"}, "100 years"),
         ({"advisor.api_key_source": "command:/bin/sh -c evil"}, "choose one"),
         ({"advisor.fallback": "model"}, "choose one"),
     ],
@@ -6200,3 +6202,184 @@ def test_text_for_a_terminal_reads_properly_on_the_pages(team_pack):
     assert "\\u000a" not in settings_page and "whitelist rules" in settings_page
     threats = said(client.get("/manage/threats"))
     assert 'published "' not in threats and "published 20" in threats
+
+
+def test_settings_never_show_where_the_advisor_sends_or_a_token_in_it(web, inventory):
+    from checker.inventory import home as checker_home
+    from checker.settings import change
+
+    change(checker_home(), "advisor.base_url", "https://corp.example/tenant/abcdef0123secretpath")
+    client, _ = signed_in(web)
+    text = said(client.get("/manage/settings"))
+    assert "secretpath" not in text and "corp.example" not in text
+    assert "another server" in text and "checker advise" not in text.split("Changed only")[0]
+
+
+def test_with_another_server_the_key_s_source_can_t_be_chosen_from_a_page(web, inventory):
+    """The keyring holds one key for every server: choosing it could send Anthropic's elsewhere."""
+    from checker.inventory import home as checker_home
+    from checker.settings import change
+
+    change(checker_home(), "advisor.base_url", "https://proxy.example/")
+    client, _ = signed_in(web)
+    form = settings_form(client)
+    assert "advisor.api_key_source" not in form and "advisor.fallback" not in form
+    forged = {**form, "advisor.api_key_source": "keyring"}
+    assert client.post("/manage/settings/save", forged).status_code == 302
+    assert config_now().advisor.api_key_source == "env"
+
+
+def pulled_page(client, monkeypatch, done=None, error=None):
+    from checker.web import threat_updates
+
+    def stand_in(*args):
+        if error:
+            raise error
+        return done
+
+    monkeypatch.setattr(threat_updates, "pull", stand_in)
+    return client.post("/manage/threats/pull", {"a": "b"})
+
+
+def test_the_latest_is_only_said_when_it_s_true(web, inventory, monkeypatch):
+    from checker.packs.pull import Pulled
+
+    client, _ = signed_in(web)
+    latest = "already have the latest"
+    assert latest in said(pulled_page(client, monkeypatch, Pulled()))
+    for done in (Pulled(problems=["no file"]), Pulled(notes=["offered, but retired"])):
+        text = said(pulled_page(client, monkeypatch, done))
+        assert latest not in text and "Not everything could be taken" in text
+    text = said(pulled_page(client, monkeypatch, Pulled(key_list=(2, 1))))
+    assert latest not in text and "new list of trusted signing keys" in text
+
+
+def test_a_pull_that_stops_part_way_says_what_it_already_did(web, inventory, monkeypatch):
+    from checker.packs.pull import Pulled, PullError
+
+    client, _ = signed_in(web)
+    failure = PullError("index signature")
+    failure.pulled = Pulled(retired_by_keys=["old-pack-v1.yaml"], key_list=(2, 1))
+    response = pulled_page(client, monkeypatch, error=failure)
+    text = said(response)
+    assert response.status_code == 400 and "old-pack-v1.yaml is no longer used" in text
+    assert "new list of trusted signing keys" in text
+    last = records_of("asked for threat updates")[-1]
+    assert last.outcome == "failed" and "1 retired" in last.detail
+
+
+def test_a_long_rule_can_still_be_changed(team_pack):
+    from checker.inventory import home as checker_home
+    from checker.settings import change
+
+    client, _ = team_pack
+    long_rule = "only: " + ", ".join(f"pack-number-{n:03}" for n in range(40))
+    change(checker_home(), "packs.apply", long_rule)
+    form = rule_form_of(client, "all")
+    assert form["current"] == long_rule
+    response = client.post("/manage/threats/rule/save", {**form, "rule_kind": "all"})
+    assert response.status_code == 302 and config_now().packs.apply == "all"
+
+
+def test_retention_can_t_break_expiry(home, capsys):
+    from checker.cli import main as cli
+
+    assert cli(["config", "set", "retention_days", "999999"]) == 2
+    assert "100 years" in capsys.readouterr().err
+
+
+def test_a_pack_put_back_isn_t_listed_as_retired(team_pack):
+    client, _ = team_pack
+    form = {"pack": PACK, "reason": "x", "confirm_password": PASSWORD}
+    client.post("/manage/threats/retire", form)
+    assert "no longer in use" in said(client.get("/manage/threats"))
+    client.post("/manage/threats/put-back", form)
+    assert "no longer in use" not in said(client.get("/manage/threats"))
+
+
+def test_damaged_files_are_words_on_every_threat_update_action(team_pack):
+    from checker.evidence import config_file
+    from checker.inventory import home as checker_home
+
+    client, _ = team_pack
+    good = config_file(checker_home()).read_text()
+    config_file(checker_home()).write_text(good + "\nnot_a_setting: 1\n")
+    form = {"pack": PACK, "reason": "x", "confirm_password": PASSWORD}
+    for path, data in (
+        ("/manage/threats/retire", form),
+        ("/manage/threats/put-back", form),
+        ("/manage/threats/pull", {"a": "b"}),
+    ):
+        response = client.post(path, data)
+        assert response.status_code == 400 and "can't be read" in said(response), path
+    assert client.get("/manage/threats").status_code == 503
+
+
+def test_damaged_state_is_a_plain_note(team_pack):
+    from checker.inventory import home as checker_home
+    from checker.packs.state import read_state, write_state
+
+    client, _ = team_pack
+    state = read_state(checker_home())
+    del state["packs"][PACK]["highest"]
+    state["packs"][PACK]["held"] = True
+    write_state(checker_home(), state)
+    response = client.get("/manage/threats")
+    assert response.status_code == 200 and "can't be read" in said(response)
+
+
+def test_a_page_doesn_t_wait_for_a_pull_holding_the_lock(team_pack, monkeypatch):
+    from checker.files import locked
+    from checker.inventory import home as checker_home
+    from checker.web import threat_updates
+
+    monkeypatch.setattr(threat_updates, "_WAIT_SECONDS", 0.2)
+    client, _ = team_pack
+    form = {"pack": PACK, "reason": "x", "confirm_password": PASSWORD}
+    with locked(checker_home() / "packs" / "state"):
+        response = client.post("/manage/threats/retire", form)
+    assert response.status_code == 400 and "Try again in a moment" in said(response)
+
+
+def test_retiring_holds_a_pack_back_even_if_the_state_lost_its_record(team_pack):
+    from checker.inventory import home as checker_home
+    from checker.packs.state import read_state, write_state
+
+    client, _ = team_pack
+    state = read_state(checker_home())
+    del state["packs"][PACK]
+    write_state(checker_home(), state)
+    form = {"pack": PACK, "reason": "x", "confirm_password": PASSWORD}
+    assert client.post("/manage/threats/retire", form).status_code == 302
+    assert read_state(checker_home())["packs"][PACK]["held"] is True
+
+
+def test_a_refused_settings_form_stays_stale_when_it_comes_back(web, inventory):
+    from checker.inventory import home as checker_home
+    from checker.settings import change
+
+    client, _ = signed_in(web)
+    form = settings_form(client)
+    bad = client.post("/manage/settings/save", {**form, "retention_days": "soon"})
+    assert form["version"] in said(bad)
+    change(checker_home(), "stale_after_days", "9")
+    retry = client.post("/manage/settings/save", {**form, "retention_days": "30"})
+    assert retry.status_code == 400 and config_now().retention_days != 30
+
+
+def test_a_saved_settings_page_says_so(web, inventory):
+    client, _ = signed_in(web)
+    response = client.post("/manage/settings/save", settings_form(client))
+    assert response["Location"] == "/manage/settings?saved=1"
+    assert "Saved." in said(client.get(response["Location"]))
+
+
+def test_a_rule_naming_what_isn_t_in_use_says_so(team_pack):
+    from checker.inventory import home as checker_home
+    from checker.settings import change
+
+    client, _ = team_pack
+    change(checker_home(), "packs.apply", "only: gone-away")
+    text = said(client.get("/manage/threats"))
+    assert "gone-away not in use right now" in text
+    assert "Nothing" in text.split("Looked for on it")[1]

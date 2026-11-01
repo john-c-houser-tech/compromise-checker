@@ -9,9 +9,15 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import yaml
+from markupsafe import escape
+from pydantic import ValidationError
+
 from checker.evidence import EvidenceError, load_config
+from checker.files import LockBusy
 from checker.inventory import hosts_file, load_inventory
 from checker.packs.choice import MAX_IDS, choose, normal, parse, rule_for
+from checker.packs.format import PackError
 from checker.packs.pull import PullError, pull, staleness
 from checker.packs.state import StateError, read_state
 from checker.packs.store import (
@@ -28,12 +34,33 @@ from checker.settings import GROUP_APPLY, change, change_host_packs
 from checker.web.manage import recorded
 
 _pulling = threading.Lock()  # a pull can take a while, and a second adds nothing
+_WAIT_SECONDS = 5  # for the packs lock: a pull holds it for minutes, and pages mustn't queue up
+_BUSY = "Threat updates are being fetched or changed. Try again in a moment."
+_CANT_READ = "The threat updates' files or the settings can't be read, so nothing was changed."
+# What damaged files raise on the way: the page says so in words.
+_DAMAGED = (
+    EvidenceError,
+    OSError,
+    StateError,
+    TrustError,
+    PackError,
+    ValidationError,
+    yaml.YAMLError,
+    KeyError,
+    AttributeError,
+    TypeError,
+    ValueError,
+)
 LONGEST_REASON = 500
 SCOPE_WORDS = {"the host's": "its own", "the configuration's": "the rule for all servers"}
 
 
 class UpdateProblem(Exception):
-    """What went wrong, in words for the page."""
+    """What went wrong, in words for the page, and what a pull had done by then."""
+
+    def __init__(self, words: str, done: dict[str, Any] | None = None):
+        super().__init__(words)
+        self.done = done
 
 
 def _in_words(rule: str, packs: list[Any]) -> str:
@@ -43,7 +70,10 @@ def _in_words(rule: str, packs: list[Any]) -> str:
     if kind == "none":
         return "no updates"
     named = ", ".join(ids)
-    return f"only {named}" if kind == "only" else f"every update except {named}"
+    said = f"only {named}" if kind == "only" else f"every update except {named}"
+    in_force = {pack.id for pack in packs}
+    missing = [pack_id for pack_id in ids if pack_id not in in_force]
+    return f"{said} ({', '.join(missing)} not in use right now)" if missing else said
 
 
 def overview(base: Path) -> dict[str, Any]:
@@ -66,17 +96,19 @@ def overview(base: Path) -> dict[str, Any]:
                 "kept_off": [pack.id for pack in packs if pack not in applied],
             }
         )
+    state_problem = False
     try:
         last = staleness(read_state(base))
         held = held_back(base)
-    except StateError:
-        last, held = None, []
+    except _DAMAGED:
+        last, held, state_problem = None, [], True
     return {
         "packs": packs,
         "problems": problems,
         "last_pull": last,
         "held": held,
-        "retired": retired(base),
+        "state_problem": state_problem,
+        "retired": [(pack, version, " ".join(why.split())) for pack, version, why in retired(base)],
         "all_rule": _in_words(config.packs.apply, packs),
         "groups": [
             {
@@ -92,32 +124,52 @@ def overview(base: Path) -> dict[str, Any]:
     }
 
 
-def pull_now(base: Path) -> dict[str, Any]:
-    from checker.checks import load_checks
-
-    if not _pulling.acquire(blocking=False):
-        raise UpdateProblem("Updates are already being fetched. Look again in a moment.")
+def _outcome(done, base: Path) -> dict[str, Any]:
     try:
-        with packs_lock(base):
-            config = load_config(base)
-            done = pull(base, config.packs.trusted_keys, load_checks(), config.packs.source)
-    except (PullError, EvidenceError, OSError, StateError, TrustError) as exc:
-        raise UpdateProblem(str(exc)) from None
-    finally:
-        _pulling.release()
+        last = staleness(read_state(base)) or ""
+    except _DAMAGED:
+        last = ""
+    old_source = "older than expected" in last or "ahead of" in last
+    notes = [note.replace("`checker packs add`", "the Put it back button") for note in done.notes]
     return {
+        "key_list": done.key_list,
         "added": done.added,
         "withdrawn": done.withdrawn,
         "retired_by_keys": done.retired_by_keys,
-        "notes": done.notes,
+        "notes": notes,
         "problems": done.problems,
         "changed": done.changed(),
+        "up_to_date": not (done.changed() or done.problems or notes or old_source),
+        "old_source": old_source,
         # Our own words: what a source says about itself isn't for the permanent record.
         "summary": (
             f"{len(done.added)} added or updated, {len(done.withdrawn)} withdrawn,"
             f" {len(done.retired_by_keys)} retired, {len(done.problems)} problems"
+            + (", new signing key list" if done.key_list else "")
         ),
     }
+
+
+def pull_now(base: Path) -> dict[str, Any]:
+    from checker.checks import load_checks
+
+    if not _pulling.acquire(blocking=False):
+        raise UpdateProblem(_BUSY)
+    try:
+        with packs_lock(base, _WAIT_SECONDS):
+            config = load_config(base)
+            done = pull(base, config.packs.trusted_keys, load_checks(), config.packs.source)
+    except LockBusy:
+        raise UpdateProblem(_BUSY) from None
+    except PullError as exc:
+        pulled = getattr(exc, "pulled", None)
+        raise UpdateProblem(str(exc), _outcome(pulled, base) if pulled else None) from None
+    except _DAMAGED as exc:
+        pulled = getattr(exc, "pulled", None)
+        raise UpdateProblem(_CANT_READ, _outcome(pulled, base) if pulled else None) from None
+    finally:
+        _pulling.release()
+    return _outcome(done, base)
 
 
 def retire_by_hand(base: Path, pack_id: str, reason: str, who: str) -> None:
@@ -127,25 +179,34 @@ def retire_by_hand(base: Path, pack_id: str, reason: str, who: str) -> None:
     if len(said) > LONGEST_REASON:
         raise UpdateProblem(f"Keep the reason under {LONGEST_REASON} characters.")
     try:
-        with packs_lock(base):
+        with packs_lock(base, _WAIT_SECONDS):
             config = load_config(base)
-            packs, _ = in_force_read_only(base, config.packs.trusted_keys)
+            organization = config.packs.trusted_keys
+            packs, _ = in_force_read_only(base, organization)
             if pack_id not in {pack.id for pack in packs}:
                 raise UpdateProblem("That threat update isn't in use any more.")
-            retire(base, pack_id, f"retired by hand by {who}: {said}", by_hand=True)
-    except (StoreError, StateError, EvidenceError, OSError) as exc:
+            retire(base, pack_id, f"retired by hand by {who}: {said}", True, organization)
+    except LockBusy:
+        raise UpdateProblem(_BUSY) from None
+    except StoreError as exc:
         raise UpdateProblem(str(exc)) from None
+    except _DAMAGED:
+        raise UpdateProblem(_CANT_READ) from None
 
 
 def put_back_by_hand(base: Path, pack_id: str) -> None:
     from checker.checks import load_checks
 
     try:
-        with packs_lock(base):
+        with packs_lock(base, _WAIT_SECONDS):
             config = load_config(base)
             put_back(base, config.packs.trusted_keys, pack_id, load_checks())
-    except (StoreError, StateError, EvidenceError, OSError) as exc:
+    except LockBusy:
+        raise UpdateProblem(_BUSY) from None
+    except StoreError as exc:
         raise UpdateProblem(str(exc)) from None
+    except _DAMAGED:
+        raise UpdateProblem(_CANT_READ) from None
 
 
 def _scope(base: Path, scope: str) -> tuple[str, str] | None:
@@ -202,7 +263,9 @@ def rule_form(base: Path, scope: str) -> dict[str, Any] | None:
         "kind": kind,
         "name": name,
         "rule_kind": rule_kind,
-        "current": current or "",
+        # Escaped here, so the page's filter doesn't cut a long one and call it changed.
+        "current": escape(current or ""),
+        "scope_field": escape(scope),
         "choices": choices,
         "following": following,
     }
@@ -214,7 +277,10 @@ def save_rule(base: Path, scope: str, post) -> str:
     if found is None:
         raise UpdateProblem("That server or group isn't in the list any more.")
     kind, name = found
-    current = _current(base, kind, name)
+    try:
+        current = _current(base, kind, name)
+    except KeyError:
+        raise UpdateProblem("That server isn't in the list any more.") from None
     if (current or "") != post.get("current", ""):
         raise UpdateProblem("This rule changed since this page opened. Look again.")
     wanted = post.get("rule_kind", "")

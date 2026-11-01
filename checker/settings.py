@@ -105,14 +105,16 @@ def recipients(advisor) -> str:
     return to
 
 
-def advisor_question(redaction: str, to: str = ANTHROPIC) -> str:
+def advisor_question(
+    redaction: str, to: str = ANTHROPIC, when: str = "you run `checker advise`"
+) -> str:
     """What `init` says before asking, and `config set advisor.enabled on`
     after turning it on: what would leave, under this redaction mode, and
     to whom."""
     text = (
         "The optional AI advisor can explain findings, propose whitelist rules for you"
-        " to review, suggest better coverage and advise on remediation. When you run"
-        f" `checker advise`, it sends {SENT[redaction]} {to}. {SENT_DETAIL[redaction]}"
+        f" to review, suggest better coverage and advise on remediation. When {when},"
+        f" it sends {SENT[redaction]} {to}. {SENT_DETAIL[redaction]}"
         " It never connects to your servers and never changes a score or a setting."
         " Everything else in the tool works without it (security and privacy policy §9)."
     )
@@ -252,6 +254,8 @@ def _on_decline(advisor) -> str:
 
 # --- Changing a setting ----------------------------------------------------------
 
+MOST_RETENTION_DAYS = 36500  # far beyond this, the date a purge works out can't be represented
+
 
 def _bool(text: str) -> bool:
     words = {"on": True, "yes": True, "true": True, "off": False, "no": False, "false": False}
@@ -262,6 +266,13 @@ def _bool(text: str) -> bool:
 
 def _optional(text: str) -> str | None:
     return None if text.lower() in ("", "none") else text
+
+
+def _retention(text: str) -> int:
+    days = int(text)
+    if days > MOST_RETENTION_DAYS:
+        raise ValueError(f"at most {MOST_RETENTION_DAYS} days, which is 100 years")
+    return days
 
 
 @dataclass(frozen=True)
@@ -277,7 +288,7 @@ SETTABLE: dict[str, Setting] = {
         Setting(("home_text",), str, "off, privileged or all"),
         Setting(("web_access_logs",), _bool, "on or off"),
         Setting(("exec_records",), str, "web, privileged or all"),
-        Setting(("retention_days",), int, "days evidence is kept (default 90)"),
+        Setting(("retention_days",), _retention, "days evidence is kept (default 90)"),
         Setting(
             ("stale_after_days",),
             int,

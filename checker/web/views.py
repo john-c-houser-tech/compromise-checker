@@ -22,6 +22,7 @@ from django.urls import Resolver404, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_otp import login as otp_login
+from markupsafe import escape
 from pydantic import ValidationError as InvalidSettings
 
 from checker import schedule
@@ -528,7 +529,7 @@ def _add_form(request, values=None, problem: str = "", status: int = 200, ask_sa
         "values": manage.for_the_page(values if values is not None else manage.blank_form()),
         "problem": problem,
         "ask_same": ask_same,
-        "groups": groups,
+        "groups": [escape(group) for group in groups],
         "code_needed": two_factor.code_needed(request),
     }
     return render(request, "manage_add.html.j2", context, status=status)
@@ -569,7 +570,7 @@ def _server_page(
         "trusted": manage.trust_of(host),
         "stops": schedule.host_problems_in_plain_words(host),
         "earlier": earlier,
-        "groups": manage.group_names(home()),
+        "groups": [escape(group) for group in manage.group_names(home())],
         "code_needed": two_factor.code_needed(request),
     }
     return render(request, "manage_server.html.j2", context, status=status)
@@ -592,6 +593,7 @@ def _back_to_server(name: str) -> HttpResponse:
 
 
 CANT_MANAGE = "That couldn't be done: the list of servers or the evidence store can't be written."
+CANT_CHANGE_SETTINGS = "That couldn't be done: the settings or the evidence store can't be written."
 GONE = "That server isn't in the list of servers any more."
 MANAGE_FAILURES = (
     OSError,
@@ -749,7 +751,8 @@ def manage_threats(request) -> HttpResponse:
     try:
         return _threats_page(request)
     except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
-        return _unreadable_inventory(request, exc)
+        print(f"checker web: can't read the updates: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The settings, servers or threat updates can't be read.")
 
 
 @action("asked for threat updates")
@@ -761,10 +764,20 @@ def threats_pull(request) -> HttpResponse:
         outcome = threat_updates.pull_now(home())
     except threat_updates.UpdateProblem as exc:
         words = "The updates couldn't be fetched, so nothing more was added."
-        page = _threats_page(request, problem=f"{words} {visible(str(exc), 500)}", status=400)
+        said = visible(f"{words} {exc}", 800)
+        if exc.done:  # it may have stopped using something first, which has to be said
+            words = f"{words} Before that: {exc.done['summary']}."
+        try:
+            page = _threats_page(request, outcome=exc.done, problem=said, status=400)
+        except Exception:  # noqa: BLE001 - the words are what matter
+            page = render(request, "problem.html.j2", {"title": said}, status=400)
         raise ActionFailed(words, page=page) from None
     request.action_detail = outcome["summary"]
-    return _threats_page(request, outcome=outcome)
+    try:
+        return _threats_page(request, outcome=outcome)
+    except Exception as exc:  # noqa: BLE001 - it did happen: a plain page, and the record says so
+        print(f"checker web: can't show the updates: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The updates were fetched, but the settings can't be read.")
 
 
 def _posted_pack(request, **kwargs) -> str:
@@ -783,7 +796,7 @@ def threat_retire(request) -> HttpResponse:
         )
     except threat_updates.UpdateProblem as exc:
         raise ActionFailed(str(visible(str(exc), 600))) from None
-    request.action_detail = str(visible(request.POST.get("reason", ""), 300))
+    request.action_detail = " ".join(request.POST.get("reason", "").split())
     return _back_to_threats()
 
 
@@ -834,14 +847,17 @@ def threat_rule_save(request) -> HttpResponse:
         raise ActionFailed(words, page=page) from None
     except MANAGE_FAILURES as exc:
         print(f"checker web: changing a rule failed: {type(exc).__name__}", file=sys.stderr)
-        raise ActionFailed(CANT_MANAGE) from None
+        raise ActionFailed(CANT_CHANGE_SETTINGS) from None
     return _back_to_threats()
 
 
-def _settings_page(request, typed=None, problem: str = "", status: int = 200) -> HttpResponse:
+def _settings_page(
+    request, typed=None, version=None, problem: str = "", status: int = 200
+) -> HttpResponse:
     context = {
-        **setting_forms.page(home(), typed),
+        **setting_forms.page(home(), typed, version),
         "problem": problem,
+        "saved": request.method == "GET" and request.GET.get("saved") == "1",
         "code_needed": two_factor.code_needed(request),
     }
     return render(request, "manage_settings.html.j2", context, status=status)
@@ -867,13 +883,16 @@ def settings_save(request) -> HttpResponse:
         raise ActionFailed(words, page=_settings_page(request, problem=words, status=400)) from None
     except setting_forms.FormProblem as exc:
         words = str(visible(str(exc), 600))
-        page = _settings_page(request, typed=request.POST, problem=words, status=400)
+        version = request.POST.get("version", "")
+        page = _settings_page(
+            request, typed=request.POST, version=version, problem=words, status=400
+        )
         raise ActionFailed(words, page=page) from None
     except MANAGE_FAILURES as exc:
         print(f"checker web: changing settings failed: {type(exc).__name__}", file=sys.stderr)
-        raise ActionFailed(CANT_MANAGE) from None
+        raise ActionFailed(CANT_CHANGE_SETTINGS) from None
     request.action_detail = setting_forms.changes_in_words(changed)
-    return HttpResponseRedirect(reverse("manage_settings"))
+    return HttpResponseRedirect(f"{reverse('manage_settings')}?saved=1")
 
 
 @login_required

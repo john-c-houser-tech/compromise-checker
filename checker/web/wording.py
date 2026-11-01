@@ -45,7 +45,7 @@ MAX_CHANGES_SHOWN = 3
 FRESH_CHECK = "Run a fresh check."
 ASK_WHY = "Ask whoever runs this server why."
 SETTINGS_CHANGED = "Settings have changed since this result, so it may change at the next check."
-NEW_THREAT = "New threat information has arrived, and this server hasn't been checked against it."
+NEW_THREAT = "The threat updates in use have changed since this result, so it may be out of date."
 LOGS_MISSING = " Logs can go missing when someone covers their tracks."
 
 # The tool's reasons for doubt, by how they start: what a reader should hear, and whether
@@ -219,7 +219,7 @@ def _cautions(host: FleetHost) -> tuple[list[_Caution], list[str]]:
         words, by_time = _doubt(doubt)
         notes.append(words)
         if doubt.startswith("the threat packs"):
-            cautions.append(_Caution("Not checked against new threat information", FRESH_CHECK))
+            cautions.append(_Caution("Not checked against the current threat updates", FRESH_CHECK))
         elif by_time:
             cautions.append(_Caution("No strong signs, but don't rely on this yet", FRESH_CHECK))
         else:

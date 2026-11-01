@@ -250,7 +250,9 @@ that may include access tokens, and sometimes secrets typed into commands.
   holds no evidence, and failed logins aren't in it. It can't be changed from
   the pages, but anyone with full control of the machine could alter it. It
   isn't removed by `purge` or by the retention period: to remove it, delete the
-  web interface's file.
+  web interface's file. If the record can't be written, for example on a full
+  disk, signing out and viewing results and evidence still work, and those
+  events go to the tool's error output instead; actions are refused.
 
 ## 9. The optional AI advisor
 

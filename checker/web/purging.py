@@ -34,7 +34,8 @@ class PurgeProblem(Exception):
 
 def named(params) -> str:
     """What it's asked to delete, for the record."""
-    what, host, before = params.get("what", ""), params.get("host", ""), params.get("before", "")
+    what, host = params.get("what", ""), params.get("host", "")
+    before = params.get("before", "").strip()
     if what == "expired":
         return "past the retention period"
     if what == "before":

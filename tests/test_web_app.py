@@ -6908,7 +6908,8 @@ def test_a_timer_of_another_home_is_said_and_left_alone(web, inventory, timer):
     "line",
     ["OnCalendar=daily", "OnCalendar=Mon *-*-* 02:15:00",
      "#OnCalendar=*-*-* 02:15:00\nOnBootSec=1h",
-     "OnCalendar=*-*-* 02:15:00\nOnCalendar=*-*-* 09:00:00"],
+     "OnCalendar=*-*-* 02:15:00\nOnCalendar=*-*-* 09:00:00",
+     "OnCalendar=*-*-* 02:15:00\n  OnBootSec=1h"],
 )  # fmt: skip
 def test_a_timer_changed_by_hand_isn_t_given_a_time_it_doesn_t_have(web, inventory, timer, line):
     from checker.inventory import home as checker_home
@@ -6916,7 +6917,7 @@ def test_a_timer_changed_by_hand_isn_t_given_a_time_it_doesn_t_have(web, invento
     client, _ = signed_in(web)
     timer["unit"].parent.mkdir(parents=True)
     timer["unit"].write_text(f"[Timer]\n{line}\n")
-    timer["unit"].with_suffix(".service").write_text(f"CHECKER_HOME={checker_home()}\n")
+    timer["unit"].with_suffix(".service").write_text(f"Environment=CHECKER_HOME={checker_home()}\n")
     text = said(client.get("/manage/schedule"))
     assert "A daily check runs at" not in text and "set up by hand" in text
 
@@ -7013,7 +7014,8 @@ def test_a_server_emptied_is_forgotten_by_the_last_run_s_memory(web, inventory):
         client.post("/manage/delete/confirm", purge_form(client, **ONE_SERVER)).status_code == 200
     )
     kept = load_state(home[0], identity_of(home))
-    assert set(kept["hosts"]) == {"db01"} and kept["pending"] == ["db01: something"]
+    assert set(kept["hosts"]) == {"db01"}
+    assert kept["pending"] == ["web01: new critical", "db01: something"], "news nobody has had"
 
 
 def test_a_choice_without_a_kind_says_so(web, inventory):
@@ -7021,3 +7023,211 @@ def test_a_choice_without_a_kind_says_so(web, inventory):
     stored(home, "b1", 30)
     assert "Choose what to delete" in said(client.get("/manage/delete", {"host": "web01"}))
     assert "Choose a server" in said(client.get("/manage/delete", {"what": "host"}))
+
+
+@pytest.fixture
+def mac(monkeypatch, tmp_path):
+    """launchctl's answers, by what it's asked. Stand-ins: nothing here has run on a real Mac."""
+    state = {"ran": [], "bootstrap": 0, "print": 0}
+
+    def run(command, **kwargs):
+        state["ran"].append(command)
+        if command[:2] == ["launchctl", "bootstrap"]:
+            code = (
+                state["bootstrap"].pop(0)
+                if isinstance(state["bootstrap"], list)
+                else state["bootstrap"]
+            )
+            return _Ran(returncode=code, stderr="in progress" if code else "")
+        if command[:2] == ["launchctl", "print"]:
+            return _Ran(returncode=state["print"])
+        return _Ran()
+
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    from checker import schedule
+
+    monkeypatch.setattr(schedule.time, "sleep", lambda seconds: None)
+    return state
+
+
+def test_a_failed_change_on_a_mac_loads_the_old_timer_again(web, inventory, mac):
+    from checker import schedule
+
+    client, _ = signed_in(web)
+    form = {"at": "02:15", "confirm_password": PASSWORD}
+    assert client.post("/manage/schedule/save", form).status_code == 302
+    mac["ran"].clear()
+    mac["bootstrap"] = [1, 1, 1, 1, 1, 0]
+    original = schedule.install.__defaults__
+    schedule.install.__defaults__ = (original[0], lambda seconds: None)
+    try:
+        response = client.post("/manage/schedule/save", {**form, "at": "05:00"})
+    finally:
+        schedule.install.__defaults__ = original
+    assert response.status_code == 400
+    bootstraps = [c for c in mac["ran"] if c[:2] == ["launchctl", "bootstrap"]]
+    assert len(bootstraps) == 6, "five tries, then the old one again"
+    assert "A daily check runs at 02:15" in said(client.get("/manage/schedule"))
+
+
+def test_a_mac_timer_that_isn_t_loaded_is_said_plainly(web, inventory, mac):
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    mac["print"] = 113
+    assert "isn't running, so it won't happen" in said(client.get("/manage/schedule"))
+    mac["print"] = 5
+    text = said(client.get("/manage/schedule"))
+    assert "can't tell whether" in text and "A daily check runs at" not in text
+
+
+@pytest.mark.parametrize(
+    ("ours", "written", "other"),
+    [
+        ("/srv/a", "/srv/ab", True),
+        ("/home/x/.config/checker", "/home/x/.config/checker-staging", True),
+        ("/srv/100%", "/srv/100%", False),
+        ("/srv/with space", "/srv/with space", False),
+        ("/srv/a", "/srv/a", False),
+    ],
+)
+def test_whose_timer_it_is_comes_from_its_home_exactly(tmp_path, monkeypatch, ours, written, other):
+    from checker import schedule
+
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user" / ".config"))
+    units = schedule.systemd_units((2, 15), {"CHECKER_HOME": written})
+    folder = tmp_path / "user" / ".config" / "systemd" / "user"
+    folder.mkdir(parents=True)
+    for name, text in units.items():
+        (folder / name).write_text(text)
+    assert schedule.timer_of_another_home(Path(ours)) is other
+    assert schedule.timer_time(Path(ours)) == "02:15"
+
+
+def test_whose_timer_it_is_with_a_symlink_or_nothing_to_read(tmp_path, monkeypatch):
+    from checker import schedule
+
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user" / ".config"))
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    folder = tmp_path / "user" / ".config" / "systemd" / "user"
+    folder.mkdir(parents=True)
+    service = folder / "compromise-checker.service"
+    service.write_text(f"Environment=CHECKER_HOME={tmp_path / 'link'}\n")
+    assert schedule.timer_of_another_home(real) is False
+    service.write_text("")
+    assert schedule.timer_of_another_home(real) is False, "not locked out by an empty file"
+
+
+def test_a_failure_writing_a_file_puts_them_all_back(web, inventory, timer, monkeypatch):
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    real = Path.write_bytes
+
+    def fails_on_the_timer(self, data):
+        if self.suffix == ".timer" and b"05:00" in data:
+            raise OSError(28, "No space left on device")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fails_on_the_timer)
+    response = client.post("/manage/schedule/save", {"at": "05:00", "confirm_password": PASSWORD})
+    monkeypatch.setattr(Path, "write_bytes", real)
+    text = said(response)
+    assert response.status_code == 400 and "put back as they were" in text and "No space" in text
+    assert "02:15" in timer["unit"].read_text()
+
+
+def test_stale_files_can_be_cleared_with_no_timer_to_stop(web, inventory, timer):
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    timer["unit"].unlink()
+    timer["ran"].clear()
+    assert client.post("/manage/schedule/stop", {"confirm_password": PASSWORD}).status_code == 302
+    assert not timer["unit"].with_suffix(".service").exists()
+    assert not [c for c in timer["ran"] if "disable" in c]
+
+
+def test_stopped_is_stopped_even_if_tidying_up_fails(web, inventory, timer, monkeypatch):
+    import subprocess
+
+    client, _ = signed_in(web)
+    client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    real = subprocess.run
+
+    def hangs_on_reload(command, **kwargs):
+        if "daemon-reload" in command:
+            raise subprocess.TimeoutExpired(command, 60)
+        return real(command, **kwargs)
+
+    monkeypatch.setattr("subprocess.run", hangs_on_reload)
+    assert client.post("/manage/schedule/stop", {"confirm_password": PASSWORD}).status_code == 302
+    assert records_of("stopped the daily check")[-1].detail == "stopped"
+
+
+def test_busy_isn_t_read_as_a_missing_session(web, inventory, timer):
+    client, _ = signed_in(web)
+    timer["fail"] = "Device or resource busy"
+    response = client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    assert "logged-in session" not in said(response) and "busy" in said(response)
+
+
+def test_another_home_s_timer_offers_nothing_to_save(web, inventory, timer):
+    client, _ = signed_in(web)
+    timer["unit"].parent.mkdir(parents=True)
+    timer["unit"].write_text("OnCalendar=*-*-* 02:15:00\n")
+    timer["unit"].with_suffix(".service").write_text("Environment=CHECKER_HOME=/srv/other\n")
+    text = said(client.get("/manage/schedule"))
+    assert "Each day it checks" not in text and "/manage/schedule/save" not in text
+
+
+def test_the_command_line_won_t_purge_during_a_run(home, capsys):
+    from test_purge import add
+
+    from checker import cli
+    from checker.schedule import run_lock
+
+    add(home, "b1", 30)
+    with run_lock(home[0]):
+        assert cli.main(["purge", "web01", "--yes"]) == 1
+        assert "in progress" in capsys.readouterr().err
+        assert cli.main(["purge", "web01", "--dry-run"]) == 0, "looking is fine"
+    assert home[1].bundles("web01")
+
+
+def test_no_false_warning_when_nothing_was_emptied(home, capsys, monkeypatch):
+    from test_purge import add
+
+    from checker import cli, schedule
+
+    add(home, "b1", 30)
+    add(home, "b2", 2)
+
+    def must_not(*args):
+        raise AssertionError("nothing was emptied")
+
+    monkeypatch.setattr(schedule, "forget_hosts", must_not)
+    assert (
+        cli.main(
+            [
+                "purge",
+                "--before",
+                (__import__("test_purge").NOW - timedelta(days=10)).isoformat(),
+                "--yes",
+            ]
+        )
+        == 0
+    )
+    assert "memory" not in capsys.readouterr().err
+
+
+def test_the_record_s_date_is_what_the_plan_used(web, inventory):
+    from checker.web.purging import named
+
+    assert named({"what": "host", "host": "db02", "before": "   "}) == "db02"

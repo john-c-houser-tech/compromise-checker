@@ -923,6 +923,25 @@ def _timer_command(command: list[str]) -> Any:
         raise InstallFailed(f"`{' '.join(command)}` failed: {exc.strerror}") from None
 
 
+def _put_back(where: Placement, earlier: dict[Path, bytes | None]) -> None:
+    """After a failed start: the files as they were, and the timer as it was, as far as that goes.
+    It's best effort: what can't be restored shows on the next look at the timer."""
+    for path, content in earlier.items():
+        with contextlib.suppress(OSError):
+            if content is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(content)
+    had_one = any(content is not None for content in earlier.values())
+    if sys.platform == "darwin":
+        steps = where.start if had_one else []  # the old agent was unloaded to load the new one
+    else:
+        steps = where.start if had_one else where.stop
+    for command in steps:
+        with contextlib.suppress(InstallFailed):
+            _timer_command(command)
+
+
 def install(
     base: Path,
     at: tuple[int, int],
@@ -939,7 +958,10 @@ def install(
             " characters): " + ", ".join(repr(word) for word in unsafe)
         )
     where = placement(sys.platform, at, env, base, Path.home())
-    earlier = {path: path.read_bytes() if path.exists() else None for path in where.files}
+    try:
+        earlier = {path: path.read_bytes() if path.exists() else None for path in where.files}
+    except OSError as exc:
+        raise InstallFailed(f"the timer's files can't be read: {exc.strerror}") from None
     try:
         for path, content in where.files.items():
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -957,31 +979,40 @@ def install(
                 pause(1.0)
             if done.returncode != 0:
                 raise InstallFailed(f"`{' '.join(command)}` failed: {(done.stderr or '').strip()}")
-    except InstallFailed:
-        for path, content in earlier.items():
-            if content is None:
-                path.unlink(missing_ok=True)
-            else:
-                path.write_bytes(content)
-        raise
+    except (InstallFailed, OSError) as exc:
+        _put_back(where, earlier)
+        why = exc.strerror if isinstance(exc, OSError) else exc
+        raise InstallFailed(f"{why} (the timer's files were put back as they were)") from None
     return where
+
+
+_NOT_LOADED = (3, 113)  # launchctl: no such process, or not loaded
 
 
 def remove_timer(base: Path) -> list[Path]:
     """Stop the timer and delete its files. Returns those it deleted. If it can't be stopped, the
-    files stay: a timer that keeps running with nothing saying so is the worst outcome."""
+    files stay: a timer that keeps running with nothing saying so is the worst outcome. With no
+    timer file there's nothing to stop, and what's left is only clearing up."""
     where = placement(sys.platform, (3, 0), {}, base, Path.home())
     present = [path for path in where.files if path.exists()]
     if not present:
         return []
     stop, *after = where.stop  # stopped while its files are there; reloaded once they're gone
-    done = _timer_command(stop)
-    if done.returncode != 0 and sys.platform != "darwin":  # launchd: fails if it wasn't loaded
-        raise InstallFailed(f"`{' '.join(stop)}` failed: {(done.stderr or '').strip()}")
+    if any(path.suffix in (".timer", ".plist") for path in present):
+        done = _timer_command(stop)
+        words = (done.stderr or "").strip()
+        fine = (
+            done.returncode == 0
+            or (sys.platform == "darwin" and done.returncode in _NOT_LOADED)
+            or "does not exist" in words
+        )
+        if not fine:
+            raise InstallFailed(f"`{' '.join(stop)}` failed: {words}")
     for path in present:
         path.unlink()
     for command in after:
-        _timer_command(command)
+        with contextlib.suppress(InstallFailed):  # it is stopped: this only tidies up
+            _timer_command(command)
     return present
 
 
@@ -996,17 +1027,17 @@ def timer_time(base: Path) -> str | None:
     where = placement(sys.platform, (3, 0), {}, base, Path.home())
     for path in where.files:
         if path.suffix == ".plist" and path.exists():
-            try:
-                when = plistlib.loads(path.read_bytes())["StartCalendarInterval"]
+            when = _plist(path).get("StartCalendarInterval")
+            if isinstance(when, dict) and set(when) == {"Hour", "Minute"}:
                 return f"{int(when['Hour']):02}:{int(when['Minute']):02}"
-            except (OSError, ValueError, KeyError, TypeError, plistlib.InvalidFileException):
-                return None
+            return None
         if path.suffix == ".timer" and path.exists():
             try:
                 text = path.read_text()
             except (OSError, UnicodeError):
                 return None
-            lines = [line for line in text.splitlines() if line.startswith(("OnCalendar=", "On"))]
+            lines = [line.strip() for line in text.splitlines()]
+            lines = [line for line in lines if line.startswith("On")]
             found = (
                 re.fullmatch(r"OnCalendar=\*-\*-\* (\d\d):(\d\d):00", lines[0]) if lines else None
             )
@@ -1014,47 +1045,73 @@ def timer_time(base: Path) -> str | None:
     return None
 
 
-def _timer_text(base: Path) -> str | None:
-    """What the installed timer runs with, as text: its service, or its launchd file."""
+def _plist(path: Path) -> dict[str, Any]:
+    try:
+        found = plistlib.loads(path.read_bytes())
+    except Exception:  # noqa: BLE001 - whatever a damaged one raises, it says nothing
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def _timer_env(base: Path) -> dict[str, str]:
+    """The environment the installed timer's run gets, as written."""
     where = placement(sys.platform, (3, 0), {}, base, Path.home())
     for path in where.files:
-        if path.suffix in (".service", ".plist") and path.exists():
+        if path.suffix == ".plist" and path.exists():
+            env = _plist(path).get("EnvironmentVariables")
+            return {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {}
+        if path.suffix == ".service" and path.exists():
             try:
-                return path.read_text(errors="replace")
+                text = path.read_text(errors="replace")
             except OSError:
-                return None
-    return None
+                return {}
+            env = {}
+            for line in text.splitlines():
+                if line.startswith("Environment="):
+                    word = line.removeprefix("Environment=").strip().strip('"')
+                    key, _, value = word.partition("=")
+                    env[key] = value.replace('\\"', '"').replace("%%", "%")
+            return env
+    return {}
 
 
 def timer_of_another_home(base: Path) -> bool:
     """The timer's name is fixed, so it may run another copy of this tool: stopping or replacing it
-    from here would stop that one's checks, and this one's servers aren't being checked by it."""
-    text = _timer_text(base)
-    return text is not None and str(base) not in text
+    from here would stop that one's checks, and this one's servers aren't being checked by it. With
+    no home to read there's nothing to say it's another's, and nobody should be locked out."""
+    home = _timer_env(base).get("CHECKER_HOME")
+    if not home:
+        return False
+    try:
+        return Path(home).resolve() != base.resolve()
+    except (OSError, ValueError):
+        return True
 
 
 def timer_environment_now(base: Path) -> dict[str, str]:
     """What a scheduled run will have that decides what it can reach: its agent's socket."""
-    text = _timer_text(base) or ""
-    found = re.search(r"SSH_AUTH_SOCK(?:=|</key>\s*<string>)([^\s<\"]+)", text)
-    return {"SSH_AUTH_SOCK": found[1]} if found else {}
+    socket = _timer_env(base).get("SSH_AUTH_SOCK")
+    return {"SSH_AUTH_SOCK": socket} if socket else {}
 
 
 def timer_running() -> bool | None:
     """Whether the timer is switched on (None: can't tell here). Files alone don't say: enabling
     it can fail, and someone can switch it off."""
-    if sys.platform == "darwin":
-        return None
+    command = (
+        ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"]
+        if sys.platform == "darwin"
+        else ["systemctl", "--user", "is-active", f"{UNIT}.timer"]
+    )
     try:
         done = subprocess.run(  # noqa: S603
-            ["systemctl", "--user", "is-active", f"{UNIT}.timer"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
+            command, capture_output=True, text=True, check=False, timeout=10
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
+    if sys.platform == "darwin":
+        if done.returncode == 0:
+            return True
+        return False if done.returncode in _NOT_LOADED else None
     state = done.stdout.strip()
     if state in ("active", "activating"):
         return True
@@ -1063,20 +1120,15 @@ def timer_running() -> bool | None:
 
 def forget_hosts(base: Path, hosts: list[str], identity, recipients: list[str]) -> None:
     """What the last run remembered of hosts whose evidence is all gone: it's derived from that
-    evidence, and it would hide their next run's findings as not new."""
+    evidence, and it would hide their next run's findings as not new. Alerts not yet delivered stay:
+    deleting evidence mustn't also delete the news nobody has had."""
     if not hosts or not (base / STATE_FILE).exists():
         return
     state = load_state(base, identity)
-    if not state:  # unreadable: nothing here to edit, and a run starts it again
-        return
     seen = state.get("hosts")
-    if isinstance(seen, dict):
-        state["hosts"] = {name: value for name, value in seen.items() if name not in hosts}
-    pending = state.get("pending")
-    if isinstance(pending, list):
-        state["pending"] = [
-            line for line in pending if not str(line).startswith(tuple(f"{h}:" for h in hosts))
-        ]
+    if not isinstance(seen, dict) or not any(name in seen for name in hosts):
+        return
+    state["hosts"] = {name: value for name, value in seen.items() if name not in hosts}
     save_state(base, state, recipients)
 
 

@@ -946,7 +946,7 @@ NO_SESSION = (
 def _timer_failed(request, words) -> ActionFailed:
     """This machine's own command's words, on one line, for whoever looks after it."""
     text = " ".join(str(words).split())
-    if "bus" in text.lower() or "XDG_RUNTIME_DIR" in text:
+    if "connect to bus" in text or "D-Bus" in text or "XDG_RUNTIME_DIR" in text:
         text = f"{NO_SESSION} ({text})"
     said = visible(text, 800)
     try:

@@ -2210,7 +2210,22 @@ def _expired_notice(base: Path) -> None:
 
 
 def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> int:
-    """Delete stored evidence (policy §8), after showing what goes."""
+    """Delete stored evidence (policy §8), after showing what goes. Not during a run: it would keep
+    its own view of what's stored, and save it over what this forgets."""
+    from checker import schedule
+
+    if args.dry_run:
+        return _purge(args, ask)
+    try:
+        with schedule.run_lock(home()):
+            return _purge(args, ask)
+    except schedule.Busy:
+        print("checker: `checker run` is in progress: try again when it has finished",
+              file=sys.stderr)  # fmt: skip
+        return 1
+
+
+def _purge(args: argparse.Namespace, ask: Callable[[str], str]) -> int:
     base = home()
     try:
         config = load_config(base)
@@ -2307,7 +2322,7 @@ def _forget_emptied(base: Path, chosen, config) -> None:
 
     emptied = [host for host, what in chosen.baselines.items() if what == "emptied"]
     try:
-        if config.identity_file:
+        if emptied and config.identity_file:
             identity = load_identity(Path(config.identity_file))
             schedule.forget_hosts(base, emptied, identity, config.recipients)
     except Exception as exc:  # noqa: BLE001 - the purge did happen, and a run starts it again

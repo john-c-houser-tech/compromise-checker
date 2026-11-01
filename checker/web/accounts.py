@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import secrets
 from datetime import timedelta
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 
+from checker.web.app import is_local
 from checker.web.models import LoginAttempt, SetupToken
 
 SETUP_LIFETIME = timedelta(hours=1)
@@ -63,6 +66,26 @@ def create_first_account(token: str, username: str, password: str):
 def normal_name(username: str) -> str:
     """As an account name is stored, so what was typed at setup works at login."""
     return get_user_model().normalize_username(username.strip())
+
+
+def client_address(request) -> str:
+    """Whose this request is, for throttling and the record. Behind the proxy on this machine
+    every peer is the proxy, so one person could lock everyone out: there it is the last
+    forwarded address, the one the proxy added itself (earlier ones are whatever the
+    client sent). IPv6 counts by network, since one client can hold a whole /64."""
+    address = request.META.get("REMOTE_ADDR", "")
+    if settings.CHECKER_BEHIND_PROXY and is_local(address):
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "").rpartition(",")[2].strip()
+        address = forwarded or address
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if parsed.version == 4:
+        return str(parsed)
+    if parsed.ipv4_mapped:
+        return str(parsed.ipv4_mapped)
+    return str(ipaddress.ip_network(f"{parsed}/64", strict=False))
 
 
 def _recent():

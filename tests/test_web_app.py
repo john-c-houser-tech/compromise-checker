@@ -63,6 +63,20 @@ def settings_override(_django):
         setattr(settings, name, value)
 
 
+def clear_the_record():
+    """Between tests only: in use, the record can't be emptied."""
+    from django.db import connection
+
+    from checker.web.models import ACTION_RECORD_TRIGGERS
+
+    with connection.cursor() as cursor:
+        cursor.execute("DROP TRIGGER IF EXISTS web_actionrecord_no_update")
+        cursor.execute("DROP TRIGGER IF EXISTS web_actionrecord_no_delete")
+        cursor.execute("DELETE FROM web_actionrecord")
+        for sql in ACTION_RECORD_TRIGGERS:
+            cursor.execute(sql)
+
+
 @pytest.fixture
 def web(_django, home):
     """A clean accounts database, and a browser that checks CSRF as a real one must."""
@@ -73,6 +87,7 @@ def web(_django, home):
 
     for model in (get_user_model(), Session, LoginAttempt, SetupToken):
         model.objects.all().delete()
+    clear_the_record()
     return browser(), home
 
 
@@ -366,7 +381,7 @@ def request_from(peer, forwarded=None):
 
 
 def test_behind_a_proxy_the_address_is_the_one_the_proxy_added(web, settings_override):
-    from checker.web.views import client_address
+    from checker.web.accounts import client_address
 
     settings_override(CHECKER_BEHIND_PROXY=True)
     assert client_address(request_from("127.0.0.1", "198.51.100.9")) == "198.51.100.9"
@@ -378,14 +393,14 @@ def test_behind_a_proxy_the_address_is_the_one_the_proxy_added(web, settings_ove
 
 
 def test_without_a_proxy_a_forwarded_header_means_nothing(web, settings_override):
-    from checker.web.views import client_address
+    from checker.web.accounts import client_address
 
     settings_override(CHECKER_BEHIND_PROXY=False)
     assert client_address(request_from("127.0.0.1", "198.51.100.9")) == "127.0.0.1"
 
 
 def test_ipv6_counts_by_network(web, settings_override):
-    from checker.web.views import client_address
+    from checker.web.accounts import client_address
 
     settings_override(CHECKER_BEHIND_PROXY=False)
     one = client_address(request_from("2001:db8:1:2::1"))
@@ -1626,3 +1641,205 @@ def test_the_screenshots_stop_on_a_real_name():
     )
     with pytest.raises(ValueError, match="real name"):
         screenshots.named("li123-45.members.linode.com", {})
+
+
+# --- Actions and the record -------------------------------------------------------------------
+
+
+def the_record():
+    from checker.web.models import ActionRecord
+
+    return list(ActionRecord.objects.order_by("id").values_list("action", "target", "outcome"))
+
+
+def request_for(user, data=None, address="127.0.0.1"):
+    from django.test import RequestFactory
+
+    request = RequestFactory().post("/x", data or {}, REMOTE_ADDR=address)
+    request.user = user
+    return request
+
+
+def an_action(consequential=False, then=None):
+    from django.http import HttpResponse
+
+    from checker.web.actions import action
+
+    done = []
+
+    @action("did a thing", consequential=consequential, target=lambda request, **kw: "web01")
+    def view(request):
+        done.append(1)
+        if then:
+            then()
+        return HttpResponse("ok")
+
+    return view, done
+
+
+def test_every_route_that_changes_anything_goes_through_the_gate(web, monkeypatch):
+    """Walks the routes: a POST to any of them must be refused unless it's an action or one of
+    the three forms that come before there's anyone to record."""
+    from django.urls import get_resolver
+
+    from checker import web as web_package
+
+    assert web_package is not None
+    client, _ = signed_in(web)
+    forms = {"login", "logout", "setup"}
+    for pattern in get_resolver("checker.web.urls").url_patterns:
+        name = pattern.name
+        if name in forms or getattr(pattern.callback, "checker_action", None):
+            continue
+        path = str(pattern.pattern).replace("<path:name>", "web01").replace("<str:name>", "x")
+        response = client.post(f"/{path}", {"x": "1"})
+        assert response.status_code == 405, name
+
+
+def test_an_action_needs_a_signed_in_post(web):
+    from django.contrib.auth.models import AnonymousUser
+    from django.test import RequestFactory
+
+    view, done = an_action()
+    anonymous = request_for(AnonymousUser())
+    assert view(anonymous).status_code == 302
+    get = RequestFactory().get("/x")
+    get.user = account()
+    assert view(get).status_code == 405
+    assert not done and the_record() == []
+
+
+def test_an_action_is_recorded_from_start_to_finish(web):
+    view, done = an_action()
+    assert view(request_for(account())).status_code == 200
+    assert done == [1]
+    assert the_record() == [("did a thing", "web01", "started"), ("did a thing", "web01", "done")]
+
+
+def test_a_failed_action_says_so_and_names_no_text(web):
+    def boom():
+        raise ValueError("secret text")
+
+    view, _ = an_action(then=boom)
+    with pytest.raises(ValueError):
+        view(request_for(account()))
+    assert the_record()[-1] == ("did a thing", "web01", "failed")
+    from checker.web.models import ActionRecord
+
+    assert ActionRecord.objects.order_by("-id").first().detail == "ValueError"
+
+
+def test_if_it_cant_be_recorded_it_doesnt_happen(web, monkeypatch):
+    from checker.web import actions
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    view, done = an_action()
+    user = account()
+    monkeypatch.setattr(actions.ActionRecord.objects, "create", broken)
+    with pytest.raises(OSError):
+        view(request_for(user))
+    assert not done
+
+
+def test_a_consequential_action_needs_the_password_again(web):
+    view, done = an_action(consequential=True)
+    user = account()
+    assert view(request_for(user)).status_code == 403
+    assert view(request_for(user, {"confirm_password": "wrong"})).status_code == 403
+    assert not done
+    assert view(request_for(user, {"confirm_password": PASSWORD})).status_code == 200
+    assert done == [1]
+    outcomes = [row[2] for row in the_record()]
+    assert outcomes == ["refused", "refused", "started", "done"]
+
+
+def test_guessing_the_confirmation_is_throttled(web):
+    from checker.web.accounts import MAX_FAILURES_FOR_NAME
+
+    view, done = an_action(consequential=True)
+    user = account()
+    for _ in range(MAX_FAILURES_FOR_NAME):
+        view(request_for(user, {"confirm_password": "wrong"}))
+    assert view(request_for(user, {"confirm_password": PASSWORD})).status_code == 403
+    assert not done
+
+
+def test_the_record_cant_be_changed_or_emptied(web):
+    from django.db import DatabaseError, transaction
+
+    from checker.web.models import ActionRecord
+
+    view, _ = an_action()
+    view(request_for(account()))
+    with pytest.raises(DatabaseError), transaction.atomic():
+        ActionRecord.objects.all().update(who="someone else")
+    with pytest.raises(DatabaseError), transaction.atomic():
+        ActionRecord.objects.all().delete()
+    assert ActionRecord.objects.count() == 2
+
+
+def test_views_and_sign_ins_are_recorded(web):
+    client, home = web
+    account()
+    client.post("/login", {"username": "jo", "password": PASSWORD})
+    analysed(home, "b1", 10, CLEAN)
+    client.get("/hosts/web01")
+    client.get("/hosts/web01/evidence")
+    client.post("/logout", {"from": "a form"})
+    names = [(row[0], row[1]) for row in the_record()]
+    assert names == [
+        ("signed in", ""),
+        ("viewed a server's results", "web01"),
+        ("viewed a server's evidence", "web01"),
+        ("signed out", ""),
+    ]
+
+
+def test_a_failed_login_isnt_kept_in_the_permanent_record(web):
+    client, _ = web
+    account()
+    client.post("/login", {"username": "somebodys-password-by-mistake", "password": "no"})
+    assert the_record() == []
+
+
+def test_the_activity_page_lists_the_record_and_needs_a_login(web):
+    from checker.web.models import ActionRecord
+
+    client, _ = web
+    assert client.get("/activity").status_code == 302
+    client, _ = signed_in(web)
+    view, _ = an_action()
+    view(request_for(account_named("other")))
+    text = client.get("/activity").content.decode()
+    assert "did a thing" in text and "web01" in text and "other" in text
+    assert ActionRecord.objects.count() == 2
+
+
+def test_the_record_shows_hostile_text_as_text(web):
+    from django.contrib.auth import get_user_model
+
+    from checker.web.actions import record
+
+    client, _ = signed_in(web)
+    record(request_for(get_user_model().objects.get(username="jo")), "x", HOSTILE, detail=HOSTILE)
+    text = client.get("/activity").content.decode()
+    assert "<script>alert" not in text and BIDI not in text
+
+
+def test_the_record_pages_back(web, settings_override, monkeypatch):
+    from django.contrib.auth import get_user_model
+
+    from checker.web import views
+    from checker.web.actions import record
+
+    monkeypatch.setattr(views, "ACTIVITY_PAGE", 2)
+    client, _ = signed_in(web)
+    user = get_user_model().objects.get(username="jo")
+    for n in range(5):
+        record(request_for(user), f"thing-{n}")
+    text = client.get("/activity").content.decode()
+    assert "thing-4" in text and "thing-1" not in text and "?from=2" in text
+    assert "thing-1" in client.get("/activity", {"from": "2"}).content.decode()
+    assert client.get("/activity", {"from": "x"}).status_code == 200

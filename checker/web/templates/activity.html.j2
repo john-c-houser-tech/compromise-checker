@@ -1,0 +1,19 @@
+{% extends "base.html.j2" %}
+{% block title %}Activity: {{ product_name() }}{% endblock %}
+{% block main %}
+<h1 class="page-title">Activity</h1>
+<p class="note">Who signed in, who looked at which server, and everything done from these pages, newest first. It can't be changed from here. Anyone with full control of this machine could still alter it, so it tells you what happened and isn't protection against that.</p>
+{% if not rows %}<p>Nothing yet.</p>{% else %}
+<div class="record-wrap">
+<table class="record">
+  <thead><tr><th>When</th><th>Who</th><th>What</th><th>On</th><th>Result</th><th>From</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr><td>{{ r.at.isoformat() | when }}</td><td>{{ r.who }}</td><td>{{ r.action }}{% if r.detail %}: {{ r.detail }}{% endif %}</td><td>{{ r.target }}</td><td>{{ r.outcome }}</td><td>{{ r.address }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if older is not none %}<p><a href="?from={{ older }}">Older</a></p>{% endif %}
+{% endif %}
+{% endblock %}

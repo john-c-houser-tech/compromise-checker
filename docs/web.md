@@ -49,11 +49,22 @@ can reach that address, which is why it asks for a login even there.
 
 ## What it keeps
 
-`web.db` in the checker's home, owner-only: accounts with hashed passwords, sessions, and failed
-logins for the last 15 minutes, with their usernames and addresses. No evidence is ever copied
+`web.db` in the checker's home, owner-only: accounts with hashed passwords, sessions, failed
+logins for the last 15 minutes with their usernames and addresses, and the activity record below. No evidence is ever copied
 there. `keys/web-secret.txt` signs sessions; deleting it signs everyone out. Evidence is decrypted
 in memory for each page, with the same key the command line uses, and pages tell browsers not to
 keep them. There is no access log; only errors in the tool itself go to its standard error.
+
+## The activity record
+
+The Activity page lists who signed in and out, who viewed which server's results and evidence, and each
+action taken from these pages, with when and from which address. It's permanent and append-only, in the
+tool's own words, and holds no evidence. It tells you what happened; anyone with full control of this
+machine could still alter it, so it isn't protection against that. If an action can't be recorded, it
+doesn't happen.
+
+Anything that changes what later findings mean, or removes data, asks for your password again, even
+when you're signed in.
 
 ## How it protects you
 

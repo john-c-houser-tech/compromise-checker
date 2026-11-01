@@ -15,6 +15,7 @@
   <nav aria-label="Main">
     <a href="{{ url('fleet') }}">Servers</a>
     <a href="{{ url('threats') }}">Known threats</a>
+    <a href="{{ url('activity') }}">Activity</a>
   </nav>
   <form method="post" action="{{ url('logout') }}">{{ csrf_input }}<button>Sign out</button></form>
   {% endif %}

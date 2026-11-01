@@ -7,6 +7,7 @@ urlpatterns = [
     path("hosts/<path:name>/evidence", views.evidence_page, name="evidence"),
     path("hosts/<path:name>", views.host_page, name="host"),
     path("threats", views.threats_page, name="threats"),
+    path("activity", views.activity_page, name="activity"),
     path("login", views.login_page, name="login"),
     path("logout", views.logout_page, name="logout"),
     path("setup/<str:token>", views.setup_page, name="setup"),

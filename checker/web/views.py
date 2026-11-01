@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import ipaddress
 import sys
 from urllib.parse import urlsplit
 
-from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.password_validation import validate_password
@@ -22,30 +20,12 @@ from checker.fleet import read_evidence, read_fleet, read_host, read_threats
 from checker.inventory import home
 from checker.report import visible
 from checker.web import accounts, wording
-from checker.web.app import HERE, is_local
+from checker.web.actions import record
+from checker.web.app import HERE
+from checker.web.models import ActionRecord
 
 # Where a login may go on to: not a form's address, which would land on an error.
-VIEWABLE = {"fleet", "host", "evidence", "threats"}
-
-
-def client_address(request) -> str:
-    """Whose failed logins these are, for throttling. Behind the proxy on this machine
-    every peer is the proxy, so one person could lock everyone out: there it is the last
-    forwarded address, the one the proxy added itself (earlier ones are whatever the
-    client sent). IPv6 counts by network, since one client can hold a whole /64."""
-    address = request.META.get("REMOTE_ADDR", "")
-    if settings.CHECKER_BEHIND_PROXY and is_local(address):
-        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "").rpartition(",")[2].strip()
-        address = forwarded or address
-    try:
-        parsed = ipaddress.ip_address(address)
-    except ValueError:
-        return address
-    if parsed.version == 4:
-        return str(parsed)
-    if parsed.ipv4_mapped:
-        return str(parsed.ipv4_mapped)
-    return str(ipaddress.ip_network(f"{parsed}/64", strict=False))
+VIEWABLE = {"fleet", "host", "evidence", "threats", "activity"}
 
 
 def _safe_next(request) -> str:
@@ -110,6 +90,7 @@ def setup_page(request, token: str) -> HttpResponse:
                     request, "problem.html.j2", {"title": "This link isn't valid"}, status=404
                 )
             login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+            record(request, "created the first account")
             return HttpResponseRedirect(reverse("fleet"))
     return render(request, "setup.html.j2", {"errors": errors, "username": username})
 
@@ -120,7 +101,7 @@ def login_page(request) -> HttpResponse:
     if request.method == "POST":
         username = accounts.normal_name(request.POST.get("username", ""))[:150]
         password = request.POST.get("password", "")
-        address = client_address(request)
+        address = accounts.client_address(request)
         # One message for all of it: a page mustn't say which usernames exist.
         error = "That username and password didn't work."
         if accounts.throttled(username, address):
@@ -130,6 +111,7 @@ def login_page(request) -> HttpResponse:
             if user is not None:
                 accounts.clear_failures(username, address)
                 login(request, user)
+                record(request, "signed in")
                 return HttpResponseRedirect(_safe_next(request))
             accounts.record_failure(username, address)
     return render(
@@ -142,6 +124,7 @@ def login_page(request) -> HttpResponse:
 
 @require_POST
 def logout_page(request) -> HttpResponse:
+    record(request, "signed out")
     logout(request)
     return HttpResponseRedirect(reverse("login"))
 
@@ -202,6 +185,7 @@ def host_page(request, name: str) -> HttpResponse:
         return _unavailable(request, "A settings file or the evidence key can't be read.")
     if found is None:
         return not_found(request)
+    record(request, "viewed a server's results", name)
     host, assessment, advice, enabled = found
     return render(
         request,
@@ -226,6 +210,7 @@ def evidence_page(request, name: str) -> HttpResponse:
         return _unavailable(request, "A settings file or the evidence key can't be read.")
     if stored is None:
         return not_found(request)
+    record(request, "viewed a server's evidence", name)
     return render(request, "evidence.html.j2", {"host": name, **wording.evidence_details(stored)})
 
 
@@ -240,6 +225,27 @@ def threats_page(request) -> HttpResponse:
         print(f"checker web: can't read the results: {type(exc).__name__}", file=sys.stderr)
         return _unavailable(request, "A settings file or the evidence key can't be read.")
     return render(request, "threats.html.j2", wording.threat_details(stored))
+
+
+ACTIVITY_PAGE = 200
+
+
+@login_required
+@require_GET
+def activity_page(request) -> HttpResponse:
+    try:
+        start = max(0, int(request.GET.get("from", 0)))
+    except ValueError:
+        start = 0
+    rows = list(ActionRecord.objects.order_by("-id")[start : start + ACTIVITY_PAGE + 1])
+    return render(
+        request,
+        "activity.html.j2",
+        {
+            "rows": rows[:ACTIVITY_PAGE],
+            "older": start + ACTIVITY_PAGE if len(rows) > ACTIVITY_PAGE else None,
+        },
+    )
 
 
 def _unavailable(request, detail: str) -> HttpResponse:

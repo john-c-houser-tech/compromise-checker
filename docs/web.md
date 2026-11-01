@@ -65,6 +65,22 @@ can reach that address, which is why it asks for a login even there.
   It refuses to listen beyond this machine without TLS, and refuses an http address for another
   machine, since logins and evidence would cross the network unencrypted.
 
+**Decide what's normal** on a server's page is for the two choices that can hide a real change, so each
+shows what it would hide first, is worked out again when you confirm it, and takes your password, and a
+code if two-factor is on:
+
+- **Accept how it is now.** The latest check becomes the baseline, with your reason, so what changed since
+  the old one stops being reported as changed. It has to be the check you were shown: a newer one means
+  looking again.
+- **The AI advisor's whitelist rules.** A rule hides findings from then on. Each shows what it would hide
+  in the last 30 days' results, on every server it would reach. One that would hide a critical finding,
+  is for a server assessed High or Critical, or has expired can't be approved. An approved rule goes in
+  the same file you'd edit by hand ([whitelists](whitelists.md)), in your name, with what's already there
+  left as it was; if the tool can't add to that file safely, it says so and changes nothing. Refusing one
+  takes it out of the proposals. If the advisor is on, you can ask it for rules from there.
+
+Decisions take effect the next time results are worked out.
+
 ## What it keeps
 
 `web.db` in the checker's home, owner-only: accounts with hashed passwords, two-factor secrets and

@@ -1,0 +1,86 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}Decide about {{ name }}: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('host', name=name) }}">Back to {{ name }}</a></p>
+<h1 class="page-title">Decide what's normal on {{ name }}</h1>
+{% if worried %}<p class="error" role="alert">This server is assessed as worrying. Don't accept anything here until you know why: both of these can hide what an intruder did.</p>{% endif %}
+
+<h2>Accept how it is now</h2>
+{% if not choice %}
+<p>There's no check to accept yet.</p>
+{% else %}
+<p>Each check compares a server with a baseline, an earlier state you've said is right. Accepting makes the latest check the new baseline, so <strong>what changed since then stops being reported as changed.</strong> Only do this if you know those changes were yours.</p>
+{% if choice.current == choice.bundle %}
+<p>The latest check already is the baseline.</p>
+{% elif not choice.current %}
+<p>There's no baseline yet: the next time its results are worked out, the first check becomes it.</p>
+{% elif choice.problem %}
+<p class="error">{{ choice.problem }}</p>
+{% else %}
+{% if not choice.changes %}<p>Nothing has changed since the current baseline.</p>{% else %}
+<h3>What would stop being reported</h3>
+{% for change in choice.changes %}
+<details>
+  <summary>{{ change.name }}: {{ change.counts.added }} added, {{ change.counts.removed }} removed, {{ change.counts.changed }} changed</summary>
+  <div class="from-server">
+  {% for item in change.added %}<p>+ {{ item }}</p>{% endfor %}
+  {% for item in change.removed %}<p>- {{ item }}</p>{% endfor %}
+  {% for item in change.changed %}<p>~ {{ item }}</p>{% endfor %}
+  </div>
+  {% for note in change.notes %}<p class="note">Not comparable: {{ note }}</p>{% endfor %}
+</details>
+{% endfor %}
+{% endif %}
+<form method="post" action="{{ url('baseline_accept') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="host" value="{{ name }}">
+  <input type="hidden" name="bundle" value="{{ choice.bundle }}">
+  <label>Why these changes are expected <input name="reason" required></label>
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Accept this as the baseline</button>
+</form>
+{% endif %}
+{% endif %}
+
+<h2>Rules the AI advisor proposed</h2>
+<p class="note">These come from an AI model that read this server's logs, and text an intruder wrote could have steered it. A rule hides findings from then on, so each shows what it would hide.</p>
+{% if advisor_on %}
+<form method="post" action="{{ url('rules_ask') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="host" value="{{ name }}">
+  <button>Ask the AI advisor for rules</button>
+</form>
+{% endif %}
+{% if not rules %}<p>None waiting.</p>{% endif %}
+{% for rule in rules %}
+<section class="finding">
+  <h3>{{ rule.id }}</h3>
+  {% if rule.rule.reason %}<p>The advisor's reason: <span class="from-server">{{ rule.rule.reason }}</span></p>{% endif %}
+  {% if rule.rule.match %}<p>Matches: <span class="from-server">{{ rule.rule.match }}</span></p>{% endif %}
+  {% if rule.rule.expires %}<p>Expires: {{ rule.rule.expires | string }}. Applies to: {{ rule.hosts | join(", ") if rule.hosts else name }}.</p>{% endif %}
+  {% if rule.hides %}
+  <p><strong>It would hide:</strong></p>
+  <div class="from-server">{% for line in rule.hides %}<p>{{ line }}</p>{% endfor %}</div>
+  {% elif not rule.problem %}<p class="note">It wouldn't hide anything in the last 30 days' results.</p>{% endif %}
+  {% if rule.reveals %}<p><strong>It would bring back:</strong></p><div class="from-server">{% for line in rule.reveals %}<p>{{ line }}</p>{% endfor %}</div>{% endif %}
+  {% if rule.before and rule.after and rule.before != rule.after %}<p>{{ name }}'s estimate would go from {{ "%.0f" | format(rule.before[0] * 100) }}% {{ rule.before[1] }} to {{ "%.0f" | format(rule.after[0] * 100) }}% {{ rule.after[1] }}.</p>{% endif %}
+  {% if rule.problem %}<p class="error">It can't be approved: {{ rule.problem }}.</p>{% else %}
+  <form method="post" action="{{ url('rule_approve') }}">
+    {{ csrf_input }}
+    <input type="hidden" name="host" value="{{ name }}"><input type="hidden" name="file" value="{{ rule.file }}"><input type="hidden" name="rule" value="{{ rule.id }}"><input type="hidden" name="digest" value="{{ rule.digest }}">
+    {{ parts.confirm(with_code=code_needed) }}
+    <button>Approve this rule, in my name</button>
+  </form>
+  {% endif %}
+  {% if rule.digest %}
+  <form method="post" action="{{ url('rule_refuse') }}">
+    {{ csrf_input }}
+    <input type="hidden" name="host" value="{{ name }}"><input type="hidden" name="file" value="{{ rule.file }}"><input type="hidden" name="rule" value="{{ rule.id }}"><input type="hidden" name="digest" value="{{ rule.digest }}">
+    <button>Refuse it</button>
+  </form>
+  {% endif %}
+</section>
+{% endfor %}
+<p class="note">Decisions take effect the next time results are worked out: <a href="{{ url('host', name=name) }}">do that from the server's page</a>.</p>
+{% endblock %}

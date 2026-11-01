@@ -30,6 +30,11 @@ POLL_SECONDS = 0.25
 RESTARTED = "the server restarted, so this was stopped"
 RESTARTED_ANALYSIS = "the server restarted during this, so how it ended isn't known"
 TOO_LONG = "ran too long, so it was stopped"
+FINISHED = {
+    "check": "finished a check",
+    "analysis": "finished an analysis",
+    "advice": "the AI advisor's request ended",
+}
 
 _running: dict[int, _Child] = {}
 _output: dict[int, _Output] = {}
@@ -73,6 +78,8 @@ def _command(kind: str, hosts: list[str]) -> list[str]:
     checker = [sys.executable, "-P", "-m", "checker"]
     if kind == "analysis":
         return [*checker, "analyze", "--", *hosts]
+    if kind == "advice":
+        return [*checker, "advise", "--role", "whitelist", "--", *hosts]
     return [*checker, "run", "--unattended", "--from-web-page", "--", *hosts]
 
 
@@ -89,8 +96,8 @@ def start(kind: str, hosts: list[str], who: str, address: str, passwords=None) -
             address=address[:64],
             started_at=timezone.now(),
         )
-        # An analysis prints findings, which aren't for keeping: only its problems are read.
-        reading_all = kind != "analysis"
+        # The others print findings, which aren't for keeping: only their problems are read.
+        reading_all = kind == "check"
         try:
             process = subprocess.Popen(  # noqa: S603 - this tool, and names from the inventory
                 _command(kind, hosts),
@@ -120,8 +127,12 @@ def start(kind: str, hosts: list[str], who: str, address: str, passwords=None) -
 
 
 def _hand_over(child: _Child) -> None:
-    """Then the pipe stays open: its closing is how the child knows this server has gone."""
+    """Then a check's pipe stays open: its closing is how it knows this server has gone. The others
+    don't read it, and anything that asked them a question mustn't wait for an answer."""
     passwords, child.passwords = child.passwords, None
+    if passwords is None:
+        _close_quietly(child.process.stdin)
+        return
     try:
         child.process.stdin.write(json.dumps(passwords or {}).encode() + b"\n")
         child.process.stdin.flush()
@@ -224,7 +235,7 @@ def _write_down_endings() -> None:
                     at=run.finished_at,
                     who=run.who,
                     address=run.address,
-                    action=f"finished {'an analysis' if run.kind == 'analysis' else 'a check'}",
+                    action=FINISHED[run.kind],
                     target=", ".join(json.loads(run.hosts))[:200],
                     outcome=words[:32],
                     detail="",
@@ -244,7 +255,7 @@ def ending_words(kind: str, status: int) -> str:
 
     if status < 0:
         return "ended unexpectedly"
-    if kind == "analysis":
+    if kind != "check":
         return "finished" if status == 0 else "finished with problems"
     if status == schedule.EXIT_BUSY:
         return "another check was running"
@@ -267,7 +278,7 @@ def is_running(run_id: int) -> bool:
 
 
 def _restarted_words(kind: str) -> str:
-    return RESTARTED_ANALYSIS if kind == "analysis" else RESTARTED
+    return RESTARTED if kind == "check" else RESTARTED_ANALYSIS
 
 
 def state_of(run: CheckRun) -> str:

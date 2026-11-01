@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, login, logout
@@ -26,7 +26,7 @@ from checker.evidence import EvidenceError
 from checker.fleet import read_evidence, read_fleet, read_host, read_threats
 from checker.inventory import home, load_inventory
 from checker.report import visible
-from checker.web import accounts, runs, two_factor, wording
+from checker.web import accounts, decide, runs, two_factor, wording
 from checker.web.actions import ActionFailed, action, record, record_if_possible
 from checker.web.app import HERE
 from checker.web.middleware import before_second_step, setting_it_up
@@ -41,6 +41,7 @@ VIEWABLE = {
     "activity",
     "checks",
     "check",
+    "decide",
     "two_factor_manage",
 }
 
@@ -493,7 +494,7 @@ def checks_page(request) -> HttpResponse:
 def _run_row(run) -> dict:
     return {
         "id": run.id,
-        "kind": "Analysis" if run.kind == "analysis" else "Check",
+        "kind": {"analysis": "Analysis", "advice": "AI advice"}.get(run.kind, "Check"),
         "hosts": ", ".join(json.loads(run.hosts)),
         "who": run.who,
         "started": run.started_at,
@@ -602,6 +603,111 @@ def check_stop(request, run_id: int) -> HttpResponse:
     if run_id >= 2**63 or not runs.stop(run_id):
         raise ActionFailed("That check isn't running any more.")
     return HttpResponseRedirect(reverse("check", kwargs={"run_id": run_id}))
+
+
+def _known_host(name: str) -> bool:
+    return bool(name) and any(host.name == name for host in load_inventory().hosts)
+
+
+def _posted_host(request, **kwargs) -> str:
+    return request.POST.get("host", "")
+
+
+def _posted_rule(request, **kwargs) -> str:
+    return f"{request.POST.get('host', '')}: {request.POST.get('rule', '')}"
+
+
+@login_required
+@require_GET
+def decide_page(request) -> HttpResponse:
+    """Everything shown here is what a decision would do, worked out without changing anything."""
+    name = request.GET.get("host", "")
+    try:
+        if not _known_host(name):
+            return not_found(request)
+        found = read_host(home(), name)
+        choice = decide.baseline_choice(home(), name)
+        owner = request.user.get_username()
+        rules = [decide.preview(home(), name, one, owner) for one in decide.proposals(home(), name)]
+        enabled = found[3] if found else False
+    except EvidenceError as exc:
+        return _unavailable(request, str(exc))
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't read the results: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "A settings file or the evidence key can't be read.")
+    record_if_possible(request, "viewed what could be decided about a server", name)
+    return render(
+        request,
+        "decide.html.j2",
+        {
+            "name": name,
+            "row": wording.row(found[0]) if found else None,
+            "choice": choice,
+            "rules": rules,
+            "advisor_on": enabled,
+            "code_needed": two_factor.code_needed(request),
+            "worried": bool(found) and found[0].band in decide.TOO_WORRYING,
+        },
+    )
+
+
+def _back_to_decide(name: str) -> HttpResponse:
+    return HttpResponseRedirect(f"{reverse('decide')}?{urlencode({'host': name})}")
+
+
+@action("accepted a baseline", consequential=True, target=_posted_host)
+def baseline_accept(request) -> HttpResponse:
+    name = _posted_host(request)
+    try:
+        if not _known_host(name):
+            raise ActionFailed("That server isn't in the list of servers.")
+        decide.accept_baseline(
+            home(),
+            name,
+            request.POST.get("bundle", ""),
+            request.POST.get("reason", ""),
+            request.user.get_username(),
+        )
+    except EvidenceError as exc:
+        raise ActionFailed(str(visible(str(exc), 300))) from None
+    return _back_to_decide(name)
+
+
+def _rule_from_form(request) -> tuple[str, str, str, str]:
+    post = request.POST
+    return post.get("host", ""), post.get("file", ""), post.get("rule", ""), post.get("digest", "")
+
+
+@action("approved a whitelist rule", consequential=True, target=_posted_rule)
+def rule_approve(request) -> HttpResponse:
+    name, file, rule, digest = _rule_from_form(request)
+    try:
+        if not _known_host(name):
+            raise ActionFailed("That server isn't in the list of servers.")
+        decide.approve(home(), name, file, rule, digest, request.user.get_username())
+    except ValueError as exc:
+        raise ActionFailed(str(visible(str(exc), 600))) from None
+    return _back_to_decide(name)
+
+
+@action("refused a whitelist rule", target=_posted_rule)
+def rule_refuse(request) -> HttpResponse:
+    name, file, rule, digest = _rule_from_form(request)
+    try:
+        if not _known_host(name):
+            raise ActionFailed("That server isn't in the list of servers.")
+        decide.refuse(home(), name, file, rule, digest)
+    except ValueError as exc:
+        raise ActionFailed(str(exc)) from None
+    return _back_to_decide(name)
+
+
+@action("asked the AI advisor for rules", target=_posted_host)
+def rules_ask(request) -> HttpResponse:
+    name = _posted_host(request)
+    if not _known_host(name):
+        raise ActionFailed("That server isn't in the list of servers.")
+    return _start_run(request, "advice", [name])
 
 
 ACTIVITY_PAGE = 200

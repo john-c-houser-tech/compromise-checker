@@ -12,6 +12,7 @@
     {{ notes(row) }}
     {% if can_check %}
     <p><a href="{{ url('check_new') }}?host={{ row.host.host | urlencode }}">Check this server now</a></p>
+    <p><a href="{{ url('decide') }}?host={{ row.host.host | urlencode }}">Decide what's normal here</a></p>
     <form method="post" action="{{ url('analyze_start') }}">
       {{ csrf_input }}
       <input type="hidden" name="host" value="{{ row.host.host }}">

@@ -4210,3 +4210,328 @@ def test_relative_paths_mean_what_they_mean_on_the_command_line(tmp_path):
     )  # fmt: skip
     output = run.stdout + run.stderr
     assert "not set up yet" not in output and "can't be read" not in output, output
+
+
+# --- Decisions ---------------------------------------------------------------------------------
+
+
+def findings_of(assessment):
+    return [f for f in assessment["findings"] if not f.get("suppressed_by")]
+
+
+def proposal_rule(rule_id="routine-thing", check="ssh.authorized_keys", expires=None, **extra):
+    from datetime import date
+
+    return {
+        "id": rule_id,
+        "match": {"check": check},
+        "reason": "routine here",
+        "owner": "",
+        "expires": expires or date(2099, 1, 1),
+        "broad": True,
+        **extra,
+    }
+
+
+def write_proposals(home_path, host, rules, layer="hosts", name=None, stem="20261031T120000Z"):
+    import yaml
+
+    folder = home_path / "proposals"
+    folder.mkdir(exist_ok=True)
+    lines = ["rules:"]
+    for rule in rules:
+        lines += ["", f"  # for whitelist/{layer}/{name or host}.yaml"]
+        body = yaml.safe_dump([rule], sort_keys=False)
+        lines += ["  " + line for line in body.rstrip().split("\n")]
+    path = folder / f"{host}-{stem}.yaml"
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+@pytest.fixture
+def two_checks(web, inventory):
+    """A signed-in browser, and a server with a baseline and a later check that differs."""
+    client, home = signed_in(web)
+    inventory(key_host())
+    analysed(home, "b1", 10, CLEAN)
+    second = analysed(home, "b2", 20, host_records(accounts=(("root", 0), ("newuser", 1000))))
+    return client, home, second
+
+
+def test_accepting_shows_what_it_hides_then_needs_a_reason_and_the_password(two_checks):
+    from checker.baseline import current_baseline
+    from checker.evidence import Store, database_file
+
+    client, home, _ = two_checks
+    text = client.get("/decide", {"host": "web01"}).content.decode()
+    assert "stops being reported as changed" in text and "newuser" in text
+    form = {"host": "web01", "bundle": "b2", "reason": "our new deploy account"}
+    assert client.post("/decide/baseline", form).status_code == 403
+    store = Store(database_file(home[0]), read_only=True)
+    assert current_baseline(store, "web01")["bundle_id"] == "b1"
+    store.close()
+    form["confirm_password"] = PASSWORD
+    assert client.post("/decide/baseline", {**form, "reason": " "}).status_code == 400
+    assert client.post("/decide/baseline", {**form, "bundle": "b1"}).status_code == 400
+    assert client.post("/decide/baseline", form).status_code == 302
+    store = Store(database_file(home[0]), read_only=True)
+    now = current_baseline(store, "web01")
+    store.close()
+    assert now["bundle_id"] == "b2" and now["how"] == "accepted"
+    assert ("accepted a baseline", "web01", "done") in the_record()
+    assert "already is the baseline" in client.get("/decide", {"host": "web01"}).content.decode()
+
+
+def test_only_servers_in_the_list_can_be_decided_about(web, inventory):
+    client, _ = signed_in(web)
+    inventory(key_host())
+    assert client.get("/decide", {"host": "nope"}).status_code == 404
+    assert client.get("/decide").status_code == 404
+    form = {"host": "nope", "bundle": "b", "reason": "r", "confirm_password": PASSWORD}
+    assert client.post("/decide/baseline", form).status_code == 400
+    assert client.post("/decide/ask", {"host": "nope"}).status_code == 400
+    form = {"host": "nope", "file": "f", "rule": "r", "digest": "d", "confirm_password": PASSWORD}
+    assert client.post("/decide/approve", form).status_code == 400
+    assert client.post("/decide/refuse", form).status_code == 400
+
+
+def test_looking_at_a_decision_changes_nothing_but_the_record(two_checks):
+    from checker.evidence import Store, database_file
+
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule()])
+
+    def everything():
+        store = Store(database_file(home[0]), read_only=True)
+        try:
+            return [dict(row) for row in store.bundles()], list(
+                store._db.execute("SELECT * FROM baselines").fetchall()
+            )
+        finally:
+            store.close()
+
+    files = sorted(str(p) for p in home[0].rglob("*") if p.is_file() and p.suffix != ".db")
+    before, web_before = everything(), everything_but_the_record()
+    assert client.get("/decide", {"host": "web01"}).status_code == 200
+    assert [dict(r) for r in before[0]] == [dict(r) for r in everything()[0]]
+    assert web_before == everything_but_the_record()
+    assert files == sorted(str(p) for p in home[0].rglob("*") if p.is_file() and p.suffix != ".db")
+
+
+def a_routine_finding(second):
+    found = [f for f in findings_of(second) if f["band"].lower() not in ("critical",)]
+    assert found
+    return found[0]
+
+
+def rule_form(client, home_path, host="web01"):
+    from checker.web import decide
+
+    [proposed] = decide.proposals(home_path, host)
+    return {
+        "host": host,
+        "file": proposed.file,
+        "rule": proposed.id,
+        "digest": proposed.digest,
+    }
+
+
+def test_a_rule_shows_what_it_hides_and_goes_in_only_with_the_password(two_checks):
+    from checker.whitelist import read_layer
+
+    client, home, second = two_checks
+    finding = a_routine_finding(second)
+    write_proposals(home[0], "web01", [proposal_rule(check=finding["check"])])
+    text = client.get("/decide", {"host": "web01"}).content.decode()
+    assert "It would hide" in text and finding["check"] in text
+    form = rule_form(client, home[0])
+    assert client.post("/decide/approve", form).status_code == 403
+    layer = home[0] / "whitelist" / "hosts" / "web01.yaml"
+    assert not layer.exists()
+    response = client.post("/decide/approve", {**form, "confirm_password": PASSWORD})
+    assert response.status_code == 302
+    [rule] = read_layer(layer).rules
+    assert rule.owner == "jo" and rule.id == "routine-thing"
+    assert not list((home[0] / "proposals").glob("web01-*"))
+    assert ("approved a whitelist rule", "web01: routine-thing", "done") in the_record()
+    assert "None waiting" in client.get("/decide", {"host": "web01"}).content.decode()
+    assert oct(layer.stat().st_mode)[-3:] == "600"
+
+
+def test_what_a_person_wrote_in_a_layer_file_stays_as_it_was(two_checks):
+    from checker.web.decide import _appended
+
+    assert _appended("", {"id": "a"}, "note") == "rules:\n  # note\n  - id: a\n"
+    kept = "# my notes\nprofiles: []\nrules:\n- id: mine # why\n  owner: me\n"
+    out = _appended(kept, {"id": "a"}, "note")
+    assert out.startswith(kept) and out.endswith("# note\n- id: a\n")
+    assert _appended("profiles: []\n", {"id": "a"}, "n").startswith("profiles: []\nrules:\n")
+    with pytest.raises(ValueError, match="plain list"):
+        _appended("rules: []\n", {"id": "a"}, "n")
+    with pytest.raises(ValueError, match="comes after"):
+        _appended("rules:\n- id: x\nprofiles: []\n", {"id": "a"}, "n")
+
+
+def test_a_file_that_cant_be_added_to_says_to_edit_it_by_hand(two_checks):
+    client, home, second = two_checks
+    layer = home[0] / "whitelist" / "hosts" / "web01.yaml"
+    layer.parent.mkdir(parents=True)
+    layer.write_text("rules: []\n")
+    write_proposals(home[0], "web01", [proposal_rule(check=a_routine_finding(second)["check"])])
+    form = {**rule_form(client, home[0]), "confirm_password": PASSWORD}
+    response = client.post("/decide/approve", form)
+    assert response.status_code == 400 and "by hand" in response.content.decode()
+    assert layer.read_text() == "rules: []\n"
+    assert list((home[0] / "proposals").glob("web01-*"))
+
+
+def test_a_rule_changed_since_it_was_shown_isnt_approved(two_checks):
+    client, home, _ = two_checks
+    path = write_proposals(home[0], "web01", [proposal_rule()])
+    form = {**rule_form(client, home[0]), "confirm_password": PASSWORD}
+    path.write_text(path.read_text().replace("ssh.authorized_keys", "account.uid0"))
+    response = client.post("/decide/approve", form)
+    assert response.status_code == 400 and "changed or gone" in response.content.decode()
+    assert not (home[0] / "whitelist" / "hosts" / "web01.yaml").exists()
+
+
+def test_refusing_takes_out_only_that_rule_and_is_recorded(two_checks):
+    from checker.web import decide
+
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule("one"), proposal_rule("two")])
+    [first, second] = decide.proposals(home[0], "web01")
+    form = {"host": "web01", "file": first.file, "rule": first.id, "digest": first.digest}
+    assert client.post("/decide/refuse", form).status_code == 302
+    assert [p.id for p in decide.proposals(home[0], "web01")] == ["two"]
+    assert client.post("/decide/refuse", form).status_code == 400
+    assert ("refused a whitelist rule", "web01: one", "done") in the_record()
+    left = decide.proposals(home[0], "web01")[0]
+    form = {"host": "web01", "file": left.file, "rule": left.id, "digest": left.digest}
+    assert client.post("/decide/refuse", form).status_code == 302
+    assert not list((home[0] / "proposals").glob("web01-*"))
+    assert not (home[0] / "whitelist").exists()
+
+
+def test_a_rule_that_would_hide_a_critical_finding_cant_be_approved(web, inventory):
+    client, home = signed_in(web)
+    inventory(key_host())
+    analysed(home, "b1", 10, CLEAN)
+    second = analysed(home, "b2", 20, ROOTED)
+    found = next(f for f in second["findings"] if f["band"].lower() == "critical")
+    write_proposals(home[0], "web01", [proposal_rule(check=found["check"])])
+    text = client.get("/decide", {"host": "web01"}).content.decode()
+    assert "can&#39;t be approved" in text or "t be approved" in text
+    assert "Approve this rule" not in text
+    assert "worrying" in text
+    form = {**rule_form(client, home[0]), "confirm_password": PASSWORD}
+    assert client.post("/decide/approve", form).status_code == 400
+    assert not (home[0] / "whitelist" / "hosts" / "web01.yaml").exists()
+
+
+def test_an_expired_or_invalid_rule_cant_be_approved(two_checks):
+    from datetime import date
+
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule("old", expires=date(2020, 1, 1))])
+    assert "passed its expiry" in client.get("/decide", {"host": "web01"}).content.decode()
+    write_proposals(home[0], "web01", [proposal_rule("BAD ID!")], stem="20261031T120001Z")
+    text = client.get("/decide", {"host": "web01"}).content.decode()
+    assert "isn" in text and "valid rule" in text
+
+
+def test_a_damaged_proposal_file_doesnt_stop_the_page(two_checks):
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule()])
+    (home[0] / "proposals" / "web01-20261031T120002Z.yaml").write_text("rules: [unclosed\n")
+    response = client.get("/decide", {"host": "web01"})
+    assert (
+        response.status_code == 200
+        and "can&#39;t be read" in response.content.decode()
+        or ("be read" in response.content.decode())
+    )
+
+
+def test_another_servers_proposals_arent_this_ones(two_checks):
+    from checker.web import decide
+
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01-2", [proposal_rule("other")], stem="20261031T120000Z")
+    assert decide.proposals(home[0], "web01") == []
+    assert "None waiting" in client.get("/decide", {"host": "web01"}).content.decode()
+
+
+def test_a_rule_for_a_group_shows_every_server_and_goes_in_the_groups_file(web, inventory):
+    from checker.inventory import Host
+    from checker.whitelist import read_layer
+
+    client, home = signed_in(web)
+    inventory(
+        Host(name="web01", address="192.0.2.1", user="u", auth="agent", group="web"),
+        Host(name="web02", address="192.0.2.2", user="u", auth="agent", group="web"),
+    )
+    analysed(home, "b1", 10, CLEAN)
+    second = analysed(home, "b2", 20, host_records(accounts=(("root", 0), ("newuser", 1000))))
+    write_proposals(
+        home[0], "web01", [proposal_rule(check=a_routine_finding(second)["check"])],
+        layer="groups", name="web",
+    )  # fmt: skip
+    text = client.get("/decide", {"host": "web01"}).content.decode()
+    assert "web01, web02" in text
+    form = {**rule_form(client, home[0]), "confirm_password": PASSWORD}
+    assert client.post("/decide/approve", form).status_code == 302
+    assert read_layer(home[0] / "whitelist" / "groups" / "web.yaml").rules[0].owner == "jo"
+
+
+def test_a_rule_for_a_group_on_a_server_with_none_says_so(two_checks):
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule()], layer="groups", name="web")
+    assert "for a group" in client.get("/decide", {"host": "web01"}).content.decode()
+
+
+def test_hostile_text_in_a_proposal_is_only_text(two_checks):
+    client, home, _ = two_checks
+    write_proposals(home[0], "web01", [proposal_rule(reason=HOSTILE)])
+    text = client.get("/decide", {"host": "web01"}).content.decode()
+    assert "<script>alert" not in text and BIDI not in text
+
+
+def test_the_advisor_is_only_asked_when_it_is_on(two_checks, child, agent):
+    from checker.evidence import load_config
+    from checker.settings import change
+
+    client, home, _ = two_checks
+    assert "Ask the AI advisor" not in client.get("/decide", {"host": "web01"}).content.decode()
+    _, seen = child
+    assert client.post("/decide/ask", {"host": "web01"}).status_code == 302
+    run = finished()
+    assert seen == {"kind": "advice", "hosts": ["web01"]} and run.kind == "advice"
+    assert ("the AI advisor's request ended", "web01", "finished") in the_record()
+    assert load_config(home[0]).advisor.enabled is False and change is not None
+
+
+def test_asking_the_advisor_runs_its_real_command():
+    from checker.web.runs import _command
+
+    assert _command("advice", ["web01"])[3:] == [
+        "checker", "advise", "--role", "whitelist", "--", "web01",
+    ]  # fmt: skip
+
+
+def test_only_a_check_keeps_its_pipe_open(web, inventory, child, agent):
+    programs, _ = child
+    programs["code"] = "import sys; print('saw', repr(sys.stdin.read()), file=sys.stderr)"
+    client, _ = signed_in(web)
+    inventory(key_host())
+    location = client.post("/decide/ask", {"host": "web01"})["Location"]
+    finished()
+    assert "saw" in client.get(location).content.decode()  # it didn't wait for an answer
+
+
+def test_a_consequential_decision_takes_a_code_too_when_two_factor_is_on(web, inventory):
+    client, user, device = verified_client(web)
+    inventory(key_host())
+    response = client.get("/decide", {"host": "web01"})
+    assert response.status_code == 200
+    form = {"host": "web01", "bundle": "b", "reason": "r", "confirm_password": PASSWORD}
+    assert client.post("/decide/baseline", form).status_code == 403

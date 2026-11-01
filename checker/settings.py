@@ -425,15 +425,14 @@ def remove_host(home: Path, name: str) -> None:
         before = path.read_text(encoding="utf-8")
         store = Store(database_file(home))
         try:
-            write = lambda: save_inventory(inventory, path)  # noqa: E731
-            undo = lambda: atomic_write(path, before)  # noqa: E731
-            if rule is None:
-                store.record_config_change(f"hosts.{name}", settings, None, write, undo)
-            else:  # its settings first, and the change itself with the last line of the record
-                store.record_config_change(
-                    f"hosts.{name}", settings, None, lambda: None, lambda: None
-                )
-                store.record_config_change(f"hosts.{name}.packs", rule, None, write, undo)
+            changes = [(f"hosts.{name}", settings, None)]
+            if rule is not None:
+                changes.append((f"hosts.{name}.packs", rule, None))
+            store.record_config_changes(
+                changes,
+                lambda: save_inventory(inventory, path),
+                lambda: atomic_write(path, before),
+            )
         finally:
             store.close()
 

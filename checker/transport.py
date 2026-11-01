@@ -586,16 +586,26 @@ async def fetch_host_key(host: Host, known_hosts: Path | None = None) -> HostKey
     )
 
 
-def trust_host_key(host: Host, check: HostKeyCheck, known_hosts: Path | None = None) -> None:
+class TrustedKeysChanged(TransportError):
+    """The trusted keys aren't what the decision to trust this one was based on."""
+
+
+def trust_host_key(
+    host: Host, check: HostKeyCheck, known_hosts: Path | None = None, unchanged: bool = False
+) -> None:
     """Record `check.key` as the only trusted key for this host. The whole
     read-modify-write holds a lock, so concurrent `trust` commands can't
-    lose each other's entries."""
+    lose each other's entries. `unchanged` also refuses if the trusted keys
+    aren't those `check` saw: two people confirming at once mustn't replace
+    each other's key without anyone having agreed to a replacement."""
     if UNSAFE_IN_ADDRESS.search(host.address):
         raise TransportError(f"{host.name}: its address can't go in the file of trusted keys")
     path = known_hosts or known_hosts_file()
     name = _known_hosts_name(host)
     entry = check.key.export_public_key("openssh").decode("ascii").split()
     with locked(path):
+        if unchanged and set(trusted_fingerprints(host, path)) != set(check.known_fingerprints):
+            raise TrustedKeysChanged(f"{host.name}: its trusted keys changed meanwhile")
         kept = [line for line in _read_known(path) if line.split()[:1] != [name]]
         kept.append(f"{name} {entry[0]} {entry[1]}")
         atomic_write(path, "\n".join(kept) + "\n")

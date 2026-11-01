@@ -538,7 +538,10 @@ def _server_page(
     offer=None,
     status=200,
 ):
-    host = load_inventory().get(name)
+    try:
+        host = load_inventory().get(name)
+    except KeyError:  # removed meanwhile: asking a server for its key takes a while
+        raise ActionFailed(GONE) from None
     try:
         earlier = manage.has_results(home(), name)
     except Exception as exc:  # noqa: BLE001 - only a link depends on it

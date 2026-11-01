@@ -5666,3 +5666,101 @@ def test_a_key_file_is_read_no_further_than_a_key_could_be(tmp_path):
     assert read_key_file(str(path)).get_fingerprint("sha256") == key.get_fingerprint("sha256")
     with pytest.raises(asyncssh.KeyImportError):
         read_key_file("/proc/self/status")
+
+
+def test_two_confirmations_at_once_can_t_replace_a_key_nobody_agreed_to(web, unconfirmed, offered):
+    """Both saw an untrusted address. The second would overwrite the first with no tick."""
+    from checker.transport import trust_host_key
+    from checker.web import manage
+
+    client, _ = signed_in(web)
+    first = asyncssh.generate_private_key("ssh-ed25519")
+    host = hosts_now()["web01"]
+    real = manage.trust_host_key
+
+    def someone_else_first(host_, check, **kwargs):
+        from checker.transport import HostKeyCheck
+
+        trust_host_key(
+            host_,
+            HostKeyCheck(first.convert_to_public(), first.get_fingerprint("sha256"), "ssh-ed25519"),
+        )
+        real(host_, check, **kwargs)
+
+    manage.trust_host_key = someone_else_first
+    try:
+        response = client.post("/manage/server/trust-key", trust_form(printed(offered["key"])))
+    finally:
+        manage.trust_host_key = real
+    assert response.status_code == 400 and "just now" in said(response)
+    assert trusted_now(host.name) == [first.get_fingerprint("sha256")]
+
+
+def test_a_failed_removal_leaves_nothing_on_the_record(web, unconfirmed, monkeypatch):
+    from checker.evidence import Store, database_file
+    from checker.inventory import Host
+
+    client, home = signed_in(web)
+    unconfirmed(Host(name="web01", address="192.0.2.1", user="scan", packs="none"))
+    store = Store(database_file(home[0]))
+    try:
+        before = len(store.config_changes())
+    finally:
+        store.close()
+
+    def full_disk(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    form = {"host": "web01", "confirm_password": PASSWORD}
+    with monkeypatch.context() as patched:  # undo() would undo the test home's setting too
+        patched.setattr("checker.inventory.save_inventory", full_disk)
+        assert client.post("/manage/server/remove", form).status_code == 400
+    assert "web01" in hosts_now()
+    store = Store(database_file(home[0]))
+    try:
+        assert len(store.config_changes()) == before
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("python", ["/usr/bin/not-python3", "not-python3", "/tmp/evilpython"])  # noqa: S108
+def test_python_has_to_be_the_whole_name(web, unconfirmed, python):
+    client, _ = signed_in(web)
+    assert client.post("/manage/adding", server_form(python=python)).status_code == 400
+
+
+def test_saving_something_else_leaves_old_odd_values_exactly_as_they_are(web, unconfirmed):
+    from checker.inventory import Host
+
+    client, _ = signed_in(web)
+    was = Host(
+        name="web01",
+        address="192.0.2.1",
+        user="scan",
+        auth="key",
+        group=" Web Servers ",
+        key_path="/k/with space ",
+        web_roots=["/srv/a ", "/srv/b"],
+    )
+    unconfirmed(was)
+    form = page_form(client, sudo="root")
+    form["web_roots"] = form["web_roots"].replace("\n", "\r\n")  # as a browser sends a text box
+    assert client.post("/manage/server/change", form).status_code == 302
+    assert hosts_now()["web01"] == was.model_copy(update={"sudo": "root"})
+
+
+def test_a_server_removed_while_its_key_is_fetched_is_words(web, unconfirmed, monkeypatch):
+    from checker.inventory import Inventory, hosts_file, save_inventory
+    from checker.transport import HostKeyCheck
+    from checker.web import manage
+
+    key = asyncssh.generate_private_key("ssh-ed25519")
+
+    async def removed_meanwhile(host):
+        save_inventory(Inventory(hosts=[]), hosts_file())
+        return HostKeyCheck(key.convert_to_public(), key.get_fingerprint("sha256"), "ssh-ed25519")
+
+    monkeypatch.setattr(manage, "fetch_host_key", removed_meanwhile)
+    client, _ = signed_in(web)
+    response = client.post("/manage/server/ask-key", {"host": "web01"})
+    assert response.status_code == 400 and "any more" in said(response)

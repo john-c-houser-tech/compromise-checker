@@ -1166,21 +1166,20 @@ class Store:
         database is reserved before anything is written (a busy database
         fails first), and if the commit fails after writing, `undo()` puts
         the old configuration back."""
+        self.record_config_changes([(setting, old, new)], write, undo)
+
+    def record_config_changes(self, changes: list[tuple[str, Any, Any]], write, undo) -> None:
+        """Several lines of the record for one change, all or none."""
         operator, controller = who_and_where()
         self._db.execute("BEGIN IMMEDIATE")
         try:
-            self._db.execute(
-                "INSERT INTO config_changes (at, operator, controller, setting, old, new)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    datetime.now(UTC).isoformat(timespec="seconds"),
-                    operator,
-                    controller,
-                    setting,
-                    json.dumps(old),
-                    json.dumps(new),
-                ),
-            )
+            at = datetime.now(UTC).isoformat(timespec="seconds")
+            for setting, old, new in changes:
+                self._db.execute(
+                    "INSERT INTO config_changes (at, operator, controller, setting, old, new)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (at, operator, controller, setting, json.dumps(old), json.dumps(new)),
+                )
             write()
         except BaseException:
             self._db.rollback()

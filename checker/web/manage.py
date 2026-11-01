@@ -26,6 +26,7 @@ from checker.settings import HostChangedMeanwhile, add_host, change_host
 from checker.transport import (
     HostKeyCheck,
     TransportError,
+    TrustedKeysChanged,
     fetch_host_key,
     trust_host_key,
     trusted_fingerprints,
@@ -55,7 +56,7 @@ PLAIN = {
 _FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
 # From a page this names what runs as root on a server, so it has to be Python by name at least.
 _PYTHON = re.compile(
-    r"(?:/[A-Za-z0-9._-]+)*/?(?:python(?:3(?:\.[0-9]+t?)?)?|platform-python|pypy3)"
+    r"(?:(?:/[A-Za-z0-9._-]+)*/)?(?:python(?:3(?:\.[0-9]+t?)?)?|platform-python|pypy3)"
 )
 LONGEST_PASTE = 16 * 1024
 ANY_KEY_COMMAND = 'for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done'
@@ -187,16 +188,24 @@ def _prior(text: str, kept: Host | None) -> float | None:
         raise FormProblem(f"{LABELS['prior']}: {PLAIN['prior']}.") from None
 
 
-def _web_roots(text: str, kept: Host | None) -> list[str] | None:
-    roots = [line.strip() for line in text.splitlines() if line.strip()]
-    if not roots and kept is not None and kept.web_roots == []:
-        return []  # none at all, set on purpose, which the empty box also shows
-    return roots or None
+def _left_alone(post, kept: Host | None, field: str) -> bool:
+    """A browser sends a text box's line endings as CRLF, so that alone isn't a change."""
+    return kept is not None and post.get(field, "").replace("\r\n", "\n") == form_of(kept)[field]
+
+
+def _web_roots(post, kept: Host | None) -> list[str] | None:
+    if _left_alone(post, kept, "web_roots"):
+        return kept.web_roots  # including none at all, which the empty box also shows
+    return [line.strip() for line in post.get("web_roots", "").splitlines() if line.strip()] or None
 
 
 def host_from_form(post, kept: Host | None = None) -> Host:
     """A valid host, or FormProblem. Settings the form doesn't show stay as they are."""
     text = {field: post.get(field, "").strip() for field in FORM_FIELDS}
+    # An old value with spaces around it stays exactly as it is unless someone changes it.
+    for field in ("address", "user", "key_path", "group", "python"):
+        if _left_alone(post, kept, field):
+            text[field] = form_of(kept)[field]
     try:
         port = int(text["port"] or "22")
     except ValueError:
@@ -215,7 +224,7 @@ def host_from_form(post, kept: Host | None = None) -> Host:
         "password_source": text["password_source"] or "prompt",
         "group": text["group"] or None,
         "python": text["python"] or "python3",
-        "web_roots": _web_roots(post.get("web_roots", ""), kept),
+        "web_roots": _web_roots(post, kept),
         "prior": _prior(text["prior"], kept),
     }
     try:
@@ -381,7 +390,12 @@ def trust(host: Host, check: HostKeyCheck, pasted: str, replace: bool) -> bool:
     if check.status == "changed" and not replace:
         raise FormProblem("This replaces the key trusted before: tick the box to say you mean it.")
     try:
-        trust_host_key(host, check)
+        trust_host_key(host, check, unchanged=True)
+    except TrustedKeysChanged:
+        raise FormProblem(
+            "Someone else confirmed a key for this server just now, so this one wasn't saved."
+            " Ask the server for its key again."
+        ) from None
     except TransportError:
         raise FormProblem("This server's address can't go in the file of trusted keys.") from None
     return True

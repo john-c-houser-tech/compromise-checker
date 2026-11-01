@@ -308,7 +308,9 @@ The accepted rules are written to `proposals/HOST-TIME.yaml` (beside `whitelist/
 hides. The file is read back before it is kept and must hold exactly the
 accepted rules, so text from a host quoted in its comments can't add one. Its `owner` is left empty, so `checker whitelist check` refuses it
 until a person writes in who vouches for it. Review, set the owner, try it
-with `checker whitelist test`, then copy it into the layer file. The
+with `checker whitelist test`, then copy it into the layer file, or approve
+it from [the web interface](web.md), which shows the comparison for the
+last 30 days and writes your account as the owner. The
 report lists what was proposed and what was set aside, and why.
 
 The checks bound what a rule can hide, not why it was proposed. Text an

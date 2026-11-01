@@ -330,8 +330,10 @@ coverage, and advise on remediation. It works fully without it.
   proxy.
 - **Advice only.** The advisor cannot connect to any server and cannot change
   any setting, score or whitelist. Its proposals are written to a file for a
-  person to review, and suggested settings are shown as commands for a person
-  to run. The tool never offers a rule that whitelists a critical finding or
+  person to review. A person can approve a proposal from the web interface,
+  which first shows what it would hide and asks for their password, and records
+  it in their name. Suggested settings are shown as commands for a person to
+  run. The tool never offers a rule that whitelists a critical finding or
   one that is part of a chain; a model's suggestion of one is set aside, and
   the report says so. Every report section written by the advisor is labelled
   with the model, the redaction setting and the time, and says when the

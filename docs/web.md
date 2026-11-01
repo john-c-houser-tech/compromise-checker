@@ -65,6 +65,27 @@ can reach that address, which is why it asks for a login even there.
   It refuses to listen beyond this machine without TLS, and refuses an http address for another
   machine, since logins and evidence would cross the network unencrypted.
 
+**Decide what's normal** on a server's page is for the two choices that can hide a real change, so each
+shows what it would hide first, and takes your password, and a code if two-factor is on. It's worked out
+again when you confirm it: if that differs from what you saw, you're asked to look again.
+
+- **Accept how it is now.** The latest check becomes the baseline, with your reason, so what changed since
+  the old one stops being reported as changed. It has to be the check you were shown: a newer one means
+  looking again. A server assessed High or Critical gets a warning, not a refusal, since you may know why.
+- **The AI advisor's whitelist rules.** A rule hides findings from then on. Each shows what it would hide
+  in the last 30 days' results that could be compared, on every server it would reach, and says how many
+  that was. It can't be approved if a server it reaches has no check, or its latest can't be compared; if
+  it would hide a critical finding; if a server it reaches is assessed High or Critical or has a chain of
+  findings; or if it's a rule for a check only ever written by hand, has no narrowing, has expired or lasts
+  over 90 days. An approved rule goes in the same
+  file you'd edit by hand ([whitelists](whitelists.md)), in your name, with what's already there left as it
+  was; if the tool can't add to that file safely, it says so and changes nothing. Refusing one takes it out
+  of the proposals, and a file that can't be read can be discarded. If the advisor is on, you can ask it for
+  rules from there, with your password since that costs money. A request that may cost more than
+  `advisor.max_cost_per_run`, or whose price isn't known, isn't sent, and the page says so.
+
+Decisions take effect the next time results are worked out.
+
 ## What it keeps
 
 `web.db` in the checker's home, owner-only: accounts with hashed passwords, two-factor secrets and

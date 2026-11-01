@@ -30,7 +30,7 @@ class CheckRun(models.Model):
     """A check started from a page, for showing it and how it ended. Only the latest are kept; the
     activity record is what lasts."""
 
-    kind = models.CharField(max_length=16)  # "check" or "analysis"
+    kind = models.CharField(max_length=16)  # "check", "analysis" or "advice"
     hosts = models.TextField()  # JSON
     who = models.CharField(max_length=150)
     address = models.CharField(max_length=64)

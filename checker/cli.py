@@ -923,7 +923,7 @@ def build_parser() -> argparse.ArgumentParser:
     analysing.add_argument("--identity", help="the evidence private key file")
     analysing.set_defaults(handler=cmd_analyze)
     reporting = commands.add_parser(
-        "report", help="write the confidential HTML report for hosts' latest bundles"
+        "report", help="write the confidential report, HTML or PDF, for hosts' latest bundles"
     )
     chosen = reporting.add_mutually_exclusive_group(required=True)
     chosen.add_argument("host", nargs="?")
@@ -937,10 +937,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reporting.add_argument("--bundle", help="this bundle rather than the host's latest")
     reporting.add_argument(
-        "--output", help="the file to write (default: reports/ in the home; ends in .age)"
+        "--output", help="the file to write (default: reports/ in the home; .html.age or .pdf.age)"
     )
     reporting.add_argument(
-        "--plain", action="store_true", help="write plain HTML, not encrypted (to hand it on)"
+        "--plain", action="store_true", help="write it plain, not encrypted (to hand it on)"
     )
     reporting.add_argument(
         "--format", choices=("html", "pdf"), default="html", help="html (the default) or pdf"
@@ -1553,8 +1553,9 @@ def cmd_report(args: argparse.Namespace) -> int:
         )
     elif args.format == "pdf":
         print(
-            f"Encrypted to the evidence key. To read it: age -d -i KEY {path}. To send it to"
-            " someone, write it with --plain and send it securely."
+            f"Encrypted to the evidence key. To read it: age -d -i KEY -o report.pdf {path},"
+            " which leaves a plain copy to protect and delete. To send it to someone, write it"
+            " with --plain and send it securely."
         )
     else:
         print(f"Encrypted to the evidence key. To read it: checker report --open {path}")
@@ -1645,7 +1646,7 @@ def cmd_web(args: argparse.Namespace) -> int:
         from checker.web.app import serve
     except ImportError:
         print(
-            "checker: the web interface needs: pip install 'checker[web]'",
+            "checker: the web interface needs: pip install -e '.[web]'",
             file=sys.stderr,
         )
         return 2
@@ -1673,7 +1674,9 @@ def _open_report(args: argparse.Namespace, base: Path) -> int:
     try:
         path = Path(args.open) if args.open else latest_report(base / "reports")
         if path is None:
-            raise EvidenceError("no report yet: `checker report HOST` writes one")
+            raise EvidenceError(
+                "no HTML report yet: `checker report HOST` writes one (--open doesn't show PDFs)"
+            )
         if not path.name.endswith((".html", ".html.age")):
             raise EvidenceError(f"not a report (its name ends in .html.age or .html): {path}")
         if not path.is_file():

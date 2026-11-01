@@ -837,7 +837,7 @@ def test_the_command_says_what_to_install_without_the_extra(home, monkeypatch, c
 
     monkeypatch.setitem(sys.modules, "checker.web.app", None)
     assert cli.main(["web"]) == 2
-    assert "checker[web]" in capsys.readouterr().err
+    assert ".[web]" in capsys.readouterr().err
 
 
 def test_the_command_refuses_half_a_tls_pair(home, capsys):

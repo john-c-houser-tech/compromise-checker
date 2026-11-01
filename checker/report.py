@@ -13,6 +13,8 @@ import hashlib
 import json
 import os
 import secrets
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -505,8 +507,8 @@ def write_report(
             f"an encrypted report's name ends in .{kind}.age ({output.name}); --plain writes"
             f" a plain {kind.upper()}"
         )
-    if output is not None and plain and output.suffix == ".age":
-        raise EvidenceError(f"a plain report's name can't end in .age ({output.name})")
+    if output is not None and plain and output.suffix != f".{kind}":
+        raise EvidenceError(f"a plain {kind.upper()} report's name ends in .{kind} ({output.name})")
     priors = priors or (lambda _: (DEFAULT_PRIOR, "default"))
     whitelists = whitelists or (lambda _: None)
     packs = packs or (lambda _: ([], []))
@@ -548,24 +550,42 @@ def write_report(
     return output
 
 
+PDF_MEMORY_BYTES = 4 * 1024 * 1024 * 1024
+PDF_SECONDS = 600
+PDF_INSTALL = "pip install -e '.[pdf]', and the Pango libraries"
+
+
 def pdf_from_html(html: str) -> bytes:
-    """The report as a PDF, for sending. Needs the `pdf` extra's WeasyPrint. A report is
-    self-contained, and its text may be a compromised host's: rendering it fetches nothing,
-    from any network or any file."""
+    """The report as a PDF, for sending, made in a limited process of its own: a report's text
+    may be a compromised host's (checker/pdf_render.py). Anything going wrong there is an
+    EvidenceError naming no text from the report."""
+    script = Path(__file__).with_name("pdf_render.py")
     try:
-        from weasyprint import HTML
-        from weasyprint.urls import URLFetcher
-    except (ImportError, OSError) as exc:  # OSError: its native libraries aren't there
+        done = subprocess.run(  # noqa: S603 - this interpreter, the tool's own file
+            [sys.executable, "-I", str(script), str(PDF_MEMORY_BYTES), str(PDF_SECONDS)],
+            input=html.encode("utf-8", "backslashreplace"),
+            capture_output=True,
+            timeout=PDF_SECONDS + 30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
         raise EvidenceError(
-            "PDF reports need: pip install 'checker[pdf]', and the Pango libraries"
-            f" ({type(exc).__name__})"
+            f"the PDF took over {PDF_SECONDS} seconds, so none was made: the report may be very"
+            " large. The HTML report still works."
         ) from None
-
-    class NoFetching(URLFetcher):
-        def fetch(self, url, headers=None):
-            raise ValueError(f"a report fetches nothing: {url[:80]}")
-
-    return HTML(string=html, url_fetcher=NoFetching()).write_pdf()
+    if done.returncode == 0 and done.stdout.startswith(b"%PDF"):
+        return done.stdout
+    if done.returncode == 3:
+        raise EvidenceError(f"PDF reports need: {PDF_INSTALL}")
+    if done.returncode < 0 and done.returncode != -signal.SIGXCPU:
+        raise EvidenceError(
+            "making the PDF crashed, so none was made. A machine with no fonts does this: install"
+            " one, such as fonts-dejavu or dejavu-sans-fonts. The HTML report still works."
+        )
+    raise EvidenceError(
+        "the PDF couldn't be made, so none was: the report may be very large. The HTML report"
+        " still works."
+    )
 
 
 def read_report(path: Path, identity: x25519.Identity | None) -> str:

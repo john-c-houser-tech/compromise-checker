@@ -500,3 +500,21 @@ def test_retention_days_must_be_positive():
 
     with pytest.raises(ValidationError):
         Config(recipients=["x"], retention_days=0)
+
+
+def test_purge_takes_pdf_reports_too(home, capsys):
+    pytest.importorskip("weasyprint")
+    from checker.report import write_report
+
+    base, store, identity, config = home
+    add(home, "b1", 40)
+    written = [
+        write_report(store, ["web01"], identity, config.recipients, base / "reports", kind="pdf"),
+        write_report(
+            store, ["web01"], identity, config.recipients, base / "reports", kind="pdf", plain=True
+        ),
+    ]
+    assert all(p.exists() for p in written)
+    args = cli.build_parser().parse_args(["purge", "web01"])
+    assert cli.cmd_purge(args, lambda _: "purge") == 0
+    assert not any(p.exists() for p in written)

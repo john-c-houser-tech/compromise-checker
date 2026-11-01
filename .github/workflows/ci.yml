@@ -31,7 +31,7 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: pyproject.toml
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libpango-1.0-0 libpangoft2-1.0-0 > /dev/null  # WeasyPrint's
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 > /dev/null  # WeasyPrint's
       - run: pip install -e ".[dev]"
       - name: Lint
         run: |
@@ -39,6 +39,8 @@ jobs:
           ruff format --check .
       - name: Tests
         run: pytest -q
+        env:
+          CHECKER_TEST_CRASH: "1"
       - name: The package holds the key list
         run: |
           pip wheel --no-deps -q -w /tmp/wheel .

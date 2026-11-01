@@ -121,10 +121,15 @@ reports folder that show a purged bundle; a report written elsewhere with
 
 ## PDF
 
-`checker report HOST --format pdf`, for sending. It needs `pip install 'checker[pdf]'` and the Pango
-libraries. It holds what the HTML report holds, with "Confidential" on every page. It's encrypted to
-the evidence key like any report, or with `--plain` written as a plain PDF to hand on, and that copy
-is yours to protect. Nothing is fetched while it's made, from any network or file.
+`checker report HOST --format pdf`, for sending. It needs `pip install -e '.[pdf]'`, the Pango
+libraries and at least one font. It holds what the HTML report holds, with "Confidential" on every
+page. It's encrypted to the evidence key like any report, or with `--plain` written as a plain PDF
+to hand on, and that copy is yours to protect. Purging takes PDF reports as it takes HTML ones.
+
+A report's text may be a compromised host's, so the PDF is made in a separate limited process: at
+most 4 GB of memory and 10 minutes, no core file, and nothing fetched from any network or file. If
+it fails, you get a plain error and no PDF, and the HTML report still works. A report with thousands
+of findings can take minutes. Scheduled checks write HTML only.
 
 ## The fleet at a glance
 

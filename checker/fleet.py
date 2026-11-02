@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -18,6 +17,7 @@ import pyrage
 
 from checker.assess import load_assessment
 from checker.baseline import usable_bundles
+from checker.database import DATABASE_ERRORS
 from checker.evidence import EvidenceError, store_unreadable
 from checker.report import OLDER_CHECKS, out_of_date, visible
 from checker.schedule import BANDS, SERIOUS, _exposed, _identity_of, alerts, remembered
@@ -132,7 +132,7 @@ def _load(store, bundle_id: str, identity, which: int = -1) -> tuple[dict | None
     one host's problem: that goes up to fleet()."""
     try:
         return load_assessment(store, bundle_id, identity, which), None
-    except sqlite3.Error:
+    except DATABASE_ERRORS:
         raise
     except EvidenceError:
         return None, "mismatch"
@@ -397,7 +397,7 @@ def fleet_host(
             now,
             stale_after,
         )
-    except sqlite3.Error:
+    except DATABASE_ERRORS:
         raise
     except Exception:  # noqa: BLE001 - the band it read must not be lost to odd stored data
         return replace(headline, doubts=("part of its analysis couldn't be worked out",))
@@ -556,7 +556,7 @@ def fleet(
                 stale_after,
                 removed=bool(groups) and name not in groups,
             )
-        except sqlite3.Error:
+        except DATABASE_ERRORS:
             raise
         except Exception:  # noqa: BLE001 - one host's odd data mustn't blank the fleet
             return FleetHost(name, groups.get(name), "unreadable", unreadable_why="internal")
@@ -564,7 +564,7 @@ def fleet(
     try:
         names = set(groups) | set(store.hosts())
         hosts = [one(n) for n in names if group is None or n not in groups or groups[n] == group]
-    except sqlite3.Error as exc:
+    except DATABASE_ERRORS as exc:
         raise EvidenceError(store_unreadable(exc)) from exc
     unreadable = [h for h in hosts if h.state == "unreadable"]
     if (
@@ -653,7 +653,7 @@ def _stored_advice(store, host: str, identity, found: _Found) -> dict:
         return {}
     try:
         return latest_advice(store, host, identity, found.row["id"], found.after.get("analysed_at"))
-    except sqlite3.Error:
+    except DATABASE_ERRORS:
         raise
     except Exception:  # noqa: BLE001 - advice is extra: the findings still show, and say so
         return {"unreadable": True}
@@ -684,7 +684,7 @@ def read_host(base: Path, host: str) -> tuple | None:
                     stale_after=timedelta(days=settings.config.stale_after_days),
                     removed=bool(groups) and host not in groups,
                 )
-            except sqlite3.Error:
+            except DATABASE_ERRORS:
                 raise
             except Exception:  # noqa: BLE001 - as in fleet(): loud, and the page still loads
                 item = FleetHost(host, groups.get(host), "unreadable", unreadable_why="internal")
@@ -694,7 +694,7 @@ def read_host(base: Path, host: str) -> tuple | None:
                 found = _analyses(store, usable_bundles(store, host), settings.identity)
                 assessment = found.after
                 advice = _stored_advice(store, host, settings.identity, found)
-        except sqlite3.Error as exc:
+        except DATABASE_ERRORS as exc:
             raise EvidenceError(store_unreadable(exc)) from exc
     finally:
         store.close()
@@ -761,7 +761,7 @@ def read_evidence(base: Path, host: str) -> dict | None:
                 "baselines": baselines,
                 "custody": [dict(c) for c in store.custody_of(row["id"])],
             }
-        except sqlite3.Error as exc:
+        except DATABASE_ERRORS as exc:
             raise EvidenceError(store_unreadable(exc)) from exc
     finally:
         store.close()

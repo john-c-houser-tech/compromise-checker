@@ -35,7 +35,7 @@ what to do next. Comprehensive, easy installation follows later (see the end).
 7. **PDF and JSON** reports (DESIGN.md §13).
 8. **Actions:** every job a small organization needs can be done from a page, from
    first setup through adding a server to acting on a finding, with no command line.
-9. **PostgreSQL**, with accounts and roles for a team sharing one store.
+9. **PostgreSQL**, with accounts and roles for a team using one shared machine's web interface.
 
 ## Ground rules
 
@@ -139,6 +139,12 @@ The page's commands are proved on a real sshd by `tests/integration/first_setup_
 
 **5.14 PostgreSQL.** The store behind one interface, with its append-only triggers,
 custody and purges proved to hold there as they do on SQLite.
+As built: SQLite stays the default, and PostgreSQL is an extra. Evidence files stay on disk, and the
+address can't hold a password. `checker store move` moves an existing store. The whole test suite runs on
+both. The web interface's own database follows with 5.15.
+One shared machine runs the tool, and a team signs in to its web interface (John, 2026-11-01): running
+checks from several computers isn't planned, since it would copy the key that acts as an administrator on
+every server to each of them.
 
 **5.15 Accounts and roles.** Login, roles (who may view, who may act), and the action
 record naming a person, not a machine. Reaching it from another machine comes with this. So does

@@ -426,6 +426,7 @@ def test_a_broken_check_is_reported_not_fatal(monkeypatch):
 # --- Analyze ----------------------------------------------------------------------------------
 
 
+@pytest.mark.sqlite_only
 def test_analyze_stores_an_assessment_with_coverage(home):
     _, store, identity, config = home
     add_bundle(home, "b1", 0, host_records())

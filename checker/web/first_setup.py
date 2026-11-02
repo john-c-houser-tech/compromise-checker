@@ -14,7 +14,7 @@ import asyncssh
 from markupsafe import escape
 
 from checker.baseline import usable_bundles
-from checker.evidence import Store, database_file, load_config
+from checker.evidence import Store, database_file, load_config, store_exists
 from checker.files import atomic_write, locked
 from checker.inventory import Host, hosts_file, load_inventory
 from checker.transport import read_key_file, trusted_fingerprints
@@ -118,7 +118,7 @@ def _public_key(host: Host) -> str | None:
 def _checked(base: Path, hosts: list[Host]) -> bool:
     """Whether a server in the list has a check that collected something. A failed connection
     records a check too, with nothing in it."""
-    if not database_file(base).exists():
+    if not store_exists(base):
         return False
     store = Store(database_file(base), read_only=True)
     try:

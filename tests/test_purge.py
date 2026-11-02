@@ -91,6 +91,7 @@ TABLES = ("bundles", "custody", "derived", "baselines", "assessments")
 # --- what goes, and the record of it -----------------------------------------------
 
 
+@pytest.mark.sqlite_only
 def test_purging_a_host_removes_its_rows_and_files_and_records_only_identifiers(home):
     base, store, _, _ = home
     add(home, "b1", 30)
@@ -119,6 +120,7 @@ def test_purging_a_host_removes_its_rows_and_files_and_records_only_identifiers(
     assert json.loads(record["baselines"]) == {"web01": "emptied"}
 
 
+@pytest.mark.sqlite_only
 def test_append_only_holds_again_after_a_purge_and_purges_are_append_only(home):
     base, store, _, _ = home
     add(home, "b1", 30)
@@ -134,6 +136,7 @@ def test_append_only_holds_again_after_a_purge_and_purges_are_append_only(home):
         store._db.execute("UPDATE purges SET scope = '{}'")
 
 
+@pytest.mark.sqlite_only
 def test_a_failed_purge_changes_nothing_and_leaves_the_triggers(home):
     base, store, _, _ = home
     add(home, "b1", 30)
@@ -314,6 +317,7 @@ def test_a_report_a_purge_couldnt_delete_goes_at_the_next(home, monkeypatch, pla
     assert not report.exists() and leftovers(store, base) == []
 
 
+@pytest.mark.sqlite_only
 def test_bundles_outside_the_evidence_folder_are_listed_not_touched(home, tmp_path):
     base, store, _, _ = home
     path = add(home, "b1", 40)
@@ -414,6 +418,7 @@ class FailingAt:
         return getattr(self._db, name)
 
 
+@pytest.mark.sqlite_only
 def test_a_purge_failing_midway_leaves_rows_and_triggers(home):
     base, store, _, _ = home
     add(home, "b1", 30)

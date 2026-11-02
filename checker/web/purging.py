@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,7 +13,15 @@ from typing import Any
 import yaml
 from markupsafe import escape
 
-from checker.evidence import EvidenceError, Store, database_file, load_config, load_identity
+from checker.database import DATABASE_ERRORS
+from checker.evidence import (
+    EvidenceError,
+    Store,
+    database_file,
+    load_config,
+    load_identity,
+    store_exists,
+)
 from checker.inventory import hosts_file, load_inventory
 from checker.purge import execute, leftovers, parse_before
 from checker.purge import plan as purge_plan
@@ -129,7 +136,7 @@ def page(base: Path, params) -> dict[str, Any]:
         "cant": "",
         "hosts": [],
     }
-    if not database_file(base).exists():
+    if not store_exists(base):
         return context
     store = Store(database_file(base), read_only=True)
     try:
@@ -191,7 +198,7 @@ def run(base: Path, params) -> dict[str, Any]:
     except (
         EvidenceError,
         OSError,
-        sqlite3.Error,
+        *DATABASE_ERRORS,
         ValueError,
         TypeError,
         KeyError,

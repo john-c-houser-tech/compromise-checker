@@ -20,7 +20,7 @@ from markupsafe import Markup, escape
 from pydantic import ValidationError
 
 from checker.baseline import usable_bundles
-from checker.evidence import Store, database_file
+from checker.evidence import Store, database_file, store_exists
 from checker.inventory import Host, hosts_file, load_inventory, new_host_problems
 from checker.report import visible
 from checker.schedule import host_problems_in_plain_words, unattended_in_plain_words
@@ -133,7 +133,7 @@ def check_blockers(host: Host, unattended: bool = False, environ=None) -> list[s
 
 
 def has_results(base: Path, name: str) -> bool:
-    if not database_file(base).exists():
+    if not store_exists(base):
         return False
     store = Store(database_file(base), read_only=True)
     try:

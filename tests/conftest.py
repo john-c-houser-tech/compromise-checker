@@ -17,6 +17,20 @@ import pytest
 PASSWORD = "correct horse"
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "sqlite_only: looks at SQLite's own file or tables, or names its errors"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if os.environ.get("CHECKER_TEST_POSTGRES_EVERYWHERE"):
+        skip = pytest.mark.skip(reason="about SQLite itself: test_store_backends covers both")
+        for item in items:
+            if item.get_closest_marker("sqlite_only"):
+                item.add_marker(skip)
+
+
 @pytest.fixture(autouse=True)
 def _no_real_http(monkeypatch):
     """No test reaches a real server over HTTP (the advisor's tests use mock
@@ -233,7 +247,23 @@ def home(tmp_path, monkeypatch):
     from checker.evidence import Store, database_file, initialise, load_identity
 
     monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
-    config, identity_path = initialise(tmp_path)
+    # CHECKER_TEST_POSTGRES_EVERYWHERE: the whole suite with its store on that server, each test in
+    # a schema of its own (a throwaway server: tests/test_store_backends.py says more).
+    server = os.environ.get("CHECKER_TEST_POSTGRES_EVERYWHERE")
+    schema = url = None
+    if server:
+        import secrets
+
+        import psycopg
+
+        schema = f"t{secrets.token_hex(6)}"
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"CREATE SCHEMA {schema}")
+        url = f"{server}?options=-csearch_path%3D{schema}"
+    config, identity_path = initialise(tmp_path, database=url)
     store = Store(database_file(tmp_path))
     yield tmp_path, store, load_identity(identity_path), config
     store.close()
+    if schema:
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA {schema} CASCADE")

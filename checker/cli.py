@@ -7,7 +7,6 @@ import json
 import os
 import re
 import signal
-import sqlite3
 import sys
 import threading
 from collections.abc import Callable
@@ -32,6 +31,7 @@ from checker.baseline import accept, changes, usable_bundles
 from checker.checks import BANDS, CATEGORIES
 from checker.collect import collect_hosts
 from checker.credentials import password_for
+from checker.database import DATABASE_ERRORS, check_database_url
 from checker.evidence import (
     Advisor,
     EvidenceError,
@@ -49,6 +49,7 @@ from checker.evidence import (
     mail_key_file,
     open_bundle,
     open_text,
+    store_exists,
 )
 from checker.inventory import (
     Host,
@@ -264,6 +265,7 @@ def cmd_init(args: argparse.Namespace, ask: Callable[[str], str] | None = None) 
             args.web_access_logs,
             args.exec_records,
             advisor,
+            args.database,
         )
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -313,7 +315,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 2
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, *DATABASE_ERRORS) as exc:
         print(f"checker: {args.key} not changed: {exc}", file=sys.stderr)
         return 1
     if old == new:
@@ -330,7 +332,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
 
 def cmd_config_history(args: argparse.Namespace) -> int:
     base = home()
-    if not database_file(base).exists():
+    if not store_exists(base):
         print("checker: not set up yet: run `checker init`", file=sys.stderr)
         return 2
     store = Store(database_file(base))
@@ -803,6 +805,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = commands.add_parser("init", help="set up: evidence key, database, configuration")
     init.add_argument(
+        "--database",
+        metavar="POSTGRESQL_ADDRESS",
+        help="keep the store in PostgreSQL (docs/postgres.md), not a file; no password in it",
+    )
+    init.add_argument(
         "--recipient",
         metavar="AGE_PUBLIC_KEY",
         help="encrypt evidence to this key (its private half kept elsewhere)",
@@ -972,6 +979,16 @@ def build_parser() -> argparse.ArgumentParser:
     fleet_view.add_argument("--identity", help="the evidence private key file")
     fleet_view.set_defaults(handler=cmd_fleet)
 
+    store_parser = commands.add_parser("store", help="where the store is kept")
+    store_commands = store_parser.add_subparsers(
+        dest="store_command", metavar="ACTION", required=True
+    )
+    moving = store_commands.add_parser(
+        "move", help="move the store from its file to PostgreSQL (docs/postgres.md)"
+    )
+    moving.add_argument("--to", required=True, metavar="POSTGRESQL_ADDRESS")
+    moving.add_argument("--yes", action="store_true", help="delete the old file without asking")
+    moving.set_defaults(handler=cmd_store_move)
     web = commands.add_parser("web", help="run the web interface (needs the `web` extra)")
     web.add_argument("--bind", default="127.0.0.1:8088", help="address and port to listen on")
     web.add_argument("--public-url", help="the address people use, behind a proxy")
@@ -2268,6 +2285,67 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
         return 1
 
 
+def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) -> int:
+    """From SQLite's file to a PostgreSQL database: copied, checked, the settings changed, and then
+    the file removed, since a purge couldn't reach what's left in it. Evidence files don't move."""
+    from checker import schedule
+    from checker.evidence import copy_store
+    from checker.files import atomic_write, locked
+
+    base = home()
+    try:
+        config = load_config(base)
+        if config.database:
+            raise EvidenceError("the store is already in a database")
+        check_database_url(args.to)
+        if not database_file(base).exists():
+            raise EvidenceError(f"no store to move ({database_file(base)})")
+        with schedule.run_lock(base), locked(config_file(base)):
+            source = Store(database_file(base), url=None)
+            target = Store(database_file(base), url=args.to)
+            try:
+                counts = copy_store(source, target)
+                before = config_file(base).read_text(encoding="utf-8")
+                data = load_config(base).model_dump() | {"database": args.to}
+                target.record_config_change(
+                    "database",
+                    None,
+                    args.to,
+                    lambda: atomic_write(config_file(base), yaml.safe_dump(data, sort_keys=False)),
+                    lambda: atomic_write(config_file(base), before),
+                )
+            finally:
+                source.close()
+                target.close()
+    except schedule.Busy:
+        print(
+            "checker: `checker run` is in progress: try again when it has finished", file=sys.stderr
+        )
+        return 1
+    except ValueError as exc:
+        print(f"checker: --to {exc}", file=sys.stderr)
+        return 2
+    except (EvidenceError, OSError, *DATABASE_ERRORS) as exc:
+        print(f"checker: not moved: {exc}", file=sys.stderr)
+        return 1
+    print(f"Moved {counts['bundles']} bundle(s) and their records, and checked each table.")
+    print("The store is now in that database. Evidence files stay where they are.")
+    old = [
+        database_file(base).with_name(database_file(base).name + end)
+        for end in ("", "-wal", "-shm")
+    ]
+    if (
+        not args.yes
+        and ask("Delete the old file? A purge can't reach it. Type 'delete': ") != "delete"
+    ):
+        print(f"Kept {database_file(base)}: it still lists what's stored, so delete it yourself.")
+        return 0
+    for path in old:
+        path.unlink(missing_ok=True)
+    print("Deleted the old file.")
+    return 0
+
+
 def _purge(args: argparse.Namespace, ask: Callable[[str], str]) -> int:
     base = home()
     try:
@@ -2339,7 +2417,7 @@ def _purge(args: argparse.Namespace, ask: Callable[[str], str]) -> int:
             print("Nothing deleted.")
             return 1
         outcome = execute(store, base, chosen)
-    except (EvidenceError, OSError, sqlite3.Error) as exc:
+    except (EvidenceError, OSError, *DATABASE_ERRORS) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     finally:

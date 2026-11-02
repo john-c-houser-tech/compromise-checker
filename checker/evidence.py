@@ -32,6 +32,14 @@ import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pyrage import x25519
 
+from checker.database import (
+    DATABASE_ERRORS,
+    PostgresDatabase,
+    SQLiteDatabase,
+    append_only_triggers_sqlite,
+    check_database_url,
+    configured_url,
+)
 from checker.files import atomic_write, locked
 from checker.protocol import (
     ACCOUNT_NAME,
@@ -343,6 +351,14 @@ class Config(BaseModel):
     notify_command: str | None = None
     # Keys of the organization's own, for its private threat packs.
     packs: Packs = Field(default_factory=Packs)
+    # The store's PostgreSQL address (checker.database), with no password. Empty: SQLite, a file
+    # beside the evidence.
+    database: str | None = None
+
+    @field_validator("database")
+    @classmethod
+    def _database(cls, value: str | None) -> str | None:
+        return None if value is None else check_database_url(value)
 
     @field_validator("notify_command")
     @classmethod
@@ -385,17 +401,25 @@ def initialise(
     web_access_logs: bool = False,
     exec_records: ExecRecords = "web",
     advisor: Advisor | None = None,
+    database: str | None = None,
 ) -> tuple[Config, Path | None]:
     """Create the tool's directory, evidence key and database. With
     `recipient`, bundles are encrypted to that key and its private half stays
     wherever the organization keeps it; otherwise a key pair is made here."""
+    if database:
+        try:
+            check_database_url(database)
+        except ValueError as exc:
+            raise EvidenceError(f"--database {exc}") from None
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
     # One init at a time: two interleaved could publish a key in the config
     # whose private half the other had just replaced, leaving evidence unreadable.
     with locked(config_file(home)):
         if config_file(home).exists():
             raise EvidenceError(f"already set up ({config_file(home)}); nothing changed")
-        return _initialise(home, recipient, home_text, web_access_logs, exec_records, advisor)
+        return _initialise(
+            home, recipient, home_text, web_access_logs, exec_records, advisor, database
+        )
 
 
 def _initialise(
@@ -405,6 +429,7 @@ def _initialise(
     web_access_logs: bool = False,
     exec_records: ExecRecords = "web",
     advisor: Advisor | None = None,
+    database: str | None = None,
 ) -> tuple[Config, Path | None]:
     identity_path = None
     kept = home / "keys" / "evidence-identity.txt"
@@ -449,8 +474,9 @@ def _initialise(
         web_access_logs=web_access_logs,
         exec_records=exec_records,
         advisor=advisor or Advisor(),
+        database=database,
     )
-    Store(database_file(home)).close()
+    Store(database_file(home), url=database).close()
     mail_key(home)
     atomic_write(config_file(home), yaml.safe_dump(config.model_dump(), sort_keys=False))
     return config, identity_path
@@ -972,28 +998,6 @@ CREATE TRIGGER IF NOT EXISTS config_changes_no_delete BEFORE DELETE ON config_ch
 """
 
 
-# Append-only, enforced by the database itself (DESIGN.md §3.4). Only
-# `purge` lifts it, inside its own transaction (Store.purge).
-APPEND_ONLY = (
-    ("bundles", "bundles are"),
-    ("custody", "custody is"),
-    ("baselines", "baselines are"),
-    ("assessments", "assessments are"),
-    ("advice", "advice is"),
-)
-
-
-def _append_only_triggers() -> list[str]:
-    statements = []
-    for table, label in APPEND_ONLY:
-        for action in ("update", "delete"):
-            statements.append(
-                f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action} BEFORE {action.upper()}"
-                f" ON {table} BEGIN SELECT RAISE(ABORT, '{label} append-only'); END"
-            )
-    return statements
-
-
 BUNDLE_COLUMNS = (
     "id",
     "host",
@@ -1022,7 +1026,7 @@ def who_and_where() -> tuple[str, str]:
     return getpass.getuser(), socket.gethostname()
 
 
-def store_unreadable(exc: sqlite3.Error) -> str:
+def store_unreadable(exc: Exception) -> str:
     """Why a store opened only for looking can't answer, and what to do. Looking
     can't repair it, since recovery and upgrades both have to write."""
     text = str(exc)
@@ -1031,37 +1035,54 @@ def store_unreadable(exc: sqlite3.Error) -> str:
             "an earlier run was interrupted and the store needs recovering:"
             " `checker bundle list` recovers it"
         )
-    if "locked" in text:
+    if "locked" in text or "lock timeout" in text:
         return "the store is busy with another run: try again shortly"
-    if "no such table" in text or "no such column" in text:
+    if "no such table" in text or "no such column" in text or "does not exist" in text:
         return "the store is from an older version: `checker bundle list` upgrades it"
     return f"the store can't be read, and may be damaged: {text}"
 
 
+def store_exists(home: Path) -> bool:
+    """Whether there's a store to look in: a database the settings name, or the file."""
+    return bool(configured_url(home)) or database_file(home).exists()
+
+
 class Store:
-    def __init__(self, path: Path, read_only: bool = False) -> None:
+    def __init__(self, path: Path, read_only: bool = False, url: str | None = None) -> None:
+        """`path`: where SQLite keeps it, if the settings beside it don't name a database. `url`:
+        this database, for when there are no settings yet. Read only: for looking, with no schema,
+        no upgrade and nothing created, and a write is an error."""
+        try:
+            url = url or configured_url(path.parent)
+        except ValueError as exc:
+            raise EvidenceError(str(exc)) from exc
+        if url:
+            self._open_postgres(url, read_only)
+            return
         if read_only:
-            # For looking: no schema, no upgrade, no file created; a write is an error.
             if not path.exists():
                 raise EvidenceError(f"not set up yet: run `checker init` (no {path})")
             try:
-                self._db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+                self._db = sqlite3.connect(
+                    f"{path.resolve().as_uri()}?mode=ro", uri=True, factory=SQLiteDatabase
+                )
                 self._db.row_factory = sqlite3.Row
-                for table in ("bundles", "assessments", "baselines", "purges"):
-                    self._db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()  # noqa: S608
+                self._looks_usable()
             except sqlite3.Error as exc:
                 raise EvidenceError(store_unreadable(exc)) from exc
             return
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fresh = not path.exists()
-        self._db = sqlite3.connect(path)
+        self._db = sqlite3.connect(path, factory=SQLiteDatabase)
         if fresh:
             os.chmod(path, 0o600)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
         # So INSERT OR REPLACE's implicit delete fires the append-only triggers.
         self._db.execute("PRAGMA recursive_triggers = ON")
-        self._db.executescript(_SCHEMA + "".join(f"{sql};\n" for sql in _append_only_triggers()))
+        self._db.executescript(
+            _SCHEMA + "".join(f"{sql};\n" for sql in append_only_triggers_sqlite())
+        )
         # Added in Phase 3 (PR 3.7), after the table was first made.
         columns = {row["name"] for row in self._db.execute("PRAGMA table_info(advice)")}
         if "endpoint" not in columns:
@@ -1072,6 +1093,26 @@ class Store:
                 columns = {row["name"] for row in self._db.execute("PRAGMA table_info(advice)")}
                 if "endpoint" not in columns:
                     raise
+
+    def _looks_usable(self) -> None:
+        for table in ("bundles", "assessments", "baselines", "purges"):
+            self._db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()  # noqa: S608
+
+    def _open_postgres(self, url: str, read_only: bool) -> None:
+        try:
+            self._db = PostgresDatabase(url, read_only)
+        except RuntimeError as exc:
+            raise EvidenceError(str(exc)) from exc
+        except DATABASE_ERRORS as exc:
+            raise EvidenceError(f"the database can't be reached: {exc}") from exc
+        try:
+            if read_only:
+                self._looks_usable()
+            else:
+                self._db.ensure_schema(_SCHEMA)
+        except DATABASE_ERRORS as exc:
+            self._db.close()
+            raise EvidenceError(store_unreadable(exc)) from exc
 
     def close(self) -> None:
         self._db.close()
@@ -1103,13 +1144,13 @@ class Store:
             ),
         )
 
-    def bundle(self, bundle_id: str) -> sqlite3.Row:
+    def bundle(self, bundle_id: str) -> Any:
         row = self._db.execute("SELECT * FROM bundles WHERE id = ?", (bundle_id,)).fetchone()
         if row is None:
             raise EvidenceError(f"no bundle {bundle_id!r}")
         return row
 
-    def bundles(self, host: str | None = None) -> list[sqlite3.Row]:
+    def bundles(self, host: str | None = None) -> list[Any]:
         if host:
             query = "SELECT * FROM bundles WHERE host = ? ORDER BY started_at"
             return self._db.execute(query, (host,)).fetchall()
@@ -1118,13 +1159,17 @@ class Store:
     def record_derived(self, row: dict[str, Any]) -> None:
         with self._db:
             self._db.execute(
-                "INSERT OR REPLACE INTO derived (bundle_id, kind, parser_version, path,"
+                "DELETE FROM derived WHERE bundle_id = :bundle_id AND kind = :kind",
+                {"bundle_id": row["bundle_id"], "kind": row["kind"]},
+            )
+            self._db.execute(
+                "INSERT INTO derived (bundle_id, kind, parser_version, path,"
                 " created_at, items, ciphertext_sha256, summary) VALUES (:bundle_id, :kind,"
                 " :parser_version, :path, :created_at, :items, :ciphertext_sha256, :summary)",
                 row,
             )
 
-    def derived(self, bundle_id: str, kind: str) -> sqlite3.Row | None:
+    def derived(self, bundle_id: str, kind: str) -> Any:
         return self._db.execute(
             "SELECT * FROM derived WHERE bundle_id = ? AND kind = ?", (bundle_id, kind)
         ).fetchone()
@@ -1158,7 +1203,7 @@ class Store:
                 {"checks_version": row["checks_version"], "baseline": row["baseline_id"]},
             )
 
-    def assessments(self, bundle_id: str) -> list[sqlite3.Row]:
+    def assessments(self, bundle_id: str) -> list[Any]:
         return self._db.execute(
             "SELECT * FROM assessments WHERE bundle_id = ? ORDER BY seq", (bundle_id,)
         ).fetchall()
@@ -1166,12 +1211,12 @@ class Store:
     def hosts(self) -> list[str]:
         return [r[0] for r in self._db.execute("SELECT DISTINCT host FROM bundles ORDER BY host")]
 
-    def baselines(self, host: str) -> list[sqlite3.Row]:
+    def baselines(self, host: str) -> list[Any]:
         return self._db.execute(
             "SELECT * FROM baselines WHERE host = ? ORDER BY seq", (host,)
         ).fetchall()
 
-    def custody_of(self, bundle_id: str) -> list[sqlite3.Row]:
+    def custody_of(self, bundle_id: str) -> list[Any]:
         return self._db.execute(
             "SELECT * FROM custody WHERE bundle_id = ? ORDER BY seq", (bundle_id,)
         ).fetchall()
@@ -1187,7 +1232,7 @@ class Store:
     def record_config_changes(self, changes: list[tuple[str, Any, Any]], write, undo) -> None:
         """Several lines of the record for one change, all or none."""
         operator, controller = who_and_where()
-        self._db.execute("BEGIN IMMEDIATE")
+        self._db.begin_write()
         try:
             at = datetime.now(UTC).isoformat(timespec="seconds")
             for setting, old, new in changes:
@@ -1218,17 +1263,17 @@ class Store:
                 row,
             )
 
-    def advice_for_host(self, host: str) -> list[sqlite3.Row]:
+    def advice_for_host(self, host: str) -> list[Any]:
         return self._db.execute(
             "SELECT * FROM advice WHERE host = ? ORDER BY seq", (host,)
         ).fetchall()
 
-    def advice(self, bundle_id: str) -> list[sqlite3.Row]:
+    def advice(self, bundle_id: str) -> list[Any]:
         return self._db.execute(
             "SELECT * FROM advice WHERE bundle_id = ? ORDER BY seq", (bundle_id,)
         ).fetchall()
 
-    def config_changes(self) -> list[sqlite3.Row]:
+    def config_changes(self) -> list[Any]:
         return self._db.execute("SELECT * FROM config_changes ORDER BY seq").fetchall()
 
     def purge_state(self, host: str) -> list[Any]:
@@ -1262,7 +1307,7 @@ class Store:
         marks = ", ".join("?" for _ in bundle_ids)
         hosts = {}
         counts: dict[str, int] = {}
-        self._db.execute("BEGIN IMMEDIATE")
+        self._db.begin_write()
         try:
             for row in self._db.execute(
                 f"SELECT id, host FROM bundles WHERE id IN ({marks})",  # noqa: S608 - placeholders
@@ -1278,9 +1323,7 @@ class Store:
                         f"{host}'s stored evidence changed while the purge was being planned"
                         " (a new bundle or baseline); nothing was deleted: run it again"
                     )
-            for table, _ in APPEND_ONLY:
-                for action in ("update", "delete"):
-                    self._db.execute(f"DROP TRIGGER {table}_no_{action}")
+            self._db.lift_append_only()
             for table, column in (
                 ("advice", "bundle_id"),
                 ("assessments", "bundle_id"),
@@ -1293,8 +1336,7 @@ class Store:
                     f"DELETE FROM {table} WHERE {column} IN ({marks})",  # noqa: S608 - fixed names
                     bundle_ids,
                 ).rowcount
-            for sql in _append_only_triggers():
-                self._db.execute(sql)
+            self._db.restore_append_only()
             self._db.execute(
                 "INSERT INTO purges (at, operator, controller, scope, bundles, counts, baselines)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1314,7 +1356,7 @@ class Store:
             raise
         return counts
 
-    def purges(self) -> list[sqlite3.Row]:
+    def purges(self) -> list[Any]:
         return self._db.execute("SELECT * FROM purges ORDER BY seq").fetchall()
 
     def baseline_purged(self, host: str, since: str | None = None) -> bool:
@@ -1327,6 +1369,74 @@ class Store:
             if what is not None:
                 return what == "moved" and (since is None or row["at"] > since)
         return False
+
+
+COPIED_TABLES = (  # parents first
+    "bundles",
+    "custody",
+    "derived",
+    "baselines",
+    "assessments",
+    "purges",
+    "advice",
+    "config_changes",
+)
+
+
+def _fingerprint_of(store: Store, table: str) -> tuple[int, str]:
+    """How many rows and what's in them, the same whichever database holds them."""
+    digest = hashlib.sha256()
+    rows = store._db.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608 - fixed names
+    lines = []
+    for row in rows:
+        values = {key: row[key] for key in row.keys()}  # noqa: SIM118 - sqlite3.Row
+        lines.append(
+            json.dumps(
+                {
+                    key: (bytes(value).hex() if isinstance(value, bytes | memoryview) else value)
+                    for key, value in sorted(values.items())
+                },
+                sort_keys=True,
+            )
+        )
+    for line in sorted(lines):
+        digest.update(line.encode())
+    return len(rows), digest.hexdigest()
+
+
+def copy_store(source: Store, target: Store) -> dict[str, int]:
+    """Every row, as it is, into a store with none, then a check that each table reads back the
+    same. All or nothing. Returns how many rows per table. The guards stay on: nothing here changes
+    a row."""
+    for table in COPIED_TABLES:
+        if target._db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]:  # noqa: S608
+            raise EvidenceError(f"the new database already has {table} in it: use an empty one")
+    counts = {}
+    target._db.begin_write()
+    try:
+        for table in COPIED_TABLES:
+            rows = source._db.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608
+            counts[table] = len(rows)
+            for row in rows:
+                names = list(row.keys())
+                statement = (
+                    f"INSERT INTO {table} ({', '.join(names)})"  # noqa: S608 - the store's own names
+                    f" VALUES ({', '.join(f':{name}' for name in names)})"
+                )
+                target._db.execute(statement, {name: row[name] for name in names})
+            if rows and "seq" in rows[0].keys():
+                target._db.execute(
+                    f"SELECT setval(pg_get_serial_sequence('{table}', 'seq'),"  # noqa: S608
+                    f" (SELECT max(seq) FROM {table}))"
+                )
+        for table in COPIED_TABLES:
+            if _fingerprint_of(source, table) != _fingerprint_of(target, table):
+                raise EvidenceError(f"{table} didn't read back the same, so nothing was moved")
+        target._db.commit()
+    except BaseException:
+        target._db.rollback()
+        raise
+    return counts
 
 
 def bundle_id(host: str, started: datetime, run_id: str) -> str:
@@ -1357,7 +1467,7 @@ def write_sidecar(sealed: Sealed, row: dict[str, Any]) -> Path:
     return sidecar
 
 
-def check_sidecar(path: Path, row: sqlite3.Row) -> list[tuple[str, bool]]:
+def check_sidecar(path: Path, row: Any) -> list[tuple[str, bool]]:
     """Compare a bundle's sidecar with its database row, field by field.
     Never raises: a missing or damaged sidecar is a failed check."""
     try:

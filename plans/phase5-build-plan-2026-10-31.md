@@ -139,6 +139,9 @@ The page's commands are proved on a real sshd by `tests/integration/first_setup_
 
 **5.14 PostgreSQL.** The store behind one interface, with its append-only triggers,
 custody and purges proved to hold there as they do on SQLite.
+As built: SQLite stays the default, and PostgreSQL is an extra. Evidence files stay on disk, and the
+address can't hold a password. `checker store move` moves an existing store. The whole test suite runs on
+both. The web interface's own database follows with 5.15.
 
 **5.15 Accounts and roles.** Login, roles (who may view, who may act), and the action
 record naming a person, not a machine. Reaching it from another machine comes with this. So does

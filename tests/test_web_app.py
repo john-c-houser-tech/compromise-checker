@@ -612,6 +612,7 @@ def test_the_page_shows_the_same_order_as_the_command(web):
     assert "not proof" in text
 
 
+@pytest.mark.sqlite_only
 def test_looking_at_the_page_leaves_the_evidence_store_alone(web):
     client, home = signed_in(web)
     analysed(home, "b1", 10, ROOTED)
@@ -622,6 +623,7 @@ def test_looking_at_the_page_leaves_the_evidence_store_alone(web):
     assert not (home[0] / "packs" / "state.json").exists()
 
 
+@pytest.mark.sqlite_only
 def test_a_store_that_cannot_answer_is_a_plain_page(web):
     client, home = signed_in(web)
     (home[0] / "checker.db").write_bytes(b"not a database, not at all" * 100)

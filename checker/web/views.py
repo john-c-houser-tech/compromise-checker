@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import getpass
 import json
-import sqlite3
 import sys
 from urllib.parse import urlencode, urlsplit
 
@@ -26,6 +25,7 @@ from django_otp import login as otp_login
 from pydantic import ValidationError as InvalidSettings
 
 from checker import schedule
+from checker.database import DATABASE_ERRORS
 from checker.evidence import EvidenceError, load_config
 from checker.fleet import read_evidence, read_fleet, read_host, read_threats
 from checker.inventory import home, load_inventory
@@ -613,7 +613,7 @@ CANT_CHANGE_SETTINGS = "That couldn't be done: the settings or the evidence stor
 GONE = "That server isn't in the list of servers any more."
 MANAGE_FAILURES = (
     OSError,
-    sqlite3.Error,
+    *DATABASE_ERRORS,
     yaml.YAMLError,
     InvalidSettings,
     EvidenceError,
@@ -1336,7 +1336,7 @@ def _deciding(request, work) -> HttpResponse:
         raise
     except (ValueError, EvidenceError) as exc:
         raise ActionFailed(visible(str(exc), 800)) from None
-    except (OSError, sqlite3.Error, yaml.YAMLError, WhitelistError) as exc:
+    except (OSError, *DATABASE_ERRORS, yaml.YAMLError, WhitelistError) as exc:
         print(f"checker web: a decision failed: {type(exc).__name__}", file=sys.stderr)
         raise ActionFailed(CANT_DECIDE) from None
     return _back_to_decide(name)

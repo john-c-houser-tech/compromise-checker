@@ -44,6 +44,11 @@ WHAT_TO_TRY = (
         "This machine couldn't reach the server. Check its address and port, and that it's on.",
     ),
     (
+        "cannot read key",
+        "The key file for this server can't be read. It has to be a key with no passphrase, in a"
+        " file this tool's account can read, or use an SSH agent instead.",
+    ),
+    (
         "host key",
         "The server's identity hasn't been confirmed, or it has changed. Confirm it on the"
         " server's page.",
@@ -168,8 +173,17 @@ def progress(base: Path) -> dict[str, Any]:
 
 
 def what_to_try(lines: list[str]) -> list[str]:
-    """A check's own words, and what they mean for someone setting up a server."""
-    return [advice for phrase, advice in WHAT_TO_TRY if any(phrase in str(line) for line in lines)]
+    """A check's own words, and what they mean for someone setting up a server. Only the tool's own
+    lines, and only the first phrase in each: what comes after it can be the server's words."""
+    found = set()
+    for line in lines:
+        text = str(line)
+        if not text.startswith("checker:"):
+            continue
+        places = [(text.find(phrase), phrase) for phrase, _ in WHAT_TO_TRY if phrase in text]
+        if places:
+            found.add(min(places)[1])
+    return [advice for phrase, advice in WHAT_TO_TRY if phrase in found]
 
 
 def _from_option(typed: str) -> tuple[str, str]:
@@ -213,8 +227,8 @@ def commands_for(base: Path, host: Host, typed_from: str) -> dict[str, Any]:
         "commands": "",
         "removal": "",
     }
-    if not (public and plain and usable_python and context["uses_sudo_rule"]):
-        return context
+    if problem or not (public and plain and usable_python and context["uses_sudo_rule"]):
+        return context  # a refused address: not commands with no limit under the error
     python = f"/usr/bin/{host.python}" if named else host.python
     user = host.user
     options = ["restrict"]
@@ -224,19 +238,27 @@ def commands_for(base: Path, host: Host, typed_from: str) -> dict[str, Any]:
     options.append(f'command="sudo -n -- {host.python} -I -B -"')
     line = f"{','.join(options)} {public} compromise-checker"
     rule = f"{user} ALL=(root) NOPASSWD: {python} -I -B -"
+    rule_file = f"/etc/sudoers.d/compromise-checker-{user}"
     commands = f"""sudo bash -eu <<'END_OF_SETUP'
-# Stop if this account is already someone's: these commands are for a new one.
-if id {user} > /dev/null 2>&1; then
-  echo "STOPPED: the account {user} already exists, so nothing was changed."
-  exit 1
-fi
-# Stop if sudo would find a different Python from the one the rule names. The same file by another
-# path is fine: /bin is /usr/bin on most systems now, and sudo compares the files.
+stop() {{ echo "STOPPED: $1"; exit 1; }}
+nothing="so nothing was changed."
+for needed in visudo useradd su ssh-keygen; do
+  command -v "$needed" > /dev/null || stop "$needed isn't installed here, $nothing"
+done
+# Stop if this account is someone's, or a home is waiting for it with someone's files.
+id {user} > /dev/null 2>&1 && stop "the account {user} already exists, $nothing"
+home_base=$(useradd -D | sed -n 's/^HOME=//p')
+[ ! -e "$home_base/{user}" ] || stop "$home_base/{user} already exists, $nothing"
+# Stop if sudo would find a different Python from the one the rule names.
 found=$(command -v {host.python} || true)
-if [ -z "$found" ] || [ "$(readlink -f "$found")" != "$(readlink -f {python})" ]; then
-  echo "STOPPED: Python isn't at {python} here, so nothing was changed."
-  exit 1
-fi
+[ -n "$found" ] || stop "there's no {host.python} here, $nothing"
+[ "$(readlink -f "$found")" = "$(readlink -f {python})" ] \\
+  || stop "another Python comes before {python} here, $nothing"
+# The rule, checked before anything is made.
+rule=$(mktemp)
+trap 'rm -f "$rule"' EXIT
+echo {shlex.quote(rule)} > "$rule"
+visudo -cf "$rule" > /dev/null || stop "the sudo rule didn't check out, $nothing"
 
 # The account: no password, so it can only log in with the key.
 useradd --create-home --shell /bin/sh --comment "{_COMMENT}" {user}
@@ -248,13 +270,14 @@ install -d -m 700 -o {user} -g {user} "$home/.ssh"
 echo {shlex.quote(line)} > "$home/.ssh/authorized_keys"
 chown {user}:{user} "$home/.ssh/authorized_keys"
 chmod 600 "$home/.ssh/authorized_keys"
+ssh-keygen -lf "$home/.ssh/authorized_keys" > /dev/null 2>&1 \\
+  && [ "$(wc -l < "$home/.ssh/authorized_keys")" = 1 ] \\
+  || stop "the key was damaged in pasting. Take this away again, then paste it unwrapped."
 
-# The one thing it may run as an administrator, checked before it goes in place.
-rule=$(mktemp)
-echo {shlex.quote(rule)} > "$rule"
-visudo -cf "$rule"
-install -m 440 -o root -g root "$rule" /etc/sudoers.d/compromise-checker
-rm -f "$rule"
+# The one thing it may run as an administrator, and proof that it can.
+install -m 440 -o root -g root "$rule" {rule_file}
+su -s /bin/sh {user} -c 'sudo -n -- {host.python} -I -B -' < /dev/null \\
+  || stop "sudo refused it. Take this away again, and see docs/scanner-account.md."
 echo "Set up. Now confirm its identity on the server's page."
 END_OF_SETUP
 """
@@ -264,7 +287,7 @@ if [ "$(getent passwd {user} | cut -d: -f5)" != "{_COMMENT}" ]; then
   echo "STOPPED: {user} isn't an account these commands made, so nothing was changed."
   exit 1
 fi
-rm -f /etc/sudoers.d/compromise-checker
+rm -f {rule_file}
 userdel --remove {user}
 echo "Taken away."
 END_OF_REMOVAL

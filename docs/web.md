@@ -149,8 +149,9 @@ copy of that file, or a backup of it, as you would a password.
 
 The first time `checker web` starts, in an empty home, it sets itself up: an evidence key, a database,
 nothing optional collected and the AI advisor off. It prints where the key is and the one-time link for
-the first account. If settings go missing from a home with a key or evidence in it, it refuses, and says to
-restore them: a new key would make everything stored unreadable. `checker init` is still there
+the first account. If settings go missing from a home with an evidence key in it, it keeps that key, so a
+backed-up key is enough to start again, and goes back to those same settings. With stored evidence and no
+key it refuses, and asks for the key: a new one couldn't read what's stored. `checker init` is still there
 for anyone who wants to answer its questions first, or keep the private key elsewhere (`--recipient`).
 
 The First setup page then goes through what's next, working out where you are from what's really there:

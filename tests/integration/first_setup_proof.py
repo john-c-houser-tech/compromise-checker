@@ -84,21 +84,28 @@ def wait_for_check(page) -> str:
 
 
 def prove_the_key_is_limited(home: Path, env: dict) -> None:
-    """The limits the page's commands claim, tried from outside and from the wrong address."""
+    """The limits the page's commands claim, tried from outside and from the wrong address. Each
+    has to show the login itself worked, or was refused for the right reason."""
     key = str(home / "keys" / "scanner_ed25519")
-    ssh = ["ssh", "-i", key, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-           "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"]  # fmt: skip
-    asked = run(
-        *ssh, "-p", str(SSH_PORT), "scanner@127.0.0.1", "id", check=False, given="", env=env
+    ssh = ["ssh", "-F", "/dev/null", "-i", key, "-o", "StrictHostKeyChecking=no",
+           "-o", "UserKnownHostsFile=/dev/null", "-o", "IdentitiesOnly=yes",
+           "-o", "BatchMode=yes"]  # fmt: skip
+    asked = run(*ssh, "-p", str(SSH_PORT), "scanner@127.0.0.1", "id", check=False,
+                given="import os; print('as uid', os.geteuid())", env=env)  # fmt: skip
+    checks(
+        "whatever it asks for, it gets only the forced Python, as root",
+        asked.returncode == 0 and "as uid 0" in asked.stdout and "uid=" not in asked.stdout,
+        asked.stdout + asked.stderr,
     )
-    checks("it can't run what it asks for", "uid=" not in asked.stdout, asked.stdout)
     run("docker", "cp", key, f"{CONTAINER}:/tmp/stolen")
     run("docker", "exec", CONTAINER, "chmod", "600", "/tmp/stolen")
-    stolen = run(
-        "docker", "exec", CONTAINER, "ssh", "-i", "/tmp/stolen", "-o", "StrictHostKeyChecking=no",
-        "-o", "BatchMode=yes", "scanner@127.0.0.1", "true", check=False, given="",
+    run(
+        "docker", "exec", CONTAINER, "ssh", "-F", "/dev/null", "-i", "/tmp/stolen", "-o",
+        "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "scanner@127.0.0.1", "true",
+        check=False, given="",
     )  # fmt: skip
-    checks("it's refused from another address", "Permission denied" in stolen.stderr, stolen.stderr)
+    log = run("docker", "exec", CONTAINER, "cat", "/tmp/sshd.log").stdout
+    checks("the right key is refused from another address", "not from a permitted host" in log, log)
     existing = run("docker", "exec", "-i", CONTAINER, "bash", check=False, given=COMMANDS["last"])
     checks(
         "the commands stop on an account that exists",
@@ -169,7 +176,11 @@ def journey(page, base: str, link: str, home: Path, gateway: str, env: dict) -> 
     text = wait_for_check(page)
     checks("the real check finishes cleanly", "Finished." in text, text)
     listing = run(sys.executable, "-m", "checker", "bundle", "list", env=env, cwd=REPO).stdout
-    checks("what it stored is a complete collection", "complete" in listing, listing)
+    checks(
+        "what it stored is a complete collection",
+        bool(re.search(r"\bcomplete\b", listing)),
+        listing,
+    )
     prove_the_key_is_limited(home, env)
     page.goto(f"{base}/first-setup")
     checks("first setup says it's done", "Your first server is checked" in page.inner_text("main"))

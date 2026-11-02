@@ -7464,10 +7464,8 @@ def test_the_web_interface_sets_itself_up_on_a_first_start(tmp_path, monkeypatch
     assert (home_path / "keys" / "evidence-identity.txt").read_text() == before
 
 
-@pytest.mark.parametrize("trace", ["keys/evidence-identity.txt", "checker.db", "evidence/x.age"])
-def test_missing_settings_never_mean_a_new_key_over_old_evidence(
-    tmp_path, monkeypatch, capsys, trace
-):
+@pytest.mark.parametrize("trace", ["checker.db", "evidence/x.age"])
+def test_evidence_with_no_key_or_settings_stops_a_first_start(tmp_path, monkeypatch, capsys, trace):
     from checker import cli
     from checker.web import app
 
@@ -7477,21 +7475,69 @@ def test_missing_settings_never_mean_a_new_key_over_old_evidence(
     monkeypatch.setenv("CHECKER_HOME", str(home_path))
     monkeypatch.setattr(app, "serve", lambda *args: 0)
     assert cli.main(["web"]) == 1
-    assert "restore config.yaml" in capsys.readouterr().err
-    assert (home_path / trace).read_text() == "kept"
-    assert not (home_path / "config.yaml").exists()
+    assert "Put your backup of the evidence key" in capsys.readouterr().err
+    assert (home_path / trace).read_text() == "kept" and not (home_path / "config.yaml").exists()
 
 
-def test_init_never_replaces_an_evidence_key(tmp_path, monkeypatch, capsys):
+def test_a_kept_key_is_enough_to_start_again(tmp_path, monkeypatch, capsys):
+    """After a first start cut short, or on a new machine with only the backup the page asks for."""
+    from checker import cli
+    from checker.evidence import load_config
+    from checker.web import app
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    monkeypatch.setattr(app, "serve", lambda *args: 0)
+    assert cli.main(["init", "--advisor", "off"]) == 0
+    key = tmp_path / "keys" / "evidence-identity.txt"
+    before, recipients = key.read_text(), load_config(tmp_path).recipients
+    (tmp_path / "config.yaml").unlink()
+    capsys.readouterr()
+    assert cli.main(["web"]) == 0
+    assert "keeping it" in capsys.readouterr().out
+    assert key.read_text() == before and load_config(tmp_path).recipients == recipients
+    (tmp_path / "config.yaml").unlink()
+    assert cli.main(["init", "--advisor", "off"]) == 0, "and the command line's way back works too"
+    assert key.read_text() == before and load_config(tmp_path).recipients == recipients
+
+
+def test_a_kept_key_isn_t_replaced_by_another_recipient_or_when_damaged(
+    tmp_path, monkeypatch, capsys
+):
+    from pyrage import x25519
+
     from checker import cli
 
     monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
-    assert cli.main(["init", "--advisor", "off"]) == 0
     key = tmp_path / "keys" / "evidence-identity.txt"
-    before = key.read_text()
-    (tmp_path / "config.yaml").unlink()
+    key.parent.mkdir(parents=True)
+    key.write_text("not a key")
     assert cli.main(["init", "--advisor", "off"]) == 1
-    assert key.read_text() == before and "restore config.yaml" in capsys.readouterr().err
+    assert key.read_text() == "not a key"
+    other = str(x25519.Identity.generate().to_public())
+    assert cli.main(["init", "--advisor", "off", "--recipient", other]) == 1
+    assert key.read_text() == "not a key" and not (tmp_path / "config.yaml").exists()
+
+
+def test_a_dangling_key_link_is_never_written_through(tmp_path, monkeypatch):
+    from checker import cli
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    key = tmp_path / "keys" / "evidence-identity.txt"
+    key.parent.mkdir(parents=True)
+    key.symlink_to(tmp_path / "elsewhere")
+    assert cli.main(["init", "--advisor", "off"]) == 1
+    assert key.is_symlink() and not (tmp_path / "elsewhere").exists()
+
+
+def test_a_relative_home_sets_nothing_up(tmp_path, monkeypatch):
+    from checker import cli
+    from checker.web import app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CHECKER_HOME", "rel")
+    monkeypatch.setattr(app, "serve", lambda *args: 0)
+    assert cli.main(["web"]) == 1
+    assert not (tmp_path / "rel").exists()
 
 
 def test_a_dangling_settings_link_isn_t_a_first_start(tmp_path, monkeypatch, capsys):
@@ -7641,6 +7687,8 @@ def test_the_commands_are_filled_in_with_the_real_key_and_nothing_private(keyed)
     assert 'command="sudo -n -- python3 -I -B -"' in text
     assert "scanner ALL=(root) NOPASSWD: /usr/bin/python3 -I -B -" in text
     assert "sudo bash -eu" in text and "already exists" in text
+    assert "/etc/sudoers.d/compromise-checker-scanner" in text
+    assert "su -s /bin/sh scanner -c 'sudo -n -- python3 -I -B -'" in text, "proved, not assumed"
     assert "act as an administrator" in text
     assert "PRIVATE KEY" not in text
 
@@ -7663,8 +7711,8 @@ def test_the_command_is_what_the_transport_really_sends(keyed):
 def test_a_bad_address_goes_nowhere_near_the_commands(keyed, typed):
     client, _ = keyed
     text = prepared(client, **{"from": typed})
-    assert "That isn't one IP address" in text and "evil" not in text.split("On the server")[1]
-    assert "rm -rf" not in text.split("On the server")[1]
+    assert "That isn't one IP address" in text and "On the server" not in text
+    assert "useradd" not in text, "not commands with no limit, under the error"
 
 
 def test_with_no_address_it_says_the_key_isn_t_limited(keyed):
@@ -7710,6 +7758,28 @@ def test_the_prepare_page_is_for_listed_servers_and_contacts_nothing(keyed, monk
     assert client.get("/manage/server/prepare", {"host": "web01"}).status_code == 200
 
 
+def test_a_server_s_words_can_t_steer_what_a_failed_check_advises():
+    from checker.web.first_setup import what_to_try
+
+    hostile = (
+        "checker: web01: not collected: web01: sudo refused: login refused host key cannot connect"
+    )
+    assert len(what_to_try([hostile])) == 1 and "administrator" in what_to_try([hostile])[0]
+    assert what_to_try(["web01 login refused, said a server"]) == []
+    assert "no passphrase" in what_to_try(["checker: web01: cannot read key /k: encrypted"])[0]
+
+
+def test_the_fleet_survives_a_settings_file_the_reminder_can_t_read(web, inventory, monkeypatch):
+    from checker.web import first_setup
+
+    def broken(base):
+        raise IndexError("no recipients")
+
+    client, _ = signed_in(web)
+    monkeypatch.setattr(first_setup, "key_unsaved", broken)
+    assert client.get("/").status_code == 200
+
+
 def test_first_setup_needs_a_login(web, inventory):
     client, _ = web
     assert client.get("/first-setup").status_code == 302
@@ -7723,7 +7793,7 @@ def test_first_setup_needs_a_login(web, inventory):
 def test_a_range_too_wide_to_limit_anything_is_refused(keyed, typed):
     client, _ = keyed
     text = prepared(client, **{"from": typed})
-    assert "too wide" in text and "from=" not in text
+    assert "too wide" in text and "useradd" not in text
 
 
 def test_a_python_path_is_used_as_given_and_only_the_usual_gets_the_os_note(keyed, unconfirmed):
@@ -7808,9 +7878,18 @@ def test_a_folder_at_the_key_s_path_is_refused_and_two_makes_give_one_key(web, i
 @pytest.mark.parametrize(
     ("line", "words"),
     [
-        ("not collected (empty): web01: login refused for scanner", "refused this machine's login"),
-        ("sudo refused: sudo: a password is required", "couldn't act as an administrator"),
-        ("cannot connect: Connection lost", "couldn't reach the server"),
+        (
+            "checker: web01: not collected (empty): web01: login refused for scanner",
+            "refused this machine's login",
+        ),
+        (
+            "checker: web01: not collected (empty): web01: sudo refused: a password is required",
+            "couldn't act as an administrator",
+        ),
+        (
+            "checker: web01: not collected (empty): web01: cannot connect: Connection lost",
+            "couldn't reach the server",
+        ),
     ],
 )
 def test_a_failed_check_says_what_to_look_at(web, inventory, line, words, monkeypatch):

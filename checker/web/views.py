@@ -390,6 +390,11 @@ def fleet_page(request) -> HttpResponse:
         # Details may quote a settings file, secrets included: only the kind goes to the log.
         print(f"checker web: can't read the results: {type(exc).__name__}", file=sys.stderr)
         return _unavailable(request, "A settings file or the evidence key can't be read.")
+    try:
+        key_unsaved = first_setup.key_unsaved(home())
+    except Exception as exc:  # noqa: BLE001 - only a reminder depends on it
+        print(f"checker web: can't read the key's state: {type(exc).__name__}", file=sys.stderr)
+        key_unsaved = False
     for problem in problems:
         print(f"checker web: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)
     rows = wording.rows_for(hosts)
@@ -408,7 +413,7 @@ def fleet_page(request) -> HttpResponse:
         request,
         "fleet.html.j2",
         {
-            "key_unsaved": first_setup.key_unsaved(home()),
+            "key_unsaved": key_unsaved,
             "headline": title,
             "headline_tone": title_tone,
             "rows": shown,

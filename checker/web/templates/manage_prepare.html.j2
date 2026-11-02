@@ -22,10 +22,11 @@
   <label>Address <input name="from" value="{{ typed_from }}"></label>
   <button>Put it in the commands</button>
 </form>
+{% if not from_problem %}
 {% if not address %}<p class="note">These commands don't limit where the key can be used from.</p>{% endif %}
 <h2>On the server</h2>
 <pre class="command">{{ commands }}</pre>
-<p>It should end by saying "Set up". If it says STOPPED, nothing was changed, and it says why. If it fails with "sudo: command not found" and you're logged in as root, remove the word <code>sudo</code> from the first line.</p>
+<p>It should end by saying "Set up". If it says STOPPED, it says why. If it stops with any other error, run "Taking this away again" below, then try again. If it says "sudo: command not found", install sudo on the server first: this tool needs it.</p>
 {% if usual_python %}<p class="note">This expects Python at {{ python }}, as on RHEL 9 and 10, Rocky, AlmaLinux and Ubuntu 22.04 or later.</p>{% endif %}
 <h2>Next</h2>
 <p><a href="{{ url('manage_server') }}?host={{ host.name | urlencode }}">Confirm it's really this server</a>, then <a href="{{ url('check_new') }}?host={{ host.name | urlencode }}">run a check</a>.</p>
@@ -33,5 +34,6 @@
   <summary>Taking this away again</summary>
   <pre class="command">{{ removal }}</pre>
 </details>
+{% endif %}
 {% endif %}
 {% endblock %}

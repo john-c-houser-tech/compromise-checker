@@ -1727,20 +1727,25 @@ def _web_extra_missing(exc: ImportError) -> int:
 def _first_start(base: Path) -> None:
     """Someone who has never used a command line starts here, so the tool sets itself up, with
     nothing optional collected and the AI advisor off. The first setup page asks about them. What
-    `checker init --recipient` does stays with `checker init`. Only in a home with nothing in it,
-    since a missing settings file is no sign of a new install, and only where a home could be."""
-    traces = [
-        name
-        for name in ("keys/evidence-identity.txt", "checker.db", "evidence", "web.db")
-        if (base / name).exists()
-    ]
-    if traces:
+    `checker init --recipient` does stays with `checker init`. Missing settings are no sign of a new
+    install: an evidence key found here is kept, and evidence with no key to read it stops this."""
+    if os.environ.get("CHECKER_HOME"):
+        if not base.is_absolute():
+            raise EvidenceError(f"CHECKER_HOME has to be a full path, not {base}")
+        if not base.parent.is_dir():
+            raise EvidenceError(
+                f"CHECKER_HOME is {base}, whose folder doesn't exist: is that right?"
+            )
+    has_key = os.path.lexists(base / "keys" / "evidence-identity.txt")
+    if not has_key and any((base / name).exists() for name in ("checker.db", "evidence")):
         raise EvidenceError(
-            f"{base} has {', '.join(traces)} but no settings: restore config.yaml from a backup,"
-            " or run `checker init` if you mean to start again"
+            f"{base} has stored evidence but no settings or key. Put your backup of the evidence"
+            f" key at {base / 'keys' / 'evidence-identity.txt'} and start again: a new key couldn't"
+            " read what's stored"
         )
-    if os.environ.get("CHECKER_HOME") and not base.parent.is_dir():
-        raise EvidenceError(f"CHECKER_HOME is {base}, whose folder doesn't exist: is that right?")
+    if has_key:
+        print("Found an evidence key here with no settings: keeping it. Settings are back to")
+        print("nothing optional collected and the AI advisor off. Check them in Settings.")
     try:
         _, identity_path = initialise(base)
     except EvidenceError:
@@ -1767,7 +1772,10 @@ def cmd_web(args: argparse.Namespace) -> int:
     if bool(args.tls_cert) != bool(args.tls_key):
         print("checker: --tls-cert and --tls-key go together", file=sys.stderr)
         return 2
-    problem = listen_problem(args.bind, args.public_url, bool(args.tls_cert))
+    try:
+        problem = listen_problem(args.bind, args.public_url, bool(args.tls_cert))
+    except ImportError as exc:
+        return _web_extra_missing(exc)
     if problem:  # before anything is set up, for a server that wouldn't have started
         print(f"checker: {problem}", file=sys.stderr)
         return 2

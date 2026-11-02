@@ -12,7 +12,7 @@
     {% if evidence_key_lost %}
     <p class="error" role="alert">The evidence key isn't where it should be, at {{ evidence_key | visible(2000) }}. Without it, what's stored can't be read. Put your backup back there.</p>
     {% elif evidence_key %}
-    <p>Everything this tool stores is encrypted to one key, which is on this machine. If it's lost, stored evidence can't be read by anyone. Copy this file somewhere safe and separate, such as a password manager, and not on this machine. If this machine is somewhere else, ask whoever looks after it to copy the file for you:</p>
+    <p>The evidence this tool stores is encrypted to one key, which is on this machine. If it's lost, stored evidence can't be read by anyone. Copy this file somewhere safe and separate, such as a password manager, and not on this machine. If this machine is somewhere else, ask whoever looks after it to copy the file for you:</p>
     <p class="command">{{ evidence_key | visible(2000) }}</p>
     <p class="note">Anyone with that file and a copy of the evidence can read it, so keep it as private as the evidence.</p>
     {% if not done.backup %}
@@ -57,7 +57,7 @@
       {{ parts.confirm(with_code=code_needed) }}
       <button>Make this machine's key</button>
     </form>
-    <p class="note">If you already have a key for this, skip this step: name its file when you add a server.</p>
+    <p class="note">If you already have a key for this, with no passphrase, skip this step: name its file when you add a server.</p>
     {% endif %}
   </li>
   <li>

@@ -9102,12 +9102,13 @@ def test_a_start_that_didnt_happen_doesnt_count(web, inventory, monkeypatch, fai
     assert not accounts.too_many_starts("jo")
 
 
-def test_real_starts_count_on_every_route(web, inventory, monkeypatch):
+def test_real_starts_count_on_every_route(web, inventory, agent, monkeypatch):
     """Through the routes, so a renamed action can't quietly end the limit."""
     from checker.web import accounts, runs
 
     monkeypatch.setattr(runs, "start", lambda *args, **kwargs: 1)
     client, _ = signed_in(web)
+    inventory(key_host())
     for path, fields in (
         ("/checks/start", {"host": "web01"}),
         ("/checks/analyze", {"host": "web01"}),

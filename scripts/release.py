@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess  # noqa: S404
 import sys
@@ -302,6 +303,8 @@ def build_wheel(commit: str, work: Path) -> Path:
     python = tool / "bin" / "python"
     tool_home = work / "tool-home"
     tool_home.mkdir()
+    pinned = work / "build-requirements.lock"
+    pinned.write_bytes(_blob(commit, "release/build-requirements.lock"))
     _run(
         python,
         "-I",
@@ -312,7 +315,7 @@ def build_wheel(commit: str, work: Path) -> Path:
         "--quiet",
         "--require-hashes",
         "-r",
-        BUILD_LOCK,
+        pinned,
         cwd=work,
         env=_clean_env(tool_home, "UTC", "0"),
     )
@@ -447,7 +450,7 @@ def publish_command(directory: Path, manifest: Manifest) -> str:
     """Names each file, so nothing else that happens to be in the folder gets published."""
     flag = " --prerelease" if manifest.prerelease else ""
     names = [*manifest.files, MANIFEST, SIGNATURE]
-    files = " ".join(str(directory / name) for name in names)
+    files = " ".join(shlex.quote(str(directory / name)) for name in names)
     version = manifest.version
     return f'gh release create v{version} --verify-tag{flag} --title "{version}" {files}'
 

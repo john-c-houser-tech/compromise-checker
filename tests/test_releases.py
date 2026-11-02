@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import tomllib
 import zipfile
 from pathlib import Path
@@ -531,6 +532,13 @@ def test_the_publish_command_matches_the_release_and_names_each_file(tmp_path):
         assert f"d/{name}" in command
     final = read_manifest(*signed(key, body(prerelease=False)), public(key, tmp_path))
     assert "--prerelease" not in script.publish_command(Path("d"), final)
+
+
+def test_the_publish_command_survives_a_space_in_the_folder_name(tmp_path):
+    key = Key()
+    manifest = read_manifest(*signed(key, body()), public(key, tmp_path))
+    command = script.publish_command(Path("/tmp/release files"), manifest)
+    assert f"/tmp/release files/{MANIFEST}" in shlex.split(command)
 
 
 def test_verify_refuses_a_folder_holding_anything_else(tmp_path):

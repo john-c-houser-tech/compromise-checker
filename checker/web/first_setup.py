@@ -270,6 +270,8 @@ install -d -m 700 -o {user} -g {user} "$home/.ssh"
 echo {shlex.quote(line)} > "$home/.ssh/authorized_keys"
 chown {user}:{user} "$home/.ssh/authorized_keys"
 chmod 600 "$home/.ssh/authorized_keys"
+# Where SELinux is on, sshd can only read these with the right label.
+if command -v restorecon > /dev/null; then restorecon -R "$home/.ssh"; fi
 ssh-keygen -lf "$home/.ssh/authorized_keys" > /dev/null 2>&1 \\
   && [ "$(wc -l < "$home/.ssh/authorized_keys")" = 1 ] \\
   || stop "the key was damaged in pasting. Take this away again, then paste it unwrapped."

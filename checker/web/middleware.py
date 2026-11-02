@@ -57,7 +57,7 @@ def only_through_the_proxy(get_response):
         wanted = settings.CHECKER_PROXY_SECRET
         if wanted is not None:
             sent = request.META.get(_PROXY_SECRET_META, "")
-            if not hmac.compare_digest(sent.encode(), wanted.encode()):
+            if not wanted or not hmac.compare_digest(sent.encode(), wanted.encode()):
                 words = (
                     "This has to be reached through its proxy, and that request didn't come"
                     f" through it. The proxy must send the header {PROXY_SECRET_HEADER}: see the"

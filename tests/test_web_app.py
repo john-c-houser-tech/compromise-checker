@@ -9020,20 +9020,14 @@ def test_starting_behind_a_proxy_says_what_it_needs_and_not_the_secret(
     assert web_app.PROXY_SECRET_HEADER not in capsys.readouterr().out
 
 
-def starts_recorded(who, number, action="started a check", age=timedelta(0)):
+def starts_recorded(who, number, age=timedelta(0)):
     from django.utils import timezone
 
-    from checker.web.models import ActionRecord
+    from checker.web.models import CheckRun
 
     for _ in range(number):
-        ActionRecord.objects.create(
-            at=timezone.now() - age,
-            who=who,
-            address="",
-            action=action,
-            target="",
-            outcome="started",
-            detail="",
+        CheckRun.objects.create(
+            kind="check", hosts="[]", who=who, address="", started_at=timezone.now() - age
         )
 
 
@@ -9042,7 +9036,7 @@ def starts_recorded(who, number, action="started a check", age=timedelta(0)):
     [
         ("/checks/start", {"host": "web01"}),
         ("/checks/analyze", {"host": "web01"}),
-        ("/decide/ask", {"host": "web01", "confirm_password": PASSWORD}),
+        ("/decide/ask", {"host": "web01"}),  # no password: nor is a code used up to hear this
     ],
 )
 def test_one_person_can_start_only_so_many_in_an_hour(web, monkeypatch, path, fields):
@@ -9051,42 +9045,87 @@ def test_one_person_can_start_only_so_many_in_an_hour(web, monkeypatch, path, fi
     started = []
     monkeypatch.setattr(runs, "start", lambda *args, **kwargs: started.append(args) or 1)
     client, _ = signed_in(web)
-    starts_recorded("jo", accounts.MAX_STARTS, "started an analysis")
+    starts_recorded("jo", accounts.MAX_STARTS)
     response = client.post(path, fields)
     assert response.status_code == 400 and "as many as one person can" in response.content.decode()
     assert not started
     assert actions_recorded()[-1][3] == "failed"
 
 
-def test_the_limit_counts_each_kind_together_and_only_the_last_hour(web):
+def test_the_limit_is_each_persons_own_and_only_the_last_hour(web):
     from checker.web import accounts
-    from checker.web.views import STARTS
 
-    account_named("jo")
-    starts_recorded("jo", accounts.MAX_STARTS - 2, "started a check")
-    starts_recorded("jo", 1, "started an analysis")
-    assert not accounts.too_many_starts("jo", STARTS)
-    starts_recorded("jo", 1, "asked the AI advisor for rules")
-    assert accounts.too_many_starts("jo", STARTS)
-    assert not accounts.too_many_starts("someone else", STARTS)
+    starts_recorded("jo", accounts.MAX_STARTS - 1)
+    assert not accounts.too_many_starts("jo")
+    starts_recorded("jo", 1)
+    assert accounts.too_many_starts("jo") and not accounts.too_many_starts("someone else")
+    starts_recorded("old", accounts.MAX_STARTS, age=accounts.START_WINDOW + timedelta(minutes=1))
+    assert not accounts.too_many_starts("old")
 
 
-def test_old_starts_and_other_lines_dont_count(web):
+def test_what_never_started_doesnt_count(web):
+    """Or a stolen session could use up someone's starts with forms that do nothing."""
     from checker.web import accounts
-    from checker.web.views import STARTS
-
-    starts_recorded("jo", accounts.MAX_STARTS, age=accounts.START_WINDOW + timedelta(minutes=1))
-    starts_recorded("jo", accounts.MAX_STARTS, "changed settings")
-    assert not accounts.too_many_starts("jo", STARTS)
-
-
-def test_the_limits_action_names_are_real_ones(web):
-    """Or a rename would quietly end the limit."""
-    from django.urls import reverse
-
-    from checker.web.views import STARTS
 
     client, _ = signed_in(web)
-    for view in ("check_start", "analyze_start", "rules_ask"):
-        client.post(reverse(view), {"host": "web01", "confirm_password": PASSWORD})
-    assert {row[1] for row in actions_recorded() if row[3] == "started"} >= set(STARTS)
+    for _ in range(accounts.MAX_STARTS + 1):
+        client.post("/checks/analyze", {"host": "not a server"})
+    assert not accounts.too_many_starts("jo")
+
+
+def test_the_limit_outlasts_what_is_kept_of_runs():
+    from checker.web import accounts, runs
+
+    assert runs.KEEP > accounts.MAX_STARTS
+
+
+@pytest.mark.parametrize("peer", ["127.0.0.1", "127.77.5.9", "::1", "::ffff:127.0.0.2"])
+@pytest.mark.parametrize("behind", [False, True])
+def test_anyone_on_this_machine_counts_as_one_address(web, settings_override, peer, behind):
+    """They can send from any of 127.x.y.z, so otherwise each would be a new set of tries."""
+    from checker.web.accounts import client_address
+
+    settings_override(CHECKER_BEHIND_PROXY=behind)
+    assert client_address(request_from(peer)) == "127.0.0.1"
+    assert client_address(request_from("127.0.0.1", peer if behind else None)) == "127.0.0.1"
+
+
+def test_guessing_from_many_loopback_addresses_is_still_throttled(web, settings_override):
+    client, _ = web
+    settings_override(CHECKER_BEHIND_PROXY=True)
+    account()
+    for n in range(5):
+        forged = {"HTTP_X_FORWARDED_FOR": f"127.77.5.{n}"}
+        client.post("/login", {"username": "jo", "password": "no"}, **forged)
+    response = client.post(
+        "/login",
+        {"username": "jo", "password": PASSWORD},
+        HTTP_X_FORWARDED_FOR="127.88.1.1",
+    )
+    assert "Too many failed attempts" in response.content.decode()
+
+
+@pytest.mark.parametrize("contents", ["", " \n\n"])
+def test_an_emptied_secret_file_gets_a_new_secret(tmp_path, contents):
+    path = tmp_path / "keys" / web_app.PROXY_SECRET_FILE
+    path.parent.mkdir()
+    path.write_text(contents)
+    assert len(web_app.proxy_secret(tmp_path)) >= 40
+
+
+def test_an_empty_secret_refuses_everything_rather_than_nothing(web, settings_override):
+    client, _ = web
+    settings_override(CHECKER_BEHIND_PROXY=True, CHECKER_PROXY_SECRET="")
+    assert client.get("/login").status_code == 403
+    assert client.get("/login", HTTP_X_CHECKER_PROXY_SECRET="").status_code == 403
+
+
+def test_the_secret_comes_before_anything_else_answers(web, behind_proxy):
+    client, _ = web
+    assert client.get("/login", HTTP_HOST="not-allowed.example").status_code == 403
+    too_large = client.post("/login", {"x": "y" * 100_000})
+    assert too_large.status_code == 403 and "through its proxy" in too_large.content.decode()
+
+
+def test_the_server_doesnt_note_malformed_requests():
+    assert web_app.server_options("127.0.0.1:1", None, None)["loglevel"] == "error"

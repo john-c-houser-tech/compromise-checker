@@ -7,6 +7,7 @@ ports, turns off its admin port, and doesn't touch the machine's certificates or
 
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -106,6 +107,7 @@ def wait(p):
 
 
 DIRECT = "http://127.0.0.1:18767/login"
+p = None
 try:
     p = caddy(False)
     wait(p)
@@ -141,7 +143,7 @@ try:
         .execute("select username, address from web_loginattempt")
         .fetchall()
     )
-    assert rows == [("jo", "127.0.0.2")], rows
+    assert rows == [("jo", "127.0.0.1")], rows  # anyone on this machine counts as one
     print("A forged address and secret from a client count for nothing: recorded", rows)
     assert curl(DIRECT, "-H", "Host: checker.localhost") == "403"
     assert (
@@ -172,5 +174,9 @@ try:
     p.terminate()
     p.wait(5)
 finally:
+    if p is not None:
+        p.terminate()
+        p.wait(5)
     server.terminate()
     server.wait(10)
+    shutil.rmtree(work, ignore_errors=True)  # it holds the secret

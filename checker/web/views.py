@@ -1383,11 +1383,8 @@ def _names_of(request, **kwargs) -> str:
     return ", ".join(request.POST.getlist("host")) or "every server"
 
 
-STARTS = ("started a check", "started an analysis", "asked the AI advisor for rules")
-
-
 def _not_too_many_starts(request) -> None:
-    if accounts.too_many_starts(request.user.get_username(), STARTS):
+    if accounts.too_many_starts(request.user.get_username()):
         raise ActionFailed(
             f"You've started {accounts.MAX_STARTS} checks, analyses and requests for AI advice in"
             " the last hour, which is as many as one person can. Try again later. If you didn't"

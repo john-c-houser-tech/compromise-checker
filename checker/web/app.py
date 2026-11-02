@@ -34,7 +34,8 @@ def secret_key(home: Path) -> str:
 def proxy_secret(home: Path) -> str:
     """What the proxy sends to show a request came through it: made once, owner-only."""
     path = home / "keys" / PROXY_SECRET_FILE
-    if not path.exists():
+    # An emptied one, from a full disk or a partial backup, would be a secret anyone can send.
+    if not path.exists() or not path.read_text().strip():
         atomic_write(path, secrets.token_urlsafe(32) + "\n")
     os.chmod(path, 0o600)  # a restored backup may have come back wider
     return path.read_text().strip()
@@ -299,6 +300,8 @@ def server_options(bind: str, tls_cert: str | None, tls_key: str | None) -> dict
         "timeout": 120,
         # An access log would hold setup links; nothing about a request needs keeping.
         "accesslog": None,
+        # Anonymous requests mustn't be able to fill a log: gunicorn notes every malformed one.
+        "loglevel": "error",
         # gunicorn's own management socket: nothing here uses it, so nothing listens.
         "control_socket_disable": True,
     }

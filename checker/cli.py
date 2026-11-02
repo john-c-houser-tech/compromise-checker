@@ -2339,19 +2339,32 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
         return 1
     print(f"Moved {counts['bundles']} bundle(s) and their records, and checked each table.")
     print("The store is now in that database. Evidence files stay where they are.")
-    old = [
-        database_file(base).with_name(database_file(base).name + end)
-        for end in ("", "-wal", "-shm")
-    ]
+    # Renamed at once: left under its own name, it would be taken for the store if the settings were
+    # ever lost, with nothing to say it's out of date.
+    moved = []
+    for end in ("", "-wal", "-shm"):
+        path = database_file(base).with_name(database_file(base).name + end)
+        if path.exists():
+            target_name = path.with_name(path.name + ".moved")
+            try:
+                path.rename(target_name)
+            except OSError as exc:
+                print(
+                    f"checker: couldn't rename {path} ({exc.strerror}): delete it, or it could be"
+                    " taken for the store",
+                    file=sys.stderr,
+                )
+                return 1
+            moved.append(target_name)
     try:
         answer = args.yes or ask("Delete the old file? A purge can't reach it. Type 'delete': ")
     except EOFError:
         answer = ""
     if answer is not True and answer != "delete":
-        print(f"Kept {database_file(base)}: it still lists what's stored, so delete it yourself.")
+        print(f"Kept it as {moved[0]}: it still lists what's stored, so delete it yourself.")
         return 0
     try:
-        for path in old:
+        for path in moved:
             path.unlink(missing_ok=True)
     except OSError as exc:
         print(

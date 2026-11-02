@@ -67,7 +67,8 @@ missing, disabled or changed.
 
 Stop the web interface and anything else using the tool first. `checker store move` needs an empty
 database, and doesn't run during a `checker run`. It holds the old store while it copies every row, checks
-that each table reads back the same and changes the settings, and only then offers to delete the old file.
+that each table reads back the same and changes the settings, and only then renames the old file to
+`checker.db.moved`, so it can't be taken for the store, and offers to delete it.
 If the settings can't be written, what it made is taken away. If it's stopped between the two, the old
 store stays in charge, nothing is lost, and the new database needs emptying before trying again. Delete it: a purge can't reach what's left in it. There's no command for moving back.
 

@@ -410,7 +410,7 @@ def initialise(
     """Create the tool's directory, evidence key and database. With
     `recipient`, bundles are encrypted to that key and its private half stays
     wherever the organization keeps it; otherwise a key pair is made here."""
-    if database:
+    if database is not None:
         try:
             check_database_url(database)
         except ValueError as exc:
@@ -442,14 +442,13 @@ def _initialise(
     if (
         not database
         and not new_store
-        and os.path.lexists(kept)
         and not database_file(home).exists()
         and evidence.is_dir()
         and any(evidence.iterdir())
     ):
         # With a store elsewhere, whose settings are what's lost, this would start an empty one.
         raise EvidenceError(
-            f"{home} has evidence and a key, but no store: restore config.yaml from a backup, since"
+            f"{home} has evidence, but no store: restore config.yaml from a backup, since"
             " the store may be in a database it names. If the store really is lost, `checker init"
             " --new-store` starts an empty one, which won't list the evidence already here"
         )

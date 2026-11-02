@@ -375,11 +375,12 @@ class PostgresDatabase:
         )
 
     def _refuse_tables_of_others(self) -> None:
-        """Opening a store puts guards on tables by these names, which mustn't be someone else's."""
+        """Opening a store puts guards on tables by these names, which mustn't be someone else's,
+        and anything else by those names, of any kind, would be taken for one."""
         here = "(SELECT oid FROM pg_namespace WHERE nspname = current_schema())"
         for row in self.execute(
             "SELECT relname, obj_description(oid, 'pg_class') AS mark FROM pg_class"  # noqa: S608
-            f" WHERE relkind = 'r' AND relname = ANY(?) AND relnamespace = {here}",
+            f" WHERE relname = ANY(?) AND relnamespace = {here}",
             [list(_TABLES)],
         ).fetchall():
             if row["mark"] != _MARK:

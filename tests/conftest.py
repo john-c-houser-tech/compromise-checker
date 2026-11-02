@@ -55,7 +55,8 @@ def _store_on_postgres(monkeypatch):
             with psycopg.connect(server, autocommit=True) as admin:
                 admin.execute(f"CREATE SCHEMA {schema}")
             schemas.append(schema)
-            database = f"{server}?options=-csearch_path%3D{schema}"
+            separator = "&" if "?" in server else "?"
+            database = f"{server}{separator}options=-csearch_path%3D{schema}"
         return real(
             home, recipient, home_text, web_access_logs, exec_records, advisor, database, new_store
         )

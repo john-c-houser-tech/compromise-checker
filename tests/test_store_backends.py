@@ -414,7 +414,8 @@ def test_moving_keeps_the_old_file_unless_told(tmp_path, monkeypatch, server_add
     initialise(tmp_path)
     args = type("Args", (), {"to": server_address, "yes": False})
     assert cli.cmd_store_move(args, ask=lambda words: "no") == 0
-    assert database_file(tmp_path).exists()
+    assert not database_file(tmp_path).exists(), "or it could be taken for the store"
+    assert (tmp_path / "checker.db.moved").exists()
 
 
 def test_moving_into_a_database_with_something_in_it_changes_nothing(
@@ -589,7 +590,8 @@ def test_one_store_s_writer_doesn_t_hold_up_another_on_the_same_server(postgres)
     with psycopg.connect(SERVER, autocommit=True) as admin:
         admin.execute(f"CREATE SCHEMA {schema}")
     try:
-        other = Store(postgres.path, url=f"{SERVER}?options=-csearch_path%3D{schema}")
+        separator = "&" if "?" in SERVER else "?"
+        other = Store(postgres.path, url=f"{SERVER}{separator}options=-csearch_path%3D{schema}")
         started = time.monotonic()
         other.record_bundle(bundle_row("elsewhere"))
         assert time.monotonic() - started < 5
@@ -784,7 +786,7 @@ def test_a_prompt_nobody_answers_keeps_the_file_and_no_trace(tmp_path, monkeypat
 
     args = type("Args", (), {"to": server_address, "yes": False})
     assert cli.cmd_store_move(args, ask=no_input) == 0
-    assert database_file(tmp_path).exists()
+    assert (tmp_path / "checker.db.moved").exists()
 
 
 @pytest.mark.parametrize(
@@ -923,3 +925,63 @@ def test_a_lost_server_after_opening_is_words_on_the_command_line(
     monkeypatch.setattr(cli, "build_parser", Parser)
     assert cli.main([]) == 1
     assert "connection to the database was lost" in capsys.readouterr().err
+
+
+def test_an_old_file_kept_after_a_move_can_t_become_the_store(
+    tmp_path, monkeypatch, server_address, capsys
+):
+    """Kept, and the settings later lost: a fallback to it would miss everything since."""
+    from checker import cli
+    from checker.evidence import initialise
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    initialise(tmp_path)
+    (tmp_path / "evidence" / "web01").mkdir(parents=True)
+    (tmp_path / "evidence" / "web01" / "b1.age").write_text("x")
+    args = type("Args", (), {"to": server_address, "yes": False})
+    assert cli.cmd_store_move(args, ask=lambda words: "no") == 0
+    (tmp_path / "config.yaml").unlink()
+    assert cli.main(["bundle", "list"]) in (1, 2)
+    assert not database_file(tmp_path).exists()
+    assert cli.main(["init", "--advisor", "off"]) == 1
+    assert "--new-store" in capsys.readouterr().err
+
+
+def test_a_partitioned_table_of_someone_else_s_is_refused_and_left_alone(
+    postgres, tmp_path, server_address
+):
+    import psycopg
+
+    with psycopg.connect(server_address, autocommit=True) as db:
+        db.execute("CREATE TABLE purges (id INT) PARTITION BY RANGE (id)")
+    with pytest.raises(EvidenceError, match="didn't make"):
+        Store(database_file(tmp_path), url=server_address, create=True)
+    with psycopg.connect(server_address, autocommit=True) as db:
+        kept = db.execute("SELECT obj_description('purges'::regclass, 'pg_class')").fetchone()[0]
+    assert kept is None, "not even its comment changed"
+
+
+@pytest.mark.sqlite_only
+def test_an_empty_address_is_refused_before_anything_is_made(tmp_path, monkeypatch, capsys):
+    from checker import cli
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    assert cli.main(["init", "--advisor", "off", "--database", ""]) == 1
+    assert "postgresql://" in capsys.readouterr().err
+    assert not (tmp_path / "keys").exists()
+
+
+@pytest.mark.sqlite_only
+def test_a_key_held_elsewhere_gets_the_same_care_over_a_lost_store(tmp_path, monkeypatch, capsys):
+    from pyrage import x25519
+
+    from checker import cli
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    recipient = str(x25519.Identity.generate().to_public())
+    (tmp_path / "evidence" / "web01").mkdir(parents=True)
+    (tmp_path / "evidence" / "web01" / "b1.age").write_text("x")
+    assert cli.main(["init", "--advisor", "off", "--recipient", recipient]) == 1
+    assert "--new-store" in capsys.readouterr().err
+    assert not database_file(tmp_path).exists()
+    assert cli.main(["init", "--advisor", "off", "--recipient", recipient, "--new-store"]) == 0

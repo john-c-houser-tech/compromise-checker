@@ -1392,7 +1392,7 @@ def _not_too_many_starts(request) -> None:
         )
 
 
-@action("started a check", target=_names_of, check=_not_too_many_starts)
+@action(accounts.STARTS[0], target=_names_of, check=_not_too_many_starts)
 def check_start(request) -> HttpResponse:
     try:
         ready, asking, _ = _check_plan(request, request.POST.getlist("host"))
@@ -1432,7 +1432,7 @@ def _start_run(request, kind: str, hosts: list[str], passwords=None) -> HttpResp
 
 
 @action(
-    "started an analysis",
+    accounts.STARTS[1],
     target=lambda request, **kwargs: request.POST.get("host", ""),
     check=_not_too_many_starts,
 )
@@ -1587,7 +1587,7 @@ def rule_discard(request) -> HttpResponse:
 
 
 @action(
-    "asked the AI advisor for rules",
+    accounts.STARTS[2],
     consequential=True,
     target=_posted_host,
     check=_not_too_many_starts,

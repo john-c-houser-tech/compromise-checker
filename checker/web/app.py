@@ -34,11 +34,21 @@ def secret_key(home: Path) -> str:
 def proxy_secret(home: Path) -> str:
     """What the proxy sends to show a request came through it: made once, owner-only."""
     path = home / "keys" / PROXY_SECRET_FILE
-    # An emptied one, from a full disk or a partial backup, would be a secret anyone can send.
-    if not path.exists() or not path.read_text().strip():
-        atomic_write(path, secrets.token_urlsafe(32) + "\n")
-    os.chmod(path, 0o600)  # a restored backup may have come back wider
-    return path.read_text().strip()
+    existed = path.exists()
+    if existed:
+        os.chmod(path, 0o600)  # a restored backup may have come back wider
+        kept = path.read_bytes().strip()
+        # An emptied or damaged one, from a full disk or a partial backup, could be guessed.
+        if re.fullmatch(rb"[A-Za-z0-9_-]{32,}", kept):
+            return kept.decode()
+        print(
+            f"checker: {path} wasn't a usable secret, so there's a new one: the proxy must send it",
+            file=sys.stderr,
+        )
+    made = secrets.token_urlsafe(32)
+    atomic_write(path, made + "\n")
+    os.chmod(path, 0o600)
+    return made
 
 
 def is_local(host: str) -> bool:
@@ -55,6 +65,14 @@ def is_local(host: str) -> bool:
     except OSError:
         return False
     return bool(found) and all(ipaddress.ip_address(a.partition("%")[0]).is_loopback for a in found)
+
+
+class _NoClientErrorsInTheLog(logging.Filter):
+    """Anonymous requests mustn't be able to fill a log, and gunicorn notes a bad chunk in a body
+    with a whole traceback. It says this only of what went wrong in talking to the client."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.getMessage().startswith("Socket error processing request")
 
 
 class _NoLinksInTheLog(logging.Filter):
@@ -343,6 +361,8 @@ def serve(
         )
     print(f"{product_name()} is at {address}", flush=True)  # before the server takes over
     wsgi = read_timeout(get_wsgi_application())
+
+    logging.getLogger("gunicorn.error").addFilter(_NoClientErrorsInTheLog())
 
     class Server(BaseApplication):
         def load_config(self):

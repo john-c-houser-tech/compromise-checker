@@ -9020,14 +9020,20 @@ def test_starting_behind_a_proxy_says_what_it_needs_and_not_the_secret(
     assert web_app.PROXY_SECRET_HEADER not in capsys.readouterr().out
 
 
-def starts_recorded(who, number, age=timedelta(0)):
+def starts_recorded(who, number, action="started a check", outcome="done", age=timedelta(0)):
     from django.utils import timezone
 
-    from checker.web.models import CheckRun
+    from checker.web.models import ActionRecord
 
     for _ in range(number):
-        CheckRun.objects.create(
-            kind="check", hosts="[]", who=who, address="", started_at=timezone.now() - age
+        ActionRecord.objects.create(
+            at=timezone.now() - age,
+            who=who,
+            address="",
+            action=action,
+            target="",
+            outcome=outcome,
+            detail="",
         )
 
 
@@ -9055,28 +9061,64 @@ def test_one_person_can_start_only_so_many_in_an_hour(web, monkeypatch, path, fi
 def test_the_limit_is_each_persons_own_and_only_the_last_hour(web):
     from checker.web import accounts
 
-    starts_recorded("jo", accounts.MAX_STARTS - 1)
+    starts_recorded("jo", accounts.MAX_STARTS - 2)
+    starts_recorded("jo", 1, "started an analysis")
     assert not accounts.too_many_starts("jo")
-    starts_recorded("jo", 1)
+    starts_recorded("jo", 1, "asked the AI advisor for rules")
     assert accounts.too_many_starts("jo") and not accounts.too_many_starts("someone else")
     starts_recorded("old", accounts.MAX_STARTS, age=accounts.START_WINDOW + timedelta(minutes=1))
     assert not accounts.too_many_starts("old")
+    starts_recorded("other", accounts.MAX_STARTS, "changed settings")
+    assert not accounts.too_many_starts("other")
 
 
-def test_what_never_started_doesnt_count(web):
-    """Or a stolen session could use up someone's starts with forms that do nothing."""
+def test_only_starts_that_went_ahead_count(web):
     from checker.web import accounts
 
-    client, _ = signed_in(web)
-    for _ in range(accounts.MAX_STARTS + 1):
-        client.post("/checks/analyze", {"host": "not a server"})
+    for outcome in ("started", "failed", "failed: 500", "refused"):
+        starts_recorded("jo", accounts.MAX_STARTS, outcome=outcome)
     assert not accounts.too_many_starts("jo")
 
 
-def test_the_limit_outlasts_what_is_kept_of_runs():
+@pytest.mark.parametrize(
+    "failure",
+    ["held", "busy", "no process"],
+)
+def test_a_start_that_didnt_happen_doesnt_count(web, inventory, monkeypatch, failure):
+    """Or someone could use up another's starts, or their own during a shortage."""
     from checker.web import accounts, runs
 
-    assert runs.KEEP > accounts.MAX_STARTS
+    def refused(*args, **kwargs):
+        raise {
+            "held": runs.Held(),
+            "busy": runs.AlreadyRunning(1),
+            "no process": OSError("no memory"),
+        }[failure]
+
+    monkeypatch.setattr(runs, "start", refused)
+    client, _ = signed_in(web)
+    for _ in range(accounts.MAX_STARTS + 1):
+        client.post("/checks/analyze", {"host": "web01"})
+    assert not accounts.too_many_starts("jo")
+
+
+def test_real_starts_count_on_every_route(web, inventory, monkeypatch):
+    """Through the routes, so a renamed action can't quietly end the limit."""
+    from checker.web import accounts, runs
+
+    monkeypatch.setattr(runs, "start", lambda *args, **kwargs: 1)
+    client, _ = signed_in(web)
+    for path, fields in (
+        ("/checks/start", {"host": "web01"}),
+        ("/checks/analyze", {"host": "web01"}),
+        ("/decide/ask", {"host": "web01", "confirm_password": PASSWORD}),
+    ):
+        assert client.post(path, fields).status_code == 302, path
+    assert {row[1] for row in actions_recorded() if row[3] == "done"} == set(accounts.STARTS)
+    starts_recorded("jo", accounts.MAX_STARTS - 4)
+    assert not accounts.too_many_starts("jo")
+    starts_recorded("jo", 1)
+    assert accounts.too_many_starts("jo")
 
 
 @pytest.mark.parametrize("peer", ["127.0.0.1", "127.77.5.9", "::1", "::ffff:127.0.0.2"])
@@ -9105,12 +9147,18 @@ def test_guessing_from_many_loopback_addresses_is_still_throttled(web, settings_
     assert "Too many failed attempts" in response.content.decode()
 
 
-@pytest.mark.parametrize("contents", ["", " \n\n"])
-def test_an_emptied_secret_file_gets_a_new_secret(tmp_path, contents):
+@pytest.mark.parametrize(
+    "contents", [b"", b" \n\n", b"a", b"\0" * 44, b"\xff" * 44, b"short-secret"]
+)
+def test_a_secret_file_that_isnt_one_gets_a_new_secret_and_says_so(tmp_path, capsys, contents):
     path = tmp_path / "keys" / web_app.PROXY_SECRET_FILE
     path.parent.mkdir()
-    path.write_text(contents)
-    assert len(web_app.proxy_secret(tmp_path)) >= 40
+    path.write_bytes(contents)
+    made = web_app.proxy_secret(tmp_path)
+    assert len(made) >= 40 and path.read_text().strip() == made
+    assert path.stat().st_mode & 0o777 == 0o600
+    said = capsys.readouterr().err
+    assert "the proxy must send it" in said and made not in said
 
 
 def test_an_empty_secret_refuses_everything_rather_than_nothing(web, settings_override):
@@ -9127,5 +9175,41 @@ def test_the_secret_comes_before_anything_else_answers(web, behind_proxy):
     assert too_large.status_code == 403 and "through its proxy" in too_large.content.decode()
 
 
-def test_the_server_doesnt_note_malformed_requests():
+def test_a_malformed_request_doesnt_fill_the_log(tmp_path):
+    """A real server, since this depends on what gunicorn does with what it's sent."""
+    with socket.socket() as spare:
+        spare.bind(("127.0.0.1", 0))
+        port = spare.getsockname()[1]
+    env = {**os.environ, "CHECKER_HOME": str(tmp_path)}
+    server = subprocess.Popen(
+        [sys.executable, "-m", "checker", "web", "--bind", f"127.0.0.1:{port}"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        for line in server.stdout:
+            if " is at " in line:
+                break
+        bad = b"POST /login HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\nZZ\r\n"
+        for _ in range(40):  # the first may come before it's listening
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+                    connection.sendall(bad)
+                    connection.recv(1024)
+                break
+            except OSError:
+                time.sleep(0.25)
+        for _ in range(3):
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+                connection.sendall(bad)
+                connection.recv(1024)
+    finally:
+        server.terminate()
+        _, errors = server.communicate(timeout=15)
+    assert "Traceback" not in errors and "Socket error" not in errors, errors[:500]
+
+
+def test_the_servers_log_level_leaves_out_routine_lines():
     assert web_app.server_options("127.0.0.1:1", None, None)["loglevel"] == "error"

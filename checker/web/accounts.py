@@ -23,7 +23,6 @@ from checker.web.app import is_local
 from checker.web.models import (
     Access,
     ActionRecord,
-    CheckRun,
     Invitation,
     LoginAttempt,
     SetupToken,
@@ -36,6 +35,7 @@ THROTTLE_WINDOW = timedelta(minutes=15)
 THIS_MACHINE = "127.0.0.1"
 START_WINDOW = timedelta(hours=1)
 MAX_STARTS = 30  # per person: one run is already the most at a time, and "all servers" is one run
+STARTS = ("started a check", "started an analysis", "asked the AI advisor for rules")
 MAX_FAILURES_FOR_NAME = 5  # from one address: guessing one account's password
 MAX_FAILURES_FROM_ADDRESS = 20  # guessing across accounts
 MAX_WRONG_CONFIRMATIONS = 5  # then the session ends: it's the only way a thief can keep trying
@@ -381,10 +381,15 @@ def clear_confirmations(session_key: str) -> None:
 
 def too_many_starts(who: str) -> bool:
     """Whether this person has started enough lately: each start reaches every server it names, and
-    may cost money. Only what really started counts, so nobody can use up someone's starts with
-    forms that do nothing. `runs.KEEP` keeps more than this of the latest, whoever's they are."""
+    may cost money. From the record, which nothing can push out, and only the starts that went
+    ahead, so nobody can use up someone's starts with forms that do nothing."""
     since = timezone.now() - START_WINDOW
-    return CheckRun.objects.filter(who=who, started_at__gt=since).count() >= MAX_STARTS
+    return (
+        ActionRecord.objects.filter(
+            who=who, action__in=STARTS, outcome="done", at__gt=since
+        ).count()
+        >= MAX_STARTS
+    )
 
 
 def no_such_account(username: str) -> str | None:

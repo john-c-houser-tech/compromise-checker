@@ -63,7 +63,7 @@ can reach that address, which is why it asks for a login even there.
 
   ```
   {
-      admin off
+      admin unix//var/lib/caddy/admin.sock
   }
 
   checker.example {
@@ -89,10 +89,13 @@ can reach that address, which is why it asks for a login even there.
   the tool's port directly and claim a false address. That's only as strong as the secret, so on a machine
   others can sign in to:
 
-  - Turn off Caddy's admin port, as above. By default any local user can read and change its whole
-    settings there, secret included, with no password.
-  - Keep the proxy's settings file readable only by those who run it, and don't turn on Caddy's `debug`
-    option, which writes the secret to its log.
+  - Move Caddy's admin port to a socket in a folder only its account can write to, as above. By default
+    any local user can read and change its whole settings on that port, secret included, with no
+    password. Don't use `admin off` for this: `caddy reload` then sends the settings to the default port,
+    where a local user could be listening.
+  - Keep the proxy's settings file readable only by those who run it (Caddy keeps its own copy, called
+    `autosave.json`, that way), and don't turn on Caddy's `debug` option, which writes the secret to its
+    log.
   - Keep the tool running. While it's stopped, a local user could listen on its port and receive what the
     proxy sends, including passwords and the secret.
 
@@ -325,8 +328,9 @@ check, and any check started from a page, delete what's past them.
   setting it up if that's still to be done.
 - **Passwords:** at least 12 characters, not common, not all digits, not like the username. Five
   failed logins for a name from one address, or twenty from one address, stop further tries from
-  there for 15 minutes, even with the right password. Everyone on this machine counts as one address,
-  with or without a proxy, so another local user could lock you out for that long. If you lose a
+  there for 15 minutes, even with the right password. Everyone connecting from this machine counts as one
+  address, with or without a proxy, or a few if it has several network addresses, so another local user
+  could lock you out for that long. If you lose a
   password, `checker web-password USERNAME` sets a new one and notes it in the activity record. Don't
   delete `web.db` for this: the activity record goes with it.
 - **Host text is treated as hostile.** A compromised server can put anything in its logs, and that

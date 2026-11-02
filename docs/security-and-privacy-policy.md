@@ -32,7 +32,8 @@ collects.**
 - Likely secrets are masked before evidence leaves a server.
 - Nothing leaves your organization unless you turn on the optional AI
   advisor, and then only what section 9 describes, sent with your own
-  account to the AI provider you choose.
+  account to the AI provider you choose, or you keep the tool's index on a
+  database server outside it (section 10).
 - No telemetry. The tool never contacts NouriLoop LLC.
 
 ## 3. Authorization and accountability
@@ -100,6 +101,9 @@ findings.
   can use it, and is kept in a file only the tool's account can read. It can act
   as an administrator on every server that accepts it, so protect the machine
   accordingly. The tool never stores passwords in readable form.
+- If you keep the index in PostgreSQL, the address in the settings never holds
+  a password: the tool refuses one that does. The password, if there is one,
+  stays in your own `.pgpass` file.
 - Passwords come from a prompt, a page of the web interface, the operating
   system's keyring, or your secrets manager. They are kept in memory only for the run, never written to
   logs, and never placed on a command line, where other users and audit logs
@@ -220,7 +224,12 @@ that may include access tokens, and sometimes secrets typed into commands.
   encryption format, to a key created for your organization at setup. Keep
   that key's backup safe: without it, stored evidence cannot be read.
 - **Index.** An index records each collection's identifiers, times, status,
-  size and fingerprints — never its content.
+  size and fingerprints — never its content. It is a file on this machine or, if
+  you choose, a PostgreSQL database. Whoever runs that database can read the parts
+  that aren't encrypted: server names, times, file paths, hashes and sizes,
+  status, the accounts and machine that ran each command, what purges took, the
+  AI models used and their cost, and every settings change with its old and new
+  values.
 - **Tamper-evident.** Each collection carries fingerprints (SHA-256) of its
   contents and of the encrypted file, and a chain-of-custody record of who
   collected it, when, from which machine and from which server. Stored
@@ -229,7 +238,9 @@ that may include access tokens, and sometimes secrets typed into commands.
   default. You can change the period. A `purge` command or a page of the
   web interface deletes everything stored for a server or a date range, and can
   delete whatever is past its retention period, which a daily check also does. An
-  alert not yet delivered stays until it is; the tool reminds
+  alert not yet delivered stays until it is; a purge doesn't reach copies of that
+  database you keep, such as backups, replicas and archived logs, nor a moved
+  store's old file that you chose to keep; the tool reminds
   you when anything is due. One exception: a server's current baseline, the
   collection later checks compare against, is kept until a newer one is
   accepted, because deleting it would hide changes made since. Data for a
@@ -387,7 +398,9 @@ Nothing, unless you choose one of these:
   runs your command on your machine and gives it a short summary in the
   tool's own words (host names, bands, check names, finding titles and the
   report's path; never evidence or text from a host); where that command
-  sends it is your choice.
+  sends it is your choice;
+- the tool's index, if you keep it in a PostgreSQL database on a server outside
+  your organization (section 8 says what it can read).
 
 The tool has no telemetry, usage reporting or licence check, and it never
 contacts NouriLoop LLC on its own. Threat packs (section 11) are downloaded
@@ -453,7 +466,8 @@ The tool gives you control of the data it collects, so these remain yours:
 - telling staff or users about monitoring where your policies or local law
   require it;
 - your agreement with any AI or reputation provider you choose to use;
-- keeping the evidence encryption key and reports safe, and setting a
+- keeping the evidence encryption key and reports safe, securing the database
+  server if you use one and deciding how long its backups are kept, and setting a
   retention period that meets your own obligations.
 
 ## 14. Limits of the tool, and responsibility for its use

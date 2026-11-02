@@ -131,6 +131,9 @@ done this: create the keys and settings the policy's choices depend on (`checker
 init`'s questions in plain words, including the AI advisor), then for each server what
 to set up there (the scanner account and its one sudo rule) and a check that it worked.
 Reminds them to back up the evidence key, without which stored evidence can't be read.
+As built: `checker web` sets itself up on a first start, at the most private choices. The tool can make
+this machine's SSH key when asked (John, 2026-11-01), and the evidence key isn't offered as a download.
+The page's commands are proved on a real sshd by `tests/integration/first_setup_proof.py`.
 
 ### Stage 4: a shared store
 

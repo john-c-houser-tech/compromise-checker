@@ -817,7 +817,7 @@ def test_the_stylesheet_only_asks_for_fonts_that_exist(web):
 
 def test_no_servers_says_what_to_do(web):
     client, _ = signed_in(web)
-    assert "Add your first server" in client.get("/").content.decode()
+    assert "Start with first setup" in client.get("/").content.decode()
 
 
 def test_hostile_text_from_a_real_finding_does_nothing(web):
@@ -7439,3 +7439,476 @@ def test_a_baseline_accepted_since_the_preview_means_looking_again(web, inventor
     response = client.post("/manage/delete/confirm", form)
     assert response.status_code == 400 and "changed since you looked" in said(response)
     assert sorted(bundles_of(home)) == ["b1", "b2"]
+
+
+# --- First setup (plan 5.13b) ---------------------------------------------------------------
+
+
+def test_the_web_interface_sets_itself_up_on_a_first_start(tmp_path, monkeypatch, capsys):
+    from checker import cli
+    from checker.evidence import load_config
+    from checker.web import app
+
+    home_path = tmp_path / "fresh"
+    monkeypatch.setenv("CHECKER_HOME", str(home_path))
+    monkeypatch.setattr(app, "serve", lambda *args: 0)
+    assert cli.main(["web"]) == 0
+    out = capsys.readouterr().out
+    assert "BACK IT UP" in out and "AI advisor off" in out
+    config = load_config(home_path)
+    assert config.advisor.enabled is False and config.home_text == "off"
+    assert config.web_access_logs is False
+    assert (home_path / "keys" / "evidence-identity.txt").exists()
+    before = (home_path / "keys" / "evidence-identity.txt").read_text()
+    assert cli.main(["web"]) == 0, "and leaves it alone after that"
+    assert (home_path / "keys" / "evidence-identity.txt").read_text() == before
+
+
+@pytest.mark.parametrize("trace", ["checker.db", "evidence/x.age"])
+def test_evidence_with_no_key_or_settings_stops_a_first_start(tmp_path, monkeypatch, capsys, trace):
+    from checker import cli
+    from checker.web import app
+
+    home_path = tmp_path / "old"
+    (home_path / trace).parent.mkdir(parents=True, exist_ok=True)
+    (home_path / trace).write_text("kept")
+    monkeypatch.setenv("CHECKER_HOME", str(home_path))
+    monkeypatch.setattr(app, "serve", lambda *args: 0)
+    assert cli.main(["web"]) == 1
+    assert "Put your backup of the evidence key" in capsys.readouterr().err
+    assert (home_path / trace).read_text() == "kept" and not (home_path / "config.yaml").exists()
+
+
+def test_a_kept_key_is_enough_to_start_again(tmp_path, monkeypatch, capsys):
+    """After a first start cut short, or on a new machine with only the backup the page asks for."""
+    from checker import cli
+    from checker.evidence import load_config
+    from checker.web import app
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    monkeypatch.setattr(app, "serve", lambda *args: 0)
+    assert cli.main(["init", "--advisor", "off"]) == 0
+    key = tmp_path / "keys" / "evidence-identity.txt"
+    before, recipients = key.read_text(), load_config(tmp_path).recipients
+    (tmp_path / "config.yaml").unlink()
+    capsys.readouterr()
+    assert cli.main(["web"]) == 0
+    assert "keeping it" in capsys.readouterr().out
+    assert key.read_text() == before and load_config(tmp_path).recipients == recipients
+    assert load_config(tmp_path).identity_file == str(key), "or nothing stored could be read"
+    (tmp_path / "config.yaml").unlink()
+    assert cli.main(["init", "--advisor", "off"]) == 0, "and the command line's way back works too"
+    assert key.read_text() == before and load_config(tmp_path).recipients == recipients
+
+
+def test_a_kept_key_isn_t_replaced_by_another_recipient_or_when_damaged(
+    tmp_path, monkeypatch, capsys
+):
+    from pyrage import x25519
+
+    from checker import cli
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    key = tmp_path / "keys" / "evidence-identity.txt"
+    key.parent.mkdir(parents=True)
+    key.write_text("not a key")
+    assert cli.main(["init", "--advisor", "off"]) == 1
+    assert key.read_text() == "not a key"
+    key.write_text("AGE-SECRET-KEY-NOTAKEY")
+    assert cli.main(["init", "--advisor", "off"]) == 1
+    assert "can't be read" in capsys.readouterr().err
+    assert key.read_text() == "AGE-SECRET-KEY-NOTAKEY"
+    key.write_text("not a key")
+    other = str(x25519.Identity.generate().to_public())
+    assert cli.main(["init", "--advisor", "off", "--recipient", other]) == 1
+    assert key.read_text() == "not a key" and not (tmp_path / "config.yaml").exists()
+
+
+def test_a_dangling_key_link_is_never_written_through(tmp_path, monkeypatch):
+    from checker import cli
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    key = tmp_path / "keys" / "evidence-identity.txt"
+    key.parent.mkdir(parents=True)
+    key.symlink_to(tmp_path / "elsewhere")
+    assert cli.main(["init", "--advisor", "off"]) == 1
+    assert key.is_symlink() and not (tmp_path / "elsewhere").exists()
+
+
+def test_a_relative_home_sets_nothing_up(tmp_path, monkeypatch):
+    from checker import cli
+    from checker.web import app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CHECKER_HOME", "rel")
+    monkeypatch.setattr(app, "serve", lambda *args: 0)
+    assert cli.main(["web"]) == 1
+    assert not (tmp_path / "rel").exists()
+
+
+def test_a_dangling_settings_link_isn_t_a_first_start(tmp_path, monkeypatch, capsys):
+    from checker import cli
+    from checker.web import app
+
+    tmp_path.joinpath("config.yaml").symlink_to(tmp_path / "gone.yaml")
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    monkeypatch.setattr(app, "serve", lambda *args: 0)
+    assert cli.main(["web"]) == 1
+    assert not (tmp_path / "keys").exists()
+
+
+def test_a_mistyped_home_or_a_refused_address_sets_nothing_up(tmp_path, monkeypatch):
+    from checker import cli
+    from checker.web import app
+
+    monkeypatch.setattr(app, "serve", lambda *args: 0)
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path / "ty" / "po" / "home"))
+    assert cli.main(["web"]) == 1
+    assert not (tmp_path / "ty").exists()
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path / "fresh"))
+    assert cli.main(["web", "--bind", "0.0.0.0:8088"]) == 2
+    assert not (tmp_path / "fresh").exists()
+
+
+def setup_page(client):
+    response = client.get("/first-setup")
+    assert response.status_code == 200
+    return said(response)
+
+
+def test_first_setup_goes_step_by_step_from_what_s_really_there(web, inventory):
+    client, home = signed_in(web)
+    inventory()
+    text = setup_page(client)
+    assert "evidence-identity.txt" in text and "I've backed it up" in text
+    assert text.count("(done)") == 0
+    assert "Your stored evidence can't be read without its key" in said(client.get("/"))
+    assert client.post("/first-setup/key-saved", {"a": "b"}).status_code == 302
+    assert setup_page(client).count("(done)") == 1
+    assert "Your stored evidence can't be read" not in said(client.get("/"))
+    import yaml
+
+    from checker.inventory import home as checker_home
+    from checker.settings import config_version  # noqa: F401
+
+    path = checker_home() / "config.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["recipients"] = ["age1" + "q" * 58]
+    path.write_text(yaml.safe_dump(data))
+    assert setup_page(client).count("(done)") == 0, "a confirmation is about one key"
+    assert "Your stored evidence can't be read" in said(client.get("/"))
+    assert records_of("said the evidence key is backed up")[-1].who == "jo"
+
+
+def test_the_first_choices_are_confirmed_and_are_the_real_settings(web, inventory):
+    client, _ = signed_in(web)
+    reader = _FormReader("/first-setup/choices")
+    reader.feed(client.get("/first-setup").content.decode())
+    form = {**reader.fields, "web_access_logs": "on", "confirm_password": PASSWORD}
+    assert set(reader.fields) >= {"home_text", "web_access_logs", "advisor.enabled", "version"}
+    assert (
+        client.post("/first-setup/choices", {**form, "confirm_password": "no"}).status_code == 403
+    )
+    assert config_now().web_access_logs is False
+    assert client.post("/first-setup/choices", form).status_code == 302
+    assert config_now().web_access_logs is True
+    assert history_now()[-1]["setting"] == "web_access_logs"
+    assert "Save these choices" not in setup_page(client)
+
+
+def test_a_first_choice_that_s_wrong_says_so_and_changes_nothing(web, inventory):
+    client, _ = signed_in(web)
+    reader = _FormReader("/first-setup/choices")
+    reader.feed(client.get("/first-setup").content.decode())
+    form = {**reader.fields, "home_text": "everything", "confirm_password": PASSWORD}
+    response = client.post("/first-setup/choices", form)
+    assert response.status_code == 400 and "choose one" in said(response)
+    assert config_now().home_text == "off"
+    forged = {**reader.fields, "notify_command": "/bin/evil", "confirm_password": PASSWORD}
+    assert client.post("/first-setup/choices", forged).status_code == 302
+    assert config_now().notify_command is None
+
+
+def key_file_of(home):
+    return home[0] / "keys" / "scanner_ed25519"
+
+
+def test_this_machine_s_key_is_confirmed_private_and_never_replaced(web, inventory):
+    client, home = signed_in(web)
+    form = {"confirm_password": PASSWORD}
+    assert client.post("/first-setup/make-key", {"confirm_password": "no"}).status_code == 403
+    assert not key_file_of(home).exists()
+    assert client.post("/first-setup/make-key", form).status_code == 302
+    path = key_file_of(home)
+    assert path.stat().st_mode & 0o777 == 0o600
+    key = asyncssh.read_private_key(path)
+    fingerprint = key.get_fingerprint("sha256")
+    assert records_of("made this machine's SSH key")[-1].detail == fingerprint
+    text = setup_page(client)
+    assert "PRIVATE KEY" not in text and "act as an administrator" in text
+    again = client.post("/first-setup/make-key", form)
+    assert again.status_code == 400 and "replacing it would lock" in said(again)
+    assert asyncssh.read_private_key(path).get_fingerprint("sha256") == fingerprint
+
+
+def test_the_add_form_starts_with_this_machine_s_key(web, inventory):
+    client, home = signed_in(web)
+    assert 'value="scanner"' not in client.get("/manage/add").content.decode()
+    client.post("/first-setup/make-key", {"confirm_password": PASSWORD})
+    text = client.get("/manage/add").content.decode()
+    assert 'value="scanner"' in text and str(key_file_of(home)) in text
+
+
+def prepared(client, host="web01", **query):
+    response = client.get("/manage/server/prepare", {"host": host, **query})
+    assert response.status_code == 200
+    return said(response)
+
+
+@pytest.fixture
+def keyed(web, unconfirmed):
+    """A signed-in browser, and a server that logs in with this machine's key."""
+    from checker.inventory import Host
+
+    client, home = signed_in(web)
+    client.post("/first-setup/make-key", {"confirm_password": PASSWORD})
+    unconfirmed(
+        Host(
+            name="web01",
+            address="192.0.2.1",
+            user="scanner",
+            auth="key",
+            key_path=str(key_file_of(home)),
+        )
+    )
+    return client, home
+
+
+def test_the_commands_are_filled_in_with_the_real_key_and_nothing_private(keyed):
+    client, home = keyed
+    text = prepared(client, **{"from": "203.0.113.10"})
+    public = " ".join((home[0] / "keys" / "scanner_ed25519.pub").read_text().split()[:2])
+    assert public in text, "whole, not cut by the page's filter"
+    assert 'from="203.0.113.10"' in text
+    assert 'command="sudo -n -- python3 -I -B -"' in text
+    assert "scanner ALL=(root) NOPASSWD: /usr/bin/python3 -I -B -" in text
+    assert "sudo bash -eu" in text and "already exists" in text
+    assert "/etc/sudoers.d/compromise-checker-scanner" in text
+    assert "su -s /bin/sh scanner -c 'sudo -n -- python3 -I -B -'" in text, "proved, not assumed"
+    assert "visudo useradd passwd getent su ssh-keygen" in text, "all checked before any change"
+    assert "act as an administrator" in text
+    assert "PRIVATE KEY" not in text
+
+
+def test_the_command_is_what_the_transport_really_sends(keyed):
+    """The forced command has to match, or the key would run something else."""
+    from checker.inventory import load_inventory
+    from checker.transport import remote_command
+
+    client, _ = keyed
+    host = load_inventory().get("web01")
+    assert f'command="{remote_command(host)}"' in prepared(client)
+
+
+@pytest.mark.parametrize(
+    "typed",
+    ["not an address", "1.2.3.4\"; rm -rf /", '1.1.1.1",command="evil', "10.1.2.3/24",
+     "::ffff:1.2.3.4"],
+)  # fmt: skip
+def test_a_bad_address_goes_nowhere_near_the_commands(keyed, typed):
+    client, _ = keyed
+    text = prepared(client, **{"from": typed})
+    assert "That isn't one IP address" in text and "On the server" not in text
+    assert "useradd" not in text, "not commands with no limit, under the error"
+
+
+def test_with_no_address_it_says_the_key_isn_t_limited(keyed):
+    client, _ = keyed
+    text = prepared(client)
+    assert "don't limit where the key" in text and "from=" not in text
+
+
+@pytest.mark.parametrize(
+    ("changes", "words"),
+    [
+        ({"sudo": "root"}, "log in as root"),
+        ({"sudo": "password"}, "sudo with a password"),
+        ({"user": "DOMAIN\\\\jo"}, "can't use the account name"),
+        ({"user": "root"}, "can't use the account name"),
+        ({"python": "../../bin/sh"}, "can't use the Python"),
+        ({"python": "bin/python3"}, "can't use the Python"),
+        ({"auth": "password", "key_path": None}, "logs in with a password"),
+        ({"auth": "agent", "key_path": None}, "SSH agent"),
+        ({"key_path": "/nonexistent/key"}, "can't read one"),
+    ],
+)
+def test_what_these_commands_don_t_suit_says_so_instead(keyed, unconfirmed, changes, words):
+    from checker.inventory import Host
+
+    client, home = keyed
+    fields = {"name": "web01", "address": "192.0.2.1", "user": "scanner", "auth": "key",
+              "key_path": str(key_file_of(home)), **changes}  # fmt: skip
+    unconfirmed(Host(**fields))
+    text = prepared(client)
+    assert words in text and "useradd" not in text
+
+
+def test_the_prepare_page_is_for_listed_servers_and_contacts_nothing(keyed, monkeypatch):
+    from checker.web import manage
+
+    def must_not(host):
+        raise AssertionError("contacted a server")
+
+    monkeypatch.setattr(manage, "fetch_host_key", must_not)
+    client, _ = keyed
+    assert client.get("/manage/server/prepare", {"host": "nope"}).status_code == 404
+    assert client.get("/manage/server/prepare", {"host": "web01"}).status_code == 200
+
+
+def test_a_server_s_words_can_t_steer_what_a_failed_check_advises():
+    from checker.web.first_setup import what_to_try
+
+    hostile = (
+        "checker: web01: not collected: web01: sudo refused: login refused host key cannot connect"
+    )
+    assert len(what_to_try([hostile])) == 1 and "administrator" in what_to_try([hostile])[0]
+    assert what_to_try(["web01 login refused, said a server"]) == []
+    assert "no passphrase" in what_to_try(["checker: web01: cannot read key /k: encrypted"])[0]
+
+
+def test_the_fleet_survives_a_settings_file_the_reminder_can_t_read(web, inventory, monkeypatch):
+    from checker.web import first_setup
+
+    def broken(base):
+        raise IndexError("no recipients")
+
+    client, _ = signed_in(web)
+    monkeypatch.setattr(first_setup, "key_unsaved", broken)
+    assert client.get("/").status_code == 200
+
+
+def test_first_setup_needs_a_login(web, inventory):
+    client, _ = web
+    assert client.get("/first-setup").status_code == 302
+    assert client.get("/manage/server/prepare?host=web01").status_code == 302
+    for path in ("key-saved", "choices", "make-key"):
+        assert client.post(f"/first-setup/{path}", {"a": "b"}).status_code == 302
+        assert client.get(f"/first-setup/{path}").status_code in (302, 405)
+
+
+@pytest.mark.parametrize("typed", ["0.0.0.0/0", "::/0", "10.0.0.0/8"])
+def test_a_range_too_wide_to_limit_anything_is_refused(keyed, typed):
+    client, _ = keyed
+    text = prepared(client, **{"from": typed})
+    assert "too wide" in text and "useradd" not in text
+
+
+def test_a_python_path_is_used_as_given_and_only_the_usual_gets_the_os_note(keyed, unconfirmed):
+    from checker.inventory import Host
+
+    client, home = keyed
+    fields = {"name": "web01", "address": "192.0.2.1", "user": "scanner", "auth": "key",
+              "key_path": str(key_file_of(home))}  # fmt: skip
+    assert "as on RHEL 9 and 10" in prepared(client)
+    unconfirmed(Host(**fields, python="/opt/py/bin/python3"))
+    text = prepared(client)
+    assert "NOPASSWD: /opt/py/bin/python3 -I -B -" in text and "as on RHEL 9" not in text
+    assert 'command="sudo -n -- /opt/py/bin/python3 -I -B -"' in text
+
+
+def check_step_done(home):
+    from checker.web import first_setup
+
+    return first_setup.progress(home[0])["done"]["check"]
+
+
+def test_a_failed_collection_isn_t_a_first_server_checked(keyed):
+    from test_snapshot import add_bundle
+
+    client, home = keyed
+    add_bundle(home, "e1", 10, [], status="empty")
+    assert check_step_done(home) is False
+    assert "Your first server is checked" not in setup_page(client)
+    add_bundle(home, "c1", 20, CLEAN)
+    assert check_step_done(home) is True
+
+
+def test_a_bundle_of_a_server_no_longer_listed_doesn_t_count(keyed):
+    from test_purge import add
+
+    _, home = keyed
+    add(home, "b1", 2, host="gone")
+    assert check_step_done(home) is False
+
+
+def test_a_key_that_can_t_be_read_keeps_the_key_step_open(web, unconfirmed):
+    from checker.inventory import Host
+
+    client, _ = signed_in(web)
+    unconfirmed(Host(name="web01", address="192.0.2.1", user="s", auth="key", key_path="/none/key"))
+    text = setup_page(client)
+    assert "/first-setup/make-key" in client.get("/first-setup").content.decode()
+    assert "already have their own way" not in text
+
+
+def test_a_lost_evidence_key_is_said(web, inventory):
+    from checker.inventory import home as checker_home
+
+    client, _ = signed_in(web)
+    client.post("/first-setup/key-saved", {"a": "b"})
+    (checker_home() / "keys" / "evidence-identity.txt").rename(checker_home() / "moved.txt")
+    text = setup_page(client)
+    assert "isn't where it should be" in text and "nothing to do here" not in text
+    (checker_home() / "moved.txt").rename(checker_home() / "keys" / "evidence-identity.txt")
+
+
+def test_a_refused_choice_is_words_even_with_damaged_files(web, inventory):
+    from checker.inventory import hosts_file
+
+    client, _ = signed_in(web)
+    reader = _FormReader("/first-setup/choices")
+    reader.feed(client.get("/first-setup").content.decode())
+    hosts_file().write_text("hosts: [not: right\n")
+    form = {**reader.fields, "home_text": "everything", "confirm_password": PASSWORD}
+    assert client.post("/first-setup/choices", form).status_code == 400
+
+
+def test_a_folder_at_the_key_s_path_is_refused_and_two_makes_give_one_key(web, inventory):
+    client, home = signed_in(web)
+    path = key_file_of(home)
+    path.mkdir(parents=True)
+    response = client.post("/first-setup/make-key", {"confirm_password": PASSWORD})
+    assert response.status_code == 400 and "already" in said(response)
+    path.rmdir()
+
+
+@pytest.mark.parametrize(
+    ("line", "words"),
+    [
+        (
+            "checker: web01: not collected (empty): web01: login refused for scanner",
+            "refused this machine's login",
+        ),
+        (
+            "checker: web01: not collected (empty): web01: sudo refused: a password is required",
+            "couldn't act as an administrator",
+        ),
+        (
+            "checker: web01: not collected (empty): web01: cannot connect: Connection lost",
+            "couldn't reach the server",
+        ),
+    ],
+)
+def test_a_failed_check_says_what_to_look_at(web, inventory, line, words, monkeypatch):
+    from django.utils import timezone
+
+    from checker.web import runs
+    from checker.web.models import CheckRun
+
+    client, _ = signed_in(web)
+    run = CheckRun.objects.create(
+        kind="check", hosts=json.dumps(["web01"]), who="jo", address="", started_at=timezone.now()
+    )
+    monkeypatch.setattr(runs, "output_lines", lambda run_id: [line])
+    text = said(client.get(f"/checks/{run.id}"))
+    assert words in text and "/manage/server/prepare?host=web01" in text

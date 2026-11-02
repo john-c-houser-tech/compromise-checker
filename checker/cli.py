@@ -1724,10 +1724,44 @@ def _web_extra_missing(exc: ImportError) -> int:
     return 2
 
 
+def _first_start(base: Path) -> None:
+    """Someone who has never used a command line starts here, so the tool sets itself up, with
+    nothing optional collected and the AI advisor off. The first setup page asks about them. What
+    `checker init --recipient` does stays with `checker init`. Missing settings are no sign of a new
+    install: an evidence key found here is kept, and evidence with no key to read it stops this."""
+    if os.environ.get("CHECKER_HOME"):
+        if not base.is_absolute():
+            raise EvidenceError(f"CHECKER_HOME has to be a full path, not {base}")
+        if not base.parent.is_dir():
+            raise EvidenceError(
+                f"CHECKER_HOME is {base}, whose folder doesn't exist: is that right?"
+            )
+    has_key = os.path.lexists(base / "keys" / "evidence-identity.txt")
+    if not has_key and any((base / name).exists() for name in ("checker.db", "evidence")):
+        raise EvidenceError(
+            f"{base} has stored evidence but no settings or key. Put your backup of the evidence"
+            f" key at {base / 'keys' / 'evidence-identity.txt'} and start again: a new key couldn't"
+            " read what's stored"
+        )
+    if has_key:
+        print("Found an evidence key here with no settings: keeping it. Settings are back to")
+        print("nothing optional collected and the AI advisor off. Check them in Settings.")
+    try:
+        _, identity_path = initialise(base)
+    except EvidenceError:
+        if config_file(base).exists():  # another start got there first, which is fine
+            return
+        raise
+    print(f"Set up in {base}, with nothing optional collected and the AI advisor off.")
+    if identity_path:
+        print(f"The evidence key is in {identity_path}. BACK IT UP somewhere safe and separate:")
+        print("without it, stored evidence cannot be read, by you or anyone else.")
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     """The web interface, until interrupted."""
     try:
-        from checker.web.app import serve
+        from checker.web.app import listen_problem, serve
     except ImportError:
         print(
             "checker: the web interface needs: pip install -e '.[web]'",
@@ -1735,14 +1769,23 @@ def cmd_web(args: argparse.Namespace) -> int:
         )
         return 2
     base = home()
-    try:
-        load_config(base)
-    except (EvidenceError, ValidationError, yaml.YAMLError) as exc:
-        print(f"checker: {exc}", file=sys.stderr)
-        return 1
     if bool(args.tls_cert) != bool(args.tls_key):
         print("checker: --tls-cert and --tls-key go together", file=sys.stderr)
         return 2
+    try:
+        problem = listen_problem(args.bind, args.public_url, bool(args.tls_cert))
+    except ImportError as exc:
+        return _web_extra_missing(exc)
+    if problem:  # before anything is set up, for a server that wouldn't have started
+        print(f"checker: {problem}", file=sys.stderr)
+        return 2
+    try:
+        if not config_file(base).is_symlink() and not config_file(base).exists():
+            _first_start(base)
+        load_config(base)
+    except (EvidenceError, ValidationError, yaml.YAMLError, OSError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
     try:
         return serve(base, args.bind, args.public_url, args.tls_cert, args.tls_key)
     except ImportError as exc:

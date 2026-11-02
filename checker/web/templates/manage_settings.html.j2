@@ -14,24 +14,7 @@
   {% if section.note %}<p class="note">{{ section.note }}</p>{% endif %}
   {% if section.title == "AI advisor" %}<p class="note">{{ what_leaves | visible(3000) }}</p>{% endif %}
   {% for field in section.fields %}
-  {% if not field.editable %}
-  <p><strong>{{ field.label }}:</strong> set on the command line, so it can't be changed here.</p>
-  {% elif field.kind == "choice" %}
-  <label>{{ field.label }}{% if field.help %} <small>{{ field.help }}</small>{% endif %}
-    <select name="{{ field.key }}">
-      {% for value, words in field.options %}<option value="{{ value }}"{% if field.value == value %} selected{% endif %}>{{ words }}</option>{% endfor %}
-    </select>
-  </label>
-  {% elif field.kind == "onoff" %}
-  <label>{{ field.label }}{% if field.help %} <small>{{ field.help }}</small>{% endif %}
-    <select name="{{ field.key }}">
-      <option value="on"{% if field.value == "on" %} selected{% endif %}>On</option>
-      <option value="off"{% if field.value == "off" %} selected{% endif %}>Off</option>
-    </select>
-  </label>
-  {% else %}
-  <label>{{ field.label }}{% if field.help %} <small>{{ field.help }}</small>{% endif %} <input name="{{ field.key }}" value="{{ field.value }}"></label>
-  {% endif %}
+  {{ parts.setting_field(field) }}
   {% endfor %}
   {% endfor %}
   {{ parts.confirm(with_code=code_needed) }}

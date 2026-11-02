@@ -95,8 +95,11 @@ findings.
 
 ## 6. Credentials
 
-- SSH keys are used through an SSH agent, or from a key file you name. The tool
-  never stores keys or passwords in readable form.
+- SSH keys are used through an SSH agent, from a key file you name, or from a key
+  the tool makes when you ask it to. That key has no passphrase, so daily checks
+  can use it, and is kept in a file only the tool's account can read. It can act
+  as an administrator on every server that accepts it, so protect the machine
+  accordingly. The tool never stores passwords in readable form.
 - Passwords come from a prompt, a page of the web interface, the operating
   system's keyring, or your secrets manager. They are kept in memory only for the run, never written to
   logs, and never placed on a command line, where other users and audit logs
@@ -247,9 +250,9 @@ that may include access tokens, and sometimes secrets typed into commands.
   owner-only file, and never evidence. By default only this machine can reach
   it, and it won't listen more widely without TLS.
   An account can also add and change servers, after confirming with its
-  password, and a code if two-factor sign-in is on. That includes naming any key
-  file the web server can read and which Python runs as administrator on a
-  server. So someone with an account could use those keys to log in elsewhere,
+  password, and a code if two-factor sign-in is on. That includes making this
+  machine's SSH key, naming any key file the web server can read, and choosing
+  which Python runs as administrator on a server. So someone with an account could use those keys to log in elsewhere,
   or send the next typed password to a machine they control. The same
   confirmation lets an account change what is collected and how long evidence is
   kept, delete stored evidence, set or stop a daily check, turn the AI advisor on, choose how much is hidden from it, and stop threat
@@ -289,11 +292,12 @@ The tool can use an AI model to explain an analysis, propose whitelist rules
 for a person to review, suggest settings and host configuration for better
 coverage, and advise on remediation. It works fully without it.
 
-- **Your choice at setup.** When the tool is set up, it asks whether to turn
-  the advisor on and explains what would be sent and to whom. Installations
+- **Your choice at setup.** The advisor stays off until someone turns it on.
+  `checker init` asks and explains what would be sent and to whom, and so does the
+  web interface's First setup page; until someone answers there, it stays off. Installations
   set up without anyone answering questions leave it off unless the
-  configuration file turns it on. `checker config` or the web interface's
-  Settings page changes the choice later, and every change made with either is
+  configuration file turns it on. `checker config`, or the web interface's
+  First setup or Settings page, changes the choice later, and every change made with either is
   recorded with when it was made. The command line records the machine account
   that made it, and the page's activity record names the person. Edits made to
   the configuration file by hand are not recorded.

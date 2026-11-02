@@ -407,7 +407,23 @@ def _initialise(
     advisor: Advisor | None = None,
 ) -> tuple[Config, Path | None]:
     identity_path = None
-    if recipient:
+    kept = home / "keys" / "evidence-identity.txt"
+    if os.path.lexists(kept):
+        # Its settings may be gone, but evidence may be encrypted to this. Replacing it would make
+        # all of that unreadable, for good, so it's kept, and new settings are built around it.
+        if recipient:
+            raise EvidenceError(
+                f"an evidence key is already in {home / 'keys'}: move it away yourself if you mean"
+                " to stop using it, since evidence encrypted to it needs it"
+            )
+        try:
+            recipients = [str(load_identity(kept).to_public())]
+        except (OSError, ValueError, EvidenceError, pyrage.IdentityError) as exc:
+            raise EvidenceError(
+                f"the evidence key in {home / 'keys'} can't be read, so nothing was changed"
+            ) from exc
+        identity_path = kept
+    elif recipient:
         try:
             x25519.Recipient.from_str(recipient)
         except pyrage.RecipientError as exc:

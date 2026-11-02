@@ -34,6 +34,7 @@ from checker.settings import remove_host
 from checker.web import (
     accounts,
     decide,
+    first_setup,
     manage,
     purging,
     runs,
@@ -66,6 +67,8 @@ VIEWABLE = {
     "manage_settings",
     "manage_schedule",
     "manage_purge",
+    "first_setup",
+    "manage_prepare",
     "two_factor_manage",
 }
 
@@ -387,6 +390,11 @@ def fleet_page(request) -> HttpResponse:
         # Details may quote a settings file, secrets included: only the kind goes to the log.
         print(f"checker web: can't read the results: {type(exc).__name__}", file=sys.stderr)
         return _unavailable(request, "A settings file or the evidence key can't be read.")
+    try:
+        key_unsaved = first_setup.key_unsaved(home())
+    except Exception as exc:  # noqa: BLE001 - only a reminder depends on it
+        print(f"checker web: can't read the key's state: {type(exc).__name__}", file=sys.stderr)
+        key_unsaved = False
     for problem in problems:
         print(f"checker web: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)
     rows = wording.rows_for(hosts)
@@ -405,6 +413,7 @@ def fleet_page(request) -> HttpResponse:
         request,
         "fleet.html.j2",
         {
+            "key_unsaved": key_unsaved,
             "headline": title,
             "headline_tone": title_tone,
             "rows": shown,
@@ -529,7 +538,11 @@ def _add_form(request, values=None, problem: str = "", status: int = 200, ask_sa
     except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
         return _unreadable_inventory(request, exc)
     context = {
-        "values": manage.for_the_page(values if values is not None else manage.blank_form()),
+        "values": manage.for_the_page(
+            values
+            if values is not None
+            else manage.blank_form(first_setup.key_path_if_made(home()))
+        ),
         "problem": problem,
         "ask_same": ask_same,
         "groups": manage.groups_for_the_page(groups),
@@ -1045,6 +1058,89 @@ def purge_confirm(request) -> HttpResponse:
         return _unavailable(request, "The evidence was deleted, but this page can't be shown.")
 
 
+def _first_setup_page(request, problem="", status: int = 200) -> HttpResponse:
+    context = {
+        **first_setup.progress(home()),
+        "problem": problem,
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "first_setup.html.j2", context, status=status)
+
+
+def _setup_refused(request, words) -> ActionFailed:
+    try:
+        return ActionFailed(words, page=_first_setup_page(request, words, 400))
+    except Exception:  # noqa: BLE001 - the words are what matter
+        return ActionFailed(words)
+
+
+@login_required
+@require_GET
+def first_setup_page(request) -> HttpResponse:
+    """Worked out from what's really there each time, so it can't drift from it."""
+    try:
+        return _first_setup_page(request)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't read the setup: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The settings or the evidence store can't be read.")
+
+
+def _evidence_key_named(request, **kwargs) -> str:
+    return first_setup.this_key(home())
+
+
+@action(first_setup.KEY_SAVED, target=_evidence_key_named)
+def first_setup_key_saved(request) -> HttpResponse:
+    """No password: it changes nothing but the reminder, and says who said so."""
+    return HttpResponseRedirect(reverse("first_setup"))
+
+
+@action(first_setup.CHOSE, consequential=True)
+def first_setup_choices(request) -> HttpResponse:
+    """Password again, as on the settings page: it's the same settings, by the same code."""
+    try:
+        changed = setting_forms.save(home(), request.POST)
+    except setting_forms.ChangedMeanwhile as exc:
+        raise _setup_refused(request, str(exc)) from None
+    except setting_forms.FormProblem as exc:
+        raise _setup_refused(request, visible(str(exc), 800)) from None
+    except MANAGE_FAILURES as exc:
+        print(f"checker web: first setup's choices failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(CANT_CHANGE_SETTINGS) from None
+    request.action_detail = setting_forms.changes_in_words(changed)
+    return HttpResponseRedirect(reverse("first_setup"))
+
+
+@action("made this machine's SSH key", consequential=True)
+def first_setup_make_key(request) -> HttpResponse:
+    """Password again: it's a credential for every server that comes to accept it."""
+    try:
+        request.action_detail = first_setup.make_key(home())
+    except first_setup.KeyExists as exc:
+        raise ActionFailed(str(exc)) from None
+    except OSError as exc:
+        print(f"checker web: making the key failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed(
+            "That couldn't be done: this machine's files can't be written."
+        ) from None
+    return HttpResponseRedirect(reverse("first_setup"))
+
+
+@login_required
+@require_GET
+def manage_prepare(request) -> HttpResponse:
+    """The commands to paste on a server, filled in. Works out text, and contacts nothing."""
+    name = request.GET.get("host", "")
+    try:
+        if not _known_host(name):
+            return not_found(request)
+        host = load_inventory().get(name)
+        context = first_setup.commands_for(home(), host, request.GET.get("from", ""))
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        return _unreadable_inventory(request, exc)
+    return render(request, "manage_prepare.html.j2", {"host": host, **context})
+
+
 @login_required
 @require_GET
 def checks_page(request) -> HttpResponse:
@@ -1154,12 +1250,16 @@ def check_page(request, run_id: int) -> HttpResponse:
     run = CheckRun.objects.filter(pk=run_id).first()
     if run is None:
         return not_found(request)
+    lines = runs.output_lines(run.id)
+    checking = run.kind == "check" and not runs.is_running(run.id)
     return render(
         request,
         "check.html.j2",
         {
             "run": _run_row(run),
-            "lines": runs.output_lines(run.id),
+            "lines": lines,
+            "try_these": first_setup.what_to_try(lines) if checking else [],
+            "check_hosts": json.loads(run.hosts),
             "busy": "busy" in request.GET,
             "from_decide": run.kind == "advice",
         },

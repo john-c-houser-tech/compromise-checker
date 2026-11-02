@@ -18,6 +18,8 @@ from checker.product import product_name
 HERE = Path(__file__).resolve().parent
 SESSION_SECONDS = 8 * 3600
 LOCAL_NAMES = ["127.0.0.1", "localhost", "[::1]"]
+PROXY_SECRET_FILE = "web-proxy-secret.txt"  # noqa: S105 - where it is, not what it is
+PROXY_SECRET_HEADER = "X-Checker-Proxy-Secret"  # noqa: S105 - the same
 
 
 def secret_key(home: Path) -> str:
@@ -27,6 +29,26 @@ def secret_key(home: Path) -> str:
         atomic_write(path, secrets.token_urlsafe(64) + "\n")
     os.chmod(path, 0o600)  # a restored backup may have come back wider
     return path.read_text().strip()
+
+
+def proxy_secret(home: Path) -> str:
+    """What the proxy sends to show a request came through it: made once, owner-only."""
+    path = home / "keys" / PROXY_SECRET_FILE
+    existed = path.exists()
+    if existed:
+        os.chmod(path, 0o600)  # a restored backup may have come back wider
+        kept = path.read_bytes().strip()
+        # An emptied or damaged one, from a full disk or a partial backup, could be guessed.
+        if re.fullmatch(rb"[A-Za-z0-9_-]{32,}", kept):
+            return kept.decode()
+        print(
+            f"checker: {path} wasn't a usable secret, so there's a new one: the proxy must send it",
+            file=sys.stderr,
+        )
+    made = secrets.token_urlsafe(32)
+    atomic_write(path, made + "\n")
+    os.chmod(path, 0o600)
+    return made
 
 
 def is_local(host: str) -> bool:
@@ -43,6 +65,14 @@ def is_local(host: str) -> bool:
     except OSError:
         return False
     return bool(found) and all(ipaddress.ip_address(a.partition("%")[0]).is_loopback for a in found)
+
+
+class _NoClientErrorsInTheLog(logging.Filter):
+    """Anonymous requests mustn't be able to fill a log, and gunicorn notes a bad chunk in a body
+    with a whole traceback. It says this only of what went wrong in talking to the client."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.getMessage().startswith("Socket error processing request")
 
 
 class _NoLinksInTheLog(logging.Filter):
@@ -86,6 +116,12 @@ def public_url_problem(public_url: str) -> str | None:
     return None
 
 
+def behind_a_proxy(public_url: str | None, tls: bool) -> bool:
+    """An https address with no certificate here means something else provides it. http is only
+    allowed for this machine itself, where nothing need stand in between."""
+    return bool(public_url) and not tls and urlsplit(public_url).scheme == "https"
+
+
 def django_settings(
     home: Path, public_url: str | None = None, tls: bool = False, listens_beyond: bool = False
 ) -> dict:
@@ -98,13 +134,16 @@ def django_settings(
     if host and ":" in host:
         host = f"[{host}]"
     prefix = "__Host-" if secure else ""  # bound to this host, https only, over any port
+    proxied = behind_a_proxy(public_url, tls)
     return {
         "DEBUG": False,
         "SECRET_KEY": secret_key(home),
         "ALLOWED_HOSTS": [host] if parts else LOCAL_NAMES,
         "CSRF_TRUSTED_ORIGINS": [f"{parts.scheme}://{parts.netloc}"] if parts else [],
-        # Behind a proxy every peer is the proxy: see accounts.client_address.
-        "CHECKER_BEHIND_PROXY": bool(parts),
+        # Behind a proxy every peer is the proxy: see accounts.client_address, and
+        # middleware.only_through_the_proxy for why its word can be taken.
+        "CHECKER_BEHIND_PROXY": proxied,
+        "CHECKER_PROXY_SECRET": proxy_secret(home) if proxied else None,
         "CHECKER_PUBLIC_URL": public_url,
         "CHECKER_TWO_FACTOR_REQUIRED": two_factor_required(public_url, listens_beyond),
         "OTP_TOTP_ISSUER": product_name(),
@@ -120,6 +159,7 @@ def django_settings(
         ],
         "MIDDLEWARE": [
             "checker.web.middleware.security_headers",
+            "checker.web.middleware.only_through_the_proxy",
             "checker.web.middleware.small_forms_only",
             "django.contrib.sessions.middleware.SessionMiddleware",
             "django.middleware.common.CommonMiddleware",
@@ -278,6 +318,8 @@ def server_options(bind: str, tls_cert: str | None, tls_key: str | None) -> dict
         "timeout": 120,
         # An access log would hold setup links; nothing about a request needs keeping.
         "accesslog": None,
+        # Anonymous requests mustn't be able to fill a log: gunicorn notes every malformed one.
+        "loglevel": "error",
         # gunicorn's own management socket: nothing here uses it, so nothing listens.
         "control_socket_disable": True,
     }
@@ -312,8 +354,15 @@ def serve(
     if link:
         print("No account yet. Open this link, once, within an hour, to create the first one:")
         print(f"  {link}")
+    if behind_a_proxy(public_url, tls):
+        print(
+            f"The proxy must send the header {PROXY_SECRET_HEADER} with the value in"
+            f" {home / 'keys' / PROXY_SECRET_FILE}, or every request is refused."
+        )
     print(f"{product_name()} is at {address}", flush=True)  # before the server takes over
     wsgi = read_timeout(get_wsgi_application())
+
+    logging.getLogger("gunicorn.error").addFilter(_NoClientErrorsInTheLog())
 
     class Server(BaseApplication):
         def load_config(self):

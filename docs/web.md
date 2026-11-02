@@ -55,11 +55,52 @@ can reach that address, which is why it asks for a login even there.
 
 - **Behind a proxy on this machine** that provides https (Caddy, nginx):
   `checker web --public-url https://checker.example`. Only that address is accepted, and cookies
-  are sent only over https. The proxy must add the client's address as the last entry of
-  `X-Forwarded-For`, which Caddy and a normal nginx setup do, and should buffer request bodies. The
-  address in the activity record is only as good as that proxy. Anyone with an account on this machine
-  can connect to the tool's port directly and claim any address, which gets around the limits on guessing
-  a login and puts a false address in the record, so use this on a machine only you can sign in to.
+  are sent only over https. The proxy must do two things. It must add the client's address as the last
+  entry of `X-Forwarded-For`, which Caddy and a normal nginx setup do. And it must send the secret in
+  `keys/web-proxy-secret.txt`, made the first time you start it this way, in the header
+  `X-Checker-Proxy-Secret`, replacing anything a client sent under that name. It should also buffer
+  request bodies. In Caddy:
+
+  ```
+  {
+      admin unix//var/lib/caddy/admin.sock
+  }
+
+  checker.example {
+      reverse_proxy 127.0.0.1:8088 {
+          header_up X-Checker-Proxy-Secret "the secret"
+      }
+  }
+  ```
+
+  In nginx, where setting one of these in a block drops any set further out, so they go together:
+
+  ```
+  location / {
+      proxy_pass http://127.0.0.1:8088;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Checker-Proxy-Secret "the secret";
+  }
+  ```
+
+  Any request without the secret is refused, so someone with an account on this machine can't connect to
+  the tool's port directly and claim a false address. That's only as strong as the secret, so on a machine
+  others can sign in to:
+
+  - Move Caddy's admin port to a socket in a folder only its account can write to, as above. By default
+    any local user can read and change its whole settings on that port, secret included, with no
+    password. Don't use `admin off` for this: `caddy reload` then sends the settings to the default port,
+    where a local user could be listening.
+  - Keep the proxy's settings file readable only by those who run it (Caddy keeps its own copy, called
+    `autosave.json`, that way), and don't turn on Caddy's `debug` option, which writes the secret to its
+    log.
+  - Keep the tool running. While it's stopped, a local user could listen on its port and receive what the
+    proxy sends, including passwords and the secret.
+
+  To change the secret, delete the file, restart, and put the new one in the proxy. Only Caddy has been
+  tried this way; the nginx block follows its documentation.
 - **From other machines, without a proxy:**
   `checker web --bind 0.0.0.0:443 --tls-cert CERT --tls-key KEY --public-url https://checker.example`.
   It refuses to listen beyond this machine without TLS, and refuses an http address for another
@@ -93,7 +134,7 @@ recovery codes, sessions, failed
 logins for the last 15 minutes with their usernames and addresses, the times of wrong passwords and codes (never what was typed), when the latest 50 checks started from a page ran and how they ended, and the activity record below.
 What a check reports while it runs, which can quote an error a server sent but not findings or passwords,
 stays in the web server's memory, and goes when it restarts. No evidence is ever copied
-there. `keys/web-secret.txt` signs sessions; deleting it signs everyone out. Evidence is decrypted
+there. `keys/web-secret.txt` signs sessions; deleting it signs everyone out. Behind a proxy, `keys/web-proxy-secret.txt` holds what it sends. Evidence is decrypted
 in memory for each page, with the same key the command line uses, and pages tell browsers not to
 keep them. There is no access log; only errors in the tool itself go to its standard error.
 
@@ -144,6 +185,12 @@ only once, so after using one, wait for the next. Five wrong codes end the sessi
 password, someone can try about 170 codes a day before that wait stops them, each one shown on the Activity
 page, so don't leave wrong codes you didn't type unexplained. The secrets and recovery codes are stored readable in `web.db`, since the tool has to check against them: treat a
 copy of that file, or a backup of it, as you would a password.
+
+## Starting checks
+
+One check, analysis or request for AI advice runs at a time, and each person can start 30 of them in an
+hour. Checking all your servers counts as one, and one that didn't start doesn't count. A check reaches every server it names, and advice may
+cost money, so this limits what a stolen session can do. A daily check and the command line don't count.
 
 ## People and what they may do
 
@@ -281,8 +328,9 @@ check, and any check started from a page, delete what's past them.
   setting it up if that's still to be done.
 - **Passwords:** at least 12 characters, not common, not all digits, not like the username. Five
   failed logins for a name from one address, or twenty from one address, stop further tries from
-  there for 15 minutes, even with the right password. Without a proxy, everyone on this machine
-  counts as one address, so another local user could lock you out for that long. If you lose a
+  there for 15 minutes, even with the right password. Everyone connecting from this machine counts as one
+  address, with or without a proxy, or a few if it has several network addresses, so another local user
+  could lock you out for that long. If you lose a
   password, `checker web-password USERNAME` sets a new one and notes it in the activity record. Don't
   delete `web.db` for this: the activity record goes with it.
 - **Host text is treated as hostile.** A compromised server can put anything in its logs, and that

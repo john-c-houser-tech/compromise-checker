@@ -8922,3 +8922,295 @@ def test_a_wrong_password_on_an_old_hash_takes_as_long_as_any_other(web, monkeyp
     assert hasher.verify(PASSWORD, old) and not evened
     assert not hasher.verify("wrong", old) and len(evened) == 1
     assert not hasher.verify("wrong", hasher.encode(PASSWORD, hasher.salt())) and len(evened) == 1
+
+
+# --- Only through the proxy, and a limit on starting checks -----------------------------------
+
+
+def test_only_an_https_address_with_no_certificate_here_means_a_proxy(tmp_path):
+    def made(url, tls=False):
+        return web_app.django_settings(tmp_path, url, tls)
+
+    behind = made("https://checker.example")
+    assert behind["CHECKER_BEHIND_PROXY"] and behind["CHECKER_PROXY_SECRET"]
+    for direct in (made(None), made("http://127.0.0.1:8088"), made("https://c.example", tls=True)):
+        assert not direct["CHECKER_BEHIND_PROXY"] and direct["CHECKER_PROXY_SECRET"] is None
+
+
+def test_the_proxys_secret_is_kept_owner_only_and_stays_the_same(tmp_path):
+    first = web_app.proxy_secret(tmp_path)
+    path = tmp_path / "keys" / web_app.PROXY_SECRET_FILE
+    assert len(first) >= 40 and path.stat().st_mode & 0o777 == 0o600
+    path.chmod(0o644)
+    assert web_app.proxy_secret(tmp_path) == first
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_starting_with_no_proxy_makes_no_secret(tmp_path):
+    web_app.django_settings(tmp_path)
+    assert not (tmp_path / "keys" / web_app.PROXY_SECRET_FILE).exists()
+
+
+SECRET = {"HTTP_X_CHECKER_PROXY_SECRET": "the right secret"}
+
+
+@pytest.fixture
+def behind_proxy(settings_override):
+    settings_override(CHECKER_BEHIND_PROXY=True, CHECKER_PROXY_SECRET="the right secret")
+
+
+@pytest.mark.parametrize(
+    "wrong", [None, "", "wrong", "the right secre", "the right secret ", "\u00e9"]
+)
+@pytest.mark.parametrize("path", ["/", "/login", "/style.css", "/nothing-here"])
+def test_a_request_without_the_secret_is_refused(web, behind_proxy, path, wrong):
+    client, _ = web
+    extra = {} if wrong is None else {"HTTP_X_CHECKER_PROXY_SECRET": wrong}
+    for response in (client.get(path, **extra), client.post(path, {"x": "1"}, **extra)):
+        assert response.status_code == 403 and "through its proxy" in response.content.decode()
+        assert "the right secret" not in response.content.decode()
+        assert response["Content-Security-Policy"]
+
+
+def test_a_login_without_the_secret_counts_for_nothing_and_says_nothing(web, behind_proxy):
+    from checker.web.models import ActionRecord, LoginAttempt
+
+    client, _ = web
+    forged = {"HTTP_X_FORWARDED_FOR": "198.51.100.66"}
+    assert client.post("/login", {"username": "jo", "password": "no"}, **forged).status_code == 403
+    assert not LoginAttempt.objects.exists() and not ActionRecord.objects.exists()
+
+
+def test_with_the_secret_the_address_is_the_one_the_proxy_added(web, behind_proxy):
+    from checker.web.models import LoginAttempt
+
+    client, _ = web
+    forged = {"HTTP_X_FORWARDED_FOR": "203.0.113.9, 198.51.100.66", **SECRET}
+    assert client.get("/login", **SECRET).status_code == 200
+    assert client.post("/login", {"username": "jo", "password": "no"}, **forged).status_code == 403
+    assert LoginAttempt.objects.get().address == "198.51.100.66"
+
+
+def test_no_proxy_means_no_secret_is_asked_for(web):
+    client, _ = web
+    assert client.get("/login").status_code == 200
+
+
+def test_starting_behind_a_proxy_says_what_it_needs_and_not_the_secret(
+    _django, tmp_path, monkeypatch, capsys
+):
+    class Stop(Exception):
+        pass
+
+    def configure(*args, **kwargs):
+        web_app.proxy_secret(tmp_path)
+
+    monkeypatch.setattr(web_app, "configure", configure)
+    monkeypatch.setattr("checker.web.accounts.setup_link", lambda address: None)
+    monkeypatch.setattr(
+        "django.core.wsgi.get_wsgi_application", lambda: (_ for _ in ()).throw(Stop())
+    )
+    with pytest.raises(Stop):
+        web_app.serve(tmp_path, "127.0.0.1:8088", "https://c.example")
+    said = capsys.readouterr().out
+    assert web_app.PROXY_SECRET_HEADER in said and web_app.PROXY_SECRET_FILE in said
+    assert web_app.proxy_secret(tmp_path) not in said
+    with pytest.raises(Stop):
+        web_app.serve(tmp_path, "127.0.0.1:8088")
+    assert web_app.PROXY_SECRET_HEADER not in capsys.readouterr().out
+
+
+def starts_recorded(who, number, action="started a check", outcome="done", age=timedelta(0)):
+    from django.utils import timezone
+
+    from checker.web.models import ActionRecord
+
+    for _ in range(number):
+        ActionRecord.objects.create(
+            at=timezone.now() - age,
+            who=who,
+            address="",
+            action=action,
+            target="",
+            outcome=outcome,
+            detail="",
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "fields"),
+    [
+        ("/checks/start", {"host": "web01"}),
+        ("/checks/analyze", {"host": "web01"}),
+        ("/decide/ask", {"host": "web01"}),  # no password: nor is a code used up to hear this
+    ],
+)
+def test_one_person_can_start_only_so_many_in_an_hour(web, monkeypatch, path, fields):
+    from checker.web import accounts, runs
+
+    started = []
+    monkeypatch.setattr(runs, "start", lambda *args, **kwargs: started.append(args) or 1)
+    client, _ = signed_in(web)
+    starts_recorded("jo", accounts.MAX_STARTS)
+    response = client.post(path, fields)
+    assert response.status_code == 400 and "as many as one person can" in response.content.decode()
+    assert not started
+    assert actions_recorded()[-1][3] == "failed"
+
+
+def test_the_limit_is_each_persons_own_and_only_the_last_hour(web):
+    from checker.web import accounts
+
+    starts_recorded("jo", accounts.MAX_STARTS - 2)
+    starts_recorded("jo", 1, "started an analysis")
+    assert not accounts.too_many_starts("jo")
+    starts_recorded("jo", 1, "asked the AI advisor for rules")
+    assert accounts.too_many_starts("jo") and not accounts.too_many_starts("someone else")
+    starts_recorded("old", accounts.MAX_STARTS, age=accounts.START_WINDOW + timedelta(minutes=1))
+    assert not accounts.too_many_starts("old")
+    starts_recorded("other", accounts.MAX_STARTS, "changed settings")
+    assert not accounts.too_many_starts("other")
+
+
+def test_only_starts_that_went_ahead_count(web):
+    from checker.web import accounts
+
+    for outcome in ("started", "failed", "failed: 500", "refused"):
+        starts_recorded("jo", accounts.MAX_STARTS, outcome=outcome)
+    assert not accounts.too_many_starts("jo")
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["held", "busy", "no process"],
+)
+def test_a_start_that_didnt_happen_doesnt_count(web, inventory, monkeypatch, failure):
+    """Or someone could use up another's starts, or their own during a shortage."""
+    from checker.web import accounts, runs
+
+    def refused(*args, **kwargs):
+        raise {
+            "held": runs.Held(),
+            "busy": runs.AlreadyRunning(1),
+            "no process": OSError("no memory"),
+        }[failure]
+
+    monkeypatch.setattr(runs, "start", refused)
+    client, _ = signed_in(web)
+    for _ in range(accounts.MAX_STARTS + 1):
+        client.post("/checks/analyze", {"host": "web01"})
+    assert not accounts.too_many_starts("jo")
+
+
+def test_real_starts_count_on_every_route(web, inventory, agent, monkeypatch):
+    """Through the routes, so a renamed action can't quietly end the limit."""
+    from checker.web import accounts, runs
+
+    monkeypatch.setattr(runs, "start", lambda *args, **kwargs: 1)
+    client, _ = signed_in(web)
+    inventory(key_host())
+    for path, fields in (
+        ("/checks/start", {"host": "web01"}),
+        ("/checks/analyze", {"host": "web01"}),
+        ("/decide/ask", {"host": "web01", "confirm_password": PASSWORD}),
+    ):
+        assert client.post(path, fields).status_code == 302, path
+    assert {row[1] for row in actions_recorded() if row[3] == "done"} == set(accounts.STARTS)
+    starts_recorded("jo", accounts.MAX_STARTS - 4)
+    assert not accounts.too_many_starts("jo")
+    starts_recorded("jo", 1)
+    assert accounts.too_many_starts("jo")
+
+
+@pytest.mark.parametrize("peer", ["127.0.0.1", "127.77.5.9", "::1", "::ffff:127.0.0.2"])
+@pytest.mark.parametrize("behind", [False, True])
+def test_anyone_on_this_machine_counts_as_one_address(web, settings_override, peer, behind):
+    """They can send from any of 127.x.y.z, so otherwise each would be a new set of tries."""
+    from checker.web.accounts import client_address
+
+    settings_override(CHECKER_BEHIND_PROXY=behind)
+    assert client_address(request_from(peer)) == "127.0.0.1"
+    assert client_address(request_from("127.0.0.1", peer if behind else None)) == "127.0.0.1"
+
+
+def test_guessing_from_many_loopback_addresses_is_still_throttled(web, settings_override):
+    client, _ = web
+    settings_override(CHECKER_BEHIND_PROXY=True)
+    account()
+    for n in range(5):
+        forged = {"HTTP_X_FORWARDED_FOR": f"127.77.5.{n}"}
+        client.post("/login", {"username": "jo", "password": "no"}, **forged)
+    response = client.post(
+        "/login",
+        {"username": "jo", "password": PASSWORD},
+        HTTP_X_FORWARDED_FOR="127.88.1.1",
+    )
+    assert "Too many failed attempts" in response.content.decode()
+
+
+@pytest.mark.parametrize(
+    "contents", [b"", b" \n\n", b"a", b"\0" * 44, b"\xff" * 44, b"short-secret"]
+)
+def test_a_secret_file_that_isnt_one_gets_a_new_secret_and_says_so(tmp_path, capsys, contents):
+    path = tmp_path / "keys" / web_app.PROXY_SECRET_FILE
+    path.parent.mkdir()
+    path.write_bytes(contents)
+    made = web_app.proxy_secret(tmp_path)
+    assert len(made) >= 40 and path.read_text().strip() == made
+    assert path.stat().st_mode & 0o777 == 0o600
+    said = capsys.readouterr().err
+    assert "the proxy must send it" in said and made not in said
+
+
+def test_an_empty_secret_refuses_everything_rather_than_nothing(web, settings_override):
+    client, _ = web
+    settings_override(CHECKER_BEHIND_PROXY=True, CHECKER_PROXY_SECRET="")
+    assert client.get("/login").status_code == 403
+    assert client.get("/login", HTTP_X_CHECKER_PROXY_SECRET="").status_code == 403
+
+
+def test_the_secret_comes_before_anything_else_answers(web, behind_proxy):
+    client, _ = web
+    assert client.get("/login", HTTP_HOST="not-allowed.example").status_code == 403
+    too_large = client.post("/login", {"x": "y" * 100_000})
+    assert too_large.status_code == 403 and "through its proxy" in too_large.content.decode()
+
+
+def test_a_malformed_request_doesnt_fill_the_log(tmp_path):
+    """A real server, since this depends on what gunicorn does with what it's sent."""
+    with socket.socket() as spare:
+        spare.bind(("127.0.0.1", 0))
+        port = spare.getsockname()[1]
+    env = {**os.environ, "CHECKER_HOME": str(tmp_path)}
+    server = subprocess.Popen(
+        [sys.executable, "-m", "checker", "web", "--bind", f"127.0.0.1:{port}"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        for line in server.stdout:
+            if " is at " in line:
+                break
+        bad = b"POST /login HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\nZZ\r\n"
+        for _ in range(40):  # the first may come before it's listening
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+                    connection.sendall(bad)
+                    connection.recv(1024)
+                break
+            except OSError:
+                time.sleep(0.25)
+        for _ in range(3):
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+                connection.sendall(bad)
+                connection.recv(1024)
+    finally:
+        server.terminate()
+        _, errors = server.communicate(timeout=15)
+    assert "Traceback" not in errors and "Socket error" not in errors, errors[:500]
+
+
+def test_the_servers_log_level_leaves_out_routine_lines():
+    assert web_app.server_options("127.0.0.1:1", None, None)["loglevel"] == "error"

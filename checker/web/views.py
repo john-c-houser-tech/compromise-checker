@@ -1383,7 +1383,16 @@ def _names_of(request, **kwargs) -> str:
     return ", ".join(request.POST.getlist("host")) or "every server"
 
 
-@action("started a check", target=_names_of)
+def _not_too_many_starts(request) -> None:
+    if accounts.too_many_starts(request.user.get_username()):
+        raise ActionFailed(
+            f"You've started {accounts.MAX_STARTS} checks, analyses and requests for AI advice in"
+            " the last hour, which is as many as one person can. Try again later. If you didn't"
+            " start them, change your password: the Activity page shows what ran."
+        )
+
+
+@action(accounts.STARTS[0], target=_names_of, check=_not_too_many_starts)
 def check_start(request) -> HttpResponse:
     try:
         ready, asking, _ = _check_plan(request, request.POST.getlist("host"))
@@ -1422,7 +1431,11 @@ def _start_run(request, kind: str, hosts: list[str], passwords=None) -> HttpResp
     return HttpResponseRedirect(reverse("check", kwargs={"run_id": run_id}))
 
 
-@action("started an analysis", target=lambda request, **kwargs: request.POST.get("host", ""))
+@action(
+    accounts.STARTS[1],
+    target=lambda request, **kwargs: request.POST.get("host", ""),
+    check=_not_too_many_starts,
+)
 def analyze_start(request) -> HttpResponse:
     """Runs the checks again on what was last collected, connecting to nothing: after a new threat
     pack or a changed rule, say."""
@@ -1573,7 +1586,12 @@ def rule_discard(request) -> HttpResponse:
     return _deciding(request, lambda name: decide.discard(home(), name, file))
 
 
-@action("asked the AI advisor for rules", consequential=True, target=_posted_host)
+@action(
+    accounts.STARTS[2],
+    consequential=True,
+    target=_posted_host,
+    check=_not_too_many_starts,
+)
 def rules_ask(request) -> HttpResponse:
     """The password, since this spends the organization's money."""
     name = _posted_host(request)

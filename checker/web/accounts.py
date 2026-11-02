@@ -32,6 +32,10 @@ from checker.web.models import (
 SETUP_LIFETIME = timedelta(hours=1)
 INVITATION_LIFETIME = timedelta(hours=24)  # it crosses to someone else, who may be asleep
 THROTTLE_WINDOW = timedelta(minutes=15)
+THIS_MACHINE = "127.0.0.1"
+START_WINDOW = timedelta(hours=1)
+MAX_STARTS = 30  # per person: one run is already the most at a time, and "all servers" is one run
+STARTS = ("started a check", "started an analysis", "asked the AI advisor for rules")
 MAX_FAILURES_FOR_NAME = 5  # from one address: guessing one account's password
 MAX_FAILURES_FROM_ADDRESS = 20  # guessing across accounts
 MAX_WRONG_CONFIRMATIONS = 5  # then the session ends: it's the only way a thief can keep trying
@@ -283,7 +287,10 @@ def client_address(request) -> str:
     """Whose this request is, for throttling and the record. Behind the proxy on this machine
     every peer is the proxy, so one person could lock everyone out: there it is the last
     forwarded address, the one the proxy added itself (earlier ones are whatever the
-    client sent). IPv6 counts by network, since one client can hold a whole /64."""
+    client sent). Only the proxy's requests get this far: see middleware.only_through_the_proxy.
+    Anyone on this machine counts as one, since they can send from any of 127.x.y.z and would
+    otherwise get new tries from each. IPv6 counts by network, since one client can hold a whole
+    /64."""
     address = request.META.get("REMOTE_ADDR", "")
     if settings.CHECKER_BEHIND_PROXY and is_local(address):
         forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "").rpartition(",")[2].strip()
@@ -292,6 +299,10 @@ def client_address(request) -> str:
         parsed = ipaddress.ip_address(address)
     except ValueError:
         return address
+    if parsed.is_loopback or (
+        parsed.version == 6 and parsed.ipv4_mapped and parsed.ipv4_mapped.is_loopback
+    ):
+        return THIS_MACHINE
     if parsed.version == 4:
         return str(parsed)
     if parsed.ipv4_mapped:
@@ -366,6 +377,19 @@ def confirmations_used_up(session_key: str) -> bool:
 
 def clear_confirmations(session_key: str) -> None:
     WrongConfirmation.objects.filter(session_key=session_key).delete()
+
+
+def too_many_starts(who: str) -> bool:
+    """Whether this person has started enough lately: each start reaches every server it names, and
+    may cost money. From the record, which nothing can push out, and only the starts that went
+    ahead, so nobody can use up someone's starts with forms that do nothing."""
+    since = timezone.now() - START_WINDOW
+    return (
+        ActionRecord.objects.filter(
+            who=who, action__in=STARTS, outcome="done", at__gt=since
+        ).count()
+        >= MAX_STARTS
+    )
 
 
 def no_such_account(username: str) -> str | None:

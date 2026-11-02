@@ -98,6 +98,12 @@ running on a machine of their own and reach its first-setup page in a browser.
   has had no outside security review. The Linode form exists but isn't advertised until John has installed
   through both routes and a few outside people have tried it. The update check ignores pre-releases on a
   machine running a final version.
+- **Machines (2026-11-02):** x86 only in the first release, since that's what the real-machine tests can
+  run on. The dependency list has Arm's files too, so adding Arm later is a matter of testing it.
+- **The version number (2026-11-02):** stays `0.1.0.dev0` until I.8 sets `0.1.0`. A version has no beta form,
+  so the first final release after the `0.1.0` pre-release has to be `0.1.1` or later.
+- **Python (2026-11-02):** 3.12 to 3.14 in the first release, always installed with `--only-binary`, so a
+  dependency is never built from source as root. 3.15 waits for a PyYAML wheel.
 - **Default database:** the tool's ordinary file on the machine. PostgreSQL stays available through
   `checker store move` for anyone who wants it. The script doesn't install it.
 
@@ -113,12 +119,16 @@ running on a machine of their own and reach its first-setup page in a browser.
 
 ## Pull requests
 
-- **I.1 Release build.** Set the version, make the exact list of dependencies with their hashes, write the
+- **I.1 Release build.** Make the exact list of dependencies with their hashes, write the
   steps for building and signing a release, and put the public release key in place. John makes the key.
 - **I.2 Install script, this PC only.** The pasted line, the signature check, the Ubuntu or Rocky check, the
   check for a machine already in use, the tool's own account, the services (so daily checks run with nobody
   logged in), the first-setup link and the command to show it again. Sleep turned off or warned about, and
-  a missed check shown on the page.
+  a missed check shown on the page. The Pango libraries that PDF reports need. **Nothing from the release
+  runs before its signature is checked,** and `checker/releases.py` can't do that on a new machine, since it
+  needs dependencies from the release being checked. So the script checks it another way, chosen here:
+  Python's standard library has no Ed25519, and `minisign` isn't in every base package source. The script
+  also names the exact version it expects, so an older signed release can't be given to a new install.
 - **I.3 The web address route.** The question at the start, the check that the machine can be reached,
   Caddy with the proxy secret, retrying until DNS works, the stop if port 80 or 443 is taken, and the
   optional address limit.
@@ -131,6 +141,8 @@ running on a machine of their own and reach its first-setup page in a browser.
   that address changes. (Today that limit is optional, and the person types the address.)
 - **I.6 Updates.** The version check and its off switch, the notice and its louder form for security fixes,
   the rule on pre-releases, the button, the root service, keeping the previous version and rolling back.
+  The service installs only from `stage_release`'s private copy, with `newer_than` set, and keeps the
+  installed release's manifest, since that's the only record of whether a machine is on a pre-release.
   This is the new path from a web session to root, so it gets the closest review. Policy wording too.
 - **I.7 Linode form.** Confirm how a form is published today, then build it, with the link above the console's
   login prompt. Test whether the link can be copied from there, and use a short code if it can't.
@@ -141,7 +153,8 @@ running on a machine of their own and reach its first-setup page in a browser.
 
 - Which Ubuntu and Rocky versions can be supported. The tool needs Python 3.12 or later, which not all of
   them ship by default. Settled in I.2.
-- Whether the first release covers only x86 machines, or Arm too. Settled in I.1.
+- A newer release being withheld from a machine can't be detected from a signature alone. The signed
+  `published` date lets the page show how old the newest release it can see is. Settled in I.6.
 - Where Caddy and the login-failure blocker come from on each distribution, and how far each source can be
   pinned the way the tool's own dependencies are. Settled in I.3 and I.4.
 - The smallest machine that works, measured during I.8 so the install page can state it.

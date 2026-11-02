@@ -579,12 +579,14 @@ def test_each_store_trouble_says_what_to_do(text, words):
     assert words in store_unreadable(sqlite3.OperationalError(text))
 
 
+@pytest.mark.sqlite_only
 def test_a_damaged_store_is_a_plain_error_from_the_command(home, capsys):
     (home[0] / "checker.db").write_bytes(b"not a database, not at all" * 100)
     assert cli.main(["fleet"]) == 1
     assert "damaged" in capsys.readouterr().err
 
 
+@pytest.mark.sqlite_only
 def test_an_empty_store_is_a_plain_error_from_the_command(home, capsys):
     (home[0] / "checker.db").write_bytes(b"")
     assert cli.main(["fleet"]) == 1
@@ -775,6 +777,7 @@ def test_the_command_on_a_home_not_set_up_creates_nothing(tmp_path, monkeypatch,
     assert not (tmp_path / "new").exists()
 
 
+@pytest.mark.sqlite_only
 def test_the_read_only_store_refuses_a_write(home):
     store = Store(home[0] / "checker.db", read_only=True)
     with pytest.raises(sqlite3.OperationalError):

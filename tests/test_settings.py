@@ -325,6 +325,7 @@ def test_turning_the_advisor_on_says_what_its_redaction_sends(base, capsys):
     assert "Excerpts are sent as collected" in out and "placeholders first" not in out
 
 
+@pytest.mark.sqlite_only
 def test_changes_are_append_only(base):
     change(base, "advisor.enabled", "on")
     db = sqlite3.connect(database_file(base))

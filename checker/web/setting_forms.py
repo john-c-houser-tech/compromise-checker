@@ -294,6 +294,7 @@ def _command_line_only(config) -> list[tuple[str, str]]:
         ),
         ("An API key read by running a command", "yes" if _is_command(advisor) else "no"),
         ("Where threat updates come from", "changed" if _source_changed(config) else "as shipped"),
+        ("Where the store is kept", "a database server" if config.database else "a file here"),
     ]
 
 

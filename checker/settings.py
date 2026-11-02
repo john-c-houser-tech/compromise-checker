@@ -28,6 +28,7 @@ from checker.evidence import (
     database_file,
     is_local,
     load_config,
+    store_exists,
 )
 from checker.files import atomic_write, locked
 
@@ -493,7 +494,7 @@ def remove_host(home: Path, name: str) -> None:
         rule = host.packs
         settings = host.model_dump(mode="json", exclude_defaults=True)
         inventory.remove(name)
-        if not database_file(home).exists():  # not set up yet, so nothing to keep the record in
+        if not store_exists(home):  # not set up yet, so nothing to keep the record in
             save_inventory(inventory, path)
             return
         before = path.read_text(encoding="utf-8")

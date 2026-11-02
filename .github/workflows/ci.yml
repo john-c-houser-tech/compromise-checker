@@ -24,6 +24,14 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.12", "3.15"]  # floor, and what the dev machine runs
+    services:
+      postgres:  # a throwaway, for the store's promises on both databases
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -41,6 +49,14 @@ jobs:
         run: pytest -q
         env:
           CHECKER_TEST_CRASH: "1"
+          PGPASSWORD: test
+          CHECKER_TEST_POSTGRES: postgresql://postgres@127.0.0.1:5432/postgres
+      - name: Tests, with the store on PostgreSQL
+        if: matrix.python == '3.12'
+        run: pytest -q
+        env:
+          PGPASSWORD: test
+          CHECKER_TEST_POSTGRES_EVERYWHERE: postgresql://postgres@127.0.0.1:5432/postgres
       - name: The package holds the key list
         run: |
           pip wheel --no-deps -q -w /tmp/wheel .

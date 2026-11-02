@@ -76,6 +76,7 @@ def seal(home, data: bytes, pieces: int = 7):
 # --- init -------------------------------------------------------------------------
 
 
+@pytest.mark.sqlite_only
 def test_init_creates_key_config_and_database(checker_home):
     config, identity_path = initialise(checker_home)
     assert identity_path.stat().st_mode & 0o777 == 0o600
@@ -145,6 +146,7 @@ def test_cut_off_stream_is_incomplete(checker_home):
     assert sealed.status == "incomplete"
 
 
+@pytest.mark.sqlite_only
 def test_store_is_append_only(checker_home):
     initialise(checker_home)
     store = Store(database_file(checker_home))
@@ -261,6 +263,24 @@ async def test_failed_runs_are_recorded_with_their_session(server, checker_home)
     assert "a password is required" in open_text(row["problem"], identity)
 
 
+def _everything_the_store_holds(home) -> bytes:
+    """The file itself, or on a database server, what any table says."""
+    from checker.evidence import COPIED_TABLES, Store
+
+    if database_file(home).exists():
+        return database_file(home).read_bytes()
+    store = Store(database_file(home))
+    try:
+        rows = [
+            dict(row)
+            for table in COPIED_TABLES
+            for row in store._db.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608
+        ]
+    finally:
+        store.close()
+    return repr(rows).encode()
+
+
 async def test_the_index_holds_no_readable_details(server, checker_home):
     config, _ = initialise(checker_home)
     await collect_hosts(
@@ -271,7 +291,7 @@ async def test_the_index_holds_no_readable_details(server, checker_home):
         limits=LIMITS,
         modules=MODULES,
     )
-    database = database_file(checker_home).read_bytes()
+    database = _everything_the_store_holds(checker_home)
     # (The custody log names the controller's own host, as the policy says; the
     # fake target is this machine, so its hostname can't be used as a probe here.)
     machine_id = Path("/etc/machine-id").read_bytes().strip()
@@ -428,6 +448,7 @@ def test_judge_uses_the_run_id_echo_and_the_exit_status():
     assert judge("broken", None, "mine", 0) == ("broken", None)
 
 
+@pytest.mark.sqlite_only
 def test_insert_or_replace_cannot_bypass_append_only(checker_home):
     initialise(checker_home)
     store = Store(database_file(checker_home))

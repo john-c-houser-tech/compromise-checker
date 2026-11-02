@@ -17,6 +17,57 @@ import pytest
 PASSWORD = "correct horse"
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "sqlite_only: looks at SQLite's own file or tables, or names its errors"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if os.environ.get("CHECKER_TEST_POSTGRES_EVERYWHERE"):
+        skip = pytest.mark.skip(reason="about SQLite itself: test_store_backends covers both")
+        for item in items:
+            if item.get_closest_marker("sqlite_only"):
+                item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _store_on_postgres(monkeypatch):
+    """CHECKER_TEST_POSTGRES_EVERYWHERE: every store any test sets up is on that server, in a schema
+    of its own (a throwaway server: tests/test_store_backends.py says more)."""
+    server = os.environ.get("CHECKER_TEST_POSTGRES_EVERYWHERE")
+    if not server:
+        yield
+        return
+    import secrets
+
+    import psycopg
+
+    from checker import evidence
+
+    schemas = []
+    real = evidence._initialise
+
+    def on_the_server(home, recipient, home_text, web_access_logs=False, exec_records="web",
+                      advisor=None, database=None, new_store=False):  # fmt: skip
+        if database is None:
+            schema = f"t{secrets.token_hex(6)}"
+            with psycopg.connect(server, autocommit=True) as admin:
+                admin.execute(f"CREATE SCHEMA {schema}")
+            schemas.append(schema)
+            separator = "&" if "?" in server else "?"
+            database = f"{server}{separator}options=-csearch_path%3D{schema}"
+        return real(
+            home, recipient, home_text, web_access_logs, exec_records, advisor, database, new_store
+        )
+
+    monkeypatch.setattr(evidence, "_initialise", on_the_server)
+    yield
+    with psycopg.connect(server, autocommit=True) as admin:
+        for schema in schemas:
+            admin.execute(f"DROP SCHEMA {schema} CASCADE")
+
+
 @pytest.fixture(autouse=True)
 def _no_real_http(monkeypatch):
     """No test reaches a real server over HTTP (the advisor's tests use mock

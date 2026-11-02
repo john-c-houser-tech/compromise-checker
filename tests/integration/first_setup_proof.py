@@ -204,9 +204,19 @@ def main() -> int:
             "docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}",
             CONTAINER,
         ).stdout.strip()  # fmt: skip
+        database = os.environ.get(
+            "CHECKER_PROOF_DATABASE"
+        )  # a throwaway, to prove it on PostgreSQL
+        if database:
+            run(sys.executable, "-m", "checker", "init", "--advisor", "off", "--database", database,
+                env=env, cwd=REPO)  # fmt: skip
         server, link, said = start_server(home, env)
         made = (home / "keys" / "evidence-identity.txt").exists()
-        checks("an empty home sets itself up", made and any("BACK IT UP" in s for s in said), said)
+        checks(
+            "an empty home sets itself up",
+            made and (database or any("BACK IT UP" in s for s in said)),
+            said,
+        )
         with sync_playwright() as play:
             browser = play.chromium.launch(
                 executable_path=os.environ.get("CHROMIUM", "/usr/bin/chromium"),

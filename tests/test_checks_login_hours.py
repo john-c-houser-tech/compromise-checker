@@ -203,7 +203,7 @@ def test_analyze_tells_the_check_the_session_user(home, monkeypatch):
     base, store, identity, config = home
     add_bundle(home, "b1", 0, host_records())
     row = dict(store.bundle("b1"))
-    store._db.execute("DROP TRIGGER bundles_no_update")
+    store._db.lift_append_only()
     store._db.execute(
         "UPDATE bundles SET session = ? WHERE id = 'b1'",
         (seal_text(jsonlib.dumps({"user": "scanner"}), config.recipients),),

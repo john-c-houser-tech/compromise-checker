@@ -5,6 +5,7 @@ import html
 import json
 import os
 import re
+import secrets
 import socket
 import subprocess
 import sys
@@ -49,11 +50,27 @@ def browser(**kwargs):
 @pytest.fixture(scope="session")
 def _django():
     home = Path(tempfile.mkdtemp())
+    server = os.environ.get("CHECKER_TEST_POSTGRES_EVERYWHERE")
+    schema = f"web{secrets.token_hex(6)}" if server else None
+    if server:
+        import psycopg
+
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"CREATE SCHEMA {schema}")
+        separator = "&" if "?" in server else "?"
+        address = f"{server}{separator}options=-csearch_path%3D{schema}"
+        (home / "config.yaml").write_text(f"database: {address}\n")
     web_app.configure(home)
     from django.test.utils import setup_test_environment
 
     setup_test_environment()  # adds "testserver" to ALLOWED_HOSTS
-    return home
+    yield home
+    if server:
+        from django.db import connections
+
+        connections.close_all()
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA {schema} CASCADE")
 
 
 @pytest.fixture
@@ -76,13 +93,15 @@ def clear_the_record():
     """Between tests only: in use, the record can't be emptied."""
     from django.db import connection
 
-    from checker.web.models import ACTION_RECORD_TRIGGERS
+    from checker.web.models import action_record_guards
 
+    on = " ON web_actionrecord" if connection.vendor == "postgresql" else ""
+    actions = ("update", "delete", "truncate") if on else ("update", "delete")
     with connection.cursor() as cursor:
-        cursor.execute("DROP TRIGGER IF EXISTS web_actionrecord_no_update")
-        cursor.execute("DROP TRIGGER IF EXISTS web_actionrecord_no_delete")
+        for kind in actions:
+            cursor.execute(f"DROP TRIGGER IF EXISTS web_actionrecord_no_{kind}{on}")
         cursor.execute("DELETE FROM web_actionrecord")
-        for sql in ACTION_RECORD_TRIGGERS:
+        for sql in action_record_guards(connection.vendor):
             cursor.execute(sql)
 
 
@@ -2362,10 +2381,10 @@ def holds():
 
 result = {"triggers": triggers(), "holds": holds()}
 if sys.argv[2] == "rebuild":
-    old = ActionRecord._meta.get_field("target")
+    old = ActionRecord._meta.get_field("who")
     new = old.clone()
     new.max_length = 201
-    new.set_attributes_from_name("target")
+    new.set_attributes_from_name("who")
     new.model = ActionRecord
     with connection.schema_editor() as editor:
         editor.alter_field(ActionRecord, old, new)
@@ -9214,3 +9233,69 @@ def test_a_malformed_request_doesnt_fill_the_log(tmp_path):
 
 def test_the_servers_log_level_leaves_out_routine_lines():
     assert web_app.server_options("127.0.0.1:1", None, None)["loglevel"] == "error"
+
+
+def test_failed_logins_clear_whatever_case_the_name_was_typed_in(web):
+    from checker.web import accounts
+    from checker.web.models import LoginAttempt
+
+    accounts.record_failure("Jo", "198.51.100.1")
+    accounts.clear_failures("jO", "198.51.100.1")
+    assert not LoginAttempt.objects.exists()
+    user = account()
+    accounts.record_failure(user.get_username().upper(), "198.51.100.1")
+    accounts._lock_out(user)
+    assert not LoginAttempt.objects.exists()
+    user.refresh_from_db()
+    accounts.record_failure(user.get_username().upper(), "198.51.100.1")
+    assert accounts.reset_password(user.get_username(), "a different long password") == []
+    assert not LoginAttempt.objects.exists()
+
+
+def test_the_accounts_database_going_away_is_words_at_the_command_line(_django, capsys):
+    from django.db import OperationalError
+
+    from checker import cli
+
+    def gone(args):
+        raise OperationalError("server closed the connection")
+
+    assert cli._plain_database_errors(gone)(None) == 1
+    assert "server closed" in capsys.readouterr().err
+
+    def other(args):
+        raise KeyError("a bug, which should say so")
+
+    with pytest.raises(KeyError):
+        cli._plain_database_errors(other)(None)
+
+
+def test_the_accounts_database_going_away_at_the_setup_link_is_words(
+    _django, tmp_path, monkeypatch
+):
+    from django.db import OperationalError
+
+    from checker.web import accounts
+
+    def gone(address):
+        raise OperationalError("server closed the connection")
+
+    monkeypatch.setattr(web_app, "configure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(accounts, "setup_link", gone)
+    with pytest.raises(web_app.AccountsProblem, match="server closed"):
+        web_app.serve(tmp_path, "127.0.0.1:8099")
+
+
+def test_a_failed_taking_away_adds_to_what_went_wrong_and_doesnt_replace_it(
+    _django, monkeypatch, capsys
+):
+    from django.db import OperationalError
+
+    from checker.web import moving, postgres
+
+    def gone(connection):
+        raise OperationalError("gone")
+
+    monkeypatch.setattr(postgres, "drop_ours", gone)
+    moving.take_accounts_back()
+    assert "empty that database" in capsys.readouterr().err

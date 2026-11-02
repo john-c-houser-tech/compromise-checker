@@ -155,7 +155,9 @@ it's named as open). People are added by a one-time link and choose their own pa
 person's name stays taken, since the record names them. The store's own records name the person too.
 Behind a proxy (an https address with no certificate here), a request must carry a secret from
 `keys/web-proxy-secret.txt` in a header the proxy replaces, or it's refused. A person can start 30 runs
-an hour.
+an hour. With the store in PostgreSQL, the accounts and record are there too, and `checker store move` takes
+them along: its own backend makes every transaction one writer at a time, as SQLite's are, so the guards
+written for SQLite hold without each needing its own lock.
 
 ## Decisions to settle (one at a time)
 

@@ -293,6 +293,7 @@ that may include access tokens, and sometimes secrets typed into commands.
   the tool has to check codes against them. The file is readable only by the
   tool's owner, but a copy of it, or a backup, should be protected like a
   password. They aren't sent anywhere.
+  If the index is in a PostgreSQL database, the web interface keeps these there too, instead of in its own file. Whoever runs that database, or holds a backup of it, can read them: passwords are hashed, but authenticator secrets and unused recovery codes are readable, and a session's key is what a browser presents to be signed in. So someone who can read these tables can sign in as anyone who is signed in, and someone who can change them can do anything an account can. Choose who runs that database accordingly, and protect its backups like passwords.
 
 ## 9. The optional AI advisor
 
@@ -398,6 +399,7 @@ Nothing, unless you choose one of these:
   sends it is your choice;
 - the tool's index, if you keep it in a PostgreSQL database on a server outside
   your organization (section 8 says what it can read).
+- the web interface's accounts, sessions, two-factor secrets and activity record, if the index is in a PostgreSQL database on a server outside your organization (section 8 says what that means).
 
 The tool has no telemetry, usage reporting or licence check, and it never
 contacts NouriLoop LLC on its own. Threat packs (section 11) are downloaded

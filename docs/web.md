@@ -129,7 +129,8 @@ Decisions take effect the next time results are worked out.
 
 ## What it keeps
 
-`web.db` in the checker's home, owner-only: accounts with hashed passwords, two-factor secrets and
+`web.db` in the checker's home, owner-only, or the store's PostgreSQL database if it has one
+([postgres.md](postgres.md) says who can read it there): accounts with hashed passwords, two-factor secrets and
 recovery codes, sessions, failed
 logins for the last 15 minutes with their usernames and addresses, the times of wrong passwords and codes (never what was typed), when the latest 50 checks started from a page ran and how they ended, and the activity record below.
 What a check reports while it runs, which can quote an error a server sent but not findings or passwords,
@@ -184,7 +185,7 @@ With two-factor on, anything that asks for your password again asks for a code a
 only once, so after using one, wait for the next. Five wrong codes end the session. With a stolen
 password, someone can try about 170 codes a day before that wait stops them, each one shown on the Activity
 page, so don't leave wrong codes you didn't type unexplained. The secrets and recovery codes are stored readable in `web.db`, since the tool has to check against them: treat a
-copy of that file, or a backup of it, as you would a password.
+copy of that file or database, or a backup of it, as you would a password.
 
 ## Starting checks
 

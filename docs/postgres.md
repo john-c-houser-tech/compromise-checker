@@ -28,7 +28,27 @@ can't read.
 
 **One machine runs the tool.** A database server doesn't make this safe to run from several at once:
 evidence is found by its full path, and "only one check at a time" and "no purge during a check" are locks
-on that machine. The web interface's accounts and activity record are still in their own file, `web.db`.
+on that machine.
+
+## The web interface's accounts
+
+With the store in a database, the web interface keeps its own tables there too, instead of in `web.db`:
+accounts, sessions, two-factor secrets and recovery codes, failed logins, and the activity record. The
+activity record is append-only there as well, `TRUNCATE` included, and its guards go back at every start.
+
+**Whoever runs the database server, or holds a backup of it, can use what's in these tables.** Passwords are
+hashed, but two-factor secrets and unused recovery codes are readable, since the tool has to check codes
+against them, and a session's key is what a browser presents to be signed in. So someone who can read these
+tables can sign in as anyone who's signed in, for as long as the session lasts, and someone who can write to
+them can do anything an account can. Choose who runs that database accordingly, and protect its backups like
+passwords.
+
+The web interface needs the database to be running: without it, it won't start, and pages won't load. If the
+tables were made by something else, such as another Django application, in this schema or another its search
+path reaches, it refuses to use them, so that application's accounts can't sign in here.
+
+Don't change the address in the settings by hand: an empty database or schema looks just like a new install,
+so the store and the accounts would start empty there, and the web interface would offer a new first account.
 
 ## The address
 
@@ -49,8 +69,8 @@ Environment variables could send it elsewhere unseen. The tool refuses to connec
 which then wins. It refuses while `PGSERVICE`, `PGHOSTADDR`, `PGOPTIONS` and others that an address can't
 overrule are set. The message names the one in the way.
 
-It refuses a session with triggers switched off (`session_replication_role`), and tables with these names
-that it didn't make, so give it a database of its own.
+It refuses a session with triggers switched off (`session_replication_role`), a database whose encoding isn't
+UTF8, and tables with these names that it didn't make, so give it a database of its own.
 
 ## Append-only
 
@@ -69,11 +89,18 @@ Stop the web interface and anything else using the tool first. `checker store mo
 database, and doesn't run during a `checker run`. It holds the old store while it copies every row, checks
 that each table reads back the same and changes the settings, and only then renames the old file to
 `checker.db.moved`, so it can't be taken for the store, and offers to delete it.
+
+`web.db` moves with it, if the web interface has been used: people keep their accounts, two-factor and
+sessions, and the record keeps its lines and numbers. It becomes `web.db.moved`, which holds password hashes
+and two-factor secrets, so delete it. If it's still there under its own name with the store in a database, the
+web interface won't start until `checker store move --to` the same address has moved it or finished moving it.
 If the settings can't be written, what it made is taken away. If it's stopped between the two, the old
 store stays in charge, nothing is lost, and the new database needs emptying before trying again. Delete it: a purge can't reach what's left in it. There's no command for moving back.
 
 If `config.yaml` is lost while the store is in a database, the tool won't start an empty store beside
-your evidence: restore the file. If the store really is lost, `checker init --new-store` starts an empty one,
+your evidence, and while `web.db.moved` is there the web interface won't start with no accounts: restore the
+file. Once the old files are deleted and with no evidence yet, nothing is left to say a database was in use,
+so back up `config.yaml`. If the store really is lost, `checker init --new-store` starts an empty one,
 which won't list the evidence already there.
 
 ## Backups
@@ -87,11 +114,13 @@ in the database's own files until it next vacuums them.
 
 ## Testing
 
-`tests/test_store_backends.py` runs the store's promises on both databases, given a throwaway server:
+`tests/test_store_backends.py` and `tests/test_web_postgres.py` run the promises on both databases, given a
+throwaway server:
 
 ```
-PGPASSWORD=… CHECKER_TEST_POSTGRES=postgresql://postgres@127.0.0.1:55432/postgres pytest tests/test_store_backends.py
+PGPASSWORD=… CHECKER_TEST_POSTGRES=postgresql://postgres@127.0.0.1:55432/postgres pytest tests/test_store_backends.py tests/test_web_postgres.py
 PGPASSWORD=… CHECKER_TEST_POSTGRES_EVERYWHERE=postgresql://postgres@127.0.0.1:55432/postgres pytest
 ```
 
-The second runs the whole suite with its store on PostgreSQL. Each test gets a schema of its own.
+The second runs the whole suite with its store and the web interface's tables on PostgreSQL. Each test's
+store gets a schema of its own.

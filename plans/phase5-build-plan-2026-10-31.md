@@ -150,6 +150,9 @@ every server to each of them.
 record naming a person, not a machine. Reaching it from another machine comes with this. So does
 trusting the proxy properly: today anyone with an account on the machine can connect to the port
 directly and claim any forwarded address (a Unix socket or a secret header from the proxy would stop it).
+As built so far: two kinds of account, view only and full access (a page is closed to view only unless
+it's named as open). People are added by a one-time link and choose their own password. A removed
+person's name stays taken, since the record names them. The store's own records name the person too.
 
 ## Decisions to settle (one at a time)
 

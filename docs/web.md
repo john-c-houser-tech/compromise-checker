@@ -145,6 +145,39 @@ password, someone can try about 170 codes a day before that wait stops them, eac
 page, so don't leave wrong codes you didn't type unexplained. The secrets and recovery codes are stored readable in `web.db`, since the tool has to check against them: treat a
 copy of that file, or a backup of it, as you would a password.
 
+## People and what they may do
+
+The first account has full access. Manage, then People, adds others. There are two kinds of account:
+
+- **View only** sees every server's results and evidence, the checks that ran, and the activity record,
+  and changes nothing but its own password and two-factor sign-in.
+- **Full access** can also start checks, change servers and settings, decide what's normal, delete
+  evidence, and add or remove people.
+
+Results describe weaknesses an attacker could use, so give even a view-only account as you would the
+evidence itself. Pages a view-only account can't use aren't shown to it, and if it asks for one anyway
+it's refused, and an attempt to do something goes in the activity record.
+
+To add someone, choose a name and what they may do. You get a link to give them in a way only they can
+read. It works once, within 24 hours, and they choose their own password with it, so nobody else ever
+knows it. The link is shown once and only its hash is kept. Whoever gets the link first becomes that
+person, and when the interface can be reached from another machine they must then set up two-factor
+sign-in.
+
+Each person's page can change what they may do, which applies straight away even if they're signed in.
+It can make a new link when a password or phone is lost, which signs them out and clears their password
+and two-factor sign-in until they use it. And it can remove them. A removed person can't sign in, and
+their name stays taken and listed, since the activity record names them by it. Nobody can do any of this
+to their own account, so there's always someone left with full access. Anyone can change their own
+password under Sign-in security.
+
+Someone with full access could make a new link for someone else and use it themselves. The activity
+record shows who made each link, so look there if a person says they didn't do something.
+
+The activity record names the person signed in. So do the store's own records of what they did, such as
+`checker config history` and a bundle's custody: there they appear as `sam (web interface)`, and a daily
+check, or anything run on the command line, still appears under this machine's account.
+
 ## First setup
 
 The first time `checker web` starts, in an empty home, it sets itself up: an evidence key, a database,

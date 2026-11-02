@@ -93,6 +93,7 @@ def django_settings(
         "CSRF_TRUSTED_ORIGINS": [f"{parts.scheme}://{parts.netloc}"] if parts else [],
         # Behind a proxy every peer is the proxy: see accounts.client_address.
         "CHECKER_BEHIND_PROXY": bool(parts),
+        "CHECKER_PUBLIC_URL": public_url,
         "CHECKER_TWO_FACTOR_REQUIRED": two_factor_required(public_url, listens_beyond),
         "OTP_TOTP_ISSUER": product_name(),
         "ROOT_URLCONF": "checker.web.urls",
@@ -113,7 +114,9 @@ def django_settings(
             "django.middleware.csrf.CsrfViewMiddleware",
             "django.contrib.auth.middleware.AuthenticationMiddleware",
             "django_otp.middleware.OTPMiddleware",
+            "checker.web.middleware.name_the_person",
             "checker.web.middleware.TwoFactorGate",
+            "checker.web.middleware.AccessGate",
         ],
         "DATABASES": {
             "default": {

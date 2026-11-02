@@ -102,11 +102,8 @@ def web(_django, home):
 
 
 def signed_in(web):
-    from django.contrib.auth import get_user_model
-
     client, home = web
-    user = get_user_model().objects.create_user("jo", password=PASSWORD)
-    client.force_login(user)
+    client.force_login(account())
     return client, home
 
 
@@ -328,16 +325,18 @@ def without_token(response):
     return re.sub(rb'name="csrfmiddlewaretoken" value="[^"]*"', b"", response.content)
 
 
-def account_named(name):
+def account_named(name, full=True):
     from django.contrib.auth import get_user_model
 
-    return get_user_model().objects.create_user(name, password=PASSWORD)
+    from checker.web.models import Access
+
+    user = get_user_model().objects.create_user(name, password=PASSWORD)
+    Access.objects.create(user=user, full=full)
+    return user
 
 
 def account():
-    from django.contrib.auth import get_user_model
-
-    return get_user_model().objects.create_user("jo", password=PASSWORD)
+    return account_named("jo")
 
 
 def test_pages_need_a_login(web):
@@ -1733,7 +1732,13 @@ def route_problems(client):
     from checker.web import views
     from checker.web.actions import GATED
 
-    forms = {views.login_page, views.logout_page, views.setup_page, views.two_factor_page}
+    forms = {
+        views.login_page,
+        views.logout_page,
+        views.setup_page,
+        views.join_page,
+        views.two_factor_page,
+    }
     problems = []
     for pattern in get_resolver("checker.web.urls").url_patterns:
         view = pattern.callback
@@ -2640,6 +2645,7 @@ def test_with_only_a_password_nothing_opens_but_the_second_step(web):
         views.font,
         views.stylesheet,
         views.setup_page,
+        views.join_page,
         views.login_page,
         views.logout_page,
         views.two_factor_page,
@@ -3325,7 +3331,7 @@ def test_making_new_codes_keeps_a_session_that_signed_in_with_a_recovery_code(we
 def test_the_forms_that_need_a_code_ask_for_one(web):
     client, _, _ = verified_client(web)
     text = client.get("/two-factor/manage").content.decode()
-    assert text.count('name="confirm_code"') == 2 and text.count('name="confirm_password"') == 2
+    assert text.count('name="confirm_code"') == 3 and text.count('name="confirm_password"') == 3
     assert "or a recovery code" in text
 
 
@@ -3955,6 +3961,7 @@ def test_every_page_but_the_open_ones_asks_who_you_are(web):
         views.font,
         views.stylesheet,
         views.setup_page,
+        views.join_page,
         views.login_page,
         views.logout_page,
     }
@@ -7914,3 +7921,644 @@ def test_a_failed_check_says_what_to_look_at(web, inventory, line, words, monkey
     monkeypatch.setattr(runs, "output_lines", lambda run_id: [line])
     text = said(client.get(f"/checks/{run.id}"))
     assert words in text and "/manage/server/prepare?host=web01" in text
+
+
+# --- People and what they may do --------------------------------------------------------------
+
+
+def person(name, full=False):
+    """A signed-in browser for an account made as the pages would have made it."""
+    client = browser()
+    client.force_login(account_named(name, full=full))
+    return client
+
+
+def form_values_of(client, action, name=None):
+    """A form's fields as a browser would send them: the page's filter mustn't change them."""
+    page = f"/manage/people/person?{urlencode({'name': name})}" if name else "/manage/people"
+    text = client.get(page).content.decode()
+    found = []
+    for piece in text.split("<form")[1:]:
+        if f'action="{action}"' not in piece.split(">")[0]:
+            continue
+        reader = _FormReader(action)
+        reader.feed("<form" + piece.split("</form>")[0] + "</form>")
+        found.append(reader.fields)
+    if name is not None:
+        found = [fields for fields in found if fields.get("name") == name]
+    assert found, action
+    return {**found[0], "confirm_password": PASSWORD}
+
+
+def link_in(response):
+    match = re.search(r"https?://[^\s<]*/join/([A-Za-z0-9_-]+)", response.content.decode())
+    assert match, response.content.decode()[:600]
+    return match.group(0), match.group(1)
+
+
+def actions_recorded():
+    from checker.web.models import ActionRecord
+
+    return [
+        (row.who, row.action, row.target, row.outcome, row.detail)
+        for row in ActionRecord.objects.order_by("id")
+    ]
+
+
+def invite(client, name="sam", access="view"):
+    return client.post(
+        "/manage/people/invite",
+        {"name": name, "access": access, "confirm_password": PASSWORD},
+    )
+
+
+# Every page, by what someone who can only view may do with it. A new page has to be added here.
+VIEW_ONLY_MAY_USE = {
+    "fleet",
+    "host",
+    "evidence",
+    "threats",
+    "activity",
+    "checks",
+    "check",
+    "two_factor_setup",
+    "two_factor_start",
+    "two_factor_turn_on",
+    "two_factor_manage",
+    "two_factor_new_codes",
+    "two_factor_codes_saved",
+    "two_factor_turn_off",
+    "password_change",
+    # Open before anyone is known to be anyone.
+    "login",
+    "logout",
+    "two_factor",
+    "setup",
+    "join",
+    "style",
+    "font",
+}
+
+
+def test_every_route_is_closed_to_view_only_unless_it_is_named_here(web):
+    """By walking them all, so nothing new can reach someone who can only view by accident."""
+    from django.urls import get_resolver
+
+    from checker.web.actions import GATED
+    from checker.web.models import ActionRecord
+
+    _, home = web
+    analysed(home, "b1", 10, CLEAN)
+    client = person("viewer")
+    names = set()
+    for pattern in get_resolver("checker.web.urls").url_patterns:
+        names.add(pattern.name)
+        if pattern.name in VIEW_ONLY_MAY_USE:
+            continue
+        path = "/" + route_path(pattern)
+        before = ActionRecord.objects.count()
+        if pattern.callback in GATED:
+            response = client.post(path, {"host": "web01", "confirm_password": PASSWORD})
+            assert response.status_code == 403, path
+            row = ActionRecord.objects.order_by("-id").first()
+            assert ActionRecord.objects.count() == before + 1, path
+            assert (row.who, row.outcome, row.target) == ("viewer", "refused", path)
+        else:
+            assert client.get(path).status_code == 403, path
+            assert client.head(path).status_code == 403, path
+            assert ActionRecord.objects.count() == before, path
+    assert VIEW_ONLY_MAY_USE <= names  # a name left over would hide a mistake
+
+
+@pytest.mark.parametrize("view", ["fleet", "threats", "activity", "checks", "two_factor_manage"])
+def test_view_only_can_read(web, view):
+    from django.urls import reverse
+
+    assert person("viewer").get(reverse(view)).status_code == 200
+
+
+def test_view_only_can_read_results_and_evidence(web):
+    _, home = web
+    analysed(home, "b1", 10, CLEAN)
+    client = person("viewer")
+    assert client.get("/hosts/web01").status_code == 200
+    assert client.get("/hosts/web01/evidence").status_code == 200
+
+
+def test_view_only_is_not_offered_what_it_would_be_refused(web):
+    from django.utils import timezone
+
+    from checker.web.models import CheckRun
+
+    _, home = web
+    analysed(home, "b1", 10, CLEAN)
+    run = CheckRun.objects.create(
+        kind="check", hosts='["web01"]', who="jo", address="", started_at=timezone.now()
+    )
+    client = person("viewer")
+    allowed = {"/", "/checks", "/threats", "/activity", "/two-factor/manage", "/two-factor/setup"}
+    allowed |= {"/login", "/logout"}
+    for page in ("/", "/hosts/web01", "/checks", f"/checks/{run.id}", "/threats", "/activity"):
+        text = client.get(page).content.decode()
+        for target in re.findall(r'(?:href|action)="(/[^"?]*)', text):
+            if target.startswith(("/hosts/", "/checks/", "/style", "/fonts/", "/two-factor")):
+                if target != f"/checks/{run.id}/stop":
+                    continue
+            assert target in allowed, (page, target)
+
+
+def test_full_access_is_still_offered_them(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    text = client.get("/").content.decode()
+    assert 'href="/manage"' in text and 'href="/checks/new"' in text
+
+
+def test_an_account_with_no_access_row_can_only_view(web):
+    from django.contrib.auth import get_user_model
+
+    client = browser()
+    client.force_login(get_user_model().objects.create_user("norow", password=PASSWORD))
+    assert client.get("/").status_code == 200
+    assert client.get("/manage").status_code == 403
+
+
+def test_the_first_account_has_full_access(web):
+    from checker.web.accounts import create_first_account, has_full_access, setup_link
+
+    token = link_token(setup_link("http://x"))
+    assert has_full_access(create_first_account(token, "first", PASSWORD))
+
+
+def test_accounts_from_before_roles_keep_full_access(tmp_path):
+    """In its own process, from a database as the last version left it."""
+    probe = """
+import sys
+from pathlib import Path
+from checker.web.app import configure
+configure(Path(sys.argv[1]))
+from django.contrib.auth import get_user_model
+from django.core.management import call_command
+from checker.web.accounts import has_full_access
+from checker.web.models import Access
+call_command("migrate", "web", "0004", verbosity=0)
+from django.db import connection
+with connection.cursor() as cursor:
+    cursor.execute(
+        "INSERT INTO auth_user (username, password, is_superuser, first_name, last_name, email,"
+        " is_staff, is_active, date_joined) VALUES ('old', 'x', 0, '', '', '', 0, 1,"
+        " '2026-10-31T00:00:00')"
+    )
+call_command("migrate", verbosity=0)
+print(has_full_access(get_user_model().objects.get(username="old")))
+"""
+    run = subprocess.run(
+        [sys.executable, "-c", probe, str(tmp_path)], capture_output=True, text=True, check=True
+    )
+    assert run.stdout.strip() == "True"
+
+
+def test_inviting_someone_and_them_joining(web):
+    from django.contrib.auth import authenticate
+
+    from checker.web.accounts import has_full_access
+
+    client, _ = signed_in(web)
+    response = invite(client)
+    assert response.status_code == 200
+    link, token = link_in(response)
+    assert link.startswith("http://testserver/join/")
+    new = browser()
+    assert "invited as <strong>sam</strong>" in new.get(f"/join/{token}").content.decode()
+    assert not authenticate(username="sam", password=PASSWORD)
+    response = new.post(f"/join/{token}", {"password": PASSWORD, "password2": PASSWORD})
+    assert response.status_code == 302
+    assert authenticate(username="sam", password=PASSWORD)
+    assert new.get("/").status_code == 200  # signed in by joining
+    from django.contrib.auth import get_user_model
+
+    assert not has_full_access(get_user_model().objects.get(username="sam"))
+    assert new.get("/manage").status_code == 403
+    recorded = actions_recorded()
+    assert ("jo", "invited someone", "sam", "done", "view only") in recorded
+    assert ("sam", "joined", "", "done", "") in recorded
+    # Spent.
+    assert browser().get(f"/join/{token}").status_code == 404
+    gone = browser().post(
+        f"/join/{token}",
+        {"password": "another long password", "password2": "another long password"},
+    )
+    assert gone.status_code == 404
+    assert authenticate(username="sam", password=PASSWORD)
+
+
+def test_full_access_can_be_given_when_inviting(web):
+    client, _ = signed_in(web)
+    _, token = link_in(invite(client, access="full"))
+    new = browser()
+    new.post(f"/join/{token}", {"password": PASSWORD, "password2": PASSWORD})
+    assert new.get("/manage").status_code == 200
+
+
+def test_an_invitation_defaults_to_view_only_for_anything_but_full(web):
+    client, _ = signed_in(web)
+    _, token = link_in(invite(client, access="everything"))
+    new = browser()
+    new.post(f"/join/{token}", {"password": PASSWORD, "password2": PASSWORD})
+    assert new.get("/manage").status_code == 403
+
+
+def test_the_form_starts_at_view_only(web):
+    client, _ = signed_in(web)
+    assert form_values_of(client, "/manage/people/invite")["access"] == "view"
+
+
+def test_inviting_needs_the_password_again(web):
+    from django.contrib.auth import get_user_model
+
+    client, _ = signed_in(web)
+    response = client.post(
+        "/manage/people/invite",
+        {"name": "sam", "access": "full", "confirm_password": "wrong"},
+    )
+    assert response.status_code == 403
+    assert not get_user_model().objects.filter(username="sam").exists()
+
+
+def test_behind_a_proxy_the_link_uses_the_address_people_use(web, settings_override):
+    client, _ = signed_in(web)
+    settings_override(CHECKER_PUBLIC_URL="https://checker.example")
+    link, _ = link_in(invite(client))
+    assert link.startswith("https://checker.example/join/")
+
+
+def test_only_the_links_hash_is_kept(web):
+    from checker.web.models import Invitation
+
+    client, _ = signed_in(web)
+    _, token = link_in(invite(client))
+    row = Invitation.objects.get()
+    assert token not in row.token_hash and len(row.token_hash) == 64
+    assert token not in str(actions_recorded())
+
+
+def test_the_link_is_on_the_page_it_was_made_for_and_no_other(web):
+    client, _ = signed_in(web)
+    _, token = link_in(invite(client))
+    assert token not in client.get("/manage/people").content.decode()
+
+
+def test_a_link_runs_out(web):
+    from django.utils import timezone
+
+    from checker.web.models import Invitation
+
+    client, _ = signed_in(web)
+    _, token = link_in(invite(client))
+    Invitation.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
+    response = browser().post(f"/join/{token}", {"password": PASSWORD, "password2": PASSWORD})
+    assert response.status_code == 404
+    assert "Link ran out" in client.get("/manage/people").content.decode()
+
+
+@pytest.mark.parametrize(
+    ("password", "again", "words"),
+    [
+        (PASSWORD, "something else entirely", "match"),
+        ("short", "short", "too short"),
+        ("sam", "sam", "too short"),
+    ],
+)
+def test_a_bad_password_leaves_the_link_working(web, password, again, words):
+    client, _ = signed_in(web)
+    _, token = link_in(invite(client))
+    new = browser()
+    response = new.post(f"/join/{token}", {"password": password, "password2": again})
+    assert response.status_code == 400 and words in response.content.decode()
+    assert (
+        new.post(f"/join/{token}", {"password": PASSWORD, "password2": PASSWORD}).status_code == 302
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "words"),
+    [
+        ("", "Type a name"),
+        ("   ", "Type a name"),
+        ("two words", "only letters"),
+        ("<b>", "only letters"),
+        ("jo", "already an account"),
+        ("JO", "already an account"),
+        ("x" * 151, "too long"),
+    ],
+)
+def test_a_name_that_cant_be_used_is_refused(web, name, words):
+    from django.contrib.auth import get_user_model
+
+    client, _ = signed_in(web)
+    before = get_user_model().objects.count()
+    response = invite(client, name=name)
+    assert response.status_code == 400 and words in response.content.decode()
+    assert get_user_model().objects.count() == before
+    assert any(row[1] == "invited someone" and row[3] == "failed" for row in actions_recorded())
+
+
+def test_a_removed_persons_name_is_never_used_again(web):
+    client, _ = signed_in(web)
+    account_named("sam", full=False)
+    assert (
+        client.post(
+            "/manage/people/remove", form_values_of(client, "/manage/people/remove", name="sam")
+        ).status_code
+        == 302
+    )
+    for name in ("sam", "SAM"):
+        response = invite(client, name=name)
+        assert response.status_code == 400 and "was removed" in response.content.decode()
+
+
+def test_access_changes_apply_at_once_to_someone_signed_in(web):
+    client, _ = signed_in(web)
+    other = person("sam", full=False)
+    assert other.get("/manage").status_code == 403
+    fields = form_values_of(client, "/manage/people/access", name="sam")
+    assert fields["access"] == "full"
+    assert client.post("/manage/people/access", fields).status_code == 302
+    assert other.get("/manage").status_code == 200
+    fields = form_values_of(client, "/manage/people/access", name="sam")
+    assert fields["access"] == "view"
+    assert client.post("/manage/people/access", fields).status_code == 302
+    assert other.get("/manage").status_code == 403
+    recorded = actions_recorded()
+    assert ("jo", "changed someone's access", "sam", "done", "now full access") in recorded
+    assert ("jo", "changed someone's access", "sam", "done", "now view only") in recorded
+
+
+def test_removing_someone_ends_everything_they_had(web):
+    from django.contrib.auth import authenticate, get_user_model
+
+    client, _ = signed_in(web)
+    other = person("sam", full=True)
+    with_app(get_user_model().objects.get(username="sam"))
+    fields = form_values_of(client, "/manage/people/remove", name="sam")
+    assert client.post("/manage/people/remove", fields).status_code == 302
+    assert other.get("/").status_code == 302  # signed out
+    assert not authenticate(username="sam", password=PASSWORD)
+    from checker.web.accounts import has_full_access
+
+    sam = get_user_model().objects.get(username="sam")
+    assert not sam.is_active and not has_full_access(sam)
+    login = browser().post("/login", {"username": "sam", "password": PASSWORD})
+    assert login.status_code == 403
+    assert "sam" in client.get("/manage/people").content.decode()  # the record's name stays listed
+    assert ("jo", "removed someone", "sam", "done", "") in actions_recorded()
+
+
+def test_a_removed_persons_link_stops_working(web):
+    client, _ = signed_in(web)
+    _, token = link_in(invite(client))
+    fields = form_values_of(client, "/manage/people/remove", name="sam")
+    assert client.post("/manage/people/remove", fields).status_code == 302
+    assert browser().get(f"/join/{token}").status_code == 404
+
+
+def test_a_new_link_clears_what_they_had_and_replaces_the_old_link(web):
+    from django.contrib.auth import authenticate, get_user_model
+
+    from checker.web import two_factor
+
+    client, _ = signed_in(web)
+    _, old = link_in(invite(client))
+    new_browser = browser()
+    new_browser.post(f"/join/{old}", {"password": PASSWORD, "password2": PASSWORD})
+    sam = get_user_model().objects.get(username="sam")
+    with_app(sam)
+    fields = form_values_of(client, "/manage/people/new-link", name="sam")
+    response = client.post("/manage/people/new-link", fields)
+    assert response.status_code == 200
+    _, token = link_in(response)
+    assert new_browser.get("/").status_code == 302
+    assert not authenticate(username="sam", password=PASSWORD)
+    assert not two_factor.is_on(sam)
+    assert browser().get(f"/join/{old}").status_code == 404
+    fresh = browser()
+    assert (
+        fresh.post(
+            f"/join/{token}",
+            {"password": "another long password", "password2": "another long password"},
+        ).status_code
+        == 302
+    )
+    assert authenticate(username="sam", password="another long password")
+    assert ("jo", "made a new sign-in link", "sam", "done", "") in actions_recorded()
+
+
+def test_a_new_link_keeps_their_access(web):
+    client, _ = signed_in(web)
+    account_named("sam", full=True)
+    fields = form_values_of(client, "/manage/people/new-link", name="sam")
+    _, token = link_in(client.post("/manage/people/new-link", fields))
+    new = browser()
+    new.post(f"/join/{token}", {"password": PASSWORD, "password2": PASSWORD})
+    assert new.get("/manage").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "path", ["/manage/people/access", "/manage/people/remove", "/manage/people/new-link"]
+)
+def test_nobody_does_these_to_their_own_account(web, path):
+    from checker.web.accounts import has_full_access
+
+    client, _ = signed_in(web)
+    account_named("sam", full=False)
+    response = client.post(path, {"name": "jo", "access": "view", "confirm_password": PASSWORD})
+    assert response.status_code == 400 and "your own account" in response.content.decode()
+    from django.contrib.auth import authenticate, get_user_model
+
+    jo = get_user_model().objects.get(username="jo")
+    assert has_full_access(jo) and jo.is_active and authenticate(username="jo", password=PASSWORD)
+
+
+def test_the_people_page_offers_nothing_against_your_own_account(web):
+    client, _ = signed_in(web)
+    account_named("sam", full=False)
+    text = client.get("/manage/people").content.decode()
+    assert "person?name=sam" in text and "person?name=jo" not in text
+    assert client.get("/manage/people/person?name=jo").status_code == 302
+    assert client.get("/manage/people/person?name=nobody").status_code == 302
+    assert 'value="sam"' in client.get("/manage/people/person?name=sam").content.decode()
+
+
+@pytest.mark.parametrize(
+    "path", ["/manage/people/access", "/manage/people/remove", "/manage/people/new-link"]
+)
+def test_someone_who_isnt_there_or_is_removed_is_refused(web, path):
+    client, _ = signed_in(web)
+    assert (
+        "no account called"
+        in client.post(path, {"name": "nobody", "confirm_password": PASSWORD}).content.decode()
+    )
+    account_named("sam", full=False)
+    fields = form_values_of(client, "/manage/people/remove", name="sam")
+    assert client.post("/manage/people/remove", fields).status_code == 302
+    response = client.post(path, {"name": "sam", "access": "full", "confirm_password": PASSWORD})
+    assert response.status_code == 400 and "has been removed" in response.content.decode()
+    from django.contrib.auth import get_user_model
+
+    from checker.web.accounts import has_full_access
+
+    assert not has_full_access(get_user_model().objects.get(username="sam"))
+
+
+def test_two_people_cant_remove_each_other_and_leave_nobody(web):
+    """Each passed the gate before the other's change landed: it's looked at again in the write."""
+    from django.contrib.auth import get_user_model
+
+    from checker.web import accounts
+
+    a, b = account_named("aa"), account_named("bb")
+    accounts.remove(a, "bb")
+    # The request by bb already past the gate and its password, as if at the same moment.
+    b = get_user_model().objects.get(username="bb")
+    with pytest.raises(accounts.PersonProblem):
+        accounts.remove(b, "aa")
+    with pytest.raises(accounts.PersonProblem):
+        accounts.set_access(b, "aa", False)
+    with pytest.raises(accounts.PersonProblem):
+        accounts.new_link(b, "aa")
+    with pytest.raises(accounts.PersonProblem):
+        accounts.invite(b, "cc", True)
+    assert accounts.has_full_access(get_user_model().objects.get(username="aa"))
+
+
+def test_a_name_with_odd_characters_survives_the_forms(web):
+    """The first account can have any name, and the page's filter would change it in a form."""
+    client, _ = signed_in(web)
+    account_named("back\\slash", full=False)
+    fields = form_values_of(client, "/manage/people/access", name="back\\slash")
+    assert client.post("/manage/people/access", fields).status_code == 302
+    from django.contrib.auth import get_user_model
+
+    from checker.web.accounts import has_full_access
+
+    assert has_full_access(get_user_model().objects.get(username="back\\slash"))
+
+
+def test_a_hostile_name_does_nothing_on_the_people_page(web):
+    client, _ = signed_in(web)
+    account_named(HOSTILE[:150], full=False)
+    text = client.get("/manage/people").content.decode()
+    assert "<script>alert" not in text and "<img src=x" not in text and BIDI not in text
+    page = f"/manage/people/person?{urlencode({'name': HOSTILE[:150]})}"
+    text = client.get(page).content.decode()
+    # A form has to send the name back as it is: nobody sees a hidden field's value, and it's escaped.
+    assert 'value="&lt;script&gt;' in text
+    shown = re.sub(r'<input type="hidden"[^>]*>', "", text)
+    assert "<script>alert" not in text and "<img src=x" not in text and BIDI not in shown
+
+
+def test_changing_your_own_password(web):
+    from django.contrib.auth import authenticate
+
+    client, _ = signed_in(web)
+    other = browser()
+    other.force_login(authenticate(username="jo", password=PASSWORD))
+    new = "a new long password here"
+    response = client.post(
+        "/sign-in/password",
+        {"password": new, "password2": new, "confirm_password": PASSWORD},
+    )
+    assert response.status_code == 302 and response["Location"].endswith("?changed=1")
+    assert authenticate(username="jo", password=new)
+    assert not authenticate(username="jo", password=PASSWORD)
+    assert client.get("/").status_code == 200  # this session goes on
+    assert other.get("/").status_code == 302  # any other one ends
+    assert "Your password is changed" in client.get(response["Location"]).content.decode()
+    assert ("jo", "changed their password", "", "done", "") in actions_recorded()
+
+
+def test_view_only_can_change_its_own_password(web):
+    from django.contrib.auth import authenticate
+
+    client = person("viewer")
+    new = "a new long password here"
+    response = client.post(
+        "/sign-in/password",
+        {"password": new, "password2": new, "confirm_password": PASSWORD},
+    )
+    assert response.status_code == 302 and authenticate(username="viewer", password=new)
+
+
+@pytest.mark.parametrize(
+    ("password", "again", "confirm", "status"),
+    [
+        ("a new long password here", "a different one altogether", PASSWORD, 400),
+        ("short", "short", PASSWORD, 400),
+        ("a new long password here", "a new long password here", "wrong", 403),
+    ],
+)
+def test_a_bad_password_change_changes_nothing(web, password, again, confirm, status):
+    from django.contrib.auth import authenticate
+
+    client, _ = signed_in(web)
+    response = client.post(
+        "/sign-in/password",
+        {"password": password, "password2": again, "confirm_password": confirm},
+    )
+    assert response.status_code == status
+    assert authenticate(username="jo", password=PASSWORD)
+
+
+def test_a_removed_person_cant_be_given_a_password_from_the_command_line(web):
+    from checker.web.accounts import no_such_account, reset_password, turn_off_two_factor
+
+    client, _ = signed_in(web)
+    account_named("sam", full=False)
+    fields = form_values_of(client, "/manage/people/remove", name="sam")
+    client.post("/manage/people/remove", fields)
+    assert "removed" in no_such_account("sam")
+    assert "removed" in reset_password("sam", "a new long password here")[0]
+    assert "removed" in turn_off_two_factor("sam")
+    assert "sam" not in no_such_account("nobody")
+
+
+def test_a_password_from_the_command_line_ends_an_invitation(web):
+    from checker.web.accounts import reset_password
+
+    client, _ = signed_in(web)
+    _, token = link_in(invite(client))
+    assert reset_password("sam", "a new long password here") == []
+    assert browser().get(f"/join/{token}").status_code == 404
+
+
+def test_what_a_page_writes_to_the_store_names_the_person(web, unconfirmed):
+    from checker.evidence import Store, database_file, who_and_where
+
+    machine_account = who_and_where()[0]
+    client = person("sam", full=True)
+    assert client.post("/manage/server/change", page_form(client, group="db")).status_code == 302
+    store = Store(database_file(web[1][0]))
+    try:
+        row = store.config_changes()[-1]
+    finally:
+        store.close()
+    assert row["setting"] == "hosts.web01" and row["operator"] == "sam (web interface)"
+    assert who_and_where()[0] == machine_account  # and only for that request
+
+
+def test_a_check_started_from_a_page_is_told_who_started_it(web, monkeypatch):
+    from checker.evidence import WEB_PERSON_VARIABLE, who_and_where
+    from checker.web import runs
+
+    seen = {}
+
+    def popen(command, **kwargs):
+        seen.update(kwargs["env"])
+        raise OSError("stop here")
+
+    monkeypatch.setattr(runs.subprocess, "Popen", popen)
+    with pytest.raises(OSError, match="stop here"):
+        runs.start("check", ["web01"], "sam" + BIDI + chr(7), "127.0.0.1")
+    assert seen[WEB_PERSON_VARIABLE] == "sam"
+    monkeypatch.setenv(WEB_PERSON_VARIABLE, seen[WEB_PERSON_VARIABLE])
+    assert who_and_where()[0] == "sam (web interface)"

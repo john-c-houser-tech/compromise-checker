@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from django.db import DatabaseError, close_old_connections, connection
 from django.utils import timezone
 
+from checker.evidence import WEB_PERSON_VARIABLE, printable_name
 from checker.web.models import ActionRecord, CheckRun
 
 KEEP = 50  # runs, and what they reported
@@ -109,7 +110,11 @@ def start(kind: str, hosts: list[str], who: str, address: str, passwords=None) -
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE if reading_all else subprocess.DEVNULL,
                 stderr=subprocess.STDOUT if reading_all else subprocess.PIPE,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env={
+                    **os.environ,
+                    "PYTHONUNBUFFERED": "1",
+                    WEB_PERSON_VARIABLE: printable_name(who),
+                },
                 start_new_session=True,  # so stopping it reaches all it started
             )
         except OSError:

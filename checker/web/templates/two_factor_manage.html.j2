@@ -3,6 +3,17 @@
 {% block nudge %}{% endblock %}
 {% block main %}
 <h1>Sign-in security</h1>
+<h2>Your password</h2>
+{% if password_changed %}<p role="status">Your password is changed. Anywhere else you were signed in has been signed out.</p>{% endif %}
+{% for problem in password_problems %}<p class="error" role="alert">{{ problem }}</p>{% endfor %}
+<form method="post" action="{{ url('password_change') }}">
+  {{ csrf_input }}
+  <label>New password <small>At least 12 characters, not used anywhere else.</small> <input name="password" type="password" autocomplete="new-password" required></label>
+  <label>New password again <input name="password2" type="password" autocomplete="new-password" required></label>
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Change your password</button>
+</form>
+<h2>Two-factor sign-in</h2>
 {% if not on %}
 <p>Two-factor sign-in is off. <a href="{{ url('two_factor_setup') }}">Turn it on</a>.</p>
 {% else %}

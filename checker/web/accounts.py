@@ -11,6 +11,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.sessions.backends.db import SessionStore
 from django.contrib.sessions.models import Session
 from django.core.exceptions import ValidationError
@@ -18,9 +19,17 @@ from django.db import transaction
 from django.utils import timezone
 
 from checker.web.app import is_local
-from checker.web.models import ActionRecord, LoginAttempt, SetupToken, WrongConfirmation
+from checker.web.models import (
+    Access,
+    ActionRecord,
+    Invitation,
+    LoginAttempt,
+    SetupToken,
+    WrongConfirmation,
+)
 
 SETUP_LIFETIME = timedelta(hours=1)
+INVITATION_LIFETIME = timedelta(hours=24)  # it crosses to someone else, who may be asleep
 THROTTLE_WINDOW = timedelta(minutes=15)
 MAX_FAILURES_FOR_NAME = 5  # from one address: guessing one account's password
 MAX_FAILURES_FROM_ADDRESS = 20  # guessing across accounts
@@ -65,12 +74,164 @@ def create_first_account(token: str, username: str, password: str):
         if not setup_token_valid(token):
             return None
         SetupToken.objects.all().delete()
-        return get_user_model().objects.create_user(username=username, password=password)
+        user = get_user_model().objects.create_user(username=username, password=password)
+        Access.objects.create(user=user, full=True)
+        return user
 
 
 def normal_name(username: str) -> str:
     """As an account name is stored, so what was typed at setup works at login."""
     return get_user_model().normalize_username(username.strip())
+
+
+def has_full_access(user) -> bool:
+    """Read afresh for each request, so a change applies to whoever is already signed in."""
+    return user.is_authenticated and Access.objects.filter(user=user, full=True).exists()
+
+
+class PersonProblem(ValueError):
+    """Why that can't be done to that person, in words for the page."""
+
+
+def people() -> list[dict]:
+    """Everyone who has or had an account: the record still names those removed."""
+    from checker.web import two_factor  # it needs Django set up further than this module does
+
+    rows = []
+    users = get_user_model().objects.select_related("access", "invitation").order_by("username")
+    for user in users:
+        invitation = getattr(user, "invitation", None)
+        rows.append(
+            {
+                "name": user.get_username(),
+                "full": hasattr(user, "access") and user.access.full,
+                "removed": not user.is_active,
+                "invited": invitation is not None,
+                "expired": invitation is not None and invitation.expires_at <= timezone.now(),
+                "two_factor": two_factor.is_on(user),
+            }
+        )
+    return rows
+
+
+def _new_invitation(user) -> str:
+    token = secrets.token_urlsafe(32)
+    Invitation.objects.filter(user=user).delete()
+    Invitation.objects.create(
+        user=user, token_hash=_hash(token), expires_at=timezone.now() + INVITATION_LIFETIME
+    )
+    return token
+
+
+def _still_full(actor) -> None:
+    """Checked again inside the write, so two people can't take each other's access at once and
+    leave nobody who can give it back."""
+    if not Access.objects.filter(user=actor, full=True, user__is_active=True).exists():
+        raise PersonProblem("Your own access has changed, so this wasn't done.")
+
+
+def _someone_else(actor, name: str):
+    """Nobody does this to themselves: with that rule, whoever does it still has full access
+    afterwards, so there's always someone who does."""
+    _still_full(actor)
+    user = get_user_model().objects.filter(username=name).first()
+    if user is None:
+        raise PersonProblem(f"There's no account called {name}.")
+    if user.pk == actor.pk:
+        raise PersonProblem(
+            "You can't do this to your own account. Ask someone else with full access."
+        )
+    if not user.is_active:
+        raise PersonProblem(f"{name} has been removed.")
+    return user
+
+
+def invite(actor, name: str, full: bool) -> str:
+    """A new account with no password yet, and the token for its link. A name can't be used twice,
+    even after someone is removed: the record would then seem to mean the new person."""
+    if not name:
+        raise PersonProblem("Type a name for them.")
+    try:
+        UnicodeUsernameValidator()(name)
+    except ValidationError:
+        raise PersonProblem(
+            "A name can have only letters, numbers and the characters @ . + - _"
+        ) from None
+    if len(name) > 150:
+        raise PersonProblem("That name is too long.")
+    with transaction.atomic():
+        _still_full(actor)
+        taken = get_user_model().objects.filter(username__iexact=name).first()
+        if taken is not None and not taken.is_active:
+            raise PersonProblem(
+                f"{taken.get_username()} was removed, and the activity record still names them."
+                " Choose a different name."
+            )
+        if taken is not None:
+            raise PersonProblem(f"There's already an account called {taken.get_username()}.")
+        user = get_user_model().objects.create_user(username=name, password=None)
+        Access.objects.create(user=user, full=full)
+        return _new_invitation(user)
+
+
+def set_access(actor, name: str, full: bool) -> None:
+    with transaction.atomic():
+        user = _someone_else(actor, name)
+        Access.objects.update_or_create(user=user, defaults={"full": full})
+
+
+def _lock_out(user) -> None:
+    """No way in that was there before: password, second step, sessions or link."""
+    from checker.web import two_factor  # it needs Django set up further than this module does
+
+    user.set_unusable_password()
+    user.save()
+    two_factor.turn_off(user)
+    two_factor.forget_pending(user)
+    two_factor.forgive_wrong_codes(user)
+    _end_sessions(user)
+    LoginAttempt.objects.filter(username=user.get_username().lower()).delete()
+    Invitation.objects.filter(user=user).delete()
+
+
+def new_link(actor, name: str) -> str:
+    """For a lost password or phone, or to invite them again. It ends what they had."""
+    with transaction.atomic():
+        user = _someone_else(actor, name)
+        _lock_out(user)
+        return _new_invitation(user)
+
+
+def remove(actor, name: str) -> None:
+    """Kept, unable to sign in, for the record's sake: its lines name them by this name."""
+    with transaction.atomic():
+        user = _someone_else(actor, name)
+        _lock_out(user)
+        user.is_active = False
+        user.save()
+        Access.objects.filter(user=user).update(full=False)
+
+
+def invited(token: str):
+    """Whose link this is, or None if it isn't one that works."""
+    found = (
+        Invitation.objects.select_related("user")
+        .filter(token_hash=_hash(token), expires_at__gt=timezone.now(), user__is_active=True)
+        .first()
+    )
+    return found.user if found else None
+
+
+def accept(token: str, password: str):
+    """The link is spent with the password set, so two tabs can't both use it."""
+    with transaction.atomic():
+        user = invited(token)
+        if user is None:
+            return None
+        Invitation.objects.filter(user=user).delete()
+        user.set_password(password)
+        user.save()
+        return user
 
 
 def client_address(request) -> str:
@@ -163,9 +324,13 @@ def clear_confirmations(session_key: str) -> None:
 
 
 def no_such_account(username: str) -> str | None:
-    if get_user_model().objects.filter(username=username).exists():
+    found = get_user_model().objects.filter(username=username).first()
+    if found is not None and found.is_active:
         return None
-    names = ", ".join(get_user_model().objects.values_list("username", flat=True))
+    if found is not None:
+        return f"{username} has been removed, so can't sign in again."
+    active = get_user_model().objects.filter(is_active=True)
+    names = ", ".join(active.values_list("username", flat=True))
     return f"There's no account called {username}. The accounts are: {names or 'none yet'}"
 
 
@@ -229,5 +394,6 @@ def reset_password(username: str, password: str) -> list[str]:
         two_factor.forget_pending(user)  # a thief may have started one with the old password
         two_factor.forgive_wrong_codes(user)
         LoginAttempt.objects.filter(username=username.lower()).delete()
+        Invitation.objects.filter(user=user).delete()  # the password is now the way in
         _record_from_command_line("reset a password from the command line", username)
     return []

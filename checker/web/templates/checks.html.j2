@@ -2,7 +2,7 @@
 {% block title %}Checks: {{ product_name() }}{% endblock %}
 {% block main %}
 <h1 class="page-title">Checks</h1>
-<p><a href="{{ url('check_new') }}">Check your servers now</a></p>
+{% if full_access(request) %}<p><a href="{{ url('check_new') }}">Check your servers now</a></p>{% endif %}
 {% if not rows %}<p>No checks have been started from here yet.</p>{% else %}
 <div class="record-wrap">
 <table class="record">

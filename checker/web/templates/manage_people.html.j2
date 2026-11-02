@@ -1,0 +1,51 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}People: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage') }}">Back to Manage</a></p>
+<h1 class="page-title">People</h1>
+<p><strong>View only</strong> sees every server's results and evidence and the activity record, and changes nothing. <strong>Full access</strong> can also start checks, change servers and settings, delete evidence, and add or remove people. Anyone with an account can see the results, which describe weaknesses an attacker could use, so give accounts as you would the evidence itself.</p>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+{% if link %}
+<div class="nudge" role="status">
+  <p>Give {{ link_for }} this link in a way only they can read. It works once, within 24 hours, and it won't be shown again. Anyone who gets it first can become them.</p>
+  <p><code>{{ link }}</code></p>
+</div>
+{% endif %}
+{% if only_this_machine %}<p class="note">Right now this can be reached only from this machine, so someone on another computer can't use a link. The guide to the web interface says how to let them reach it.</p>{% endif %}
+
+<div class="record-wrap">
+<table class="record">
+  <thead><tr><th scope="col">Name</th><th scope="col">Access</th><th scope="col">Two-factor sign-in</th><th scope="col">Status</th></tr></thead>
+  <tbody>
+  {% for row in rows %}
+  <tr>
+    <td>{% if row.me %}{{ row.name }} (you){% else %}<a href="{{ url('manage_person') }}?name={{ row.name | urlencode }}">{{ row.name }}</a>{% endif %}</td>
+    <td>{{ "Full access" if row.full else "View only" }}</td>
+    <td>{{ "On" if row.two_factor else "Off" }}</td>
+    <td>{% if row.expired %}Link ran out{% elif row.invited %}Hasn't used their link yet{% else %}Joined{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2>Add someone</h2>
+<form method="post" action="{{ url('person_invite') }}">
+  {{ csrf_input }}
+  <label>Their name <small>They'll sign in with this, and the activity record will show it.</small> <input name="name" autocomplete="off" required></label>
+  <label>What they may do
+    <select name="access">
+      <option value="view" selected>View only</option>
+      <option value="full">Full access</option>
+    </select>
+  </label>
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Make their link</button>
+</form>
+
+{% if removed %}
+<h2>Removed</h2>
+<ul>{% for name in removed %}<li>{{ name }}</li>{% endfor %}</ul>
+{% endif %}
+{% endblock %}

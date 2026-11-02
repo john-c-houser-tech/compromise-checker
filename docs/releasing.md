@@ -10,6 +10,7 @@ teaches the tool what to look for, while a release replaces its code.
 | --- | --- |
 | `checker-VERSION-py3-none-any.whl` | the tool |
 | `requirements.lock` | every dependency: one exact version of each, with its hashes |
+| `install.py` | the [installer](install.md), told which version it's for |
 | `release.json` | the version, the commit, the date, whether it's a pre-release or a security fix, and each file's hash and size |
 | `release.json.minisig` | the release key's signature of `release.json` |
 

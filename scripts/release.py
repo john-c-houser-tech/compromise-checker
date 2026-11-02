@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 from checker import __version__  # noqa: E402
 from checker.packs.signing import SignatureError, public_key  # noqa: E402
 from checker.releases import (  # noqa: E402
+    INSTALLER,
     MANIFEST,
     REQUIREMENTS,
     SIGNATURE,
@@ -372,6 +373,14 @@ def check_wheel(wheel: Path, version: str, wanted: dict[str, bytes]) -> None:
         raise Refused(f"the wheel differs from the commit in {', '.join(changed)}")
 
 
+def installer_for(source: bytes, version: str) -> bytes:
+    """The installer knows which version it's for, so it can't be given an older release."""
+    placeholder = b'VERSION = "@VERSION@"'
+    if source.count(placeholder) != 1:
+        raise Refused("the installer doesn't have its one place for the version")
+    return source.replace(placeholder, f'VERSION = "{version}"'.encode())
+
+
 def write_manifest(
     directory: Path,
     version: str,
@@ -431,6 +440,9 @@ def build(prerelease: bool, security_fix: bool, trial: bool) -> Path:
         try:
             shutil.copy(wheel, staged / wheel.name)
             (staged / REQUIREMENTS).write_bytes(_blob(commit, "release/requirements.lock"))
+            (staged / INSTALLER).write_bytes(
+                installer_for(_blob(commit, "release/install.py"), __version__)
+            )
             write_manifest(
                 staged, __version__, commit, prerelease, security_fix, published, trial=trial
             )

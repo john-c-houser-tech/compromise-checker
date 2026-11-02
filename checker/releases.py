@@ -54,6 +54,7 @@ RELEASE_KEYS: tuple[str, ...] = ("RWSrQekC3RodNJBjEJsAevGCUsudzjSUpTcGCiIyE/Cj1I
 MANIFEST = "release.json"
 SIGNATURE = "release.json.minisig"
 REQUIREMENTS = "requirements.lock"
+INSTALLER = "install.py"
 MAX_MANIFEST_BYTES = 64 * 1024
 _CHUNK = 1024 * 1024
 _VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
@@ -123,6 +124,8 @@ class Manifest(BaseModel):
             raise ValueError(f"it doesn't list {self.wheel_name}")
         if REQUIREMENTS not in self.files:
             raise ValueError(f"it doesn't list {REQUIREMENTS}")
+        if INSTALLER not in self.files:
+            raise ValueError(f"it doesn't list {INSTALLER}")
         return self
 
     @property

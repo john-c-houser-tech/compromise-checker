@@ -126,9 +126,10 @@ running on a machine of their own and reach its first-setup page in a browser.
   logged in), the first-setup link and the command to show it again. Sleep turned off or warned about, and
   a missed check shown on the page. The Pango libraries that PDF reports need. **Nothing from the release
   runs before its signature is checked,** and `checker/releases.py` can't do that on a new machine, since it
-  needs dependencies from the release being checked. So the script checks it another way, chosen here:
-  Python's standard library has no Ed25519, and `minisign` isn't in every base package source. The script
-  also names the exact version it expects, so an older signed release can't be given to a new install.
+  needs dependencies from the release being checked. So the script is one file using only what comes with
+  Python, with its own short Ed25519 check, tested against the tool's and against real minisign. Rocky doesn't
+  package `minisign` in its base sources. The script also names the exact version it expects, so an older signed
+  release can't be given to a new install. Installing on Ubuntu 24.04 and 26.04, and Rocky 9 and 10.
 - **I.3 The web address route.** The question at the start, the check that the machine can be reached,
   Caddy with the proxy secret, retrying until DNS works, the stop if port 80 or 443 is taken, and the
   optional address limit.
@@ -141,6 +142,8 @@ running on a machine of their own and reach its first-setup page in a browser.
   that address changes. (Today that limit is optional, and the person types the address.)
 - **I.6 Updates.** The version check and its off switch, the notice and its louder form for security fixes,
   the rule on pre-releases, the button, the root service, keeping the previous version and rolling back.
+  The daily timer names the Python of the version that set it, so an update has to set the timer again, or the
+  old version keeps running the checks.
   The service installs only from `stage_release`'s private copy, with `newer_than` set, and keeps the
   installed release's manifest, since that's the only record of whether a machine is on a pre-release.
   This is the new path from a web session to root, so it gets the closest review. Policy wording too.
@@ -151,8 +154,6 @@ running on a machine of their own and reach its first-setup page in a browser.
 
 ## Not known yet
 
-- Which Ubuntu and Rocky versions can be supported. The tool needs Python 3.12 or later, which not all of
-  them ship by default. Settled in I.2.
 - A newer release being withheld from a machine can't be detected from a signature alone. The signed
   `published` date lets the page show how old the newest release it can see is. Settled in I.6.
 - Where Caddy and the login-failure blocker come from on each distribution, and how far each source can be

@@ -17,6 +17,7 @@ from test_pack_trust import Key
 
 from checker import __version__, releases
 from checker.releases import (
+    INSTALLER,
     MANIFEST,
     REQUIREMENTS,
     SIGNATURE,
@@ -50,6 +51,7 @@ def body(**changes) -> dict:
         "files": {
             wheel_name(VERSION): {"sha256": "0" * 64, "size": 1},
             REQUIREMENTS: {"sha256": "1" * 64, "size": 2},
+            INSTALLER: {"sha256": "3" * 64, "size": 3},
         },
     }
     whole.update(changes)
@@ -69,6 +71,7 @@ def a_release(directory: Path, key: Key, version: str = VERSION) -> Path:
     directory.mkdir(exist_ok=True)
     (directory / wheel_name(version)).write_bytes(b"the wheel")
     (directory / REQUIREMENTS).write_text("the list\n")
+    (directory / INSTALLER).write_text("the installer\n")
     script.write_manifest(directory, version, COMMIT, True, False, PUBLISHED)
     (directory / SIGNATURE).write_bytes(key.sign((directory / MANIFEST).read_bytes()))
     return directory
@@ -131,6 +134,12 @@ def test_the_release_key_is_in_place():
         {"files": {}},
         {"files": {REQUIREMENTS: {"sha256": "1" * 64, "size": 2}}},
         {"files": {wheel_name(VERSION): {"sha256": "0" * 64, "size": 1}}},
+        {
+            "files": {
+                wheel_name(VERSION): {"sha256": "0" * 64, "size": 1},
+                REQUIREMENTS: {"sha256": "1" * 64, "size": 2},
+            }
+        },
     ],
 )
 def test_a_signed_manifest_that_is_wrong_is_still_refused(tmp_path, changes):
@@ -520,7 +529,16 @@ def test_a_manifest_does_not_list_itself_or_its_signature(tmp_path):
     key = Key()
     source = a_release(tmp_path / "r", key)
     path = script.write_manifest(source, VERSION, COMMIT, True, False, PUBLISHED)
-    assert set(json.loads(path.read_text())["files"]) == {wheel_name(VERSION), REQUIREMENTS}
+    listed = set(json.loads(path.read_text())["files"])
+    assert listed == {wheel_name(VERSION), REQUIREMENTS, INSTALLER}
+
+
+def test_the_installer_is_told_its_version_once():
+    source = (ROOT / "release" / "install.py").read_bytes()
+    assert b'VERSION = "1.2.3"' in script.installer_for(source, "1.2.3")
+    assert b"@VERSION@" not in script.installer_for(source, "1.2.3")
+    with pytest.raises(script.Refused, match="one place"):
+        script.installer_for(b"no such line", "1.2.3")
 
 
 def test_a_signed_trial_is_still_never_accepted(tmp_path):
@@ -573,7 +591,7 @@ def test_the_publish_command_matches_the_release_and_names_each_file(tmp_path):
     command = script.publish_command(Path("d"), manifest)
     assert "--prerelease" in command
     assert not command.endswith("*")
-    for name in (wheel_name(VERSION), REQUIREMENTS, MANIFEST, SIGNATURE):
+    for name in (wheel_name(VERSION), REQUIREMENTS, INSTALLER, MANIFEST, SIGNATURE):
         assert f"d/{name}" in command
     final = read_manifest(*signed(key, body(prerelease=False)), public(key, tmp_path))
     assert "--prerelease" not in script.publish_command(Path("d"), final)

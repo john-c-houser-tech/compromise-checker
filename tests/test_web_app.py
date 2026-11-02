@@ -8877,3 +8877,33 @@ def test_the_guarded_upgrade_itself_cant_undo_a_lock_out(web, monkeypatch):
     monkeypatch.setattr(accounts, "make_password", landing_midway)
     accounts.upgrade_password_hash(sam, PASSWORD)
     assert not get_user_model().objects.get(username="sam").has_usable_password()
+
+
+def test_someone_given_a_new_link_cant_finish_managing_people(web):
+    """Their request confirmed the old password, and a new link leaves their access as it was."""
+    from django.contrib.auth import get_user_model
+
+    from checker.web import accounts
+
+    a, b = account_named("aa"), account_named("bb")
+    accounts.new_link(a, "bb")  # bb here is the user as their request read it, just before this
+    for attempt in (
+        lambda: accounts.remove(b, "aa"),
+        lambda: accounts.set_access(b, "aa", False),
+        lambda: accounts.new_link(b, "aa"),
+        lambda: accounts.invite(b, "cc", True),
+    ):
+        with pytest.raises(accounts.PersonProblem):
+            attempt()
+    assert accounts.has_full_access(get_user_model().objects.get(username="aa"))
+    assert not get_user_model().objects.filter(username="cc").exists()
+
+
+def test_a_long_name_in_another_writing_can_still_be_managed(web):
+    """Each character takes nine in an address, past what the page's filter would let through."""
+    client, _ = signed_in(web)
+    name = "\u4e2d" * 40
+    account_named(name, full=False)
+    text = html.unescape(client.get("/manage/people").content.decode())
+    link = re.search(r'href="(/manage/people/person\?name=[^"]*)"', text).group(1)
+    assert f'value="{name}"' in client.get(link).content.decode()

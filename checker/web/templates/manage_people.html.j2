@@ -20,7 +20,7 @@
   <tbody>
   {% for row in rows %}
   <tr>
-    <td>{% if row.me %}{{ row.name }} (you){% else %}<a href="{{ url('manage_person') }}?name={{ row.name | urlencode }}">{{ row.name }}</a>{% endif %}</td>
+    <td>{% if row.me %}{{ row.name }} (you){% else %}<a href="{{ url('manage_person') }}?name={{ row.name | urlencode | e }}">{{ row.name }}</a>{% endif %}</td>
     <td>{{ "Full access" if row.full else "View only" }}</td>
     <td>{{ "On" if row.two_factor else "Off" }}</td>
     <td>{% if row.expired %}Link ran out{% elif row.invited %}Hasn't used their link yet{% else %}Joined{% endif %}</td>

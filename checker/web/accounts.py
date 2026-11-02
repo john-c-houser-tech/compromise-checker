@@ -126,8 +126,11 @@ def _new_invitation(user) -> str:
 
 def _still_full(actor) -> None:
     """Checked again inside the write, so two people can't take each other's access at once and
-    leave nobody who can give it back."""
-    if not Access.objects.filter(user=actor, full=True, user__is_active=True).exists():
+    leave nobody who can give it back. The password too: a new link leaves access as it was, but
+    what was confirmed before it no longer counts."""
+    if not Access.objects.filter(
+        user=actor, full=True, user__is_active=True, user__password=actor.password
+    ).exists():
         raise PersonProblem("Your own access has changed, so this wasn't done.")
 
 

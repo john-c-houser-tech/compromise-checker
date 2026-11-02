@@ -277,6 +277,7 @@ def stage_release(
         staged = Path(tempfile.mkdtemp(prefix=".stage-", dir=target.parent))
     except OSError as exc:
         raise ReleaseError(f"can't make {target}: {exc}") from None
+    moved = False
     try:
         for name, expected in manifest.files.items():
             with (staged / name).open("xb") as copy:
@@ -289,9 +290,10 @@ def stage_release(
         _sync(staged / SIGNATURE)
         _sync(staged)
         os.rename(staged, target)
+        moved = True
         _sync(target.parent)
     except BaseException as exc:
-        shutil.rmtree(staged, ignore_errors=True)
+        shutil.rmtree(target if moved else staged, ignore_errors=True)
         if isinstance(exc, OSError):
             raise ReleaseError(f"can't copy the release: {exc}") from None
         raise

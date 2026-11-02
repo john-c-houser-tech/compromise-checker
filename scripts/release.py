@@ -246,14 +246,10 @@ def _tag_commit(version: str) -> str | None:
 
 
 def _main_tip() -> str | None:
-    done = subprocess.run(  # noqa: S603
-        ["git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"],  # noqa: S607
-        cwd=ROOT,
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    return done.stdout.strip() if done.returncode == 0 else None
+    """Asks GitHub, since the local record of origin/main only knows the last fetch: a fix merged
+    since then is what this check is there to catch. If GitHub can't be asked, nothing is built."""
+    answer = _git("ls-remote", "origin", "refs/heads/main")
+    return answer.split()[0] if answer else None
 
 
 def _clean_env(home: Path, tz: str, epoch: str) -> dict:

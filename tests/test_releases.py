@@ -356,6 +356,26 @@ def test_a_full_disk_is_not_reported_as_a_bad_source(tmp_path, monkeypatch):
     assert not (tmp_path / "stage").exists()
 
 
+def test_a_failure_after_the_move_leaves_nothing_in_the_way_of_trying_again(tmp_path, monkeypatch):
+    key = Key()
+    source = a_release(tmp_path / "r", key)
+    target = tmp_path / "stage"
+    keys = public(key, tmp_path)
+    real_sync = releases._sync
+
+    def failing(path):
+        if path == target.parent:
+            raise OSError(5, "Input/output error")
+        real_sync(path)
+
+    monkeypatch.setattr(releases, "_sync", failing)
+    with pytest.raises(ReleaseError, match="can't copy the release"):
+        stage_release(source, target, keys)
+    assert not target.exists()
+    monkeypatch.setattr(releases, "_sync", real_sync)
+    assert stage_release(source, target, keys).version == VERSION
+
+
 def test_staging_will_not_use_a_link_that_exists(tmp_path):
     key = Key()
     source = a_release(tmp_path / "r", key)
@@ -406,6 +426,31 @@ def test_a_real_release_is_of_the_tagged_commit_on_main():
         script.check_source("0.1.0", COMMIT, COMMIT, "b" * 40)
     with pytest.raises(script.Refused, match="origin/main is"):
         script.check_source("0.1.0", COMMIT, COMMIT, None)
+
+
+def test_the_newest_commit_on_main_comes_from_github_and_not_the_last_fetch(monkeypatch):
+    asked = []
+
+    def git(*arguments):
+        asked.append(arguments)
+        return f"{COMMIT}\trefs/heads/main"
+
+    monkeypatch.setattr(script, "_git", git)
+    assert script._main_tip() == COMMIT
+    assert asked == [("ls-remote", "origin", "refs/heads/main")]
+
+
+def test_if_github_cannot_be_asked_nothing_is_built(monkeypatch):
+    def git(*_):
+        raise script.Refused("git ls-remote failed")
+
+    monkeypatch.setattr(script, "_git", git)
+    with pytest.raises(script.Refused, match="ls-remote"):
+        script._main_tip()
+    monkeypatch.setattr(script, "_git", lambda *_: "")
+    assert script._main_tip() is None
+    with pytest.raises(script.Refused, match="origin/main is None"):
+        script.check_source("0.1.0", COMMIT, COMMIT, script._main_tip())
 
 
 def test_a_real_release_needs_a_key_to_ship(monkeypatch):

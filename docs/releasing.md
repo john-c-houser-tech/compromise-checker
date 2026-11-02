@@ -51,8 +51,8 @@ From the newest commit on `main`, after the change that sets the version has bee
 
        python scripts/release.py build --prerelease
 
-   It refuses unless the tag is this commit and this is the newest commit on `origin/main`, so a release
-   can't miss a fix that's already merged. The wheel comes from what's committed, never from the working
+   It asks GitHub for the newest commit on `main`, and refuses unless that's this commit and the tag is too,
+   so a release can't miss a fix that's already merged. The wheel comes from what's committed, never from the working
    folder. It's built twice, with the pinned build tool and none of your own settings, and refused if the
    two differ or its files aren't exactly what git has for this commit.
 4. Restore the release key from its offline copy, somewhere that isn't this repository, such as

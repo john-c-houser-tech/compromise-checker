@@ -8907,3 +8907,18 @@ def test_a_long_name_in_another_writing_can_still_be_managed(web):
     text = html.unescape(client.get("/manage/people").content.decode())
     link = re.search(r'href="(/manage/people/person\?name=[^"]*)"', text).group(1)
     assert f'value="{name}"' in client.get(link).content.decode()
+
+
+def test_a_wrong_password_on_an_old_hash_takes_as_long_as_any_other(web, monkeypatch):
+    from django.contrib.auth.hashers import PBKDF2PasswordHasher
+
+    from checker.web.hashing import NoUpgradeWhileChecking
+
+    evened = []
+    monkeypatch.setattr(
+        PBKDF2PasswordHasher, "harden_runtime", lambda self, *args: evened.append(args)
+    )
+    hasher, old = NoUpgradeWhileChecking(), out_of_date_hash(PASSWORD)
+    assert hasher.verify(PASSWORD, old) and not evened
+    assert not hasher.verify("wrong", old) and len(evened) == 1
+    assert not hasher.verify("wrong", hasher.encode(PASSWORD, hasher.salt())) and len(evened) == 1

@@ -11,6 +11,14 @@ class NoUpgradeWhileChecking(PBKDF2PasswordHasher):
     def must_update(self, encoded: str) -> bool:
         return False
 
+    def verify(self, password: str, encoded: str) -> bool:
+        """Django evens out a wrong password's time only when an upgrade is due, which it now never
+        thinks. Without this, an old hash would answer faster and show the account exists."""
+        right = super().verify(password, encoded)
+        if not right and out_of_date(encoded):
+            self.harden_runtime(password, encoded)
+        return right
+
 
 def out_of_date(encoded: str) -> bool:
     return PBKDF2PasswordHasher().must_update(encoded)

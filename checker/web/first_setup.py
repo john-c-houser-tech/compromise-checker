@@ -242,7 +242,7 @@ def commands_for(base: Path, host: Host, typed_from: str) -> dict[str, Any]:
     commands = f"""sudo bash -eu <<'END_OF_SETUP'
 stop() {{ echo "STOPPED: $1"; exit 1; }}
 nothing="so nothing was changed."
-for needed in visudo useradd su ssh-keygen; do
+for needed in visudo useradd passwd getent su ssh-keygen; do
   command -v "$needed" > /dev/null || stop "$needed isn't installed here, $nothing"
 done
 # Stop if this account is someone's, or a home is waiting for it with someone's files.

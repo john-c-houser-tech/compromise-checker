@@ -7495,6 +7495,7 @@ def test_a_kept_key_is_enough_to_start_again(tmp_path, monkeypatch, capsys):
     assert cli.main(["web"]) == 0
     assert "keeping it" in capsys.readouterr().out
     assert key.read_text() == before and load_config(tmp_path).recipients == recipients
+    assert load_config(tmp_path).identity_file == str(key), "or nothing stored could be read"
     (tmp_path / "config.yaml").unlink()
     assert cli.main(["init", "--advisor", "off"]) == 0, "and the command line's way back works too"
     assert key.read_text() == before and load_config(tmp_path).recipients == recipients
@@ -7513,6 +7514,11 @@ def test_a_kept_key_isn_t_replaced_by_another_recipient_or_when_damaged(
     key.write_text("not a key")
     assert cli.main(["init", "--advisor", "off"]) == 1
     assert key.read_text() == "not a key"
+    key.write_text("AGE-SECRET-KEY-NOTAKEY")
+    assert cli.main(["init", "--advisor", "off"]) == 1
+    assert "can't be read" in capsys.readouterr().err
+    assert key.read_text() == "AGE-SECRET-KEY-NOTAKEY"
+    key.write_text("not a key")
     other = str(x25519.Identity.generate().to_public())
     assert cli.main(["init", "--advisor", "off", "--recipient", other]) == 1
     assert key.read_text() == "not a key" and not (tmp_path / "config.yaml").exists()
@@ -7689,6 +7695,7 @@ def test_the_commands_are_filled_in_with_the_real_key_and_nothing_private(keyed)
     assert "sudo bash -eu" in text and "already exists" in text
     assert "/etc/sudoers.d/compromise-checker-scanner" in text
     assert "su -s /bin/sh scanner -c 'sudo -n -- python3 -I -B -'" in text, "proved, not assumed"
+    assert "visudo useradd passwd getent su ssh-keygen" in text, "all checked before any change"
     assert "act as an administrator" in text
     assert "PRIVATE KEY" not in text
 

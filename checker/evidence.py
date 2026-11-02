@@ -418,7 +418,7 @@ def _initialise(
             )
         try:
             recipients = [str(load_identity(kept).to_public())]
-        except (OSError, ValueError, EvidenceError) as exc:
+        except (OSError, ValueError, EvidenceError, pyrage.IdentityError) as exc:
             raise EvidenceError(
                 f"the evidence key in {home / 'keys'} can't be read, so nothing was changed"
             ) from exc

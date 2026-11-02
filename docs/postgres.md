@@ -44,8 +44,8 @@ them can do anything an account can. Choose who runs that database accordingly, 
 passwords.
 
 The web interface needs the database to be running: without it, it won't start, and pages won't load. If the
-tables were made by something else, such as another Django application, it refuses to use them, so that
-application's accounts can't sign in here.
+tables were made by something else, such as another Django application, in this schema or another its search
+path reaches, it refuses to use them, so that application's accounts can't sign in here.
 
 ## The address
 
@@ -66,8 +66,8 @@ Environment variables could send it elsewhere unseen. The tool refuses to connec
 which then wins. It refuses while `PGSERVICE`, `PGHOSTADDR`, `PGOPTIONS` and others that an address can't
 overrule are set. The message names the one in the way.
 
-It refuses a session with triggers switched off (`session_replication_role`), and tables with these names
-that it didn't make, so give it a database of its own.
+It refuses a session with triggers switched off (`session_replication_role`), a database whose encoding isn't
+UTF8, and tables with these names that it didn't make, so give it a database of its own.
 
 ## Append-only
 
@@ -96,7 +96,8 @@ store stays in charge, nothing is lost, and the new database needs emptying befo
 
 If `config.yaml` is lost while the store is in a database, the tool won't start an empty store beside
 your evidence, and while `web.db.moved` is there the web interface won't start with no accounts: restore the
-file. If the store really is lost, `checker init --new-store` starts an empty one,
+file. Once the old files are deleted and with no evidence yet, nothing is left to say a database was in use,
+so back up `config.yaml`. If the store really is lost, `checker init --new-store` starts an empty one,
 which won't list the evidence already there.
 
 ## Backups

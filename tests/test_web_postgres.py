@@ -273,6 +273,201 @@ def test_two_starts_at_once_both_succeed(home):
         assert each.returncode == 0, err
 
 
+def a_role(*settings):
+    import psycopg
+
+    role = f"r{secrets.token_hex(4)}"
+    with psycopg.connect(server, autocommit=True) as admin:
+        admin.execute(f"CREATE ROLE {role} SUPERUSER LOGIN PASSWORD 'test'")
+        for setting in settings:
+            admin.execute(f"ALTER ROLE {role} SET {setting}")
+    return role
+
+
+def drop_role(role):
+    import psycopg
+
+    with psycopg.connect(server, autocommit=True) as admin:
+        admin.execute(f"DROP ROLE {role}")
+
+
+GUESSES_AT_ONCE = """
+gate = threading.Barrier(16)
+results = []
+def guess():
+    gate.wait()
+    results.append(accounts.begin_login("jo", "198.51.100.1"))
+    connection.close()
+threads = [threading.Thread(target=guess) for _ in range(16)]
+[t.start() for t in threads]
+[t.join() for t in threads]
+print(json.dumps([sum(results), accounts.MAX_FAILURES_FOR_NAME]))
+"""
+
+
+def test_the_lock_means_the_same_when_a_stricter_level_is_the_default(home, address):
+    """At REPEATABLE READ a waiter reads from before it waited, so all of these would pass."""
+    role = a_role("default_transaction_isolation = 'repeatable read'")
+    try:
+        (home / "config.yaml").write_text(f"database: {address[0]}&user={role}\n")
+        allowed, limit = run(home, GUESSES_AT_ONCE)
+        assert allowed == limit
+    finally:
+        import psycopg
+
+        with psycopg.connect(address[0], autocommit=True) as db:
+            db.execute(f"DROP OWNED BY {role} CASCADE")
+        drop_role(role)
+
+
+def test_the_stores_writers_read_what_the_last_one_wrote_at_a_stricter_default(address):
+    from checker.database import PostgresDatabase
+
+    role = a_role("default_transaction_isolation = 'repeatable read'")
+    try:
+        db = PostgresDatabase(f"{address[0]}&user={role}")
+        level = db.execute("SHOW transaction_isolation").fetchone()[0]
+        db.close()
+        assert level == "read committed"
+    finally:
+        drop_role(role)
+
+
+def test_another_schema_on_the_path_isnt_taken_for_ours_and_a_failed_move_leaves_it(home, address):
+    import psycopg
+
+    role = a_role()
+    schema = address[1]
+    other = f"o{secrets.token_hex(4)}"
+    with psycopg.connect(server, autocommit=True) as admin:
+        admin.execute(f"CREATE SCHEMA {other}")
+        admin.execute(f"CREATE TABLE {other}.django_migrations (id int)")
+        admin.execute(f"CREATE TABLE {other}.auth_user (id int)")
+        admin.execute(f"ALTER ROLE {role} SET search_path = {schema}, {other}")
+    plain = f"{server}{'&' if '?' in server else '?'}user={role}"
+    try:
+        (home / "config.yaml").write_text(f"database: {plain}\n")
+        done = run(home, "print(1)", check=False)
+        assert done.returncode != 0 and "didn't make" in done.stderr
+        with psycopg.connect(server, autocommit=True) as admin:
+            found = admin.execute(
+                "SELECT obj_description(oid, 'pg_class') FROM pg_class WHERE relnamespace ="
+                " %s::regnamespace AND relname = 'django_migrations'",
+                (other,),
+            ).fetchone()
+        assert found == (None,), "its table wasn't marked as ours"
+        made_store_and_accounts(home)
+        assert move(home, plain, check=False).returncode == 1
+        with psycopg.connect(server, autocommit=True) as admin:
+            for table in ("django_migrations", "auth_user"):
+                assert admin.execute(f"SELECT to_regclass('{other}.{table}')").fetchone()[0]
+    finally:
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA {other} CASCADE")
+        drop_role(role)
+
+
+def test_a_refused_session_isnt_kept_for_the_next_use(home, address):
+    import psycopg
+
+    role = a_role()
+    try:
+        (home / "config.yaml").write_text(f"database: {address[0]}&user={role}\n")
+        result = run(
+            home,
+            f"""
+            import psycopg
+            connection.close()
+            with psycopg.connect(sys.argv[2], autocommit=True) as admin:
+                admin.execute("ALTER ROLE {role} SET session_replication_role = replica")
+            refused = []
+            for _ in range(2):
+                try:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT 1")
+                    refused.append(False)
+                except RuntimeError:
+                    refused.append(True)
+            print(json.dumps(refused))
+            """,
+            server,
+        )
+        assert result == [True, True]
+    finally:
+        with psycopg.connect(address[0], autocommit=True) as db:
+            db.execute(f"DROP OWNED BY {role} CASCADE")
+        drop_role(role)
+
+
+def test_a_database_not_in_utf8_is_refused(tmp_path):
+    import psycopg
+
+    name = f"d{secrets.token_hex(4)}"
+    with psycopg.connect(server, autocommit=True) as admin:
+        admin.execute(f"CREATE DATABASE {name} ENCODING 'LATIN1' LOCALE 'C' TEMPLATE template0")
+    try:
+        base = server.rpartition("/")[0]
+        (tmp_path / "keys").mkdir()
+        (tmp_path / "config.yaml").write_text(f"database: {base}/{name}\n")
+        done = run(tmp_path, "print(1)", check=False)
+        assert done.returncode != 0 and "UTF8" in done.stderr
+    finally:
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"DROP DATABASE {name}")
+
+
+def test_names_that_grow_once_stored_are_still_only_wrong_logins(home):
+    result = run(
+        home,
+        """
+        results = [accounts.begin_login(name, "198.51.100.1")
+                   for name in ("\\x00" * 26, "a" * 149 + "\\x00", "x" * 5000)]
+        lengths = sorted(len(n) for n in LoginAttempt.objects.values_list("username", flat=True))
+        print(json.dumps([results, lengths[-1]]))
+        """,
+    )
+    assert result == [[True, True, True], 150]
+
+
+def test_a_throttle_still_counts_a_name_too_long_to_keep_whole(home):
+    result = run(
+        home,
+        """
+        name = "x" * 5000
+        answers = [accounts.begin_login(name, "198.51.100.1") for _ in range(7)]
+        print(json.dumps(sum(answers)))
+        """,
+    )
+    assert result == 5
+
+
+def test_old_failed_logins_dont_stop_a_move(home, address):
+    made_store_and_accounts(home)
+    with sqlite3.connect(home / "web.db") as old:
+        old.execute(
+            "INSERT INTO web_loginattempt (username, address, at) VALUES (?, 'a', '2026-01-01')",
+            ("\x00" * 150,),
+        )
+    move(home, address[0])
+    assert run(home, READ_ACCOUNTS)["jo"]
+
+
+def test_the_move_leaves_the_old_file_owner_only(home, address):
+    made_store_and_accounts(home)
+    (home / "web.db").chmod(0o644)
+    move(home, address[0])
+    assert (home / "web.db.moved").stat().st_mode & 0o077 == 0
+
+
+def test_a_stale_file_beside_a_database_in_use_doesnt_advise_emptying_it(home, address):
+    made_store_and_accounts(home)
+    move(home, address[0])
+    run(home, 'get_user_model().objects.create_user("another", password="z" * 14); print(1)')
+    (home / "web.db.moved").rename(home / "web.db")
+    done = move(home, address[0], check=False)
+    assert done.returncode == 1 and "don't empty" in done.stderr
+
+
 MAKE_ACCOUNTS = """
 import sys
 from pathlib import Path
@@ -427,4 +622,17 @@ def test_a_move_refuses_a_database_holding_other_accounts(home, address):
     run(home, 'get_user_model().objects.create_user("another", password="z" * 14); print(1)')
     (home / "web.db.moved").rename(home / "web.db")
     done = move(home, address[0], check=False)
-    assert done.returncode == 1 and "other accounts" in done.stderr
+    assert done.returncode == 1 and "different accounts" in done.stderr
+
+
+def test_a_move_into_a_database_with_someone_elses_accounts_is_refused(home, address):
+    import psycopg
+
+    made_store_and_accounts(home)
+    other = f"{address[0]}"
+    with psycopg.connect(other, autocommit=True) as db:
+        db.execute("CREATE TABLE auth_user (id int)")
+    done = move(home, other, check=False)
+    assert done.returncode == 1 and "didn't make" in done.stderr
+    with psycopg.connect(other) as db:
+        assert db.execute("SELECT to_regclass('auth_user')").fetchone()[0] == "auth_user"

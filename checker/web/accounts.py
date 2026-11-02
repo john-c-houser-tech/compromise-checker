@@ -19,6 +19,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from checker.database import no_nul
 from checker.web.app import is_local
 from checker.web.models import (
     Access,
@@ -209,7 +210,7 @@ def _lock_out(user) -> None:
     two_factor.forget_pending(user)
     two_factor.forgive_wrong_codes(user)
     _end_sessions(user)
-    LoginAttempt.objects.filter(username=user.get_username().lower()).delete()
+    LoginAttempt.objects.filter(username=_attempt_name(user.get_username())).delete()
     Invitation.objects.filter(user=user).delete()
 
 
@@ -318,13 +319,19 @@ def _is_address(text: str) -> bool:
     return True
 
 
+def _attempt_name(username: str) -> str:
+    """As a failed login's name is stored and compared. Cut last: a NUL takes more room once it's
+    in a database, and anyone can send one."""
+    return no_nul(username.lower())[:150]
+
+
 def _recent():
     return LoginAttempt.objects.filter(at__gt=timezone.now() - THROTTLE_WINDOW)
 
 
 def throttled(username: str, address: str) -> bool:
     return (
-        _recent().filter(username=username.lower(), address=address).count()
+        _recent().filter(username=_attempt_name(username), address=address).count()
         >= MAX_FAILURES_FOR_NAME
         or _recent().filter(address=address).count() >= MAX_FAILURES_FROM_ADDRESS
     )
@@ -333,7 +340,7 @@ def throttled(username: str, address: str) -> bool:
 def record_failure(username: str, address: str) -> None:
     LoginAttempt.objects.filter(at__lte=timezone.now() - THROTTLE_WINDOW).delete()
     LoginAttempt.objects.create(
-        username=username.lower()[:150], address=address[:64], at=timezone.now()
+        username=_attempt_name(username), address=address[:64], at=timezone.now()
     )
 
 
@@ -348,7 +355,7 @@ def begin_login(username: str, address: str) -> bool:
 
 
 def clear_failures(username: str, address: str) -> None:
-    LoginAttempt.objects.filter(username=username.lower(), address=address).delete()
+    LoginAttempt.objects.filter(username=_attempt_name(username), address=address).delete()
 
 
 def begin_confirmation(session_key: str) -> bool:
@@ -465,7 +472,7 @@ def reset_password(username: str, password: str) -> list[str]:
         user.save()
         two_factor.forget_pending(user)  # a thief may have started one with the old password
         two_factor.forgive_wrong_codes(user)
-        LoginAttempt.objects.filter(username=username.lower()).delete()
+        LoginAttempt.objects.filter(username=_attempt_name(username)).delete()
         Invitation.objects.filter(user=user).delete()  # the password is now the way in
         _record_from_command_line("reset a password from the command line", username)
     return []

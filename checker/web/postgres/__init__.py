@@ -20,7 +20,7 @@ def settings_for(url: str) -> dict:
 
     db = database.PostgresDatabase(url)
     try:
-        row = db.execute("SELECT current_database() AS name, current_user AS who").fetchone()
+        row = db.execute("SELECT current_database() AS name, session_user AS who").fetchone()
     finally:
         db.close()
     named = psycopg.conninfo.conninfo_to_dict(url)
@@ -53,6 +53,19 @@ def _table_marks(connection, names: list[str]) -> dict[str, str | None]:
         return dict(cursor.fetchall())
 
 
+def _found_elsewhere(connection, names: list[str]) -> list[str]:
+    """In another schema this session's path reaches: Django's and PostgreSQL's own look-ups by name
+    would take them for these."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+            " WHERE c.relname = ANY(%s) AND n.nspname = ANY(current_schemas(false))"
+            " AND n.nspname <> current_schema()",
+            [names],
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+
 def is_ours(connection) -> bool:
     return _table_marks(connection, [_MIGRATIONS]).get(_MIGRATIONS) == _MARK
 
@@ -64,7 +77,8 @@ def refuse_tables_of_others(connection) -> None:
     if is_ours(connection):
         return
     names = connection.introspection.django_table_names(only_existing=False, include_views=False)
-    found = _table_marks(connection, [*names, _MIGRATIONS])
+    names = [*names, _MIGRATIONS]
+    found = [*_table_marks(connection, names), *_found_elsewhere(connection, names)]
     if found:
         raise RuntimeError(
             f"this database already has a {sorted(found)[0]} table this tool didn't make: use a"
@@ -73,11 +87,27 @@ def refuse_tables_of_others(connection) -> None:
 
 
 def claim(connection) -> None:
+    from django.db import transaction
     from django.db.migrations.recorder import MigrationRecorder
 
-    MigrationRecorder(connection).ensure_schema()
+    # Together: stopped between them, its own empty table would be refused as someone else's.
+    with transaction.atomic(using=connection.alias):
+        MigrationRecorder(connection).ensure_schema()
+        with connection.cursor() as cursor:
+            cursor.execute(f"COMMENT ON TABLE {_MIGRATIONS} IS '{_MARK}'")
+
+
+def drop_ours(connection) -> None:
+    """Only what this tool marked, and only in its own schema: never by a name the path resolves."""
+    if not is_ours(connection):
+        return
+    names = connection.introspection.django_table_names(only_existing=False, include_views=False)
+    quote = connection.ops.quote_name
     with connection.cursor() as cursor:
-        cursor.execute(f"COMMENT ON TABLE {_MIGRATIONS} IS '{_MARK}'")
+        cursor.execute("SELECT current_schema()")
+        schema = quote(cursor.fetchone()[0])
+        for table in [*names, _MIGRATIONS]:
+            cursor.execute(f"DROP TABLE IF EXISTS {schema}.{quote(table)} CASCADE")
 
 
 @contextmanager

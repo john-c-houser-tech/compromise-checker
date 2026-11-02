@@ -36,8 +36,12 @@ class DatabaseWrapper(base.DatabaseWrapper):
             for statement in database.session_limits():
                 cursor.execute(statement)
             cursor.execute("SHOW session_replication_role")
-            if cursor.fetchone()[0] != "origin":
-                raise RuntimeError(database.TRIGGERS_OFF)
+            allowed = cursor.fetchone()[0] == "origin"
+        if not allowed:
+            # Not left open: Django would take it as a good connection the next time it's needed.
+            self.connection.close()
+            self.connection = None
+            raise RuntimeError(database.TRIGGERS_OFF)
 
     def set_autocommit(self, autocommit, force_begin_transaction_with_broken_autocommit=False):
         super().set_autocommit(autocommit, force_begin_transaction_with_broken_autocommit)

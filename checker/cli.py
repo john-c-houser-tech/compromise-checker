@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import contextlib
+import functools
 import json
 import os
 import re
@@ -1821,6 +1822,25 @@ def cmd_web(args: argparse.Namespace) -> int:
         return 1
 
 
+def _plain_database_errors(
+    command: Callable[[argparse.Namespace], int],
+) -> Callable[[argparse.Namespace], int]:
+    """A command on the accounts: if their database goes part way, words and not a traceback."""
+
+    @functools.wraps(command)
+    def run(args: argparse.Namespace) -> int:
+        try:
+            return command(args)
+        except Exception as exc:
+            database_error = sys.modules.get("django.db")
+            if database_error is None or not isinstance(exc, database_error.Error):
+                raise
+            print(f"checker: the accounts database can't be used: {exc}", file=sys.stderr)
+            return 1
+
+    return run
+
+
 def _web_has_run(base: Path) -> bool:
     """Its file, or an address where its tables would be. Unreadable settings count: opening it is
     what says what's wrong with them."""
@@ -1830,6 +1850,7 @@ def _web_has_run(base: Path) -> bool:
         return True
 
 
+@_plain_database_errors
 def cmd_web_password(args: argparse.Namespace) -> int:
     """When a password is lost. Whoever owns the home can do this, and the record says so."""
     import getpass
@@ -1878,6 +1899,7 @@ def cmd_web_password(args: argparse.Namespace) -> int:
     return 0
 
 
+@_plain_database_errors
 def cmd_web_two_factor_off(args: argparse.Namespace) -> int:
     """When a phone and its recovery codes are both gone. The record says so."""
     try:

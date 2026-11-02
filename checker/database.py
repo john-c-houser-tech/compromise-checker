@@ -114,6 +114,10 @@ def session_limits() -> list[str]:
         f"SET lock_timeout = '{LOCK_TIMEOUT_SECONDS}s'",
         f"SET statement_timeout = '{STATEMENT_TIMEOUT_SECONDS}s'",
         f"SET idle_in_transaction_session_timeout = '{STATEMENT_TIMEOUT_SECONDS}s'",
+        # A writer's lock only means anything if what it reads next is what's there by then. At a
+        # stricter level, set as the database's or the account's default, it reads from before it
+        # waited: every guard would pass on old numbers, with no error.
+        "SET default_transaction_isolation = 'read committed'",
     ]
 
 
@@ -298,6 +302,12 @@ class PostgresDatabase:
         if role != "origin":
             self._connection.close()
             raise RuntimeError(TRIGGERS_OFF)
+        encoding = self._connection.execute("SHOW server_encoding").fetchone()[0]
+        if encoding != "UTF8":
+            self._connection.close()
+            # Otherwise whatever it can't hold is an error, and anyone can send that: a login's name
+            # to the web interface, a server's own text to the store.
+            raise RuntimeError(f"this database's encoding is {encoding}: it has to be UTF8")
         if self._read_only:
             self._connection.execute("SET default_transaction_read_only = on")
 

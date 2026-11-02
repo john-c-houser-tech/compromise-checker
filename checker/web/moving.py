@@ -4,9 +4,12 @@ interface must be stopped, as for the store."""
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 from checker import database
+from checker.database import configured_url
 from checker.evidence import EvidenceError
 from checker.web import app, postgres
 
@@ -15,6 +18,7 @@ def _set_up(home: Path, url: str) -> None:
     import django
     from django.conf import settings
 
+    os.chmod(home / "web.db", 0o600)  # a restored backup may be wider, and its next name keeps it
     databases = {
         "default": postgres.settings_for(url),
         "source": {
@@ -33,13 +37,22 @@ def _models() -> list:
     return [
         model
         for model in apps.get_models(include_auto_created=True)
-        if model._meta.managed or model._meta.auto_created
+        if (model._meta.managed or model._meta.auto_created) and model is not _throttle_rows()
     ]
+
+
+def _throttle_rows():
+    """Failed logins, kept for 15 minutes: nothing to lose, and they hold what anyone typed, which
+    an old row could keep from fitting."""
+    from checker.web.models import LoginAttempt
+
+    return LoginAttempt
 
 
 def _rows(model, alias: str) -> list[tuple]:
     names = [field.attname for field in model._meta.local_concrete_fields]
-    return list(model._base_manager.using(alias).order_by("pk").values_list(*names))
+    # Sorted here: a database's own order of text depends on its locale.
+    return sorted(model._base_manager.using(alias).values_list(*names), key=repr)
 
 
 def _as_stored(rows: list[tuple]) -> list[tuple]:
@@ -87,13 +100,6 @@ def _copy_everything(connection) -> int:
     return total
 
 
-def _drop(connection) -> None:
-    names = connection.introspection.django_table_names(only_existing=True, include_views=False)
-    with connection.cursor() as cursor:
-        for table in [*names, "django_migrations"]:
-            cursor.execute(f"DROP TABLE IF EXISTS {connection.ops.quote_name(table)} CASCADE")
-
-
 def move_accounts(home: Path, url: str) -> int:
     """How many rows. All of them are there and read back the same, or nothing is left behind. An
     earlier move that got this far is only checked, so that one stopped before its last step can be
@@ -110,10 +116,7 @@ def move_accounts(home: Path, url: str) -> int:
             if postgres.is_ours(target):
                 call_command("migrate", verbosity=0, interactive=False)
                 if not all(_same(model) for model in _models()):
-                    raise EvidenceError(
-                        "the new database already has other accounts in it: use an empty one. If an"
-                        " earlier move stopped part way, empty that database first"
-                    )
+                    raise EvidenceError(_different(home, url))
                 return sum(len(_rows(model, "default")) for model in _models())
             postgres.refuse_tables_of_others(target)
             try:
@@ -122,15 +125,37 @@ def move_accounts(home: Path, url: str) -> int:
                 total = _copy_everything(target)
                 app._protect_the_record()
             except BaseException:
-                _drop(target)
+                postgres.drop_ours(target)
                 raise
             return total
     except (Error, ValueError, RuntimeError, *database.DATABASE_ERRORS) as exc:
         raise EvidenceError(f"the accounts: {exc}") from exc
 
 
-def take_accounts_back() -> None:
-    """After `move_accounts` when the rest of the move failed, so it can be tried again."""
-    from django.db import connections
+def _different(home: Path, url: str) -> str:
+    if configured_url(home) == url:
+        # The database is what's in use, so emptying it would lose the real accounts and record.
+        return (
+            f"the database is in use and holds different accounts from {home / 'web.db'}, which may"
+            " be an old copy from a backup. Nothing was changed: the database's are the ones in"
+            " use, so if this file is old, rename it, and don't empty the database"
+        )
+    return (
+        "the new database already has other accounts in it: use an empty one. If an earlier move"
+        " stopped part way, empty that database first"
+    )
 
-    _drop(connections["default"])
+
+def take_accounts_back() -> None:
+    """After `move_accounts` when the rest of the move failed, so it can be tried again. Whatever
+    went wrong with the move is what needs saying, so this only adds to it."""
+    from django.db import Error, connections
+
+    try:
+        postgres.drop_ours(connections["default"])
+    except Error:
+        print(
+            "checker: the accounts' copy couldn't be taken away: empty that database before trying"
+            " again",
+            file=sys.stderr,
+        )

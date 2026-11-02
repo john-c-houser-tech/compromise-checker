@@ -404,7 +404,12 @@ def serve(
 
     scheme = "https" if tls else "http"
     address = public_url or f"{scheme}://{bind}"
-    link = setup_link(address)
+    from django.db import Error
+
+    try:
+        link = setup_link(address)
+    except Error as exc:
+        raise AccountsProblem(f"the accounts database can't be used: {exc}") from exc
     if link:
         print("No account yet. Open this link, once, within an hour, to create the first one:")
         print(f"  {link}")

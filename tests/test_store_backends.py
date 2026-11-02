@@ -4,6 +4,7 @@ when CHECKER_TEST_POSTGRES names one to use up (a throwaway: each test gets a sc
 
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -815,10 +816,11 @@ def test_a_session_with_triggers_off_is_refused(postgres):
 
     role = f"r{secrets.token_hex(4)}"
     with psycopg.connect(SERVER, autocommit=True) as admin:
-        admin.execute(f"CREATE ROLE {role} SUPERUSER LOGIN PASSWORD 'test'")
+        password = os.environ.get("PGPASSWORD") or "unused"
+        admin.execute(f"CREATE ROLE {role} SUPERUSER LOGIN PASSWORD '{password}'")
         admin.execute(f"ALTER ROLE {role} SET session_replication_role = replica")
     try:
-        url = SERVER.replace("postgres@", f"{role}@")
+        url = re.sub(r"//[^@/]*@", f"//{role}@", SERVER)
         with pytest.raises(EvidenceError, match="triggers switched off"):
             Store(postgres.path, url=url)
     finally:
@@ -985,3 +987,26 @@ def test_a_key_held_elsewhere_gets_the_same_care_over_a_lost_store(tmp_path, mon
     assert "--new-store" in capsys.readouterr().err
     assert not database_file(tmp_path).exists()
     assert cli.main(["init", "--advisor", "off", "--recipient", recipient, "--new-store"]) == 0
+
+
+def test_an_interrupt_as_the_settings_change_leaves_the_moved_store_alone(
+    tmp_path, monkeypatch, server_address
+):
+    """The settings may already name it by then, so dropping it would lose everything moved."""
+    from checker import evidence
+    from checker.evidence import initialise
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    initialise(tmp_path)
+    old = Store(database_file(tmp_path))
+    old.record_bundle(bundle_row("b1"))
+    target = Store(database_file(tmp_path), url=server_address)
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        evidence.copy_store(old, target, "database", None, "x", interrupted)
+    assert [row["id"] for row in target.bundles()] == ["b1"]
+    old.close()
+    target.close()

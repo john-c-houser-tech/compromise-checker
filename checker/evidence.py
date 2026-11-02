@@ -1512,7 +1512,9 @@ def copy_store(
             raise
         try:
             write()
-        except BaseException:
+        except OSError:
+            # It wasn't written: replacing the file happens in one step. On anything else, such as
+            # an interrupt, it may have been, and these tables are then the store: they stay.
             target._db.drop_store()
             raise
     finally:

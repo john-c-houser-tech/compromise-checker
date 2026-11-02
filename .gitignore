@@ -9,3 +9,6 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+
+# Signing keys never belong in this public repository, even encrypted
+*.key

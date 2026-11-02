@@ -65,27 +65,44 @@ jobs:
           grep -q 'checker/packs/keys/keys\.yaml\.minisig ' /tmp/wheel/files
 
   release:
-    name: Release build
+    name: Release build (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]  # the range a first release supports: 3.15 has no wheel for PyYAML yet
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 > /dev/null  # WeasyPrint's
-      - run: pip install --quiet pydantic cryptography  # what the build script's checks import
-      - name: Build the same commit twice, and compare
+          python-version: ${{ matrix.python }}
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 curl > /dev/null  # WeasyPrint's
+      - run: pip install --quiet pydantic cryptography uv==0.12.10  # the build script's checks, and the list's maker
+      - name: The list still meets pyproject.toml
+        run: python scripts/release.py lock --check
+      - name: Build the same commit twice, compare, and compare with the commit
         run: python scripts/release.py build --prerelease --trial
       - name: Install from the release alone, as a machine would
         run: |
           python -m venv /tmp/installed
-          /tmp/installed/bin/pip install --quiet --require-hashes --only-binary :all: -r dist/release-*/requirements.lock
-          /tmp/installed/bin/pip install --quiet --no-deps --no-index dist/release-*/*.whl
+          /tmp/installed/bin/pip install --quiet --require-hashes --only-binary :all: -r dist/trial-*/requirements.lock
+          /tmp/installed/bin/pip install --quiet --no-deps --no-index dist/trial-*/*.whl
           /tmp/installed/bin/pip check
-          cd /tmp
+      - name: The installed tool serves its pages, away from the repository
+        working-directory: /tmp
+        env:
+          CHECKER_HOME: /tmp/checker-home
+        run: |
           /tmp/installed/bin/checker --version
-          /tmp/installed/bin/checker web --help > /dev/null
           /tmp/installed/bin/python -c "import django, django_otp, gunicorn, psycopg, weasyprint, anthropic"
+          /tmp/installed/bin/checker web > /tmp/web.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            curl --silent --fail --output /dev/null http://127.0.0.1:8088/login && break
+            sleep 1
+          done
+          curl --silent --show-error --fail --output /dev/null http://127.0.0.1:8088/login
+          curl --silent --show-error --fail --output /dev/null http://127.0.0.1:8088/style.css
+          grep --quiet first-setup /tmp/web.log || grep --quiet setup /tmp/web.log
 
   collector:
     name: Collector on ${{ matrix.image }}

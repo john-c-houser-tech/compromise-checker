@@ -8045,33 +8045,80 @@ def test_view_only_can_read_results_and_evidence(web):
     assert client.get("/hosts/web01/evidence").status_code == 200
 
 
-def test_view_only_is_not_offered_what_it_would_be_refused(web):
+@pytest.fixture
+def pages_with_everything(web, inventory, home, monkeypatch):
+    """Every viewable page, with whatever it can offer on it: a server that can be checked, a check
+    running and one that ended with advice, and the page for a check that lost the race."""
     from django.utils import timezone
 
+    from checker.web import first_setup, runs
     from checker.web.models import CheckRun
 
-    _, home = web
     analysed(home, "b1", 10, CLEAN)
-    run = CheckRun.objects.create(
+    run = lambda: CheckRun.objects.create(  # noqa: E731
         kind="check", hosts='["web01"]', who="jo", address="", started_at=timezone.now()
     )
+    running, ended, advice = run(), run(), run()
+    for finished in (ended, advice):
+        finished.finished_at = timezone.now()
+    advice.kind = "advice"
+    ended.save()
+    advice.save()
+    monkeypatch.setattr(runs, "is_running", lambda run_id: run_id == running.id)
+    monkeypatch.setattr(
+        runs, "output_lines", lambda run_id: [f"checker: {first_setup.WHAT_TO_TRY[0][0]}"]
+    )
+    return [
+        "/",
+        "/hosts/web01",
+        "/hosts/web01/evidence",
+        "/checks",
+        f"/checks/{running.id}",
+        f"/checks/{running.id}?busy=1",
+        f"/checks/{ended.id}",
+        f"/checks/{advice.id}",
+        "/threats",
+        "/activity",
+    ]
+
+
+def links_and_forms(client, page):
+    text = html.unescape(client.get(page).content.decode())
+    links = re.findall(r'<a href="(/[^"]*)"', text)
+    forms = re.findall(r'<form method="post" action="(/[^"]*)"', text)
+    return links, forms
+
+
+def test_view_only_is_not_offered_what_it_would_be_refused(pages_with_everything):
+    from django.urls import resolve
+
+    from checker.web.middleware import BEFORE_SECOND_STEP, FOR_VIEWERS
+
     client = person("viewer")
-    allowed = {"/", "/checks", "/threats", "/activity", "/two-factor/manage", "/two-factor/setup"}
-    allowed |= {"/login", "/logout"}
-    for page in ("/", "/hosts/web01", "/checks", f"/checks/{run.id}", "/threats", "/activity"):
-        text = client.get(page).content.decode()
-        for target in re.findall(r'(?:href|action)="(/[^"?]*)', text):
-            if target.startswith(("/hosts/", "/checks/", "/style", "/fonts/", "/two-factor")):
-                if target != f"/checks/{run.id}/stop":
-                    continue
-            assert target in allowed, (page, target)
+    for page in pages_with_everything:
+        links, forms = links_and_forms(client, page)
+        for link in links:
+            assert client.get(link).status_code != 403, (page, link)
+        for form in forms:
+            view = resolve(form).func
+            assert view in FOR_VIEWERS or view in BEFORE_SECOND_STEP, (page, form)
 
 
-def test_full_access_is_still_offered_them(web):
-    client, home = signed_in(web)
-    analysed(home, "b1", 10, CLEAN)
-    text = client.get("/").content.decode()
-    assert 'href="/manage"' in text and 'href="/checks/new"' in text
+def test_full_access_is_still_offered_them(pages_with_everything):
+    """Or the test above would pass with nothing on the pages to hide."""
+    client = person("boss", full=True)
+    found = set()
+    for page in pages_with_everything:
+        links, forms = links_and_forms(client, page)
+        found |= {link.partition("?")[0] for link in links} | set(forms)
+    assert {
+        "/manage",
+        "/checks/new",
+        "/decide",
+        "/checks/analyze",
+        "/manage/server/prepare",
+    } <= found
+    assert any(path.endswith("/stop") for path in found)
 
 
 def test_an_account_with_no_access_row_can_only_view(web):
@@ -8243,8 +8290,8 @@ def test_a_bad_password_leaves_the_link_working(web, password, again, words):
 @pytest.mark.parametrize(
     ("name", "words"),
     [
-        ("", "Type a name"),
-        ("   ", "Type a name"),
+        ("", "Choose a name"),
+        ("   ", "Choose a name"),
         ("two words", "only letters"),
         ("<b>", "only letters"),
         ("jo", "already an account"),
@@ -8296,6 +8343,7 @@ def test_access_changes_apply_at_once_to_someone_signed_in(web):
 
 def test_removing_someone_ends_everything_they_had(web):
     from django.contrib.auth import authenticate, get_user_model
+    from django.contrib.sessions.models import Session
 
     client, _ = signed_in(web)
     other = person("sam", full=True)
@@ -8308,6 +8356,8 @@ def test_removing_someone_ends_everything_they_had(web):
 
     sam = get_user_model().objects.get(username="sam")
     assert not sam.is_active and not has_full_access(sam)
+    assert client.session.session_key in {row.session_key for row in Session.objects.all()}
+    assert Session.objects.count() == 1, "only the one who removed them is still signed in"
     login = browser().post("/login", {"username": "sam", "password": PASSWORD})
     assert login.status_code == 403
     assert "sam" in client.get("/manage/people").content.decode()  # the record's name stays listed
@@ -8315,11 +8365,14 @@ def test_removing_someone_ends_everything_they_had(web):
 
 
 def test_a_removed_persons_link_stops_working(web):
+    from checker.web.models import Invitation
+
     client, _ = signed_in(web)
     _, token = link_in(invite(client))
     fields = form_values_of(client, "/manage/people/remove", name="sam")
     assert client.post("/manage/people/remove", fields).status_code == 302
     assert browser().get(f"/join/{token}").status_code == 404
+    assert not Invitation.objects.exists()
 
 
 def test_a_new_link_clears_what_they_had_and_replaces_the_old_link(web):
@@ -8451,7 +8504,7 @@ def test_a_hostile_name_does_nothing_on_the_people_page(web):
     assert "<script>alert" not in text and "<img src=x" not in text and BIDI not in text
     page = f"/manage/people/person?{urlencode({'name': HOSTILE[:150]})}"
     text = client.get(page).content.decode()
-    # A form has to send the name back as it is: nobody sees a hidden field's value, and it's escaped.
+    # A form has to send the name back as it is: nobody sees a hidden field, and it's escaped.
     assert 'value="&lt;script&gt;' in text
     shown = re.sub(r'<input type="hidden"[^>]*>', "", text)
     assert "<script>alert" not in text and "<img src=x" not in text and BIDI not in shown
@@ -8562,3 +8615,154 @@ def test_a_check_started_from_a_page_is_told_who_started_it(web, monkeypatch):
     assert seen[WEB_PERSON_VARIABLE] == "sam"
     monkeypatch.setenv(WEB_PERSON_VARIABLE, seen[WEB_PERSON_VARIABLE])
     assert who_and_where()[0] == "sam (web interface)"
+
+
+@pytest.mark.parametrize("what", ["remove", "new_link"])
+def test_a_password_change_in_flight_cant_undo_a_lock_out(web, monkeypatch, what):
+    """The password was right when it was checked, but the account has been taken away since."""
+    from django.contrib.auth import authenticate, get_user_model
+
+    from checker.web import accounts
+
+    boss = account_named("boss")
+    thief = person("sam", full=True)
+    real = accounts.make_password
+
+    def landing_midway(password):
+        getattr(accounts, what)(boss, "sam")
+        return real(password)
+
+    monkeypatch.setattr(accounts, "make_password", landing_midway)
+    new = "a new long password here"
+    response = thief.post(
+        "/sign-in/password", {"password": new, "password2": new, "confirm_password": PASSWORD}
+    )
+    assert response.status_code == 400 and "wasn&#39;t changed" in response.content.decode()
+    sam = get_user_model().objects.get(username="sam")
+    assert not sam.has_usable_password() and sam.is_active is (what == "new_link")
+    assert not authenticate(username="sam", password=new)
+    assert thief.get("/").status_code == 302
+
+
+def test_a_password_set_on_the_command_line_cant_bring_someone_back(web, monkeypatch):
+    from django.contrib.auth import authenticate, get_user_model
+
+    from checker.web import accounts
+
+    boss = account_named("boss")
+    account_named("sam", full=False)
+    real = accounts.validate_password
+
+    def landing_midway(*args):
+        accounts.remove(boss, "sam")
+        real(*args)
+
+    monkeypatch.setattr(accounts, "validate_password", landing_midway)
+    new = "a new long password here"
+    assert "removed" in accounts.reset_password("sam", new)[0]
+    assert not get_user_model().objects.get(username="sam").is_active
+    assert not authenticate(username="sam", password=new)
+
+
+def test_joining_clears_whatever_a_request_left_behind_during_a_lock_out(web):
+    from django.contrib.auth import get_user_model
+
+    from checker.web import two_factor
+
+    client, _ = signed_in(web)
+    _, token = link_in(invite(client))
+    with_app(get_user_model().objects.get(username="sam"))
+    new = browser()
+    new.post(f"/join/{token}", {"password": PASSWORD, "password2": PASSWORD})
+    assert not two_factor.is_on(get_user_model().objects.get(username="sam"))
+    assert new.get("/").status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("path", "fields", "words"),
+    [
+        ("/sign-in/password", {"password": "short", "password2": "short"}, "too short"),
+        ("/manage/people/invite", {"name": "jo", "access": "view"}, "already an account"),
+    ],
+)
+def test_a_form_that_cant_work_doesnt_use_up_a_code(web, path, fields, words):
+    """It says so before asking for the password or code at all, so neither is spent."""
+    from checker.web.models import WrongConfirmation
+
+    client, _, _ = verified_client(web)
+    response = client.post(path, fields)
+    assert response.status_code == 400 and words in response.content.decode()
+    assert not WrongConfirmation.objects.exists()
+
+
+def test_a_first_account_needs_a_plain_name_too(web):
+    from django.contrib.auth import get_user_model
+
+    from checker.web.accounts import setup_link
+
+    client, _ = web
+    token = link_token(setup_link("http://x"))
+    for name in ("line\nbreak", "\u200b", "sam (web interface)"):
+        response = setup_post(client, token, username=name)
+        assert "only letters" in response.content.decode()
+    assert not get_user_model().objects.exists()
+
+
+def test_a_name_with_nothing_printable_falls_back_to_this_machines_account(monkeypatch):
+    import getpass
+
+    from checker.evidence import WEB_PERSON_VARIABLE, acting_for, who_and_where
+
+    monkeypatch.delenv(WEB_PERSON_VARIABLE, raising=False)
+    with acting_for("\u200b"):
+        assert who_and_where()[0] == getpass.getuser()
+    with acting_for("sam"):
+        assert who_and_where()[0] == "sam (web interface)"
+
+
+@pytest.mark.parametrize("taken", ["\u00c9mile", "\u00e9mile"])
+def test_names_differing_only_in_case_are_the_same_in_any_language(web, taken):
+    client, _ = signed_in(web)
+    account_named(taken, full=False)
+    for name in ("\u00c9mile", "\u00e9mile", "\u00c9MILE"):
+        assert invite(client, name=name).status_code == 400
+
+
+def test_a_removed_name_stays_taken_in_any_language(web):
+    client, _ = signed_in(web)
+    account_named("\u00d6zge", full=False)
+    fields = form_values_of(client, "/manage/people/remove", name="\u00d6zge")
+    assert client.post("/manage/people/remove", fields).status_code == 302
+    response = invite(client, name="\u00f6zge")
+    assert response.status_code == 400 and "was removed" in response.content.decode()
+
+
+def test_a_long_link_isnt_cut(web, settings_override):
+    client, _ = signed_in(web)
+    settings_override(CHECKER_PUBLIC_URL="https://" + "a" * 280 + ".example")
+    link, token = link_in(invite(client))
+    assert link.endswith(f"/join/{token}") and len(token) >= 40
+
+
+@pytest.mark.parametrize("kind", ["join", "setup"])
+def test_a_link_stays_out_of_the_log_when_it_fails(web, monkeypatch, caplog, kind):
+    """It's still good afterwards, and a log is read by more people than the link was given to."""
+    from checker.web import accounts
+    from checker.web.accounts import setup_link
+
+    def broken(*args):
+        raise RuntimeError("the tool's own error")
+
+    if kind == "join":
+        client, _ = signed_in(web)
+        _, token = link_in(invite(client))
+        monkeypatch.setattr(accounts, "accept", broken)
+    else:
+        token = link_token(setup_link("http://x"))
+        monkeypatch.setattr(accounts, "create_first_account", broken)
+    with caplog.at_level("ERROR", logger="django.request"):
+        response = browser().post(
+            f"/{kind}/{token}", {"username": "jo", "password": PASSWORD, "password2": PASSWORD}
+        )
+    assert response.status_code == 500
+    assert f"/{kind}/(hidden)" in caplog.text and token not in caplog.text

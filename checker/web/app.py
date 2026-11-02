@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import re
 import secrets
 import socket
 import sys
@@ -42,6 +43,17 @@ def is_local(host: str) -> bool:
     except OSError:
         return False
     return bool(found) and all(ipaddress.ip_address(a.partition("%")[0]).is_loopback for a in found)
+
+
+class _NoLinksInTheLog(logging.Filter):
+    """An error's line names the address, and a one-time link in one is still good if it failed."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        hidden = re.sub(r"/(setup|join)/\S+", r"/\1/(hidden)", message)
+        if hidden != message:
+            record.msg, record.args = hidden, ()
+        return True
 
 
 def two_factor_required(public_url: str | None, listens_beyond: bool) -> bool:
@@ -177,6 +189,7 @@ def configure(
     # Anonymous requests mustn't be able to fill a log: wrong Hosts and refused forms
     # say nothing, and paths (which can hold a setup link) stay out of it.
     logging.getLogger("django.request").setLevel(logging.ERROR)
+    logging.getLogger("django.request").addFilter(_NoLinksInTheLog())
     logging.getLogger("django.security").setLevel(logging.CRITICAL)
     settings.configure(**django_settings(home, public_url, tls, listens_beyond))
     django.setup()

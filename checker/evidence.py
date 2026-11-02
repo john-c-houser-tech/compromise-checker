@@ -1065,8 +1065,8 @@ def printable_name(person: str) -> str:
 
 
 def who_and_where() -> tuple[str, str]:
-    person = _acting_for.get() or os.environ.get(WEB_PERSON_VARIABLE)
-    who = f"{printable_name(person)} (web interface)" if person else getpass.getuser()
+    person = printable_name(_acting_for.get() or os.environ.get(WEB_PERSON_VARIABLE) or "")
+    who = f"{person} (web interface)" if person else getpass.getuser()
     return who, socket.gethostname()
 
 

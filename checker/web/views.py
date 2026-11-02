@@ -132,8 +132,8 @@ def setup_page(request, token: str) -> HttpResponse:
     if request.method == "POST":
         username = accounts.normal_name(request.POST.get("username", ""))[:150]
         password = request.POST.get("password", "")
-        if not username:
-            errors.append("Choose a username.")
+        if problem := accounts.name_shape_problem(username):
+            errors.append(problem)
         if password != request.POST.get("password2", ""):
             errors.append("The two passwords don't match.")
         try:
@@ -413,18 +413,24 @@ def two_factor_manage(request) -> HttpResponse:
     return _security_page(request, changed="changed" in request.GET)
 
 
-@for_viewers
-@action("changed their password", consequential=True)
-def password_change(request) -> HttpResponse:
-    """Most people here have no way to the command line, so this has to be a page."""
-    user = request.user
-    password = request.POST.get("password", "")
-    problems = _password_problems(password, request.POST.get("password2", ""), user)
+def _usable_new_password(request) -> None:
+    password, again = request.POST.get("password", ""), request.POST.get("password2", "")
+    problems = _password_problems(password, again, request.user)
     if problems:
         page = _security_page(request, problems=problems, status=400)
         raise ActionFailed("The new password can't be used.", page=page)
-    user.set_password(password)
-    user.save()
+
+
+@for_viewers
+@action("changed their password", consequential=True, check=_usable_new_password)
+def password_change(request) -> HttpResponse:
+    """Most people here have no way to the command line, so this has to be a page."""
+    user = request.user
+    if not accounts.change_own_password(user, request.POST.get("password", "")):
+        raise ActionFailed(
+            "Your account changed while this was happening, so the password wasn't changed.",
+            sign_out=True,
+        )
     update_session_auth_hash(request, user)  # this session goes on; any other one ends
     two_factor.forget_pending(user)  # a thief may have started one with the old password
     return HttpResponseRedirect(reverse("two_factor_manage") + "?changed=1")
@@ -844,7 +850,7 @@ def _people_page(
             "rows": [row for row in rows if not row["removed"]],
             "removed": [row["name"] for row in rows if row["removed"]],
             "problem": problem,
-            "link": link,
+            "link": escape(link),  # whole: the pages' filter for server text would cut a long one
             "link_for": link_for,
             "code_needed": two_factor.code_needed(request),
             "only_this_machine": not settings.CHECKER_TWO_FACTOR_REQUIRED,
@@ -883,7 +889,13 @@ def manage_person(request) -> HttpResponse:
     return render(request, "manage_person.html.j2", context)
 
 
-@action("invited someone", consequential=True, target=_posted_person)
+def _usable_new_name(request) -> None:
+    problem = accounts.new_name_problem(accounts.normal_name(request.POST.get("name", "")))
+    if problem:
+        raise ActionFailed(problem, page=_people_page(request, problem=problem, status=400))
+
+
+@action("invited someone", consequential=True, target=_posted_person, check=_usable_new_name)
 def person_invite(request) -> HttpResponse:
     name = accounts.normal_name(request.POST.get("name", ""))
     full = request.POST.get("access") == "full"

@@ -10,6 +10,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import make_password
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.sessions.backends.db import SessionStore
@@ -146,29 +147,41 @@ def _someone_else(actor, name: str):
     return user
 
 
-def invite(actor, name: str, full: bool) -> str:
-    """A new account with no password yet, and the token for its link. A name can't be used twice,
-    even after someone is removed: the record would then seem to mean the new person."""
+def name_shape_problem(name: str) -> str | None:
+    """Names reach the record, a terminal and hidden form fields: plain ones survive all of them."""
     if not name:
-        raise PersonProblem("Type a name for them.")
+        return "Choose a name."
     try:
         UnicodeUsernameValidator()(name)
     except ValidationError:
-        raise PersonProblem(
-            "A name can have only letters, numbers and the characters @ . + - _"
-        ) from None
-    if len(name) > 150:
-        raise PersonProblem("That name is too long.")
+        return "A name can have only letters, numbers and the characters @ . + - _"
+    return "That name is too long." if len(name) > 150 else None
+
+
+def new_name_problem(name: str) -> str | None:
+    """A name can't be used twice, even after someone is removed: the record would then seem to
+    mean the new person. Compared here, since SQLite's own comparison knows only English letters."""
+    if problem := name_shape_problem(name):
+        return problem
+    wanted = name.casefold()
+    for username, active in get_user_model().objects.values_list("username", "is_active"):
+        if username.casefold() != wanted:
+            continue
+        if active:
+            return f"There's already an account called {username}."
+        return (
+            f"{username} was removed, and the activity record still names them."
+            " Choose a different name."
+        )
+    return None
+
+
+def invite(actor, name: str, full: bool) -> str:
+    """A new account with no password yet, and the token for its link."""
     with transaction.atomic():
         _still_full(actor)
-        taken = get_user_model().objects.filter(username__iexact=name).first()
-        if taken is not None and not taken.is_active:
-            raise PersonProblem(
-                f"{taken.get_username()} was removed, and the activity record still names them."
-                " Choose a different name."
-            )
-        if taken is not None:
-            raise PersonProblem(f"There's already an account called {taken.get_username()}.")
+        if problem := new_name_problem(name):
+            raise PersonProblem(problem)
         user = get_user_model().objects.create_user(username=name, password=None)
         Access.objects.create(user=user, full=full)
         return _new_invitation(user)
@@ -223,15 +236,34 @@ def invited(token: str):
 
 
 def accept(token: str, password: str):
-    """The link is spent with the password set, so two tabs can't both use it."""
+    """The link is spent with the password set, so two tabs can't both use it. Anything set up
+    for this account by a request that was still running when it was locked out goes too."""
+    from checker.web import two_factor  # it needs Django set up further than this module does
+
     with transaction.atomic():
         user = invited(token)
         if user is None:
             return None
         Invitation.objects.filter(user=user).delete()
+        two_factor.turn_off(user)
         user.set_password(password)
         user.save()
         return user
+
+
+def change_own_password(user, password: str) -> bool:
+    """False if the account was locked out or its password changed since this request began: what
+    was confirmed no longer holds, and writing it back would undo that. The new hash is made first,
+    since that's slow and everything else waits for a write."""
+    hashed = make_password(password)
+    changed = (
+        get_user_model()
+        .objects.filter(pk=user.pk, is_active=True, password=user.password)
+        .update(password=hashed)
+    )
+    if changed:
+        user.password = hashed
+    return bool(changed)
 
 
 def client_address(request) -> str:
@@ -389,6 +421,9 @@ def reset_password(username: str, password: str) -> list[str]:
     except ValidationError as exc:
         return list(exc.messages)
     with transaction.atomic():
+        user = get_user_model().objects.get(pk=user.pk)  # it may have changed during the checks
+        if not user.is_active:
+            return [no_such_account(username)]
         user.set_password(password)
         user.save()
         two_factor.forget_pending(user)  # a thief may have started one with the old password

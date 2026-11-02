@@ -317,13 +317,61 @@ def test_staging_a_refused_release_makes_nothing(tmp_path):
     assert not target.exists()
 
 
+def test_staging_leaves_nothing_beside_the_target_when_refused(tmp_path):
+    key = Key()
+    source = a_release(tmp_path / "r", key)
+    (source / REQUIREMENTS).write_text("the LIST\n")
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    with pytest.raises(ReleaseError):
+        stage_release(source, parent / "stage", public(key, tmp_path))
+    assert list(parent.iterdir()) == []
+
+
+def test_a_stop_part_way_never_leaves_part_of_a_release_at_the_target(tmp_path, monkeypatch):
+    key = Key()
+    source = a_release(tmp_path / "r", key)
+    target = tmp_path / "stage"
+
+    def stopped(*_):
+        raise SystemExit("stopped")
+
+    monkeypatch.setattr(releases.os, "rename", stopped)
+    with pytest.raises(SystemExit):
+        stage_release(source, target, public(key, tmp_path))
+    assert not target.exists()
+
+
+def test_a_full_disk_is_not_reported_as_a_bad_source(tmp_path, monkeypatch):
+    key = Key()
+    source = a_release(tmp_path / "r", key)
+
+    def full(*_):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(releases.os, "fsync", full)
+    with pytest.raises(ReleaseError, match="can't copy the release"):
+        stage_release(source, tmp_path / "stage", public(key, tmp_path))
+    assert not (tmp_path / "stage").exists()
+
+
+def test_staging_will_not_use_a_link_that_exists(tmp_path):
+    key = Key()
+    source = a_release(tmp_path / "r", key)
+    target = tmp_path / "stage"
+    target.symlink_to(tmp_path / "nowhere")
+    with pytest.raises(ReleaseError, match="already exists"):
+        stage_release(source, target, public(key, tmp_path))
+    assert target.is_symlink()
+
+
 def test_staging_will_not_use_a_folder_that_exists(tmp_path):
     key = Key()
     source = a_release(tmp_path / "r", key)
     target = tmp_path / "stage"
     target.mkdir()
     (target / "planted").write_text("x")
-    with pytest.raises(ReleaseError, match="can't make"):
+    with pytest.raises(ReleaseError, match="already exists"):
         stage_release(source, target, public(key, tmp_path))
     assert (target / "planted").read_text() == "x"
 
@@ -348,13 +396,15 @@ def test_a_trial_may_be_of_anything_but_the_versions_must_still_agree():
 
 
 def test_a_real_release_is_of_the_tagged_commit_on_main():
-    script.check_source("0.1.0", COMMIT, COMMIT, True)
+    script.check_source("0.1.0", COMMIT, COMMIT, COMMIT)
     with pytest.raises(script.Refused, match="no tag"):
-        script.check_source("0.1.0", COMMIT, None, True)
+        script.check_source("0.1.0", COMMIT, None, COMMIT)
     with pytest.raises(script.Refused, match="v0.1.0 is commit"):
-        script.check_source("0.1.0", COMMIT, "b" * 40, True)
-    with pytest.raises(script.Refused, match="isn't on origin/main"):
-        script.check_source("0.1.0", COMMIT, COMMIT, False)
+        script.check_source("0.1.0", COMMIT, "b" * 40, COMMIT)
+    with pytest.raises(script.Refused, match="origin/main is"):
+        script.check_source("0.1.0", COMMIT, COMMIT, "b" * 40)
+    with pytest.raises(script.Refused, match="origin/main is"):
+        script.check_source("0.1.0", COMMIT, COMMIT, None)
 
 
 def test_a_real_release_needs_a_key_to_ship(monkeypatch):
@@ -374,11 +424,8 @@ def test_the_tool_and_collector_agree_today():
     assert script.collector_version(text) == __version__
 
 
-def _source_and_wheel(tmp_path: Path, files: dict[str, bytes]) -> tuple[Path, Path]:
-    source = tmp_path / "source"
-    (source / "checker").mkdir(parents=True)
-    (source / "checker" / "a.py").write_bytes(b"a")
-    (source / "checker" / "b.css").write_bytes(b"b")
+def _source_and_wheel(tmp_path: Path, files: dict[str, bytes]) -> tuple[dict, Path]:
+    source = {"checker/a.py": b"a", "checker/b.css": b"b"}
     wheel = tmp_path / wheel_name(VERSION)
     with zipfile.ZipFile(wheel, "w") as package:
         for name, data in files.items():
@@ -473,9 +520,25 @@ def test_verify_can_check_against_a_key_the_commit_no_longer_lists(tmp_path, cap
     assert "--prerelease" in capsys.readouterr().out
 
 
-def test_the_publish_command_matches_the_kind_of_release():
-    assert "--prerelease" in script.publish_command(Path("d"), "0.1.0", True)
-    assert "--prerelease" not in script.publish_command(Path("d"), "0.1.0", False)
+def test_the_publish_command_matches_the_release_and_names_each_file(tmp_path):
+    key = Key()
+    data, signature = signed(key, body())
+    manifest = read_manifest(data, signature, public(key, tmp_path))
+    command = script.publish_command(Path("d"), manifest)
+    assert "--prerelease" in command
+    assert not command.endswith("*")
+    for name in (wheel_name(VERSION), REQUIREMENTS, MANIFEST, SIGNATURE):
+        assert f"d/{name}" in command
+    final = read_manifest(*signed(key, body(prerelease=False)), public(key, tmp_path))
+    assert "--prerelease" not in script.publish_command(Path("d"), final)
+
+
+def test_verify_refuses_a_folder_holding_anything_else(tmp_path):
+    key = Key()
+    source = a_release(tmp_path / "r", key)
+    (source / "stray.key").write_text("x")
+    with pytest.raises(script.Refused, match=r"stray\.key"):
+        script.verify(source, key.pub_file(tmp_path / "key.pub"))
 
 
 # --- The lists -------------------------------------------------------------------------------
@@ -541,6 +604,7 @@ def _commands(monkeypatch, tmp_path) -> list[list[str]]:
 
 def test_refreshing_the_lists_really_moves_old_pins(monkeypatch, tmp_path):
     seen = _commands(monkeypatch, tmp_path)
+    (tmp_path / "pyproject.toml").write_text('[build-system]\nrequires = ["setuptools>=80"]\n')
     script.lock()
     assert len(seen) == 2
     assert all("--upgrade" in command for command in seen)
@@ -554,9 +618,32 @@ def test_one_package_can_move_alone(monkeypatch, tmp_path):
     assert seen[0][seen[0].index("--upgrade-package") + 1] == "django"
 
 
-def test_checking_the_list_moves_nothing_it_does_not_have_to(monkeypatch, tmp_path):
+def test_checking_the_lists_moves_nothing_it_does_not_have_to(monkeypatch, tmp_path):
     seen = _commands(monkeypatch, tmp_path)
     script.LOCK.parent.mkdir()
     script.LOCK.write_text("the list\n")
+    script.BUILD_LOCK.write_text("the tool\n")
+    (tmp_path / "pyproject.toml").write_text('[build-system]\nrequires = ["setuptools>=80"]\n')
     script.check_lock()
-    assert not {"--upgrade", "--upgrade-package"} & set(seen[0])
+    assert len(seen) == 2
+    assert not {"--upgrade", "--upgrade-package"} & {part for one in seen for part in one}
+
+
+ONE_PIN = "pyyaml==6.0.3 ; python_version >= '3.12' \\\n    --hash=sha256:{}\n"
+
+
+def test_a_new_file_for_a_pinned_version_is_not_a_change():
+    assert script.pins(ONE_PIN.format("a" * 64)) == script.pins(ONE_PIN.format("b" * 64))
+
+
+def test_a_new_version_or_marker_is_a_change():
+    assert script.pins(ONE_PIN.format("a" * 64)) != script.pins(
+        ONE_PIN.format("a" * 64).replace("6.0.3", "6.0.4")
+    )
+    assert script.pins(ONE_PIN.format("a" * 64)) != script.pins(
+        ONE_PIN.format("a" * 64).replace("3.12", "3.13")
+    )
+
+
+def test_the_build_tool_comes_from_pyproject():
+    assert "setuptools" in script._build_requirements()

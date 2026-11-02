@@ -42,26 +42,28 @@ pre-release of `0.1.0`, the next final is `0.1.1` or later.
 
 ## Making a release
 
-From `main`, after the change that sets the version has been merged:
+From the newest commit on `main`, after the change that sets the version has been merged:
 
 1. Refresh and audit the lists, as above, and merge any change first.
-2. Tag the commit, and don't push the tag yet: `git fetch origin && git tag vVERSION`.
+2. Tag the commit, and don't push the tag yet: `git switch main && git pull --ff-only && git tag vVERSION`.
 3. Build it. Use `--final` instead of `--prerelease` for a final release, and add `--security-fix` for one
    that machines should be told to hurry with:
 
        python scripts/release.py build --prerelease
 
-   It refuses unless the tag is this commit and the commit is on `origin/main`. The wheel comes from what's
-   committed, never from the working folder. It's built twice, with the pinned build tool and none of your
-   own settings, and refused if the two differ or its files aren't exactly the commit's.
+   It refuses unless the tag is this commit and this is the newest commit on `origin/main`, so a release
+   can't miss a fix that's already merged. The wheel comes from what's committed, never from the working
+   folder. It's built twice, with the pinned build tool and none of your own settings, and refused if the
+   two differ or its files aren't exactly what git has for this commit.
 4. Restore the release key from its offline copy, somewhere that isn't this repository, such as
    `/run/user/$UID/`. Sign, and don't touch a file after this:
 
        minisign -S -s /run/user/$UID/release.key -m dist/release-VERSION/release.json -t "Compromise Checker VERSION"
 
 5. Remove the key from this machine again.
-6. Check it as a machine would, which also prints the command to publish it. For a release that changes the
-   key, add `--key` with the public key machines trust now:
+6. Check it as a machine would, which also prints the command to publish it, naming each file. It refuses
+   if the folder holds anything else, so a stray file can't get published. For a release that changes the key,
+   add `--key` with the public key machines trust now:
 
        python scripts/release.py verify dist/release-VERSION
 
@@ -93,7 +95,7 @@ It says the release key signed these files once. It doesn't say they're the newe
     minisign -G -p release.pub -s release.key -c "Compromise Checker release key"
 
 Use a password of its own. Keep the secret key and its password offline, in more than one place, and never
-on the machine that builds. The public key goes in `RELEASE_KEYS` in `checker/releases.py`, in the install
+leave it on the machine that builds: it's only there for the moment of signing. The public key goes in `RELEASE_KEYS` in `checker/releases.py`, in the install
 script, and on nouriloop.com. A real build refuses if `RELEASE_KEYS` is empty.
 
 ## If the release key is lost or stolen

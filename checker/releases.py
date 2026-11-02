@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import stat
+import tempfile
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
@@ -194,16 +195,19 @@ def _check_one(path: Path, expected: ReleaseFile, sink: Callable[[bytes], object
             raise ReleaseError(f"{path.name} is the wrong size: it isn't the file that was signed")
         digest = hashlib.sha256()
         total = 0
-        try:
-            while chunk := source.read(_CHUNK):
-                total += len(chunk)
-                if total > expected.size:
-                    raise ReleaseError(f"{path.name} grew while it was being read")
-                digest.update(chunk)
-                if sink:
-                    sink(chunk)
-        except OSError as exc:
-            raise ReleaseError(f"can't read {path.name}: {exc}") from None
+        while True:
+            try:
+                chunk = source.read(_CHUNK)
+            except OSError as exc:
+                raise ReleaseError(f"can't read {path.name}: {exc}") from None
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > expected.size:
+                raise ReleaseError(f"{path.name} grew while it was being read")
+            digest.update(chunk)
+            if sink:
+                sink(chunk)  # a failure here is the copy's, such as a full disk, not the source's
     if digest.hexdigest() != expected.sha256:
         raise ReleaseError(f"{path.name} has the wrong hash: it isn't the file that was signed")
 
@@ -244,6 +248,14 @@ def read_release(
     return manifest
 
 
+def _sync(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def stage_release(
     source: Path,
     target: Path,
@@ -254,22 +266,32 @@ def stage_release(
     """Copy a release from `source`, which someone less trusted may be able to write to, into a new
     private `target`, hashing each file as it's copied. What's in `target` is then what was checked,
     and is what to install from. `target` must not exist yet, and its parent must be writable only
-    by the caller. Nothing is left in `target` if the release is refused."""
+    by the caller. It's put together beside `target` and moved there whole, so a stop at any moment
+    (a service being stopped, a power cut) never leaves part of a release under that name."""
     data, signature = _read_signed(source)
     manifest = read_manifest(data, signature, keys)
     _accept(manifest, newer_than, expected_version)
+    if os.path.lexists(target):
+        raise ReleaseError(f"can't make {target}: it already exists")
     try:
-        os.mkdir(target, 0o700)
+        staged = Path(tempfile.mkdtemp(prefix=".stage-", dir=target.parent))
     except OSError as exc:
         raise ReleaseError(f"can't make {target}: {exc}") from None
     try:
         for name, expected in manifest.files.items():
-            with (target / name).open("xb") as copy:
+            with (staged / name).open("xb") as copy:
                 _check_one(source / name, expected, copy.write)
-        (target / MANIFEST).write_bytes(data)
-        (target / SIGNATURE).write_bytes(signature)
+                copy.flush()
+                os.fsync(copy.fileno())
+        (staged / MANIFEST).write_bytes(data)
+        (staged / SIGNATURE).write_bytes(signature)
+        _sync(staged / MANIFEST)
+        _sync(staged / SIGNATURE)
+        _sync(staged)
+        os.rename(staged, target)
+        _sync(target.parent)
     except BaseException as exc:
-        shutil.rmtree(target, ignore_errors=True)
+        shutil.rmtree(staged, ignore_errors=True)
         if isinstance(exc, OSError):
             raise ReleaseError(f"can't copy the release: {exc}") from None
         raise

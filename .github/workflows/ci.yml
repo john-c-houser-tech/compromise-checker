@@ -95,14 +95,15 @@ jobs:
         run: |
           /tmp/installed/bin/checker --version
           /tmp/installed/bin/python -c "import django, django_otp, gunicorn, psycopg, weasyprint, anthropic"
+          trap 'cat /tmp/web.log' ERR
           /tmp/installed/bin/checker web > /tmp/web.log 2>&1 &
           for attempt in $(seq 1 30); do
             curl --silent --fail --output /dev/null http://127.0.0.1:8088/login && break
             sleep 1
           done
-          curl --silent --show-error --fail --output /dev/null http://127.0.0.1:8088/login
+          curl --silent --show-error --fail http://127.0.0.1:8088/login | grep --quiet 'name="password"'
           curl --silent --show-error --fail --output /dev/null http://127.0.0.1:8088/style.css
-          grep --quiet first-setup /tmp/web.log || grep --quiet setup /tmp/web.log
+          grep --quiet '/setup/' /tmp/web.log
 
   collector:
     name: Collector on ${{ matrix.image }}

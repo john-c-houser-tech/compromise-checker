@@ -20,6 +20,7 @@ import subprocess  # noqa: S404
 import sys
 import tarfile
 import tempfile
+import tomllib
 import venv
 import zipfile
 from datetime import UTC, datetime
@@ -47,7 +48,6 @@ BUILD_LOCK = ROOT / "release" / "build-requirements.lock"
 # What an installed machine has: the web interface and everything it offers. keyring isn't here,
 # since a machine with nobody at it has no keyring to unlock, and nor are developers' tools.
 EXTRAS = ("web", "postgres", "pdf", "advisor")
-BUILD_TOOL = "setuptools>=80"
 OLDEST_PYTHON = "3.12"
 _FINAL = re.compile(r"\d+\.\d+\.\d+")
 
@@ -70,8 +70,44 @@ def _run(*command: str | Path, cwd: Path | None = None, env: dict | None = None)
     return done.stdout
 
 
+def _git_env() -> dict:
+    """What's committed is what counts: a maintainer's own git settings, such as line-ending
+    conversion, mustn't change what the build sees."""
+    return {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
 def _git(*arguments: str) -> str:
-    return _run("git", *arguments, cwd=ROOT).strip()
+    return _run("git", *arguments, cwd=ROOT, env=_git_env()).strip()
+
+
+def _blob(commit: str, path: str) -> bytes:
+    """A file's bytes exactly as committed."""
+    done = subprocess.run(  # noqa: S603
+        ["git", "cat-file", "blob", f"{commit}:{path}"],  # noqa: S607
+        cwd=ROOT,
+        env=_git_env(),
+        check=False,
+        capture_output=True,
+    )
+    if done.returncode:
+        raise Refused(f"can't read {path} from {commit}: {done.stderr.decode(errors='replace')}")
+    return done.stdout
+
+
+def committed_files(commit: str) -> dict[str, bytes]:
+    """The `checker` folder as the commit has it, read from git's own record. Comparing with what
+    `git archive` gives would miss what it leaves out or converts, since the build uses that too."""
+    listing = subprocess.run(  # noqa: S603
+        ["git", "ls-tree", "-r", "-z", "--name-only", commit, "--", "checker/"],  # noqa: S607
+        cwd=ROOT,
+        env=_git_env(),
+        check=False,
+        capture_output=True,
+    )
+    if listing.returncode:
+        raise Refused(f"can't list {commit}: {listing.stderr.decode(errors='replace')}")
+    names = [name.decode("utf-8") for name in listing.stdout.split(b"\0") if name]
+    return {name: _blob(commit, name) for name in names}
 
 
 def _compile(
@@ -111,6 +147,12 @@ def _project_source() -> list[str]:
     return ["pyproject.toml", *[part for extra in EXTRAS for part in ("--extra", extra)]]
 
 
+def _build_requirements() -> str:
+    """What pyproject.toml says a build needs, so the two can't drift apart."""
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return "".join(f"{requirement}\n" for requirement in project["build-system"]["requires"])
+
+
 def lock(packages: tuple[str, ...] = ()) -> None:
     """Every dependency moves to its newest version, or only the ones named."""
     freshen = (
@@ -121,20 +163,33 @@ def lock(packages: tuple[str, ...] = ()) -> None:
     LOCK.parent.mkdir(exist_ok=True)
     _compile(_project_source(), LOCK, freshen=freshen)
     if not packages:
-        _compile(["-"], BUILD_LOCK, stdin=f"{BUILD_TOOL}\n", freshen=freshen)
+        _compile(["-"], BUILD_LOCK, stdin=_build_requirements(), freshen=freshen)
     print(f"Wrote {LOCK.relative_to(ROOT)} and {BUILD_LOCK.relative_to(ROOT)}. Review what moved.")
 
 
+def pins(text: str) -> list[str]:
+    """The versions a list picks, without their hashes. A hash appears when a project uploads a new
+    file for a version already released, which isn't a change in what this project asks for."""
+    joined = text.replace("\\\n", " ")
+    return [line.split("--hash=")[0].strip() for line in joined.splitlines() if line.strip()]
+
+
 def check_lock() -> None:
-    """The list still meets pyproject.toml: nothing moves unless it has to, so any change means the
-    project asks for something the list doesn't give."""
+    """The lists still meet pyproject.toml: nothing moves unless it has to, so any change in a
+    version means the project asks for something the list doesn't give."""
     with tempfile.TemporaryDirectory(prefix="checker-lock-") as work:
-        fresh = Path(work) / "requirements.lock"
+        fresh, fresh_build = Path(work) / "requirements.lock", Path(work) / "build.lock"
         shutil.copy(LOCK, fresh)
+        shutil.copy(BUILD_LOCK, fresh_build)
         _compile(_project_source(), fresh)
-        if fresh.read_bytes() != LOCK.read_bytes():
-            raise Refused("the list no longer matches pyproject.toml: run scripts/release.py lock")
-    print("The list matches pyproject.toml.")
+        _compile(["-"], fresh_build, stdin=_build_requirements())
+        for made, kept in ((fresh, LOCK), (fresh_build, BUILD_LOCK)):
+            if pins(made.read_text(encoding="utf-8")) != pins(kept.read_text(encoding="utf-8")):
+                raise Refused(
+                    f"{kept.name} no longer matches pyproject.toml:"
+                    " run scripts/release.py lock --package NAME for what changed"
+                )
+    print("The lists match pyproject.toml.")
 
 
 def collector_version(text: str) -> str:
@@ -157,14 +212,15 @@ def check_ready(version: str, collector: str, status: str, trial: bool) -> None:
         raise Refused(f"there are uncommitted changes, so commit or remove them:\n{status}")
 
 
-def check_source(version: str, commit: str, tagged: str | None, on_main: bool) -> None:
-    """What gets signed is what `main` has, under the tag that names it."""
+def check_source(version: str, commit: str, tagged: str | None, main_tip: str | None) -> None:
+    """What gets signed is the newest thing on `main`, under the tag that names it. An older commit
+    could miss the very fix a release is being made for."""
     if tagged is None:
         raise Refused(f"there's no tag v{version} here: tag this commit first, without pushing it")
     if tagged != commit:
         raise Refused(f"v{version} is commit {tagged}, and this is {commit}")
-    if not on_main:
-        raise Refused("this commit isn't on origin/main: fetch it, or release from main")
+    if main_tip != commit:
+        raise Refused(f"this is {commit} and origin/main is {main_tip}: release from its newest")
 
 
 def check_keys() -> None:
@@ -188,14 +244,15 @@ def _tag_commit(version: str) -> str | None:
     return done.stdout.strip() if done.returncode == 0 else None
 
 
-def _on_main(commit: str) -> bool:
+def _main_tip() -> str | None:
     done = subprocess.run(  # noqa: S603
-        ["git", "merge-base", "--is-ancestor", commit, "origin/main"],  # noqa: S607
+        ["git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"],  # noqa: S607
         cwd=ROOT,
         check=False,
+        text=True,
         capture_output=True,
     )
-    return done.returncode == 0
+    return done.stdout.strip() if done.returncode == 0 else None
 
 
 def _clean_env(home: Path, tz: str, epoch: str) -> dict:
@@ -235,17 +292,32 @@ def _build_wheel(python: Path, source: Path, out: Path, env: dict) -> Path:
     return wheels[0]
 
 
-def build_wheel(commit: str, work: Path) -> tuple[Path, Path]:
-    """The wheel for `commit`, and a copy of the commit's files to compare it with. It's built
+def build_wheel(commit: str, work: Path) -> Path:
+    """The wheel for `commit`. It's built
     twice, in fresh copies with a different home and time zone: different bytes mean the result
     depends on something other than the commit. Permissions are fixed, since they end up in the
     wheel."""
     tool = work / "tool"
     venv.create(tool, with_pip=True)
     python = tool / "bin" / "python"
-    _run(python, "-m", "pip", "install", "--quiet", "--require-hashes", "-r", BUILD_LOCK)
+    tool_home = work / "tool-home"
+    tool_home.mkdir()
+    _run(
+        python,
+        "-I",
+        "-m",
+        "pip",
+        "--isolated",
+        "install",
+        "--quiet",
+        "--require-hashes",
+        "-r",
+        BUILD_LOCK,
+        cwd=work,
+        env=_clean_env(tool_home, "UTC", "0"),
+    )
     when = _git("show", "-s", "--format=%ct", commit)
-    wheels, sources = [], []
+    wheels = []
     before = os.umask(0o022)
     try:
         for attempt, tz in (("one", "UTC"), ("two", "Asia/Tokyo")):
@@ -253,11 +325,18 @@ def build_wheel(commit: str, work: Path) -> tuple[Path, Path]:
             source.mkdir()
             archive = work / f"{attempt}.tar"
             _git(
-                "-c", "tar.umask=0022", "archive", "--format=tar", "--output", str(archive), commit
+                "-c",
+                "tar.umask=0022",
+                "-c",
+                "core.autocrlf=false",
+                "archive",
+                "--format=tar",
+                "--output",
+                str(archive),
+                commit,
             )
             with tarfile.open(archive) as tar:
                 tar.extractall(source, filter="data")
-            sources.append(source)
             home = work / f"{attempt}-home"
             home.mkdir()
             env = _clean_env(home, tz, when)
@@ -266,10 +345,10 @@ def build_wheel(commit: str, work: Path) -> tuple[Path, Path]:
         os.umask(before)
     if sha256_of(wheels[0]) != sha256_of(wheels[1]):
         raise Refused("two builds of the same commit differ, so this release couldn't be checked")
-    return wheels[0], sources[0]
+    return wheels[0]
 
 
-def check_wheel(wheel: Path, version: str, source: Path) -> None:
+def check_wheel(wheel: Path, version: str, wanted: dict[str, bytes]) -> None:
     """The wheel holds exactly the commit's `checker` folder, byte for byte, plus the package's own
     description. That's what stops a file going missing, and what stops one getting in."""
     if wheel.name != wheel_name(version):
@@ -283,11 +362,6 @@ def check_wheel(wheel: Path, version: str, source: Path) -> None:
         }
         if not any(name.startswith(description) for name in package.namelist()):
             raise Refused("the wheel has no package description")
-    wanted = {
-        path.relative_to(source).as_posix(): path.read_bytes()
-        for path in (source / "checker").rglob("*")
-        if path.is_file()
-    }
     extra = sorted(set(held) - set(wanted))
     if extra:
         raise Refused(f"the wheel holds what the commit doesn't: {', '.join(extra)}")
@@ -346,18 +420,18 @@ def build(prerelease: bool, security_fix: bool, trial: bool) -> Path:
     check_ready(__version__, collector_version(collector), _git("status", "--porcelain"), trial)
     commit = _git("rev-parse", "HEAD")
     if not trial:
-        check_source(__version__, commit, _tag_commit(__version__), _on_main(commit))
+        check_source(__version__, commit, _tag_commit(__version__), _main_tip())
         check_keys()
     directory = clear_way(ROOT / "dist", __version__, trial)
     published = datetime.now(UTC).date().isoformat()
     with tempfile.TemporaryDirectory(prefix="checker-release-") as work:
-        wheel, source = build_wheel(commit, Path(work))
-        check_wheel(wheel, __version__, source)
+        wheel = build_wheel(commit, Path(work))
+        check_wheel(wheel, __version__, committed_files(commit))
         # Put together apart and moved into place, so a failed build leaves nothing to sign.
         staged = Path(tempfile.mkdtemp(prefix=".staged-", dir=directory.parent))
         try:
             shutil.copy(wheel, staged / wheel.name)
-            (staged / REQUIREMENTS).write_bytes((source / "release/requirements.lock").read_bytes())
+            (staged / REQUIREMENTS).write_bytes(_blob(commit, "release/requirements.lock"))
             write_manifest(
                 staged, __version__, commit, prerelease, security_fix, published, trial=trial
             )
@@ -369,9 +443,23 @@ def build(prerelease: bool, security_fix: bool, trial: bool) -> Path:
     return directory
 
 
-def publish_command(directory: Path, version: str, prerelease: bool) -> str:
-    flag = " --prerelease" if prerelease else ""
-    return f'gh release create v{version} --verify-tag{flag} --title "{version}" {directory}/*'
+def publish_command(directory: Path, manifest: Manifest) -> str:
+    """Names each file, so nothing else that happens to be in the folder gets published."""
+    flag = " --prerelease" if manifest.prerelease else ""
+    names = [*manifest.files, MANIFEST, SIGNATURE]
+    files = " ".join(str(directory / name) for name in names)
+    version = manifest.version
+    return f'gh release create v{version} --verify-tag{flag} --title "{version}" {files}'
+
+
+def check_nothing_else(directory: Path, manifest: Manifest) -> None:
+    extra = sorted(
+        path.name
+        for path in directory.iterdir()
+        if path.name not in {*manifest.files, MANIFEST, SIGNATURE}
+    )
+    if extra:
+        raise Refused(f"the folder also holds what isn't in the release: {', '.join(extra)}")
 
 
 def verify(directory: Path, key_file: Path | None = None) -> None:
@@ -382,12 +470,13 @@ def verify(directory: Path, key_file: Path | None = None) -> None:
     except (OSError, SignatureError) as exc:
         raise Refused(f"can't use that key: {exc}") from None
     manifest = read_release(directory, keys)
+    check_nothing_else(directory, manifest)
     kind = "pre-release" if manifest.prerelease else "release"
     print(
         f"Good: {kind} {manifest.version} of commit {manifest.commit}, signed by the release key."
     )
     print("To publish it, once the tag is pushed:")
-    print(f"    {publish_command(directory, manifest.version, manifest.prerelease)}")
+    print(f"    {publish_command(directory, manifest)}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -413,7 +502,12 @@ def main(argv: list[str] | None = None) -> int:
             verify(arguments.directory, arguments.key)
         else:
             directory = build(arguments.prerelease, arguments.security_fix, arguments.trial)
-            print(f"Built {directory.relative_to(ROOT)}. To sign it, see docs/releasing.md.")
+            what = (
+                "It's only for checking."
+                if arguments.trial
+                else "To sign it, see docs/releasing.md."
+            )
+            print(f"Built {directory.relative_to(ROOT)}. {what}")
     except (Refused, ReleaseError) as exc:
         print(f"Not done: {exc}", file=sys.stderr)
         return 1

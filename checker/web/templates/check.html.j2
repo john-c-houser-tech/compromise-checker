@@ -4,15 +4,15 @@
 {% block main %}
 <p class="back"><a href="{{ url('checks') }}">All checks</a></p>
 <h1 class="page-title">{{ run.kind }} of {{ run.hosts }}</h1>
-{% if busy %}<p class="error" role="alert">Another check was already running, so yours didn't start. This is that one: when it's done, <a href="{{ url('check_new') }}">start yours again</a>.</p>{% endif %}
+{% if busy and full_access(request) %}<p class="error" role="alert">Another check was already running, so yours didn't start. This is that one: when it's done, <a href="{{ url('check_new') }}">start yours again</a>.</p>{% endif %}
 {% if run.running %}
 <p role="status">Running. This page updates by itself, and you can leave it: it carries on.</p>
-<form method="post" action="{{ url('check_stop', run_id=run.id) }}">{{ csrf_input }}<button>Stop this check</button></form>
+{% if full_access(request) %}<form method="post" action="{{ url('check_stop', run_id=run.id) }}">{{ csrf_input }}<button>Stop this check</button></form>{% endif %}
 {% else %}
 <p role="status">{{ run.state[:1] | upper }}{{ run.state[1:] }}.{% if run.state in ("finished", "finished with problems") %} <a href="{{ url('fleet') }}">See your servers</a>.{% endif %}</p>
-{% if from_decide %}<p><a href="{{ url('decide') }}?host={{ run.hosts | urlencode }}">See what it proposed</a></p>{% endif %}
+{% if from_decide and full_access(request) %}<p><a href="{{ url('decide') }}?host={{ run.hosts | urlencode }}">See what it proposed</a></p>{% endif %}
 {% endif %}
-{% if try_these %}
+{% if try_these and full_access(request) %}
 <h2>What to look at</h2>
 <ul>{% for words in try_these %}<li>{{ words | visible(2000) }}</li>{% endfor %}</ul>
 <ul>{% for name in check_hosts %}<li><a href="{{ url('manage_prepare') }}?host={{ name | urlencode }}">What to set up on {{ name }}</a></li>{% endfor %}</ul>

@@ -8,6 +8,10 @@ from django.shortcuts import render
 from django.urls import reverse
 from django_otp import user_has_device
 
+from checker.evidence import acting_for
+from checker.web import accounts
+from checker.web.actions import record_if_possible
+
 CSP = (
     "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; form-action 'self'; "
     "base-uri 'none'; frame-ancestors 'none'"
@@ -63,8 +67,29 @@ def small_forms_only(get_response):
     return middleware
 
 
+def name_the_person(get_response):
+    """Whatever this request writes to the evidence store says who is signed in, not which account
+    on this machine runs the server."""
+
+    def middleware(request):
+        if not request.user.is_authenticated:
+            return get_response(request)
+        with acting_for(request.user.get_username()):
+            return get_response(request)
+
+    return middleware
+
+
 BEFORE_SECOND_STEP = set()  # what can be used with only a password so far, kept by identity
 SETTING_IT_UP = set()  # and these too, with no second step set up yet
+
+
+FOR_VIEWERS = set()  # what an account that can only view may use, kept by identity
+
+
+def for_viewers(view):
+    FOR_VIEWERS.add(view)
+    return view
 
 
 def before_second_step(view):
@@ -98,3 +123,32 @@ class TwoFactorGate:
         if settings.CHECKER_TWO_FACTOR_REQUIRED and view not in SETTING_IT_UP:
             return HttpResponseRedirect(reverse("two_factor_setup"))
         return None
+
+
+class AccessGate:
+    """Here and not on each page, so a new page is closed to those who can only view until someone
+    decides otherwise."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        return self.get_response(request)
+
+    def process_view(self, request, view, args, kwargs):
+        user = request.user
+        if (
+            not user.is_authenticated
+            or view in FOR_VIEWERS
+            or view in BEFORE_SECOND_STEP
+            or view in SETTING_IT_UP
+            or accounts.has_full_access(user)
+        ):
+            return None
+        if request.method not in ("GET", "HEAD"):
+            record_if_possible(request, "tried what needs full access", request.path, "refused")
+        context = {
+            "title": "Your account can view results, but not do this",
+            "detail": "Ask someone with full access if it needs doing.",
+        }
+        return render(request, "problem.html.j2", context, status=403)

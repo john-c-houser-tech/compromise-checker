@@ -45,6 +45,19 @@ def fully_signed_in(request) -> bool:
         return False
 
 
+def full_access(request) -> bool:
+    """For hiding what the gate would refuse. An error page mustn't fail for want of it."""
+    from checker.web.accounts import has_full_access  # needs Django set up
+
+    user = getattr(request, "user", None)
+    if user is None:
+        return False
+    try:
+        return has_full_access(user)
+    except DatabaseError:
+        return False
+
+
 def two_factor_nudge(request) -> str | None:
     """What the reminder on every page should say, if anything: "off" or "unsaved"."""
     from checker.web import two_factor  # it needs Django set up further than this module does
@@ -69,5 +82,6 @@ def environment(**options) -> Environment:
     env.globals["product_name"] = product_name
     env.globals["two_factor_nudge"] = two_factor_nudge
     env.globals["fully_signed_in"] = fully_signed_in
+    env.globals["full_access"] = full_access
     env.globals["host_url"] = host_url
     return env

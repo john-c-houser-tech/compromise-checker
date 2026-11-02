@@ -10,7 +10,13 @@ from urllib.parse import urlencode, urlsplit
 
 import yaml
 from django.conf import settings
-from django.contrib.auth import authenticate, get_user_model, login, logout
+from django.contrib.auth import (
+    authenticate,
+    get_user_model,
+    login,
+    logout,
+    update_session_auth_hash,
+)
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.auth.password_validation import validate_password
@@ -22,6 +28,7 @@ from django.urls import Resolver404, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_otp import login as otp_login
+from markupsafe import escape
 from pydantic import ValidationError as InvalidSettings
 
 from checker import schedule
@@ -45,7 +52,7 @@ from checker.web import (
 )
 from checker.web.actions import ActionFailed, action, record, record_if_possible
 from checker.web.app import HERE
-from checker.web.middleware import before_second_step, setting_it_up
+from checker.web.middleware import before_second_step, for_viewers, setting_it_up
 from checker.web.models import ActionRecord, CheckRun
 from checker.whitelist import WhitelistError
 
@@ -69,6 +76,8 @@ VIEWABLE = {
     "manage_purge",
     "first_setup",
     "manage_prepare",
+    "manage_people",
+    "manage_person",
     "two_factor_manage",
 }
 
@@ -123,8 +132,8 @@ def setup_page(request, token: str) -> HttpResponse:
     if request.method == "POST":
         username = accounts.normal_name(request.POST.get("username", ""))[:150]
         password = request.POST.get("password", "")
-        if not username:
-            errors.append("Choose a username.")
+        if problem := accounts.name_shape_problem(username):
+            errors.append(problem)
         if password != request.POST.get("password2", ""):
             errors.append("The two passwords don't match.")
         try:
@@ -151,6 +160,44 @@ def setup_page(request, token: str) -> HttpResponse:
 
 @before_second_step
 @require_http_methods(["GET", "POST"])
+def join_page(request, token: str) -> HttpResponse:
+    """Someone choosing their password from the link they were given."""
+    invalid = {"title": "This link isn't valid. Ask whoever gave it to you for a new one."}
+    person = accounts.invited(token)
+    if person is None:
+        return render(request, "problem.html.j2", invalid, status=404)
+    errors = []
+    if request.method == "POST":
+        password = request.POST.get("password", "")
+        errors = _password_problems(password, request.POST.get("password2", ""), person)
+        if not errors:
+            try:
+                with transaction.atomic():  # no account in use without its line in the record
+                    user = accounts.accept(token, password)
+                    if user is not None:
+                        login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+                        record(request, "joined")
+            except Exception:
+                request.user = AnonymousUser()  # the error page mustn't look signed in
+                raise
+            if user is None:
+                return render(request, "problem.html.j2", invalid, status=404)
+            return HttpResponseRedirect(reverse("fleet"))
+    context = {"errors": errors, "name": person.get_username()}
+    return render(request, "join.html.j2", context, status=400 if errors else 200)
+
+
+def _password_problems(password: str, again: str, user) -> list[str]:
+    problems = [] if password == again else ["The two passwords don't match."]
+    try:
+        validate_password(password, user)
+    except ValidationError as exc:
+        problems.extend(exc.messages)
+    return problems
+
+
+@before_second_step
+@require_http_methods(["GET", "POST"])
 def login_page(request) -> HttpResponse:
     error = None
     if request.method == "POST":
@@ -164,6 +211,7 @@ def login_page(request) -> HttpResponse:
         else:
             user = authenticate(request, username=username, password=password)
             if user is not None:
+                accounts.upgrade_password_hash(user, password)  # before the session depends on it
                 try:
                     with transaction.atomic():  # no sign-in without its line in the record
                         accounts.clear_failures(username, address)
@@ -258,8 +306,9 @@ def two_factor_page(request) -> HttpResponse:
         record_if_possible(request, "wrong code at sign-in", outcome="refused")
         error = (
             "That code didn't work. A code works only once, so wait for the next. If you never set"
-            " this up or the code won't work, someone may have your password: on the server, run"
-            " checker web-password and then checker web-two-factor-off."
+            " this up or the code won't work, someone may have your password: ask someone with full"
+            " access for a new link, or on the server run checker web-password and then"
+            " checker web-two-factor-off."
         )
     return render(
         request,
@@ -329,8 +378,8 @@ def two_factor_turn_on(request) -> HttpResponse:
     if two_factor.pending(request) is None:
         raise ActionFailed(
             "That setup has ended. Go to Sign-in security and start again. If you didn't start"
-            " again somewhere else, someone may have your password: on the server, change it with"
-            " checker web-password."
+            " again somewhere else, someone may have your password: ask someone with full access"
+            " for a new link, or on the server change it with checker web-password."
         )
     words = (
         "That code didn't work. Check that your phone's clock is right, and try the next one. If"
@@ -340,9 +389,7 @@ def two_factor_turn_on(request) -> HttpResponse:
     raise ActionFailed(words, page=_setup_page(request, error=words, status=400, retry=True))
 
 
-@login_required
-@require_GET
-def two_factor_manage(request) -> HttpResponse:
+def _security_page(request, problems=(), changed=False, status: int = 200) -> HttpResponse:
     user = request.user
     return render(
         request,
@@ -353,10 +400,46 @@ def two_factor_manage(request) -> HttpResponse:
             "unsaved": two_factor.codes_unsaved(user),
             "code_needed": two_factor.code_needed(request),
             "required": settings.CHECKER_TWO_FACTOR_REQUIRED,
+            "password_problems": problems,
+            "password_changed": changed,
         },
+        status=status,
     )
 
 
+@for_viewers
+@login_required
+@require_GET
+def two_factor_manage(request) -> HttpResponse:
+    return _security_page(request, changed="changed" in request.GET)
+
+
+def _usable_new_password(request) -> None:
+    password, again = request.POST.get("password", ""), request.POST.get("password2", "")
+    problems = _password_problems(password, again, request.user)
+    if problems:
+        page = _security_page(request, problems=problems, status=400)
+        raise ActionFailed("The new password can't be used.", page=page)
+
+
+@for_viewers
+@action("changed their password", consequential=True, check=_usable_new_password)
+def password_change(request) -> HttpResponse:
+    """Most people here have no way to the command line, so this has to be a page."""
+    user = request.user
+    if not accounts.change_own_password(user, request.POST.get("password", "")):
+        raise ActionFailed(
+            "Your account changed while this was happening, so you've been signed out. If you"
+            " clicked twice, the first click may have changed the password: the Activity page"
+            " shows what ran.",
+            sign_out=True,
+        )
+    update_session_auth_hash(request, user)  # this session goes on; any other one ends
+    two_factor.forget_pending(user)  # a thief may have started one with the old password
+    return HttpResponseRedirect(reverse("two_factor_manage") + "?changed=1")
+
+
+@for_viewers
 @action("made new recovery codes", consequential=True)
 def two_factor_new_codes(request) -> HttpResponse:
     if not two_factor.is_on(request.user):
@@ -365,18 +448,21 @@ def two_factor_new_codes(request) -> HttpResponse:
     return render(request, "two_factor_codes.html.j2", {"codes": codes})
 
 
+@for_viewers
 @action("said the recovery codes are saved")
 def two_factor_codes_saved(request) -> HttpResponse:
     two_factor.mark_codes_saved(request.user)
     return HttpResponseRedirect(reverse("two_factor_manage"))
 
 
+@for_viewers
 @action("turned off two-factor", consequential=True)
 def two_factor_turn_off(request) -> HttpResponse:
     two_factor.turn_off(request.user)
     return HttpResponseRedirect(reverse("two_factor_manage"))
 
 
+@for_viewers
 @login_required
 @require_GET
 def fleet_page(request) -> HttpResponse:
@@ -427,6 +513,7 @@ def fleet_page(request) -> HttpResponse:
     )
 
 
+@for_viewers
 @login_required
 @require_GET
 def host_page(request, name: str) -> HttpResponse:
@@ -457,6 +544,7 @@ def host_page(request, name: str) -> HttpResponse:
     )
 
 
+@for_viewers
 @login_required
 @require_GET
 def evidence_page(request, name: str) -> HttpResponse:
@@ -473,6 +561,7 @@ def evidence_page(request, name: str) -> HttpResponse:
     return render(request, "evidence.html.j2", {"host": name, **wording.evidence_details(stored)})
 
 
+@for_viewers
 @login_required
 @require_GET
 def threats_page(request) -> HttpResponse:
@@ -744,6 +833,111 @@ def server_key_trust(request) -> HttpResponse:
         raise ActionFailed(CANT_MANAGE) from None
     request.action_detail = check.fingerprint + ("" if wrote else ": already trusted")
     return _back_to_server(name)
+
+
+def _posted_person(request, **kwargs) -> str:
+    return request.POST.get("name", "")
+
+
+def _people_page(
+    request, problem: str = "", link: str = "", link_for: str = "", status: int = 200
+) -> HttpResponse:
+    rows = accounts.people()
+    me = request.user.get_username()
+    for row in rows:
+        row["me"] = row["name"] == me
+    return render(
+        request,
+        "manage_people.html.j2",
+        {
+            "rows": [row for row in rows if not row["removed"]],
+            "removed": [row["name"] for row in rows if row["removed"]],
+            "problem": problem,
+            "link": escape(link),  # whole: the pages' filter for server text would cut a long one
+            "link_for": link_for,
+            "code_needed": two_factor.code_needed(request),
+            "only_this_machine": not settings.CHECKER_TWO_FACTOR_REQUIRED,
+        },
+        status=status,
+    )
+
+
+def _person_refused(request, exc: accounts.PersonProblem) -> ActionFailed:
+    words = str(exc)
+    return ActionFailed(words, page=_people_page(request, problem=words, status=400))
+
+
+def _join_link(request, token: str) -> str:
+    """The address people use, which behind a proxy this request's own can't say."""
+    path = reverse("join", kwargs={"token": token})
+    public = settings.CHECKER_PUBLIC_URL
+    return f"{public.rstrip('/')}{path}" if public else request.build_absolute_uri(path)
+
+
+@login_required
+@require_GET
+def manage_people(request) -> HttpResponse:
+    return _people_page(request)
+
+
+@login_required
+@require_GET
+def manage_person(request) -> HttpResponse:
+    name = request.GET.get("name", "")
+    row = next((row for row in accounts.people() if row["name"] == name), None)
+    if row is None or row["removed"] or name == request.user.get_username():
+        return HttpResponseRedirect(reverse("manage_people"))
+    row["form_name"] = escape(name)  # the pages' filter for server text would change it
+    context = {"row": row, "code_needed": two_factor.code_needed(request)}
+    return render(request, "manage_person.html.j2", context)
+
+
+def _usable_new_name(request) -> None:
+    problem = accounts.new_name_problem(accounts.normal_name(request.POST.get("name", "")))
+    if problem:
+        raise ActionFailed(problem, page=_people_page(request, problem=problem, status=400))
+
+
+@action("invited someone", consequential=True, target=_posted_person, check=_usable_new_name)
+def person_invite(request) -> HttpResponse:
+    name = accounts.normal_name(request.POST.get("name", ""))
+    full = request.POST.get("access") == "full"
+    try:
+        token = accounts.invite(request.user, name, full)
+    except accounts.PersonProblem as exc:
+        raise _person_refused(request, exc) from None
+    request.action_detail = "full access" if full else "view only"
+    return _people_page(request, link=_join_link(request, token), link_for=name)
+
+
+@action("changed someone's access", consequential=True, target=_posted_person)
+def person_access(request) -> HttpResponse:
+    full = request.POST.get("access") == "full"
+    try:
+        accounts.set_access(request.user, request.POST.get("name", ""), full)
+    except accounts.PersonProblem as exc:
+        raise _person_refused(request, exc) from None
+    request.action_detail = "now full access" if full else "now view only"
+    return HttpResponseRedirect(reverse("manage_people"))
+
+
+@action("made a new sign-in link", consequential=True, target=_posted_person)
+def person_new_link(request) -> HttpResponse:
+    name = request.POST.get("name", "")
+    try:
+        token = accounts.new_link(request.user, name)
+    except accounts.PersonProblem as exc:
+        raise _person_refused(request, exc) from None
+    return _people_page(request, link=_join_link(request, token), link_for=name)
+
+
+@action("removed someone", consequential=True, target=_posted_person)
+def person_remove(request) -> HttpResponse:
+    try:
+        accounts.remove(request.user, request.POST.get("name", ""))
+    except accounts.PersonProblem as exc:
+        raise _person_refused(request, exc) from None
+    return HttpResponseRedirect(reverse("manage_people"))
 
 
 def _threats_page(request, outcome=None, problem: str = "", status: int = 200) -> HttpResponse:
@@ -1141,6 +1335,7 @@ def manage_prepare(request) -> HttpResponse:
     return render(request, "manage_prepare.html.j2", {"host": host, **context})
 
 
+@for_viewers
 @login_required
 @require_GET
 def checks_page(request) -> HttpResponse:
@@ -1242,6 +1437,7 @@ def analyze_start(request) -> HttpResponse:
     return _start_run(request, "analysis", [name])
 
 
+@for_viewers
 @login_required
 @require_GET
 def check_page(request, run_id: int) -> HttpResponse:
@@ -1394,6 +1590,7 @@ def rules_ask(request) -> HttpResponse:
 ACTIVITY_PAGE = 200
 
 
+@for_viewers
 @login_required
 @require_GET
 def activity_page(request) -> HttpResponse:

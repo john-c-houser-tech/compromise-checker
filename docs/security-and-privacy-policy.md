@@ -227,7 +227,7 @@ that may include access tokens, and sometimes secrets typed into commands.
   size and fingerprints — never its content. It is a file on this machine or, if
   you choose, a PostgreSQL database. Whoever runs that database can read the parts
   that aren't encrypted: server names, times, file paths, hashes and sizes,
-  status, the accounts and machine that ran each command, what purges took, the
+  status, the accounts and machine that ran each command, including the name of the person signed in, for anything done from the web interface, what purges took, the
   AI models used and their cost, and every settings change with its old and new
   values.
 - **Tamper-evident.** Each collection carries fingerprints (SHA-256) of its
@@ -255,25 +255,22 @@ that may include access tokens, and sometimes secrets typed into commands.
 - **The web interface.** If you run it, it decrypts evidence in memory for each
   page, using the same key as the command line, and tells browsers not to keep
   the pages. So the web server can read everything the tool has stored, and
-  anyone with an account can see every result: treat an account like access to
-  the evidence itself. It keeps accounts with hashed passwords, sessions, and
+  anyone with an account can see every result: treat an account like access to the evidence itself. An account is either view only or has full access. A view-only account sees every result and all the evidence, and can change only its own password and two-factor sign-in. It keeps accounts with hashed passwords, sessions, and
   failed logins for 15 minutes (with their usernames and addresses) in its own
-  owner-only file, and never evidence. By default only this machine can reach
+  owner-only file, and never evidence. It also keeps the name given to each person, which stays after they are removed because the activity record names them by it, and the hash of each unused invitation link, which works once, within 24 hours. By default only this machine can reach
   it, and it won't listen more widely without TLS.
-  An account can also add and change servers, after confirming with its
+  An account with full access can also add and change servers, after confirming with its
   password, and a code if two-factor sign-in is on. That includes making this
   machine's SSH key, naming any key file the web server can read, and choosing
-  which Python runs as administrator on a server. So someone with an account could use those keys to log in elsewhere,
-  or send the next typed password to a machine they control. The same
-  confirmation lets an account change what is collected and how long evidence is
+  which Python runs as administrator on a server. So someone with full access could use those keys to log in elsewhere,
+  or send the next typed password to a machine they control. The same confirmation lets it change what is collected and how long evidence is
   kept, delete stored evidence, set or stop a daily check, turn the AI advisor on, choose how much is hidden from it, and stop threat
   packs or keep them off a server. Asking for the latest signed packs needs no
   confirmation. Apart from the daily check, which
   runs the tool's own fixed command and any notify command already set, anything
   that runs a command on this machine, or sends data or keys to another address,
   can only be changed on the command line. Each such
-  change is recorded, but the record doesn't prevent it. Give accounts only to
-  people you would trust with the servers themselves.
+  change is recorded, but the record doesn't prevent it. Someone with full access can also add and remove people, and could make a new sign-in link for someone else and use it themselves; the activity record shows who made each link. Give full access only to people you would trust with the servers themselves, and view-only access only to people you would trust with the evidence.
   If you start a check from its pages, the web server starts the same run the
   command line does, connecting to your servers with the same settings. What
   that check reports is held in memory, not on disk, and holds no findings. A

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import re
 import secrets
 import socket
 import sys
@@ -42,6 +43,17 @@ def is_local(host: str) -> bool:
     except OSError:
         return False
     return bool(found) and all(ipaddress.ip_address(a.partition("%")[0]).is_loopback for a in found)
+
+
+class _NoLinksInTheLog(logging.Filter):
+    """An error's line names the address, and a one-time link in one is still good if it failed."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        hidden = re.sub(r"/(setup|join)/\S+", r"/\1/(hidden)", message)
+        if hidden != message:
+            record.msg, record.args = hidden, ()
+        return True
 
 
 def two_factor_required(public_url: str | None, listens_beyond: bool) -> bool:
@@ -93,6 +105,7 @@ def django_settings(
         "CSRF_TRUSTED_ORIGINS": [f"{parts.scheme}://{parts.netloc}"] if parts else [],
         # Behind a proxy every peer is the proxy: see accounts.client_address.
         "CHECKER_BEHIND_PROXY": bool(parts),
+        "CHECKER_PUBLIC_URL": public_url,
         "CHECKER_TWO_FACTOR_REQUIRED": two_factor_required(public_url, listens_beyond),
         "OTP_TOTP_ISSUER": product_name(),
         "ROOT_URLCONF": "checker.web.urls",
@@ -113,7 +126,9 @@ def django_settings(
             "django.middleware.csrf.CsrfViewMiddleware",
             "django.contrib.auth.middleware.AuthenticationMiddleware",
             "django_otp.middleware.OTPMiddleware",
+            "checker.web.middleware.name_the_person",
             "checker.web.middleware.TwoFactorGate",
+            "checker.web.middleware.AccessGate",
         ],
         "DATABASES": {
             "default": {
@@ -130,6 +145,7 @@ def django_settings(
                 "OPTIONS": {"environment": "checker.web.templating.environment"},
             }
         ],
+        "PASSWORD_HASHERS": ["checker.web.hashing.NoUpgradeWhileChecking"],
         "AUTH_PASSWORD_VALIDATORS": [
             {
                 "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
@@ -174,6 +190,7 @@ def configure(
     # Anonymous requests mustn't be able to fill a log: wrong Hosts and refused forms
     # say nothing, and paths (which can hold a setup link) stay out of it.
     logging.getLogger("django.request").setLevel(logging.ERROR)
+    logging.getLogger("django.request").addFilter(_NoLinksInTheLog())
     logging.getLogger("django.security").setLevel(logging.CRITICAL)
     settings.configure(**django_settings(home, public_url, tls, listens_beyond))
     django.setup()

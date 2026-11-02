@@ -22,6 +22,9 @@ import socket
 import sqlite3
 import sys
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1041,8 +1044,30 @@ _INSERT_BUNDLE = "INSERT INTO bundles ({}) VALUES ({})".format(  # noqa: S608 - 
 )
 
 
+# A check started from a page runs in a process of its own, which is told this way who started it.
+WEB_PERSON_VARIABLE = "CHECKER_WEB_PERSON"
+_acting_for: ContextVar[str | None] = ContextVar("acting_for", default=None)
+
+
+@contextmanager
+def acting_for(person: str) -> Iterator[None]:
+    """What's written here on behalf of someone signed in to the web interface names them."""
+    token = _acting_for.set(person)
+    try:
+        yield
+    finally:
+        _acting_for.reset(token)
+
+
+def printable_name(person: str) -> str:
+    """Names reach a terminal and an environment variable, where other characters do harm."""
+    return "".join(c for c in person if c.isprintable())
+
+
 def who_and_where() -> tuple[str, str]:
-    return getpass.getuser(), socket.gethostname()
+    person = printable_name(_acting_for.get() or os.environ.get(WEB_PERSON_VARIABLE) or "")
+    who = f"{person} (web interface)" if person else getpass.getuser()
+    return who, socket.gethostname()
 
 
 def store_unreadable(exc: Exception) -> str:

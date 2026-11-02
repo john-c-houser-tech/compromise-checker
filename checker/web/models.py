@@ -1,6 +1,27 @@
 """What the web interface keeps of its own, with django-otp's tables. Never evidence."""
 
+from django.conf import settings
 from django.db import models
+
+
+class Access(models.Model):
+    """What an account may do. Without a row an account can only view, so a way of making accounts
+    that forgets this gives away nothing."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="access"
+    )
+    full = models.BooleanField(default=False)
+
+
+class Invitation(models.Model):
+    """The one-time link someone uses to choose their password: only its hash is kept."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="invitation"
+    )
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField()
 
 
 class SetupToken(models.Model):

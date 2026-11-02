@@ -108,8 +108,9 @@ def _refused_page(request, words: str, status: int = 403):
     return render(request, "problem.html.j2", context, status=status)
 
 
-def action(name: str, consequential: bool = False, target=lambda request, **kwargs: ""):
-    """Make a view an action. `target` says what it acts on, for the record."""
+def action(name: str, consequential: bool = False, target=lambda request, **kwargs: "", check=None):
+    """Make a view an action. `target` says what it acts on, for the record. `check` raises
+    ActionFailed for a form that can't work, before a code is used up confirming it."""
 
     def decorate(view):
         if getattr(view, "csrf_exempt", False):
@@ -126,6 +127,15 @@ def action(name: str, consequential: bool = False, target=lambda request, **kwar
             except Exception as exc:
                 record(request, name, "(couldn't be named)", "failed", type(exc).__name__)
                 raise
+            if check is not None:
+                try:
+                    check(request)
+                except ActionFailed as exc:
+                    record_if_possible(request, name, on, "failed", exc.words)
+                    return exc.page or _refused_page(request, exc.words, status=400)
+                except Exception as exc:
+                    record_if_possible(request, name, on, "failed", type(exc).__name__)
+                    raise
             if consequential:
                 refused = confirmation_refused(request, name, on)
                 if refused:

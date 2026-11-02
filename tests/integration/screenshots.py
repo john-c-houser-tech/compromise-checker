@@ -116,8 +116,11 @@ def main() -> int:
     from django_otp.oath import totp
     from django_otp.plugins.otp_totp.models import TOTPDevice
 
+    from checker.web.models import Access
+
     password = secrets.token_urlsafe(24)
     user = get_user_model().objects.create_user("demo", password=password)
+    Access.objects.create(user=user, full=True)
     device = TOTPDevice.objects.create(user=user, name="demo", confirmed=True)
     seen: list[str] = []
     server = make_server(

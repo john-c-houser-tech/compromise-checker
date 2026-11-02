@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from checker.database import DATABASE_ERRORS, configured_url
 from checker.files import atomic_write
 from checker.product import product_name
 
@@ -20,6 +21,41 @@ SESSION_SECONDS = 8 * 3600
 LOCAL_NAMES = ["127.0.0.1", "localhost", "[::1]"]
 PROXY_SECRET_FILE = "web-proxy-secret.txt"  # noqa: S105 - where it is, not what it is
 PROXY_SECRET_HEADER = "X-Checker-Proxy-Secret"  # noqa: S105 - the same
+
+
+class AccountsProblem(RuntimeError):
+    """The accounts database can't be used, in words for whoever started this."""
+
+
+def accounts_database(home: Path) -> dict:
+    """Where the store's address says, or the file beside the store. Accounts left behind in either
+    place mustn't be quietly replaced by an empty set, with the record gone and a new first account
+    on offer."""
+    file = home / "web.db"
+    try:
+        url = configured_url(home)
+        if url is None:
+            if file.with_name("web.db.moved").exists():
+                raise ValueError(
+                    "the accounts were moved to a database, and the settings no longer name it:"
+                    " restore config.yaml"
+                )
+            return {
+                "ENGINE": "django.db.backends.sqlite3",
+                "NAME": str(file),
+                # Writers queue up: two tabs mustn't get "database is locked".
+                "OPTIONS": {"transaction_mode": "IMMEDIATE", "timeout": 20},
+            }
+        if file.exists() and file.stat().st_size:
+            raise ValueError(
+                f"the store is in a database, but the accounts are still in {file}: run"
+                " checker store move --to with the same address"
+            )
+        from checker.web.postgres import settings_for
+
+        return settings_for(url)
+    except (ValueError, RuntimeError, *DATABASE_ERRORS) as exc:
+        raise AccountsProblem(str(exc)) from exc
 
 
 def secret_key(home: Path) -> str:
@@ -123,7 +159,11 @@ def behind_a_proxy(public_url: str | None, tls: bool) -> bool:
 
 
 def django_settings(
-    home: Path, public_url: str | None = None, tls: bool = False, listens_beyond: bool = False
+    home: Path,
+    public_url: str | None = None,
+    tls: bool = False,
+    listens_beyond: bool = False,
+    databases: dict | None = None,
 ) -> dict:
     """Every setting in one place. Behind a proxy, `public_url` is the address people use:
     only it is accepted as a Host and as a form's origin, and over https cookies are
@@ -170,14 +210,7 @@ def django_settings(
             "checker.web.middleware.TwoFactorGate",
             "checker.web.middleware.AccessGate",
         ],
-        "DATABASES": {
-            "default": {
-                "ENGINE": "django.db.backends.sqlite3",
-                "NAME": str(home / "web.db"),
-                # Writers queue up: two tabs mustn't get "database is locked".
-                "OPTIONS": {"transaction_mode": "IMMEDIATE", "timeout": 20},
-            }
-        },
+        "DATABASES": databases or {"default": accounts_database(home)},
         "TEMPLATES": [
             {
                 "BACKEND": "django.template.backends.jinja2.Jinja2",
@@ -220,23 +253,44 @@ def configure(
     """Once per process. The accounts database is made or brought up to date, owner-only."""
     import django
     from django.conf import settings
-    from django.core.management import call_command
+    from django.db import Error
 
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
-    database = home / "web.db"
-    if not database.exists():
-        database.touch(mode=0o600)
-    os.chmod(database, 0o600)  # a restored backup may have come back wider
+    made = django_settings(home, public_url, tls, listens_beyond)
+    if made["DATABASES"]["default"]["ENGINE"].endswith("sqlite3"):
+        database = home / "web.db"
+        if not database.exists():
+            database.touch(mode=0o600)
+        os.chmod(database, 0o600)  # a restored backup may have come back wider
     # Anonymous requests mustn't be able to fill a log: wrong Hosts and refused forms
     # say nothing, and paths (which can hold a setup link) stay out of it.
     logging.getLogger("django.request").setLevel(logging.ERROR)
     logging.getLogger("django.request").addFilter(_NoLinksInTheLog())
     logging.getLogger("django.security").setLevel(logging.CRITICAL)
-    settings.configure(**django_settings(home, public_url, tls, listens_beyond))
+    settings.configure(**made)
     django.setup()
-    call_command("migrate", verbosity=0, interactive=False)
-    _protect_the_record()
-    _clear_old_sessions()
+    try:
+        _bring_up_to_date()
+        _clear_old_sessions()
+    except (Error, RuntimeError, *DATABASE_ERRORS) as exc:
+        raise AccountsProblem(f"the accounts database can't be used: {exc}") from exc
+
+
+def _bring_up_to_date() -> None:
+    from django.core.management import call_command
+    from django.db import connection
+
+    if connection.vendor != "postgresql":
+        call_command("migrate", verbosity=0, interactive=False)
+        _protect_the_record()
+        return
+    from checker.web import postgres
+
+    with postgres.one_migration_at_a_time(connection):
+        postgres.refuse_tables_of_others(connection)
+        postgres.claim(connection)
+        call_command("migrate", verbosity=0, interactive=False)
+        _protect_the_record()
 
 
 def _clear_old_sessions() -> None:
@@ -249,10 +303,10 @@ def _clear_old_sessions() -> None:
 def _protect_the_record() -> None:
     from django.db import connection
 
-    from checker.web.models import ACTION_RECORD_TRIGGERS
+    from checker.web.models import action_record_guards
 
     with connection.cursor() as cursor:
-        for sql in ACTION_RECORD_TRIGGERS:
+        for sql in action_record_guards(connection.vendor):
             cursor.execute(sql)
 
 

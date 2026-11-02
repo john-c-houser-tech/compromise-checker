@@ -40,10 +40,10 @@ from checker.database import (
     DATABASE_ERRORS,
     PostgresDatabase,
     SQLiteDatabase,
-    _no_nul,
     append_only_triggers_sqlite,
     check_database_url,
     configured_url,
+    no_nul,
 )
 from checker.files import atomic_write, locked
 from checker.protocol import (
@@ -1460,7 +1460,7 @@ def _fingerprint_of(store: Store, table: str) -> tuple[int, str]:
                     key: (
                         bytes(value).hex()
                         if isinstance(value, bytes | memoryview)
-                        else _no_nul(value)  # as it reads back from a database that can't hold one
+                        else no_nul(value)  # as it reads back from a database that can't hold one
                     )
                     for key, value in sorted(values.items())
                 },

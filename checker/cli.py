@@ -31,7 +31,7 @@ from checker.baseline import accept, changes, usable_bundles
 from checker.checks import BANDS, CATEGORIES
 from checker.collect import collect_hosts
 from checker.credentials import password_for
-from checker.database import DATABASE_ERRORS, check_database_url
+from checker.database import DATABASE_ERRORS, check_database_url, configured_url
 from checker.evidence import (
     Advisor,
     EvidenceError,
@@ -1787,7 +1787,7 @@ def _first_start(base: Path) -> None:
 def cmd_web(args: argparse.Namespace) -> int:
     """The web interface, until interrupted."""
     try:
-        from checker.web.app import listen_problem, serve
+        from checker.web.app import AccountsProblem, listen_problem, serve
     except ImportError:
         print(
             "checker: the web interface needs: pip install -e '.[web]'",
@@ -1816,6 +1816,18 @@ def cmd_web(args: argparse.Namespace) -> int:
         return serve(base, args.bind, args.public_url, args.tls_cert, args.tls_key)
     except ImportError as exc:
         return _web_extra_missing(exc)
+    except AccountsProblem as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+
+
+def _web_has_run(base: Path) -> bool:
+    """Its file, or an address where its tables would be. Unreadable settings count: opening it is
+    what says what's wrong with them."""
+    try:
+        return (base / "web.db").exists() or bool(configured_url(base))
+    except ValueError:
+        return True
 
 
 def cmd_web_password(args: argparse.Namespace) -> int:
@@ -1823,12 +1835,12 @@ def cmd_web_password(args: argparse.Namespace) -> int:
     import getpass
 
     try:
-        from checker.web.app import configure
+        from checker.web.app import AccountsProblem, configure
     except ImportError:
         print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
         return 2
     base = home()
-    if not (base / "web.db").exists():  # a mistyped home mustn't gain a new database
+    if not _web_has_run(base):  # a mistyped home mustn't gain a new database
         print(
             f"checker: no web interface has been run from {base}. Run this as the user who runs"
             " it, with the same CHECKER_HOME.",
@@ -1839,6 +1851,9 @@ def cmd_web_password(args: argparse.Namespace) -> int:
         configure(base)
     except ImportError as exc:
         return _web_extra_missing(exc)
+    except AccountsProblem as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
 
     from checker.web.accounts import no_such_account, reset_password  # needs Django set up
 
@@ -1866,12 +1881,12 @@ def cmd_web_password(args: argparse.Namespace) -> int:
 def cmd_web_two_factor_off(args: argparse.Namespace) -> int:
     """When a phone and its recovery codes are both gone. The record says so."""
     try:
-        from checker.web.app import configure
+        from checker.web.app import AccountsProblem, configure
     except ImportError:
         print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
         return 2
     base = home()
-    if not (base / "web.db").exists():  # a mistyped home mustn't gain a new database
+    if not _web_has_run(base):  # a mistyped home mustn't gain a new database
         print(
             f"checker: no web interface has been run from {base}. Run this as the user who runs"
             " it, with the same CHECKER_HOME.",
@@ -1882,6 +1897,9 @@ def cmd_web_two_factor_off(args: argparse.Namespace) -> int:
         configure(base)
     except ImportError as exc:
         return _web_extra_missing(exc)
+    except AccountsProblem as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
 
     from checker.web.accounts import turn_off_two_factor  # needs Django set up
 
@@ -2294,9 +2312,15 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
         return 1
 
 
+def _accounts_to_move(base: Path) -> bool:
+    file = base / "web.db"
+    return file.exists() and file.stat().st_size > 0
+
+
 def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) -> int:
-    """From SQLite's file to a PostgreSQL database: copied, checked, the settings changed, and then
-    the file removed, since a purge couldn't reach what's left in it. Evidence files don't move."""
+    """From SQLite's files to a PostgreSQL database, the web interface's accounts and record with
+    the store: copied, checked, the settings changed, and then the files removed, since a purge
+    couldn't reach what's left in them. Evidence files don't move."""
     from checker import schedule
     from checker.evidence import copy_store
     from checker.files import atomic_write, locked
@@ -2304,31 +2328,53 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
     base = home()
     try:
         config = load_config(base)
-        if config.database:
+        accounts = _accounts_to_move(base)
+        if config.database and not accounts:
             raise EvidenceError("the store is already in a database")
+        if config.database and args.to != config.database:
+            raise EvidenceError(
+                f"the store is already in a database, and its accounts have to join it: --to"
+                f" {config.database}"
+            )
         try:
             check_database_url(args.to)
         except ValueError as exc:
             print(f"checker: --to {exc}", file=sys.stderr)
             return 2
-        if not database_file(base).exists():
+        if not config.database and not database_file(base).exists():
             raise EvidenceError(f"no store to move ({database_file(base)})")
-        with schedule.run_lock(base), locked(config_file(base)):
-            source = Store(database_file(base), url=None)
-            target = Store(database_file(base), url=args.to)
+        if accounts:
             try:
-                data = load_config(base).model_dump() | {"database": args.to}
-                counts = copy_store(
-                    source,
-                    target,
-                    "database",
-                    None,
-                    args.to,
-                    lambda: atomic_write(config_file(base), yaml.safe_dump(data, sort_keys=False)),
-                )
-            finally:
-                source.close()
-                target.close()
+                from checker.web.moving import move_accounts, take_accounts_back
+            except ImportError as exc:
+                return _web_extra_missing(exc)
+        counts = None
+        with schedule.run_lock(base), locked(config_file(base)):
+            rows = move_accounts(base, args.to) if accounts else None
+            try:
+                if not config.database:
+                    source = Store(database_file(base), url=None)
+                    target = Store(database_file(base), url=args.to)
+                    try:
+                        data = load_config(base).model_dump() | {"database": args.to}
+                        counts = copy_store(
+                            source,
+                            target,
+                            "database",
+                            None,
+                            args.to,
+                            lambda: atomic_write(
+                                config_file(base), yaml.safe_dump(data, sort_keys=False)
+                            ),
+                        )
+                    finally:
+                        source.close()
+                        target.close()
+            except BaseException:
+                # Unless the settings already name it: then this is where the accounts belong.
+                if accounts and load_config(base).database != args.to:
+                    take_accounts_back()
+                raise
     except schedule.Busy:
         print(
             "checker: `checker run` is in progress: try again when it has finished", file=sys.stderr
@@ -2337,31 +2383,54 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
     except (EvidenceError, OSError, *DATABASE_ERRORS) as exc:
         print(f"checker: not moved: {exc}", file=sys.stderr)
         return 1
-    print(f"Moved {counts['bundles']} bundle(s) and their records, and checked each table.")
-    print("The store is now in that database. Evidence files stay where they are.")
-    # Renamed at once: left under its own name, it would be taken for the store if the settings were
-    # ever lost, with nothing to say it's out of date.
+    if counts is not None:
+        print(f"Moved {counts['bundles']} bundle(s) and their records, and checked each table.")
+        print("The store is now in that database. Evidence files stay where they are.")
+    if rows is not None:
+        print(f"Moved the web interface's accounts and record ({rows} rows), and checked them.")
+    return _retire_old_files(base, args, ask, store=counts is not None, accounts=accounts)
+
+
+def _retire_old_files(
+    base: Path, args: argparse.Namespace, ask: Callable[[str], str], store: bool, accounts: bool
+) -> int:
+    """Renamed at once: left under its own name, one would be taken for what's in use if the
+    settings were ever lost, with nothing to say it's out of date."""
+    files = [*([database_file(base)] if store else []), *([base / "web.db"] if accounts else [])]
     moved = []
-    for end in ("", "-wal", "-shm"):
-        path = database_file(base).with_name(database_file(base).name + end)
-        if path.exists():
-            target_name = path.with_name(path.name + ".moved")
-            try:
-                path.rename(target_name)
-            except OSError as exc:
-                print(
-                    f"checker: couldn't rename {path} ({exc.strerror}): delete it, or it could be"
-                    " taken for the store",
-                    file=sys.stderr,
-                )
-                return 1
-            moved.append(target_name)
+    for file in files:
+        for end in ("", "-wal", "-shm", "-journal"):
+            path = file.with_name(file.name + end)
+            if path.exists():
+                target_name = path.with_name(path.name + ".moved")
+                try:
+                    path.rename(target_name)
+                except OSError as exc:
+                    print(
+                        f"checker: couldn't rename {path} ({exc.strerror}): delete it, or it could"
+                        " be taken for what's in use",
+                        file=sys.stderr,
+                    )
+                    return 1
+                moved.append(target_name)
+    if not moved:
+        return 0
+    question = "Delete the old file? A purge can't reach it. Type 'delete': "
+    if accounts:
+        question = (
+            "Delete the old files? A purge can't reach them, and web.db holds password hashes and"
+            " two-factor secrets. Type 'delete': "
+        )
     try:
-        answer = args.yes or ask("Delete the old file? A purge can't reach it. Type 'delete': ")
+        answer = args.yes or ask(question)
     except EOFError:
         answer = ""
     if answer is not True and answer != "delete":
-        print(f"Kept it as {moved[0]}: it still lists what's stored, so delete it yourself.")
+        kept = moved if accounts else moved[:1]
+        print(
+            f"Kept it as {' and '.join(str(path) for path in kept)}: it still lists what's stored,"
+            " so delete it yourself."
+        )
         return 0
     try:
         for path in moved:
@@ -2371,7 +2440,7 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
             f"checker: couldn't delete {path} ({exc.strerror}): delete it yourself", file=sys.stderr
         )
         return 1
-    print("Deleted the old file.")
+    print("Deleted the old file." if not accounts else "Deleted the old files.")
     return 0
 
 

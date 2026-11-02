@@ -93,13 +93,28 @@ _MARK = "compromise-checker store"
 LOCK_TIMEOUT_SECONDS = 20
 CONNECT_TIMEOUT_SECONDS = 15
 STATEMENT_TIMEOUT_SECONDS = 300
-_KEEPALIVE = {
+KEEPALIVE = {
     "keepalives": 1,
     "keepalives_idle": 30,
     "keepalives_interval": 10,
     "keepalives_count": 3,
     "tcp_user_timeout": 60000,  # a server gone silent: a page or a check mustn't wait for ever
 }
+
+
+TRIGGERS_OFF = (
+    "this database session has triggers switched off (session_replication_role), so history"
+    " couldn't be protected: change that setting for this account"
+)
+
+
+def session_limits() -> list[str]:
+    """How long anything may wait, for every session the tool opens."""
+    return [
+        f"SET lock_timeout = '{LOCK_TIMEOUT_SECONDS}s'",
+        f"SET statement_timeout = '{STATEMENT_TIMEOUT_SECONDS}s'",
+        f"SET idle_in_transaction_session_timeout = '{STATEMENT_TIMEOUT_SECONDS}s'",
+    ]
 
 
 def check_database_url(url: str) -> str:
@@ -200,7 +215,14 @@ def _schema_for_postgres(schema: str) -> str:
     )
 
 
-def _postgres_trigger_statements(table: str, label: str) -> list[str]:
+def guard_function() -> str:
+    return (
+        "CREATE OR REPLACE FUNCTION checker_append_only() RETURNS trigger"
+        f" LANGUAGE plpgsql AS $${_GUARD_BODY}$$"
+    )
+
+
+def postgres_trigger_statements(table: str, label: str) -> list[str]:
     message = f"{label} append-only".replace("'", "''")
     return [
         f"CREATE OR REPLACE TRIGGER {table}_no_{action} BEFORE {action.upper()} ON {table}"
@@ -227,7 +249,7 @@ _TABLES = (
 )
 
 
-def _no_nul(value: Any) -> Any:
+def no_nul(value: Any) -> Any:
     """PostgreSQL's text can't hold a NUL, and a hostile server can send one in what's recorded
     about it. Refusing would let it keep its own collection out of the record, so it's shown."""
     return value.replace("\x00", "\\u0000") if isinstance(value, str) else value
@@ -268,20 +290,14 @@ class PostgresDatabase:
             autocommit=True,
             row_factory=_row_factory,
             connect_timeout=CONNECT_TIMEOUT_SECONDS,
-            **_KEEPALIVE,
+            **KEEPALIVE,
         )
-        self._connection.execute(f"SET lock_timeout = '{LOCK_TIMEOUT_SECONDS}s'")
-        self._connection.execute(f"SET statement_timeout = '{STATEMENT_TIMEOUT_SECONDS}s'")
-        self._connection.execute(
-            f"SET idle_in_transaction_session_timeout = '{STATEMENT_TIMEOUT_SECONDS}s'"
-        )
+        for statement in session_limits():
+            self._connection.execute(statement)
         role = self._connection.execute("SHOW session_replication_role").fetchone()[0]
         if role != "origin":
             self._connection.close()
-            raise RuntimeError(
-                "this database session has triggers switched off (session_replication_role), so"
-                " history couldn't be protected: change that setting for this account"
-            )
+            raise RuntimeError(TRIGGERS_OFF)
         if self._read_only:
             self._connection.execute("SET default_transaction_read_only = on")
 
@@ -305,9 +321,9 @@ class PostgresDatabase:
 
     def execute(self, sql: str, parameters: Any = ()) -> Any:
         if isinstance(parameters, dict):
-            cleaned: Any = {key: _no_nul(value) for key, value in parameters.items()}
+            cleaned: Any = {key: no_nul(value) for key, value in parameters.items()}
         else:
-            cleaned = [_no_nul(value) for value in parameters]
+            cleaned = [no_nul(value) for value in parameters]
         return self._again_if_lost(
             lambda: self._connection.execute(_translated(sql), cleaned or None)
         )
@@ -400,12 +416,9 @@ class PostgresDatabase:
             self._connection.execute(_schema_for_postgres(schema))
             for table in _TABLES:
                 self._connection.execute(f"COMMENT ON TABLE {table} IS '{_MARK}'")
-            self._connection.execute(
-                "CREATE OR REPLACE FUNCTION checker_append_only() RETURNS trigger"
-                f" LANGUAGE plpgsql AS $${_GUARD_BODY}$$"
-            )
+            self._connection.execute(guard_function())
             for table, label in (*APPEND_ONLY, *ALWAYS_APPEND_ONLY):
-                for statement in _postgres_trigger_statements(table, label):
+                for statement in postgres_trigger_statements(table, label):
                     self._connection.execute(statement)
 
     def drop_store(self) -> None:
@@ -421,7 +434,7 @@ class PostgresDatabase:
 
     def restore_append_only(self) -> None:
         for table, label in APPEND_ONLY:
-            for statement in _postgres_trigger_statements(table, label):
+            for statement in postgres_trigger_statements(table, label):
                 self._connection.execute(statement)
 
 

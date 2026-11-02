@@ -68,7 +68,7 @@ class ActionRecord(models.Model):
     who = models.CharField(max_length=150)
     address = models.CharField(max_length=64)
     action = models.CharField(max_length=64)
-    target = models.CharField(max_length=200)
+    target = models.TextField()  # bounded where it's written; a limit here would refuse a line
     outcome = models.CharField(max_length=32)
     detail = models.TextField()
 
@@ -80,3 +80,16 @@ ACTION_RECORD_TRIGGERS = [
     "CREATE TRIGGER IF NOT EXISTS web_actionrecord_no_delete BEFORE DELETE ON web_actionrecord"
     " BEGIN SELECT RAISE(ABORT, 'the record is append-only'); END",
 ]
+
+
+def action_record_guards(vendor: str) -> list[str]:
+    """Each start puts them back, on either database. On PostgreSQL, the same guards as the store's
+    history, which also stop TRUNCATE."""
+    if vendor != "postgresql":
+        return ACTION_RECORD_TRIGGERS
+    from checker import database
+
+    return [
+        database.guard_function(),
+        *database.postgres_trigger_statements("web_actionrecord", "the record is"),
+    ]

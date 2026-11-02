@@ -1,6 +1,11 @@
 from django.db import migrations, models
 
-from checker.web.models import ACTION_RECORD_TRIGGERS
+from checker.web.models import action_record_guards
+
+
+def _guard(apps, schema_editor):
+    for statement in action_record_guards(schema_editor.connection.vendor):
+        schema_editor.execute(statement, params=None)
 
 
 class Migration(migrations.Migration):
@@ -24,5 +29,5 @@ class Migration(migrations.Migration):
                 ("detail", models.TextField()),
             ],
         ),
-        migrations.RunSQL(ACTION_RECORD_TRIGGERS, migrations.RunSQL.noop),
+        migrations.RunPython(_guard, migrations.RunPython.noop),
     ]

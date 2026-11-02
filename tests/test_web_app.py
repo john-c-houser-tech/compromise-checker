@@ -5,6 +5,7 @@ import html
 import json
 import os
 import re
+import secrets
 import socket
 import subprocess
 import sys
@@ -49,11 +50,27 @@ def browser(**kwargs):
 @pytest.fixture(scope="session")
 def _django():
     home = Path(tempfile.mkdtemp())
+    server = os.environ.get("CHECKER_TEST_POSTGRES_EVERYWHERE")
+    schema = f"web{secrets.token_hex(6)}" if server else None
+    if server:
+        import psycopg
+
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"CREATE SCHEMA {schema}")
+        separator = "&" if "?" in server else "?"
+        address = f"{server}{separator}options=-csearch_path%3D{schema}"
+        (home / "config.yaml").write_text(f"database: {address}\n")
     web_app.configure(home)
     from django.test.utils import setup_test_environment
 
     setup_test_environment()  # adds "testserver" to ALLOWED_HOSTS
-    return home
+    yield home
+    if server:
+        from django.db import connections
+
+        connections.close_all()
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA {schema} CASCADE")
 
 
 @pytest.fixture
@@ -76,13 +93,15 @@ def clear_the_record():
     """Between tests only: in use, the record can't be emptied."""
     from django.db import connection
 
-    from checker.web.models import ACTION_RECORD_TRIGGERS
+    from checker.web.models import action_record_guards
 
+    on = " ON web_actionrecord" if connection.vendor == "postgresql" else ""
+    actions = ("update", "delete", "truncate") if on else ("update", "delete")
     with connection.cursor() as cursor:
-        cursor.execute("DROP TRIGGER IF EXISTS web_actionrecord_no_update")
-        cursor.execute("DROP TRIGGER IF EXISTS web_actionrecord_no_delete")
+        for kind in actions:
+            cursor.execute(f"DROP TRIGGER IF EXISTS web_actionrecord_no_{kind}{on}")
         cursor.execute("DELETE FROM web_actionrecord")
-        for sql in ACTION_RECORD_TRIGGERS:
+        for sql in action_record_guards(connection.vendor):
             cursor.execute(sql)
 
 
@@ -2362,10 +2381,10 @@ def holds():
 
 result = {"triggers": triggers(), "holds": holds()}
 if sys.argv[2] == "rebuild":
-    old = ActionRecord._meta.get_field("target")
+    old = ActionRecord._meta.get_field("who")
     new = old.clone()
     new.max_length = 201
-    new.set_attributes_from_name("target")
+    new.set_attributes_from_name("who")
     new.model = ActionRecord
     with connection.schema_editor() as editor:
         editor.alter_field(ActionRecord, old, new)

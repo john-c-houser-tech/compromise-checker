@@ -37,6 +37,7 @@ from checker.database import (
     DATABASE_ERRORS,
     PostgresDatabase,
     SQLiteDatabase,
+    _no_nul,
     append_only_triggers_sqlite,
     check_database_url,
     configured_url,
@@ -404,6 +405,7 @@ def initialise(
     exec_records: ExecRecords = "web",
     advisor: Advisor | None = None,
     database: str | None = None,
+    new_store: bool = False,
 ) -> tuple[Config, Path | None]:
     """Create the tool's directory, evidence key and database. With
     `recipient`, bundles are encrypted to that key and its private half stays
@@ -420,7 +422,7 @@ def initialise(
         if config_file(home).exists():
             raise EvidenceError(f"already set up ({config_file(home)}); nothing changed")
         return _initialise(
-            home, recipient, home_text, web_access_logs, exec_records, advisor, database
+            home, recipient, home_text, web_access_logs, exec_records, advisor, database, new_store
         )
 
 
@@ -432,12 +434,14 @@ def _initialise(
     exec_records: ExecRecords = "web",
     advisor: Advisor | None = None,
     database: str | None = None,
+    new_store: bool = False,
 ) -> tuple[Config, Path | None]:
     identity_path = None
     kept = home / "keys" / "evidence-identity.txt"
     evidence = home / "evidence"
     if (
         not database
+        and not new_store
         and os.path.lexists(kept)
         and not database_file(home).exists()
         and evidence.is_dir()
@@ -445,8 +449,9 @@ def _initialise(
     ):
         # With a store elsewhere, whose settings are what's lost, this would start an empty one.
         raise EvidenceError(
-            f"{home} has evidence and a key, but no store: restore config.yaml from a backup,"
-            " since the store may be in a database it names"
+            f"{home} has evidence and a key, but no store: restore config.yaml from a backup, since"
+            " the store may be in a database it names. If the store really is lost, `checker init"
+            " --new-store` starts an empty one, which won't list the evidence already here"
         )
     if os.path.lexists(kept):
         # Its settings may be gone, but evidence may be encrypted to this. Replacing it would make
@@ -491,7 +496,7 @@ def _initialise(
         advisor=advisor or Advisor(),
         database=database,
     )
-    Store(database_file(home), url=database).close()
+    Store(database_file(home), url=database, create=True).close()
     mail_key(home)
     atomic_write(config_file(home), yaml.safe_dump(config.model_dump(), sort_keys=False))
     return config, identity_path
@@ -1054,7 +1059,9 @@ def store_unreadable(exc: Exception) -> str:
         return "the store is busy with another run: try again shortly"
     if "no such table" in text or "no such column" in text or "does not exist" in text:
         return "the store is from an older version: `checker bundle list` upgrades it"
-    if "permission denied" in text:
+    if "no schema has been selected" in text:
+        return "the database account has no schema to use: check its search_path"
+    if "permission denied" in text or "must be owner" in text:
         return "the database account can't use this database: it has to own it (docs/postgres.md)"
     if "connection" in text or "terminating" in text or "server closed" in text:
         return "the connection to the database was lost: check it's running, and try again"
@@ -1070,10 +1077,14 @@ def store_exists(home: Path) -> bool:
 
 
 class Store:
-    def __init__(self, path: Path, read_only: bool = False, url: str | None = None) -> None:
+    def __init__(
+        self, path: Path, read_only: bool = False, url: str | None = None, create: bool = False
+    ) -> None:
         """`path`: where SQLite keeps it, if the settings beside it don't name a database. `url`:
         this database, for when there are no settings yet. Read only: for looking, with no schema,
-        no upgrade and nothing created, and a write is an error."""
+        no upgrade and nothing created, and a write is an error. `create`: setting up. Otherwise a
+        home with no settings and no store isn't set up, and making one here could be making an
+        empty store beside evidence whose store is elsewhere."""
         try:
             url = url or configured_url(path.parent)
         except ValueError as exc:
@@ -1093,8 +1104,10 @@ class Store:
             except sqlite3.Error as exc:
                 raise EvidenceError(store_unreadable(exc)) from exc
             return
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fresh = not path.exists()
+        if fresh and not create and not (path.parent / "config.yaml").exists():
+            raise EvidenceError(f"not set up yet: run `checker init` (no {path})")
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._db = sqlite3.connect(path, factory=SQLiteDatabase)
         if fresh:
             os.chmod(path, 0o600)
@@ -1123,7 +1136,7 @@ class Store:
     def _open_postgres(self, url: str, read_only: bool) -> None:
         try:
             self._db = PostgresDatabase(url, read_only)
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError) as exc:
             raise EvidenceError(str(exc)) from exc
         except DATABASE_ERRORS as exc:
             # The words on any page, and the details, with where it is, only for whoever runs this.
@@ -1134,6 +1147,9 @@ class Store:
                 self._looks_usable()
             else:
                 self._db.ensure_schema(_SCHEMA)
+        except RuntimeError as exc:
+            self._db.close()
+            raise EvidenceError(str(exc)) from exc
         except DATABASE_ERRORS as exc:
             self._db.close()
             raise EvidenceError(store_unreadable(exc)) from exc
@@ -1417,7 +1433,11 @@ def _fingerprint_of(store: Store, table: str) -> tuple[int, str]:
         lines.append(
             json.dumps(
                 {
-                    key: (bytes(value).hex() if isinstance(value, bytes | memoryview) else value)
+                    key: (
+                        bytes(value).hex()
+                        if isinstance(value, bytes | memoryview)
+                        else _no_nul(value)  # as it reads back from a database that can't hold one
+                    )
                     for key, value in sorted(values.items())
                 },
                 sort_keys=True,
@@ -1428,36 +1448,29 @@ def _fingerprint_of(store: Store, table: str) -> tuple[int, str]:
     return len(rows), digest.hexdigest()
 
 
-def _next_numbers(source: Store, table: str) -> int | None:
-    """The last number SQLite gave in this table, which rows may have since been purged from."""
-    row = source._db.execute("SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)).fetchone()
-    return row[0] if row else None
-
-
-def _looks_made_by_this_tool(target: Store) -> bool:
-    """A table by these names that someone else made would sort by locale, and lack its links."""
-    collation = target._db.execute(
-        "SELECT collation_name FROM information_schema.columns WHERE table_schema ="
-        " current_schema() AND table_name = 'bundles' AND column_name = 'id'"
+def _last_number(source: Store, table: str) -> int:
+    """The last number given in this table, whose rows may have since been purged."""
+    given = source._db.execute(
+        "SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)
     ).fetchone()
-    links = target._db.execute(
-        "SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid = 'custody'::regclass"
-    ).fetchone()
-    return bool(collation) and collation[0] == "C" and links[0] > 0
+    highest = source._db.execute(f"SELECT max(seq) FROM {table}").fetchone()[0]  # noqa: S608
+    return max(given[0] if given else 0, highest or 0)
 
 
 def copy_store(
-    source: Store, target: Store, setting: str, old: Any, new: Any, write: Any, undo: Any
+    source: Store, target: Store, setting: str, old: Any, new: Any, write: Any
 ) -> dict[str, int]:
-    """Every row, as it is, into a store with none, a check that each table reads back the same, and
-    the settings changed by `write`, all or nothing. The source is held for all of it, so nothing
-    written elsewhere meanwhile is left behind. Returns how many rows per table. The guards stay on:
-    nothing here changes a row."""
-    if not _looks_made_by_this_tool(target):
-        raise EvidenceError("the new database has tables this tool didn't make: use an empty one")
+    """Every row, as it is, into a store with none, and a check that each table reads back the same.
+    Then the settings changed by `write`, after the rows are safe: a crash between them leaves the
+    old store in charge, with nothing lost. If the settings can't be written, what was made is taken
+    away so it can be tried again. The source is held for all of it, so nothing written elsewhere
+    meanwhile is left behind. Returns how many rows per table. The guards stay on."""
     for table in COPIED_TABLES:
         if target._db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]:  # noqa: S608
-            raise EvidenceError(f"the new database already has {table} in it: use an empty one")
+            raise EvidenceError(
+                f"the new database already has {table} in it: use an empty one. If an earlier move"
+                " stopped part way, empty that database first"
+            )
     counts = {}
     source._db.begin_write()
     try:
@@ -1473,8 +1486,7 @@ def copy_store(
                         f" VALUES ({', '.join(f':{name}' for name in names)})"
                     )
                     target._db.execute(statement, {name: row[name] for name in names})
-                number = _next_numbers(source, table)
-                if number:
+                if table not in ("bundles", "derived") and (number := _last_number(source, table)):
                     target._db.execute(
                         f"SELECT setval(pg_get_serial_sequence('{table}', 'seq'), ?)",  # noqa: S608
                         (number,),
@@ -1495,15 +1507,14 @@ def copy_store(
                     json.dumps(new),
                 ),
             )
-            write()
+            target._db.commit()
         except BaseException:
             target._db.rollback()
             raise
         try:
-            target._db.commit()
+            write()
         except BaseException:
-            undo()
-            target._db.rollback()
+            target._db.drop_store()
             raise
     finally:
         source._db.rollback()

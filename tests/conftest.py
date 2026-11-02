@@ -49,14 +49,16 @@ def _store_on_postgres(monkeypatch):
     real = evidence._initialise
 
     def on_the_server(home, recipient, home_text, web_access_logs=False, exec_records="web",
-                      advisor=None, database=None):  # fmt: skip
+                      advisor=None, database=None, new_store=False):  # fmt: skip
         if database is None:
             schema = f"t{secrets.token_hex(6)}"
             with psycopg.connect(server, autocommit=True) as admin:
                 admin.execute(f"CREATE SCHEMA {schema}")
             schemas.append(schema)
             database = f"{server}?options=-csearch_path%3D{schema}"
-        return real(home, recipient, home_text, web_access_logs, exec_records, advisor, database)
+        return real(
+            home, recipient, home_text, web_access_logs, exec_records, advisor, database, new_store
+        )
 
     monkeypatch.setattr(evidence, "_initialise", on_the_server)
     yield

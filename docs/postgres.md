@@ -2,6 +2,7 @@
 
 By default the store is a SQLite file, `checker.db`, beside the evidence. It can be a PostgreSQL
 database instead (14 or later), which your organization backs up and looks after like its others.
+One machine still runs the tool: a team signs in to its web interface.
 The tool's account has to own the database, since it makes the tables and their guards:
 
 ```
@@ -34,14 +35,22 @@ on that machine. The web interface's accounts and activity record are still in t
 It can't hold a password, and the tool refuses one that does, since settings are kept in plain text and
 every change to them is kept for good. Use a Unix socket with peer authentication
 (`postgresql:///checker`), or a `.pgpass` file. It's read as PostgreSQL's own library reads it, and can
-only name a server, port, database and account, with their TLS settings.
+only name a server, port, database and account, their TLS settings, and `requirepeer` or `require_auth`.
+Its options can only choose a schema. Its socket should be one only PostgreSQL can create, not `/tmp` on a
+shared machine: anyone able to listen there could collect a password from `.pgpass`, unless `requirepeer`
+names the account the server runs as.
 
 An address on another machine has to use `sslmode=verify-full`, which checks it's really that server:
 `postgresql://db.example.org/checker?sslmode=verify-full`. Otherwise someone on the way could read
 which servers you have and how they were judged.
 
-`PGHOST`, `PGHOSTADDR`, `PGSERVICE`, `PGSERVICEFILE` and `PGSSLMODE` could send it elsewhere unseen, so the
-tool refuses to connect while any is set.
+Environment variables could send it elsewhere unseen. The tool refuses to connect while `PGHOST`, `PGPORT`,
+`PGDATABASE`, `PGUSER`, `PGSSLMODE` or `PGSSLROOTCERT` is set unless the address says the same thing itself,
+which then wins. It refuses while `PGSERVICE`, `PGHOSTADDR`, `PGOPTIONS` and others that an address can't
+overrule are set. The message names the one in the way.
+
+It refuses a session with triggers switched off (`session_replication_role`), and tables with these names
+that it didn't make, so give it a database of its own.
 
 ## Append-only
 
@@ -58,11 +67,13 @@ missing, disabled or changed.
 
 Stop the web interface and anything else using the tool first. `checker store move` needs an empty
 database, and doesn't run during a `checker run`. It holds the old store while it copies every row, checks
-that each table reads back the same and changes the settings, all or nothing, and only then offers to
-delete the old file. Delete it: a purge can't reach what's left in it. There's no command for moving back.
+that each table reads back the same and changes the settings, and only then offers to delete the old file.
+If the settings can't be written, what it made is taken away. If it's stopped between the two, the old
+store stays in charge, nothing is lost, and the new database needs emptying before trying again. Delete it: a purge can't reach what's left in it. There's no command for moving back.
 
 If `config.yaml` is lost while the store is in a database, the tool won't start an empty store beside
-your evidence: restore the file.
+your evidence: restore the file. If the store really is lost, `checker init --new-store` starts an empty one,
+which won't list the evidence already there.
 
 ## Backups
 

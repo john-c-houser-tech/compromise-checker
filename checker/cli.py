@@ -50,6 +50,7 @@ from checker.evidence import (
     open_bundle,
     open_text,
     store_exists,
+    store_unreadable,
 )
 from checker.inventory import (
     Host,
@@ -266,6 +267,7 @@ def cmd_init(args: argparse.Namespace, ask: Callable[[str], str] | None = None) 
             args.exec_records,
             advisor,
             args.database,
+            args.new_store,
         )
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -809,6 +811,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--database",
         metavar="POSTGRESQL_ADDRESS",
         help="keep the store in PostgreSQL (docs/postgres.md), not a file; no password in it",
+    )
+    init.add_argument(
+        "--new-store",
+        action="store_true",
+        help="start an empty store though evidence is here: it won't list that evidence",
     )
     init.add_argument(
         "--recipient",
@@ -1761,15 +1768,16 @@ def _first_start(base: Path) -> None:
             f" key at {base / 'keys' / 'evidence-identity.txt'} and start again: a new key couldn't"
             " read what's stored"
         )
-    if has_key:
-        print("Found an evidence key here with no settings: keeping it. Settings are back to")
-        print("nothing optional collected and the AI advisor off. Check them in Settings.")
     try:
         _, identity_path = initialise(base)
     except EvidenceError:
         if config_file(base).exists():  # another start got there first, which is fine
             return
         raise
+    if has_key:
+        print("Found an evidence key here with no settings: keeping it. Settings are back to")
+        print("nothing optional collected and the AI advisor off. Check them in Settings.")
+        return
     print(f"Set up in {base}, with nothing optional collected and the AI advisor off.")
     if identity_path:
         print(f"The evidence key is in {identity_path}. BACK IT UP somewhere safe and separate:")
@@ -2298,14 +2306,17 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
         config = load_config(base)
         if config.database:
             raise EvidenceError("the store is already in a database")
-        check_database_url(args.to)
+        try:
+            check_database_url(args.to)
+        except ValueError as exc:
+            print(f"checker: --to {exc}", file=sys.stderr)
+            return 2
         if not database_file(base).exists():
             raise EvidenceError(f"no store to move ({database_file(base)})")
         with schedule.run_lock(base), locked(config_file(base)):
             source = Store(database_file(base), url=None)
             target = Store(database_file(base), url=args.to)
             try:
-                before = config_file(base).read_text(encoding="utf-8")
                 data = load_config(base).model_dump() | {"database": args.to}
                 counts = copy_store(
                     source,
@@ -2314,7 +2325,6 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
                     None,
                     args.to,
                     lambda: atomic_write(config_file(base), yaml.safe_dump(data, sort_keys=False)),
-                    lambda: atomic_write(config_file(base), before),
                 )
             finally:
                 source.close()
@@ -2324,9 +2334,6 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
             "checker: `checker run` is in progress: try again when it has finished", file=sys.stderr
         )
         return 1
-    except ValueError as exc:
-        print(f"checker: --to {exc}", file=sys.stderr)
-        return 2
     except (EvidenceError, OSError, *DATABASE_ERRORS) as exc:
         print(f"checker: not moved: {exc}", file=sys.stderr)
         return 1
@@ -3080,4 +3087,7 @@ def main(argv: list[str] | None = None) -> int:
         return handler(args)
     except EvidenceError as exc:  # a store that can't be reached, read or found: words, not a trace
         print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    except DATABASE_ERRORS as exc:  # or one lost after opening
+        print(f"checker: {store_unreadable(exc)}", file=sys.stderr)
         return 1

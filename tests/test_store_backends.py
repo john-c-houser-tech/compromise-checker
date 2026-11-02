@@ -57,7 +57,7 @@ def opened(request, tmp_path):
     stores = []
 
     def make(read_only=False):
-        store = Store(database_file(tmp_path), read_only=read_only, url=url)
+        store = Store(database_file(tmp_path), read_only=read_only, url=url, create=True)
         stores.append(store)
         return store
 
@@ -277,7 +277,7 @@ def test_one_writer_at_a_time(opened):
 
     def other():
         # Its own connection, in its own thread, as another command would be.
-        second = Store(first_path, url=first_url)
+        second = Store(first_path, url=first_url, create=True)
         second.record_config_change("y", 1, 2, lambda: order.append("second"), lambda: None)
         second.close()
 
@@ -322,13 +322,16 @@ def test_a_guard_that_was_dropped_comes_back_on_opening(opened):
         "postgresql://localhost/checker?service=prod",
         "postgresql://localhost/checker?passfile=/tmp/x",
         "POSTGRESQL://db.example.org/checker",
+        "postgresql://localhost/x?options=-csession_replication_role%3Dreplica",
+        "postgresql://localhost/x?options=-crole%3Dadmin",
+        "postgresql://localhost/x?connect_timeout=1",
         "postgresql:///checker?host=db.example.org",
         "mysql://localhost/checker",
         "/some/file",
     ],
 )
 def test_an_address_with_a_password_or_no_encryption_is_refused(url):
-    with pytest.raises(ValueError, match="password|sslmode|postgresql://|can't say"):
+    with pytest.raises(ValueError, match="password|sslmode|postgresql://|can't say|options"):
         check_database_url(url)
 
 
@@ -340,6 +343,8 @@ def test_an_address_with_a_password_or_no_encryption_is_refused(url):
         "postgresql://user@127.0.0.1:5433/checker",
         "postgresql:///checker?host=/run/postgresql",
         "postgresql://db.example.org/checker?sslmode=verify-full",
+        "postgresql:///checker?options=-csearch_path%3Dmine",
+        "postgresql://localhost/checker?requirepeer=postgres",
     ],
 )
 def test_a_good_address_is_kept(url):
@@ -596,15 +601,25 @@ def test_one_store_s_writer_doesn_t_hold_up_another_on_the_same_server(postgres)
 
 
 @pytest.mark.sqlite_only
-@pytest.mark.parametrize("variable", ["PGHOST", "PGSERVICE", "PGHOSTADDR", "PGSSLMODE"])
+@pytest.mark.parametrize(
+    "variable",
+    ["PGPORT", "PGDATABASE", "PGUSER", "PGSSLMODE", "PGSERVICE", "PGHOSTADDR", "PGOPTIONS"],
+)
 def test_a_variable_that_would_steer_it_elsewhere_stops_it(tmp_path, monkeypatch, variable):
     monkeypatch.setenv(variable, "somewhere")
     with pytest.raises(EvidenceError, match=variable):
+        Store(database_file(tmp_path), url="postgresql://127.0.0.1/?application_name=x")
+
+
+@pytest.mark.sqlite_only
+def test_a_variable_the_address_overrules_doesn_t_stop_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("PGHOST", "somewhere")
+    with pytest.raises(EvidenceError, match="can't be reached"):
         Store(database_file(tmp_path), url="postgresql://127.0.0.1:1/x")
 
 
 @pytest.mark.sqlite_only
-def test_a_server_that_s_down_is_plain_words_and_no_address(tmp_path, monkeypatch, capsys):
+def test_a_server_that_s_down_is_plain_words_on_each_command(tmp_path, monkeypatch, capsys):
     from checker import cli
     from checker.evidence import initialise
 
@@ -720,9 +735,16 @@ def test_a_move_into_tables_someone_else_made_is_refused(
     monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
     initialise(tmp_path)
     with psycopg.connect(server_address, autocommit=True) as db:
-        db.execute("CREATE TABLE bundles (id TEXT PRIMARY KEY)")
+        db.execute("CREATE TABLE advice (id TEXT PRIMARY KEY)")
+        db.execute("INSERT INTO advice VALUES ('theirs')")
     assert cli.main(["store", "move", "--to", server_address, "--yes"]) == 1
+    assert "didn't make" in capsys.readouterr().err
     assert load_config(tmp_path).database is None and database_file(tmp_path).exists()
+    with psycopg.connect(server_address, autocommit=True) as db:
+        db.execute("UPDATE advice SET id = 'still theirs'")  # no guard was put on it
+    other = tmp_path / "other"
+    monkeypatch.setenv("CHECKER_HOME", str(other))
+    assert cli.main(["init", "--advisor", "off", "--database", server_address]) == 1
 
 
 def test_a_settings_failure_in_a_move_leaves_it_able_to_try_again(
@@ -763,3 +785,141 @@ def test_a_prompt_nobody_answers_keeps_the_file_and_no_trace(tmp_path, monkeypat
     args = type("Args", (), {"to": server_address, "yes": False})
     assert cli.cmd_store_move(args, ask=no_input) == 0
     assert database_file(tmp_path).exists()
+
+
+@pytest.mark.parametrize(
+    "replaced",
+    [
+        "BEFORE INSERT ON bundles",
+        "BEFORE UPDATE OF problem ON bundles",
+        "AFTER UPDATE ON bundles",
+    ],
+)
+def test_a_guard_replaced_by_one_that_doesn_t_guard_goes_back(postgres, replaced):
+    store = postgres()
+    store.record_bundle(bundle_row("b1"))
+    store._db.execute(
+        f"CREATE OR REPLACE TRIGGER bundles_no_update {replaced} FOR EACH ROW"
+        " EXECUTE FUNCTION checker_append_only('x')"
+    )
+    again = postgres()
+    with pytest.raises(DATABASE_ERRORS, match="append-only"):
+        with again._db:
+            again._db.execute("UPDATE bundles SET status = 'forged'")
+
+
+def test_a_session_with_triggers_off_is_refused(postgres):
+    import psycopg
+
+    role = f"r{secrets.token_hex(4)}"
+    with psycopg.connect(SERVER, autocommit=True) as admin:
+        admin.execute(f"CREATE ROLE {role} SUPERUSER LOGIN PASSWORD 'test'")
+        admin.execute(f"ALTER ROLE {role} SET session_replication_role = replica")
+    try:
+        url = SERVER.replace("postgres@", f"{role}@")
+        with pytest.raises(EvidenceError, match="triggers switched off"):
+            Store(postgres.path, url=url)
+    finally:
+        with psycopg.connect(SERVER, autocommit=True) as admin:
+            admin.execute(f"DROP ROLE {role}")
+
+
+def test_a_nul_already_in_a_file_store_doesn_t_stop_a_move(tmp_path, monkeypatch, server_address):
+    from checker import cli
+    from checker.evidence import initialise
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    initialise(tmp_path)
+    old = Store(database_file(tmp_path))
+    old.record_bundle({**bundle_row("b1"), "collector_version": "1.0\x00evil"})
+    old.close()
+    assert cli.main(["store", "move", "--to", server_address, "--yes"]) == 0
+    new = Store(database_file(tmp_path))
+    assert new.bundle("b1")["collector_version"] == "1.0\\u0000evil"
+    new.close()
+
+
+def test_the_rows_are_safe_before_the_settings_say_so(tmp_path, monkeypatch, server_address):
+    """Stopped between the two, the old store must still be in charge, with nothing lost."""
+    import psycopg
+
+    from checker import evidence
+    from checker.evidence import initialise
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    initialise(tmp_path)
+    old = Store(database_file(tmp_path))
+    old.record_bundle(bundle_row("b1"))
+    target = Store(database_file(tmp_path), url=server_address)
+    seen = []
+
+    def write():
+        with psycopg.connect(server_address, autocommit=True) as other:
+            seen.append(other.execute("SELECT count(*) FROM bundles").fetchone()[0])
+
+    evidence.copy_store(old, target, "database", None, "x", write)
+    old.close()
+    target.close()
+    assert seen == [1]
+
+
+@pytest.mark.sqlite_only
+def test_reading_with_no_settings_never_makes_an_empty_store(tmp_path, monkeypatch, capsys):
+    """Which would then look like a store to the guard below: the first review's fix, undone."""
+    from checker import cli
+    from checker.evidence import initialise
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    initialise(tmp_path)
+    (tmp_path / "evidence" / "web01").mkdir(parents=True)
+    (tmp_path / "evidence" / "web01" / "b1.age").write_text("x")
+    (tmp_path / "config.yaml").unlink()
+    database_file(tmp_path).unlink()
+    for command in (["bundle", "list"], ["config", "history"], ["bundle", "show", "b1"]):
+        assert cli.main(command) in (1, 2), command
+        assert not database_file(tmp_path).exists(), command
+    assert cli.main(["init", "--advisor", "off"]) == 1
+    assert "--new-store" in capsys.readouterr().err
+    assert cli.main(["init", "--advisor", "off", "--new-store"]) == 0, "a deliberate way through"
+    assert database_file(tmp_path).exists()
+
+
+def test_a_store_in_a_schema_whose_name_needs_quoting_works(postgres):
+    import psycopg
+
+    from checker.database import PostgresDatabase
+    from checker.evidence import _SCHEMA
+
+    with psycopg.connect(SERVER, autocommit=True) as admin:
+        admin.execute('CREATE SCHEMA "My-Store"')
+    database = PostgresDatabase(SERVER)
+    try:
+        database.execute('SET search_path TO "My-Store"')
+        database.ensure_schema(_SCHEMA)
+        assert database._guards_as_they_should_be()
+    finally:
+        database.close()
+        with psycopg.connect(SERVER, autocommit=True) as admin:
+            admin.execute('DROP SCHEMA "My-Store" CASCADE')
+
+
+def test_a_lost_server_after_opening_is_words_on_the_command_line(
+    postgres, monkeypatch, capsys, tmp_path
+):
+    import psycopg
+
+    from checker import cli
+
+    def lost(args):
+        raise psycopg.OperationalError("server closed the connection unexpectedly")
+
+    class Parsed:
+        handler = staticmethod(lost)
+
+    class Parser:
+        def parse_args(self, argv):
+            return Parsed()
+
+    monkeypatch.setattr(cli, "build_parser", Parser)
+    assert cli.main([]) == 1
+    assert "connection to the database was lost" in capsys.readouterr().err

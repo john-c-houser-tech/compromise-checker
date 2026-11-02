@@ -382,7 +382,8 @@ extended attributes with `os.getxattr`, so `getcap` is not needed.
 - **Assessment** — the scored result of one run: prior, findings and their
   contributions, probability, band, coverage, and the AI commentary if any.
 
-Storage: SQLite by default (single operator), PostgreSQL for teams. Bundles
+Storage: SQLite by default, PostgreSQL as an option (one machine runs the tool either way; a team
+signs in to its web interface; docs/postgres.md). Bundles
 are files; everything else is in the database.
 
 ---
@@ -906,7 +907,7 @@ checker purge web01 --before 2026-07-01
 | SSH | AsyncSSH | Parallel, agent and password auth, stdin/stdout control |
 | Models | Pydantic | Shared, validated schemas for events, findings, AI output |
 | Config | YAML (PyYAML, safe loader) | Readable whitelists and packs in git |
-| Store | SQLite / PostgreSQL | Single operator / team |
+| Store | SQLite / PostgreSQL | A file / a database server, on one machine's tool |
 | Encryption | age (pyrage) | Simple, audited, key held by the organization |
 | Signing | minisign | Packs and releases |
 | Reports | Jinja2 → HTML; WeasyPrint → PDF | Self-contained files |

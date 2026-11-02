@@ -1,5 +1,5 @@
 """The two databases the store can use (plan 5.14): SQLite, a file beside the evidence, by default;
-PostgreSQL, for a team, as an optional extra. `checker.evidence.Store` holds the SQL, which is
+PostgreSQL, as an optional extra. `checker.evidence.Store` holds the SQL, which is
 written for SQLite and translated here. What differs is here too: how a writer gets the database to
 itself, and how append-only is enforced and lifted, so that it holds the same way on either, by the
 database itself.
@@ -44,7 +44,8 @@ ALWAYS_APPEND_ONLY = (
 )
 _LOCAL_HOSTS = {"", "localhost", "127.0.0.1", "::1"}
 # All an address may say, as libpq reads it. Nothing that holds a secret, or that sends the decision
-# of where to connect somewhere this can't see (service, hostaddr).
+# of where to connect somewhere this can't see (service, hostaddr). `requirepeer` and `require_auth`
+# let a socket or port someone else could listen on be pinned down.
 _ADDRESS_KEYS = {
     "host",
     "port",
@@ -56,10 +57,39 @@ _ADDRESS_KEYS = {
     "sslkey",
     "options",
     "application_name",
-    "connect_timeout",
+    "requirepeer",
+    "require_auth",
 }
+_ONLY_OPTION = re.compile(r"-c\s*search_path=[A-Za-z_][A-Za-z0-9_]*")
 # libpq falls back on these for what an address leaves out, so they could send it elsewhere unseen.
-_STEERING_VARIABLES = ("PGHOST", "PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE", "PGSSLMODE")
+_FALLS_BACK_FOR = {
+    "PGHOST": "host",
+    "PGPORT": "port",
+    "PGDATABASE": "dbname",
+    "PGUSER": "user",
+    "PGSSLMODE": "sslmode",
+    "PGSSLROOTCERT": "sslrootcert",
+    "PGSSLCERT": "sslcert",
+    "PGSSLKEY": "sslkey",
+}
+# And these change where it goes, or what it does there, and no address can overrule them.
+_ALWAYS_STEERS = (
+    "PGHOSTADDR",
+    "PGSERVICE",
+    "PGSERVICEFILE",
+    "PGOPTIONS",
+    "PGTARGETSESSIONATTRS",
+    "PGLOADBALANCEHOSTS",
+    "PGREQUIREPEER",
+    "PGCHANNELBINDING",
+    "PGSSLNEGOTIATION",
+    "PGGSSENCMODE",
+    "PGSSLCRL",
+    "PGSSLCRLDIR",
+    "PGSSLMINPROTOCOLVERSION",
+    "PGSSLMAXPROTOCOLVERSION",
+)
+_MARK = "compromise-checker store"
 LOCK_TIMEOUT_SECONDS = 20
 CONNECT_TIMEOUT_SECONDS = 15
 STATEMENT_TIMEOUT_SECONDS = 300
@@ -91,6 +121,9 @@ def check_database_url(url: str) -> str:
     extra = sorted(set(parts) - _ADDRESS_KEYS)
     if extra:
         raise ValueError(f"can't say {extra[0]}: name the server in the address itself")
+    if "options" in parts and not _ONLY_OPTION.fullmatch(str(parts["options"])):
+        # Anything else could switch the guards off for a session, or act as another account.
+        raise ValueError("can only say which schema to use in its options, as -csearch_path=NAME")
     hosts = str(parts.get("host", "")).split(",")
     remote = [host for host in hosts if host not in _LOCAL_HOSTS and not host.startswith("/")]
     if remote and parts.get("sslmode") != "verify-full":
@@ -159,7 +192,12 @@ def _schema_for_postgres(schema: str) -> str:
     tables = re.sub(r"\bTEXT\b", 'TEXT COLLATE "C"', tables)
     tables = re.sub(r"\bINTEGER\b", "BIGINT", tables)
     tables = re.sub(r"\bREAL\b", "DOUBLE PRECISION", tables)
-    return re.sub(r"\bBLOB\b", "BYTEA", tables)
+    tables = re.sub(r"\bBLOB\b", "BYTEA", tables)
+    # A purge finds rows by these, and holds every table while it does.
+    return tables + "".join(
+        f"CREATE INDEX IF NOT EXISTS {table}_bundle ON {table} (bundle_id);\n"
+        for table in ("custody", "baselines", "assessments", "advice")
+    )
 
 
 def _postgres_trigger_statements(table: str, label: str) -> list[str]:
@@ -176,6 +214,7 @@ def _postgres_trigger_statements(table: str, label: str) -> list[str]:
 
 
 _GUARD_BODY = " BEGIN RAISE EXCEPTION '%', TG_ARGV[0]; END "
+_TRIGGER_KINDS = {"update": 19, "delete": 11, "truncate": 34}  # pg_trigger.tgtype's bits
 _TABLES = (
     "bundles",
     "custody",
@@ -206,10 +245,19 @@ class PostgresDatabase:
         if psycopg is None:
             raise RuntimeError("PostgreSQL needs: pip install -e '.[postgres]'")
         check_database_url(url)
-        steering = [name for name in _STEERING_VARIABLES if os.environ.get(name)]
+        named = psycopg.conninfo.conninfo_to_dict(url)
+        steering = [
+            *(name for name in _ALWAYS_STEERS if os.environ.get(name)),
+            *(
+                name
+                for name, key in _FALLS_BACK_FOR.items()
+                if os.environ.get(name) and key not in named
+            ),
+        ]
         if steering:
             raise RuntimeError(
-                f"{steering[0]} is set, and would change which database this reaches: unset it"
+                f"{steering[0]} is set, and would change which database this reaches: unset it, or"
+                " say it in the address"
             )
         self._url, self._read_only = url, read_only
         self._connect()
@@ -227,6 +275,13 @@ class PostgresDatabase:
         self._connection.execute(
             f"SET idle_in_transaction_session_timeout = '{STATEMENT_TIMEOUT_SECONDS}s'"
         )
+        role = self._connection.execute("SHOW session_replication_role").fetchone()[0]
+        if role != "origin":
+            self._connection.close()
+            raise RuntimeError(
+                "this database session has triggers switched off (session_replication_role), so"
+                " history couldn't be protected: change that setting for this account"
+            )
         if self._read_only:
             self._connection.execute("SET default_transaction_read_only = on")
 
@@ -292,30 +347,46 @@ class PostgresDatabase:
         self._connection.close()
 
     def _guards_as_they_should_be(self) -> bool:
-        """Every table, and every guard: there, switched on, unconditional and calling the function,
-        which says what it should. Not a count: a guard disabled or replaced still counts."""
-        wanted = {
-            f"{table}_no_{action}"
-            for table, _ in (*APPEND_ONLY, *ALWAYS_APPEND_ONLY)
-            for action in ("update", "delete", "truncate")
-        }
+        """Every table, and every guard: there, switched on, unconditional, on what it should be
+        and calling the function, which says what it should. Not a count: a guard disabled or
+        replaced still counts."""
+        here = "(SELECT oid FROM pg_namespace WHERE nspname = current_schema())"
         tables = self.execute(
-            "SELECT count(*) FROM pg_class WHERE relkind = 'r' AND relname = ANY(?)"
-            " AND relnamespace = current_schema()::regnamespace",
+            "SELECT count(*) FROM pg_class WHERE relkind = 'r' AND relname = ANY(?)"  # noqa: S608
+            f" AND relnamespace = {here}",
             [list(_TABLES)],
         ).fetchone()[0]
         if tables != len(_TABLES):
             return False
         found = self.execute(
-            "SELECT t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid"
-            " JOIN pg_proc p ON p.oid = t.tgfoid"
+            "SELECT t.tgname, t.tgtype, c.relname FROM pg_trigger t"  # noqa: S608
+            " JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_proc p ON p.oid = t.tgfoid"
             " WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND t.tgqual IS NULL"
-            " AND c.relnamespace = current_schema()::regnamespace"
-            " AND p.proname = 'checker_append_only' AND p.prosrc = ?"
-            " AND t.tgname LIKE c.relname || '\\_no\\_%%'",
+            " AND t.tgattr::text = ''"
+            f" AND c.relnamespace = {here} AND p.pronamespace = {here}"
+            " AND p.proname = 'checker_append_only' AND p.prosrc = ?",
             [_GUARD_BODY],
         ).fetchall()
-        return wanted <= {row["tgname"] for row in found}
+        have = {(row["relname"], row["tgname"], row["tgtype"]) for row in found}
+        return all(
+            (table, f"{table}_no_{action}", kind) in have
+            for table, _ in (*APPEND_ONLY, *ALWAYS_APPEND_ONLY)
+            for action, kind in _TRIGGER_KINDS.items()
+        )
+
+    def _refuse_tables_of_others(self) -> None:
+        """Opening a store puts guards on tables by these names, which mustn't be someone else's."""
+        here = "(SELECT oid FROM pg_namespace WHERE nspname = current_schema())"
+        for row in self.execute(
+            "SELECT relname, obj_description(oid, 'pg_class') AS mark FROM pg_class"  # noqa: S608
+            f" WHERE relkind = 'r' AND relname = ANY(?) AND relnamespace = {here}",
+            [list(_TABLES)],
+        ).fetchall():
+            if row["mark"] != _MARK:
+                raise RuntimeError(
+                    f"this database already has a {row['relname']} table this tool didn't make:"
+                    " use a database of its own"
+                )
 
     def ensure_schema(self, schema: str) -> None:
         """Tables, function and guards, if any aren't as they should be, as SQLite's schema is on
@@ -323,8 +394,11 @@ class PostgresDatabase:
         making them takes locks."""
         if self._guards_as_they_should_be():
             return
+        self._refuse_tables_of_others()
         with self:
             self._connection.execute(_schema_for_postgres(schema))
+            for table in _TABLES:
+                self._connection.execute(f"COMMENT ON TABLE {table} IS '{_MARK}'")
             self._connection.execute(
                 "CREATE OR REPLACE FUNCTION checker_append_only() RETURNS trigger"
                 f" LANGUAGE plpgsql AS $${_GUARD_BODY}$$"
@@ -332,6 +406,12 @@ class PostgresDatabase:
             for table, label in (*APPEND_ONLY, *ALWAYS_APPEND_ONLY):
                 for statement in _postgres_trigger_statements(table, label):
                     self._connection.execute(statement)
+
+    def drop_store(self) -> None:
+        """What a move that couldn't finish made, so it can be tried again. Only tables this tool
+        made, and only on the way out of a move into an empty database."""
+        for table in reversed(_TABLES):
+            self._connection.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
 
     def lift_append_only(self) -> None:
         for table, _ in APPEND_ONLY:
@@ -342,6 +422,9 @@ class PostgresDatabase:
         for table, label in APPEND_ONLY:
             for statement in _postgres_trigger_statements(table, label):
                 self._connection.execute(statement)
+
+
+_UNREADABLE = "the settings file, config.yaml, can't be read: restore it from a backup"
 
 
 def configured_url(home: Path) -> str | None:
@@ -355,13 +438,13 @@ def configured_url(home: Path) -> str | None:
     except FileNotFoundError:
         return None
     except (OSError, UnicodeError) as exc:
-        raise ValueError("the settings file can't be read") from exc
+        raise ValueError(_UNREADABLE) from exc
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
-        raise ValueError("the settings file can't be read") from exc
+        raise ValueError(_UNREADABLE) from exc
     if not isinstance(data, dict):
-        raise ValueError("the settings file can't be read")
+        raise ValueError(_UNREADABLE)
     url = data.get("database")
     if url is None:
         return None

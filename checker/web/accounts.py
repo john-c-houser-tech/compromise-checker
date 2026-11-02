@@ -32,6 +32,8 @@ from checker.web.models import (
 SETUP_LIFETIME = timedelta(hours=1)
 INVITATION_LIFETIME = timedelta(hours=24)  # it crosses to someone else, who may be asleep
 THROTTLE_WINDOW = timedelta(minutes=15)
+START_WINDOW = timedelta(hours=1)
+MAX_STARTS = 30  # per person: one run is already the most at a time, and "all servers" is one run
 MAX_FAILURES_FOR_NAME = 5  # from one address: guessing one account's password
 MAX_FAILURES_FROM_ADDRESS = 20  # guessing across accounts
 MAX_WRONG_CONFIRMATIONS = 5  # then the session ends: it's the only way a thief can keep trying
@@ -283,7 +285,8 @@ def client_address(request) -> str:
     """Whose this request is, for throttling and the record. Behind the proxy on this machine
     every peer is the proxy, so one person could lock everyone out: there it is the last
     forwarded address, the one the proxy added itself (earlier ones are whatever the
-    client sent). IPv6 counts by network, since one client can hold a whole /64."""
+    client sent). Only the proxy's requests get this far: see middleware.only_through_the_proxy.
+    IPv6 counts by network, since one client can hold a whole /64."""
     address = request.META.get("REMOTE_ADDR", "")
     if settings.CHECKER_BEHIND_PROXY and is_local(address):
         forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "").rpartition(",")[2].strip()
@@ -366,6 +369,16 @@ def confirmations_used_up(session_key: str) -> bool:
 
 def clear_confirmations(session_key: str) -> None:
     WrongConfirmation.objects.filter(session_key=session_key).delete()
+
+
+def too_many_starts(who: str, names: tuple[str, ...]) -> bool:
+    """Whether this person has started enough lately: each start reaches every server it names,
+    and may cost money. The record already says, and no one can make it forget."""
+    since = timezone.now() - START_WINDOW
+    started = ActionRecord.objects.filter(
+        who=who, action__in=names, outcome="started", at__gt=since
+    )
+    return started.count() >= MAX_STARTS
 
 
 def no_such_account(username: str) -> str | None:

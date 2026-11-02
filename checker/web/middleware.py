@@ -1,5 +1,6 @@
 """What applies to every request, before anything else reads it."""
 
+import hmac
 from urllib.parse import urlencode
 
 from django.conf import settings
@@ -11,6 +12,7 @@ from django_otp import user_has_device
 from checker.evidence import acting_for
 from checker.web import accounts
 from checker.web.actions import record_if_possible
+from checker.web.app import PROXY_SECRET_HEADER
 
 CSP = (
     "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; form-action 'self'; "
@@ -38,6 +40,31 @@ def security_headers(get_response):
         if not request.path.startswith(("/style", "/fonts/")):
             response["Cache-Control"] = "no-store"
         return response
+
+    return middleware
+
+
+_PROXY_SECRET_META = "HTTP_" + PROXY_SECRET_HEADER.upper().replace("-", "_")
+
+
+def only_through_the_proxy(get_response):
+    """Behind a proxy, the port is still open to everyone with an account on this machine. Without
+    this, they could connect to it directly and claim any forwarded address, which would get round
+    the limits on guessing a login and put a false address in the record. The proxy holds a secret
+    they don't, and replaces whatever a client sends in its place."""
+
+    def middleware(request):
+        wanted = settings.CHECKER_PROXY_SECRET
+        if wanted is not None:
+            sent = request.META.get(_PROXY_SECRET_META, "")
+            if not hmac.compare_digest(sent.encode(), wanted.encode()):
+                words = (
+                    "This has to be reached through its proxy, and that request didn't come"
+                    f" through it. The proxy must send the header {PROXY_SECRET_HEADER}: see the"
+                    " guide to the web interface.\n"
+                )
+                return HttpResponse(words, status=403, content_type="text/plain")
+        return get_response(request)
 
     return middleware
 

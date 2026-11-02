@@ -8922,3 +8922,171 @@ def test_a_wrong_password_on_an_old_hash_takes_as_long_as_any_other(web, monkeyp
     assert hasher.verify(PASSWORD, old) and not evened
     assert not hasher.verify("wrong", old) and len(evened) == 1
     assert not hasher.verify("wrong", hasher.encode(PASSWORD, hasher.salt())) and len(evened) == 1
+
+
+# --- Only through the proxy, and a limit on starting checks -----------------------------------
+
+
+def test_only_an_https_address_with_no_certificate_here_means_a_proxy(tmp_path):
+    def made(url, tls=False):
+        return web_app.django_settings(tmp_path, url, tls)
+
+    behind = made("https://checker.example")
+    assert behind["CHECKER_BEHIND_PROXY"] and behind["CHECKER_PROXY_SECRET"]
+    for direct in (made(None), made("http://127.0.0.1:8088"), made("https://c.example", tls=True)):
+        assert not direct["CHECKER_BEHIND_PROXY"] and direct["CHECKER_PROXY_SECRET"] is None
+
+
+def test_the_proxys_secret_is_kept_owner_only_and_stays_the_same(tmp_path):
+    first = web_app.proxy_secret(tmp_path)
+    path = tmp_path / "keys" / web_app.PROXY_SECRET_FILE
+    assert len(first) >= 40 and path.stat().st_mode & 0o777 == 0o600
+    path.chmod(0o644)
+    assert web_app.proxy_secret(tmp_path) == first
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_starting_with_no_proxy_makes_no_secret(tmp_path):
+    web_app.django_settings(tmp_path)
+    assert not (tmp_path / "keys" / web_app.PROXY_SECRET_FILE).exists()
+
+
+SECRET = {"HTTP_X_CHECKER_PROXY_SECRET": "the right secret"}
+
+
+@pytest.fixture
+def behind_proxy(settings_override):
+    settings_override(CHECKER_BEHIND_PROXY=True, CHECKER_PROXY_SECRET="the right secret")
+
+
+@pytest.mark.parametrize(
+    "wrong", [None, "", "wrong", "the right secre", "the right secret ", "\u00e9"]
+)
+@pytest.mark.parametrize("path", ["/", "/login", "/style.css", "/nothing-here"])
+def test_a_request_without_the_secret_is_refused(web, behind_proxy, path, wrong):
+    client, _ = web
+    extra = {} if wrong is None else {"HTTP_X_CHECKER_PROXY_SECRET": wrong}
+    for response in (client.get(path, **extra), client.post(path, {"x": "1"}, **extra)):
+        assert response.status_code == 403 and "through its proxy" in response.content.decode()
+        assert "the right secret" not in response.content.decode()
+        assert response["Content-Security-Policy"]
+
+
+def test_a_login_without_the_secret_counts_for_nothing_and_says_nothing(web, behind_proxy):
+    from checker.web.models import ActionRecord, LoginAttempt
+
+    client, _ = web
+    forged = {"HTTP_X_FORWARDED_FOR": "198.51.100.66"}
+    assert client.post("/login", {"username": "jo", "password": "no"}, **forged).status_code == 403
+    assert not LoginAttempt.objects.exists() and not ActionRecord.objects.exists()
+
+
+def test_with_the_secret_the_address_is_the_one_the_proxy_added(web, behind_proxy):
+    from checker.web.models import LoginAttempt
+
+    client, _ = web
+    forged = {"HTTP_X_FORWARDED_FOR": "203.0.113.9, 198.51.100.66", **SECRET}
+    assert client.get("/login", **SECRET).status_code == 200
+    assert client.post("/login", {"username": "jo", "password": "no"}, **forged).status_code == 403
+    assert LoginAttempt.objects.get().address == "198.51.100.66"
+
+
+def test_no_proxy_means_no_secret_is_asked_for(web):
+    client, _ = web
+    assert client.get("/login").status_code == 200
+
+
+def test_starting_behind_a_proxy_says_what_it_needs_and_not_the_secret(
+    _django, tmp_path, monkeypatch, capsys
+):
+    class Stop(Exception):
+        pass
+
+    def configure(*args, **kwargs):
+        web_app.proxy_secret(tmp_path)
+
+    monkeypatch.setattr(web_app, "configure", configure)
+    monkeypatch.setattr("checker.web.accounts.setup_link", lambda address: None)
+    monkeypatch.setattr(
+        "django.core.wsgi.get_wsgi_application", lambda: (_ for _ in ()).throw(Stop())
+    )
+    with pytest.raises(Stop):
+        web_app.serve(tmp_path, "127.0.0.1:8088", "https://c.example")
+    said = capsys.readouterr().out
+    assert web_app.PROXY_SECRET_HEADER in said and web_app.PROXY_SECRET_FILE in said
+    assert web_app.proxy_secret(tmp_path) not in said
+    with pytest.raises(Stop):
+        web_app.serve(tmp_path, "127.0.0.1:8088")
+    assert web_app.PROXY_SECRET_HEADER not in capsys.readouterr().out
+
+
+def starts_recorded(who, number, action="started a check", age=timedelta(0)):
+    from django.utils import timezone
+
+    from checker.web.models import ActionRecord
+
+    for _ in range(number):
+        ActionRecord.objects.create(
+            at=timezone.now() - age,
+            who=who,
+            address="",
+            action=action,
+            target="",
+            outcome="started",
+            detail="",
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "fields"),
+    [
+        ("/checks/start", {"host": "web01"}),
+        ("/checks/analyze", {"host": "web01"}),
+        ("/decide/ask", {"host": "web01", "confirm_password": PASSWORD}),
+    ],
+)
+def test_one_person_can_start_only_so_many_in_an_hour(web, monkeypatch, path, fields):
+    from checker.web import accounts, runs
+
+    started = []
+    monkeypatch.setattr(runs, "start", lambda *args, **kwargs: started.append(args) or 1)
+    client, _ = signed_in(web)
+    starts_recorded("jo", accounts.MAX_STARTS, "started an analysis")
+    response = client.post(path, fields)
+    assert response.status_code == 400 and "as many as one person can" in response.content.decode()
+    assert not started
+    assert actions_recorded()[-1][3] == "failed"
+
+
+def test_the_limit_counts_each_kind_together_and_only_the_last_hour(web):
+    from checker.web import accounts
+    from checker.web.views import STARTS
+
+    account_named("jo")
+    starts_recorded("jo", accounts.MAX_STARTS - 2, "started a check")
+    starts_recorded("jo", 1, "started an analysis")
+    assert not accounts.too_many_starts("jo", STARTS)
+    starts_recorded("jo", 1, "asked the AI advisor for rules")
+    assert accounts.too_many_starts("jo", STARTS)
+    assert not accounts.too_many_starts("someone else", STARTS)
+
+
+def test_old_starts_and_other_lines_dont_count(web):
+    from checker.web import accounts
+    from checker.web.views import STARTS
+
+    starts_recorded("jo", accounts.MAX_STARTS, age=accounts.START_WINDOW + timedelta(minutes=1))
+    starts_recorded("jo", accounts.MAX_STARTS, "changed settings")
+    assert not accounts.too_many_starts("jo", STARTS)
+
+
+def test_the_limits_action_names_are_real_ones(web):
+    """Or a rename would quietly end the limit."""
+    from django.urls import reverse
+
+    from checker.web.views import STARTS
+
+    client, _ = signed_in(web)
+    for view in ("check_start", "analyze_start", "rules_ask"):
+        client.post(reverse(view), {"host": "web01", "confirm_password": PASSWORD})
+    assert {row[1] for row in actions_recorded() if row[3] == "started"} >= set(STARTS)

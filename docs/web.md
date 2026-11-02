@@ -55,11 +55,24 @@ can reach that address, which is why it asks for a login even there.
 
 - **Behind a proxy on this machine** that provides https (Caddy, nginx):
   `checker web --public-url https://checker.example`. Only that address is accepted, and cookies
-  are sent only over https. The proxy must add the client's address as the last entry of
-  `X-Forwarded-For`, which Caddy and a normal nginx setup do, and should buffer request bodies. The
-  address in the activity record is only as good as that proxy. Anyone with an account on this machine
-  can connect to the tool's port directly and claim any address, which gets around the limits on guessing
-  a login and puts a false address in the record, so use this on a machine only you can sign in to.
+  are sent only over https. The proxy must do two things. It must add the client's address as the last
+  entry of `X-Forwarded-For`, which Caddy and a normal nginx setup do. And it must send the secret in
+  `keys/web-proxy-secret.txt`, made the first time you start it this way, in the header
+  `X-Checker-Proxy-Secret`, replacing anything a client sent under that name. It should also buffer
+  request bodies. In Caddy:
+
+  ```
+  checker.example {
+      reverse_proxy 127.0.0.1:8088 {
+          header_up X-Checker-Proxy-Secret "the secret"
+      }
+  }
+  ```
+
+  In nginx, `proxy_set_header X-Checker-Proxy-Secret "the secret";`. Any request without the secret is
+  refused, so nobody with an account on this machine can connect to the tool's port directly and claim a
+  false address. Keep the proxy's settings file readable only by those who run it, since whoever has the
+  secret could do that. To change the secret, delete the file, restart, and put the new one in the proxy.
 - **From other machines, without a proxy:**
   `checker web --bind 0.0.0.0:443 --tls-cert CERT --tls-key KEY --public-url https://checker.example`.
   It refuses to listen beyond this machine without TLS, and refuses an http address for another
@@ -93,7 +106,7 @@ recovery codes, sessions, failed
 logins for the last 15 minutes with their usernames and addresses, the times of wrong passwords and codes (never what was typed), when the latest 50 checks started from a page ran and how they ended, and the activity record below.
 What a check reports while it runs, which can quote an error a server sent but not findings or passwords,
 stays in the web server's memory, and goes when it restarts. No evidence is ever copied
-there. `keys/web-secret.txt` signs sessions; deleting it signs everyone out. Evidence is decrypted
+there. `keys/web-secret.txt` signs sessions; deleting it signs everyone out. Behind a proxy, `keys/web-proxy-secret.txt` holds what it sends. Evidence is decrypted
 in memory for each page, with the same key the command line uses, and pages tell browsers not to
 keep them. There is no access log; only errors in the tool itself go to its standard error.
 
@@ -144,6 +157,12 @@ only once, so after using one, wait for the next. Five wrong codes end the sessi
 password, someone can try about 170 codes a day before that wait stops them, each one shown on the Activity
 page, so don't leave wrong codes you didn't type unexplained. The secrets and recovery codes are stored readable in `web.db`, since the tool has to check against them: treat a
 copy of that file, or a backup of it, as you would a password.
+
+## Starting checks
+
+One check, analysis or request for AI advice runs at a time, and each person can start 30 of them in an
+hour. Checking all your servers counts as one. A check reaches every server it names, and advice may
+cost money, so this limits what a stolen session can do. A daily check and the command line don't count.
 
 ## People and what they may do
 

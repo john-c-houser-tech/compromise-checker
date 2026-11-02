@@ -153,6 +153,9 @@ directly and claim any forwarded address (a Unix socket or a secret header from 
 As built so far: two kinds of account, view only and full access (a page is closed to view only unless
 it's named as open). People are added by a one-time link and choose their own password. A removed
 person's name stays taken, since the record names them. The store's own records name the person too.
+Behind a proxy (an https address with no certificate here), a request must carry a secret from
+`keys/web-proxy-secret.txt` in a header the proxy replaces, or it's refused. A person can start 30 runs
+an hour.
 
 ## Decisions to settle (one at a time)
 

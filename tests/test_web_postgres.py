@@ -625,6 +625,153 @@ def test_a_move_refuses_a_database_holding_other_accounts(home, address):
     assert done.returncode == 1 and "different accounts" in done.stderr
 
 
+def test_a_move_into_a_database_holding_another_installs_accounts_says_use_an_empty_one(
+    home, address, tmp_path_factory
+):
+    made_store_and_accounts(home)
+    other = tmp_path_factory.mktemp("other")
+    (other / "keys").mkdir()
+    (other / "config.yaml").write_text(f"database: {address[0]}\n")
+    run(other, 'get_user_model().objects.create_user("another", password="z" * 14); print(1)')
+    done = move(home, address[0], check=False)
+    assert done.returncode == 1 and "use an empty one" in done.stderr
+
+
+def test_a_move_stopped_before_it_copied_starts_again_and_loses_nobody(home, address):
+    """The store's already there, and the tables were made but nothing came across."""
+    made_store_and_accounts(home)
+    (home / "web.db").rename(home / "held")
+    move(home, address[0])
+    run(home, "print(1)")  # empty tables, marked as ours, as a move stopped there would leave
+    (home / "held").rename(home / "web.db")
+    done = move(home, address[0])
+    assert "accounts and record" in done.stdout
+    result = run(home, READ_ACCOUNTS)
+    assert result["jo"] and result["records"] == ["did 0", "did 1", "did 2"]
+
+
+def test_a_nul_in_the_record_moves_as_the_database_shows_it(home, address):
+    made_store_and_accounts(home)
+    with sqlite3.connect(home / "web.db") as old:
+        old.execute("DROP TRIGGER web_actionrecord_no_update")
+        old.execute("UPDATE web_actionrecord SET detail = ?", ("a\x00b",))
+    move(home, address[0])
+    assert run(home, "print(json.dumps(ActionRecord.objects.first().detail))") == "a\\u0000b"
+
+
+def test_a_move_doesnt_depend_on_how_the_database_orders_text(tmp_path):
+    """In Czech, ch sorts after h, so the two databases' own orders of these keys differ."""
+    import psycopg
+
+    name = f"d{secrets.token_hex(4)}"
+    with psycopg.connect(server, autocommit=True) as admin:
+        admin.execute(
+            f"CREATE DATABASE {name} TEMPLATE template0 LOCALE_PROVIDER icu ICU_LOCALE 'cs'"
+        )
+    try:
+        (tmp_path / "keys").mkdir()
+        (tmp_path / "config.yaml").write_text("")
+        made_store_and_accounts(tmp_path)
+        with sqlite3.connect(tmp_path / "web.db") as old:
+            for key in ("ch1", "ci1", "cz1", "h1"):
+                old.execute(
+                    "INSERT INTO django_session (session_key, session_data, expire_date)"
+                    " VALUES (?, 'x', '2099-01-01 00:00:00')",
+                    (key,),
+                )
+        move(tmp_path, f"{server.rpartition('/')[0]}/{name}")
+    finally:
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"DROP DATABASE {name} WITH (FORCE)")
+
+
+def test_taking_away_only_touches_whats_ours_in_our_schema(home, address):
+    import psycopg
+
+    role = a_role()
+    schema = address[1]
+    other = f"o{secrets.token_hex(4)}"
+    with psycopg.connect(server, autocommit=True) as admin:
+        admin.execute(f"CREATE SCHEMA {other}")
+        admin.execute(f"ALTER ROLE {role} SET search_path = {schema}, {other}")
+    plain = f"{server}{'&' if '?' in server else '?'}user={role}"
+    try:
+        (home / "config.yaml").write_text(f"database: {plain}\n")
+        run(home, "print(1)")
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"DROP TABLE {schema}.web_checkrun")
+            admin.execute(f"CREATE TABLE {other}.web_checkrun (id int)")
+        unmarked = run(
+            home,
+            """
+            from checker.web import postgres
+            with connection.cursor() as cursor:
+                cursor.execute("COMMENT ON TABLE django_migrations IS NULL")
+            postgres.drop_ours(connection)
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT to_regclass('django_migrations')")
+                print(json.dumps(cursor.fetchone()[0] is not None))
+            """,
+            check=False,
+        )
+        # Without the mark it isn't ours, so it stays.
+        assert unmarked.returncode == 0, unmarked.stderr
+        assert json.loads(unmarked.stdout.strip().splitlines()[-1]) is True
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(
+                f"COMMENT ON TABLE {schema}.django_migrations IS 'compromise-checker web interface'"
+            )
+        run(
+            home,
+            """
+            from checker.web import postgres
+            postgres.drop_ours(connection)
+            print(1)
+            """,
+        )
+        with psycopg.connect(server, autocommit=True) as admin:
+            assert admin.execute(f"SELECT to_regclass('{other}.web_checkrun')").fetchone()[0]
+            assert admin.execute(f"SELECT to_regclass('{schema}.auth_user')").fetchone()[0] is None
+    finally:
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA {other} CASCADE")
+            admin.execute(f"DROP OWNED BY {role} CASCADE")
+        drop_role(role)
+
+
+def test_a_role_with_another_client_encoding_can_still_store_any_text(address):
+    from checker.database import PostgresDatabase
+
+    role = a_role("client_encoding = 'LATIN1'")
+    try:
+        db = PostgresDatabase(f"{address[0]}&user={role}")
+        assert (
+            db.execute("SELECT %s AS t".replace("%s", "?"), ["日本語"]).fetchone()["t"] == "日本語"
+        )
+        db.close()
+    finally:
+        drop_role(role)
+
+
+def test_a_move_with_accounts_but_no_web_extra_says_so(tmp_path, address):
+    (tmp_path / "web.db").write_bytes(b"x")
+    made = """
+import sys
+sys.modules["django"] = None
+from checker import cli
+raise SystemExit(cli.main(["store", "move", "--to", sys.argv[1], "--yes"]))
+"""
+    env = os.environ | {"CHECKER_HOME": str(tmp_path)}
+    subprocess.run(
+        [sys.executable, "-m", "checker", "init", "--advisor", "off"],
+        check=True, env=env, capture_output=True, text=True, input="",
+    )  # fmt: skip
+    done = subprocess.run(
+        [sys.executable, "-c", made, address[0]], capture_output=True, text=True, env=env
+    )
+    assert done.returncode == 2 and "pip install" in done.stderr and "Traceback" not in done.stderr
+
+
 def test_a_move_into_a_database_with_someone_elses_accounts_is_refused(home, address):
     import psycopg
 

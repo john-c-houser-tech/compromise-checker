@@ -2367,6 +2367,8 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
             raise EvidenceError(f"no store to move ({database_file(base)})")
         if accounts:
             try:
+                import django  # noqa: F401 - what it uses, here while there's nothing to undo
+
                 from checker.web.moving import move_accounts, take_accounts_back
             except ImportError as exc:
                 return _web_extra_missing(exc)

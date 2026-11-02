@@ -101,9 +101,10 @@ def _copy_everything(connection) -> int:
 
 
 def move_accounts(home: Path, url: str) -> int:
-    """How many rows. All of them are there and read back the same, or nothing is left behind. An
-    earlier move that got this far is only checked, so that one stopped before its last step can be
-    finished by running it again."""
+    """How many rows. All of them are there and read back the same, or what this made is taken away
+    if it can be. An earlier move that finished copying is only checked, so that one stopped before
+    its last step can be finished by running it again. One stopped before that left tables with
+    nobody in them, which are simply made again."""
     from django.core.management import call_command
     from django.db import Error, connections
 
@@ -115,6 +116,9 @@ def move_accounts(home: Path, url: str) -> int:
         with postgres.one_migration_at_a_time(target):
             if postgres.is_ours(target):
                 call_command("migrate", verbosity=0, interactive=False)
+            if postgres.is_ours(target) and _nobody_there():
+                postgres.drop_ours(target)
+            if postgres.is_ours(target):
                 if not all(_same(model) for model in _models()):
                     raise EvidenceError(_different(home, url))
                 return sum(len(_rows(model, "default")) for model in _models())
@@ -130,6 +134,16 @@ def move_accounts(home: Path, url: str) -> int:
             return total
     except (Error, ValueError, RuntimeError, *database.DATABASE_ERRORS) as exc:
         raise EvidenceError(f"the accounts: {exc}") from exc
+
+
+def _nobody_there() -> bool:
+    """No account and no line in the record, so nothing a person could have put there."""
+    from django.contrib.auth import get_user_model
+
+    from checker.web.models import ActionRecord
+
+    users, record = get_user_model().objects, ActionRecord.objects
+    return not users.using("default").exists() and not record.using("default").exists()
 
 
 def _different(home: Path, url: str) -> str:

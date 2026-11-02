@@ -118,6 +118,8 @@ def session_limits() -> list[str]:
         # stricter level, set as the database's or the account's default, it reads from before it
         # waited: every guard would pass on old numbers, with no error.
         "SET default_transaction_isolation = 'read committed'",
+        # Or anything the account's default can't hold is an error, whatever the database can hold.
+        "SET client_encoding = 'UTF8'",
     ]
 
 

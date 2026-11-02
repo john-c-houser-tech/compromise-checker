@@ -47,6 +47,9 @@ The web interface needs the database to be running: without it, it won't start, 
 tables were made by something else, such as another Django application, in this schema or another its search
 path reaches, it refuses to use them, so that application's accounts can't sign in here.
 
+Don't change the address in the settings by hand: an empty database or schema looks just like a new install,
+so the store and the accounts would start empty there, and the web interface would offer a new first account.
+
 ## The address
 
 It can't hold a password, and the tool refuses one that does, since settings are kept in plain text and

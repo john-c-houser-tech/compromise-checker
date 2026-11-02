@@ -9233,3 +9233,69 @@ def test_a_malformed_request_doesnt_fill_the_log(tmp_path):
 
 def test_the_servers_log_level_leaves_out_routine_lines():
     assert web_app.server_options("127.0.0.1:1", None, None)["loglevel"] == "error"
+
+
+def test_failed_logins_clear_whatever_case_the_name_was_typed_in(web):
+    from checker.web import accounts
+    from checker.web.models import LoginAttempt
+
+    accounts.record_failure("Jo", "198.51.100.1")
+    accounts.clear_failures("jO", "198.51.100.1")
+    assert not LoginAttempt.objects.exists()
+    user = account()
+    accounts.record_failure(user.get_username().upper(), "198.51.100.1")
+    accounts._lock_out(user)
+    assert not LoginAttempt.objects.exists()
+    user.refresh_from_db()
+    accounts.record_failure(user.get_username().upper(), "198.51.100.1")
+    assert accounts.reset_password(user.get_username(), "a different long password") == []
+    assert not LoginAttempt.objects.exists()
+
+
+def test_the_accounts_database_going_away_is_words_at_the_command_line(_django, capsys):
+    from django.db import OperationalError
+
+    from checker import cli
+
+    def gone(args):
+        raise OperationalError("server closed the connection")
+
+    assert cli._plain_database_errors(gone)(None) == 1
+    assert "server closed" in capsys.readouterr().err
+
+    def other(args):
+        raise KeyError("a bug, which should say so")
+
+    with pytest.raises(KeyError):
+        cli._plain_database_errors(other)(None)
+
+
+def test_the_accounts_database_going_away_at_the_setup_link_is_words(
+    _django, tmp_path, monkeypatch
+):
+    from django.db import OperationalError
+
+    from checker.web import accounts
+
+    def gone(address):
+        raise OperationalError("server closed the connection")
+
+    monkeypatch.setattr(web_app, "configure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(accounts, "setup_link", gone)
+    with pytest.raises(web_app.AccountsProblem, match="server closed"):
+        web_app.serve(tmp_path, "127.0.0.1:8099")
+
+
+def test_a_failed_taking_away_adds_to_what_went_wrong_and_doesnt_replace_it(
+    _django, monkeypatch, capsys
+):
+    from django.db import OperationalError
+
+    from checker.web import moving, postgres
+
+    def gone(connection):
+        raise OperationalError("gone")
+
+    monkeypatch.setattr(postgres, "drop_ours", gone)
+    moving.take_accounts_back()
+    assert "empty that database" in capsys.readouterr().err

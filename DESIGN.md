@@ -172,9 +172,11 @@ sometimes secrets typed into shell commands.
   style arguments, password hashes, bearer tokens, and cloud access keys. The masking rules
   are published, and the report says that masking ran.
 - **Encrypted at rest.** Evidence bundles are encrypted on the controller
-  (age, to a key the organization holds). The database index keeps only
-  identifiers, times, status, sizes and hashes readable; what a run collected,
-  its connection details and its error text are encrypted to the same key.
+  (age, to a key the organization holds). The database index keeps
+  identifiers, times, status, sizes, hashes and who ran what readable; what a run
+  collected, its connection details and its error text are encrypted to the same
+  key. On a PostgreSQL server, its administrators can read that index
+  (docs/postgres.md).
 - **Integrity.** Each bundle carries a SHA-256 hash, the collector's own hash
   and version, and a chain-of-custody record (who, when, from where, to
   where). Bundles are append-only once written.
@@ -382,7 +384,8 @@ extended attributes with `os.getxattr`, so `getcap` is not needed.
 - **Assessment** — the scored result of one run: prior, findings and their
   contributions, probability, band, coverage, and the AI commentary if any.
 
-Storage: SQLite by default (single operator), PostgreSQL for teams. Bundles
+Storage: SQLite by default, PostgreSQL as an option (one machine runs the tool either way; a team
+signs in to its web interface; docs/postgres.md). Bundles
 are files; everything else is in the database.
 
 ---
@@ -710,6 +713,37 @@ reports remain reproducible.
   trust. Additional public signers can be considered later if a community
   grows.
 
+### 10.5 Kernel threats (Phase 6)
+
+Decided 2026-10-31: Phase 6, after the web interface. Kernels are most of the
+exploited threats on supported releases (six of nine in the 180 days to
+2026-10-31), but package rules can't judge them, so until then a pack can't cover
+one honestly. A kernel differs from other packages in four ways:
+
+- **What is running decides, not what is installed.** Old kernels stay installed
+  beside new ones, and don't expose a host unless booted, so an old one left
+  installed must not read as vulnerable. A fixed kernel installed but not yet
+  booted leaves the host exposed: the same idea as stale code, ended by a reboot
+  and not a service restart.
+- **The running version must be matched to a package.** `uname -r` is the package
+  version on the RHEL family (`5.14.0-427.13.1.el9_4.x86_64`), but only the ABI on
+  Ubuntu (`6.8.0-45-generic`, package `6.8.0-45.45`), so there it has to be read
+  through the matching installed image package. If that can't be done, the answer
+  is "can't judge", not "not affected".
+- **Live patches can cover a flaw with no reboot** (`kpatch-patch` on the RHEL
+  family, Canonical Livepatch on Ubuntu). A patch counts only where the evidence
+  shows it loaded and covering that CVE; what can be read for this, within the
+  collector's read-only rules, is settled in the Phase 6 plan.
+- **Flavours and exposure over time.** Ubuntu has many kernel packages per release
+  (`linux`, `linux-aws`, `linux-azure` and more), and a release's entries must
+  name them or say `other_builds: cant_judge`. The boot list says which kernel ran
+  when, so the exposure window comes from boots, not from package history.
+
+Most of these flaws need local access first, so what a kernel pack does to the
+score is set by its own likelihood ratio, as for any pack. The format gains a
+kernel rule, so a tool older than Phase 6 refuses such a pack; kernel packs ship
+after the tool.
+
 ---
 
 ## 11. Scoring
@@ -844,7 +878,10 @@ since the previous run.
 
 ## 14. Interfaces
 
-Command line first; a web interface later on top of the same store.
+Command line first; a web interface on top of the same store. The web interface
+(Phase 5) is the product for small organizations and businesses that can't afford
+commercial security products and mostly won't use a command line: everything they
+need is reachable in a browser, in plain words, and easy installation follows it.
 
 ```
 checker init                         # create config, keys, database
@@ -872,10 +909,11 @@ checker purge web01 --before 2026-07-01
 | SSH | AsyncSSH | Parallel, agent and password auth, stdin/stdout control |
 | Models | Pydantic | Shared, validated schemas for events, findings, AI output |
 | Config | YAML (PyYAML, safe loader) | Readable whitelists and packs in git |
-| Store | SQLite / PostgreSQL | Single operator / team |
+| Store | SQLite / PostgreSQL | A file / a database server, on one machine's tool |
 | Encryption | age (pyrage) | Simple, audited, key held by the organization |
 | Signing | minisign | Packs and releases |
 | Reports | Jinja2 → HTML; WeasyPrint → PDF | Self-contained files |
+| Web interface | Django, optional `web` extra | Tested login, sessions, CSRF and roles; the evidence store keeps its own code |
 | AI | Anthropic SDK; optional local model | Structured outputs |
 
 ---
@@ -946,6 +984,7 @@ Lessons that changed this design:
 | 3 | AI advisor (roles 1–4), redaction modes |
 | 4 | Threat packs: format, signing, distribution, PHP2Shell pack (drafting moved to a separate pack application) |
 | 5 | Fleet view, PDF/JSON, PostgreSQL, web interface |
+| 6 | Kernel threats: packs judged by the running kernel (section 10.5) |
 
 ---
 
@@ -954,6 +993,9 @@ Lessons that changed this design:
 1. ~~Product name.~~ **Decided 2026-10-25:** "Compromise Checker" stays the working
    title; the final name is chosen before the first public release, with
    trademark, domain, package-name and look-alike checks done for each candidate.
+   **Decided 2026-10-31:** the name is Compromise Checker, and stays configurable.
+   Domain and package-name checks found it free; a trademark search is still to do.
+   Whether it gets its own domain is decided later.
 2. ~~Licence.~~ **Decided 2026-10-25:** AGPL-3.0 for the tool, CC BY 4.0 for
    threat packs. NouriLoop LLC holds the copyright, so a customer who cannot
    accept AGPL can be offered a separate licence; that only stays possible if

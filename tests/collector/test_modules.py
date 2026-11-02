@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 
@@ -6126,6 +6127,294 @@ class PackageHistoryReviewTests(FixtureRoot):
         Path(str(db) + "-wal").write_bytes(b"x" * 100)
         records = collect(self.root, ["software"])
         self.assertEqual(len(named(records, "package_history_pending")), 1)
+
+    def wal_db(self, *batches):
+        """A live database in write-ahead mode, each batch of rows a transaction only in the
+        log. The writer stays open, as a running dnf's would, so the log stays there."""
+        import sqlite3
+
+        db = self.dnf_db([], [(1, int(NOW))])
+        writer = sqlite3.connect(db)
+        self.addCleanup(writer.close)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        for number, name in batches:
+            writer.execute("INSERT INTO trans_item VALUES (?, 1, ?, 1, 1)", (number, number))
+            writer.execute(
+                "INSERT INTO rpm VALUES (?, ?, 0, '1.0', '1.el9', 'x86_64')", (number, name)
+            )
+            writer.commit()
+        return db, Path(str(db) + "-wal")
+
+    def history_names(self, records):
+        return sorted(r["data"]["name"] for r in named(records, "package_change"))
+
+    def test_transactions_in_the_write_ahead_log_are_read_and_nothing_is_written(self):
+        db, wal = self.wal_db((10, "php-fpm"), (11, "php-cli"))
+        self.assertGreater(wal.stat().st_size, 0)
+        before = sorted(p.name for p in db.parent.iterdir())
+        records = collect(self.root, ["software"])
+        self.assertEqual(named(records, "package_history_pending"), [])
+        self.assertEqual(self.history_names(records), ["php-cli", "php-fpm"])
+        self.assertEqual(sorted(p.name for p in db.parent.iterdir()), before)
+
+    def test_a_torn_last_transaction_is_left_out_and_the_earlier_ones_kept(self):
+        db, wal = self.wal_db((10, "php-fpm"), (11, "php-cli"))
+        Path(str(db) + "-shm").unlink()  # no index to say how many frames there should be
+        data = wal.read_bytes()
+        wal.write_bytes(data[: len(data) - 200])
+        records = collect(self.root, ["software"])
+        self.assertEqual(named(records, "package_history_pending"), [])
+        self.assertEqual(self.history_names(records), ["php-fpm"])
+
+    def test_a_log_shorter_than_its_live_index_is_said(self):
+        _, wal = self.wal_db((10, "php-fpm"), (11, "php-cli"))
+        data = wal.read_bytes()
+        wal.write_bytes(data[: len(data) - 200])
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_pending")), 1)
+
+    def test_a_damaged_commit_frame_counts_the_log_as_unread(self):
+        """It may have been a real commit: reading on as if it weren't could miss a change."""
+        db, wal = self.wal_db((10, "php-fpm"), (11, "php-cli"))
+        Path(str(db) + "-shm").unlink()
+        data = bytearray(wal.read_bytes())
+        data[-100] ^= 0xFF
+        wal.write_bytes(bytes(data))
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_pending")), 1)
+
+    def test_the_plain_reader_finds_what_sqlite_finds(self):
+        """Long names on overflow pages, enough rows for interior pages, epochs, nulls."""
+        import sqlite3
+
+        db = self.dnf_db([], [(1, int(NOW)), (2, int(NOW) + 5)])
+        writer = sqlite3.connect(db)
+        self.addCleanup(writer.close)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        for number in range(10, 900):
+            action = (1, 2, 4, 5, 6, 8, 9, 7)[number % 8]
+            state = 2 if number % 11 == 0 else 1
+            writer.execute(
+                "INSERT INTO trans_item VALUES (?, ?, ?, ?, ?)",
+                (number, 1 + number % 2, number, action, state),
+            )
+            name = f"pkg-{number}-" + "x" * (9000 if number % 97 == 0 else number % 40)
+            epoch = None if number % 13 == 0 else number % 3
+            writer.execute(
+                "INSERT INTO rpm VALUES (?, ?, ?, '1.0', '1.el9', 'x86_64')", (number, name, epoch)
+            )
+            if number % 50 == 0:
+                writer.commit()
+        writer.commit()
+        expected = writer.execute(
+            "SELECT t.dt_begin, ti.action, r.name, r.epoch, r.version, r.release, r.arch"
+            " FROM trans_item ti JOIN trans t ON t.id = ti.trans_id"
+            " JOIN rpm r ON r.item_id = ti.item_id"
+            " WHERE t.dt_begin >= 0 AND ti.state = 1 AND ti.action IN (1, 2, 4, 5, 6, 8, 9)"
+            " ORDER BY t.dt_begin, ti.id"
+        ).fetchall()
+        self.assertGreater(len(expected), 500)
+        run = types.SimpleNamespace(check_time=lambda: None)
+        found = load_collector(self.root)._history_from_log(run, 0)
+        self.assertEqual(found, expected)
+
+    def test_the_plain_reader_reads_dnfs_real_schema(self):
+        """Comments between the columns, and rpm with no integer key: as on a real server."""
+        import sqlite3
+
+        db = Path(self.root, "var/lib/dnf/history.sqlite")
+        db.parent.mkdir(parents=True, exist_ok=True)
+        writer = sqlite3.connect(db)
+        self.addCleanup(writer.close)
+        writer.executescript(
+            """CREATE TABLE trans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dt_begin INTEGER NOT NULL,      /* (unix timestamp) date, and time */
+        dt_end INTEGER,                 /* (unix timestamp) */
+        releasever TEXT NOT NULL        -- var: $releasever, here
+    );
+    CREATE TABLE trans_item (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trans_id INTEGER REFERENCES trans(id),
+        item_id INTEGER REFERENCES item(id),
+        action INTEGER NOT NULL,        /* (enum) */
+        reason INTEGER NOT NULL,        /* (enum) */
+        state INTEGER NOT NULL          /* (enum) */
+    );
+    CREATE TABLE rpm (
+        item_id INTEGER UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        epoch INTEGER NOT NULL,         /* empty epoch is stored as 0 */
+        version TEXT NOT NULL,
+        release TEXT NOT NULL,
+        arch TEXT NOT NULL,
+        FOREIGN KEY(item_id) REFERENCES item(id),
+        CONSTRAINT rpm_unique_nevra UNIQUE (name, epoch, version, release, arch)
+    );"""
+        )
+        writer.execute("INSERT INTO trans VALUES (1, ?, 0, '9')", (int(NOW),))
+        writer.commit()
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO trans_item VALUES (1, 1, 7, 1, 2, 1)")
+        writer.execute("INSERT INTO rpm VALUES (7, 'php-fpm', 0, '8.0', '1.el9', 'x86_64')")
+        writer.commit()
+        records = collect(self.root, ["software"])
+        self.assertEqual(named(records, "package_history_pending"), [])
+        self.assertEqual(self.history_names(records), ["php-fpm"])
+
+    def test_a_reader_that_finds_less_than_sqlite_is_not_believed(self):
+        db, _ = self.wal_db()
+        import sqlite3
+
+        writer = sqlite3.connect(db)
+        self.addCleanup(writer.close)
+        writer.execute("INSERT INTO trans_item VALUES (9, 1, 9, 1, 1)")
+        writer.execute("INSERT INTO rpm VALUES (9, 'php-fpm', 0, '1.0', '1.el9', 'x86_64')")
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        collector = load_collector(self.root)
+        collector._history_from_log = lambda run, since: []
+        seen = []
+        run = types.SimpleNamespace(
+            check_time=lambda: None,
+            out_of_time=lambda: False,
+            deadline=time.monotonic() + 60,
+            stream=types.SimpleNamespace(record=lambda m, n, d: seen.append(n)),
+        )
+        changes = []
+        collector._dnf_history(run, "software", 0, changes.append)
+        self.assertIn("package_history_pending", seen)
+        self.assertEqual([c["name"] for c in changes], ["php-fpm"])
+
+    def test_a_bad_frame_before_a_later_commit_is_said(self):
+        """Stopping there would silently miss the later transaction."""
+        _, wal = self.wal_db((10, "php-fpm"), (11, "php-cli"), (12, "php-common"))
+        data = bytearray(wal.read_bytes())
+        page_size = struct.unpack(">I", data[8:12])[0]
+        data[32 + (24 + page_size) + 30] ^= 0xFF  # inside the log's second frame
+        wal.write_bytes(bytes(data))
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_pending")), 1)
+
+    def test_a_log_shorter_than_its_index_says_is_said(self):
+        collector = load_collector(self.root)
+        run = types.SimpleNamespace(check_time=lambda: None)
+        db, wal = self.wal_db((10, "php-fpm"))
+        data = wal.read_bytes()
+        index = bytearray(48)
+        index[16:20] = struct.pack("=I", 999)
+        index[32:40] = data[16:24]
+        self.assertIsNone(collector.apply_wal(run, db.read_bytes(), data, bytes(index)))
+        index[32:40] = b"otherlog"  # an index left from another log says nothing
+        self.assertIsNotNone(collector.apply_wal(run, db.read_bytes(), data, bytes(index)))
+
+    def test_a_log_claiming_a_huge_database_is_refused_without_allocating_it(self):
+        collector = load_collector(self.root)
+        run = types.SimpleNamespace(check_time=lambda: None)
+        page = bytes(512)
+        header = struct.pack(">6I", 0x377F0682, 3007000, 512, 0, 1, 2)
+        first, second = collector._wal_sum(header, False, 0, 0)
+        header += struct.pack(">2I", first, second)
+        frame = struct.pack(">2I", 1, 0x7FFFFFFF)
+        first, second = collector._wal_sum(frame, False, first, second)
+        first, second = collector._wal_sum(page, False, first, second)
+        wal = header + frame + struct.pack(">4I", 1, 2, first, second) + page
+        with self.assertRaises(ValueError):
+            collector.apply_wal(run, b"", wal)
+
+    def test_odd_bytes_are_refused_before_they_cost_anything(self):
+        collector = load_collector(self.root)
+        with self.assertRaises(ValueError):
+            collector._columns("CREATE TABLE t (" + "/*" * 40000)
+        with self.assertRaises(ValueError):
+            collector._columns("CREATE TABLE t (id INTEGER, PRIMARY KEY(id))")
+        with self.assertRaises(ValueError):
+            collector._record(b"\x83\xff\x7f" + bytes(10))
+
+    def test_a_real_number_is_a_number(self):
+        collector = load_collector(self.root)
+        payload = bytes([2, 7]) + struct.pack(">d", 1.5)
+        self.assertEqual(collector._record(payload), [1.5])
+
+    def test_a_negative_rowid_is_negative(self):
+        import sqlite3
+
+        db = Path(self.root, "n.sqlite")
+        connection = sqlite3.connect(db)
+        connection.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        connection.execute("INSERT INTO t VALUES (-5, 'x')")
+        connection.commit()
+        connection.close()
+        collector = load_collector(self.root)
+        run = types.SimpleNamespace(check_time=lambda: None)
+        rows = list(collector._SqliteImage(run, db.read_bytes()).table("t"))
+        self.assertEqual(rows, [{"id": -5, "name": "x"}])
+
+    def test_a_log_that_isnt_a_plain_file_is_said(self):
+        db = self.dnf_db([], [(1, int(NOW))])
+        os.mkfifo(str(db) + "-wal")
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_pending")), 1)
+
+    def test_running_out_of_time_on_the_log_costs_only_the_log(self):
+        self.wal_db((10, "php-fpm"))
+        collector = load_collector(self.root)
+
+        def too_slow(run, since):
+            raise collector.ModuleTimeout()
+
+        collector._history_from_log = too_slow
+        seen, changes = [], []
+        run = types.SimpleNamespace(
+            check_time=lambda: None,
+            out_of_time=lambda: False,
+            deadline=time.monotonic() + 60,
+            stream=types.SimpleNamespace(record=lambda m, n, d: seen.append(n)),
+        )
+        collector._dnf_history(run, "software", 0, changes.append)
+        self.assertIn("package_history_pending", seen)
+
+    def test_a_blob_for_a_package_name_loses_only_that_row(self):
+        collector = load_collector(self.root)
+        run = types.SimpleNamespace(check_time=lambda: None)
+        found = []
+        rows = [
+            (1, 1, b"blob", 0, "1", "1", "x"),
+            (2, 1, "php", 0, "1", "1", "x"),
+        ]
+        collector._dnf_changes(run, rows, found.append)
+        self.assertEqual([c["name"] for c in found], ["php"])
+
+    def test_a_crafted_database_is_refused_and_not_followed(self):
+        collector = load_collector(self.root)
+        run = types.SimpleNamespace(check_time=lambda: None)
+        header = bytearray(b"SQLite format 3\0".ljust(100, b"\0"))
+        header[16:18] = struct.pack(">H", 512)
+        header[56:60] = struct.pack(">I", 1)
+        looped = bytearray(header.ljust(1024, b"\0"))
+        looped[100] = 5  # page 1, interior, whose rightmost child is itself
+        looped[108:112] = struct.pack(">I", 1)
+        for bad in (bytes(looped), bytes(header), b"junk"):
+            with self.assertRaises((ValueError, IndexError, struct.error)):
+                list(collector._SqliteImage(run, bad).rows(1))
+
+    def test_a_log_with_a_bad_header_is_said_to_be_unread(self):
+        _, wal = self.wal_db((10, "php-fpm"))
+        data = bytearray(wal.read_bytes())
+        data[24] ^= 0xFF
+        wal.write_bytes(bytes(data))
+        records = collect(self.root, ["software"])
+        self.assertEqual(len(named(records, "package_history_pending")), 1)
+        self.assertEqual(self.history_names(records), [])
+
+    def test_a_log_too_big_to_hold_is_said_to_be_unread(self):
+        self.wal_db((10, "php-fpm"))
+        collector = load_collector(self.root)
+        collector.WAL_MAX_BYTES = 100
+        self.assertIsNone(collector._history_from_log(None, 0))
 
     def test_dateext_and_xz_rotations_and_old_lines_and_the_newest_kept(self):
         import lzma

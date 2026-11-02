@@ -1,0 +1,36 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}{{ row.name }}: people: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage_people') }}">Back to People</a></p>
+<h1 class="page-title">{{ row.name }}</h1>
+<p>{{ "Full access" if row.full else "View only" }}. Two-factor sign-in is {{ "on" if row.two_factor else "off" }}. {% if row.expired %}Their link ran out.{% elif row.invited %}They haven't used their link yet.{% endif %}</p>
+
+<h2>{{ "Make view only" if row.full else "Give full access" }}</h2>
+<p>This applies straight away, even if they're signed in.</p>
+<form method="post" action="{{ url('person_access') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="name" value="{{ row.form_name }}">
+  <input type="hidden" name="access" value="{{ 'view' if row.full else 'full' }}">
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>{{ "Make view only" if row.full else "Give full access" }}</button>
+</form>
+
+<h2>Make a new link</h2>
+<p>For a lost password or phone, or a link that ran out. It signs them out and clears their password and two-factor sign-in until they use the new link.</p>
+<form method="post" action="{{ url('person_new_link') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="name" value="{{ row.form_name }}">
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Make a new link</button>
+</form>
+
+<h2>Remove them</h2>
+<p>They're signed out and can't sign in again. The activity record keeps their name, so it can't be used for anyone else.</p>
+<form method="post" action="{{ url('person_remove') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="name" value="{{ row.form_name }}">
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Remove {{ row.name }}</button>
+</form>
+{% endblock %}

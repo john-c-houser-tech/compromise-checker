@@ -1,0 +1,12 @@
+{% extends "base.html.j2" %}
+{% block main %}
+<h1>Choose your password</h1>
+<p>You've been invited as <strong>{{ name }}</strong>. These results describe weaknesses an attacker could use, so use a long password, at least 12 characters, that you don't use anywhere else.</p>
+{% for error in errors %}<p class="error" role="alert">{{ error }}</p>{% endfor %}
+<form method="post">
+  {{ csrf_input }}
+  <label>Password <input name="password" type="password" autocomplete="new-password" required autofocus></label>
+  <label>Password again <input name="password2" type="password" autocomplete="new-password" required></label>
+  <button>Save and sign in</button>
+</form>
+{% endblock %}

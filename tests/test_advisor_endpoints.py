@@ -483,7 +483,7 @@ def test_what_counts_as_this_machine(url, local_):
 
 def test_an_older_advice_table_gains_the_endpoint_column(tmp_path):
     path = tmp_path / "evidence.db"
-    store = Store(path)
+    store = Store(path, create=True)
     store.close()
     db = sqlite3.connect(path)
     db.execute("DROP TRIGGER advice_no_update")
@@ -491,7 +491,7 @@ def test_an_older_advice_table_gains_the_endpoint_column(tmp_path):
     db.execute("ALTER TABLE advice DROP COLUMN endpoint")
     db.commit()
     db.close()
-    store = Store(path)
+    store = Store(path, create=True)
     columns = {row[1] for row in store._db.execute("PRAGMA table_info(advice)")}
     assert "endpoint" in columns
     triggers = {row[0] for row in store._db.execute("SELECT name FROM sqlite_master"

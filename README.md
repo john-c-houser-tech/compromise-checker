@@ -197,6 +197,11 @@ Set up a server for it with [docs/scanner-account.md](docs/scanner-account.md).
   tool does on your servers and with your data. [SECURITY.md](SECURITY.md) —
   reporting a vulnerability.
 
+![The list of servers: one plain answer at the top, then each server in the order to deal with it](docs/screenshots/fleet.png)
+
+*A demo fleet: throwaway servers, attacked on purpose, with real results from this tool and
+addresses replaced. See [docs/web.md](docs/web.md).*
+
 ## Development
 
 Runs on Python 3.12 or later on the controller.

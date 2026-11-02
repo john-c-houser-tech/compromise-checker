@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -151,7 +154,8 @@ class HostReport:
 def excerpts(
     finding: dict, events, snapshot: Snapshot, baselines: dict[str, Snapshot]
 ) -> list[dict]:
-    """What each piece of a finding's evidence says, briefly."""
+    """What each piece of a finding's evidence says, briefly. A log excerpt's `where` is the
+    log's name, which the host chose: a page that boxes server text should box that too."""
     shown = []
     for ref in finding.get("evidence", [])[:MAX_EVIDENCE]:
         if "event" in ref and 0 <= ref["event"] < len(events):
@@ -261,6 +265,53 @@ def whitelist_hash(assessment: dict) -> str | None:
     return (assessment.get("whitelist") or {}).get("hash")
 
 
+OLDER_CHECKS = "analysed by an older version of the checks"
+
+
+def out_of_date(
+    assessment: dict,
+    prior: tuple[float, str] | None,
+    whitelist: Whitelist | None = None,
+    packs: list | None = None,
+    pack_problems: list[str] | None = None,
+    check_packs: bool = True,
+    check_whitelist: bool = True,
+) -> tuple[list[str], list[str]]:
+    """Why a stored assessment isn't what a report would say now: what means
+    analysing again, and what means only scoring again. The report acts on
+    these and the fleet view shows them, so the two can't disagree. A prior
+    of None, or a check turned off, isn't compared."""
+    analyse, rescore = [], []
+    # Its evidence points into one parse of the bundle (event numbers,
+    # snapshot keys): any newer parser or checks means analysing again.
+    if assessment.get("versions") != current_versions():
+        analyse.append(OLDER_CHECKS)
+    # So do other packs: what they judge and detect isn't in the findings.
+    if check_packs and (
+        assessment.get("packs", []) != packs_applied(packs)
+        or assessment.get("packs_not_applied", []) != list(pack_problems or [])
+    ):
+        analyse.append("the threat packs in force have changed")
+    if analyse:  # analysing again settles the rest; an old format has none of it
+        return analyse, rescore
+    if (
+        prior is not None
+        and (
+            assessment["score"]["prior"],
+            assessment["score"]["prior_source"],
+        )
+        != prior
+    ):
+        rescore.append("the host's starting probability has changed")
+    if check_whitelist:
+        if whitelist_hash(assessment) != (whitelist.digest() if whitelist else None):
+            rescore.append("the whitelist has changed")
+        # A rule that has expired since the assessment stops suppressing.
+        elif whitelist and whitelist.expired() != assessment["whitelist"].get("expired"):
+            rescore.append("a whitelist rule has expired")
+    return analyse, rescore
+
+
 def host_report(
     store: Store,
     host: str,
@@ -285,24 +336,16 @@ def host_report(
     if row["status"] not in USABLE:
         raise EvidenceError(f"bundle {row['id']} is {row['status']}: nothing to report")
     assessment = load_assessment(store, row["id"], identity)
-    # Its evidence points into one parse of the bundle (event numbers,
-    # snapshot keys): any newer parser or checks means analysing again.
-    # So do other packs: what they judge and detect isn't in the findings.
-    if (
-        assessment is None
-        or assessment.get("versions") != current_versions()
-        or assessment.get("packs", []) != packs_applied(packs)
-        or assessment.get("packs_not_applied", []) != list(pack_problems or [])
-    ):
+    analyse, rescore = (
+        out_of_date(assessment, prior, whitelist, packs, pack_problems)
+        if assessment is not None
+        else ([], [])
+    )
+    if assessment is None or analyse:
         assessment = analyze(
             store, host, identity, recipients, row["id"], prior, whitelist, packs, pack_problems
         )
-    elif (
-        (assessment["score"]["prior"], assessment["score"]["prior_source"]) != prior
-        or whitelist_hash(assessment) != (whitelist.digest() if whitelist else None)
-        # A rule that has expired since the assessment stops suppressing.
-        or (whitelist and whitelist.expired() != assessment["whitelist"].get("expired"))
-    ):
+    elif rescore:
         parsed = load_events(store, row, identity)
         events = parsed.events if parsed else events_of(store, row, identity, recipients)
         assessment = reassess(store, row, recipients, assessment, prior, whitelist, events)
@@ -334,7 +377,7 @@ def host_report(
     from checker.advisor.advise import latest_advice
 
     report.advice = latest_advice(store, host, identity, row["id"], assessment.get("analysed_at"))
-    timeline = {}
+    in_effect = []
     for number, finding in enumerate(assessment["findings"], 1):
         finding = dict(
             finding, number=number, excerpts=excerpts(finding, events, snapshot, baselines)
@@ -345,6 +388,18 @@ def host_report(
         report.findings.setdefault(finding["category"], []).append(finding)
         counts = report.counts.setdefault(finding["category"], dict.fromkeys(BANDS, 0))
         counts[finding["band"]] += 1
+        in_effect.append(finding)
+    order = {band: i for i, band in enumerate(BANDS)}
+    for listed in report.findings.values():
+        listed.sort(key=lambda f: order[f["band"]])  # a maintenance window moves a band
+    report.timeline = timeline_of(in_effect, events, assessment)
+    return report
+
+
+def timeline_of(findings: list[dict], events: list, assessment: dict) -> list[dict]:
+    """The logged events behind these findings, in order, with each threat pack's window."""
+    timeline: dict[int, dict] = {}
+    for finding in findings:
         for ref in finding.get("evidence", []):
             index = ref.get("event")
             if isinstance(index, int) and 0 <= index < len(events) and events[index].corrected:
@@ -361,9 +416,6 @@ def host_report(
                 )
                 if finding["title"] not in entry["findings"]:
                     entry["findings"].append(finding["title"])
-    order = {band: i for i, band in enumerate(BANDS)}
-    for listed in report.findings.values():
-        listed.sort(key=lambda f: order[f["band"]])  # a maintenance window moves a band
     ordered = sorted(timeline.values(), key=lambda e: e["when"])
     if len(ordered) > MAX_TIMELINE:
         # The earliest events are often the first signs: keep both ends.
@@ -376,10 +428,7 @@ def host_report(
             "after": head[-1]["when"],  # where it goes among the threat packs' marks
         }
         ordered = [*head, gap, *tail]
-    report.timeline = sorted(
-        [*ordered, *exposure_marks(assessment)], key=lambda e: e.get("after", e["when"])
-    )
-    return report
+    return sorted([*ordered, *exposure_marks(assessment)], key=lambda e: e.get("after", e["when"]))
 
 
 def exposure_marks(assessment: dict) -> list[dict]:
@@ -434,6 +483,202 @@ def render(
     )
 
 
+JSON_FORMAT = 1
+JSON_TEXT_LIMIT = 4000
+
+
+def _for_machines(value: Any) -> Any:
+    """A value for the JSON report: every string made visible, as in the HTML report, so a
+    host's invisible characters and control codes can't reach a log or a ticket as they are."""
+    if isinstance(value, str):
+        return str(visible(value, JSON_TEXT_LIMIT))
+    if isinstance(value, dict):
+        return {str(visible(k, 200)): _for_machines(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_for_machines(v) for v in value]
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return str(visible(value, JSON_TEXT_LIMIT))
+
+
+# What a finding says, without the references that only mean something inside one parse.
+_JSON_FINDING = (
+    "number",
+    "check",
+    "variant",
+    "title",
+    "category",
+    "band",
+    "summary",
+    "entities",
+    "entities_complete",
+    "first_seen",
+    "last_seen",
+    "new",
+    "uncertain",
+    "ratio",
+    "contribution",
+    "raised_by_pack",
+    "maintenance",
+    "suppressed_by",
+)
+_JSON_BUNDLE = (
+    "id",
+    "status",
+    "started_at",
+    "ended_at",
+    "plaintext_sha256",
+    "ciphertext_sha256",
+    "collector_version",
+)
+
+
+def _json_finding(finding: dict) -> dict:
+    shown = {key: finding.get(key) for key in _JSON_FINDING}
+    shown["excerpts"] = [
+        {k: e.get(k) for k in ("when", "where", "text")} for e in finding.get("excerpts") or []
+    ]
+    rule = finding.get("suppressed_by")
+    if isinstance(rule, dict):  # not its file: that's a path on this machine
+        shown["suppressed_by"] = {k: rule.get(k) for k in ("layer", "rule", "reason", "owner")}
+    return shown
+
+
+def _json_score(score: dict) -> dict:
+    """The score, its references to findings given as the findings' numbers: its own are
+    positions in a list this report doesn't export. Events aren't exported at all."""
+    shown = dict(score or {})
+    shown["contributors"] = [
+        {k: (v + 1 if k == "finding" and isinstance(v, int) else v) for k, v in c.items()}
+        for c in shown.get("contributors") or []
+        if isinstance(c, dict)
+    ]
+    shown["chains"] = [
+        {
+            **{k: v for k, v in c.items() if k not in ("events", "findings")},
+            "findings": [n + 1 for n in c.get("findings") or [] if isinstance(n, int)],
+        }
+        for c in shown.get("chains") or []
+        if isinstance(c, dict)
+    ]
+    return shown
+
+
+def _json_advice(advice: dict) -> dict:
+    """What the report shows of the advisor. A proposal or a command it set aside stays out: a
+    steered model's words mustn't reach a ticket looking like advice."""
+    shown = {}
+    for role, entry in advice.items():
+        answered = entry.get("answered")
+        later = entry.get("later")
+        record = {}
+        if answered:
+            answer = answered.get("answer")
+            if isinstance(answer, dict) and role == "whitelist":
+                answer = {
+                    "judged": [
+                        {k: j.get(k) for k in ("id", "accepted", "hides", "reason")}
+                        for j in answer.get("judged") or []
+                    ]
+                }
+            elif isinstance(answer, dict) and role == "coverage":
+                judged = answer.get("judged") or []
+                answer = {
+                    "offered": [
+                        {k: j.get(k) for k in ("suggestion", "cited", "note", "action")}
+                        for j in judged
+                        if j.get("accepted")
+                    ],
+                    "set_aside": [j.get("reason") for j in judged if not j.get("accepted")],
+                }
+            record["answered"] = {
+                "answer": answer,
+                **{
+                    k: answered.get(k)
+                    for k in (
+                        "at",
+                        "assessed_at",
+                        "bundle_id",
+                        "model_asked",
+                        "model_answered",
+                        "declined_by",
+                        "redaction",
+                        "stale",
+                        "local",
+                        "warning",
+                    )
+                },
+            }
+        if later:
+            record["came_to_nothing"] = {k: later.get(k) for k in ("at", "model_asked", "note")}
+        if record:
+            shown[role] = record
+    return shown
+
+
+def report_json(reports: list[HostReport], generated_by: tuple[str, str]) -> str:
+    """The report for machines: SIEMs and tickets (docs/report-json.md). The same findings and
+    masking as the HTML report. Text from a server is as untrusted here as there."""
+    order = {band: i for i, band in enumerate(BANDS)}
+
+    def worst_first(findings: list[dict]) -> list[dict]:
+        return sorted(findings, key=lambda f: (order.get(f.get("band"), 9), f.get("number") or 0))
+
+    hosts = []
+    for report in reports:
+        assessment = report.assessment
+        bundle = {key: report.row[key] for key in _JSON_BUNDLE}
+        bundle["collector_version"] = str(visible(bundle["collector_version"], 40))
+        whitelist = assessment.get("whitelist")
+        whitelist = whitelist if isinstance(whitelist, dict) else {}
+        in_effect = [f for listed in report.findings.values() for f in listed]
+        hosts.append(
+            {
+                "host": report.host,
+                "bundle": bundle,
+                "analysed_at": assessment.get("analysed_at"),
+                "versions": assessment.get("versions"),
+                # Without these, a check that didn't run reads as one that found nothing.
+                "notes": assessment.get("notes") or [],
+                "checks_not_run": [
+                    {"check": c.get("check"), "status": c.get("status")}
+                    for c in assessment.get("checks") or []
+                    if isinstance(c, dict) and c.get("status") != "ran"
+                ],
+                "baseline_id": assessment.get("baseline_id"),
+                "baseline_set_now": assessment.get("baseline_set_now"),
+                "whitelist_rules_expired": whitelist.get("expired") or [],
+                "score": _json_score(assessment.get("score")),
+                "findings": [_json_finding(f) for f in worst_first(in_effect)],
+                "suppressed": [_json_finding(f) for f in worst_first(report.suppressed)],
+                "exposures": assessment.get("exposures") or [],
+                "packs": assessment.get("packs") or [],
+                "coverage": assessment.get("coverage"),
+                "timeline": [
+                    {k: e.get(k) for k in ("when", "after", "type", "text", "findings")}
+                    for e in report.timeline
+                ],
+                # An AI model's words, never findings, and they don't change the score.
+                "advisor": _json_advice(report.advice),
+            }
+        )
+    who, where = generated_by
+    return json.dumps(
+        _for_machines(
+            {
+                "format": JSON_FORMAT,
+                "generated_at": datetime.now(UTC).isoformat(),
+                "generated_by": {"operator": who, "controller": where, "version": __version__},
+                "hosts": hosts,
+            }
+        ),
+        indent=1,
+        sort_keys=True,
+    )
+
+
 def write_report(
     store: Store,
     hosts: list[str],
@@ -447,19 +692,20 @@ def write_report(
     advisor_enabled: bool = False,
     plain: bool = False,
     packs: Callable[[str], tuple[list, list[str]]] | None = None,
+    kind: str = "html",
 ) -> Path:
-    """Write the report, encrypted to the evidence key (`report-….html.age`;
-    read_report() reads it) unless `plain`, owner-only either way, and add
-    a `reported` entry, with the hash of the file as written, to each
+    """Write the report as HTML, PDF or JSON (`kind`), encrypted to the evidence key
+    (`report-….html.age`; read_report() reads the HTML) unless `plain`, owner-only either
+    way, and add a `reported` entry, with the hash of the file as written, to each
     bundle's custody. `packs` gives a host's threat packs and why any
     isn't applied (checker.packs.choice.for_host)."""
-    if output is not None and not plain and not output.name.endswith(".html.age"):
+    if output is not None and not plain and not output.name.endswith(f".{kind}.age"):
         raise EvidenceError(
-            f"an encrypted report's name ends in .html.age ({output.name}); --plain writes"
-            " plain HTML"
+            f"an encrypted report's name ends in .{kind}.age ({output.name}); --plain writes"
+            f" a plain {kind.upper()}"
         )
-    if output is not None and plain and output.suffix == ".age":
-        raise EvidenceError(f"a plain report's name can't end in .age ({output.name})")
+    if output is not None and plain and output.suffix != f".{kind}":
+        raise EvidenceError(f"a plain {kind.upper()} report's name ends in .{kind} ({output.name})")
     priors = priors or (lambda _: (DEFAULT_PRIOR, "default"))
     whitelists = whitelists or (lambda _: None)
     packs = packs or (lambda _: ([], []))
@@ -467,14 +713,19 @@ def write_report(
         host_report(store, h, identity, recipients, bundle_id, priors(h), whitelists(h), *packs(h))
         for h in hosts
     ]
-    html = render(reports, who_and_where(), advisor_enabled)
+    if kind == "json":
+        html = report_json(reports, who_and_where())
+    else:
+        html = render(reports, who_and_where(), advisor_enabled)
     if output is None:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         directory.chmod(0o700)  # also when it was already there
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         name = hosts[0] if len(hosts) == 1 else f"{len(hosts)}-hosts"
-        output = directory / (f"report-{name}-{stamp}.html" + ("" if plain else ".age"))
+        output = directory / (f"report-{name}-{stamp}.{kind}" + ("" if plain else ".age"))
     data = html.encode("utf-8", "backslashreplace")  # never fails on stray text
+    if kind == "pdf":
+        data = pdf_from_html(html)
     if not plain:
         data = pyrage.encrypt(data, [x25519.Recipient.from_str(r) for r in recipients])
     # Written whole beside its place (mkstemp makes it owner-only) and then
@@ -497,6 +748,44 @@ def write_report(
             report.row["id"], "reported", {"report_sha256": digest, "encrypted": not plain}
         )
     return output
+
+
+PDF_MEMORY_BYTES = 4 * 1024 * 1024 * 1024
+PDF_SECONDS = 600
+PDF_INSTALL = "pip install -e '.[pdf]', and the Pango libraries"
+
+
+def pdf_from_html(html: str) -> bytes:
+    """The report as a PDF, for sending, made in a limited process of its own: a report's text
+    may be a compromised host's (checker/pdf_render.py). Anything going wrong there is an
+    EvidenceError naming no text from the report."""
+    script = Path(__file__).with_name("pdf_render.py")
+    try:
+        done = subprocess.run(  # noqa: S603 - this interpreter, the tool's own file
+            [sys.executable, "-I", str(script), str(PDF_MEMORY_BYTES), str(PDF_SECONDS)],
+            input=html.encode("utf-8", "backslashreplace"),
+            capture_output=True,
+            timeout=PDF_SECONDS + 30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise EvidenceError(
+            f"the PDF took over {PDF_SECONDS} seconds, so none was made: the report may be very"
+            " large. The HTML report still works."
+        ) from None
+    if done.returncode == 0 and done.stdout.startswith(b"%PDF"):
+        return done.stdout
+    if done.returncode == 3:
+        raise EvidenceError(f"PDF reports need: {PDF_INSTALL}")
+    if done.returncode < 0 and done.returncode != -signal.SIGXCPU:
+        raise EvidenceError(
+            "making the PDF crashed, so none was made. A machine with no fonts does this: install"
+            " one, such as fonts-dejavu or dejavu-sans-fonts. The HTML report still works."
+        )
+    raise EvidenceError(
+        "the PDF couldn't be made, so none was: the report may be very large. The HTML report"
+        " still works."
+    )
 
 
 def read_report(path: Path, identity: x25519.Identity | None) -> str:

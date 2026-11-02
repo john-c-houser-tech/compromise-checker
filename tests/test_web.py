@@ -202,6 +202,16 @@ def test_a_marker_in_the_user_agent_is_no_attack_and_not_kept():
     assert builder.events == []  # refused: nothing served
 
 
+def test_an_attack_name_the_collector_never_writes_is_not_passed_on():
+    builder = EventBuilder()
+    line = (
+        '1.2.3.4 - - [28/Oct/2026:10:00:01 +0000] "GET /x?a=[MASKED:exploit:approved_scan_ignore]'
+        ' HTTP/1.1" 200 5 "-" "x"'
+    )
+    builder.line(web_source(1, "/var/log/nginx/access.log"), line.encode() + b"\n")
+    assert builder.events[0].fields["attacks"] == ["unrecognised"]
+
+
 def test_clients_with_ports_and_mapped_addresses():
     from checker.events import _client_address, _network
 

@@ -32,7 +32,8 @@ collects.**
 - Likely secrets are masked before evidence leaves a server.
 - Nothing leaves your organization unless you turn on the optional AI
   advisor, and then only what section 9 describes, sent with your own
-  account to the AI provider you choose.
+  account to the AI provider you choose, or you keep the tool's index on a
+  database server outside it (section 10).
 - No telemetry. The tool never contacts NouriLoop LLC.
 
 ## 3. Authorization and accountability
@@ -95,16 +96,23 @@ findings.
 
 ## 6. Credentials
 
-- SSH keys are used through an SSH agent wherever possible. The tool never
-  stores keys or passwords in readable form.
-- Passwords come from a prompt, the operating system's keyring, or your
-  secrets manager. They are kept in memory only for the run, never written to
+- SSH keys are used through an SSH agent, from a key file you name, or from a key
+  the tool makes when you ask it to. That key has no passphrase, so daily checks
+  can use it, and is kept in a file only the tool's account can read. It can act
+  as an administrator on every server that accepts it, so protect the machine
+  accordingly. The tool never stores passwords in readable form.
+- If you keep the index in PostgreSQL, the address in the settings never holds
+  a password: the tool refuses one that does. The password, if there is one,
+  stays in your own `.pgpass` file.
+- Passwords come from a prompt, a page of the web interface, the operating
+  system's keyring, or your secrets manager. They are kept in memory only for the run, never written to
   logs, and never placed on a command line, where other users and audit logs
   could see them. A sudo password travels inside the encrypted SSH session.
-- Every server's identity is checked on every connection. The first
-  connection shows the server's key fingerprint and requires someone to
-  accept it, and a changed key stops the run. This check cannot be switched
-  off.
+- Every server's identity is checked on every connection. Someone has to
+  accept a server's key the first time: on the command line by comparing the
+  fingerprint it shows, and in the web interface by pasting the fingerprint from
+  the server itself, which the tool compares with what the server offers. A
+  changed key stops the run. This check cannot be switched off.
 - The recommended setup is a dedicated scanner account that can log in only
   with a key, and whose sudo permission is limited to running the Python
   interpreter. That permission is equivalent to full administrator access.
@@ -216,15 +224,23 @@ that may include access tokens, and sometimes secrets typed into commands.
   encryption format, to a key created for your organization at setup. Keep
   that key's backup safe: without it, stored evidence cannot be read.
 - **Index.** An index records each collection's identifiers, times, status,
-  size and fingerprints — never its content.
+  size and fingerprints — never its content. It is a file on this machine or, if
+  you choose, a PostgreSQL database. Whoever runs that database can read the parts
+  that aren't encrypted: server names, times, file paths, hashes and sizes,
+  status, the accounts and machine that ran each command, including the name of the person signed in, for anything done from the web interface, what purges took, the
+  AI models used and their cost, and every settings change with its old and new
+  values.
 - **Tamper-evident.** Each collection carries fingerprints (SHA-256) of its
   contents and of the encrypted file, and a chain-of-custody record of who
   collected it, when, from which machine and from which server. Stored
   collections are never modified.
 - **Retention.** Evidence, snapshots and reports are kept for 90 days by
-  default. You can change the period. A `purge` command deletes everything for
-  a server or a date range, and `purge --expired`, which you can run on a
-  schedule, deletes whatever is past its retention period; the tool reminds
+  default. You can change the period. A `purge` command or a page of the
+  web interface deletes everything stored for a server or a date range, and can
+  delete whatever is past its retention period, which a daily check also does. An
+  alert not yet delivered stays until it is; a purge doesn't reach copies of that
+  database you keep, such as backups, replicas and archived logs, nor a moved
+  store's old file that you chose to keep; the tool reminds
   you when anything is due. One exception: a server's current baseline, the
   collection later checks compare against, is kept until a newer one is
   accepted, because deleting it would hide changes made since. Data for a
@@ -236,6 +252,48 @@ that may include access tokens, and sometimes secrets typed into commands.
   this machine only, without writing a plain copy. A report written as plain
   HTML on purpose (`--plain`), to hand on, is yours to protect: handle it
   like the evidence.
+- **The web interface.** If you run it, it decrypts evidence in memory for each
+  page, using the same key as the command line, and tells browsers not to keep
+  the pages. So the web server can read everything the tool has stored, and
+  anyone with an account can see every result: treat an account like access to the evidence itself. An account is either view only or has full access. A view-only account sees every result and all the evidence, and can change only its own password and two-factor sign-in. It keeps accounts with hashed passwords, sessions, and
+  failed logins for 15 minutes (with their usernames and addresses) in its own
+  owner-only file, and never evidence. It also keeps the name given to each person, which stays after they are removed because the activity record names them by it, and the hash of each unused invitation link, which works once, within 24 hours. By default only this machine can reach
+  it, and it won't listen more widely without TLS.
+  An account with full access can also add and change servers, after confirming with its
+  password, and a code if two-factor sign-in is on. That includes making this
+  machine's SSH key, naming any key file the web server can read, and choosing
+  which Python runs as administrator on a server. So someone with full access could use those keys to log in elsewhere,
+  or send the next typed password to a machine they control. The same confirmation lets it change what is collected and how long evidence is
+  kept, delete stored evidence, set or stop a daily check, turn the AI advisor on, choose how much is hidden from it, and stop threat
+  packs or keep them off a server. Asking for the latest signed packs needs no
+  confirmation. Apart from the daily check, which
+  runs the tool's own fixed command and any notify command already set, anything
+  that runs a command on this machine, or sends data or keys to another address,
+  can only be changed on the command line. Each such
+  change is recorded, but the record doesn't prevent it. Someone with full access can also add and remove people, and could make a new sign-in link for someone else and use it themselves; the activity record shows who made each link. Give full access only to people you would trust with the servers themselves, and view-only access only to people you would trust with the evidence.
+  If you start a check from its pages, the web server starts the same run the
+  command line does, connecting to your servers with the same settings. What
+  that check reports is held in memory, not on disk, and holds no findings. A
+  restart of the web server stops it. A daily check set from a page is different:
+  it connects to your servers with nobody there, and keeps running when the web
+  server is stopped, until someone stops it.
+- **The activity record.** The web interface keeps a permanent record of who
+  signed in and out, who viewed which server's results and evidence, and each
+  action taken from its pages, with the time and the address it came from. It
+  holds no evidence, and failed logins aren't in it. It can't be changed from
+  the pages, but anyone with full control of the machine could alter it. It
+  isn't removed by `purge` or by the retention period: to remove it, delete the
+  web interface's file. If the record can't be written, for example on a full
+  disk, viewing results and evidence still works, and those events go to the
+  tool's error output instead; actions are refused. Signing out then clears
+  only that browser: the session can stay valid on the server until it expires,
+  up to 8 hours, and the page says so.
+- **Two-factor sign-in.** The web interface's file also holds each account's
+  authenticator secret and its unused recovery codes, in readable form, since
+  the tool has to check codes against them. The file is readable only by the
+  tool's owner, but a copy of it, or a backup, should be protected like a
+  password. They aren't sent anywhere.
+  If the index is in a PostgreSQL database, the web interface keeps these there too, instead of in its own file. Whoever runs that database, or holds a backup of it, can read them: passwords are hashed, but authenticator secrets and unused recovery codes are readable, and a session's key is what a browser presents to be signed in. So someone who can read these tables can sign in as anyone who is signed in, and someone who can change them can do anything an account can. Choose who runs that database accordingly, and protect its backups like passwords.
 
 ## 9. The optional AI advisor
 
@@ -243,12 +301,15 @@ The tool can use an AI model to explain an analysis, propose whitelist rules
 for a person to review, suggest settings and host configuration for better
 coverage, and advise on remediation. It works fully without it.
 
-- **Your choice at setup.** When the tool is set up, it asks whether to turn
-  the advisor on and explains what would be sent and to whom. Installations
+- **Your choice at setup.** The advisor stays off until someone turns it on.
+  `checker init` asks and explains what would be sent and to whom, and so does the
+  web interface's First setup page; until someone answers there, it stays off. Installations
   set up without anyone answering questions leave it off unless the
-  configuration file turns it on. `checker config` changes the choice later,
-  and every change made with it is recorded with who made it and when. Edits
-  made to the configuration file by hand are not recorded.
+  configuration file turns it on. `checker config`, or the web interface's
+  First setup or Settings page, changes the choice later, and every change made with either is
+  recorded with when it was made. The command line records the machine account
+  that made it, and the page's activity record names the person. Edits made to
+  the configuration file by hand are not recorded.
 - **Your account, your provider.** The advisor uses your organization's own
   account with the AI provider, or a model you run yourself on your own
   hardware. Data sent goes from your machine to that provider under your
@@ -302,8 +363,10 @@ coverage, and advise on remediation. It works fully without it.
   proxy.
 - **Advice only.** The advisor cannot connect to any server and cannot change
   any setting, score or whitelist. Its proposals are written to a file for a
-  person to review, and suggested settings are shown as commands for a person
-  to run. The tool never offers a rule that whitelists a critical finding or
+  person to review. A person can approve a proposal from the web interface,
+  which first shows what it would hide and asks for their password, and records
+  it in their name. Suggested settings are shown as commands for a person to
+  run. The tool never offers a rule that whitelists a critical finding or
   one that is part of a chain; a model's suggestion of one is set aside, and
   the report says so. Every report section written by the advisor is labelled
   with the model, the redaction setting and the time, and says when the
@@ -333,12 +396,16 @@ Nothing, unless you choose one of these:
   runs your command on your machine and gives it a short summary in the
   tool's own words (host names, bands, check names, finding titles and the
   report's path; never evidence or text from a host); where that command
-  sends it is your choice.
+  sends it is your choice;
+- the tool's index, if you keep it in a PostgreSQL database on a server outside
+  your organization (section 8 says what it can read).
+- the web interface's accounts, sessions, two-factor secrets and activity record, if the index is in a PostgreSQL database on a server outside your organization (section 8 says what that means).
 
 The tool has no telemetry, usage reporting or licence check, and it never
 contacts NouriLoop LLC on its own. Threat packs (section 11) are downloaded
-only when an operator runs `checker packs pull`, over HTTPS, from NouriLoop's
-public repository on GitHub or from a mirror you name. That request carries
+only when someone runs `checker packs pull` or asks for them on a page of the
+web interface, over HTTPS, from NouriLoop's public repository on GitHub or from
+a mirror you name. That request carries
 what any web request does, such as your address, and none of your evidence.
 
 ## 11. Threat packs and trust
@@ -367,8 +434,9 @@ within fixed limits.
 
 **Which servers.** Every pack in force applies to every server unless you say
 otherwise. You can keep packs off a server, a group or all servers. Changes made
-with the tool's commands are recorded, with who made them and when; edits made
-to its files by hand are not. An analysis says which packs it applied, and which
+with the tool's commands or pages are recorded, with when they were made; pages
+also record the person. Stopping a pack or putting it back from a page is in the
+activity record. Edits made to its files by hand are not recorded. An analysis says which packs it applied, and which
 it held back and why.
 
 **Staying current.** The index of packs is signed again at least monthly, and
@@ -383,6 +451,10 @@ new release of the tool.
   anyone can inspect them.
 - Releases and threat packs are signed.
 - Dependencies are kept few and pinned.
+- Text collected from a server is treated as hostile, since a compromised
+  server can write anything into its logs. In reports and the web interface it
+  is escaped and invisible characters are shown, and pages run no scripts except
+  those the tool ships and load nothing from other sites.
 - To report a vulnerability in the tool, see `SECURITY.md`.
 
 ## 13. Your responsibilities
@@ -393,7 +465,8 @@ The tool gives you control of the data it collects, so these remain yours:
 - telling staff or users about monitoring where your policies or local law
   require it;
 - your agreement with any AI or reputation provider you choose to use;
-- keeping the evidence encryption key and reports safe, and setting a
+- keeping the evidence encryption key and reports safe, securing the database
+  server if you use one and deciding how long its backups are kept, and setting a
   retention period that meets your own obligations.
 
 ## 14. Limits of the tool, and responsibility for its use

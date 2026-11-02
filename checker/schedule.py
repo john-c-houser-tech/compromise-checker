@@ -16,16 +16,19 @@ last run, and alerts not yet delivered, are kept encrypted between runs,
 so an alert the command couldn't deliver is sent with the next one."""
 
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
 import plistlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -35,12 +38,15 @@ from typing import Any
 
 import asyncssh
 
-BANDS = ("Low", "Medium", "High", "Critical")
+from checker.files import LockBusy, locked
+from checker.transport import read_key_file
+
+BANDS = ("Low", "Elevated", "High", "Critical")
 FINDING_BANDS = ("info", "low", "medium", "high", "critical")
 SERIOUS = ("high", "critical")
 # The run's exit status: 1 when anything failed (the band is in the log and
 # the summary), else the worst band analysed, so a timer's log shows it.
-EXIT_BAND = {"Low": 0, "Medium": 10, "High": 11, "Critical": 12}
+EXIT_BAND = {"Low": 0, "Elevated": 10, "High": 11, "Critical": 12}
 EXIT_FAILED = 1
 EXIT_SETUP = 2  # nothing was collected: no evidence key, unreadable settings
 EXIT_BUSY = 3  # another run holds the lock
@@ -63,6 +69,40 @@ class Busy(Exception):
     """Another `checker run` is in progress."""
 
 
+EXIT_STOPPED = 143  # by SIGTERM, as a shell reports it
+
+
+class Stopped(SystemExit):
+    """A run asked to stop, by SIGTERM. Not an Exception: no step's own trouble-handling should
+    catch it and carry on."""
+
+
+def stop_on_sigterm() -> None:
+    """So that cleaning up happens, and locks and databases close properly. Main thread only."""
+
+    def stop(*_) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # once: cleaning up mustn't be interrupted
+        raise Stopped(EXIT_STOPPED)
+
+    signal.signal(signal.SIGTERM, stop)
+
+
+async def _cancelled_by_sigterm(work):
+    """While a collection runs, stopping cancels it, so each host's evidence is sealed and recorded
+    as far as it got: a file with no record of it is one a purge can't find."""
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+
+    def stop_once() -> None:
+        loop.remove_signal_handler(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        task.cancel()
+
+    with contextlib.suppress(ValueError, RuntimeError, NotImplementedError):  # not the main thread
+        loop.add_signal_handler(signal.SIGTERM, stop_once)
+    return await work
+
+
 @contextmanager
 def run_lock(base: Path) -> Iterator[None]:
     """One run at a time: a second one started while the first is still
@@ -82,13 +122,18 @@ def run_lock(base: Path) -> Iterator[None]:
 # --- Unattended -----------------------------------------------------------------------------
 
 
-def host_problems(host, environ: dict[str, str] | None = None) -> list[str]:
-    """What would stop an unattended run at a prompt on this host. (An
-    agent that asks for its key's passphrase can't be seen from here: the
-    docs say to use a key already unlocked.)"""
+def needs_typed_password(host) -> bool:
+    return host.needs_password() and host.password_source != "keyring"  # noqa: S105
+
+
+def host_problems(host, environ: dict[str, str] | None = None, typed: bool = False) -> list[str]:
+    """What would stop an unattended run at a prompt on this host, `typed` if
+    someone has already given its password. (An agent that asks for its key's
+    passphrase can't be seen from here: the docs say to use a key already
+    unlocked.)"""
     environ = os.environ if environ is None else environ
     problems = []
-    if host.needs_password() and host.password_source != "keyring":  # noqa: S105
+    if needs_typed_password(host) and not typed:
         what = "logs in with a password" if host.auth == "password" else "uses sudo's password"
         problems.append(
             f"{host.name} {what} typed at a prompt: keep it in the OS keyring"
@@ -105,6 +150,37 @@ def host_problems(host, environ: dict[str, str] | None = None) -> list[str]:
     return problems
 
 
+def host_problems_in_plain_words(host, environ: dict[str, str] | None = None) -> list[str]:
+    """What stops a check started from a page, where a typed password can be given: the same
+    conditions as `host_problems`, for someone who isn't at a command line."""
+    environ = os.environ if environ is None else environ
+    problems = []
+    if host.auth == "agent" and not environ.get("SSH_AUTH_SOCK"):
+        problems.append(
+            "It logs in with an SSH agent, and this web server can't reach one. Give it a key file"
+            " instead, or start the web server from a session that has an agent."
+        )
+    if host.auth == "key":
+        problem = _key_problem(host.key_path)
+        if problem:
+            problems.append(f"Its key file can't be used: {problem}.")
+    return problems
+
+
+def unattended_in_plain_words(host, environ: dict[str, str] | None = None) -> list[str]:
+    """What stops a scheduled check, where nobody is there to type: `host_problems`' conditions, for
+    someone who isn't at a command line."""
+    typing = (
+        [
+            "It needs a password typed. Give it a key file, or choose the keyring for its password"
+            " (which has to be unlocked when the check runs)."
+        ]
+        if needs_typed_password(host)
+        else []
+    )
+    return typing + host_problems_in_plain_words(host, environ)
+
+
 def unattended_problems(hosts: list, environ: dict[str, str] | None = None) -> list[str]:
     return [problem for host in hosts for problem in host_problems(host, environ)]
 
@@ -113,10 +189,10 @@ def _key_problem(path: str | None) -> str | None:
     if not path:
         return "no key file is named"
     try:
-        asyncssh.read_private_key(Path(path).expanduser())
+        read_key_file(path)
     except asyncssh.KeyImportError as exc:
         if "passphrase" in str(exc).lower():
-            return "it has a passphrase, which an unattended run can't type"
+            return "it has a passphrase, which a check nobody is typing at can't enter"
         return f"it can't be read ({exc})"
     except OSError as exc:
         return f"it can't be read ({exc.strerror or exc})"
@@ -438,11 +514,13 @@ def run(
     say: Callable[[str], None] = print,
     collect: Callable | None = None,
     environ: dict[str, str] | None = None,
+    typed_passwords: dict[str, str] | None = None,
 ) -> RunResult:
     """Collect, analyze, report and purge what has expired; say what needs a
     look. Each step's trouble is caught and reported, so the later steps
     and the notification still happen. Raises Busy if another run holds the
-    lock."""
+    lock. `typed_passwords` are what someone gave for this run, by host, from
+    the web interface: an unattended run uses them and asks for nothing."""
     from checker.assess import analyze, prior_for
     from checker.baseline import USABLE
     from checker.collect import collect_hosts
@@ -454,6 +532,15 @@ def run(
     from checker.whitelist import for_host as whitelist_for_host
 
     collect = collect or collect_hosts
+    typed_passwords = typed_passwords or {}
+
+    def given_or_unattended(host) -> str:
+        return typed_passwords.get(host.name) or unattended_password(host)
+
+    if unattended:
+        provider = given_or_unattended if typed_passwords else unattended_password
+    else:
+        provider = password_for
     result = RunResult([])
     with run_lock(base):
         state = load_state(base, identity)
@@ -482,7 +569,7 @@ def run(
             refused = {}
             if unattended:
                 for host in hosts:
-                    if problems := host_problems(host, environ):
+                    if problems := host_problems(host, environ, host.name in typed_passwords):
                         refused[host.name] = "; ".join(problems)
             todo = [h for h in hosts if h.name not in refused]
             before = {
@@ -491,21 +578,29 @@ def run(
             }
             outcomes = []
             if todo:
+                before_sigterm = signal.getsignal(signal.SIGTERM)
                 try:
                     outcomes = asyncio.run(
-                        collect(
-                            base,
-                            config,
-                            todo,
-                            days=days,
-                            parallel=parallel,
-                            password_provider=unattended_password if unattended else password_for,
+                        _cancelled_by_sigterm(
+                            collect(
+                                base,
+                                config,
+                                todo,
+                                days=days,
+                                parallel=parallel,
+                                password_provider=provider,
+                            )
                         )
                     )
+                except asyncio.CancelledError:
+                    raise Stopped(EXIT_STOPPED) from None
                 except Exception as exc:  # noqa: BLE001 - every host shows as not collected
                     result.problems.append(
                         f"collection failed ({type(exc).__name__}: {visible(str(exc), 300)})"
                     )
+                finally:
+                    if threading.current_thread() is threading.main_thread():
+                        signal.signal(signal.SIGTERM, before_sigterm)  # asyncio's went with it
             by_host = {o.host: o for o in outcomes}
             analysed = []
             for host in hosts:
@@ -571,6 +666,16 @@ def run(
                     )
                     result.run_alerts.append("the report couldn't be written")
             _purge_expired(store, base, config, inventory, say, result)
+        except Stopped:
+            # What this run found mustn't be lost to the next: it would compare against this run's
+            # results and see nothing new to say.
+            with contextlib.suppress(OSError):
+                save_state(
+                    base,
+                    {"hosts": seen, "pending": result.alerting, "pack_problems": pack_problems},
+                    config.recipients,
+                )
+            raise
         finally:
             store.close()
         pending: list[str] = []
@@ -713,8 +818,8 @@ def systemd_units(at: tuple[int, int], env: dict[str, str]) -> dict[str, str]:
             "Type=oneshot",
             *lines,
             "ExecStart=" + " ".join(_systemd_word(w) for w in command_line()),
-            # Exit statuses 10-12 are the worst band, not a failure to run.
-            "SuccessExitStatus=10 11 12",
+            # Exit statuses 10-12 are the worst band, not a failure to run; 143 is being stopped.
+            "SuccessExitStatus=10 11 12 143",
             # A run waiting on something forever would keep the timer from starting it again.
             "TimeoutStartSec=4h",
             "Nice=10",
@@ -799,6 +904,324 @@ def placement(
         ],
         f"journalctl --user -u {UNIT}.service",
     )
+
+
+class InstallFailed(Exception):
+    """Why the timer couldn't be set up or stopped. Its files are as they were before."""
+
+
+TIMER_COMMAND_SECONDS = 60  # a hung systemctl mustn't hold a page, or the command, for ever
+
+
+def _timer_command(command: list[str]) -> Any:
+    try:
+        return subprocess.run(  # noqa: S603
+            command, capture_output=True, text=True, check=False, timeout=TIMER_COMMAND_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        raise InstallFailed(f"`{' '.join(command)}` didn't finish") from None
+    except OSError as exc:
+        raise InstallFailed(f"`{' '.join(command)}` failed: {exc.strerror}") from None
+
+
+class AnotherHome(InstallFailed):
+    """The timer runs another copy of this tool, so it wasn't changed."""
+
+
+TIMER_LOCK_SECONDS = 10
+
+
+def _timer_lock(where: Placement):
+    """Per user, as the timer is, whichever copy of this tool is asking: one change at a time, from
+    looking at what's there to putting it back."""
+    folder = next(iter(where.files)).parent
+    return locked(folder / UNIT, wait=TIMER_LOCK_SECONDS)
+
+
+def _put_back(
+    where: Placement, earlier: dict[Path, bytes | None], was_on: bool | None, touched: bool
+) -> None:
+    """After a failed start: the files as they were, and the timer as it was, as far as that goes.
+    It's best effort: what can't be restored shows on the next look at the timer. If nothing was
+    asked of the scheduler yet, nothing is now, and one that was off is never switched on."""
+    for path, content in earlier.items():
+        with contextlib.suppress(OSError):
+            if content is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(content)
+    if not touched:
+        return
+    had_one = any(content is not None for content in earlier.values())
+    if not had_one:
+        steps = [] if sys.platform == "darwin" else where.stop
+    elif was_on:
+        steps = where.start
+    else:
+        steps = [] if sys.platform == "darwin" else where.start[:1]  # its files changed back
+    for command in steps:
+        with contextlib.suppress(InstallFailed):
+            _timer_command(command)
+
+
+def _refuse_another_home(base: Path) -> None:
+    if timer_of_another_home(base):
+        raise AnotherHome("the timer runs another copy of this tool")
+
+
+def install(
+    base: Path,
+    at: tuple[int, int],
+    hosts: list,
+    say: Callable[[str], None] = lambda words: None,
+    pause: Callable[[float], None] | None = None,
+    only_this_home: bool = False,
+) -> Placement:
+    """Write the timer's files and start it, as `checker schedule install` and a page do. If it
+    can't start, the files go back as they were: left there, they'd read as a timer that runs."""
+    env = timer_environment(base, hosts)
+    if sys.platform != "darwin" and (unsafe := systemd_unsafe(env)):
+        raise InstallFailed(
+            "a systemd unit can't hold these paths (quotes, backslashes, $, ` or control"
+            " characters): " + ", ".join(repr(word) for word in unsafe)
+        )
+    where = placement(sys.platform, at, env, base, Path.home())
+    try:
+        with _timer_lock(where):
+            if only_this_home:
+                _refuse_another_home(base)
+            _install_locked(base, where, say, pause or time.sleep)
+    except LockBusy:
+        raise InstallFailed("someone else is changing the timer: try again") from None
+    return where
+
+
+def _install_locked(base: Path, where: Placement, say, pause) -> None:
+    try:
+        earlier = {path: path.read_bytes() if path.exists() else None for path in where.files}
+    except OSError as exc:
+        raise InstallFailed(f"the timer's files can't be read: {exc.strerror}") from None
+    was_on = timer_running()
+    touched = False
+    try:
+        for path, content in where.files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            say(f"Wrote {path}")
+        if sys.platform == "darwin":
+            (base / "logs").mkdir(exist_ok=True, mode=0o700)
+            touched = True
+            _timer_command(where.stop[0])  # a reload
+        for command in where.start:
+            touched = True
+            # launchd may still be unloading the old agent: a few tries, a second apart.
+            for _ in range(5 if sys.platform == "darwin" else 1):
+                done = _timer_command(command)
+                if done.returncode == 0:
+                    break
+                pause(1.0)
+            if done.returncode != 0:
+                raise InstallFailed(f"`{' '.join(command)}` failed: {(done.stderr or '').strip()}")
+    except (InstallFailed, OSError) as exc:
+        _put_back(where, earlier, was_on, touched)
+        why = exc.strerror if isinstance(exc, OSError) else exc
+        raise InstallFailed(f"{why} (the timer's files were put back as they were)") from None
+
+
+_NOT_LOADED = (3, 113)  # launchctl: no such process, or not loaded
+
+
+def remove_timer(base: Path, only_this_home: bool = False) -> tuple[list[Path], bool]:
+    """Stop the timer and delete its files. Returns those it deleted, and whether a timer was
+    running or there to stop. If it can't be stopped, the files stay: a timer that keeps running
+    with nothing saying so is the worst outcome. Its files can be gone while it's still loaded, so
+    the scheduler is asked, not just the folder."""
+    where = placement(sys.platform, (3, 0), {}, base, Path.home())
+    try:
+        with _timer_lock(where):
+            if only_this_home:
+                _refuse_another_home(base)
+            return _remove_locked(where)
+    except LockBusy:
+        raise InstallFailed("someone else is changing the timer: try again") from None
+
+
+def _stop_with_no_file(stop: list[str]) -> None:
+    """`disable` couldn't find the unit file, which says nothing about a timer still loaded from
+    it: that takes a stop of its own, and only seeing it inactive says it's stopped."""
+    if timer_running() is True:
+        _timer_command(["systemctl", "--user", "stop", f"{UNIT}.timer"])
+        if timer_running() is True:
+            raise InstallFailed(f"`{' '.join(stop)}` couldn't stop the timer still loaded")
+
+
+def _remove_locked(where: Placement) -> tuple[list[Path], bool]:
+    present = [path for path in where.files if path.exists()]
+    if not present and timer_running() is not True:
+        return [], False
+    stop, *after = where.stop  # stopped while its files are there; reloaded once they're gone
+    done = _timer_command(stop)
+    words = (done.stderr or "").strip()
+    if "does not exist" in words:
+        _stop_with_no_file(stop)
+    elif done.returncode != 0 and not (sys.platform == "darwin" and done.returncode in _NOT_LOADED):
+        raise InstallFailed(f"`{' '.join(stop)}` failed: {words}")
+    for path in present:
+        path.unlink()
+    for command in after:
+        with contextlib.suppress(InstallFailed):  # it is stopped: this only tidies up
+            _timer_command(command)
+    return present, True
+
+
+def placement_exists(base: Path) -> bool:
+    where = placement(sys.platform, (3, 0), {}, base, Path.home())
+    return any(path.exists() for path in where.files)
+
+
+def timer_time(base: Path) -> str | None:
+    """The installed timer's time of day, HH:MM, if it's the daily one this tool writes; None if
+    there's none, or a person changed it to something this can't state."""
+    where = placement(sys.platform, (3, 0), {}, base, Path.home())
+    for path in where.files:
+        if path.suffix == ".plist" and path.exists():
+            when = _plist(path).get("StartCalendarInterval")
+            if isinstance(when, dict) and set(when) == {"Hour", "Minute"}:
+                hour, minute = when["Hour"], when["Minute"]
+                if (
+                    type(hour) is int
+                    and type(minute) is int
+                    and 0 <= hour < 24
+                    and 0 <= minute < 60
+                ):
+                    return f"{hour:02}:{minute:02}"
+            return None
+        if path.suffix == ".timer" and path.exists():
+            try:
+                text = path.read_text()
+            except (OSError, UnicodeError):
+                return None
+            lines = [line.strip() for line in text.splitlines()]
+            lines = [line for line in lines if line.startswith("On")]
+            found = (
+                re.fullmatch(r"OnCalendar=\*-\*-\* (\d\d):(\d\d):00", lines[0]) if lines else None
+            )
+            return f"{found[1]}:{found[2]}" if found and len(lines) == 1 else None
+    return None
+
+
+def _plist(path: Path) -> dict[str, Any]:
+    try:
+        found = plistlib.loads(path.read_bytes())
+    except Exception:  # noqa: BLE001 - whatever a damaged one raises, it says nothing
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def _systemd_environment(text: str) -> dict[str, str]:
+    """A service's Environment= lines as systemd reads them: indented or not, several assignments
+    to a line, quoted or not, later ones winning, and an empty one clearing what came before.
+    ValueError if one can't be read."""
+    env: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("Environment="):
+            continue
+        value = line.removeprefix("Environment=")
+        if not value:
+            env.clear()
+            continue
+        for word in shlex.split(value):
+            key, equals, setting = word.partition("=")
+            if equals:
+                env[key] = setting.replace("%%", "%")
+    return env
+
+
+def _timer_env(base: Path) -> dict[str, str] | None:
+    """The environment the installed timer's run gets, as written. None if there's nothing to read;
+    {} if there's something, and it can't be told or names nothing."""
+    where = placement(sys.platform, (3, 0), {}, base, Path.home())
+    for path in where.files:
+        if path.suffix == ".plist" and path.exists():
+            body = _plist(path)
+            if not body:
+                return None
+            env = body.get("EnvironmentVariables")
+            return {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {}
+        if path.suffix == ".service" and path.exists():
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                return None
+            if not text.strip():
+                return None
+            try:
+                return _systemd_environment(text)
+            except ValueError:
+                return {}
+    return None
+
+
+def timer_of_another_home(base: Path) -> bool:
+    """The timer's name is fixed, so it may run another copy of this tool: stopping or replacing it
+    from here would stop that one's checks, and this one's servers aren't being checked by it. This
+    tool always writes the home, so a timer with a body that doesn't name it isn't taken for ours.
+    With nothing to read there's nothing to say it's another's, and nobody should be locked out."""
+    env = _timer_env(base)
+    if env is None:
+        return False
+    home = env.get("CHECKER_HOME")
+    if not home:
+        return True
+    try:
+        return Path(home).resolve() != base.resolve()
+    except (OSError, ValueError):
+        return True
+
+
+def timer_environment_now(base: Path) -> dict[str, str]:
+    """What a scheduled run will have that decides what it can reach: its agent's socket."""
+    socket = (_timer_env(base) or {}).get("SSH_AUTH_SOCK")
+    return {"SSH_AUTH_SOCK": socket} if socket else {}
+
+
+def timer_running() -> bool | None:
+    """Whether the timer is switched on (None: can't tell here). Files alone don't say: enabling
+    it can fail, and someone can switch it off."""
+    command = (
+        ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"]
+        if sys.platform == "darwin"
+        else ["systemctl", "--user", "is-active", f"{UNIT}.timer"]
+    )
+    try:
+        done = subprocess.run(  # noqa: S603
+            command, capture_output=True, text=True, check=False, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if sys.platform == "darwin":
+        if done.returncode == 0:
+            return True
+        return False if done.returncode in _NOT_LOADED else None
+    state = done.stdout.strip()
+    if state in ("active", "activating"):
+        return True
+    return False if state in ("inactive", "failed", "deactivating") else None
+
+
+def forget_hosts(base: Path, hosts: list[str], identity, recipients: list[str]) -> None:
+    """What the last run remembered of hosts whose evidence is all gone: it's derived from that
+    evidence, and it would hide their next run's findings as not new. Alerts not yet delivered stay:
+    deleting evidence mustn't also delete the news nobody has had."""
+    if not hosts or not (base / STATE_FILE).exists():
+        return
+    state = load_state(base, identity)
+    seen = state.get("hosts")
+    if not isinstance(seen, dict) or not any(name in seen for name in hosts):
+        return
+    state["hosts"] = {name: value for name, value in seen.items() if name not in hosts}
+    save_state(base, state, recipients)
 
 
 def lingering(user: str) -> bool | None:

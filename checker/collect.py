@@ -3,6 +3,7 @@
 import asyncio
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -64,6 +65,18 @@ class Outcome:
     bytes: int
 
 
+async def _uninterrupted(work: Callable):
+    """Its result, and whether a cancel came meanwhile. Sealing finishes whatever happens: evidence
+    with no record of it is what a purge can't find."""
+    future = asyncio.get_running_loop().run_in_executor(None, work)
+    cancelled = False
+    while True:
+        try:
+            return await asyncio.shield(future), cancelled
+        except asyncio.CancelledError:
+            cancelled = True
+
+
 async def collect_hosts(
     home: Path,
     config: Config,
@@ -113,6 +126,7 @@ async def collect_hosts(
         )
         session: Session | None = None
         error: TransportError | None = None
+        stopped = False
         try:
             session = await collect(
                 host,
@@ -124,9 +138,12 @@ async def collect_hosts(
             )
         except TransportError as exc:
             error, session = exc, exc.session
+        except asyncio.CancelledError:  # stopped: what it has so far is still kept, and recorded
+            stopped = True
         finally:
             # Joining the encryptor and fsync can be slow: keep other hosts moving.
-            sealed = await asyncio.to_thread(writer.seal)
+            sealed, stopped_meanwhile = await _uninterrupted(writer.seal)
+            stopped = stopped or stopped_meanwhile
         manifest = sealed.summary.manifest or {}
         status, verdict = judge(
             sealed.status,
@@ -135,6 +152,8 @@ async def collect_hosts(
             session.exit_status if session else None,
         )
         problem = str(error) if error else (sealed.problem or verdict)
+        if stopped:
+            problem = "stopped before it finished"
         row = {
             "id": identifier,
             "host": host.name,
@@ -176,6 +195,8 @@ async def collect_hosts(
             except OSError as exc:
                 problem = f"{problem + '; ' if problem else ''}mail gate not recorded: {exc}"
         outcomes.append(Outcome(host.name, identifier, status, problem, sealed.plaintext_bytes))
+        if stopped:
+            raise asyncio.CancelledError
         if error is not None:
             raise error
         return session

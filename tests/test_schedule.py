@@ -218,6 +218,23 @@ def test_an_unattended_run_never_prompts(fleet):
         schedule.unattended_password(Host(name="a", address="192.0.2.1", user="u", sudo="password"))
 
 
+def test_a_password_given_for_this_run_is_used_and_nothing_is_refused(fleet):
+    base, *_ = fleet
+    inventory = load_inventory()
+    host = inventory.hosts[0].model_copy(update={"auth": "password"})
+    collect = collector(fleet, CLEAN)
+    config = load_config(base)
+    identity = fleet[2]
+    schedule.run(
+        base, config, [host], identity, inventory, unattended=True, collect=collect,
+        say=lambda line: None, environ={}, typed_passwords={host.name: "given"},
+    )  # fmt: skip
+    assert collect.calls and collect.calls[0][1]["password_provider"](host) == "given"
+    other = host.model_copy(update={"name": "other"})
+    with pytest.raises(RuntimeError, match="doesn't ask"):
+        collect.calls[0][1]["password_provider"](other)
+
+
 def test_a_keyring_that_doesnt_answer_isnt_waited_for(monkeypatch):
     monkeypatch.setattr("checker.credentials.password_for", lambda host: time.sleep(5))
     host = Host(name="a", address="192.0.2.1", user="u", auth="password", password_source="keyring")
@@ -307,7 +324,7 @@ def test_what_counts_as_worse():
     before = analysis("High", root)
     assert worse(before, analysis("High", root)) == []
     assert worse(before, analysis("Critical", root)) == ["h: High to Critical (50.0%)"]
-    assert worse(analysis("High"), analysis("Medium")) == []  # better isn't news
+    assert worse(analysis("High"), analysis("Elevated")) == []  # better isn't news
     other = finding("account.uid0", "critical", entities=("account:y",))
     assert worse(before, analysis("High", root, other)) == ["h: new critical: account.uid0 title"]
     # Suppressed, or below high: not news.
@@ -321,8 +338,8 @@ def test_what_counts_as_worse():
 
 
 def test_a_finding_that_grew_serious_is_news():
-    before = analysis("Medium", finding("net.listener", "medium"))
-    assert worse(before, analysis("Medium", finding("net.listener", "high"))) == [
+    before = analysis("Elevated", finding("net.listener", "medium"))
+    assert worse(before, analysis("Elevated", finding("net.listener", "high"))) == [
         "h: now high (was medium): net.listener title"
     ]
 
@@ -510,7 +527,8 @@ def test_install_and_remove(fleet, tmp_path, monkeypatch, capsys):
 
 
 def test_install_on_a_mac_waits_for_the_old_agent_to_go(fleet, tmp_path, monkeypatch):
-    answers = iter([Done(), Done(5), Done(5), Done()])  # bootout, then two busy bootstraps
+    # Whether one's loaded, then bootout, then two busy bootstraps.
+    answers = iter([Done(), Done(), Done(5), Done(5), Done()])
     ran, waited = [], []
     monkeypatch.setattr(
         "subprocess.run", lambda command, **kw: ran.append(command) or next(answers)
@@ -519,7 +537,7 @@ def test_install_on_a_mac_waits_for_the_old_agent_to_go(fleet, tmp_path, monkeyp
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
     assert cli.main(["schedule", "install"]) == 0
-    assert [c[1] for c in ran] == ["bootout", "bootstrap", "bootstrap", "bootstrap"]
+    assert [c[1] for c in ran] == ["print", "bootout", "bootstrap", "bootstrap", "bootstrap"]
     assert waited == [1.0, 1.0]
     agents = tmp_path / "user" / "Library" / "LaunchAgents"
     assert (agents / "com.nouriloop.compromise-checker.plist").exists()
@@ -539,3 +557,45 @@ def test_a_run_purges_only_hosts_in_the_inventory(fleet):
     assert store.bundles("web01") == [] and len(store.bundles("paused")) == 1
     assert result.run_alerts == ["web01: all its evidence had expired and was purged"]
     assert any("1 expired bundle(s) of hosts not in the inventory are kept" in s for s in said)
+
+
+def test_the_bands_are_the_ones_scoring_gives():
+    from checker.scoring import PROBABILITY_BANDS
+
+    assert set(schedule.BANDS) == {name for _, name in PROBABILITY_BANDS} == set(schedule.EXIT_BAND)
+
+
+def test_rising_to_elevated_is_news():
+    (line,) = schedule.alerts("web01", {"band": "Low"}, {"score": {"band": "Elevated"}})
+    assert line == "web01: Low to Elevated"
+
+
+def test_a_stopped_collection_ends_the_run_cleanly(fleet, monkeypatch):
+    import asyncio
+
+    async def stopped(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    with pytest.raises(schedule.Stopped):
+        one_run(fleet, stopped)
+    with schedule.run_lock(fleet[0]):  # the lock went with it
+        pass
+
+
+def test_a_stop_after_finding_something_keeps_it_for_the_next_run(fleet, monkeypatch):
+    collect = collector(fleet, ROOTED)
+
+    def stop(*args, **kwargs):
+        raise schedule.Stopped(schedule.EXIT_STOPPED)
+
+    monkeypatch.setattr(schedule, "_purge_expired", stop)
+    with pytest.raises(schedule.Stopped):
+        one_run(fleet, collect)
+    monkeypatch.undo()
+    state = schedule.load_state(fleet[0], fleet[2])
+    assert state["pending"]  # sent with the next run's, as a failed notify's would be
+
+
+def test_the_timer_counts_being_stopped_as_clean():
+    units = schedule.systemd_units((3, 0), {})
+    assert any("SuccessExitStatus=10 11 12 143" in text for text in units.values())

@@ -2,15 +2,21 @@
 
 import argparse
 import asyncio
+import contextlib
+import functools
 import json
-import sqlite3
+import os
+import re
+import signal
 import sys
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 
 import pyrage
+import yaml
 from pydantic import ValidationError
 
 from checker import __version__
@@ -26,6 +32,7 @@ from checker.baseline import accept, changes, usable_bundles
 from checker.checks import BANDS, CATEGORIES
 from checker.collect import collect_hosts
 from checker.credentials import password_for
+from checker.database import DATABASE_ERRORS, check_database_url, configured_url
 from checker.evidence import (
     Advisor,
     EvidenceError,
@@ -43,8 +50,17 @@ from checker.evidence import (
     mail_key_file,
     open_bundle,
     open_text,
+    store_exists,
+    store_unreadable,
 )
-from checker.inventory import Host, home, hosts_file, inventory_transaction, load_inventory
+from checker.inventory import (
+    Host,
+    home,
+    hosts_file,
+    inventory_transaction,
+    load_inventory,
+    new_host_problems,
+)
 from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
 from checker.report import visible, write_report
@@ -90,6 +106,8 @@ def cmd_hosts_add(args: argparse.Namespace) -> int:
             web_roots=args.web_root,
             prior=args.prior,
         )
+        if problems := new_host_problems(host):
+            raise ValueError("; ".join(f"{field}: {words}" for field, words in problems))
         with inventory_transaction() as inventory:
             inventory.add(host)
     except (ValidationError, ValueError) as exc:
@@ -249,6 +267,8 @@ def cmd_init(args: argparse.Namespace, ask: Callable[[str], str] | None = None) 
             args.web_access_logs,
             args.exec_records,
             advisor,
+            args.database,
+            args.new_store,
         )
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -279,6 +299,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     for line in describe(config):
         print(line)
     print(f"Retention: {config.retention_days} days. Prior: {percent(config.prior)}.")
+    print(f"Store: {'a PostgreSQL database' if config.database else 'a file beside the evidence'}.")
     print(packs_line(config))
     try:
         groups = {h.group for h in load_inventory().hosts}
@@ -298,7 +319,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 2
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, *DATABASE_ERRORS) as exc:
         print(f"checker: {args.key} not changed: {exc}", file=sys.stderr)
         return 1
     if old == new:
@@ -315,7 +336,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
 
 def cmd_config_history(args: argparse.Namespace) -> int:
     base = home()
-    if not database_file(base).exists():
+    if not store_exists(base):
         print("checker: not set up yet: run `checker init`", file=sys.stderr)
         return 2
     store = Store(database_file(base))
@@ -788,6 +809,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = commands.add_parser("init", help="set up: evidence key, database, configuration")
     init.add_argument(
+        "--database",
+        metavar="POSTGRESQL_ADDRESS",
+        help="keep the store in PostgreSQL (docs/postgres.md), not a file; no password in it",
+    )
+    init.add_argument(
+        "--new-store",
+        action="store_true",
+        help="start an empty store though evidence is here: it won't list that evidence",
+    )
+    init.add_argument(
         "--recipient",
         metavar="AGE_PUBLIC_KEY",
         help="encrypt evidence to this key (its private half kept elsewhere)",
@@ -922,7 +953,7 @@ def build_parser() -> argparse.ArgumentParser:
     analysing.add_argument("--identity", help="the evidence private key file")
     analysing.set_defaults(handler=cmd_analyze)
     reporting = commands.add_parser(
-        "report", help="write the confidential HTML report for hosts' latest bundles"
+        "report", help="write the confidential report, HTML or PDF, for hosts' latest bundles"
     )
     chosen = reporting.add_mutually_exclusive_group(required=True)
     chosen.add_argument("host", nargs="?")
@@ -936,13 +967,54 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reporting.add_argument("--bundle", help="this bundle rather than the host's latest")
     reporting.add_argument(
-        "--output", help="the file to write (default: reports/ in the home; ends in .age)"
+        "--output", help="the file to write (default: reports/ in the home; ends in .FORMAT.age)"
     )
     reporting.add_argument(
-        "--plain", action="store_true", help="write plain HTML, not encrypted (to hand it on)"
+        "--plain", action="store_true", help="write it plain, not encrypted (to hand it on)"
+    )
+    reporting.add_argument(
+        "--format",
+        choices=("html", "pdf", "json"),
+        default="html",
+        help="html (the default), pdf, or json for SIEMs and tickets",
     )
     reporting.add_argument("--identity", help="the evidence private key file")
     reporting.set_defaults(handler=cmd_report)
+
+    fleet_view = commands.add_parser(
+        "fleet", help="every host's latest result, most worrying first, and what changed"
+    )
+    fleet_view.add_argument("--group", help="only this group's hosts")
+    fleet_view.add_argument("--identity", help="the evidence private key file")
+    fleet_view.set_defaults(handler=cmd_fleet)
+
+    store_parser = commands.add_parser("store", help="where the store is kept")
+    store_commands = store_parser.add_subparsers(
+        dest="store_command", metavar="ACTION", required=True
+    )
+    moving = store_commands.add_parser(
+        "move", help="move the store from its file to PostgreSQL (docs/postgres.md)"
+    )
+    moving.add_argument("--to", required=True, metavar="POSTGRESQL_ADDRESS")
+    moving.add_argument("--yes", action="store_true", help="delete the old file without asking")
+    moving.set_defaults(handler=cmd_store_move)
+    web = commands.add_parser("web", help="run the web interface (needs the `web` extra)")
+    web.add_argument("--bind", default="127.0.0.1:8088", help="address and port to listen on")
+    web.add_argument("--public-url", help="the address people use, behind a proxy")
+    web.add_argument("--tls-cert", help="certificate file, to serve https directly")
+    web.add_argument("--tls-key", help="its private key file")
+    web.set_defaults(handler=cmd_web)
+    web_password = commands.add_parser(
+        "web-password", help="set a new password for a web interface account"
+    )
+    web_password.add_argument("username")
+    web_password.set_defaults(handler=cmd_web_password)
+    web_two_factor_off = commands.add_parser(
+        "web-two-factor-off",
+        help="turn off two-factor sign-in for a web account that lost its phone and recovery codes",
+    )
+    web_two_factor_off.add_argument("username")
+    web_two_factor_off.set_defaults(handler=cmd_web_two_factor_off)
     changed = commands.add_parser(
         "changes", help="what changed on a host since its previous bundle and its baseline"
     )
@@ -1104,6 +1176,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["pseudonymize", "strict", "none"],
         help="preview another redaction mode than the configured one",
     )
+    advising.add_argument(
+        "--from-web-page",
+        action="store_true",
+        help="how the web interface asks: prints only how it went, on standard error",
+    )
     advising.add_argument("--bundle", help="a given bundle instead of the latest")
     advising.add_argument("--identity", help="the evidence private key file")
     advising.set_defaults(handler=cmd_advise)
@@ -1138,6 +1215,13 @@ def build_parser() -> argparse.ArgumentParser:
     running.add_argument("--days", type=int, default=30, help="look-back window (default 30)")
     running.add_argument("--parallel", type=int, default=5, help="hosts at a time (default 5)")
     running.add_argument("--identity", help="the evidence private key file")
+    running.add_argument(
+        "--from-web-page",
+        action="store_true",
+        help="with --unattended, how the web interface runs a check: reads this run's passwords"
+        " as one line of JSON by host on standard input, stops when that closes, and prints no"
+        " findings",
+    )
     running.set_defaults(handler=cmd_run)
 
     scheduling = commands.add_parser("schedule", help="run `checker run --all` daily, on a timer")
@@ -1382,6 +1466,17 @@ def _print_proposals(advice, shown) -> None:
         print("a person reviews them, sets each owner and copies them into the whitelist.")
 
 
+def _advice_failed_on_page(exc: Exception) -> int:
+    """A model server's answer can quote the request, and a settings error a key: a page gets only
+    the kind of failure, and where to find out more."""
+    print(
+        f"The advisor couldn't answer ({type(exc).__name__}). On the command line,"
+        " checker advise HOST --role whitelist says why.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def cmd_advise(args: argparse.Namespace) -> int:
     """The advisor's answer about a host's latest assessment (sent), or the
     request exactly as it would be sent (--show, sends nothing)."""
@@ -1392,6 +1487,9 @@ def cmd_advise(args: argparse.Namespace) -> int:
 
     if args.all == bool(args.host):
         print("checker: name a host, or --all", file=sys.stderr)
+        return 2
+    if args.from_web_page and (args.all or args.show):
+        print("checker: --from-web-page is for asking about one host", file=sys.stderr)
         return 2
     if args.all and (args.show or args.bundle or args.redaction):
         print("checker: --show, --bundle and --redaction are for one host", file=sys.stderr)
@@ -1454,6 +1552,12 @@ def cmd_advise(args: argparse.Namespace) -> int:
         def confirm(question: str) -> bool:
             if args.yes:
                 return True
+            if args.from_web_page:
+                print("Not sent: it may cost more than advisor.max_cost_per_run, or its price isn't"
+                      " known. Ask from the command line with checker advise, which can confirm"
+                      " it.",
+                      file=sys.stderr)  # fmt: skip
+                return False
             if not sys.stdin.isatty():
                 print("checker: not sent: confirm with --yes, or raise advisor.max_cost_per_run",
                       file=sys.stderr)  # fmt: skip
@@ -1469,8 +1573,14 @@ def cmd_advise(args: argparse.Namespace) -> int:
             role=args.role, bundle_id=args.bundle, confirm=confirm, home=base, packs=packs,
         )  # fmt: skip
     except (EvidenceError, OSError, AdvisorError) as exc:
+        if args.from_web_page:
+            return _advice_failed_on_page(exc)
         print(f"checker: {exc}", file=sys.stderr)
         return 1
+    except Exception as exc:  # noqa: BLE001 - a settings error can quote a key: only for a page
+        if not args.from_web_page:
+            raise
+        return _advice_failed_on_page(exc)
     except KeyboardInterrupt:
         sent = requests_recorded() > recorded_before
         print(
@@ -1481,7 +1591,16 @@ def cmd_advise(args: argparse.Namespace) -> int:
         return 130
     finally:
         store.close()
-    _print_advice(advice, args.role)
+    if args.from_web_page:
+        judged = advice.judged or []
+        accepted = sum(1 for item in judged if item.accepted)
+        print(
+            f"The advisor's answer: {advice.status}. {accepted} rule(s) to review,"
+            f" {len(judged) - accepted} set aside by the tool's checks.",
+            file=sys.stderr,
+        )
+    else:
+        _print_advice(advice, args.role)
     return 0 if advice.status == "answered" else 1
 
 
@@ -1518,6 +1637,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             config.advisor.enabled,
             args.plain,
             packs_for,
+            args.format,
         )
     except (EvidenceError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
@@ -1527,12 +1647,291 @@ def cmd_report(args: argparse.Namespace) -> int:
     print(f"Report written to {path}")
     if args.plain:
         print(
-            "Warning: it is plain HTML, not encrypted, and confidential: it describes weaknesses"
+            f"Warning: it is a plain {args.format.upper()}, not encrypted, and confidential:"
+            " it describes weaknesses"
             " an attacker could use. Keep it out of backups and synced folders, and delete it"
             " when it has been read."
         )
+    elif args.format != "html":
+        print(
+            f"Encrypted to the evidence key. To read it: age -d -i KEY -o report.{args.format}"
+            f" {path},"
+            " which leaves a plain copy to protect and delete. To send it to someone, write it"
+            " with --plain and send it securely."
+        )
     else:
         print(f"Encrypted to the evidence key. To read it: checker report --open {path}")
+    return 0
+
+
+def cmd_fleet(args: argparse.Namespace) -> int:
+    """Every host at a glance, from what is stored: it collects, analyses
+    and writes nothing."""
+    from checker.fleet import UNREADABLE, read_fleet, serious
+    from checker.report import visible
+
+    try:
+        hosts, problems = read_fleet(home(), args.identity, args.group)
+    except (EvidenceError, OSError, ValidationError, ValueError, yaml.YAMLError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    for problem in problems:
+        print(f"checker: threat pack not applied: {visible(problem, 300)}", file=sys.stderr)
+    if not hosts:
+        print(f"No hosts in group {visible(args.group, 80)}." if args.group else "No hosts yet.")
+        return 0
+    words = {
+        "not_analysed": "collected, not analysed yet",
+        "no_evidence": "nothing collected yet",
+        "collections_failed": "no collection has worked yet",
+        "purged": "all its evidence was purged, so nothing is known now",
+    }
+    for item in hosts:
+        name = visible(item.host, 80)
+        if item.state == "unreadable":
+            print(f"{name}  {UNREADABLE[item.unreadable_why or 'internal']}")
+        elif item.state != "analysed":
+            print(f"{name}  {words[item.state]}")
+        else:
+            score = visible(item.band or "no score", 20)
+            shown = f" {item.probability:.1%}" if item.probability is not None else ""
+            print(f"{name}  {score}{shown}  collected {item.collected_at}")
+        if item.removed:
+            print(f"  no longer in the inventory; `checker purge {name}` removes its evidence")
+        if item.last_readable_band:
+            print(f"  the last readable analysis said {visible(item.last_readable_band, 20)}")
+        # Under a serious result, a doubt mustn't read as a reason to ignore it.
+        label = (
+            "may have changed since" if item.band in ("High", "Critical") else "can't be relied on"
+        )
+        for doubt in item.doubts:
+            print(f"  {label}: {doubt}")
+        if serious(item):
+            print(f"  high or critical findings: {serious(item)}")
+        if item.hygiene and item.hygiene != "none":
+            print(f"  hygiene and exposure: {visible(item.hygiene, 40)}")
+        if item.exposed:
+            packs = ", ".join(f"{visible(p, 80)} ({s})" for p, s in sorted(item.exposed.items()))
+            print(f"  threat packs: {packs}")
+        if item.unjudged:
+            print(f"  can't tell now: {', '.join(visible(p, 80) for p in item.unjudged)}")
+        if item.gaps:
+            print(f"  coverage gaps: {item.gaps}")
+        if item.last_failed:
+            print(f"  last collection {item.last_failed[0]} at {item.last_failed[1]}")
+        for reason in item.out_of_date:
+            if reason not in item.doubts:
+                print(f"  out of date: {reason}")
+        if item.before_unreadable:
+            print("  the analysis before can't be read, so changes can't be shown")
+        if item.rescored_from:
+            print(f"  this collection was {item.rescored_from} before it was scored again")
+        elif item.band_before and item.band_before != item.band:
+            print(f"  was {item.band_before} at the analysis before")
+        for line in item.changes:
+            print(f"  {line.partition(': ')[2]}")
+        if item.resolved:
+            print(f"  no longer found: {item.resolved} high or critical finding(s)")
+        if item.suppressed:
+            print(f"  now suppressed by a whitelist: {item.suppressed} high or critical finding(s)")
+        if item.not_seen:
+            print(
+                f"  not seen, which says nothing either way: {item.not_seen} high or critical"
+                " finding(s)"
+            )
+    return 0
+
+
+def _web_extra_missing(exc: ImportError) -> int:
+    """Only for the extra's own packages: any other failed import is a bug, and should say so."""
+    if (exc.name or "").split(".")[0] not in ("django", "django_otp", "segno", "gunicorn"):
+        raise exc
+    print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+    return 2
+
+
+def _first_start(base: Path) -> None:
+    """Someone who has never used a command line starts here, so the tool sets itself up, with
+    nothing optional collected and the AI advisor off. The first setup page asks about them. What
+    `checker init --recipient` does stays with `checker init`. Missing settings are no sign of a new
+    install: an evidence key found here is kept, and evidence with no key to read it stops this."""
+    if os.environ.get("CHECKER_HOME"):
+        if not base.is_absolute():
+            raise EvidenceError(f"CHECKER_HOME has to be a full path, not {base}")
+        if not base.parent.is_dir():
+            raise EvidenceError(
+                f"CHECKER_HOME is {base}, whose folder doesn't exist: is that right?"
+            )
+    has_key = os.path.lexists(base / "keys" / "evidence-identity.txt")
+    if not has_key and any((base / name).exists() for name in ("checker.db", "evidence")):
+        raise EvidenceError(
+            f"{base} has stored evidence but no settings or key. Put your backup of the evidence"
+            f" key at {base / 'keys' / 'evidence-identity.txt'} and start again: a new key couldn't"
+            " read what's stored"
+        )
+    try:
+        _, identity_path = initialise(base)
+    except EvidenceError:
+        if config_file(base).exists():  # another start got there first, which is fine
+            return
+        raise
+    if has_key:
+        print("Found an evidence key here with no settings: keeping it. Settings are back to")
+        print("nothing optional collected and the AI advisor off. Check them in Settings.")
+        return
+    print(f"Set up in {base}, with nothing optional collected and the AI advisor off.")
+    if identity_path:
+        print(f"The evidence key is in {identity_path}. BACK IT UP somewhere safe and separate:")
+        print("without it, stored evidence cannot be read, by you or anyone else.")
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    """The web interface, until interrupted."""
+    try:
+        from checker.web.app import AccountsProblem, listen_problem, serve
+    except ImportError:
+        print(
+            "checker: the web interface needs: pip install -e '.[web]'",
+            file=sys.stderr,
+        )
+        return 2
+    base = home()
+    if bool(args.tls_cert) != bool(args.tls_key):
+        print("checker: --tls-cert and --tls-key go together", file=sys.stderr)
+        return 2
+    try:
+        problem = listen_problem(args.bind, args.public_url, bool(args.tls_cert))
+    except ImportError as exc:
+        return _web_extra_missing(exc)
+    if problem:  # before anything is set up, for a server that wouldn't have started
+        print(f"checker: {problem}", file=sys.stderr)
+        return 2
+    try:
+        if not config_file(base).is_symlink() and not config_file(base).exists():
+            _first_start(base)
+        load_config(base)
+    except (EvidenceError, ValidationError, yaml.YAMLError, OSError) as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    try:
+        return serve(base, args.bind, args.public_url, args.tls_cert, args.tls_key)
+    except ImportError as exc:
+        return _web_extra_missing(exc)
+    except AccountsProblem as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+
+
+def _plain_database_errors(
+    command: Callable[[argparse.Namespace], int],
+) -> Callable[[argparse.Namespace], int]:
+    """A command on the accounts: if their database goes part way, words and not a traceback."""
+
+    @functools.wraps(command)
+    def run(args: argparse.Namespace) -> int:
+        try:
+            return command(args)
+        except Exception as exc:
+            database_error = sys.modules.get("django.db")
+            if database_error is None or not isinstance(exc, database_error.Error):
+                raise
+            print(f"checker: the accounts database can't be used: {exc}", file=sys.stderr)
+            return 1
+
+    return run
+
+
+def _web_has_run(base: Path) -> bool:
+    """Its file, or an address where its tables would be. Unreadable settings count: opening it is
+    what says what's wrong with them."""
+    try:
+        return (base / "web.db").exists() or bool(configured_url(base))
+    except ValueError:
+        return True
+
+
+@_plain_database_errors
+def cmd_web_password(args: argparse.Namespace) -> int:
+    """When a password is lost. Whoever owns the home can do this, and the record says so."""
+    import getpass
+
+    try:
+        from checker.web.app import AccountsProblem, configure
+    except ImportError:
+        print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+        return 2
+    base = home()
+    if not _web_has_run(base):  # a mistyped home mustn't gain a new database
+        print(
+            f"checker: no web interface has been run from {base}. Run this as the user who runs"
+            " it, with the same CHECKER_HOME.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        configure(base)
+    except ImportError as exc:
+        return _web_extra_missing(exc)
+    except AccountsProblem as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+
+    from checker.web.accounts import no_such_account, reset_password  # needs Django set up
+
+    problems = [no_such_account(args.username)]
+    if problems[0] is None:
+        try:
+            password = getpass.getpass("New password: ")
+            if password != getpass.getpass("Again: "):
+                print("checker: the two passwords don't match", file=sys.stderr)
+                return 1
+        except (KeyboardInterrupt, EOFError):
+            print("\nchecker: nothing was changed", file=sys.stderr)
+            return 1
+        problems = reset_password(args.username, password)
+    problems = [problem for problem in problems if problem]
+    for problem in problems:
+        print(f"checker: {problem}", file=sys.stderr)
+    if problems:
+        return 1
+    print(f"Password changed for {args.username}. Anyone signed in as them has been signed out.")
+    print("If they can't get past the code at sign-in, run checker web-two-factor-off next.")
+    return 0
+
+
+@_plain_database_errors
+def cmd_web_two_factor_off(args: argparse.Namespace) -> int:
+    """When a phone and its recovery codes are both gone. The record says so."""
+    try:
+        from checker.web.app import AccountsProblem, configure
+    except ImportError:
+        print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+        return 2
+    base = home()
+    if not _web_has_run(base):  # a mistyped home mustn't gain a new database
+        print(
+            f"checker: no web interface has been run from {base}. Run this as the user who runs"
+            " it, with the same CHECKER_HOME.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        configure(base)
+    except ImportError as exc:
+        return _web_extra_missing(exc)
+    except AccountsProblem as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+
+    from checker.web.accounts import turn_off_two_factor  # needs Django set up
+
+    problem = turn_off_two_factor(args.username)
+    if problem:
+        print(f"checker: {problem}", file=sys.stderr)
+        return 1
+    print(f"Two-factor sign-in is off for {args.username}, and their sessions have ended.")
+    print("Anyone who knows the password can now set it up with their own phone. If it might be")
+    print("known, change it right away with checker web-password.")
     return 0
 
 
@@ -1540,14 +1939,17 @@ def _open_report(args: argparse.Namespace, base: Path) -> int:
     from checker.report import latest_report, view
 
     clashing = [f for f, given in (("--plain", args.plain), ("--output", args.output),
-                                   ("--bundle", args.bundle)) if given]  # fmt: skip
+                                   ("--bundle", args.bundle),
+                                   ("--format", args.format != "html")) if given]  # fmt: skip
     if clashing:
         print(f"checker: --open shows a report; {', '.join(clashing)} write one", file=sys.stderr)
         return 2
     try:
         path = Path(args.open) if args.open else latest_report(base / "reports")
         if path is None:
-            raise EvidenceError("no report yet: `checker report HOST` writes one")
+            raise EvidenceError(
+                "no HTML report yet: `checker report HOST` writes one (--open shows only HTML)"
+            )
         if not path.name.endswith((".html", ".html.age")):
             raise EvidenceError(f"not a report (its name ends in .html.age or .html): {path}")
         if not path.is_file():
@@ -1917,7 +2319,154 @@ def _expired_notice(base: Path) -> None:
 
 
 def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> int:
-    """Delete stored evidence (policy §8), after showing what goes."""
+    """Delete stored evidence (policy §8), after showing what goes. Not during a run: it would keep
+    its own view of what's stored, and save it over what this forgets."""
+    from checker import schedule
+
+    if args.dry_run:
+        return _purge(args, ask)
+    try:
+        with schedule.run_lock(home()):
+            return _purge(args, ask)
+    except schedule.Busy:
+        print("checker: `checker run` is in progress: try again when it has finished",
+              file=sys.stderr)  # fmt: skip
+        return 1
+
+
+def _accounts_to_move(base: Path) -> bool:
+    file = base / "web.db"
+    return file.exists() and file.stat().st_size > 0
+
+
+def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) -> int:
+    """From SQLite's files to a PostgreSQL database, the web interface's accounts and record with
+    the store: copied, checked, the settings changed, and then the files removed, since a purge
+    couldn't reach what's left in them. Evidence files don't move."""
+    from checker import schedule
+    from checker.evidence import copy_store
+    from checker.files import atomic_write, locked
+
+    base = home()
+    try:
+        config = load_config(base)
+        accounts = _accounts_to_move(base)
+        if config.database and not accounts:
+            raise EvidenceError("the store is already in a database")
+        if config.database and args.to != config.database:
+            raise EvidenceError(
+                f"the store is already in a database, and its accounts have to join it: --to"
+                f" {config.database}"
+            )
+        try:
+            check_database_url(args.to)
+        except ValueError as exc:
+            print(f"checker: --to {exc}", file=sys.stderr)
+            return 2
+        if not config.database and not database_file(base).exists():
+            raise EvidenceError(f"no store to move ({database_file(base)})")
+        if accounts:
+            from checker.web.moving import move_accounts, take_accounts_back
+        counts = None
+        with schedule.run_lock(base), locked(config_file(base)):
+            rows = move_accounts(base, args.to) if accounts else None
+            try:
+                if not config.database:
+                    source = Store(database_file(base), url=None)
+                    target = Store(database_file(base), url=args.to)
+                    try:
+                        data = load_config(base).model_dump() | {"database": args.to}
+                        counts = copy_store(
+                            source,
+                            target,
+                            "database",
+                            None,
+                            args.to,
+                            lambda: atomic_write(
+                                config_file(base), yaml.safe_dump(data, sort_keys=False)
+                            ),
+                        )
+                    finally:
+                        source.close()
+                        target.close()
+            except BaseException:
+                # Unless the settings already name it: then this is where the accounts belong.
+                if accounts and load_config(base).database != args.to:
+                    take_accounts_back()
+                raise
+    except ImportError as exc:
+        return _web_extra_missing(exc)  # before anything's been done: Django is set up first
+    except schedule.Busy:
+        print(
+            "checker: `checker run` is in progress: try again when it has finished", file=sys.stderr
+        )
+        return 1
+    except (EvidenceError, OSError, *DATABASE_ERRORS) as exc:
+        print(f"checker: not moved: {exc}", file=sys.stderr)
+        return 1
+    if counts is not None:
+        print(f"Moved {counts['bundles']} bundle(s) and their records, and checked each table.")
+        print("The store is now in that database. Evidence files stay where they are.")
+    if rows is not None:
+        print(f"Moved the web interface's accounts and record ({rows} rows), and checked them.")
+    # The store's file too if a move stopped before renaming it: the settings already say it's over.
+    return _retire_old_files(base, args, ask, database_file(base).exists(), accounts)
+
+
+def _retire_old_files(
+    base: Path, args: argparse.Namespace, ask: Callable[[str], str], store: bool, accounts: bool
+) -> int:
+    """Renamed at once: left under its own name, one would be taken for what's in use if the
+    settings were ever lost, with nothing to say it's out of date."""
+    files = [*([database_file(base)] if store else []), *([base / "web.db"] if accounts else [])]
+    moved = []
+    for file in files:
+        for end in ("", "-wal", "-shm", "-journal"):
+            path = file.with_name(file.name + end)
+            if path.exists():
+                target_name = path.with_name(path.name + ".moved")
+                try:
+                    path.rename(target_name)
+                except OSError as exc:
+                    print(
+                        f"checker: couldn't rename {path} ({exc.strerror}): delete it, or it could"
+                        " be taken for what's in use",
+                        file=sys.stderr,
+                    )
+                    return 1
+                moved.append(target_name)
+    if not moved:
+        return 0
+    question = "Delete the old file? A purge can't reach it. Type 'delete': "
+    if accounts:
+        question = (
+            "Delete the old files? A purge can't reach them, and web.db holds password hashes and"
+            " two-factor secrets. Type 'delete': "
+        )
+    try:
+        answer = args.yes or ask(question)
+    except EOFError:
+        answer = ""
+    if answer is not True and answer != "delete":
+        kept = moved if accounts else moved[:1]
+        print(
+            f"Kept it as {' and '.join(str(path) for path in kept)}: it still lists what's stored,"
+            " so delete it yourself."
+        )
+        return 0
+    try:
+        for path in moved:
+            path.unlink(missing_ok=True)
+    except OSError as exc:
+        print(
+            f"checker: couldn't delete {path} ({exc.strerror}): delete it yourself", file=sys.stderr
+        )
+        return 1
+    print("Deleted the old file." if not accounts else "Deleted the old files.")
+    return 0
+
+
+def _purge(args: argparse.Namespace, ask: Callable[[str], str]) -> int:
     base = home()
     try:
         config = load_config(base)
@@ -1988,12 +2537,13 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
             print("Nothing deleted.")
             return 1
         outcome = execute(store, base, chosen)
-    except (EvidenceError, OSError, sqlite3.Error) as exc:
+    except (EvidenceError, OSError, *DATABASE_ERRORS) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
     finally:
         store.close()
     print(f"Purged {outcome.counts['bundles']} bundle(s); {len(outcome.deleted)} file(s) deleted.")
+    _forget_emptied(base, chosen, config)
     for path, reason in outcome.failed:
         print(
             f"checker: couldn't delete {path} ({reason}); the next purge tries again",
@@ -2006,6 +2556,18 @@ def cmd_purge(args: argparse.Namespace, ask: Callable[[str], str] = input) -> in
             file=sys.stderr,
         )
     return 1 if outcome.failed else 0
+
+
+def _forget_emptied(base: Path, chosen, config) -> None:
+    from checker import schedule
+
+    emptied = [host for host, what in chosen.baselines.items() if what == "emptied"]
+    try:
+        if emptied and config.identity_file:
+            identity = load_identity(Path(config.identity_file))
+            schedule.forget_hosts(base, emptied, identity, config.recipients)
+    except Exception as exc:  # noqa: BLE001 - the purge did happen, and a run starts it again
+        print(f"checker: the last run's memory of them stays: {exc}", file=sys.stderr)
 
 
 def _read_untrusted(name: str, limit: int) -> bytes:
@@ -2059,9 +2621,9 @@ def cmd_packs_check(args: argparse.Namespace) -> int:
 
 
 def _packs_lock(base: Path):
-    from checker.files import locked
+    from checker.packs.store import packs_lock
 
-    return locked(base / "packs" / "state")
+    return packs_lock(base)
 
 
 def cmd_packs_add(args: argparse.Namespace) -> int:
@@ -2182,8 +2744,12 @@ def cmd_packs_retire(args: argparse.Namespace) -> int:
 
     base = home()
     try:
+        organization = load_config(base).packs.trusted_keys
+    except (EvidenceError, ValidationError, yaml.YAMLError, OSError, UnicodeError):
+        organization = None  # retiring still has to work: it's what's done when things go wrong
+    try:
         with _packs_lock(base):
-            names = retire(base, args.id, f"retired by hand: {args.reason}", by_hand=True)
+            names = retire(base, args.id, f"retired by hand: {args.reason}", True, organization)
     except (StoreError, OSError) as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1
@@ -2393,6 +2959,54 @@ def cmd_packs_trust_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def _passwords_from_page() -> dict[str, str] | None:
+    """One line, read from the descriptor: the rest of standard input is watched for its closing,
+    and a Python file object shared with a daemon thread can stop the interpreter exiting."""
+    line = b""
+    while not line.endswith(b"\n"):
+        chunk = os.read(0, 4096)
+        if not chunk:
+            break
+        line += chunk
+    try:
+        typed = json.loads(line)
+    except ValueError:  # nothing of what was read goes in a message
+        return None
+    if not isinstance(typed, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in typed.items()
+    ):
+        return None
+    return typed
+
+
+def _stop_when_stdin_closes() -> None:
+    """The web server holds it open, so this can't outlive the server and keep the run's lock."""
+    with contextlib.suppress(OSError):
+        while os.read(0, 4096):
+            pass
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+class _WithoutThese:
+    """Output with these strings taken out, whatever a server managed to make the tool repeat."""
+
+    def __init__(self, stream, secrets):
+        self._stream = stream
+        found = {secret for secret in secrets if secret}
+        found |= {str(visible(secret)) for secret in found}
+        # In one pass, longest first, so a short one can't break up a long one or the placeholder.
+        ordered = sorted(found, key=len, reverse=True)
+        self._secrets = re.compile("|".join(map(re.escape, ordered))) if ordered else None
+
+    def write(self, text: str) -> int:
+        if self._secrets:
+            text = self._secrets.sub("[password]", text)
+        return self._stream.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """One pass, as a timer starts it: collect, analyze, report, purge what
     has expired, and alert on hosts that got worse (checker.schedule)."""
@@ -2412,14 +3026,32 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not hosts:
         print("checker: no hosts selected", file=sys.stderr)
         return schedule.EXIT_SETUP
+    typed = None
+    if args.from_web_page:
+        if not args.unattended:
+            print("checker: --from-web-page goes with --unattended", file=sys.stderr)
+            return schedule.EXIT_SETUP
+        typed = _passwords_from_page()
+        if typed is None:
+            print("checker: the passwords on standard input aren't JSON by host", file=sys.stderr)
+            return schedule.EXIT_SETUP
+        sys.stdout = _WithoutThese(sys.stdout, typed.values())
+        sys.stderr = _WithoutThese(sys.stderr, typed.values())
+    schedule.stop_on_sigterm()
+    if args.from_web_page:
+        threading.Thread(target=_stop_when_stdin_closes, daemon=True).start()
     try:
         result = schedule.run(
             base, config, hosts, identity, inventory,
             unattended=args.unattended, days=args.days, parallel=args.parallel,
+            typed_passwords=typed,
         )  # fmt: skip
     except schedule.Busy as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return schedule.EXIT_BUSY
+    except schedule.Stopped:
+        print("checker: stopped", file=sys.stderr)
+        return schedule.EXIT_STOPPED
     except Exception as exc:  # noqa: BLE001 - unforeseen: say so, and tell someone
         print(f"checker: the run stopped: {type(exc).__name__}: {exc}", file=sys.stderr)
         failed = schedule.notify_crash(config, exc)
@@ -2429,11 +3061,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     for item in result.hosts:
         band = item.band or "-"
         shown = f" ({percent(item.probability)})" if item.probability is not None else ""
-        print(f"{item.host:20} {item.collected:12} {band}{shown}")
+        if args.from_web_page:  # results stay encrypted: the page points to where they're shown
+            print(f"{item.host:20} {item.collected}")
+        else:
+            print(f"{item.host:20} {item.collected:12} {band}{shown}")
         if item.problem:
             print(f"checker: {item.host}: {item.problem}", file=sys.stderr)
     for problem in result.problems:
         print(f"checker: {problem}", file=sys.stderr)
+    if args.from_web_page:
+        if result.notified:
+            print(f"checker: the notify command failed: {result.notified}", file=sys.stderr)
+        return result.exit_status()
     if result.report:
         print(f"Report written to {result.report}")
     if result.alerting:
@@ -2458,7 +3097,6 @@ def cmd_schedule_install(
 ) -> int:
     import getpass
     import os
-    import subprocess
     import time
 
     from checker import schedule
@@ -2493,27 +3131,11 @@ def cmd_schedule_install(
         )
     if sys.platform == "darwin" and os.environ.get("SSH_CONNECTION"):
         print("A launchd agent runs while you are logged in at the Mac (not over SSH).")
-    where = schedule.placement(sys.platform, at, env, base, Path.home())
-    for path, content in where.files.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-        print(f"Wrote {path}")
-    if sys.platform == "darwin":
-        (base / "logs").mkdir(exist_ok=True, mode=0o700)
-        subprocess.run(where.stop[0], capture_output=True, check=False)  # noqa: S603 - a reload
-    for command in where.start:
-        # launchd may still be unloading the old agent: a few tries, a second apart.
-        for _ in range(5 if sys.platform == "darwin" else 1):
-            done = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
-            if done.returncode == 0:
-                break
-            pause(1.0)
-        if done.returncode != 0:
-            print(
-                f"checker: `{' '.join(command)}` failed: {(done.stderr or '').strip()}",
-                file=sys.stderr,
-            )
-            return 1
+    try:
+        where = schedule.install(base, at, hosts, say=print, pause=pause)
+    except schedule.InstallFailed as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
     print(
         f"`checker run --all --unattended` will run every day at {args.at} (this machine's time)."
     )
@@ -2527,22 +3149,18 @@ def cmd_schedule_install(
 
 
 def cmd_schedule_remove(args: argparse.Namespace) -> int:
-    import subprocess
-
     from checker import schedule
 
-    where = schedule.placement(sys.platform, (3, 0), {}, home(), Path.home())
-    present = [path for path in where.files if path.exists()]
-    if not present:
+    try:
+        deleted, stopped = schedule.remove_timer(home())
+    except schedule.InstallFailed as exc:
+        print(f"checker: not stopped: {exc}", file=sys.stderr)
+        return 1
+    if not stopped:
         print("No timer is installed.")
         return 0
-    stop, *after = where.stop  # stopped while its files are there; reloaded once they're gone
-    subprocess.run(stop, capture_output=True, check=False)  # noqa: S603
-    for path in present:
-        path.unlink()
+    for path in deleted:
         print(f"Deleted {path}")
-    for command in after:
-        subprocess.run(command, capture_output=True, check=False)  # noqa: S603
     print("Scheduled runs stopped.")
     return 0
 
@@ -2569,4 +3187,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"checker {__version__}")
         parser.print_help()
         return 0
-    return handler(args)
+    try:
+        return handler(args)
+    except EvidenceError as exc:  # a store that can't be reached, read or found: words, not a trace
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    except DATABASE_ERRORS as exc:  # or one lost after opening
+        print(f"checker: {store_unreadable(exc)}", file=sys.stderr)
+        return 1

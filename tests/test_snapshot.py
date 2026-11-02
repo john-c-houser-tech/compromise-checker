@@ -465,6 +465,7 @@ def test_accepting_needs_a_reason_and_the_hosts_own_usable_bundle(home):
         changes(store, "nowhere", identity, config.recipients)
 
 
+@pytest.mark.sqlite_only
 def test_baselines_are_append_only(home):
     _, store, identity, config = home
     add_bundle(home, "b1", 0, host_records())

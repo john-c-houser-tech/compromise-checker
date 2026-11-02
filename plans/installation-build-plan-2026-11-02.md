@@ -98,6 +98,9 @@ running on a machine of their own and reach its first-setup page in a browser.
   has had no outside security review. The Linode form exists but isn't advertised until John has installed
   through both routes and a few outside people have tried it. The update check ignores pre-releases on a
   machine running a final version.
+- **Machines (2026-11-02):** x86 only in the first release, since that's what the real-machine tests can
+  run on. The dependency list has Arm's files too, so adding Arm later is a matter of testing it.
+- **The version number (2026-11-02):** stays `0.1.0.dev0` until I.8 sets `0.1.0`.
 - **Default database:** the tool's ordinary file on the machine. PostgreSQL stays available through
   `checker store move` for anyone who wants it. The script doesn't install it.
 
@@ -113,7 +116,7 @@ running on a machine of their own and reach its first-setup page in a browser.
 
 ## Pull requests
 
-- **I.1 Release build.** Set the version, make the exact list of dependencies with their hashes, write the
+- **I.1 Release build.** Make the exact list of dependencies with their hashes, write the
   steps for building and signing a release, and put the public release key in place. John makes the key.
 - **I.2 Install script, this PC only.** The pasted line, the signature check, the Ubuntu or Rocky check, the
   check for a machine already in use, the tool's own account, the services (so daily checks run with nobody
@@ -141,7 +144,6 @@ running on a machine of their own and reach its first-setup page in a browser.
 
 - Which Ubuntu and Rocky versions can be supported. The tool needs Python 3.12 or later, which not all of
   them ship by default. Settled in I.2.
-- Whether the first release covers only x86 machines, or Arm too. Settled in I.1.
 - Where Caddy and the login-failure blocker come from on each distribution, and how far each source can be
   pinned the way the tool's own dependencies are. Settled in I.3 and I.4.
 - The smallest machine that works, measured during I.8 so the install page can state it.

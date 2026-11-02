@@ -64,6 +64,29 @@ jobs:
           grep -q 'checker/packs/keys/keys\.yaml ' /tmp/wheel/files
           grep -q 'checker/packs/keys/keys\.yaml\.minisig ' /tmp/wheel/files
 
+  release:
+    name: Release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 > /dev/null  # WeasyPrint's
+      - run: pip install --quiet pydantic cryptography  # what the build script's checks import
+      - name: Build the same commit twice, and compare
+        run: python scripts/release.py build --prerelease --trial
+      - name: Install from the release alone, as a machine would
+        run: |
+          python -m venv /tmp/installed
+          /tmp/installed/bin/pip install --quiet --require-hashes --only-binary :all: -r dist/release-*/requirements.lock
+          /tmp/installed/bin/pip install --quiet --no-deps --no-index dist/release-*/*.whl
+          /tmp/installed/bin/pip check
+          cd /tmp
+          /tmp/installed/bin/checker --version
+          /tmp/installed/bin/checker web --help > /dev/null
+          /tmp/installed/bin/python -c "import django, django_otp, gunicorn, psycopg, weasyprint, anthropic"
+
   collector:
     name: Collector on ${{ matrix.image }}
     runs-on: ubuntu-latest

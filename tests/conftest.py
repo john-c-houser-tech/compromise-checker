@@ -32,6 +32,40 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def _store_on_postgres(monkeypatch):
+    """CHECKER_TEST_POSTGRES_EVERYWHERE: every store any test sets up is on that server, in a schema
+    of its own (a throwaway server: tests/test_store_backends.py says more)."""
+    server = os.environ.get("CHECKER_TEST_POSTGRES_EVERYWHERE")
+    if not server:
+        yield
+        return
+    import secrets
+
+    import psycopg
+
+    from checker import evidence
+
+    schemas = []
+    real = evidence._initialise
+
+    def on_the_server(home, recipient, home_text, web_access_logs=False, exec_records="web",
+                      advisor=None, database=None):  # fmt: skip
+        if database is None:
+            schema = f"t{secrets.token_hex(6)}"
+            with psycopg.connect(server, autocommit=True) as admin:
+                admin.execute(f"CREATE SCHEMA {schema}")
+            schemas.append(schema)
+            database = f"{server}?options=-csearch_path%3D{schema}"
+        return real(home, recipient, home_text, web_access_logs, exec_records, advisor, database)
+
+    monkeypatch.setattr(evidence, "_initialise", on_the_server)
+    yield
+    with psycopg.connect(server, autocommit=True) as admin:
+        for schema in schemas:
+            admin.execute(f"DROP SCHEMA {schema} CASCADE")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_http(monkeypatch):
     """No test reaches a real server over HTTP (the advisor's tests use mock
     transports): a request that would is an error, at once, instead of a
@@ -247,23 +281,7 @@ def home(tmp_path, monkeypatch):
     from checker.evidence import Store, database_file, initialise, load_identity
 
     monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
-    # CHECKER_TEST_POSTGRES_EVERYWHERE: the whole suite with its store on that server, each test in
-    # a schema of its own (a throwaway server: tests/test_store_backends.py says more).
-    server = os.environ.get("CHECKER_TEST_POSTGRES_EVERYWHERE")
-    schema = url = None
-    if server:
-        import secrets
-
-        import psycopg
-
-        schema = f"t{secrets.token_hex(6)}"
-        with psycopg.connect(server, autocommit=True) as admin:
-            admin.execute(f"CREATE SCHEMA {schema}")
-        url = f"{server}?options=-csearch_path%3D{schema}"
-    config, identity_path = initialise(tmp_path, database=url)
+    config, identity_path = initialise(tmp_path)
     store = Store(database_file(tmp_path))
     yield tmp_path, store, load_identity(identity_path), config
     store.close()
-    if schema:
-        with psycopg.connect(server, autocommit=True) as admin:
-            admin.execute(f"DROP SCHEMA {schema} CASCADE")

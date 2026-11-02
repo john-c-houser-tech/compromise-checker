@@ -296,6 +296,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     for line in describe(config):
         print(line)
     print(f"Retention: {config.retention_days} days. Prior: {percent(config.prior)}.")
+    print(f"Store: {'a PostgreSQL database' if config.database else 'a file beside the evidence'}.")
     print(packs_line(config))
     try:
         groups = {h.group for h in load_inventory().hosts}
@@ -2304,10 +2305,11 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
             source = Store(database_file(base), url=None)
             target = Store(database_file(base), url=args.to)
             try:
-                counts = copy_store(source, target)
                 before = config_file(base).read_text(encoding="utf-8")
                 data = load_config(base).model_dump() | {"database": args.to}
-                target.record_config_change(
+                counts = copy_store(
+                    source,
+                    target,
                     "database",
                     None,
                     args.to,
@@ -2334,14 +2336,21 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
         database_file(base).with_name(database_file(base).name + end)
         for end in ("", "-wal", "-shm")
     ]
-    if (
-        not args.yes
-        and ask("Delete the old file? A purge can't reach it. Type 'delete': ") != "delete"
-    ):
+    try:
+        answer = args.yes or ask("Delete the old file? A purge can't reach it. Type 'delete': ")
+    except EOFError:
+        answer = ""
+    if answer is not True and answer != "delete":
         print(f"Kept {database_file(base)}: it still lists what's stored, so delete it yourself.")
         return 0
-    for path in old:
-        path.unlink(missing_ok=True)
+    try:
+        for path in old:
+            path.unlink(missing_ok=True)
+    except OSError as exc:
+        print(
+            f"checker: couldn't delete {path} ({exc.strerror}): delete it yourself", file=sys.stderr
+        )
+        return 1
     print("Deleted the old file.")
     return 0
 
@@ -3067,4 +3076,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"checker {__version__}")
         parser.print_help()
         return 0
-    return handler(args)
+    try:
+        return handler(args)
+    except EvidenceError as exc:  # a store that can't be reached, read or found: words, not a trace
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1

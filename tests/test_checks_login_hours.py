@@ -2,8 +2,6 @@
 
 from datetime import UTC, datetime, timedelta
 
-import pytest
-
 from checker.checks import Context, run_checks
 from checker.checks.accounts import _hour_ranges, login_hours
 from checker.events import Event
@@ -186,7 +184,6 @@ def test_one_odd_login_doesnt_make_its_hour_usual():
     assert finding.summary.startswith("jch: 2 login(s) at 03:00")  # both, not just the first
 
 
-@pytest.mark.sqlite_only
 def test_analyze_tells_the_check_the_session_user(home, monkeypatch):
     import json as jsonlib
 
@@ -206,7 +203,7 @@ def test_analyze_tells_the_check_the_session_user(home, monkeypatch):
     base, store, identity, config = home
     add_bundle(home, "b1", 0, host_records())
     row = dict(store.bundle("b1"))
-    store._db.execute("DROP TRIGGER bundles_no_update")
+    store._db.lift_append_only()
     store._db.execute(
         "UPDATE bundles SET session = ? WHERE id = 'b1'",
         (seal_text(jsonlib.dumps({"user": "scanner"}), config.recipients),),

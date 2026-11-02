@@ -20,6 +20,7 @@ import secrets
 import shlex
 import socket
 import sqlite3
+import sys
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -325,7 +326,8 @@ class Packs(BaseModel):
 
 
 class Config(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # Hidden: an error mustn't repeat a value from the file, which could be a hand-typed password.
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     recipients: list[str]  # age public keys bundles are encrypted to
     identity_file: str | None = None  # where the matching private key is, if here
@@ -433,6 +435,19 @@ def _initialise(
 ) -> tuple[Config, Path | None]:
     identity_path = None
     kept = home / "keys" / "evidence-identity.txt"
+    evidence = home / "evidence"
+    if (
+        not database
+        and os.path.lexists(kept)
+        and not database_file(home).exists()
+        and evidence.is_dir()
+        and any(evidence.iterdir())
+    ):
+        # With a store elsewhere, whose settings are what's lost, this would start an empty one.
+        raise EvidenceError(
+            f"{home} has evidence and a key, but no store: restore config.yaml from a backup,"
+            " since the store may be in a database it names"
+        )
     if os.path.lexists(kept):
         # Its settings may be gone, but evidence may be encrypted to this. Replacing it would make
         # all of that unreadable, for good, so it's kept, and new settings are built around it.
@@ -1039,12 +1054,19 @@ def store_unreadable(exc: Exception) -> str:
         return "the store is busy with another run: try again shortly"
     if "no such table" in text or "no such column" in text or "does not exist" in text:
         return "the store is from an older version: `checker bundle list` upgrades it"
+    if "permission denied" in text:
+        return "the database account can't use this database: it has to own it (docs/postgres.md)"
+    if "connection" in text or "terminating" in text or "server closed" in text:
+        return "the connection to the database was lost: check it's running, and try again"
     return f"the store can't be read, and may be damaged: {text}"
 
 
 def store_exists(home: Path) -> bool:
     """Whether there's a store to look in: a database the settings name, or the file."""
-    return bool(configured_url(home)) or database_file(home).exists()
+    try:
+        return bool(configured_url(home)) or database_file(home).exists()
+    except ValueError as exc:
+        raise EvidenceError(str(exc)) from exc
 
 
 class Store:
@@ -1104,7 +1126,9 @@ class Store:
         except RuntimeError as exc:
             raise EvidenceError(str(exc)) from exc
         except DATABASE_ERRORS as exc:
-            raise EvidenceError(f"the database can't be reached: {exc}") from exc
+            # The words on any page, and the details, with where it is, only for whoever runs this.
+            print(f"checker: the database: {exc}", file=sys.stderr)
+            raise EvidenceError("the database can't be reached: check it's running") from exc
         try:
             if read_only:
                 self._looks_usable()
@@ -1404,38 +1428,85 @@ def _fingerprint_of(store: Store, table: str) -> tuple[int, str]:
     return len(rows), digest.hexdigest()
 
 
-def copy_store(source: Store, target: Store) -> dict[str, int]:
-    """Every row, as it is, into a store with none, then a check that each table reads back the
-    same. All or nothing. Returns how many rows per table. The guards stay on: nothing here changes
-    a row."""
+def _next_numbers(source: Store, table: str) -> int | None:
+    """The last number SQLite gave in this table, which rows may have since been purged from."""
+    row = source._db.execute("SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)).fetchone()
+    return row[0] if row else None
+
+
+def _looks_made_by_this_tool(target: Store) -> bool:
+    """A table by these names that someone else made would sort by locale, and lack its links."""
+    collation = target._db.execute(
+        "SELECT collation_name FROM information_schema.columns WHERE table_schema ="
+        " current_schema() AND table_name = 'bundles' AND column_name = 'id'"
+    ).fetchone()
+    links = target._db.execute(
+        "SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid = 'custody'::regclass"
+    ).fetchone()
+    return bool(collation) and collation[0] == "C" and links[0] > 0
+
+
+def copy_store(
+    source: Store, target: Store, setting: str, old: Any, new: Any, write: Any, undo: Any
+) -> dict[str, int]:
+    """Every row, as it is, into a store with none, a check that each table reads back the same, and
+    the settings changed by `write`, all or nothing. The source is held for all of it, so nothing
+    written elsewhere meanwhile is left behind. Returns how many rows per table. The guards stay on:
+    nothing here changes a row."""
+    if not _looks_made_by_this_tool(target):
+        raise EvidenceError("the new database has tables this tool didn't make: use an empty one")
     for table in COPIED_TABLES:
         if target._db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]:  # noqa: S608
             raise EvidenceError(f"the new database already has {table} in it: use an empty one")
     counts = {}
-    target._db.begin_write()
+    source._db.begin_write()
     try:
-        for table in COPIED_TABLES:
-            rows = source._db.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608
-            counts[table] = len(rows)
-            for row in rows:
-                names = list(row.keys())
-                statement = (
-                    f"INSERT INTO {table} ({', '.join(names)})"  # noqa: S608 - the store's own names
-                    f" VALUES ({', '.join(f':{name}' for name in names)})"
-                )
-                target._db.execute(statement, {name: row[name] for name in names})
-            if rows and "seq" in rows[0].keys():
-                target._db.execute(
-                    f"SELECT setval(pg_get_serial_sequence('{table}', 'seq'),"  # noqa: S608
-                    f" (SELECT max(seq) FROM {table}))"
-                )
-        for table in COPIED_TABLES:
-            if _fingerprint_of(source, table) != _fingerprint_of(target, table):
-                raise EvidenceError(f"{table} didn't read back the same, so nothing was moved")
-        target._db.commit()
-    except BaseException:
-        target._db.rollback()
-        raise
+        target._db.begin_write()
+        try:
+            for table in COPIED_TABLES:
+                rows = source._db.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608
+                counts[table] = len(rows)
+                for row in rows:
+                    names = list(row.keys())
+                    statement = (
+                        f"INSERT INTO {table} ({', '.join(names)})"  # noqa: S608 - its own names
+                        f" VALUES ({', '.join(f':{name}' for name in names)})"
+                    )
+                    target._db.execute(statement, {name: row[name] for name in names})
+                number = _next_numbers(source, table)
+                if number:
+                    target._db.execute(
+                        f"SELECT setval(pg_get_serial_sequence('{table}', 'seq'), ?)",  # noqa: S608
+                        (number,),
+                    )
+            for table in COPIED_TABLES:
+                if _fingerprint_of(source, table) != _fingerprint_of(target, table):
+                    raise EvidenceError(f"{table} didn't read back the same, so nothing was moved")
+            operator, controller = who_and_where()
+            target._db.execute(
+                "INSERT INTO config_changes (at, operator, controller, setting, old, new)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    datetime.now(UTC).isoformat(timespec="seconds"),
+                    operator,
+                    controller,
+                    setting,
+                    json.dumps(old),
+                    json.dumps(new),
+                ),
+            )
+            write()
+        except BaseException:
+            target._db.rollback()
+            raise
+        try:
+            target._db.commit()
+        except BaseException:
+            undo()
+            target._db.rollback()
+            raise
+    finally:
+        source._db.rollback()
     return counts
 
 

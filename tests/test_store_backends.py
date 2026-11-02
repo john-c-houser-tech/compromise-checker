@@ -158,6 +158,16 @@ def test_replacing_a_row_can_t_get_round_it(opened):
     with pytest.raises(DATABASE_ERRORS):
         store.record_bundle(bundle_row("b1"))
     assert len(store.bundles()) == 1
+    upsert = (
+        "INSERT INTO bundles (id, host, run_id, path, started_at, ended_at, status,"
+        " collector_sha256, plaintext_sha256, plaintext_bytes, ciphertext_sha256, ciphertext_bytes,"
+        " recipients) VALUES ('b1', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 1, 'x', 1, 'x')"
+        " ON CONFLICT (id) DO UPDATE SET status = 'forged'"
+    )
+    with pytest.raises(DATABASE_ERRORS, match="append-only"):
+        with store._db:
+            store._db.execute(upsert)
+    assert store.bundle("b1")["status"] == "complete"
 
 
 def test_a_purge_takes_everything_and_leaves_a_record_and_the_guards(opened):
@@ -301,13 +311,24 @@ def test_a_guard_that_was_dropped_comes_back_on_opening(opened):
         "postgresql://db.example.org/checker",
         "postgresql://db.example.org/checker?sslmode=prefer",
         "postgresql://db.example.org/checker?sslmode=disable",
+        "postgresql://db.example.org/checker?sslmode=require",
+        "postgresql://db.example.org/checker?sslmode=verify-ca",
+        "postgresql://localhost/db#?password=secret",
+        "postgresql://localhost/checker#?host=db.example.org",
+        "postgresql://localhost/checker?sslpassword=secret",
+        "postgresql://localhost:5432,db.example.org:5432/checker",
+        "postgresql:///checker?host=/tmp,db.example.org",
+        "postgresql://localhost/checker?hostaddr=203.0.113.5",
+        "postgresql://localhost/checker?service=prod",
+        "postgresql://localhost/checker?passfile=/tmp/x",
+        "POSTGRESQL://db.example.org/checker",
         "postgresql:///checker?host=db.example.org",
         "mysql://localhost/checker",
         "/some/file",
     ],
 )
 def test_an_address_with_a_password_or_no_encryption_is_refused(url):
-    with pytest.raises(ValueError, match="password|sslmode|postgresql://"):
+    with pytest.raises(ValueError, match="password|sslmode|postgresql://|can't say"):
         check_database_url(url)
 
 
@@ -435,6 +456,7 @@ def test_a_move_that_doesn_t_read_back_the_same_changes_nothing(
     empty.close()
 
 
+@pytest.mark.sqlite_only
 def test_a_password_can_t_get_into_the_settings(tmp_path, monkeypatch, capsys):
     from checker import cli
 
@@ -462,3 +484,282 @@ def test_the_settings_page_says_where_the_store_is_but_not_the_address(tmp_path)
     said = dict(_command_line_only(config))
     assert said["Where the store is kept"] == "a database server"
     assert "example" not in str(_command_line_only(config))
+
+
+@pytest.fixture
+def postgres(opened):
+    if opened.dialect != "postgres":
+        pytest.skip("about PostgreSQL")
+    return opened
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "ALTER TABLE custody DISABLE TRIGGER custody_no_delete",
+        "ALTER TABLE custody DISABLE TRIGGER USER",
+        "CREATE OR REPLACE FUNCTION checker_append_only() RETURNS trigger LANGUAGE plpgsql"
+        " AS $$ BEGIN RETURN OLD; END $$",
+        "CREATE OR REPLACE TRIGGER custody_no_delete BEFORE DELETE ON custody FOR EACH ROW"
+        " WHEN (false) EXECUTE FUNCTION checker_append_only('x')",
+        "DROP TRIGGER custody_no_delete ON custody",
+    ],
+)
+def test_a_guard_disabled_or_changed_goes_back_on_opening(postgres, tamper):
+    store = postgres()
+    store._db.execute(tamper)
+    store.record_bundle(bundle_row("b1"))
+    again = postgres()
+    with pytest.raises(DATABASE_ERRORS, match="append-only"):
+        with again._db:
+            again._db.execute("DELETE FROM custody")
+
+
+def test_an_extra_trigger_can_t_pass_for_a_missing_guard(postgres):
+    store = postgres()
+    store._db.execute("DROP TRIGGER custody_no_delete ON custody")
+    store._db.execute(
+        "CREATE TRIGGER foo_no_bar BEFORE UPDATE ON derived FOR EACH ROW"
+        " EXECUTE FUNCTION checker_append_only('x')"
+    )
+    store.record_bundle(bundle_row("b1"))
+    again = postgres()
+    with pytest.raises(DATABASE_ERRORS, match="append-only"):
+        with again._db:
+            again._db.execute("DELETE FROM custody")
+
+
+def test_a_missing_table_comes_back(postgres):
+    store = postgres()
+    store._db.execute("DROP TABLE derived")
+    again = postgres()
+    assert again.derived("b1", "events") is None
+
+
+def test_a_hostile_server_can_t_keep_its_collection_out_with_a_nul(postgres):
+    """PostgreSQL's text can't hold one, and this came from the server being checked."""
+    store = postgres()
+    store.record_bundle({**bundle_row("b1"), "collector_version": "1.0\x00x"})
+    assert store.bundle("b1")["collector_version"] == "1.0\\u0000x"
+
+
+def test_a_connection_lost_while_idle_is_made_again(postgres):
+    """A collection holds a store open for minutes before it first writes."""
+    import psycopg
+
+    store = postgres()
+    pid = store._db.execute("SELECT pg_backend_pid()").fetchone()[0]
+    with psycopg.connect(SERVER, autocommit=True) as admin:
+        admin.execute("SELECT pg_terminate_backend(%s)", (pid,))
+    time.sleep(0.2)
+    store.record_bundle(bundle_row("b1"))
+    assert store.bundles()[0]["id"] == "b1"
+    pid = store._db.execute("SELECT pg_backend_pid()").fetchone()[0]
+    with psycopg.connect(SERVER, autocommit=True) as admin:
+        admin.execute("SELECT pg_terminate_backend(%s)", (pid,))
+    time.sleep(0.2)
+    assert len(store.bundles()) == 1, "and when looking"
+
+
+def test_a_connection_lost_in_a_transaction_isn_t_quietly_made_again(postgres):
+    import psycopg
+
+    store = postgres()
+    store._db.begin_write()
+    pid = store._db.execute("SELECT pg_backend_pid()").fetchone()[0]
+    with psycopg.connect(SERVER, autocommit=True) as admin:
+        admin.execute("SELECT pg_terminate_backend(%s)", (pid,))
+    time.sleep(0.2)
+    with pytest.raises(DATABASE_ERRORS):
+        store._db.execute("SELECT 1")
+    store._db.rollback()
+
+
+def test_one_store_s_writer_doesn_t_hold_up_another_on_the_same_server(postgres):
+    import psycopg
+
+    store = postgres()
+    store._db.begin_write()
+    schema = f"t{secrets.token_hex(6)}"
+    with psycopg.connect(SERVER, autocommit=True) as admin:
+        admin.execute(f"CREATE SCHEMA {schema}")
+    try:
+        other = Store(postgres.path, url=f"{SERVER}?options=-csearch_path%3D{schema}")
+        started = time.monotonic()
+        other.record_bundle(bundle_row("elsewhere"))
+        assert time.monotonic() - started < 5
+        other.close()
+    finally:
+        store._db.rollback()
+        with psycopg.connect(SERVER, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA {schema} CASCADE")
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.parametrize("variable", ["PGHOST", "PGSERVICE", "PGHOSTADDR", "PGSSLMODE"])
+def test_a_variable_that_would_steer_it_elsewhere_stops_it(tmp_path, monkeypatch, variable):
+    monkeypatch.setenv(variable, "somewhere")
+    with pytest.raises(EvidenceError, match=variable):
+        Store(database_file(tmp_path), url="postgresql://127.0.0.1:1/x")
+
+
+@pytest.mark.sqlite_only
+def test_a_server_that_s_down_is_plain_words_and_no_address(tmp_path, monkeypatch, capsys):
+    from checker import cli
+    from checker.evidence import initialise
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    initialise(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        (tmp_path / "config.yaml")
+        .read_text()
+        .replace("database: null", "database: postgresql://127.0.0.1:1/x")
+    )
+    for command in (["bundle", "list"], ["config", "history"], ["purge", "--expired", "--yes"]):
+        assert cli.main(command) in (1, 2), command
+        said = capsys.readouterr().err
+        assert "Traceback" not in said and "reached" in said
+
+
+@pytest.mark.parametrize(
+    "written",
+    ["database: postgresql://u:hunter2@localhost/x\n", "database: 5\n", "database: [a]\n",
+     "database: ''\n", "- a list\n", ""],
+)  # fmt: skip
+def test_settings_that_can_t_be_trusted_never_read_as_use_sqlite(
+    tmp_path, written, monkeypatch, capsys
+):
+    from checker import cli
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(written)
+    with pytest.raises(EvidenceError):
+        Store(database_file(tmp_path))
+    assert not database_file(tmp_path).exists()
+    assert cli.main(["config", "history"]) in (1, 2)
+    assert "hunter2" not in capsys.readouterr().err
+
+
+@pytest.mark.sqlite_only
+def test_settings_lost_with_the_store_elsewhere_don_t_start_an_empty_one(
+    tmp_path, monkeypatch, capsys
+):
+    from checker import cli
+    from checker.evidence import initialise
+    from checker.web import app
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    monkeypatch.setattr(app, "serve", lambda *args: 0)
+    initialise(tmp_path)
+    (tmp_path / "evidence" / "web01").mkdir(parents=True)
+    (tmp_path / "evidence" / "web01" / "b1.age").write_text("x")
+    (tmp_path / "config.yaml").unlink()
+    database_file(tmp_path).unlink()
+    assert cli.main(["web"]) == 1
+    assert "restore config.yaml" in capsys.readouterr().err
+    assert not database_file(tmp_path).exists()
+
+
+def test_a_move_holds_the_old_store_so_nothing_is_left_behind(
+    tmp_path, monkeypatch, server_address
+):
+    from checker import cli, evidence
+    from checker.evidence import initialise
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    initialise(tmp_path)
+    real = evidence._fingerprint_of
+    tried = []
+
+    def late_writer(store, table):
+        if not tried:
+            other = Store(database_file(tmp_path), url=None)
+            other._db.execute("PRAGMA busy_timeout = 100")
+            try:
+                other.record_bundle(bundle_row("slipped"))
+                tried.append("got in")
+            except DATABASE_ERRORS:
+                tried.append("kept out")
+            other.close()
+        return real(store, table)
+
+    monkeypatch.setattr(evidence, "_fingerprint_of", late_writer)
+    assert cli.main(["store", "move", "--to", server_address, "--yes"]) == 0
+    assert tried == ["kept out"]
+
+
+def test_numbers_carry_on_after_a_move_even_past_what_was_purged(
+    tmp_path, monkeypatch, server_address
+):
+    from checker import cli
+    from checker.evidence import initialise
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    initialise(tmp_path)
+    old = Store(database_file(tmp_path))
+    old.record_bundle(bundle_row("b1"))
+    old.custody("b1", "looked")
+    last = old.custody_of("b1")[-1]["seq"]
+    old.purge(["b1"], {"host": "web01"}, {"web01": "emptied"})
+    old.close()
+    assert cli.main(["store", "move", "--to", server_address, "--yes"]) == 0
+    new = Store(database_file(tmp_path))
+    new.record_bundle(bundle_row("b2"))
+    assert new.custody_of("b2")[0]["seq"] > last
+    new.close()
+
+
+def test_a_move_into_tables_someone_else_made_is_refused(
+    tmp_path, monkeypatch, server_address, capsys
+):
+    import psycopg
+
+    from checker import cli
+    from checker.evidence import initialise, load_config
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    initialise(tmp_path)
+    with psycopg.connect(server_address, autocommit=True) as db:
+        db.execute("CREATE TABLE bundles (id TEXT PRIMARY KEY)")
+    assert cli.main(["store", "move", "--to", server_address, "--yes"]) == 1
+    assert load_config(tmp_path).database is None and database_file(tmp_path).exists()
+
+
+def test_a_settings_failure_in_a_move_leaves_it_able_to_try_again(
+    tmp_path, monkeypatch, server_address, capsys
+):
+    from checker import cli
+    from checker import files as files_module
+    from checker.evidence import initialise, load_config
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    initialise(tmp_path)
+    old = Store(database_file(tmp_path))
+    filled(old)
+    old.close()
+    real = files_module.atomic_write
+
+    def full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(files_module, "atomic_write", full)
+        assert cli.main(["store", "move", "--to", server_address, "--yes"]) == 1
+    assert real is files_module.atomic_write
+    assert load_config(tmp_path).database is None
+    assert cli.main(["store", "move", "--to", server_address, "--yes"]) == 0, "nothing in the way"
+
+
+def test_a_prompt_nobody_answers_keeps_the_file_and_no_trace(tmp_path, monkeypatch, server_address):
+    from checker import cli
+    from checker.evidence import initialise
+
+    monkeypatch.setenv("CHECKER_HOME", str(tmp_path))
+    initialise(tmp_path)
+
+    def no_input(words):
+        raise EOFError
+
+    args = type("Args", (), {"to": server_address, "yes": False})
+    assert cli.cmd_store_move(args, ask=no_input) == 0
+    assert database_file(tmp_path).exists()

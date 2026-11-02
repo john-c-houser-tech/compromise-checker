@@ -8637,7 +8637,7 @@ def test_a_password_change_in_flight_cant_undo_a_lock_out(web, monkeypatch, what
     response = thief.post(
         "/sign-in/password", {"password": new, "password2": new, "confirm_password": PASSWORD}
     )
-    assert response.status_code == 400 and "wasn&#39;t changed" in response.content.decode()
+    assert response.status_code == 400 and "signed out" in response.content.decode()
     sam = get_user_model().objects.get(username="sam")
     assert not sam.has_usable_password() and sam.is_active is (what == "new_link")
     assert not authenticate(username="sam", password=new)
@@ -8766,3 +8766,114 @@ def test_a_link_stays_out_of_the_log_when_it_fails(web, monkeypatch, caplog, kin
         )
     assert response.status_code == 500
     assert f"/{kind}/(hidden)" in caplog.text and token not in caplog.text
+
+
+def out_of_date_hash(password):
+    from django.contrib.auth.hashers import PBKDF2PasswordHasher
+
+    hasher = PBKDF2PasswordHasher()
+    return hasher.encode(password, hasher.salt(), hasher.iterations - 1000)
+
+
+@pytest.mark.parametrize("path", ["/login", "/sign-in/password"])
+def test_upgrading_an_old_hash_cant_undo_a_lock_out(web, monkeypatch, path):
+    """Django's own upgrade writes after a slow check, whatever has happened since."""
+    from django.contrib.auth import authenticate, get_user_model
+    from django.contrib.auth.hashers import PBKDF2PasswordHasher
+
+    from checker.web import accounts
+
+    boss = account_named("boss")
+    sam = account_named("sam")
+    sam.password = out_of_date_hash(PASSWORD)
+    sam.save()
+    thief = browser()
+    if path != "/login":
+        thief.force_login(sam)
+    real = PBKDF2PasswordHasher.verify
+
+    def landing_midway(self, password, encoded):
+        if not get_user_model().objects.get(username="sam").has_usable_password():
+            return real(self, password, encoded)
+        accounts.new_link(boss, "sam")
+        return real(self, password, encoded)
+
+    monkeypatch.setattr(PBKDF2PasswordHasher, "verify", landing_midway)
+    new = "a new long password here"
+    thief.post(
+        path,
+        {
+            "username": "sam",
+            "password": PASSWORD if path == "/login" else new,
+            "password2": new,
+            "confirm_password": PASSWORD,
+        },
+    )
+    monkeypatch.undo()
+    assert not get_user_model().objects.get(username="sam").has_usable_password()
+    assert not authenticate(username="sam", password=PASSWORD)
+    assert not authenticate(username="sam", password=new)
+    assert thief.get("/manage").status_code == 302
+
+
+def test_an_old_hash_is_still_upgraded_at_sign_in(web):
+    from django.contrib.auth import get_user_model
+    from django.contrib.auth.hashers import PBKDF2PasswordHasher
+
+    from checker.web.hashing import out_of_date
+
+    sam = account_named("sam")
+    sam.password = out_of_date_hash(PASSWORD)
+    sam.save()
+    assert out_of_date(sam.password)
+    client = browser()
+    assert client.post("/login", {"username": "sam", "password": PASSWORD}).status_code == 302
+    sam = get_user_model().objects.get(username="sam")
+    assert not out_of_date(sam.password) and PBKDF2PasswordHasher.algorithm in sam.password
+    assert client.get("/").status_code == 200  # the session survives it
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["\u092a\u094d\u0930\u093f\u092f\u093e", "\u0e1e\u0e34\u0e21\u0e1e\u0e4c", "jos\u00e9.m-2"],
+)
+def test_real_names_in_any_writing_are_accepted(web, name):
+    client, _ = signed_in(web)
+    _, token = link_in(invite(client, name=name))
+    assert token
+
+
+def test_a_check_that_breaks_is_still_recorded(web, monkeypatch):
+    from checker.web import accounts
+
+    def broken(name):
+        raise RuntimeError("the tool's own error")
+
+    client, _ = signed_in(web)
+    monkeypatch.setattr(accounts, "new_name_problem", broken)
+    assert invite(client).status_code == 500
+    assert ("jo", "invited someone", "sam", "failed", "RuntimeError") in actions_recorded()
+
+
+def test_view_only_with_no_servers_is_told_who_can_add_one(web):
+    text = person("viewer").get("/").content.decode()
+    assert "Someone with full access" in text and "/first-setup" not in text
+
+
+def test_the_guarded_upgrade_itself_cant_undo_a_lock_out(web, monkeypatch):
+    from django.contrib.auth import get_user_model
+
+    from checker.web import accounts
+
+    boss, sam = account_named("boss"), account_named("sam")
+    sam.password = out_of_date_hash(PASSWORD)
+    sam.save()
+    real = accounts.make_password
+
+    def landing_midway(password):
+        accounts.new_link(boss, "sam")
+        return real(password)
+
+    monkeypatch.setattr(accounts, "make_password", landing_midway)
+    accounts.upgrade_password_hash(sam, PASSWORD)
+    assert not get_user_model().objects.get(username="sam").has_usable_password()

@@ -211,6 +211,7 @@ def login_page(request) -> HttpResponse:
         else:
             user = authenticate(request, username=username, password=password)
             if user is not None:
+                accounts.upgrade_password_hash(user, password)  # before the session depends on it
                 try:
                     with transaction.atomic():  # no sign-in without its line in the record
                         accounts.clear_failures(username, address)
@@ -428,7 +429,9 @@ def password_change(request) -> HttpResponse:
     user = request.user
     if not accounts.change_own_password(user, request.POST.get("password", "")):
         raise ActionFailed(
-            "Your account changed while this was happening, so the password wasn't changed.",
+            "Your account changed while this was happening, so you've been signed out. If you"
+            " clicked twice, the first click may have changed the password: the Activity page"
+            " shows what ran.",
             sign_out=True,
         )
     update_session_auth_hash(request, user)  # this session goes on; any other one ends

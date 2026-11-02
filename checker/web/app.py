@@ -145,6 +145,7 @@ def django_settings(
                 "OPTIONS": {"environment": "checker.web.templating.environment"},
             }
         ],
+        "PASSWORD_HASHERS": ["checker.web.hashing.NoUpgradeWhileChecking"],
         "AUTH_PASSWORD_VALIDATORS": [
             {
                 "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",

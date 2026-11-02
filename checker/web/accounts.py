@@ -6,13 +6,13 @@ import hashlib
 import hmac
 import ipaddress
 import secrets
+import unicodedata
 from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.password_validation import validate_password
-from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.sessions.backends.db import SessionStore
 from django.contrib.sessions.models import Session
 from django.core.exceptions import ValidationError
@@ -151,9 +151,8 @@ def name_shape_problem(name: str) -> str | None:
     """Names reach the record, a terminal and hidden form fields: plain ones survive all of them."""
     if not name:
         return "Choose a name."
-    try:
-        UnicodeUsernameValidator()(name)
-    except ValidationError:
+    # By category, since a letter in many languages is written with marks that join it.
+    if not all(c in "@.+-_" or unicodedata.category(c)[0] in "LMN" for c in name):
         return "A name can have only letters, numbers and the characters @ . + - _"
     return "That name is too long." if len(name) > 150 else None
 
@@ -249,6 +248,17 @@ def accept(token: str, password: str):
         user.set_password(password)
         user.save()
         return user
+
+
+def upgrade_password_hash(user, password: str) -> None:
+    """After a right password, if Django now makes stronger hashes. Only over the one checked."""
+    from checker.web.hashing import out_of_date  # needs Django set up
+
+    if out_of_date(user.password):
+        hashed = make_password(password)
+        same = get_user_model().objects.filter(pk=user.pk, password=user.password)
+        if same.update(password=hashed):
+            user.password = hashed
 
 
 def change_own_password(user, password: str) -> bool:

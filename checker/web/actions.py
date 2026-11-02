@@ -133,6 +133,9 @@ def action(name: str, consequential: bool = False, target=lambda request, **kwar
                 except ActionFailed as exc:
                     record_if_possible(request, name, on, "failed", exc.words)
                     return exc.page or _refused_page(request, exc.words, status=400)
+                except Exception as exc:
+                    record_if_possible(request, name, on, "failed", type(exc).__name__)
+                    raise
             if consequential:
                 refused = confirmation_refused(request, name, on)
                 if refused:

@@ -74,9 +74,18 @@ def refuse_tables_of_others(connection) -> None:
     """Another Django application's tables would be taken for these, and its accounts could then
     sign in here. So whether this tool made them is written on the table that says what's been
     made, as the first thing done."""
-    if is_ours(connection):
-        return
     names = connection.introspection.django_table_names(only_existing=False, include_views=False)
+    if is_ours(connection):
+        # Its own shadow any of the same name further along the path, unless one has gone missing,
+        # as from a partial restore: the name would then quietly reach the other.
+        here = _table_marks(connection, names)
+        strays = _found_elsewhere(connection, [name for name in names if name not in here])
+        if strays:
+            raise RuntimeError(
+                f"this database has no {sorted(strays)[0]} table of this tool's, but another schema"
+                " on its search path has one: restore the database, or take it off the path"
+            )
+        return
     names = [*names, _MIGRATIONS]
     found = [*_table_marks(connection, names), *_found_elsewhere(connection, names)]
     if found:

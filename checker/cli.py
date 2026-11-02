@@ -2366,12 +2366,7 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
         if not config.database and not database_file(base).exists():
             raise EvidenceError(f"no store to move ({database_file(base)})")
         if accounts:
-            try:
-                import django  # noqa: F401 - what it uses, here while there's nothing to undo
-
-                from checker.web.moving import move_accounts, take_accounts_back
-            except ImportError as exc:
-                return _web_extra_missing(exc)
+            from checker.web.moving import move_accounts, take_accounts_back
         counts = None
         with schedule.run_lock(base), locked(config_file(base)):
             rows = move_accounts(base, args.to) if accounts else None
@@ -2399,6 +2394,8 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
                 if accounts and load_config(base).database != args.to:
                     take_accounts_back()
                 raise
+    except ImportError as exc:
+        return _web_extra_missing(exc)  # before anything's been done: Django is set up first
     except schedule.Busy:
         print(
             "checker: `checker run` is in progress: try again when it has finished", file=sys.stderr

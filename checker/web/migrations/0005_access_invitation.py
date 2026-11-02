@@ -7,8 +7,9 @@ def _everyone_so_far_keeps_full_access(apps, schema_editor):
     out by an upgrade."""
     access = apps.get_model("web", "Access")
     user = apps.get_model(*settings.AUTH_USER_MODEL.split("."))
-    for pk in user.objects.values_list("pk", flat=True):
-        access.objects.create(user_id=pk, full=True)
+    alias = schema_editor.connection.alias  # a move migrates a file that isn't the default database
+    for pk in user.objects.using(alias).values_list("pk", flat=True):
+        access.objects.using(alias).create(user_id=pk, full=True)
 
 
 class Migration(migrations.Migration):

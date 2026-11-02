@@ -665,6 +665,8 @@ def test_a_move_doesnt_depend_on_how_the_database_orders_text(tmp_path):
 
     name = f"d{secrets.token_hex(4)}"
     with psycopg.connect(server, autocommit=True) as admin:
+        if admin.info.server_version < 150000:
+            pytest.skip("ICU as a database's locale needs PostgreSQL 15")
         admin.execute(
             f"CREATE DATABASE {name} TEMPLATE template0 LOCALE_PROVIDER icu ICU_LOCALE 'cs'"
         )
@@ -697,38 +699,27 @@ def test_taking_away_only_touches_whats_ours_in_our_schema(home, address):
     plain = f"{server}{'&' if '?' in server else '?'}user={role}"
     try:
         (home / "config.yaml").write_text(f"database: {plain}\n")
-        run(home, "print(1)")
-        with psycopg.connect(server, autocommit=True) as admin:
-            admin.execute(f"DROP TABLE {schema}.web_checkrun")
-            admin.execute(f"CREATE TABLE {other}.web_checkrun (id int)")
-        unmarked = run(
+        # Set up after its start, which would rightly refuse this layout.
+        result = run(
             home,
-            """
+            f"""
             from checker.web import postgres
             with connection.cursor() as cursor:
+                cursor.execute("DROP TABLE {schema}.web_checkrun")
+                cursor.execute("CREATE TABLE {other}.web_checkrun (id int)")
                 cursor.execute("COMMENT ON TABLE django_migrations IS NULL")
-            postgres.drop_ours(connection)
+            postgres.drop_ours(connection)  # without the mark it isn't ours, so it stays
             with connection.cursor() as cursor:
-                cursor.execute("SELECT to_regclass('django_migrations')")
-                print(json.dumps(cursor.fetchone()[0] is not None))
-            """,
-            check=False,
-        )
-        # Without the mark it isn't ours, so it stays.
-        assert unmarked.returncode == 0, unmarked.stderr
-        assert json.loads(unmarked.stdout.strip().splitlines()[-1]) is True
-        with psycopg.connect(server, autocommit=True) as admin:
-            admin.execute(
-                f"COMMENT ON TABLE {schema}.django_migrations IS 'compromise-checker web interface'"
-            )
-        run(
-            home,
-            """
-            from checker.web import postgres
+                cursor.execute("SELECT to_regclass('{schema}.django_migrations')")
+                kept = cursor.fetchone()[0] is not None
+                cursor.execute(
+                    "COMMENT ON TABLE django_migrations IS 'compromise-checker web interface'"
+                )
             postgres.drop_ours(connection)
-            print(1)
+            print(json.dumps(kept))
             """,
         )
+        assert result is True
         with psycopg.connect(server, autocommit=True) as admin:
             assert admin.execute(f"SELECT to_regclass('{other}.web_checkrun')").fetchone()[0]
             assert admin.execute(f"SELECT to_regclass('{schema}.auth_user')").fetchone()[0] is None
@@ -751,6 +742,75 @@ def test_a_role_with_another_client_encoding_can_still_store_any_text(address):
         db.close()
     finally:
         drop_role(role)
+
+
+def test_a_table_gone_missing_doesnt_reach_one_further_along_the_path(home, address):
+    """A partial restore: its accounts would otherwise be able to sign in."""
+    import psycopg
+
+    role = a_role()
+    schema = address[1]
+    other = f"o{secrets.token_hex(4)}"
+    with psycopg.connect(server, autocommit=True) as admin:
+        admin.execute(f"CREATE SCHEMA {other}")
+        admin.execute(f"ALTER ROLE {role} SET search_path = {schema}, {other}")
+    plain = f"{server}{'&' if '?' in server else '?'}user={role}"
+    try:
+        (home / "config.yaml").write_text(f"database: {plain}\n")
+        run(home, "print(1)")
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"CREATE TABLE {other}.web_access (id int)")
+        run(home, "print(1)")  # shadowed by its own, so nothing is wrong yet
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"DROP TABLE {schema}.web_access")
+        done = run(home, "print(1)", check=False)
+        assert done.returncode != 0 and "restore the database" in done.stderr
+    finally:
+        with psycopg.connect(server, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA {other} CASCADE")
+            admin.execute(f"DROP OWNED BY {role} CASCADE")
+        drop_role(role)
+
+
+def test_a_file_in_wal_mode_is_whole_after_the_move(home, address):
+    made_store_and_accounts(home)
+    with sqlite3.connect(home / "web.db") as old:
+        assert old.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    old.close()
+    move(home, address[0])
+    assert not (home / "web.db-wal.moved").exists()
+    with sqlite3.connect(home / "web.db.moved") as kept:
+        assert kept.execute("SELECT count(*) FROM web_actionrecord").fetchone()[0] == 3
+    kept.close()
+
+
+def test_a_file_from_before_view_only_accounts_moves_with_their_access(home, address):
+    """Migrating it reads and writes the file, not the database it's moving to."""
+    made_store_and_accounts(home)
+    (home / "web.db").unlink()
+    env = os.environ | {"CHECKER_HOME": str(home)}
+    old_version = """
+import sys
+from pathlib import Path
+from checker.web.app import django_settings
+import django
+from django.conf import settings
+from django.contrib.auth.hashers import make_password
+settings.configure(**django_settings(Path(sys.argv[1])))
+django.setup()
+from django.core.management import call_command
+from django.contrib.auth import get_user_model
+call_command("migrate", "web", "0004", verbosity=0)
+call_command("migrate", "auth", verbosity=0)
+get_user_model().objects.create_user("jo", password="the first long password")
+"""
+    subprocess.run(
+        [sys.executable, "-c", old_version, str(home)], check=True, env=env, capture_output=True
+    )
+    move(home, address[0])
+    assert run(home, "print(json.dumps(list(Access.objects.values_list('full', flat=True))))") == [
+        True
+    ]
 
 
 def test_a_move_with_accounts_but_no_web_extra_says_so(tmp_path, address):

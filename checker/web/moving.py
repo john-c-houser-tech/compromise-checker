@@ -114,6 +114,7 @@ def move_accounts(home: Path, url: str) -> int:
         call_command("migrate", database="source", verbosity=0, interactive=False)
         target = connections["default"]
         with postgres.one_migration_at_a_time(target):
+            postgres.refuse_tables_of_others(target)
             if postgres.is_ours(target):
                 call_command("migrate", verbosity=0, interactive=False)
             if postgres.is_ours(target) and _nobody_there():
@@ -122,7 +123,6 @@ def move_accounts(home: Path, url: str) -> int:
                 if not all(_same(model) for model in _models()):
                     raise EvidenceError(_different(home, url))
                 return sum(len(_rows(model, "default")) for model in _models())
-            postgres.refuse_tables_of_others(target)
             try:
                 postgres.claim(target)
                 call_command("migrate", verbosity=0, interactive=False)
@@ -134,6 +134,10 @@ def move_accounts(home: Path, url: str) -> int:
             return total
     except (Error, ValueError, RuntimeError, *database.DATABASE_ERRORS) as exc:
         raise EvidenceError(f"the accounts: {exc}") from exc
+    finally:
+        # Closed before the file is renamed: in WAL mode, what's only in its log goes back into it.
+        if "source" in connections:
+            connections["source"].close()
 
 
 def _nobody_there() -> bool:

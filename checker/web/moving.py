@@ -77,6 +77,22 @@ def _copy(model, cursor, connection) -> int:
     return len(rows)
 
 
+def _never_reuse_a_number(models: list, cursor) -> None:
+    """Numbers go on from the highest ever given out, not the highest left. A session can name a
+    two-factor device since deleted, and a new device given its number would count as verified."""
+    from django.db import connections
+
+    with connections["source"].cursor() as source:
+        source.execute("SELECT name, seq FROM sqlite_sequence")
+        highest = dict(source.fetchall())
+    for model in models:
+        table, column = model._meta.db_table, model._meta.pk.column
+        if highest.get(table) and model._meta.pk.get_internal_type().endswith("AutoField"):
+            cursor.execute(
+                "SELECT setval(pg_get_serial_sequence(%s, %s), %s)", [table, column, highest[table]]
+            )
+
+
 def _copy_everything(connection) -> int:
     from django.contrib.auth.models import Permission
     from django.contrib.contenttypes.models import ContentType
@@ -91,6 +107,7 @@ def _copy_everything(connection) -> int:
         total = sum(_copy(model, cursor, connection) for model in models)
         for statement in connection.ops.sequence_reset_sql(no_style(), models):
             cursor.execute(statement)
+        _never_reuse_a_number(models, cursor)
         for model in models:
             if not _same(model):
                 raise EvidenceError(
@@ -105,6 +122,7 @@ def move_accounts(home: Path, url: str) -> int:
     if it can be. An earlier move that finished copying is only checked, so that one stopped before
     its last step can be finished by running it again. One stopped before that left tables with
     nobody in them, which are simply made again."""
+    from django.conf import settings
     from django.core.management import call_command
     from django.db import Error, connections
 
@@ -136,7 +154,7 @@ def move_accounts(home: Path, url: str) -> int:
         raise EvidenceError(f"the accounts: {exc}") from exc
     finally:
         # Closed before the file is renamed: in WAL mode, what's only in its log goes back into it.
-        if "source" in connections:
+        if settings.configured and "source" in connections:
             connections["source"].close()
 
 

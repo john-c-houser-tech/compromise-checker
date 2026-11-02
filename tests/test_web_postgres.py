@@ -813,6 +813,56 @@ get_user_model().objects.create_user("jo", password="the first long password")
     ]
 
 
+def test_a_moved_database_never_gives_a_deleted_devices_number_again(home, address):
+    """A session can still name that device, and would count as verified with the new one."""
+    made_store_and_accounts(home)
+    env = os.environ | {"CHECKER_HOME": str(home)}
+    delete = """
+import sys
+from pathlib import Path
+from checker.web.app import configure
+configure(Path(sys.argv[1]))
+from django_otp.plugins.otp_totp.models import TOTPDevice
+print(TOTPDevice.objects.get().pk)
+TOTPDevice.objects.all().delete()
+"""
+    done = subprocess.run(
+        [sys.executable, "-c", delete, str(home)],
+        check=True, env=env, capture_output=True, text=True,
+    )  # fmt: skip
+    old = int(done.stdout.strip())
+    move(home, address[0])
+    new = run(
+        home,
+        """
+        from django_otp.plugins.otp_totp.models import TOTPDevice
+        user = get_user_model().objects.get(username="jo")
+        print(json.dumps(TOTPDevice.objects.create(user=user, name="n", confirmed=True).pk))
+        """,
+    )
+    assert new > old
+
+
+def test_a_store_file_left_by_a_stopped_move_is_retired_when_it_finishes(home, address):
+    made_store_and_accounts(home)
+    move(home, address[0])
+    (home / "web.db.moved").rename(
+        home / "web.db"
+    )  # stopped after the settings, before the renames
+    (home / "checker.db.moved").rename(home / "checker.db")
+    move(home, address[0])
+    assert not (home / "checker.db").exists() and (home / "checker.db.moved").exists()
+    assert not (home / "web.db").exists() and (home / "web.db.moved").exists()
+
+
+def test_a_database_that_cant_be_reached_stops_a_move_with_words(home):
+    made_store_and_accounts(home)
+    done = move(home, "postgresql://postgres@127.0.0.1:1/nothing", check=False)
+    assert done.returncode == 1 and "not moved" in done.stderr
+    assert "Traceback" not in done.stderr
+    assert (home / "web.db").exists()
+
+
 def test_a_move_with_accounts_but_no_web_extra_says_so(tmp_path, address):
     (tmp_path / "web.db").write_bytes(b"x")
     made = """

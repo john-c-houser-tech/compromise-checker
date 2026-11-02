@@ -2409,7 +2409,8 @@ def cmd_store_move(args: argparse.Namespace, ask: Callable[[str], str] = input) 
         print("The store is now in that database. Evidence files stay where they are.")
     if rows is not None:
         print(f"Moved the web interface's accounts and record ({rows} rows), and checked them.")
-    return _retire_old_files(base, args, ask, store=counts is not None, accounts=accounts)
+    # The store's file too if a move stopped before renaming it: the settings already say it's over.
+    return _retire_old_files(base, args, ask, database_file(base).exists(), accounts)
 
 
 def _retire_old_files(

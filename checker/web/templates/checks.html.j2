@@ -10,7 +10,7 @@
 </section>
 {% endblock %}
 {% block main %}
-{% if not rows %}<p>No checks have been started from here yet.</p>{% else %}
+{% if not rows %}<div class="empty">{{ draw.buoy() }}<p>No checks have been started from here yet.</p></div>{% else %}
 <div class="record-wrap">
 <table class="record">
   <thead><tr><th>Started</th><th>What</th><th>Servers</th><th>Who</th><th>How it went</th></tr></thead>

@@ -481,7 +481,7 @@ details p, details li { font-size: 0.9375rem; color: var(--quiet); }
 .threat ul { margin: 0.25rem 0; padding-inline-start: 1.1rem; }
 .threat .note { margin: 0; }
 .affected { padding: 0.625rem 0.875rem; margin-top: 0.75rem; border-radius: 10px; background: color-mix(in srgb, var(--tone) var(--wash), var(--sheet)); }
-.affected h3 { margin: 0; color: var(--tone); }
+.affected h3 { margin: 0; color: color-mix(in srgb, var(--tone) 80%, var(--ink)); }
 .affected h3 span { font-weight: 400; }
 .from-ai { border: 1px solid var(--unknown); border-radius: var(--radius); background: var(--sheet); padding: 1rem 1.125rem; margin-top: 0.75rem; max-width: 54rem; }
 .from-ai h3 { font-size: 1rem; margin: 0.75rem 0 0.25rem; }
@@ -490,8 +490,9 @@ details p, details li { font-size: 0.9375rem; color: var(--quiet); }
 .from-ai code { display: inline-block; overflow-wrap: anywhere; }
 
 .record { width: 100%; border-collapse: collapse; font-size: 0.9375rem; background: var(--sheet); }
-.record thead th { font-size: 0.8125rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--quiet); background: var(--code); }
-.record th, .record td { text-align: start; padding: 0.625rem 0.875rem; border-bottom: 1px solid var(--rule); overflow-wrap: anywhere; vertical-align: top; }
+.record thead th { font-size: 0.8125rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--quiet); background: var(--code); white-space: nowrap; }
+@media (max-width: 52rem) { .record th, .record td { padding: 0.5rem 0.625rem; } }
+.record th, .record td { text-align: start; padding: 0.625rem 0.875rem; border-bottom: 1px solid var(--rule); overflow-wrap: break-word; vertical-align: top; }
 .record tbody tr:last-child td { border-bottom: 0; }
 .record-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: var(--radius); }
 
@@ -508,7 +509,7 @@ p.error { padding: 0.75rem 1rem; border-radius: 12px; max-width: 75ch; backgroun
 .command { overflow-x: auto; padding: 0.875rem 1rem; background: var(--code); border: 1px solid var(--rule); border-radius: 10px; font-size: 0.875rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .steps { list-style: none; counter-reset: step; padding: 0; max-width: 70ch; }
 .steps > li { counter-increment: step; position: relative; padding: 1rem 1.125rem 1rem 3.75rem; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--sheet); }
-.steps > li::before { content: counter(step); position: absolute; left: 1rem; top: 1rem; width: 2rem; height: 2rem; border-radius: 50%; display: grid; place-items: center; font-weight: 700; background: var(--accent); color: var(--on-accent); }
+.steps > li::before { content: counter(step); position: absolute; inset-inline-start: 1rem; top: 1rem; width: 2rem; height: 2rem; border-radius: 50%; display: grid; place-items: center; font-weight: 700; background: var(--accent); color: var(--on-accent); }
 .steps > li + li { margin-top: 0.875rem; }
 .steps > li > h2 { font-size: 1.125rem; margin: 0 0 0.25rem; }
 .steps .done { color: var(--quiet); font-weight: 400; }
@@ -537,7 +538,7 @@ code { font-size: 0.9em; overflow-wrap: anywhere; }
 .auth main form input { max-width: none; }
 .auth main form button { width: 100%; justify-content: center; margin-top: 1rem; }
 .coil-large { width: 52px; height: 52px; }
-.problem-icon { width: 44px; height: 44px; color: var(--unknown); }
+.problem-icon { width: 44px; height: 44px; color: var(--quiet); }
 @media (max-width: 52rem) {
   .auth .main-in { margin: 1rem; padding: 1.5rem; }
 }
@@ -547,6 +548,7 @@ code { font-size: 0.9em; overflow-wrap: anywhere; }
 
 /* Manage: each place as a card. */
 .tiles { list-style: none; margin: 0 0 2rem; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: 0.875rem; }
+@media (max-width: 52rem) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.625rem; } .tiles a { min-height: 3.75rem; padding: 0.625rem 0.75rem; font-size: 0.9375rem; } }
 .tiles a {
   min-height: 4.5rem;
   display: flex;
@@ -563,3 +565,8 @@ code { font-size: 0.9em; overflow-wrap: anywhere; }
 .tiles a:hover { border-color: var(--accent); }
 .tile-icon { width: 2.5rem; height: 2.5rem; flex: none; display: grid; place-items: center; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
 .section-title { font-size: 1.375rem; margin: 2rem 0 0.5rem; }
+
+/* Nothing to show yet: NouriLoop's buoy and the words. */
+.empty { display: flex; align-items: center; gap: 1rem; padding: 1.5rem; border: 1px dashed var(--rule); border-radius: var(--radius); color: var(--quiet); }
+.empty .drawing { width: 3.5rem; height: 3.5rem; }
+.empty p { margin: 0; }

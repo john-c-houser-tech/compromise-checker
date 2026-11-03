@@ -9520,3 +9520,46 @@ def test_the_evidence_link_once_for_each_kind_of_account(web):
     viewer = _host_page(person("viewer"))
     assert viewer.count('href="/hosts/web01/evidence"') == 1
     assert 'class="actions"' not in viewer and "/checks/analyze" not in viewer
+
+
+BANDED = ["/threats", "/checks", "/activity", "/manage", "/two-factor/manage"]
+
+
+@pytest.mark.parametrize("path", BANDED)
+def test_each_page_has_one_title_in_its_band_and_no_inline_style(web, path):
+    client, _ = signed_in(web)
+    text = client.get(path).content.decode()
+    assert text.count("<h1") == 1 and " style=" not in text
+    band = text.split('<section class="band"')[1].split("</section>")[0]
+    assert "<h1" in band and "from-server" not in band
+    assert text.index("<main>") < text.index('<section class="band"')
+
+
+def test_the_checks_band_has_its_button_for_full_access_only(web):
+    client, _ = signed_in(web)
+    assert 'class="button" href="/checks/new"' in client.get("/checks").content.decode()
+    assert "/checks/new" not in person("viewer").get("/checks").content.decode()
+
+
+def test_manage_offers_each_place_as_a_tile(web):
+    client, _ = signed_in(web)
+    tiles = client.get("/manage").content.decode().split('<ul class="tiles"')[1].split("</ul>")[0]
+    for words in (
+        "First setup",
+        "Add a server",
+        "Threat updates",
+        "Settings",
+        "Check every day",
+        "Delete stored evidence",
+        "People",
+    ):
+        assert words + "</a>" in tiles, words
+
+
+def test_the_sign_in_pages_are_a_card_and_others_carry_no_empty_class(web):
+    client, _ = web
+    assert '<body class="auth">' in client.get("/login").content.decode()
+    missing = client.get("/no-such-page").content.decode()
+    assert '<body class="auth">' in missing and 'class="nudge"' not in missing
+    signed, _ = signed_in(web)
+    assert "<body>" in signed.get("/").content.decode()

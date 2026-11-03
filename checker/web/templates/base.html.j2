@@ -11,7 +11,9 @@
 <link rel="stylesheet" href="{{ url('style') }}">
 {% block head %}{% endblock %}
 </head>
-<body class="{% block body_class %}{% endblock %}">
+{% if false %}{% block body_class %}{% endblock %}{% endif %}
+{% set body_class = self.body_class() | trim %}
+<body{% if body_class %} class="{{ body_class }}"{% endif %}>
 {% set signed_in = request is defined and fully_signed_in(request) %}
 {% set here = section(request) if request is defined else "" %}
 <header class="bar">

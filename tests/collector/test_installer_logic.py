@@ -671,12 +671,23 @@ class WebAddress(unittest.TestCase):
         real = (installer._run, installer.shutil.which, installer.WEB_MARKER)
         with tempfile.TemporaryDirectory() as folder:
             installer.WEB_MARKER = Path(folder) / "web-address.json"
-            installer._run = lambda *command, **more: called.append(command)
+
+            def run(*command, **more):
+                called.append(command)
+                return subprocess.CompletedProcess([], 0, "active\n", "")
+
+            installer._run = run
             installer.shutil.which = lambda name: "/usr/sbin/" + name
             fake = installer.APACHE_DNF._replace(config=Path(folder) / "cc.conf")
             try:
                 installer.write_marker(
-                    {"apache_before": True, "firewalld": ["https"], "selinux_switch": False}
+                    {
+                        "apache_before": True,
+                        "firewalld_permanent": ["https"],
+                        "firewalld_runtime": ["https"],
+                        "selinux_switch": False,
+                        "port_label": "added",
+                    }
                 )
                 (Path(folder) / "cc.conf").write_text("x")
                 installer._undo_web_address(fake)
@@ -686,9 +697,94 @@ class WebAddress(unittest.TestCase):
                 installer._run, installer.shutil.which, installer.WEB_MARKER = real
         text = str(called)
         self.assertNotIn("'disable', '--now', 'httpd'", text)  # it was there before
-        self.assertIn("--remove-service=https", text)
+        self.assertIn("'--permanent', '--remove-service=https'", text)
+        self.assertIn("'firewall-cmd', '--remove-service=https'", text)
         self.assertNotIn("--remove-service=http'", text)  # not opened by this installer
+        self.assertNotIn("--reload", text)  # would drop rules made for the running session
         self.assertNotIn("setsebool", text)
+        self.assertIn("'semanage', 'port', '-d', '-p', 'tcp', '8088'", text)
+
+    def test_a_failed_stop_keeps_the_record_for_another_try(self):
+        def run(*command, check=True, **more):
+            if command[:3] == ("systemctl", "disable", "--now") and "httpd" in command and check:
+                raise installer.Stop("couldn't stop it")
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        real = (installer._run, installer.shutil.which)
+        installer._run = run
+        installer.shutil.which = lambda name: None
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                fake = installer.APACHE_DNF._replace(config=Path(folder) / "cc.conf")
+                installer.write_marker({"apache_before": False})
+                with self.assertRaises(installer.Stop):
+                    installer._undo_web_address(fake)
+                self.assertTrue(installer.WEB_MARKER.exists())
+        finally:
+            installer._run, installer.shutil.which = real
+
+    def test_the_firewall_note_is_made_before_the_change(self):
+        order = []
+
+        def run(*command, **more):
+            if command[:2] == ("firewall-cmd", "--state"):
+                return subprocess.CompletedProcess([], 0, "running", "")
+            if "--query-service=http" in command[-1] or "--query-service=https" in command[-1]:
+                return subprocess.CompletedProcess([], 1, "no", "")
+            if "--add-service=https" in command[-1]:
+                order.append(("change", installer.read_marker()))
+                raise installer.Stop("firewall broke")
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        real = (installer._run, installer.shutil.which)
+        installer._run = run
+        installer.shutil.which = lambda name: "/usr/bin/" + name
+        try:
+            with self.assertRaises(installer.Stop):
+                installer._open_firewall()
+        finally:
+            installer._run, installer.shutil.which = real
+        self.assertIn("https", order[0][1]["firewalld_runtime"])
+
+    def test_someone_elses_apache_is_not_taken_over(self):
+        real = (installer.port_free_everywhere, installer._service_holds_port)
+        installer.port_free_everywhere = lambda port: False
+        installer._service_holds_port = lambda port, unit=None: True
+        try:
+            self.assertIn("Something else", installer._web_ports_problem(installer.APACHE_APT))
+            installer.write_marker({"apache_before": False})
+            self.assertIsNone(installer._web_ports_problem(installer.APACHE_APT))
+        finally:
+            installer.port_free_everywhere, installer._service_holds_port = real
+
+    def test_a_listener_on_ipv6_alone_is_noticed(self):
+        try:
+            other = socket.socket(socket.AF_INET6)
+        except OSError:
+            self.skipTest("no IPv6 here")
+        with other:
+            other.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            try:
+                other.bind(("::", 0))
+            except OSError:
+                self.skipTest("no IPv6 here")
+            other.listen()
+            port = other.getsockname()[1]
+            self.assertTrue(installer.port_free(port, "0.0.0.0"))
+            self.assertFalse(installer.port_free_everywhere(port))
+
+    def test_selinux_port_types(self):
+        listing = "http_port_t tcp 80, 81, 443\nsome_port_t tcp 8088, 9000\nother_t udp 8088\n"
+        self.assertEqual(installer.port_label(listing, 8088), "some_port_t")
+        self.assertIsNone(installer.port_label("http_port_t tcp 80\n", 8088))
+
+    def test_only_a_rule_letting_everyone_in_counts(self):
+        status = (
+            "Status: active\n\nTo Action From\n-- ------ ----\n"
+            "80/tcp ALLOW 203.0.113.10\n443/tcp ALLOW Anywhere\n"
+        )
+        self.assertFalse(installer.ufw_allows_anyone(status, "80/tcp"))
+        self.assertTrue(installer.ufw_allows_anyone(status, "443/tcp"))
 
     def test_the_daily_reload(self):
         units = installer.reload_units(installer.APACHE_APT)

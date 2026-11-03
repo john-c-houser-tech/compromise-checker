@@ -1018,7 +1018,7 @@ def _port_80_open_for_a_moment():
             _run("firewall-cmd", "--add-port=80/tcp", check=False)  # not --permanent
             closing = ("firewall-cmd", "--remove-port=80/tcp")
     elif shutil.which("ufw") and "Status: active" in _ufw_status():
-        if not re.search(r"^80(/tcp)?\s+ALLOW", _ufw_status(), re.MULTILINE):
+        if not ufw_allows_anyone(_ufw_status(), "80/tcp"):
             _run("ufw", "allow", "80/tcp", check=False)
             closing = ("ufw", "delete", "allow", "80/tcp")
     try:
@@ -1162,9 +1162,32 @@ WantedBy=paths.target
     return units
 
 
+def port_free_everywhere(port: int) -> bool:
+    """Free on every address, IPv6 ones included: something could be listening on those alone."""
+    if not port_free(port, "0.0.0.0"):  # noqa: S104
+        return False
+    try:
+        trial = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    except OSError:
+        return True  # no IPv6 here
+    with trial:
+        trial.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        trial.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        try:
+            trial.bind(("::", port))
+        except OSError:
+            return False
+    return True
+
+
 def _web_ports_problem(apache: Apache) -> Optional[str]:
+    """Apache on these ports is only let by if an earlier run of this installer started it: one that
+    was there before belongs to someone else, and isn't taken over."""
+    ours = WEB_MARKER.exists() and not read_marker().get("apache_before")
     for port in (80, 443):
-        if not port_free(port, "0.0.0.0") and not _service_holds_port(port, apache.service):  # noqa: S104
+        if port_free_everywhere(port):
+            continue
+        if not (ours and _service_holds_port(port, apache.service)):
             return f"Something else is using port {port}, which the web address needs."
     return None
 
@@ -1212,14 +1235,27 @@ def _allow_proxy_under_selinux() -> None:
         return
     say(f"Letting Apache, under SELinux, connect to web ports, and to the tool's port, {PORT}.")
     if "--> on" not in _run("getsebool", SELINUX_SWITCH, check=False).stdout:
+        write_marker({**read_marker(), "selinux_switch": True})  # noted first, in case it stops
         _run("setsebool", "-P", SELINUX_SWITCH, "1")
-        write_marker({**read_marker(), "selinux_switch": True})
     listed = _run("semanage", "port", "-l", check=False).stdout
     if re.search(rf"^http_port_t\s+tcp\s+.*\b{PORT}\b", listed, re.MULTILINE):
         return
-    added = _run("semanage", "port", "-a", "-t", "http_port_t", "-p", "tcp", str(PORT), check=False)
-    if added.returncode != 0:
+    before = port_label(listed, PORT)
+    write_marker({**read_marker(), "port_label": before or "added"})
+    if before is None:
+        _run("semanage", "port", "-a", "-t", "http_port_t", "-p", "tcp", str(PORT))
+    else:
         _run("semanage", "port", "-m", "-t", "http_port_t", "-p", "tcp", str(PORT))
+
+
+def port_label(listing: str, port: int) -> Optional[str]:
+    """The type SELinux gives a TCP port by name, from `semanage port -l`, if any does."""
+    for line in listing.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[1] == "tcp":
+            if str(port) in [part.strip() for part in parts[2].split(",")]:
+                return parts[0]
+    return None
 
 
 def _ufw_status() -> str:
@@ -1239,29 +1275,44 @@ def write_marker(marker: dict) -> None:
     _write_file(WEB_MARKER, json.dumps(marker) + "\n", 0o644)
 
 
+def ufw_allows_anyone(status: str, port: str) -> bool:
+    """A rule that lets everyone in: one limited to some addresses wouldn't let Let's Encrypt in."""
+    return bool(re.search(rf"^{re.escape(port)}\s+ALLOW(?: IN)?\s+Anywhere\s*$", status, re.M))
+
+
+def _note(key: str, value: str) -> None:
+    """Noted before it's done, so an install that stops part way can still undo it."""
+    marker = read_marker()
+    marker[key] = sorted(set(marker.get(key, [])) | {value})
+    write_marker(marker)
+
+
 def _open_firewall() -> None:
     """Only a firewall that's running: one that's off, or not there, isn't turned on here. What it
-    opens is noted, so taking the web address down closes only that."""
-    marker = read_marker()
+    opens is noted, so taking the web address down closes only that. firewalld isn't reloaded:
+    that would drop rules someone added for the running session only, SSH perhaps among them."""
     if (
         shutil.which("firewall-cmd")
         and _run("firewall-cmd", "--state", check=False).returncode == 0
     ):
         say("Opening ports 80 and 443 in the firewall.")
         for service in ("http", "https"):
-            query = _run("firewall-cmd", "--permanent", f"--query-service={service}", check=False)
-            if query.returncode != 0:
+            if _run("firewall-cmd", f"--query-service={service}", check=False).returncode != 0:
+                _note("firewalld_runtime", service)
+                _run("firewall-cmd", f"--add-service={service}")
+            permanent = _run(
+                "firewall-cmd", "--permanent", f"--query-service={service}", check=False
+            )
+            if permanent.returncode != 0:
+                _note("firewalld_permanent", service)
                 _run("firewall-cmd", "--permanent", f"--add-service={service}")
-                marker.setdefault("firewalld", []).append(service)
-        _run("firewall-cmd", "--reload")
     elif shutil.which("ufw") and "Status: active" in _ufw_status():
         say("Opening ports 80 and 443 in the firewall.")
         status = _ufw_status()
         for port in ("80/tcp", "443/tcp"):
-            if not re.search(rf"^{port}\s+ALLOW", status, re.MULTILINE):
+            if not ufw_allows_anyone(status, port):
+                _note("ufw", port)
                 _run("ufw", "allow", port)
-                marker.setdefault("ufw", []).append(port)
-    write_marker(marker)
 
 
 def _set_up_apache(web: Web, apache: Apache, secret: str) -> None:
@@ -1307,19 +1358,28 @@ def _undo_web_address(apache: Apache) -> None:
             _run("a2dissite", "-q", "compromise-checker", check=False)
         apache.config.unlink()
     _run("systemctl", "disable", "--now", f"{RELOAD}.timer", f"{RELOAD}.path", check=False)
+    # Apache must really stop passing requests on before this goes on: the tool is about to start
+    # trusting whatever reaches it. If it can't, the marker stays, so a later run tries again.
     if not marker.get("apache_before"):  # Apache came with this installer, and goes with it
-        _run("systemctl", "disable", "--now", apache.service, check=False)
-    else:
-        _run("systemctl", "reload", apache.service, check=False)
-    services = [f"--remove-service={service}" for service in marker.get("firewalld", [])]
-    if services and shutil.which("firewall-cmd"):
-        _run("firewall-cmd", "--permanent", *services, check=False)
-        _run("firewall-cmd", "--reload", check=False)
-    for port in marker.get("ufw", []):
-        if shutil.which("ufw"):
+        _run("systemctl", "disable", "--now", apache.service)
+    elif _service_running(apache.service):
+        _run("systemctl", "reload", apache.service)
+    if shutil.which("firewall-cmd"):
+        for service in marker.get("firewalld_runtime", []):
+            _run("firewall-cmd", f"--remove-service={service}", check=False)
+        for service in marker.get("firewalld_permanent", []):
+            _run("firewall-cmd", "--permanent", f"--remove-service={service}", check=False)
+    if shutil.which("ufw"):
+        for port in marker.get("ufw", []):
             _run("ufw", "delete", "allow", port, check=False)
     if marker.get("selinux_switch") and shutil.which("setsebool"):
         _run("setsebool", "-P", SELINUX_SWITCH, "0", check=False)
+    label = marker.get("port_label")
+    if label and shutil.which("semanage"):
+        if label == "added":
+            _run("semanage", "port", "-d", "-p", "tcp", str(PORT), check=False)
+        else:
+            _run("semanage", "port", "-m", "-t", label, "-p", "tcp", str(PORT), check=False)
     WEB_MARKER.unlink(missing_ok=True)
 
 

@@ -4,12 +4,18 @@ tool's own check of the same thing: the two must agree. Keys here are throwaway 
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 from test_pack_trust import Key
 
 from checker import releases
@@ -83,6 +89,82 @@ def test_many_keys_and_messages_agree():
         data = bytes(range(size))
         assert _installer_agrees(data, key.sign(data), key)
         assert not _installer_agrees(data + b"x", key.sign(data), key)
+
+
+def _library_says(public: bytes, message: bytes, signature: bytes) -> bool:
+    try:
+        Ed25519PublicKey.from_public_bytes(public).verify(signature, message)
+    except (InvalidSignature, ValueError):
+        return False
+    return True
+
+
+def test_every_single_bit_changed_in_a_signature_is_refused_as_the_library_refuses_it():
+    secret = Ed25519PrivateKey.generate()
+    public = secret.public_key().public_bytes_raw()
+    message = b"the release's hash"
+    signature = secret.sign(message)
+    assert installer.ed25519_good(public, message, signature)
+    for bit in range(len(signature) * 8):
+        forged = bytearray(signature)
+        forged[bit // 8] ^= 1 << (bit % 8)
+        assert not installer.ed25519_good(public, message, bytes(forged)), bit
+        assert not _library_says(public, message, bytes(forged)), bit
+
+
+def test_every_single_bit_changed_in_the_message_or_key_is_refused():
+    secret = Ed25519PrivateKey.generate()
+    public = secret.public_key().public_bytes_raw()
+    message = b"the release's hash"
+    signature = secret.sign(message)
+    for bit in range(len(message) * 8):
+        forged = bytearray(message)
+        forged[bit // 8] ^= 1 << (bit % 8)
+        assert not installer.ed25519_good(public, bytes(forged), signature), bit
+    for bit in range(len(public) * 8):
+        forged = bytearray(public)
+        forged[bit // 8] ^= 1 << (bit % 8)
+        assert not installer.ed25519_good(bytes(forged), message, signature), bit
+
+
+def test_crafted_forgeries_are_refused():
+    secret = Ed25519PrivateKey.generate()
+    public = secret.public_key().public_bytes_raw()
+    message = b"the release's hash"
+    signature = secret.sign(message)
+    r, s = signature[:32], int.from_bytes(signature[32:], "little")
+    identity = (1).to_bytes(32, "little")  # the point that adds nothing
+    p = 2**255 - 19
+    forgeries = {
+        "s plus the group order": r + (s + installer._L).to_bytes(32, "little"),
+        "s of the group order": r + installer._L.to_bytes(32, "little"),
+        "all zeros": bytes(64),
+        "all ones": b"\xff" * 64,
+        "identity R, zero s": identity + bytes(32),
+        "R out of range": (p + 1).to_bytes(32, "little") + signature[32:],
+        "s all ones": r + b"\xff" * 32,
+    }
+    for name, forged in forgeries.items():
+        assert not installer.ed25519_good(public, message, forged), name
+        assert not _library_says(public, message, forged), name
+
+
+def test_a_public_key_of_low_order_can_not_vouch_for_anything():
+    """It's fixed in the installer, so this can't be offered from outside, but it mustn't pass."""
+    identity = (1).to_bytes(32, "little")
+    assert not installer.ed25519_good(identity, b"message", identity + bytes(31) + b"\x01")
+
+
+def test_random_keys_and_messages_give_the_librarys_answer():
+    for size in (0, 1, 31, 32, 33, 64, 65, 1000):
+        secret = Ed25519PrivateKey.generate()
+        public = secret.public_key().public_bytes_raw()
+        message = os.urandom(size)
+        signature = secret.sign(message)
+        assert installer.ed25519_good(public, message, signature)
+        assert _library_says(public, message, signature)
+        other = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+        assert not installer.ed25519_good(other, message, signature)
 
 
 @pytest.mark.skipif(shutil.which("minisign") is None, reason="needs minisign")

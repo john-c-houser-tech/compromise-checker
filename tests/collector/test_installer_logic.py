@@ -448,6 +448,13 @@ HOME_JSON = json.dumps([{"ifname": "eth0", "addr_info": [{"local": "192.168.1.20
 
 
 class WebAddress(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        real = installer.WEB_MARKER
+        installer.WEB_MARKER = Path(folder.name) / "web-address.json"
+        self.addCleanup(setattr, installer, "WEB_MARKER", real)
+
     def test_a_name_is_tidied_and_checked(self):
         self.assertEqual(installer.web_name(" Checker.Example.ORG. "), "checker.example.org")
         for bad in (
@@ -534,7 +541,7 @@ class WebAddress(unittest.TestCase):
         self.assertIn("Redirect permanent / https://checker.example.org/", config)
         self.assertIn("TraceEnable Off", config)
         self.assertEqual(config.count("CustomLog /dev/null common"), 2)
-        self.assertIn("LimitRequestBody 131072", config)
+        self.assertIn("LogLevel authz_core:crit", config)
         self.assertIn("disablereuse=On", config)
         self.assertIn('Require expr "%{HTTP_HOST} =~ /^checker\\.example\\.org(:443)?$/i"', config)
         self.assertIn("<RequireAll>", config)
@@ -599,12 +606,89 @@ class WebAddress(unittest.TestCase):
 
     def test_a_name_leading_here_through_the_providers_network_is_accepted(self):
         installer.wait_for_name(
-            "c.example.org", [], 1, lambda _: {"198.51.100.7"}, lambda _: None, lambda _: True
+            "c.example.org", [], 1, lambda _: {"198.51.100.7"}, lambda _: None, lambda *_: True
         )
         with self.assertRaisesRegex(installer.Stop, "nothing sent there arrives"):
             installer.wait_for_name(
-                "c.example.org", [], 1, lambda _: {"198.51.100.7"}, lambda _: None, lambda _: False
+                "c.example.org", [], 1, lambda _: {"198.51.100.7"}, lambda _: None, lambda *_: False
             )
+
+    def test_every_address_of_the_name_is_tried(self):
+        asked = []
+
+        def leads(name, addresses):
+            asked.append(set(addresses))
+            return True
+
+        installer.wait_for_name(
+            "c.example.org",
+            ["172.232.170.46"],
+            1,
+            lambda _: {"172.232.170.46", "198.51.100.7", "2001:db8::7"},
+            lambda _: None,
+            leads,
+        )
+        self.assertEqual(asked, [{"198.51.100.7", "2001:db8::7"}])
+
+    def test_a_silent_connection_cannot_hold_the_check_up(self):
+        if os.geteuid() != 0:
+            self.skipTest("port 80 needs root")
+        result = []
+        thread = threading.Thread(
+            target=lambda: result.append(
+                installer.leads_here("c.example.org", {"127.0.0.1"}, seconds=2)
+            )
+        )
+        started = installer.time.monotonic()
+        thread.start()
+        installer.time.sleep(0.5)
+        idle = socket.create_connection(("127.0.0.1", 80))  # says nothing, ever
+        thread.join(15)
+        stuck = thread.is_alive()
+        idle.close()
+        thread.join(30)
+        self.assertFalse(stuck)
+        self.assertLess(installer.time.monotonic() - started, 20)
+
+    def test_a_loopback_hosts_entry_for_the_name_is_found(self):
+        hosts = "127.0.1.1 checker.example.org checker\n"
+        self.assertEqual(
+            installer.hosts_file_names(hosts, "checker.example.org", loopback=True), ["127.0.1.1"]
+        )
+        self.assertEqual(installer.hosts_file_names(hosts, "checker.example.org"), [])
+
+    def test_the_reload_waits_for_the_certificate_to_move(self):
+        web = installer.Web("checker.example.org", ())
+        units = installer.reload_units(installer.APACHE_APT, web)
+        service = [text for name, text in units.items() if name.suffix == ".service"][0]
+        self.assertIn("ExecStartPost=/bin/sh -c", service)
+        self.assertIn("/var/lib/apache2/md/staging/checker.example.org/pubcert.pem", service)
+        plain = installer.reload_units(installer.APACHE_APT)
+        self.assertNotIn("ExecStartPost", "".join(plain.values()))
+
+    def test_taking_the_web_address_down_undoes_only_what_this_installer_did(self):
+        called = []
+        real = (installer._run, installer.shutil.which, installer.WEB_MARKER)
+        with tempfile.TemporaryDirectory() as folder:
+            installer.WEB_MARKER = Path(folder) / "web-address.json"
+            installer._run = lambda *command, **more: called.append(command)
+            installer.shutil.which = lambda name: "/usr/sbin/" + name
+            fake = installer.APACHE_DNF._replace(config=Path(folder) / "cc.conf")
+            try:
+                installer.write_marker(
+                    {"apache_before": True, "firewalld": ["https"], "selinux_switch": False}
+                )
+                (Path(folder) / "cc.conf").write_text("x")
+                installer._undo_web_address(fake)
+                self.assertFalse((Path(folder) / "cc.conf").exists())
+                self.assertFalse(installer.WEB_MARKER.exists())
+            finally:
+                installer._run, installer.shutil.which, installer.WEB_MARKER = real
+        text = str(called)
+        self.assertNotIn("'disable', '--now', 'httpd'", text)  # it was there before
+        self.assertIn("--remove-service=https", text)
+        self.assertNotIn("--remove-service=http'", text)  # not opened by this installer
+        self.assertNotIn("setsebool", text)
 
     def test_the_daily_reload(self):
         units = installer.reload_units(installer.APACHE_APT)

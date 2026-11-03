@@ -333,15 +333,17 @@ def prove_web(node: "Node", checks, distro: str) -> None:
         "curl",
         "-k",
         "-s",
-        "-o",
-        "/dev/null",
         "-w",
-        "%{http_code}",
+        "\n%{http_code}",
         "-H",
-        "Host: localhost",
+        "Host: other.invalid",
         f"https://{name}/login",
     ).stdout
-    checks("a request for another name doesn't reach the tool", other == "403", other)
+    checks(
+        "a request for another name doesn't reach the tool",
+        not other.endswith("200") and 'name="password"' not in other,
+        other[-200:],
+    )
     checks(
         "Apache's settings, which hold the secret, are private",
         node.out(
@@ -351,8 +353,12 @@ def prove_web(node: "Node", checks, distro: str) -> None:
         == "600 root",
     )
     checks(
-        "the daily reload is set",
-        node.out("systemctl is-enabled compromise-checker-certificate-reload.timer") == "enabled",
+        "the daily reload is set, and the one for a certificate as it arrives",
+        node.out(
+            "systemctl is-enabled compromise-checker-certificate-reload.timer"
+            " compromise-checker-certificate-reload.path"
+        ).split()
+        == ["enabled", "enabled"],
     )
     if distro.startswith("rocky"):
         labelled = node.out("semanage port -l | grep -E '^http_port_t'")
@@ -410,6 +416,10 @@ def prove_web(node: "Node", checks, distro: str) -> None:
         login, f"csrfmiddlewaretoken={token(login)}", "username=proofadmin", f"password={password}"
     )
     checks("and that account can sign in", signed == "302", signed)
+    logged = node.out(
+        "grep -l '/setup/' /var/log/apache2/*access* /var/log/httpd/*access* 2>/dev/null || true"
+    )
+    checks("no setup link is in Apache's logs", logged == "", logged)
 
     done = node.run(f"{install} --web-address {name} --test-certificates --allow '{laptop}'")
     checks(

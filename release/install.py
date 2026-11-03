@@ -20,6 +20,7 @@ if __name__ == "__main__" and not (sys.flags.isolated or getattr(sys.flags, "saf
 
 import argparse  # noqa: E402
 import base64  # noqa: E402
+import contextlib  # noqa: E402
 import hashlib  # noqa: E402
 import http.client  # noqa: E402
 import http.server  # noqa: E402
@@ -757,6 +758,7 @@ DNS_POLL_SECONDS = 15
 PROXY_SECRET = DATA / "keys" / "web-proxy-secret.txt"
 PROXY_HEADER = "X-Checker-Proxy-Secret"
 RELOAD = "compromise-checker-certificate-reload"
+WEB_MARKER = PROGRAM / "web-address.json"  # what this installer set up for a web address
 SELINUX_SWITCH = "httpd_graceful_shutdown"
 _NAME = re.compile(
     r"(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?"
@@ -869,8 +871,9 @@ def resolve(name: str) -> set:
     return {str(address) for address in found if not address.is_loopback}
 
 
-def hosts_file_names(text: str, name: str) -> list:
-    """Addresses this machine's own /etc/hosts gives the name, which the check above sees first."""
+def hosts_file_names(text: str, name: str, loopback: bool = False) -> list:
+    """Addresses this machine's own /etc/hosts gives the name, which the check above sees first:
+    those elsewhere, or, with `loopback`, those on this machine itself."""
     found = []
     for line in text.splitlines():
         words = line.split("#", 1)[0].split()
@@ -879,7 +882,7 @@ def hosts_file_names(text: str, name: str) -> list:
                 address = ipaddress.ip_address(words[0])
             except ValueError:
                 continue
-            if not address.is_loopback:
+            if address.is_loopback == loopback:
                 found.append(str(address))
     return found
 
@@ -927,24 +930,29 @@ def wait_for_name(
             pause(DNS_POLL_SECONDS)
             found = lookup(name)
     problem = name_problem(name, found, ours)
-    if problem and leads_here is not None and leads_here(name):
+    if problem and leads_here is not None and leads_here(name, set(found) - set(ours)):
         problem = None
     if problem and not ours:
         problem = (
             f"{name} points to {', '.join(sorted(found))}, but nothing sent there arrives at this"
-            " machine. It may be behind a router, or the provider's firewall may block port 80."
+            " machine. It may be behind a router, the provider's firewall may block port 80, or an"
+            " old DNS record may still be there."
         )
     if problem:
         raise Stop(f"{problem} This run changed nothing.")
     say(f"{name} leads to this machine.")
 
 
-def leads_here(name: str, seconds: float = 10) -> bool:
-    """Ask for a one-time page by the name, from a server on port 80 here for the moment."""
+def leads_here(name: str, addresses: set, seconds: float = 10) -> bool:
+    """Ask each address for a one-time page by the name, from a server on port 80 here for the
+    moment. Every one has to lead here, since Let's Encrypt may use any of them. A connection that
+    never says anything can't hold it up: each is handled apart, and given up on after a while."""
     token = base64.urlsafe_b64encode(os.urandom(18)).decode()
     path = f"/.well-known/compromise-checker/{token}"
 
     class Answer(http.server.BaseHTTPRequestHandler):
+        timeout = 3
+
         def do_GET(self):  # noqa: N802
             body = token.encode() if self.path == path else b""
             self.send_response(200 if body else 404)
@@ -955,21 +963,69 @@ def leads_here(name: str, seconds: float = 10) -> bool:
         def log_message(self, *_):
             pass
 
+    class BothKinds(http.server.ThreadingHTTPServer):
+        address_family = socket.AF_INET6
+        daemon_threads = True
+
+        def server_bind(self):
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            super().server_bind()
+
+    class FourOnly(http.server.ThreadingHTTPServer):
+        daemon_threads = True
+
     try:
-        server = http.server.HTTPServer(("0.0.0.0", 80), Answer)  # noqa: S104
+        server = BothKinds(("::", 80), Answer)
     except OSError:
-        return False
+        try:
+            server = FourOnly(("0.0.0.0", 80), Answer)  # noqa: S104
+        except OSError:
+            return False
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with opener.open(f"http://{name}{path}", timeout=seconds) as answer:  # noqa: S310
-            return answer.read(len(token) + 1) == token.encode()
-    except (urllib.error.URLError, http.client.HTTPException, OSError):
-        return False
+        with _port_80_open_for_a_moment():
+            return all(_page_from(address, name, path, seconds) == token for address in addresses)
     finally:
         server.shutdown()
         server.server_close()
+
+
+def _page_from(address: str, name: str, path: str, seconds: float) -> str:
+    connection = http.client.HTTPConnection(address, 80, timeout=seconds)
+    try:
+        connection.request("GET", path, headers={"Host": name})
+        answer = connection.getresponse()
+        return answer.read(64).decode(errors="replace") if answer.status == 200 else ""
+    except (OSError, http.client.HTTPException):
+        return ""
+    finally:
+        connection.close()
+
+
+@contextlib.contextmanager
+def _port_80_open_for_a_moment():
+    """A firewall here would turn the request away. Opened for this check only, and closed again
+    unless it was already open."""
+    closing = None
+    if (
+        shutil.which("firewall-cmd")
+        and _run("firewall-cmd", "--state", check=False).returncode == 0
+    ):
+        if _run("firewall-cmd", "--query-port=80/tcp", check=False).returncode != 0 and (
+            _run("firewall-cmd", "--query-service=http", check=False).returncode != 0
+        ):
+            _run("firewall-cmd", "--add-port=80/tcp", check=False)  # not --permanent
+            closing = ("firewall-cmd", "--remove-port=80/tcp")
+    elif shutil.which("ufw") and "Status: active" in _ufw_status():
+        if not re.search(r"^80(/tcp)?\s+ALLOW", _ufw_status(), re.MULTILINE):
+            _run("ufw", "allow", "80/tcp", check=False)
+            closing = ("ufw", "delete", "allow", "80/tcp")
+    try:
+        yield
+    finally:
+        if closing:
+            _run(*closing, check=False)
 
 
 def ask_route(answer: Callable[[], str]) -> Optional[Web]:
@@ -1039,7 +1095,8 @@ MDContactEmail webmaster@{web.name}
     SSLEngine on
     SSLProtocol -all +TLSv1.2 +TLSv1.3
     CustomLog /dev/null common
-    LimitRequestBody 131072
+    # Refusals would otherwise name the path, and a setup link's is a secret.
+    LogLevel authz_core:crit
     ProxyRequests Off
     ProxyPreserveHost On
     ProxyTimeout 300
@@ -1060,14 +1117,23 @@ MDContactEmail webmaster@{web.name}
 
 
 def reload_units(apache: Apache, web: Optional[Web] = None) -> dict:
-    """mod_md renews certificates by itself, but Apache only uses a renewed one once it reloads."""
+    """mod_md renews certificates by itself, but Apache only uses a renewed one once it reloads.
+    The reload returns before Apache has moved the certificate out of staging, so the service waits
+    for that: otherwise the path unit would fire again and again until systemd gave up on it."""
+    wait = ""
+    if web is not None:
+        staged = f"{apache.real_store}/staging/{web.name}/pubcert.pem"
+        wait = (
+            "ExecStartPost=/bin/sh -c 'for i in $(seq 30); do"
+            f' [ -e "{staged}" ] || exit 0; sleep 1; done; exit 0\'\n'
+        )
     service = f"""[Unit]
 Description=Compromise Checker: let Apache use a renewed certificate
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/systemctl reload {apache.service}
-"""
+{wait}"""
     timer = """[Unit]
 Description=Compromise Checker: let Apache use a renewed certificate, daily
 
@@ -1108,9 +1174,18 @@ def _reachable(web: Web, dns_minutes: float) -> None:
     here. Whether a firewall outside lets Let's Encrypt in only shows when it tries."""
     ours = global_addresses(_run("ip", "-j", "address", check=False).stdout)
     try:
-        hosts = hosts_file_names(Path("/etc/hosts").read_text(encoding="utf-8"), web.name)
+        hosts_text = Path("/etc/hosts").read_text(encoding="utf-8")
     except OSError:
-        hosts = []
+        hosts_text = ""
+    hosts = hosts_file_names(hosts_text, web.name)
+    looped = hosts_file_names(hosts_text, web.name, loopback=True)
+    if looped:
+        raise Stop(
+            f"This machine's own /etc/hosts gives {web.name} as {', '.join(looped)}, so it can't"
+            " see what everyone else sees for that name. That line often names the machine itself:"
+            " change it to give the machine's own name only, then run this installer again. This"
+            " run changed nothing."
+        )
     if hosts:
         say(
             f"This machine's own /etc/hosts gives {web.name} as {', '.join(hosts)}, so the check"
@@ -1138,6 +1213,7 @@ def _allow_proxy_under_selinux() -> None:
     say(f"Letting Apache, under SELinux, connect to web ports, and to the tool's port, {PORT}.")
     if "--> on" not in _run("getsebool", SELINUX_SWITCH, check=False).stdout:
         _run("setsebool", "-P", SELINUX_SWITCH, "1")
+        write_marker({**read_marker(), "selinux_switch": True})
     listed = _run("semanage", "port", "-l", check=False).stdout
     if re.search(rf"^http_port_t\s+tcp\s+.*\b{PORT}\b", listed, re.MULTILINE):
         return
@@ -1150,19 +1226,42 @@ def _ufw_status() -> str:
     return _run("ufw", "status", check=False, env={**os.environ, "LC_ALL": "C"}).stdout
 
 
+def read_marker() -> dict:
+    try:
+        found = json.loads(WEB_MARKER.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def write_marker(marker: dict) -> None:
+    WEB_MARKER.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    _write_file(WEB_MARKER, json.dumps(marker) + "\n", 0o644)
+
+
 def _open_firewall() -> None:
-    """Only a firewall that's running: one that's off, or not there, isn't turned on here."""
+    """Only a firewall that's running: one that's off, or not there, isn't turned on here. What it
+    opens is noted, so taking the web address down closes only that."""
+    marker = read_marker()
     if (
         shutil.which("firewall-cmd")
         and _run("firewall-cmd", "--state", check=False).returncode == 0
     ):
         say("Opening ports 80 and 443 in the firewall.")
-        _run("firewall-cmd", "--permanent", "--add-service=http", "--add-service=https")
+        for service in ("http", "https"):
+            query = _run("firewall-cmd", "--permanent", f"--query-service={service}", check=False)
+            if query.returncode != 0:
+                _run("firewall-cmd", "--permanent", f"--add-service={service}")
+                marker.setdefault("firewalld", []).append(service)
         _run("firewall-cmd", "--reload")
     elif shutil.which("ufw") and "Status: active" in _ufw_status():
         say("Opening ports 80 and 443 in the firewall.")
-        _run("ufw", "allow", "80/tcp")
-        _run("ufw", "allow", "443/tcp")
+        status = _ufw_status()
+        for port in ("80/tcp", "443/tcp"):
+            if not re.search(rf"^{port}\s+ALLOW", status, re.MULTILINE):
+                _run("ufw", "allow", port)
+                marker.setdefault("ufw", []).append(port)
+    write_marker(marker)
 
 
 def _set_up_apache(web: Web, apache: Apache, secret: str) -> None:
@@ -1199,25 +1298,29 @@ def _set_up_apache(web: Web, apache: Apache, secret: str) -> None:
 def _undo_web_address(apache: Apache) -> None:
     """An earlier run that didn't finish may have set up a web address. Without one, the tool trusts
     whatever reaches it, so nothing may still be passing it requests from outside."""
-    if not apache.config.exists():
+    marker = read_marker()
+    if not (WEB_MARKER.exists() or apache.config.exists()):
         return
     say("Taking down the web address an earlier run of this installer began to set up.")
-    if apache is APACHE_APT:
-        _run("a2dissite", "-q", "compromise-checker", check=False)
-    apache.config.unlink()
+    if apache.config.exists():
+        if apache is APACHE_APT:
+            _run("a2dissite", "-q", "compromise-checker", check=False)
+        apache.config.unlink()
     _run("systemctl", "disable", "--now", f"{RELOAD}.timer", f"{RELOAD}.path", check=False)
-    _run("systemctl", "disable", "--now", apache.service, check=False)
-    if (
-        shutil.which("firewall-cmd")
-        and _run("firewall-cmd", "--state", check=False).returncode == 0
-    ):
-        _run("firewall-cmd", "--permanent", "--remove-service=http", "--remove-service=https")
-        _run("firewall-cmd", "--reload")
-    elif shutil.which("ufw") and "Status: active" in _ufw_status():
-        _run("ufw", "delete", "allow", "80/tcp", check=False)
-        _run("ufw", "delete", "allow", "443/tcp", check=False)
-    if shutil.which("setsebool"):
+    if not marker.get("apache_before"):  # Apache came with this installer, and goes with it
+        _run("systemctl", "disable", "--now", apache.service, check=False)
+    else:
+        _run("systemctl", "reload", apache.service, check=False)
+    services = [f"--remove-service={service}" for service in marker.get("firewalld", [])]
+    if services and shutil.which("firewall-cmd"):
+        _run("firewall-cmd", "--permanent", *services, check=False)
+        _run("firewall-cmd", "--reload", check=False)
+    for port in marker.get("ufw", []):
+        if shutil.which("ufw"):
+            _run("ufw", "delete", "allow", port, check=False)
+    if marker.get("selinux_switch") and shutil.which("setsebool"):
         _run("setsebool", "-P", SELINUX_SWITCH, "0", check=False)
+    WEB_MARKER.unlink(missing_ok=True)
 
 
 def stored_certificate(web: Web, apache: Apache, where: str = "domains") -> Optional[Path]:
@@ -1317,9 +1420,13 @@ def install(
         if not new_machine:
             passwd = Path("/etc/passwd").read_text(encoding="utf-8")
             mine = apache_for(system)
+            ours = WEB_MARKER.exists() and not read_marker().get("apache_before")
             left = frozenset(
-                (mine.service, port) for port in ("80", "443") if mine.config.exists()
-            ) | frozenset(("httpd", port) for port in ("80", "443") if mine.config.exists())
+                (program, port)
+                for program in (mine.service, "httpd")
+                for port in ("80", "443")
+                if ours
+            )
             signs = signs_of_use(ss_output, passwd, os.environ.get("SUDO_USER"), left)
             if not can_look:
                 signs.append(
@@ -1344,12 +1451,26 @@ def install(
             problem = _web_ports_problem(apache)
             if problem:
                 raise Stop(f"{problem} This run changed nothing.")
-            if apache.config.exists() and not port_free(80, "0.0.0.0"):  # noqa: S104
+            stopped = False
+            if WEB_MARKER.exists() and _service_running(apache.service):
                 _run(
                     "systemctl", "stop", apache.service
                 )  # an earlier run's, so the check can listen
-            _reachable(web, dns_minutes)
+                stopped = True
+            try:
+                _reachable(web, dns_minutes)
+            except Stop:
+                if stopped:
+                    _run("systemctl", "start", apache.service, check=False)
+                raise
+            if not WEB_MARKER.exists():
+                before = any(shutil.which(command) for command in ("apache2", "httpd"))
+                write_marker({"name": web.name, "apache_before": bool(before)})
         _install_packages(system, apache.packages if apache else ())
+        if apache is APACHE_APT and not read_marker().get("apache_before"):
+            # Ubuntu starts Apache, with its welcome page, as soon as it's installed.
+            _run("a2dissite", "-q", "000-default", check=False)
+            _run("systemctl", "stop", apache.service, check=False)
         if web is None:
             _undo_web_address(apache_for(system))
         _run("systemctl", "stop", UNIT, check=False)  # one left by an install that didn't finish

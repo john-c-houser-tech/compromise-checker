@@ -284,7 +284,7 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
             node.out(f"stat -c '%a %U' {DATA}/keys/evidence-identity.txt") == f"600 {ACCOUNT}",
         )
         found = node.run(
-            f"runuser -u {ACCOUNT} -- find {PROGRAM}/ -writable -not -type l -print -quit"
+            f"cd / && runuser -u {ACCOUNT} -- find {PROGRAM}/ -writable -not -type l -print -quit"
         )
         checks(
             "the tool can't change its own program",

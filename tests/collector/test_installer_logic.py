@@ -532,6 +532,11 @@ class WebAddress(unittest.TestCase):
         self.assertIn("Require all granted", config)
         self.assertNotIn("MDCertificateAuthority", config)
         self.assertIn("Redirect permanent / https://checker.example.org/", config)
+        self.assertIn("MDContactEmail webmaster@checker.example.org", config)
+        self.assertNotIn("MDStoreDir", config)
+        stored = installer.apache_config(web, secret, installer.APACHE_APT.store)
+        self.assertIn("MDStoreDir /var/lib/apache2/md", stored)
+        self.assertEqual(installer.APACHE_APT.stores, (installer.APACHE_APT.store,))
 
     def test_a_limit_and_test_certificates(self):
         web = installer.Web("checker.example.org", ("203.0.113.0/24",), True)
@@ -571,6 +576,27 @@ class WebAddress(unittest.TestCase):
         self.assertEqual(installer.new_link("https://checker.example.org"), good)
         with self.assertRaises(installer.Stop):
             installer.new_link("https://other.example.org")
+
+    def test_selinux_lets_apache_relay_and_reach_the_port(self):
+        called = []
+
+        def run(*command, **more):
+            called.append(command)
+            out = {
+                "getsebool": "httpd_can_network_relay --> off\n",
+                "semanage": "http_port_t tcp 80, 443\n",
+            }
+            return subprocess.CompletedProcess([], 0, out.get(command[0], ""), "")
+
+        real_run, real_which = installer._run, installer.shutil.which
+        installer._run = run
+        installer.shutil.which = lambda name: "/usr/sbin/" + name
+        self.addCleanup(setattr, installer, "_run", real_run)
+        self.addCleanup(setattr, installer.shutil, "which", real_which)
+        installer._allow_proxy_under_selinux()
+        self.assertIn(("setsebool", "-P", "httpd_can_network_relay", "1"), called)
+        self.assertIn(("semanage", "port", "-a", "-t", "http_port_t", "-p", "tcp", "8088"), called)
+        self.assertNotIn("httpd_can_network_connect", str(called))
 
     def test_commands_a_system_lacks_are_not_called(self):
         called = []

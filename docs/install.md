@@ -53,12 +53,15 @@ It then sets up Apache, from the system's own packages, in front of the tool:
 
 - Apache gets a certificate from Let's Encrypt for the name, with its own `mod_md` module, and renews it. A daily
   reload lets Apache use a renewed certificate. Let's Encrypt checks that the name leads to this machine, and
-  the name appears in public certificate logs.
+  the name appears in public certificate logs. The account it makes there gives `webmaster@` and the name as
+  its contact, since `mod_md` needs one, so nothing personal is sent.
 - It answers on port 443, and port 80 only sends people to 443 and lets Let's Encrypt check the name. HTTP/2 is
   off. If a firewall is running, ports 80 and 443 are opened in it.
 - The tool still listens only on this machine. Apache passes requests to it with a secret only they share, so
   nothing else on the machine can pass for Apache.
-- On Rocky, SELinux keeps Apache confined, and the tool's port is added to those it may reach.
+- On Rocky, SELinux keeps Apache confined. Its switch for acting as a proxy, `httpd_can_network_relay`, is
+  turned on, which lets it reach web ports, Let's Encrypt's included, and the tool's port is added to those.
+  It still can't connect anywhere else.
 - With a limit, only those addresses get past Apache to the page. Let's Encrypt can still reach port 80, so
   renewals keep working.
 

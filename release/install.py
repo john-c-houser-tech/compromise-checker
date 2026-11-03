@@ -766,16 +766,19 @@ class Apache(NamedTuple):
     service: str
     packages: tuple
     config: Path
-    stores: tuple  # where mod_md may keep certificates, by its default for this system
+    stores: tuple  # where mod_md may keep certificates
     check: tuple  # the command that checks the settings
+    store: Optional[Path] = None  # where it's told to keep them, if its default won't do
 
 
 APACHE_APT = Apache(
     "apache2",
     ("apache2",),
     Path("/etc/apache2/sites-available/compromise-checker.conf"),
-    (Path("/etc/apache2/md"),),
+    (Path("/var/lib/apache2/md"),),
     ("apache2ctl", "-t"),
+    # Ubuntu 26.04's Apache can't write under /etc, mod_md's default.
+    Path("/var/lib/apache2/md"),
 )
 APACHE_DNF = Apache(
     "httpd",
@@ -926,7 +929,7 @@ def answer_with_prompt(answer: Callable[[], str], prompt: str) -> str:
         raise Stop("Stopped. This run changed nothing.") from None
 
 
-def apache_config(web: Web, secret: str) -> str:
+def apache_config(web: Web, secret: str, store: Optional[Path] = None) -> str:
     """Port 80 only redirects, apart from Let's Encrypt's checks, which mod_md answers before the
     redirect. Only Apache knows the secret it sends to the tool, so nothing else on this machine can
     pass for it."""
@@ -935,9 +938,13 @@ def apache_config(web: Web, secret: str) -> str:
     who = " ".join(web.allowed) if web.allowed else ""
     access = f"Require ip {who}" if who else "Require all granted"
     staging = f"MDCertificateAuthority {STAGING_CA}\n" if web.test_certificates else ""
+    if store is not None:
+        staging += f"MDStoreDir {store}\n"
     return f"""# Written by the Compromise Checker installer, and replaced when it runs again.
 Protocols http/1.1
 MDCertificateAgreement accepted
+# mod_md won't go on without one. It needn't be read, and nothing personal is sent.
+MDContactEmail webmaster@{web.name}
 {staging}MDomain {web.name}
 
 <VirtualHost *:80>
@@ -1011,15 +1018,18 @@ def _reachable(web: Web, dns_minutes: float) -> None:
 
 
 def _allow_proxy_under_selinux() -> None:
-    """Apache is confined, and may only connect to web ports: the tool's port becomes one."""
+    """Apache is confined. As a proxy it may connect to web ports, Let's Encrypt's included, once
+    that's switched on, and the tool's port becomes one of them. It still can't reach any other."""
     if not (shutil.which("selinuxenabled") and shutil.which("semanage")):
         return
     if _run("selinuxenabled", check=False).returncode != 0:
         return
+    say(f"Letting Apache, under SELinux, act as a proxy and reach the tool's port, {PORT}.")
+    if "--> on" not in _run("getsebool", "httpd_can_network_relay", check=False).stdout:
+        _run("setsebool", "-P", "httpd_can_network_relay", "1")
     listed = _run("semanage", "port", "-l", check=False).stdout
     if re.search(rf"^http_port_t\s+tcp\s+.*\b{PORT}\b", listed, re.MULTILINE):
         return
-    say(f"Letting Apache reach the tool's port, {PORT}, under SELinux.")
     added = _run("semanage", "port", "-a", "-t", "http_port_t", "-p", "tcp", str(PORT), check=False)
     if added.returncode != 0:
         _run("semanage", "port", "-m", "-t", "http_port_t", "-p", "tcp", str(PORT))
@@ -1047,11 +1057,15 @@ def _set_up_apache(web: Web, apache: Apache, secret: str) -> None:
         _run("a2enmod", "-q", "md", "ssl", "proxy", "proxy_http", "headers")
         _run("a2dismod", "-q", "-f", "http2", check=False)
         _run("a2dissite", "-q", "000-default", check=False)
-    _write_file(apache.config, apache_config(web, secret), 0o600)
+    if apache.store is not None:
+        apache.store.mkdir(mode=0o755, parents=True, exist_ok=True)
+    _write_file(apache.config, apache_config(web, secret, apache.store), 0o600)
     if apache is APACHE_APT:
         _run("a2ensite", "-q", "compromise-checker")
     if shutil.which("restorecon"):
         _run("restorecon", str(apache.config), check=False)
+    if apache is APACHE_DNF:  # makes the certificate Rocky's own default settings point to
+        _run("systemctl", "start", "httpd-init.service", check=False)
     checked = _run(*apache.check, check=False)
     if checked.returncode != 0:
         raise Stop(
@@ -1062,14 +1076,15 @@ def _set_up_apache(web: Web, apache: Apache, secret: str) -> None:
         _write_file(path, text, 0o644)
     _run("systemctl", "daemon-reload")
     _run("systemctl", "enable", "--now", f"{RELOAD}.timer")
+    _open_firewall()  # first, so Let's Encrypt's check can get in as soon as Apache asks
     _run("systemctl", "enable", apache.service)
     _run("systemctl", "restart", apache.service)
-    _open_firewall()
 
 
-def stored_certificate(web: Web, apache: Apache) -> Optional[Path]:
+def stored_certificate(web: Web, apache: Apache, where: str = "domains") -> Optional[Path]:
+    """mod_md keeps a new certificate in "staging" until Apache reloads, then in "domains"."""
     for store in apache.stores:
-        path = store / "domains" / web.name / "pubcert.pem"
+        path = store / where / web.name / "pubcert.pem"
         if path.is_file():
             return path
     return None
@@ -1097,17 +1112,16 @@ def first_certificate(pem: str) -> Optional[bytes]:
 def wait_for_certificate(web: Web, apache: Apache, seconds: float = CERTIFICATE_SECONDS) -> bool:
     say("Getting a certificate from Let's Encrypt. This usually takes under a minute.")
     deadline = time.monotonic() + seconds
-    reloaded = False
     while time.monotonic() < deadline:
         stored = stored_certificate(web, apache)
         if stored is not None:
-            if not reloaded:
-                _run("systemctl", "reload", apache.service)
-                reloaded = True
-                time.sleep(2)
             wanted = first_certificate(stored.read_text(encoding="utf-8", errors="replace"))
             if wanted is not None and served_certificate(web.name) == wanted:
                 return True
+        if stored_certificate(web, apache, "staging") is not None:
+            _run("systemctl", "reload", apache.service)  # takes it from staging into use
+            time.sleep(3)
+            continue
         time.sleep(5)
     return False
 

@@ -637,9 +637,8 @@ def prove(
         checks("SELinux refused nothing", not found, found)
     finally:
         if keep_minutes:
-            print(
-                f"[{distro} {route}] kept for {keep_minutes} minutes: ssh -i {key} root@{made['ipv4'][0]}"
-            )
+            where = f"ssh -i {key} root@{made['ipv4'][0]}"
+            print(f"[{distro} {route}] kept for {keep_minutes} minutes: {where}")
             time.sleep(keep_minutes * 60)
         api.delete(made["id"])
     return results

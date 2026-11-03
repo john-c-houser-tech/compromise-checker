@@ -9479,3 +9479,44 @@ def test_only_the_headline_band_is_a_band():
     for template in templates.glob("*.j2"):
         for tag in re.findall(r'<(\w+)[^>]*class="band"', template.read_text(encoding="utf-8")):
             assert tag == "section", template.name
+
+
+def _host_page(client):
+    return client.get("/hosts/web01").content.decode()
+
+
+def test_the_server_page_says_what_server_text_is_before_showing_any(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    page = _host_page(client)
+    explained = page.index("comes from the server, and an intruder could have written it")
+    assert explained < page.index('<article class="finding')
+
+
+def test_no_server_text_in_the_band_or_a_severity_heading(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    page = _host_page(client)
+    band = page.split('<section class="band"')[1].split("</section>")[0]
+    assert "from-server" not in band
+    for strip in page.split('<p class="severity"')[1:]:
+        assert "from-server" not in strip.split("</p>")[0]
+    assert '<p class="meta"></p>' not in page and " · </p>" not in page
+
+
+def test_each_finding_heading_names_its_severity(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    page = _host_page(client)
+    assert '<h3><span class="visually-hidden">Very serious' in page
+    assert '<p class="severity" aria-hidden="true">' in page
+
+
+def test_the_evidence_link_once_for_each_kind_of_account(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    full = _host_page(client)
+    assert full.count('href="/hosts/web01/evidence"') == 1
+    viewer = _host_page(person("viewer"))
+    assert viewer.count('href="/hosts/web01/evidence"') == 1
+    assert 'class="actions"' not in viewer and "/checks/analyze" not in viewer

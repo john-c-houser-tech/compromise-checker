@@ -9427,6 +9427,22 @@ def test_the_band_answers_with_counts_and_no_full_stop(web, monkeypatch):
     assert '<a href="?show=critical"><strong>2</strong>' in counts
     assert '<a href="?show=low" aria-current="true"><strong>1</strong>' in counts
     assert '<a href="?show=critical"><strong>2</strong>' in counts  # not the filter in use
+    # A count of one is in the singular, of more in the plural.
+    assert "<strong>2</strong> <span>Strong signs</span>" in counts
+    assert "<strong>1</strong> <span>No strong signs</span>" in counts
+
+
+def test_a_count_of_one_server_is_singular():
+    from checker.web import wording
+
+    assert wording.count_name("elevated", 1) == "Warning sign"
+    assert wording.count_name("elevated", 3) == "Warning signs"
+    assert wording.count_name("unknown", 1) == "Needs a closer look"
+    assert wording.count_name("high", 1) == "Sign of a break-in"
+    assert wording.count_name("critical", 1) == "Strong sign"
+    # These read the same either way.
+    assert wording.count_name("low", 1) == "No strong signs"
+    assert wording.count_name("removed", 1) == "No longer checked"
 
 
 def test_the_band_tag_follows_the_answer(web, monkeypatch):
@@ -9557,3 +9573,19 @@ def test_the_evidence_link_once_for_each_kind_of_account(web):
     viewer = _host_page(person("viewer"))
     assert viewer.count('href="/hosts/web01/evidence"') == 1
     assert 'class="actions"' not in viewer and "/checks/analyze" not in viewer
+
+
+def test_every_page_file_is_in_an_installed_copy():
+    """An installed copy has only what package data lists: a file left out is a 500 there."""
+    import tomllib
+    from fnmatch import fnmatch
+
+    root = Path(__file__).resolve().parent.parent
+    listed = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["setuptools"]
+    patterns = listed["package-data"]["checker.web"]
+    web = root / "checker" / "web"
+    for folder in ("static", "templates"):
+        for path in (web / folder).rglob("*"):
+            if path.is_file():
+                name = path.relative_to(web).as_posix()
+                assert any(fnmatch(name, p) for p in patterns), name

@@ -41,6 +41,20 @@ TONE_NAMES = {
     "low": "No strong signs",
     "removed": "No longer checked",
 }
+# A count of one server says it in the singular: "1 Warning sign", "1 Needs a closer look".
+ONE_NAMES = {
+    "critical": "Strong sign",
+    "high": "Sign of a break-in",
+    "unknown": "Needs a closer look",
+    "elevated": "Warning sign",
+}
+
+
+def count_name(tone: str, n: int) -> str:
+    """What a count of n servers with this result is labelled."""
+    return ONE_NAMES.get(tone, TONE_NAMES[tone]) if n == 1 else TONE_NAMES[tone]
+
+
 MAX_CHANGES_SHOWN = 3
 FRESH_CHECK = "Run a fresh check."
 # What the band at the top of the Servers page says above the headline, by its tone.

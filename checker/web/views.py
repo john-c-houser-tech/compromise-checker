@@ -549,11 +549,8 @@ def fleet_page(request) -> HttpResponse:
     ]
     title, title_tone = wording.headline(rows)
     # Every server, whatever the filter, as the answer is: how many of each result.
-    counts = [
-        (t, wording.TONE_NAMES[t], sum(1 for r in rows if r.tone == t))
-        for t in wording.TONE_NAMES
-        if any(r.tone == t for r in rows)
-    ]
+    tally = {t: sum(1 for r in rows if r.tone == t) for t in wording.TONE_NAMES}
+    counts = [(t, wording.count_name(t, n), n) for t, n in tally.items() if n]
     return render(
         request,
         "fleet.html.j2",

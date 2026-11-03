@@ -1,6 +1,7 @@
 """The installer's signature check against files signed as minisign signs them, and against the
 tool's own check of the same thing: the two must agree. Keys here are throwaway ones."""
 
+import base64
 import hashlib
 import importlib.util
 import json
@@ -149,10 +150,15 @@ def test_crafted_forgeries_are_refused():
         assert not _library_says(public, message, forged), name
 
 
-def test_a_public_key_of_low_order_can_not_vouch_for_anything():
-    """It's fixed in the installer, so this can't be offered from outside, but it mustn't pass."""
-    identity = (1).to_bytes(32, "little")
-    assert not installer.ed25519_good(identity, b"message", identity + bytes(31) + b"\x01")
+def test_the_shipped_key_is_a_proper_one():
+    """A key of low order could vouch for anything, in the library as well as here, which is why it
+    matters that the one key this ever checks against is fixed, and sound."""
+    raw = base64.b64decode(installer.RELEASE_KEY)[10:]
+    point = installer._decode_point(raw)
+    assert point is not None
+    identity = (0, 1, 1, 0)
+    assert installer._same(installer._times(installer._L, point), identity)
+    assert not installer._same(installer._times(8, point), identity)
 
 
 def test_random_keys_and_messages_give_the_librarys_answer():

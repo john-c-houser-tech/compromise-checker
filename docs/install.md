@@ -9,14 +9,19 @@ isn't built yet.
 
 ## What the installer does
 
-`sudo python3 install.py`, from a [signed release](releasing.md). In order:
+A release's install page gives one line to paste. It downloads `install.py`, checks it against a hash on the
+page, and runs it with `sudo python3 -I install.py`. That hash is what protects the installer, since the file
+comes from the same place as the rest of the release. So the line has to be copied from the install page, not
+from anywhere else. `-I` keeps Python from running code from the folder you're in, and the installer shuts
+out what's beside it as well. In order, it:
 
 1. **Checks the release's signature,** before running anything from it. The installer knows the version it's
-   for and the release key, so it refuses an older release, or one signed by anyone else. A file that doesn't
-   match what was signed is refused.
+   for and the release key, so it refuses any other release, or one signed by anyone else. A file that doesn't
+   match what was signed is refused. It can't tell you a newer version exists, so use the current install page.
 2. **Looks for other use.** Programs that other computers can reach, and other people's login accounts, are
-   listed with why they matter. It stops unless you type a short sentence to go ahead. Nothing has been
-   changed up to this point. If something else is using port 8088, it stops with no way past.
+   listed with why they matter. It stops unless you type a short sentence to go ahead. This is a nudge rather
+   than a guarantee: it can't see everything. Nothing has been changed up to this point. If something else is
+   using port 8088, it stops with no way past.
 3. **Installs what's needed** from the system's own packages: a Python the tool can run on, and the libraries
    PDF reports use.
 4. **Makes an account** called `compromise-checker`, which nobody can log in to, with a private folder at
@@ -29,7 +34,8 @@ isn't built yet.
    the machine next starts, and the page says when a server hasn't been checked for a few days.
 8. **Gives you a link** for creating the first account. It works once, within an hour.
 
-If it stops part way, run it again to carry on. Once it has finished, running it again changes nothing.
+If it stops part way, run it again to carry on, whether or not an account has been made in the meantime. Once
+it has finished, running it again changes nothing.
 
 ## The setup link
 

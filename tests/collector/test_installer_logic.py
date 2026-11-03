@@ -4,6 +4,10 @@ files with a real key is in tests/test_installer.py."""
 
 import importlib.util
 import json
+import os
+import socket
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -163,6 +167,20 @@ class SignsOfUse(unittest.TestCase):
         both = WEB + 'LISTEN 0 511 [::]:443 [::]:* users:(("nginx",pid=4,fd=7))\n'
         self.assertEqual(len(installer.signs_of_use(SS + both, PASSWD, "sam")), 1)
 
+    def test_ssh_started_on_demand_is_not_a_sign_of_use(self):
+        ssh = 'LISTEN 0 4096 0.0.0.0:22 0.0.0.0:* users:(("systemd",pid=1,fd=40))\n'
+        self.assertEqual(installer.signs_of_use(ssh, PASSWD, "sam"), [])
+
+    def test_a_port_in_use_is_noticed_by_trying_it(self):
+        with socket.socket() as other:
+            other.bind(("127.0.0.1", 0))
+            other.listen()
+            self.assertFalse(installer.port_free(other.getsockname()[1]))
+        with socket.socket() as other:
+            other.bind(("127.0.0.1", 0))
+            port = other.getsockname()[1]
+        self.assertTrue(installer.port_free(port))
+
     def test_a_program_others_can_reach_is_listed(self):
         signs = installer.signs_of_use(SS + WEB, PASSWD, "sam")
         self.assertEqual(len(signs), 1)
@@ -215,6 +233,71 @@ class Units(unittest.TestCase):
         self.assertIn('"$(id -u)" != 0', command)
         self.assertIn(f"runuser -u {installer.ACCOUNT} --", command)
         self.assertIn("web-setup-link", command)
+
+
+class Steps(unittest.TestCase):
+    def _with_run(self, returncode, stdout="", stderr=""):
+        done = subprocess.CompletedProcess([], returncode, stdout, stderr)
+        real = installer._run
+        installer._run = lambda *_, **__: done
+        self.addCleanup(setattr, installer, "_run", real)
+
+    def test_a_link_is_handed_over(self):
+        self._with_run(0, "Open this\nhttp://127.0.0.1:8088/setup/abc\n")
+        self.assertEqual(installer.new_link(), "http://127.0.0.1:8088/setup/abc")
+
+    def test_an_existing_account_finishes_the_install(self):
+        self._with_run(1, stderr="checker: there's already an account, so")
+        self.assertIsNone(installer.new_link())
+
+    def test_no_link_is_never_taken_for_success(self):
+        for result in ((0, "", ""), (0, "something else\n", ""), (1, "", "database is broken")):
+            self._with_run(*result)
+            with self.assertRaisesRegex(installer.Stop, "couldn't be made"):
+                installer.new_link()
+
+    def test_commands_run_from_a_folder_of_no_consequence(self):
+        done = installer._run("pwd")
+        self.assertEqual(done.stdout.strip(), "/")
+
+    def test_a_linked_folder_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "target"
+            target.mkdir()
+            target.chmod(0o755)
+            link = Path(folder) / "link"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(installer.Stop, "isn't a plain folder"):
+                installer._own_folder(link, os.getuid(), os.getgid())
+            self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+
+    def test_the_link_command_keeps_the_account_off_the_terminal(self):
+        command = installer.link_command()
+        self.assertIn("setsid --wait runuser", command)
+        self.assertIn("< /dev/null", command)
+
+
+class BesideTheScript(unittest.TestCase):
+    def test_a_file_planted_beside_it_never_runs(self):
+        for flags in ([], ["-I"]):
+            with tempfile.TemporaryDirectory() as folder:
+                folder = Path(folder)
+                source = (ROOT / "release" / "install.py").read_text(encoding="utf-8")
+                (folder / "install.py").write_text(source, encoding="utf-8")
+                marker = folder / "it-ran"
+                for name in ("base64", "hashlib", "json", "re", "argparse", "typing", "socket"):
+                    (folder / f"{name}.py").write_text(
+                        f"open({str(marker)!r}, 'w').close()\n", encoding="utf-8"
+                    )
+                done = subprocess.run(
+                    [sys.executable, *flags, str(folder / "install.py")],
+                    cwd="/",
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertFalse(marker.exists(), done.stderr)
+                self.assertEqual(done.returncode, 2, done.stderr)  # the source form says so
 
 
 class Fetching(unittest.TestCase):

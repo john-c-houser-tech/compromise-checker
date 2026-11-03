@@ -150,8 +150,10 @@ running on a machine of their own and reach its first-setup page in a browser.
   This is the new path from a web session to root, so it gets the closest review. Policy wording too.
 - **I.7 Linode form.** Confirm how a form is published today, then build it, with the link above the console's
   login prompt. Test whether the link can be copied from there, and use a short code if it can't.
-- **I.8 First release.** The whole path on real machines, on both distributions and both routes, then the
-  install page. John signs and publishes `0.1.0`.
+- **I.8 First release.** The whole path on real machines, on both distributions and both routes, including a
+  real download, which proofs before this replace with a local folder. Then the install page, with the pasted
+  line that `release.py verify` prints. That line holds the installer's hash, which is all that protects the
+  installer, so the page has to live apart from the release's own files. John signs and publishes `0.1.0`.
 
 ## Not known yet
 

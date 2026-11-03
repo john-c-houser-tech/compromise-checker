@@ -604,6 +604,17 @@ def test_the_publish_command_survives_a_space_in_the_folder_name(tmp_path):
     assert f"/tmp/release files/{MANIFEST}" in shlex.split(command)
 
 
+def test_the_pasted_line_pins_the_installer_and_shuts_out_what_is_beside_it(tmp_path):
+    key = Key()
+    manifest = read_manifest(*signed(key, body()), public(key, tmp_path))
+    line = script.pasted_line(manifest, "a" * 64)
+    assert f"/v{VERSION}/{INSTALLER} " in line
+    assert f'"{"a" * 64}  {INSTALLER}" | sha256sum -c -' in line
+    assert f"sudo python3 -I {INSTALLER}" in line
+    assert line.index("sha256sum") < line.index("sudo")
+    assert line.count("&&") == 2
+
+
 def test_verify_refuses_a_folder_holding_anything_else(tmp_path):
     key = Key()
     source = a_release(tmp_path / "r", key)

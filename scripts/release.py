@@ -52,6 +52,7 @@ BUILD_LOCK = ROOT / "release" / "build-requirements.lock"
 EXTRAS = ("web", "postgres", "pdf", "advisor")
 OLDEST_PYTHON = "3.12"
 _FINAL = re.compile(r"\d+\.\d+\.\d+")
+DOWNLOADS = "https://github.com/john-c-houser-tech/compromise-checker/releases/download"
 
 
 class Refused(Exception):
@@ -463,6 +464,18 @@ def publish_command(directory: Path, manifest: Manifest) -> str:
     return f'gh release create v{version} --verify-tag{flag} --title "{version}" {files}'
 
 
+def pasted_line(manifest: Manifest, installer_hash: str) -> str:
+    """The line an install page gives people. The hash is what protects the installer, so the page
+    has to be somewhere other than the release's own files."""
+    version = manifest.version
+    url = f"{DOWNLOADS}/v{version}/{INSTALLER}"
+    return (
+        f"curl -fsSL {url} -o {INSTALLER}"
+        f' && echo "{installer_hash}  {INSTALLER}" | sha256sum -c -'
+        f" && sudo python3 -I {INSTALLER}"
+    )
+
+
 def check_nothing_else(directory: Path, manifest: Manifest) -> None:
     extra = sorted(
         path.name
@@ -488,6 +501,8 @@ def verify(directory: Path, key_file: Path | None = None) -> None:
     )
     print("To publish it, once the tag is pushed:")
     print(f"    {publish_command(directory, manifest)}")
+    print("The line for the install page, which must not live in the release's own files:")
+    print(f"    {pasted_line(manifest, manifest.files[INSTALLER].sha256)}")
 
 
 def main(argv: list[str] | None = None) -> int:

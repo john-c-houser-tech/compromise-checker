@@ -1,34 +1,41 @@
 #!/usr/bin/env python3
 """Install Compromise Checker on a machine of its own (installation plan, I.2).
 
-    sudo python3 install.py
+    sudo python3 -I install.py
 
 This one file is all that's needed, and it only uses what comes with Python, because nothing from
 the release may run until the release's signature has been checked. Its version and key are fixed
-when a release is built, so it can't be given an older release, or one signed by anyone else.
+when a release is built, so it can't be given another release, or one signed by anyone else. That
+protects what it installs, not this file: it's the published hash of this file that does that.
 
 It works with Python 3.9, the oldest a supported system starts with. The tool itself runs on a newer
 Python that this script installs from the system's own packages."""
 
-from __future__ import annotations
-
-import argparse
-import base64
-import hashlib
-import json
-import os
-import pwd
-import re
-import shutil
-import subprocess  # noqa: S404
 import sys
-import tempfile
-import time
-import urllib.error
-import urllib.request
-from collections.abc import Callable
-from pathlib import Path
-from typing import NamedTuple
+
+# Python looks for code beside a script first, and this runs as root: a json.py planted in the
+# folder would run before anything could be checked. So nothing else is imported until that's closed.
+if __name__ == "__main__" and not (sys.flags.isolated or getattr(sys.flags, "safe_path", False)):
+    del sys.path[0]
+
+import argparse  # noqa: E402
+import base64  # noqa: E402
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import pwd  # noqa: E402
+import re  # noqa: E402
+import shutil  # noqa: E402
+import socket  # noqa: E402
+import stat  # noqa: E402
+import subprocess  # noqa: E402, S404
+import tempfile  # noqa: E402
+import time  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+from collections.abc import Callable  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import NamedTuple, Optional  # noqa: E402
 
 VERSION = "@VERSION@"  # fixed when a release is built
 RELEASE_KEY = "RWSrQekC3RodNJBjEJsAevGCUsudzjSUpTcGCiIyE/Cj1ISXhnqZOx95"
@@ -64,7 +71,8 @@ _PLAIN_ACCOUNTS = {"nobody", "root", "ubuntu", "rocky", "cloud-user", "linode"}
 _NO_LOGIN = ("nologin", "false", "sync", "shutdown", "halt")
 # What a new system already has open: rpcbind, and systemd holding Cockpit's port until it's used.
 # These say nothing about the machine being in use. The firewall step is what closes them.
-_ON_A_NEW_SYSTEM = {("rpcbind", "111"), ("systemd", "9090")}
+# systemd also holds port 22 where SSH starts on demand.
+_ON_A_NEW_SYSTEM = {("rpcbind", "111"), ("systemd", "9090"), ("systemd", "22")}
 
 
 class Stop(Exception):
@@ -108,7 +116,7 @@ def _same(a: tuple, b: tuple) -> bool:
     return (a[0] * b[2] - b[0] * a[2]) % _P == 0 and (a[1] * b[2] - b[1] * a[2]) % _P == 0
 
 
-def _decode_point(raw: bytes) -> tuple | None:
+def _decode_point(raw: bytes) -> Optional[tuple]:
     if len(raw) != 32:
         return None
     y = int.from_bytes(raw, "little")
@@ -256,7 +264,7 @@ def _read_local(path: Path, limit: int) -> bytes:
     return data
 
 
-def fetcher(source: Path | None, version: str) -> Callable[[str, int], bytes]:
+def fetcher(source: Optional[Path], version: str) -> Callable[[str, int], bytes]:
     if source is not None:
         return lambda name, limit: _read_local(source / name, limit)
     return lambda name, limit: _read_url(f"{DOWNLOADS}/v{version}/{name}", limit)
@@ -289,7 +297,9 @@ class System(NamedTuple):
 
 
 _PANGO_APT = ("libpango-1.0-0", "libpangoft2-1.0-0", "libharfbuzz-subset0")
-_APT = ("apt-get", "install", "-y", "-qq")
+# A new machine's own updates often hold the lock for its first minutes.
+_APT_WAIT = ("-o", "DPkg::Lock::Timeout=300")
+_APT = ("apt-get", *_APT_WAIT, "install", "-y", "-qq")
 _DNF = ("dnf", "install", "-y", "-q")
 SYSTEMS = {
     ("ubuntu", "24.04"): System(
@@ -353,7 +363,7 @@ def _loopback(address: str) -> bool:
     return address.startswith("127.") or address == "::1"
 
 
-def port_in_use(ss_output: str, port: int) -> str | None:
+def port_in_use(ss_output: str, port: int) -> Optional[str]:
     """Which program holds `port`, on any address this tool would need."""
     for address, held, program in _listeners(ss_output):
         if held == str(port) and (_loopback(address) or address in ("0.0.0.0", "*", "::")):  # noqa: S104
@@ -361,10 +371,11 @@ def port_in_use(ss_output: str, port: int) -> str | None:
     return None
 
 
-def signs_of_use(ss_output: str, passwd: str, invoker: str | None) -> list:
+def signs_of_use(ss_output: str, passwd: str, invoker: Optional[str]) -> list:
     """What suggests this machine does something else. Things only reachable from the machine
     itself, and the SSH that's probably how the person got here, aren't counted. Nor is the person,
-    or an account a cloud provider makes."""
+    or an account a cloud provider makes. It's a nudge and not a guarantee: only TCP is looked at,
+    since a normal desktop has UDP open anyway, and only accounts in /etc/passwd."""
     signs = []
     seen = set()
     for address, port, program in _listeners(ss_output):
@@ -376,8 +387,8 @@ def signs_of_use(ss_output: str, passwd: str, invoker: str | None) -> list:
         signs.append(
             Sign(
                 f"{program} is accepting connections on port {port}",
-                "If other people use it, the firewall this install turns on later could cut them"
-                " off, and a problem in it could expose this tool's keys.",
+                "If other people use it, they could be cut off once this machine is locked down,"
+                " and a problem in it could expose this tool's keys.",
             )
         )
     for line in passwd.splitlines():
@@ -399,8 +410,10 @@ def signs_of_use(ss_output: str, passwd: str, invoker: str | None) -> list:
 
 
 def _run(*command: str, check: bool = True, **more) -> subprocess.CompletedProcess:
+    """From a folder of no consequence: Python looks for code in the current one too."""
+    more.setdefault("cwd", "/")
     done = subprocess.run(  # noqa: S603
-        command, check=False, text=True, capture_output=True, **more
+        command, check=False, text=True, errors="replace", capture_output=True, **more
     )
     if check and done.returncode:
         raise Stop(
@@ -450,8 +463,10 @@ if [ "$(id -u)" != 0 ]; then
     exit 1
 fi
 cd / || exit 1
-exec runuser -u {ACCOUNT} -- env CHECKER_HOME={DATA} {PROGRAM}/current/bin/checker \\
-    web-setup-link --address {ADDRESS}
+# In a session of its own, so what runs as the tool's account can't type into this administrator's
+# terminal.
+exec setsid --wait runuser -u {ACCOUNT} -- env CHECKER_HOME={DATA} \\
+    {PROGRAM}/current/bin/checker web-setup-link --address {ADDRESS} < /dev/null
 """
 
 
@@ -484,7 +499,7 @@ def _install_packages(system: System) -> None:
     say(f"Installing what the tool needs from {system.name}'s own packages.")
     if system.install is _APT:
         env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
-        _run("apt-get", "update", "-qq", env=env)
+        _run("apt-get", *_APT_WAIT, "update", "-qq", env=env)
         _run(*system.install, *system.packages, env=env)
     else:
         _run(*system.install, *system.packages)
@@ -512,12 +527,20 @@ def _make_account() -> int:
     return pwd.getpwnam(ACCOUNT).pw_uid
 
 
+def _own_folder(folder: Path, uid: int, gid: int) -> None:
+    """The tool's account could have changed what's here if an earlier install got that far, and
+    this runs as root: a link would hand over whatever it points to."""
+    folder.mkdir(mode=0o700, exist_ok=True)
+    if not stat.S_ISDIR(os.lstat(folder).st_mode):
+        raise Stop(f"{folder} isn't a plain folder, so it's been left alone. Please look at it.")
+    os.chown(folder, uid, gid, follow_symlinks=False)
+    os.chmod(folder, 0o700)  # noqa: S103
+
+
 def _make_folders() -> None:
     account = pwd.getpwnam(ACCOUNT)
     for folder in (ACCOUNT_HOME, DATA):
-        folder.mkdir(mode=0o700, exist_ok=True)
-        os.chown(folder, account.pw_uid, account.pw_gid)
-        folder.chmod(0o700)
+        _own_folder(folder, account.pw_uid, account.pw_gid)
 
 
 def _install_program(system: System, version: str, staged: Path) -> None:
@@ -526,10 +549,10 @@ def _install_program(system: System, version: str, staged: Path) -> None:
     if target.exists():  # left by an install that didn't finish
         shutil.rmtree(target)
     target.parent.mkdir(parents=True, mode=0o755, exist_ok=True)
-    python = shutil.which(system.python)
-    if python is None:
-        raise Stop(f"{system.python} still isn't there after installing it. Nothing else was done.")
-    _run(python, "-m", "venv", str(target))
+    python = Path("/usr/bin") / system.python  # the system's own, not one found first on the path
+    if not python.exists():
+        raise Stop(f"{python} isn't there after installing it. Run this installer again.")
+    _run(str(python), "-I", "-m", "venv", str(target))
     pip = (str(target / "bin" / "python"), "-I", "-m", "pip", "--isolated", "--no-input")
     quiet = ("--quiet", "--no-cache-dir", "--disable-pip-version-check")
     _run(
@@ -570,34 +593,75 @@ def _turn_sleep_off() -> None:
     _run("systemctl", "mask", *SLEEP_UNITS)
 
 
+def port_free(port: int) -> bool:
+    """Whether the tool could listen here: the only way to be sure is to try."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as trial:
+        trial.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            trial.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _service_running() -> bool:
+    return _run("systemctl", "is-active", UNIT, check=False).stdout.strip() == "active"
+
+
+def page_answers(address: str) -> bool:
+    """Directly, whatever proxy the environment names."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"{address}/login", timeout=5):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 def _wait_for_page(address: str, seconds: float = PAGE_SECONDS) -> None:
+    """The service has to be running too: another program could be answering on the port."""
     say("Starting the web interface.")
     deadline = time.monotonic() + seconds
-    while True:
-        try:
-            with urllib.request.urlopen(f"{address}/login", timeout=5):  # noqa: S310
-                return
-        except (urllib.error.URLError, OSError):
-            if time.monotonic() > deadline:
-                log = _run("journalctl", "-u", UNIT, "-n", "30", "--no-pager", check=False).stdout
-                raise Stop(
-                    f"The web interface didn't start. What it said:\n{log}\n"
-                    "Run this installer again once that's dealt with."
-                ) from None
-            time.sleep(2)
+    while not (page_answers(address) and _service_running()):
+        if time.monotonic() > deadline:
+            log = _run("journalctl", "-u", UNIT, "-n", "30", "--no-pager", check=False).stdout
+            raise Stop(
+                f"The web interface didn't start. What it said:\n{log}\n"
+                "Run this installer again once that's dealt with."
+            )
+        time.sleep(2)
 
 
-def _new_link() -> str:
-    done = _run(str(LINK_COMMAND), cwd="/")
-    link = done.stdout.strip().splitlines()[-1] if done.stdout.strip() else ""
-    return link
+def new_link() -> Optional[str]:
+    """A new link, or None if there's already an account and so nothing to set up."""
+    done = _run(str(LINK_COMMAND), check=False)
+    if done.returncode == 0:
+        lines = done.stdout.strip().splitlines()
+        if lines and "/setup/" in lines[-1]:
+            return lines[-1]
+    elif "already an account" in done.stderr:
+        return None
+    raise Stop(
+        f"The web interface is running, but a setup link couldn't be made:\n{done.stdout}"
+        f"{done.stderr}\nRun this installer again once that's dealt with."
+    )
 
 
-def install(version: str, source: Path | None, new_machine: bool) -> int:
+def _set_labels() -> None:
+    """Where SELinux is on, files keep the label of where they were made."""
+    if shutil.which("restorecon"):
+        paths = (PROGRAM, ACCOUNT_HOME, LINK_COMMAND, UNIT_FILE)
+        _run("restorecon", "-R", *(str(path) for path in paths), check=False)
+
+
+def install(version: str, source: Optional[Path], new_machine: bool) -> int:
+    os.umask(0o022)  # what's installed has to be readable by the tool's account, and no more
     if os.geteuid() != 0:
-        raise Stop("This has to be run as an administrator: sudo python3 install.py")
+        raise Stop("This has to be run as an administrator: sudo python3 -I install.py")
     if os.uname().machine != "x86_64":
         raise Stop(f"Only x86 machines are supported so far, and this is {os.uname().machine}.")
+    if not Path("/run/systemd/system").is_dir():
+        raise Stop("This needs a machine running systemd. Nothing has been changed.")
     system = which_system(Path("/etc/os-release").read_text(encoding="utf-8"))
     if installed():
         say(f"Compromise Checker is already installed here. For a setup link: sudo {LINK_COMMAND}")
@@ -610,10 +674,10 @@ def install(version: str, source: Path | None, new_machine: bool) -> int:
         say("The signature is good.")
         can_look = shutil.which("ss") is not None
         ss_output = _run("ss", "-Hltnp", check=False).stdout if can_look else ""
-        holder = port_in_use(ss_output, PORT)
-        if holder and holder != "gunicorn" and holder != "checker":
+        if not port_free(PORT) and not _service_running():
+            holder = port_in_use(ss_output, PORT) or "Something else"
             raise Stop(
-                f"{holder} is using port {PORT}, which this tool needs. Nothing was changed."
+                f"{holder} is using port {PORT}, which this tool needs. Nothing has been changed."
             )
         if not new_machine:
             passwd = Path("/etc/passwd").read_text(encoding="utf-8")
@@ -642,30 +706,35 @@ def install(version: str, source: Path | None, new_machine: bool) -> int:
     _write_file(LINK_COMMAND, link_command(), 0o755)
     _start_user_manager(uid)
     _write_file(UNIT_FILE, web_unit(uid), 0o644)
+    _set_labels()
     _run("systemctl", "daemon-reload")
     _turn_sleep_off()
     _run("systemctl", "enable", "--now", UNIT)
     _wait_for_page(ADDRESS)
-    link = _new_link()
+    link = new_link()
     _write_file(FINISHED, f"{version}\n", 0o644)
-    say(
-        "\nCompromise Checker is installed, and it only answers on this machine for now."
-        "\n\nOpen this link in a browser on this machine to create the first account."
-        " It works once, within an hour:"
-        f"\n\n  {link}\n"
-        f"\nIf you lose it, or it runs out, this makes a new one: sudo {LINK_COMMAND}"
-        "\nThe machine is meant to stay on and be used only for this."
-    )
+    say("\nCompromise Checker is installed, and it only answers on this machine for now.")
+    if link is None:
+        say(f"\nThere's already an account, so sign in at {ADDRESS}/login")
+    else:
+        say(
+            "\nOpen this link in a browser on this machine to create the first account."
+            " It works once, within an hour:"
+            f"\n\n  {link}\n"
+            f"\nIf you lose it, or it runs out, this makes a new one: sudo {LINK_COMMAND}"
+        )
+    say("\nThe machine is meant to stay on and be used only for this.")
     return 0
 
 
-def main(argv: list | None = None) -> int:
+def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description="Install Compromise Checker on this machine.")
     parser.add_argument(
         "--from",
         dest="source",
         type=Path,
-        help="a folder holding the release, instead of downloading it; it's checked just the same",
+        help="a folder holding the release, instead of downloading it; its files are checked just"
+        " the same",
     )
     parser.add_argument(
         "--new-machine",
@@ -683,6 +752,9 @@ def main(argv: list | None = None) -> int:
         return 1
     except KeyboardInterrupt:
         print("\nStopped. Run this installer again to continue.", file=sys.stderr)
+        return 1
+    except OSError as exc:  # a full disk, or a command that isn't here
+        print(f"\nThis couldn't go on: {exc}\nRun this installer again.", file=sys.stderr)
         return 1
 
 

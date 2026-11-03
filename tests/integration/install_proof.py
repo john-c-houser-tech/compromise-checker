@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -158,6 +159,14 @@ def status_of(node: Node, url: str) -> str:
     return node.out(f"curl -s -o /dev/null -w '%{{http_code}}' '{url}'")
 
 
+PLANTED = "/root/planted-code-ran"
+PLANT = (
+    f"mkdir -p /root/plant; for name in venv ensurepip json base64 re subprocess; do"
+    f" echo \"open('{PLANTED}', 'w').close()\" | tee /root/plant/$name.py"
+    f" > /root/release/$name.py; done"
+)
+
+
 def untouched(node: Node) -> bool:
     return node.out(f"id {ACCOUNT} 2>/dev/null; ls -d {PROGRAM} {HOME} 2>/dev/null") == ""
 
@@ -235,12 +244,16 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
         )
         node.run("kill $(cat /root/other); while ss -Hltn | grep -q ':8123 '; do sleep 1; done")
 
-        # --- The install ------------------------------------------------------------------------
+        # --- The install, from a folder with planted code, beside it too, and a strict umask ------
+        node.run(PLANT)
         started = time.monotonic()
-        done = node.run("python3 /root/release/install.py --from /root/release")
+        done = node.run(
+            "cd /root/plant && umask 077 && python3 /root/release/install.py --from /root/release"
+        )
         took = round(time.monotonic() - started)
         print(f"[{distro}] install took {took}s")
         checks("it installs", done.returncode == 0, done.stdout + done.stderr)
+        checks("no planted code ran", node.out(f"ls {PLANTED} 2>/dev/null") == "")
         links = _LINK_LINE.findall(done.stdout)
         checks("it hands over a link", len(links) == 1, done.stdout)
         if done.returncode or not links:
@@ -270,8 +283,14 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
             "the evidence key is there, readable only by the tool",
             node.out(f"stat -c '%a %U' {DATA}/keys/evidence-identity.txt") == f"600 {ACCOUNT}",
         )
-        code = node.run(f"runuser -u {ACCOUNT} -- test -w {PROGRAM}/current/bin/checker").returncode
-        checks("the tool can't change its own program", code != 0)
+        found = node.run(
+            f"runuser -u {ACCOUNT} -- find {PROGRAM}/ -writable -not -type l -print -quit"
+        )
+        checks(
+            "the tool can't change its own program",
+            found.returncode == 0 and found.stdout.strip() == "",
+            found.stdout + found.stderr,
+        )
         checks("sleep is off", node.out("systemctl is-enabled suspend.target") == "masked")
 
         # --- A new link -------------------------------------------------------------------------
@@ -280,7 +299,11 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
         checks("the new one opens", status_of(node, again[0]) == "200")
         checks("the old one stops working", status_of(node, links[0]) != "200")
         refused = node.run(f"su -s /bin/sh nobody -c {LINK}")
-        checks("the command needs an administrator", refused.returncode != 0)
+        checks(
+            "the command needs an administrator",
+            refused.returncode == 1 and "Run this with sudo" in refused.stderr,
+            refused.stderr,
+        )
 
         # --- The daily timer, under the same limits as the web interface ------------------------
         uid = node.out(f"id -u {ACCOUNT}")
@@ -328,9 +351,51 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
         checks("the timer came back", "compromise-checker" in node.out(timer), node.out(timer))
         after = _LINK_LINE.findall(node.out(LINK))
         checks("a link can still be made", len(after) == 1 and status_of(node, after[0]) == "200")
-        print(f"[{distro}] SELinux: {node.out('getenforce 2>/dev/null') or 'not on this system'}")
+        selinux = node.out("getenforce 2>/dev/null") or "not on this system"
+        print(f"[{distro}] SELinux: {selinux}")
+        if distro.startswith("rocky"):
+            checks("SELinux is enforcing, so this means something", selinux == "Enforcing", selinux)
         found = denials(node)
         checks("SELinux refused nothing", not found, found)
+
+        # --- What the page has to be able to do -------------------------------------------------
+        pdf = node.run(
+            f"systemd-run --wait --pipe {limits} {PROGRAM}/current/bin/python -c"
+            " \"from weasyprint import HTML; print(len(HTML(string='<p>x</p>').write_pdf()))\""
+        )
+        checks(
+            "a PDF can be made inside the limits",
+            pdf.returncode == 0 and pdf.stdout.strip().isdigit(),
+            pdf.stdout + pdf.stderr,
+        )
+        password = "proof-password-" + os.urandom(8).hex()
+        form = (
+            "curl -s -c /root/jar -b /root/jar {url} | "
+            'sed -n \'s/.*name="csrfmiddlewaretoken" value="\\([^"]*\\)".*/\\1/p\' | head -1'
+        )
+        token = node.out(form.format(url=f"'{after[0]}'"))
+        checks("the setup page has its form", bool(token), token)
+        created = node.out(
+            f"curl -s -o /dev/null -w '%{{http_code}}' -c /root/jar -b /root/jar"
+            f" --data-urlencode csrfmiddlewaretoken={token} -d username=proofadmin"
+            f" -d password={password} -d password2={password} '{after[0]}'"
+        )
+        checks("the first account can be made", created == "302", created)
+        node.run("rm -f /root/jar")
+        token = node.out(form.format(url="http://127.0.0.1:8088/login"))
+        signed_in = node.out(
+            f"curl -s -o /dev/null -w '%{{http_code}}' -c /root/jar -b /root/jar"
+            f" --data-urlencode csrfmiddlewaretoken={token} -d username=proofadmin"
+            f" -d password={password} http://127.0.0.1:8088/login"
+        )
+        checks("that account can sign in", signed_in == "302", signed_in)
+        done = node.run(LINK)
+        checks(
+            "no link is made once there's an account",
+            done.returncode == 1 and "already an account" in done.stderr,
+            done.stdout + done.stderr,
+        )
+        checks("the spent link stops working", status_of(node, after[0]) != "200")
     finally:
         api.delete(made["id"])
     return results
@@ -341,6 +406,12 @@ def main() -> int:
     parser.add_argument("--distro", nargs="+", default=SYSTEMS, choices=[*SYSTEMS, "all"])
     parser.add_argument("--region", default="us-sea")
     arguments = parser.parse_args()
+
+    def stop(number, _frame):  # so the servers are still deleted when this is killed
+        raise SystemExit(128 + number)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGHUP, stop)
     systems = SYSTEMS if "all" in arguments.distro else arguments.distro
     api = proof.Linode(proof.linode_token())
     proof.sweep(api)

@@ -1499,6 +1499,26 @@ class ChangingSsh(unittest.TestCase):
         self.assertFalse(installer.SSHD_DROP_IN.exists())
         self.assertFalse(any(command[0] == "systemctl" for command in self.called))
 
+    def test_an_earlier_runs_settings_are_kept(self):
+        installer.SSHD_DROP_IN.parent.mkdir()
+        earlier = installer.sshd_drop_in(installer.Choices(True, False, False), "ufw")
+        installer.SSHD_DROP_IN.write_text(earlier)
+        self.sshd(
+            shown="passwordauthentication no\nkbdinteractiveauthentication no\npermitrootlogin no\n"
+        )
+        installer._change_ssh(installer.Choices(False, True, False), "ufw")
+        text = installer.SSHD_DROP_IN.read_text()
+        self.assertIn("PasswordAuthentication no\nKbdInteractiveAuthentication no\n", text)
+        self.assertEqual(text.count("PermitRootLogin no"), 1)
+
+    def test_a_failed_change_puts_an_earlier_runs_file_back(self):
+        installer.SSHD_DROP_IN.parent.mkdir()
+        earlier = installer.sshd_drop_in(installer.Choices(True, False, False), "ufw")
+        installer.SSHD_DROP_IN.write_text(earlier)
+        self.sshd(check=255)
+        installer._change_ssh(installer.Choices(False, True, False), "ufw")
+        self.assertEqual(installer.SSHD_DROP_IN.read_text(), earlier)
+
     def test_nothing_agreed_changes_nothing(self):
         self.sshd()
         installer._change_ssh(installer.Choices(), "ufw")
@@ -1532,6 +1552,26 @@ class ChangingSsh(unittest.TestCase):
             shown = installer.sshd_settings(done.stdout)
             wanted = installer.wanted_ssh_settings(installer.Choices(True, True, False), "ufw")
             self.assertEqual(installer.ssh_settings_took(shown, wanted), [])
+
+
+class MachineNotes(unittest.TestCase):
+    def test_the_status_service_runs_the_tools_own_module_as_root(self):
+        units = installer.status_units()
+        service = units[Path("/etc/systemd/system/compromise-checker-status.service")]
+        timer = units[Path("/etc/systemd/system/compromise-checker-status.timer")]
+        self.assertIn(
+            "ExecStart=/opt/compromise-checker/current/bin/python -I -m checker.machine_status"
+            " /var/lib/compromise-checker-status/machine.json\n",
+            service,
+        )
+        self.assertNotIn("User=", service)  # SSH's settings are root's to read
+        self.assertIn("PrivateNetwork=yes\n", service)
+        self.assertIn("StateDirectoryMode=0755\n", service)
+        self.assertIn("OnUnitActiveSec=1h\n", timer)
+
+    def test_the_status_file_is_where_the_tool_reads_it(self):
+        text = (ROOT / "checker" / "machine_status.py").read_text(encoding="utf-8")
+        self.assertIn(f'STATUS = Path("{installer.STATUS_FILE}")', text)
 
 
 class Fetching(unittest.TestCase):

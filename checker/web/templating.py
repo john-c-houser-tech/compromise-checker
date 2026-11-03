@@ -72,6 +72,16 @@ def two_factor_nudge(request) -> str | None:
         return None
 
 
+def machine_notices(request) -> list[str]:
+    """What the page should say about this machine, from what its root service wrote down: for
+    people with full access, who look after it, and only once they're fully signed in."""
+    from checker import machine_status
+
+    if not fully_signed_in(request) or not full_access(request):
+        return []
+    return machine_status.notices()
+
+
 def environment(**options) -> Environment:
     options.update(autoescape=True, finalize=_finalize_page, trim_blocks=True, lstrip_blocks=True)
     env = Environment(**options)  # noqa: S701 - autoescape is set just above
@@ -81,6 +91,7 @@ def environment(**options) -> Environment:
     env.globals["url"] = lambda view, **kwargs: reverse(view, kwargs=kwargs or None)
     env.globals["product_name"] = product_name
     env.globals["two_factor_nudge"] = two_factor_nudge
+    env.globals["machine_notices"] = machine_notices
     env.globals["fully_signed_in"] = fully_signed_in
     env.globals["full_access"] = full_access
     env.globals["host_url"] = host_url

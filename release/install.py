@@ -308,25 +308,47 @@ SYSTEMS = {
     ("ubuntu", "24.04"): System(
         "Ubuntu 24.04",
         "python3",
-        ("python3-venv", "iproute2", "ufw", "unattended-upgrades", *_PANGO_APT),
+        (
+            "python3-venv",
+            "iproute2",
+            "ufw",
+            "unattended-upgrades",
+            "update-notifier-common",
+            *_PANGO_APT,
+        ),
         _APT,
     ),
     ("ubuntu", "26.04"): System(
         "Ubuntu 26.04",
         "python3",
-        ("python3-venv", "iproute2", "ufw", "unattended-upgrades", *_PANGO_APT),
+        (
+            "python3-venv",
+            "iproute2",
+            "ufw",
+            "unattended-upgrades",
+            "update-notifier-common",
+            *_PANGO_APT,
+        ),
         _APT,
     ),
     ("rocky", "9"): System(
         "Rocky Linux 9",
         "python3.12",
-        ("python3.12", "iproute", "firewalld", "dnf-automatic", "pango", "harfbuzz"),
+        (
+            "python3.12",
+            "iproute",
+            "firewalld",
+            "dnf-automatic",
+            "dnf-plugins-core",
+            "pango",
+            "harfbuzz",
+        ),
         _DNF,
     ),
     ("rocky", "10"): System(
         "Rocky Linux 10",
         "python3",
-        ("iproute", "firewalld", "dnf-automatic", "pango", "harfbuzz"),
+        ("iproute", "firewalld", "dnf-automatic", "dnf-plugins-core", "pango", "harfbuzz"),
         _DNF,
     ),
 }
@@ -1852,7 +1874,8 @@ def wanted_ssh_settings(choices: Choices, kind: str) -> dict:
     return wanted
 
 
-def sshd_drop_in(choices: Choices, kind: str) -> Optional[str]:
+def sshd_drop_in(choices: Choices, kind: str, before: str = "") -> Optional[str]:
+    """The file's text, keeping what an earlier run put there and these changes don't touch."""
     wanted = wanted_ssh_settings(choices, kind)
     if not wanted:
         return None
@@ -1862,9 +1885,18 @@ def sshd_drop_in(choices: Choices, kind: str) -> Optional[str]:
         "permitrootlogin": "PermitRootLogin no",
         "persourcepenalties": "PerSourcePenalties yes",
     }
+    kept = [
+        line.strip()
+        for line in before.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and line.split()[0].lower() in names
+        and line.split()[0].lower() not in wanted
+    ]
     lines = [
         "# Compromise Checker's installer, with the permission of the person installing it",
         "# (installation plan, I.4). SSH takes the first value it reads, so this file comes first.",
+        *kept,
         *(names[key] for key in wanted),
     ]
     return "\n".join(lines) + "\n"
@@ -1880,7 +1912,11 @@ def ssh_settings_took(shown: dict, wanted: dict) -> list:
 
 
 def _change_ssh(choices: Choices, kind: str) -> None:
-    text = sshd_drop_in(choices, kind)
+    try:
+        before: Optional[str] = SSHD_DROP_IN.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        before = None
+    text = sshd_drop_in(choices, kind, before or "")
     if text is None:
         return
     sshd = shutil.which("sshd") or "/usr/sbin/sshd"
@@ -1892,7 +1928,10 @@ def _change_ssh(choices: Choices, kind: str) -> None:
     shown = sshd_settings(_run(sshd, "-T", check=False).stdout) if checked.returncode == 0 else {}
     missed = ssh_settings_took(shown, wanted_ssh_settings(choices, kind))
     if checked.returncode != 0 or missed:
-        SSHD_DROP_IN.unlink()
+        if before is None:
+            SSHD_DROP_IN.unlink()
+        else:  # as an earlier run of this installer left it
+            _write_file(SSHD_DROP_IN, before, 0o600)
         why = plain_text(checked.stderr).strip() or f"SSH didn't take: {', '.join(missed)}"
         say(
             "SSH's settings were left as they were, because the change didn't work:"
@@ -1983,6 +2022,54 @@ def apply_lockdown(choices: Choices, kind: str) -> None:
         _limit_ssh_in_nftables(ports)
     elif choices.block and kind == "ufw":
         say(LIMITED)
+
+
+# What the web page says about this machine: whether SSH takes passwords, and whether an update
+# waits for a restart. SSH's settings are root's to read, so a small root service writes both down.
+STATUS = "compromise-checker-status"
+STATUS_FILE = Path("/var/lib") / STATUS / "machine.json"
+
+
+def status_units() -> dict:
+    service = f"""[Unit]
+Description=Compromise Checker: what the web page says about this machine's SSH and restarts
+After=ssh.service sshd.service
+
+[Service]
+Type=oneshot
+ExecStart={PROGRAM}/current/bin/python -I -m checker.machine_status {STATUS_FILE}
+StateDirectory={STATUS}
+StateDirectoryMode=0755
+UMask=0022
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+"""
+    timer = """[Unit]
+Description=Compromise Checker: note this machine's SSH and restarts every hour
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target
+"""
+    folder = Path("/etc/systemd/system")
+    return {folder / f"{STATUS}.service": service, folder / f"{STATUS}.timer": timer}
+
+
+def _note_the_machine() -> None:
+    for path, text in status_units().items():
+        _write_file(path, text, 0o644)
+    if shutil.which("restorecon"):
+        _run("restorecon", *(str(path) for path in status_units()), check=False)
+    _run("systemctl", "daemon-reload")
+    _run("systemctl", "enable", f"{STATUS}.timer")
+    _run("systemctl", "start", f"{STATUS}.service")  # now, so the page is right from the start
+    _run("systemctl", "start", f"{STATUS}.timer")
 
 
 def _set_up_apache(web: Web, apache: Apache, secret: str) -> None:
@@ -2281,6 +2368,7 @@ def install(
         _wait_for_page(ADDRESS)
     link = new_link(address)
     apply_lockdown(choices, kind)
+    _note_the_machine()
     _write_file(FINISHED, f"{version}\n", 0o644)
     if web is None:
         say("\nCompromise Checker is installed, and it only answers on this machine for now.")

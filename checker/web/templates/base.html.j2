@@ -31,7 +31,14 @@
 <p class="nudge">Your results describe weaknesses an attacker could use, and a password alone can be stolen. <a href="{{ url('two_factor_setup') }}">Turn on two-factor sign-in</a>: it takes about two minutes and an authenticator app on your phone.</p>
 {% elif nudge == "unsaved" %}
 <p class="nudge">Your recovery codes may not have been saved, and without them a lost phone locks you out. <a href="{{ url('two_factor_manage') }}">Make new ones in Sign-in security</a>.</p>
-{% endif %}{% endblock %}
+{% endif %}
+{% for notice in (machine_notices(request) if request is defined else []) %}
+{% if notice == "ssh_passwords" %}
+<p class="nudge">This machine still lets people log in over SSH with a password, which can be guessed. Once an administrator can log in with a key, turn passwords off: the install guide says how.</p>
+{% elif notice == "restart_needed" %}
+<p class="nudge">An update to this machine is waiting for a restart before it takes effect. Restart it when no check is running. It never restarts by itself.</p>
+{% endif %}
+{% endfor %}{% endblock %}
 {% block main %}{% endblock %}
 </main>
 </body>

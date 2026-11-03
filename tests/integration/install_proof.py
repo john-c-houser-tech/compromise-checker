@@ -246,7 +246,10 @@ def prove_web(node: "Node", checks, distro: str) -> None:
     links = re.findall(rf"https://{re.escape(name)}/setup/\S+", done.stdout)
     checks("it hands over a link to the web address", len(links) == 1, done.stdout)
     if done.returncode or not links:
-        print(node.out("journalctl -u compromise-checker-web -u apache2 -u httpd -n 60 --no-pager"))
+        print(node.out("journalctl -u compromise-checker-web -u apache2 -u httpd -n 80 --no-pager"))
+        print(
+            node.out("tail -n 60 /var/log/apache2/error.log /var/log/httpd/error_log 2>/dev/null")
+        )
         return
     try:
         issuer = served_certificate_issuer(name)
@@ -395,12 +398,20 @@ def status_of_with(node: "Node", url: str, extra: str) -> str:
     return node.out(f"curl -s -o /dev/null -w '%{{http_code}}' {extra} '{url}'")
 
 
-def prove(api, distro: str, region: str, release: Path, work: Path, route: str = "local") -> list:
+def prove(
+    api,
+    distro: str,
+    region: str,
+    release: Path,
+    work: Path,
+    route: str = "local",
+    keep_minutes: float = 0,
+) -> list:
     results = []
 
     def checks(what: str, good: bool, detail: object = "") -> None:
         results.append((what, good, detail))
-        shown = f" ({str(detail)[:600]})" if detail and not good else ""
+        shown = f" (...{str(detail)[-1500:]})" if detail and not good else ""
         print(f"[{distro} {route}] {'PASS' if good else 'FAIL'} {what}{shown}")
 
     place = work / f"{distro}-{route}"
@@ -625,6 +636,11 @@ def prove(api, distro: str, region: str, release: Path, work: Path, route: str =
         found = denials(node)  # last, to cover all of the above
         checks("SELinux refused nothing", not found, found)
     finally:
+        if keep_minutes:
+            print(
+                f"[{distro} {route}] kept for {keep_minutes} minutes: ssh -i {key} root@{made['ipv4'][0]}"
+            )
+            time.sleep(keep_minutes * 60)
         api.delete(made["id"])
     return results
 
@@ -640,6 +656,10 @@ def main() -> int:
         choices=["local", "web"],
         help="from this machine only, or with a web address",
     )
+    parser.add_argument(
+        "--keep-minutes", type=float, default=0, help="keep each server this long, to look at it"
+    )
+    parser.add_argument("--work", type=Path, help="a folder to keep the servers' keys in")
     arguments = parser.parse_args()
 
     def stop(number, _frame):  # so the servers are still deleted when this is killed
@@ -651,14 +671,21 @@ def main() -> int:
     api = proof.Linode(proof.linode_token())
     proof.sweep(api)
     try:
-        with tempfile.TemporaryDirectory(prefix="cc-install-") as work:
+        with tempfile.TemporaryDirectory(prefix="cc-install-", dir=arguments.work) as work:
             release = build_release(Path(work))
             sign_release(release)
             runs = [(system, route) for system in systems for route in arguments.route]
             with ThreadPoolExecutor(len(runs)) as pool:
                 futures = {
                     f"{system} {route}": pool.submit(
-                        prove, api, system, arguments.region, release, Path(work), route
+                        prove,
+                        api,
+                        system,
+                        arguments.region,
+                        release,
+                        Path(work),
+                        route,
+                        arguments.keep_minutes,
                     )
                     for system, route in runs
                 }

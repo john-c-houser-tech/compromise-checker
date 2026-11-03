@@ -8,8 +8,8 @@ severity headers.
 ## Decided (John, 2026-11-03)
 
 - **NouriLoop identity:** the Coil mark and favicon, NouriLoop green (`#2f6b4f`, `#7cc3a0` in dark) for the
-  brand and the controls, its warm off-white page (`#fbfaf7`). The top bar is NouriLoop green in both
-  themes.
+  brand and the controls, its warm off-white page (`#fbfaf7`). The top bar is NouriLoop green (`#173a2b`) in light and a near-black
+  green (`#0a100d`) in dark, as drawn.
 - **Colour still means worry and nothing else** for red, orange, amber, teal and violet. "No strong signs"
   moves from green to teal, so green is only ever the brand.
 - **A light/dark switch** in the top bar. It starts from the browser's setting and remembers a choice in a

@@ -118,7 +118,8 @@ a { color: inherit; text-underline-offset: 3px; }
 :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .icon { width: 18px; height: 18px; flex: none; }
 
-/* The top bar: NouriLoop green in both themes. Everything in it sits on one text line. */
+/* The top bar: NouriLoop green, near black in dark. Everything in it sits on one text line; on a
+   phone the menu is a row of its own that scrolls sideways, rather than piling up in rows. */
 .bar { background: var(--bar); color: var(--on-bar); border-bottom: 1px solid var(--bar-rule); }
 .bar :focus-visible { outline-color: var(--on-bar); }
 .bar-in {
@@ -131,13 +132,26 @@ a { color: inherit; text-underline-offset: 3px; }
   gap: 0.75rem 1.25rem;
 }
 .brand { display: flex; align-items: center; gap: 0.625rem; text-decoration: none; }
-.mark { width: 34px; height: 34px; flex: none; }
+.coil { width: 34px; height: 34px; flex: none; }
 .mark-tile { fill: #2f6b4f; }
 .mark-rope { stroke: #ffffff; }
 .brand-words { display: inline-flex; align-items: baseline; gap: 0.5rem; line-height: 1; }
 .brand-words strong { font-size: 1.0625rem; line-height: 1; }
 .brand-words span { font-size: 0.75rem; line-height: 1; letter-spacing: 0.1em; text-transform: uppercase; color: var(--bar-quiet); }
 .bar-nav { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.bar-nav .phone-only { display: none; }
+@media (max-width: 52rem) {
+  .bar-in { padding: 0.5rem 1rem; gap: 0.5rem 1rem; }
+  .bar-nav { order: 3; flex: 1 0 100%; flex-wrap: nowrap; overflow-x: auto; margin: 0 -0.25rem; padding: 0 0.25rem 0.25rem; }
+  .bar-nav a { flex: none; }
+  .brand-words span { display: none; }
+  .bar-end .avatar { display: none; }  /* Sign-in security is in the menu instead */
+  .bar-nav .phone-only { display: inline-flex; }
+  .brand { gap: 0.5rem; }
+  .brand-words strong { font-size: 0.9375rem; }
+  .bar-end { gap: 0.5rem; }
+  .bar-button { padding: 0 0.625rem; }
+}
 .bar-nav a,
 .bar-button,
 .theme-switch button,
@@ -164,7 +178,7 @@ a { color: inherit; text-underline-offset: 3px; }
   background: var(--bar-active);
   text-decoration: none;
 }
-a.avatar:hover, a.avatar[aria-current] { box-shadow: 0 0 0 2px var(--accent); }
+a.avatar:hover, a.avatar[aria-current] { box-shadow: 0 0 0 2px var(--on-bar); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .bar-button,
 .theme-switch button {
@@ -203,11 +217,13 @@ button, .button {
 }
 main button, .button { background: var(--accent); color: var(--on-accent); }
 main button:hover, .button:hover { filter: brightness(1.08); }
-main button.quiet, .button.quiet { background: var(--sheet); color: var(--ink); border-color: var(--rule); }
+main button.quiet, .button.quiet { background: var(--sheet); color: var(--ink); border-color: var(--quiet); }
 main button.danger, .button.danger { background: var(--critical); color: var(--on-tone); }
-:root[data-theme="dark"] main button.danger { background: transparent; color: var(--critical); border-color: var(--critical); }
+:root[data-theme="dark"] main button.danger,
+:root[data-theme="dark"] .button.danger { background: transparent; color: var(--critical); border-color: var(--critical); }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) main button.danger { background: transparent; color: var(--critical); border-color: var(--critical); }
+  :root:not([data-theme="light"]) main button.danger,
+  :root:not([data-theme="light"]) .button.danger { background: transparent; color: var(--critical); border-color: var(--critical); }
 }
 
 main { max-width: 80rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }

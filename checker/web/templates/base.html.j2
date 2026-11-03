@@ -21,15 +21,16 @@
     <nav class="bar-nav" aria-label="Main">
       {% for part, view, words in [("servers", "fleet", "Servers"), ("checks", "checks", "Checks"), ("threats", "threats", "Known threats"), ("manage", "manage", "Manage"), ("activity", "activity", "Activity")] %}
       {% if part != "manage" or full_access(request) %}
-      <a href="{{ url(view) }}"{% if here == part %} aria-current="page"{% endif %}>{{ draw.icon(part) }}{{ words }}</a>
+      <a href="{{ url(view) }}"{% if here == part %} aria-current="{{ 'page' if request.resolver_match.url_name == view else 'true' }}"{% endif %}>{{ draw.icon(part) }}{{ words }}</a>
       {% endif %}
       {% endfor %}
+      <a class="phone-only" href="{{ url('two_factor_manage') }}"{% if here == "security" %} aria-current="page"{% endif %}>{{ draw.icon("security") }}Sign-in security</a>
     </nav>
     {% endif %}
     <div class="bar-end">
       {% if request is defined and request.user is defined and request.user.is_authenticated %}
-      {% if signed_in %}<a class="avatar" href="{{ url('two_factor_manage') }}" title="{{ request.user.get_username() }}: sign-in security"{% if here == "security" %} aria-current="page"{% endif %}><span class="visually-hidden">Sign-in security for </span>{{ initial(request) }}</a>
-      {% else %}<span class="avatar" title="Signed in as {{ request.user.get_username() }}">{{ initial(request) }}</span>{% endif %}
+      {% if signed_in %}<a class="avatar" href="{{ url('two_factor_manage') }}" title="{{ request.user.get_username() }}: sign-in security"{% if here == "security" %} aria-current="page"{% endif %}><span class="visually-hidden">Sign-in security for {{ request.user.get_username() }}</span><span aria-hidden="true">{{ initial(request) }}</span></a>
+      {% else %}<span class="avatar" title="Signed in as {{ request.user.get_username() }}"><span class="visually-hidden">Signed in as {{ request.user.get_username() }}</span><span aria-hidden="true">{{ initial(request) }}</span></span>{% endif %}
       {% endif %}
       {% if request is defined %}
       <form class="theme-switch" method="post" action="{{ url('theme') }}">{{ csrf_input }}<input type="hidden" name="back" value="{{ page_back(request) }}"><button class="to-dark" name="theme" value="dark" title="Dark mode" aria-label="Switch to dark mode">{{ draw.icon("moon") }}</button><button class="to-light" name="theme" value="light" title="Light mode" aria-label="Switch to light mode">{{ draw.icon("sun") }}</button></form>

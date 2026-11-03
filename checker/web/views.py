@@ -159,10 +159,10 @@ def theme(request) -> HttpResponse:
             path="/",
             secure=settings.SESSION_COOKIE_SECURE,
             httponly=True,
-            samesite="Strict",
+            samesite="Lax",  # only a look: kept when someone arrives from a link elsewhere
         )
     else:
-        response.delete_cookie(settings.CHECKER_THEME_COOKIE, path="/", samesite="Strict")
+        response.delete_cookie(settings.CHECKER_THEME_COOKIE, path="/", samesite="Lax")
     return response
 
 

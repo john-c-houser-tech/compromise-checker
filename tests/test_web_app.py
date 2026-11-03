@@ -9317,7 +9317,7 @@ def test_a_theme_is_chosen_without_a_script(web):
     response = client.post("/theme", {"theme": "dark", "back": "/threats"})
     assert response.status_code == 302 and response["Location"] == "/threats"
     cookie = response.cookies[settings_value("CHECKER_THEME_COOKIE")]
-    assert cookie.value == "dark" and cookie["httponly"] and cookie["samesite"] == "Strict"
+    assert cookie.value == "dark" and cookie["httponly"] and cookie["samesite"] == "Lax"
     assert '<html lang="en" data-theme="dark">' in client.get("/").content.decode()
     client.post("/theme", {"theme": "light", "back": "/"})
     assert '<html lang="en" data-theme="light">' in client.get("/").content.decode()
@@ -9363,7 +9363,43 @@ def test_the_top_bar_marks_where_you_are(web):
     assert nav.count("aria-current") == 1 and 'href="/threats" aria-current="page"' in nav
     security = client.get("/two-factor/manage").content.decode()
     assert 'class="avatar" href="/two-factor/manage"' in security
-    assert 'aria-current="page"><span class="visually-hidden">' in security
+    assert (
+        'aria-current="page"><span class="visually-hidden">Sign-in security for jo</span>'
+        in security
+    )
+
+
+def test_a_page_within_a_part_marks_the_part_not_the_page(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    nav = client.get("/hosts/web01").content.decode().split('<nav class="bar-nav"')[1]
+    nav = nav.split("</nav>")[0]
+    assert '<a href="/" aria-current="true">' in nav and 'aria-current="page"' not in nav
+
+
+def test_the_coil_doesnt_take_the_timelines_class(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    page = client.get("/").content.decode()
+    assert '<svg class="coil"' in page and '<svg class="mark"' not in page
+    style = client.get("/style.css").content.decode()
+    assert ".coil {" in style and ".mark { width" not in style
+
+
+def test_view_only_and_half_signed_in_can_still_choose_a_theme(web):
+    from checker.web.models import ActionRecord
+
+    viewer = person("viewer")
+    before = ActionRecord.objects.count()
+    response = viewer.post("/theme", {"theme": "dark", "back": "/threats"})
+    assert response.status_code == 302 and response["Location"] == "/threats"
+    assert ActionRecord.objects.count() == before
+    client, _ = web
+    with_app(account())
+    past_the_password(client)  # the second step still to come
+    response = client.post("/theme", {"theme": "dark", "back": "/two-factor"})
+    assert response.status_code == 302 and response["Location"] == "/two-factor"
+    assert response.cookies[settings_value("CHECKER_THEME_COOKIE")].value == "dark"
 
 
 def settings_value(name):

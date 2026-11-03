@@ -1004,6 +1004,13 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--tls-cert", help="certificate file, to serve https directly")
     web.add_argument("--tls-key", help="its private key file")
     web.set_defaults(handler=cmd_web)
+    web_setup_link = commands.add_parser(
+        "web-setup-link", help="make a new one-time link for the first web interface account"
+    )
+    web_setup_link.add_argument(
+        "--address", default="http://127.0.0.1:8088", help="the address people use for the page"
+    )
+    web_setup_link.set_defaults(handler=cmd_web_setup_link)
     web_password = commands.add_parser(
         "web-password", help="set a new password for a web interface account"
     )
@@ -1848,6 +1855,46 @@ def _web_has_run(base: Path) -> bool:
         return (base / "web.db").exists() or bool(configured_url(base))
     except ValueError:
         return True
+
+
+@_plain_database_errors
+def cmd_web_setup_link(args: argparse.Namespace) -> int:
+    """A new link for the first account, for when the one from starting the server isn't to hand: on
+    a machine with nobody at it, that's in its log. Any link before it stops working."""
+    try:
+        from checker.web.app import AccountsProblem, configure
+    except ImportError:
+        print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+        return 2
+    base = home()
+    if not _web_has_run(base):  # a mistyped home mustn't gain a new database
+        print(
+            f"checker: no web interface has been run from {base}. Run this as the user who runs"
+            " it, with the same CHECKER_HOME.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        configure(base)
+    except ImportError as exc:
+        return _web_extra_missing(exc)
+    except AccountsProblem as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+
+    from checker.web.accounts import setup_link  # needs Django set up
+
+    link = setup_link(args.address)
+    if link is None:
+        print(
+            "checker: there's already an account, so no setup link is needed. Sign in, or use"
+            " checker web-password if the password is lost.",
+            file=sys.stderr,
+        )
+        return 1
+    print("Open this link, once, within an hour, to create the first account:")
+    print(link)
+    return 0
 
 
 @_plain_database_errors

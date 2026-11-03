@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 from checker import __version__  # noqa: E402
 from checker.packs.signing import SignatureError, public_key  # noqa: E402
 from checker.releases import (  # noqa: E402
+    INSTALLER,
     MANIFEST,
     REQUIREMENTS,
     SIGNATURE,
@@ -51,6 +52,7 @@ BUILD_LOCK = ROOT / "release" / "build-requirements.lock"
 EXTRAS = ("web", "postgres", "pdf", "advisor")
 OLDEST_PYTHON = "3.12"
 _FINAL = re.compile(r"\d+\.\d+\.\d+")
+DOWNLOADS = "https://github.com/john-c-houser-tech/compromise-checker/releases/download"
 
 
 class Refused(Exception):
@@ -372,6 +374,14 @@ def check_wheel(wheel: Path, version: str, wanted: dict[str, bytes]) -> None:
         raise Refused(f"the wheel differs from the commit in {', '.join(changed)}")
 
 
+def installer_for(source: bytes, version: str) -> bytes:
+    """The installer knows which version it's for, so it can't be given an older release."""
+    placeholder = b'VERSION = "@VERSION@"'
+    if source.count(placeholder) != 1:
+        raise Refused("the installer doesn't have its one place for the version")
+    return source.replace(placeholder, f'VERSION = "{version}"'.encode())
+
+
 def write_manifest(
     directory: Path,
     version: str,
@@ -431,6 +441,9 @@ def build(prerelease: bool, security_fix: bool, trial: bool) -> Path:
         try:
             shutil.copy(wheel, staged / wheel.name)
             (staged / REQUIREMENTS).write_bytes(_blob(commit, "release/requirements.lock"))
+            (staged / INSTALLER).write_bytes(
+                installer_for(_blob(commit, "release/install.py"), __version__)
+            )
             write_manifest(
                 staged, __version__, commit, prerelease, security_fix, published, trial=trial
             )
@@ -449,6 +462,22 @@ def publish_command(directory: Path, manifest: Manifest) -> str:
     files = " ".join(shlex.quote(str(directory / name)) for name in names)
     version = manifest.version
     return f'gh release create v{version} --verify-tag{flag} --title "{version}" {files}'
+
+
+def pasted_line(manifest: Manifest, installer_hash: str) -> str:
+    """The line an install page gives people. The hash is what protects the installer, so the page
+    has to be somewhere other than the release's own files. It works in a new private folder: in a
+    shared one, someone else could swap the file while sudo waits for a password. In brackets, so
+    that what went wrong is still the line's result after the folder is removed."""
+    version = manifest.version
+    url = f"{DOWNLOADS}/v{version}/{INSTALLER}"
+    place = f'"$d/{INSTALLER}"'
+    return (
+        "(d=$(mktemp -d) && trap 'rm -rf \"$d\"' EXIT"
+        f" && curl -fsSL {url} -o {place}"
+        f' && echo "{installer_hash}  $d/{INSTALLER}" | sha256sum -c -'
+        f" && sudo python3 -I {place})"
+    )
 
 
 def check_nothing_else(directory: Path, manifest: Manifest) -> None:
@@ -476,6 +505,8 @@ def verify(directory: Path, key_file: Path | None = None) -> None:
     )
     print("To publish it, once the tag is pushed:")
     print(f"    {publish_command(directory, manifest)}")
+    print("The line for the install page, which must not live in the release's own files:")
+    print(f"    {pasted_line(manifest, manifest.files[INSTALLER].sha256)}")
 
 
 def main(argv: list[str] | None = None) -> int:

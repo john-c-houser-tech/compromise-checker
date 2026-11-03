@@ -2,11 +2,13 @@
 checks made before a release is built. Keys here are throwaway ones."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
 import re
 import shlex
+import subprocess
 import tomllib
 import zipfile
 from pathlib import Path
@@ -17,6 +19,7 @@ from test_pack_trust import Key
 
 from checker import __version__, releases
 from checker.releases import (
+    INSTALLER,
     MANIFEST,
     REQUIREMENTS,
     SIGNATURE,
@@ -50,6 +53,7 @@ def body(**changes) -> dict:
         "files": {
             wheel_name(VERSION): {"sha256": "0" * 64, "size": 1},
             REQUIREMENTS: {"sha256": "1" * 64, "size": 2},
+            INSTALLER: {"sha256": "3" * 64, "size": 3},
         },
     }
     whole.update(changes)
@@ -69,6 +73,7 @@ def a_release(directory: Path, key: Key, version: str = VERSION) -> Path:
     directory.mkdir(exist_ok=True)
     (directory / wheel_name(version)).write_bytes(b"the wheel")
     (directory / REQUIREMENTS).write_text("the list\n")
+    (directory / INSTALLER).write_text("the installer\n")
     script.write_manifest(directory, version, COMMIT, True, False, PUBLISHED)
     (directory / SIGNATURE).write_bytes(key.sign((directory / MANIFEST).read_bytes()))
     return directory
@@ -131,6 +136,12 @@ def test_the_release_key_is_in_place():
         {"files": {}},
         {"files": {REQUIREMENTS: {"sha256": "1" * 64, "size": 2}}},
         {"files": {wheel_name(VERSION): {"sha256": "0" * 64, "size": 1}}},
+        {
+            "files": {
+                wheel_name(VERSION): {"sha256": "0" * 64, "size": 1},
+                REQUIREMENTS: {"sha256": "1" * 64, "size": 2},
+            }
+        },
     ],
 )
 def test_a_signed_manifest_that_is_wrong_is_still_refused(tmp_path, changes):
@@ -520,7 +531,16 @@ def test_a_manifest_does_not_list_itself_or_its_signature(tmp_path):
     key = Key()
     source = a_release(tmp_path / "r", key)
     path = script.write_manifest(source, VERSION, COMMIT, True, False, PUBLISHED)
-    assert set(json.loads(path.read_text())["files"]) == {wheel_name(VERSION), REQUIREMENTS}
+    listed = set(json.loads(path.read_text())["files"])
+    assert listed == {wheel_name(VERSION), REQUIREMENTS, INSTALLER}
+
+
+def test_the_installer_is_told_its_version_once():
+    source = (ROOT / "release" / "install.py").read_bytes()
+    assert b'VERSION = "1.2.3"' in script.installer_for(source, "1.2.3")
+    assert b"@VERSION@" not in script.installer_for(source, "1.2.3")
+    with pytest.raises(script.Refused, match="one place"):
+        script.installer_for(b"no such line", "1.2.3")
 
 
 def test_a_signed_trial_is_still_never_accepted(tmp_path):
@@ -573,7 +593,7 @@ def test_the_publish_command_matches_the_release_and_names_each_file(tmp_path):
     command = script.publish_command(Path("d"), manifest)
     assert "--prerelease" in command
     assert not command.endswith("*")
-    for name in (wheel_name(VERSION), REQUIREMENTS, MANIFEST, SIGNATURE):
+    for name in (wheel_name(VERSION), REQUIREMENTS, INSTALLER, MANIFEST, SIGNATURE):
         assert f"d/{name}" in command
     final = read_manifest(*signed(key, body(prerelease=False)), public(key, tmp_path))
     assert "--prerelease" not in script.publish_command(Path("d"), final)
@@ -584,6 +604,64 @@ def test_the_publish_command_survives_a_space_in_the_folder_name(tmp_path):
     manifest = read_manifest(*signed(key, body()), public(key, tmp_path))
     command = script.publish_command(Path("/tmp/release files"), manifest)
     assert f"/tmp/release files/{MANIFEST}" in shlex.split(command)
+
+
+def test_the_pasted_line_pins_the_installer_and_shuts_out_what_is_beside_it(tmp_path):
+    key = Key()
+    manifest = read_manifest(*signed(key, body()), public(key, tmp_path))
+    line = script.pasted_line(manifest, "a" * 64)
+    assert f'/v{VERSION}/{INSTALLER} -o "$d/{INSTALLER}"' in line
+    assert f'"{"a" * 64}  $d/{INSTALLER}" | sha256sum -c -' in line
+    assert f'sudo python3 -I "$d/{INSTALLER}"' in line
+    assert line.index("sha256sum") < line.index("sudo")
+
+
+def _pasted_run(tmp_path, content: bytes, wanted_hash: str, installer_exit: int = 0):
+    """The line itself, in a real shell, with stand-ins for what reaches the network and root."""
+    key = Key()
+    manifest = read_manifest(*signed(key, body()), public(key, tmp_path))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    payload = tmp_path / "payload"
+    payload.write_bytes(content)
+    ran = tmp_path / "sudo-ran"
+    (tools / "curl").write_text(f'#!/bin/sh\nfor a; do t="$a"; done\ncp {payload} "$t"\n')
+    (tools / "sudo").write_text(f'#!/bin/sh\necho "$@" > {ran}\nexit {installer_exit}\n')
+    (tools / "curl").chmod(0o755)
+    (tools / "sudo").chmod(0o755)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    done = subprocess.run(
+        ["/bin/bash", "-c", script.pasted_line(manifest, wanted_hash)],
+        env={"PATH": f"{tools}:/usr/bin:/bin", "TMPDIR": str(scratch)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return done, ran, scratch
+
+
+def test_the_pasted_line_runs_the_installer_and_cleans_up(tmp_path):
+    good = hashlib.sha256(b"the installer").hexdigest()
+    done, ran, scratch = _pasted_run(tmp_path, b"the installer", good)
+    assert done.returncode == 0, done.stderr
+    assert ran.read_text().startswith("python3 -I ")
+    assert list(scratch.iterdir()) == []
+
+
+def test_the_pasted_line_stops_at_a_bad_hash_and_says_so(tmp_path):
+    good = hashlib.sha256(b"the installer").hexdigest()
+    done, ran, scratch = _pasted_run(tmp_path, b"something else", good)
+    assert done.returncode != 0
+    assert not ran.exists()
+    assert list(scratch.iterdir()) == []
+
+
+def test_the_pasted_line_passes_on_the_installers_result(tmp_path):
+    good = hashlib.sha256(b"the installer").hexdigest()
+    done, _, scratch = _pasted_run(tmp_path, b"the installer", good, installer_exit=23)
+    assert done.returncode == 23
+    assert list(scratch.iterdir()) == []
 
 
 def test_verify_refuses_a_folder_holding_anything_else(tmp_path):

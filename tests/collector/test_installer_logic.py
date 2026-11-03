@@ -2,6 +2,8 @@
 CI runs this with each system's own python3, which is what the installer first runs on. What signs
 files with a real key is in tests/test_installer.py."""
 
+import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -777,6 +779,8 @@ class WebAddress(unittest.TestCase):
         def run(*command, **more):
             if command[:2] == ("firewall-cmd", "--state"):
                 return subprocess.CompletedProcess([], 0, "running", "")
+            if command[:2] == ("firewall-cmd", "--get-default-zone"):
+                return subprocess.CompletedProcess([], 0, "public\n", "")
             if "--query-service=http" in command[-1] or "--query-service=https" in command[-1]:
                 return subprocess.CompletedProcess([], 1, "no", "")
             if "--add-service=https" in command[-1]:
@@ -792,7 +796,7 @@ class WebAddress(unittest.TestCase):
                 installer._open_firewall()
         finally:
             installer._run, installer.shutil.which = real
-        self.assertIn("https", order[0][1]["firewalld_runtime"])
+        self.assertIn("public:https", order[0][1]["firewalld_runtime"])
 
     def test_someone_elses_apache_is_not_taken_over(self):
         real = (installer.port_free_everywhere, installer._service_holds_port)
@@ -1339,8 +1343,8 @@ class Questions(unittest.TestCase):
         self.assertEqual(
             installer.accepted_logins(journal),
             {
-                "sam": {("publickey", "192.0.2.9")},
-                "root": {("password", "192.0.2.9"), ("publickey", "192.0.2.9")},
+                "sam": {("publickey", "192.0.2.9", "")},
+                "root": {("password", "192.0.2.9", ""), ("publickey", "192.0.2.9", "")},
             },
         )
 
@@ -1510,9 +1514,20 @@ class ChangingSsh(unittest.TestCase):
 
         self.addCleanup(restore)
 
-    def sshd(self, check=0, shown="passwordauthentication no\nkbdinteractiveauthentication no\n"):
+    def sshd(
+        self,
+        check=0,
+        shown="passwordauthentication no\nkbdinteractiveauthentication no\n",
+        reload=0,
+    ):
         def run(*command, **more):
             self.called.append(command)
+            if command == ("systemctl", "is-active", "ssh.service"):
+                return subprocess.CompletedProcess(list(command), 0, "active\n", "")
+            if command[:2] == ("systemctl", "reload"):
+                return subprocess.CompletedProcess(
+                    list(command), reload, "", "failed\n" if reload else ""
+                )
             if command[-1] == "-t":
                 return subprocess.CompletedProcess(
                     list(command), check, "", "bad line 3\n" if check else ""
@@ -1527,9 +1542,16 @@ class ChangingSsh(unittest.TestCase):
         self.sshd()
         installer._change_ssh(installer.Choices(True, False, False), "ufw")
         self.assertEqual(installer.SSHD_DROP_IN.stat().st_mode & 0o777, 0o600)
-        self.assertIn(("systemctl", "try-reload-or-restart", "ssh.service"), self.called)
-        self.assertIn(("systemctl", "try-reload-or-restart", "sshd.service"), self.called)
+        self.assertIn(("systemctl", "reload", "ssh.service"), self.called)
+        self.assertNotIn(("systemctl", "reload", "sshd.service"), self.called)  # not running
         self.assertTrue(any("no longer accepts passwords" in line for line in self.said))
+
+    def test_a_reload_that_fails_puts_the_settings_back(self):
+        self.sshd(reload=1)
+        installer._change_ssh(installer.Choices(True, False, False), "ufw")
+        self.assertFalse(installer.SSHD_DROP_IN.exists())
+        self.assertFalse(any("no longer accepts passwords" in line for line in self.said))
+        self.assertTrue(any("left as they were" in line for line in self.said))
 
     def test_a_change_ssh_refuses_is_taken_back(self):
         self.sshd(check=255)
@@ -1733,6 +1755,12 @@ class FakeSsh:
         return subprocess.CompletedProcess(list(command), code, out, "")
 
 
+KEY_B64 = base64.b64encode(b"\x00\x00\x00\x0bssh-ed25519 a test key").decode()
+FINGERPRINT = "SHA256:" + base64.b64encode(
+    hashlib.sha256(base64.b64decode(KEY_B64)).digest()
+).decode().rstrip("=")
+
+
 class SshStateFromTheMachine(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -1742,7 +1770,9 @@ class SshStateFromTheMachine(unittest.TestCase):
         sshd.write_text("")
         for name in ("root", "sam"):
             (self.folder / name / ".ssh").mkdir(parents=True)
-            (self.folder / name / ".ssh" / "authorized_keys").write_text("ssh-ed25519 AAAA x\n")
+            (self.folder / name / ".ssh" / "authorized_keys").write_text(
+                f"ssh-ed25519 {KEY_B64} x\n"
+            )
         names = ("_run", "_sshd_command", "admin_accounts", "_groups_of", "_can_sudo")
         real = {name: getattr(installer, name) for name in names}
         real_getpwnam = installer.pwd.getpwnam
@@ -1773,7 +1803,7 @@ class SshStateFromTheMachine(unittest.TestCase):
     def test_an_old_root_key_login_doesnt_count_once_root_is_shut_out(self):
         settings = "permitrootlogin no\npasswordauthentication yes\npubkeyauthentication yes\n"
         journal = [
-            "Accepted publickey for root from 192.0.2.9 port 5000 ssh2: ED25519 x",
+            "Accepted publickey for root from 192.0.2.9 port 5000 ssh2: ED25519 " + FINGERPRINT,
             "Accepted password for sam from 192.0.2.9 port 5001 ssh2",
         ]
         found = self.state(settings, journal)
@@ -1783,30 +1813,67 @@ class SshStateFromTheMachine(unittest.TestCase):
 
     def test_a_key_login_counts_while_ssh_would_still_take_it(self):
         settings = "permitrootlogin prohibit-password\npasswordauthentication yes\n"
-        journal = ["Accepted publickey for root from 192.0.2.9 port 5000 ssh2: ED25519 x"]
+        journal = [
+            "Accepted publickey for root from 192.0.2.9 port 5000 ssh2: ED25519 " + FINGERPRINT
+        ]
         found = self.state(settings, journal)
         self.assertEqual(found.key_logins, frozenset({"root"}))
         self.assertEqual(found.sources, (("root", "192.0.2.9"),))
 
+    def test_only_the_key_that_logged_in_counts(self):
+        settings = "permitrootlogin prohibit-password\npasswordauthentication yes\n"
+        other = "SHA256:" + "A" * 43
+        journal = ["Accepted publickey for root from 192.0.2.9 port 5000 ssh2: ED25519 " + other]
+        self.assertEqual(self.state(settings, journal).key_logins, frozenset())
+
+    def test_a_login_held_to_one_command_doesnt_count(self):
+        settings = "permitrootlogin yes\npasswordauthentication yes\nforcecommand internal-sftp\n"
+        journal = [
+            "Accepted publickey for sam from 192.0.2.9 port 5000 ssh2: ED25519 " + FINGERPRINT
+        ]
+        found = self.state(settings, journal)
+        self.assertEqual((found.key_logins, found.logins), (frozenset(), frozenset()))
+
+    def test_a_password_login_ssh_would_now_want_a_key_for_doesnt_count(self):
+        settings = (
+            "permitrootlogin yes\npasswordauthentication yes\nauthenticationmethods publickey\n"
+        )
+        journal = ["Accepted password for sam from 192.0.2.9 port 5000 ssh2"]
+        self.assertEqual(self.state(settings, journal).logins, frozenset())
+
+    def test_keys_are_looked_for_where_ssh_looks_for_that_login(self):
+        settings = "permitrootlogin yes\npasswordauthentication yes\n"
+        journal = [
+            "Accepted publickey for sam from 192.0.2.9 port 5000 ssh2: ED25519 " + FINGERPRINT
+        ]
+        none = settings + "authorizedkeysfile none\n"
+        found = self.state(settings, journal, per_login={"sam": none})
+        self.assertEqual(found.key_logins, frozenset())
+
     def test_a_match_section_shutting_an_account_out_is_seen(self):
         settings = "permitrootlogin yes\npasswordauthentication yes\n"
-        journal = ["Accepted publickey for sam from 192.0.2.9 port 5000 ssh2: ED25519 x"]
+        journal = [
+            "Accepted publickey for sam from 192.0.2.9 port 5000 ssh2: ED25519 " + FINGERPRINT
+        ]
         found = self.state(settings, journal, per_login={"sam": settings + "denyusers sam\n"})
         self.assertEqual(found.key_logins, frozenset())
 
     def test_a_key_login_that_also_needs_a_code_doesnt_let_passwords_go(self):
         settings = "permitrootlogin yes\npasswordauthentication yes\n"
-        journal = ["Accepted publickey for sam from 192.0.2.9 port 5000 ssh2: ED25519 x"]
+        journal = [
+            "Accepted publickey for sam from 192.0.2.9 port 5000 ssh2: ED25519 " + FINGERPRINT
+        ]
         both = settings + "authenticationmethods publickey,keyboard-interactive\n"
         found = self.state(settings, journal, per_login={"sam": both})
         self.assertEqual(found.key_logins, frozenset())
-        self.assertEqual(found.logins, frozenset({"sam"}))  # it still works while passwords do
+        # The log only shows the last step, so a key and a code together aren't counted at all.
+        self.assertEqual(found.logins, frozenset())
 
     def test_an_administrator_who_cant_use_sudo_isnt_another_way_in(self):
         settings = "permitrootlogin yes\npasswordauthentication yes\n"
         journal = [
-            "Accepted publickey for root from 192.0.2.9 port 5000 ssh2: ED25519 x",
-            "Accepted publickey for sam from 192.0.2.9 port 5001 ssh2: ED25519 x",
+            "Accepted publickey for root from 192.0.2.9 port 5000 ssh2: ED25519 " + FINGERPRINT,
+            "Accepted publickey for sam from 192.0.2.9 port 5001 ssh2: ED25519 " + FINGERPRINT,
         ]
         found = self.state(settings, journal, sudo=False)
         self.assertEqual(found.logins, frozenset({"root"}))
@@ -2080,6 +2147,100 @@ class SecondReview(unittest.TestCase):
             self.assertEqual(removed, [True])
         finally:
             installer._change_ssh, installer._remove_nftables_limit = real
+
+
+class CopilotFirstRound(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        real = (installer.LOCKDOWN_MARKER, installer._run, installer.shutil.which, installer.say)
+        installer.LOCKDOWN_MARKER = Path(folder.name) / "lockdown.json"
+        installer.shutil.which = lambda name: "/usr/sbin/" + name
+        self.said = []
+        installer.say = self.said.append
+
+        def restore():
+            (
+                installer.LOCKDOWN_MARKER,
+                installer._run,
+                installer.shutil.which,
+                installer.say,
+            ) = real
+
+        self.addCleanup(restore)
+
+    def test_rich_rules_on_lines_of_their_own_are_listed(self):
+        listing = (
+            "public (active)\n  services: ssh\n  rich rules: \n"
+            '\trule family="ipv4" source address="0.0.0.0/0"'
+            ' port port="5432" protocol="tcp" accept\n'
+        )
+        self.assertEqual(installer.firewalld_extras(listing, ["22"]), ["rules of its own"])
+
+    def test_ssh_on_another_port_closes_22(self):
+        two = 'LISTEN 0 128 0.0.0.0:2200 0.0.0.0:* users:(("sshd",pid=700,fd=5))\n'
+        fake = FakeMachine(ss=two)
+        installer._run = fake
+        installer.set_up_firewall(ROCKY_9)
+        self.assertNotIn("ssh", fake.offline)
+        self.assertIn("2200/tcp", fake.offline)
+
+    def test_an_earlier_runs_ufw_limit_stays_when_nothing_was_asked(self):
+        fake = FakeMachine()
+
+        def run(*command, **more):
+            if command[:3] == ("ufw", "show", "added"):
+                fake.called.append(command)
+                out = "Added user rules:\nufw limit 22/tcp\n"
+                return subprocess.CompletedProcess(list(command), 0, out, "")
+            return fake(*command, **more)
+
+        installer._run = run
+        installer.set_up_firewall(UBUNTU_24, limit=None)
+        self.assertIn(("ufw", "prepend", "limit", "22/tcp"), fake.called)
+        self.assertNotIn(("ufw", "--force", "delete", "limit", "22/tcp"), fake.called)
+
+    def test_a_match_keeping_root_in_is_said(self):
+        def run(*command, **more):
+            out = "permitrootlogin yes\n" if command[1:3] == ("-T", "-C") else ""
+            return subprocess.CompletedProcess(list(command), 0, out, "")
+
+        installer._run = run
+        self.assertEqual(
+            installer.still_allowing_root("/usr/sbin/sshd", (("root", "192.0.2.9"), ("sam", "x"))),
+            ["192.0.2.9"],
+        )
+
+    def test_the_web_ports_open_in_every_zone_in_use(self):
+        called = []
+
+        def run(*command, **more):
+            called.append(command)
+            if command[:2] == ("firewall-cmd", "--state"):
+                return subprocess.CompletedProcess([], 0, "running", "")
+            if command[:2] == ("firewall-cmd", "--get-default-zone"):
+                return subprocess.CompletedProcess([], 0, "public\n", "")
+            if command[:2] == ("firewall-cmd", "--get-active-zones"):
+                out = "internal\n  interfaces: eth1\npublic\n  interfaces: eth0\n"
+                return subprocess.CompletedProcess([], 0, out, "")
+            if "--query-service" in command[-1]:
+                return subprocess.CompletedProcess([], 1, "no", "")
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        real = installer.WEB_MARKER
+        with tempfile.TemporaryDirectory() as folder:
+            installer.WEB_MARKER = Path(folder) / "web-address.json"
+            try:
+                installer._run = run
+                installer._open_firewall()
+                noted = installer.read_marker()
+            finally:
+                installer.WEB_MARKER = real
+        self.assertIn(("firewall-cmd", "--zone=internal", "--add-service=https"), called)
+        self.assertEqual(
+            sorted(noted["firewalld_permanent"]),
+            ["internal:http", "internal:https", "public:http", "public:https"],
+        )
 
 
 class Fetching(unittest.TestCase):

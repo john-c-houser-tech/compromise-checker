@@ -292,7 +292,11 @@ def prove_lockdown(node: "Node", checks, distro: str, said: str) -> None:
         checks("security updates install by themselves", dump.count('"1";') == 2, dump)
         timers = node.out("systemctl is-enabled apt-daily.timer apt-daily-upgrade.timer")
         checks("their timers are on", timers.split() == ["enabled", "enabled"], timers)
-        dry = node.run("unattended-upgrade --dry-run 2>&1 | tail -5", timeout=900)
+        dry = node.run(
+            "unattended-upgrade --dry-run > /root/uu.log 2>&1; code=$?; tail -5 /root/uu.log;"
+            " exit $code",
+            timeout=900,
+        )
         checks("unattended-upgrade runs", dry.returncode == 0, dry.stdout + dry.stderr)
         reboot = node.out("apt-config dump Unattended-Upgrade::Automatic-Reboot")
         checks("and never restarts the machine", '"true"' not in reboot, reboot)

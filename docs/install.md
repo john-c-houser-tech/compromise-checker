@@ -116,8 +116,9 @@ Each only if you say yes, asked separately:
   administrator is root, or an account in the `sudo`, `admin` or `wheel` group that can run anything through
   `sudo`. The login is taken from what SSH itself logged, which nobody else on the machine can write. It's
   then checked against SSH's settings as they stand, for that account and the address it came from: root
-  shut out, keys turned off, `AllowUsers` and the like, and `Match` sections. The key has to still be there,
-  and not be one held to a single command, and SSH mustn't want a one-time code after the key, which goes
+  shut out, keys turned off, `AllowUsers` and the like, `ForceCommand` or `ChrootDirectory`, which keep a
+  login from administering the machine, `AuthenticationMethods`, and `Match` sections. The very key that logged
+  in, by its fingerprint, has to still be where SSH looks for it, and not be one held to a single command, and SSH mustn't want a one-time code after the key, which goes
   with the passwords. If it isn't offered, the installer says why. If SSH's settings can't be read at all,
   nothing about SSH is asked or changed.
 - **Root login over SSH off.** Administrators then log in as themselves and use `sudo`, which leaves a record of
@@ -137,8 +138,8 @@ Each only if you say yes, asked separately:
 
 The SSH changes go in `/etc/ssh/sshd_config.d/01-compromise-checker.conf`. SSH takes the first value it reads,
 so this file comes before the one a cloud image adds. The installer checks that SSH accepts the file and that
-the settings took, and if not, it puts the file back as it was and says why. If a `Match` section in SSH's
-settings still lets an account seen in the log use a password, it says that too. Without a terminal to ask in,
+the settings took, then reloads SSH. If any of that fails, it puts the file back as it was and says why. If a `Match` section in SSH's
+settings still lets an account seen in the log use a password, or root log in, it says that too. Without a terminal to ask in,
 `--ssh-passwords-off`, `--root-login-off` and `--block-login-failures` give the answers, with the same checks.
 
 A small service, `compromise-checker-status`, runs as root every hour and notes two things for the web page:

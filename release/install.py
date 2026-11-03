@@ -1012,7 +1012,9 @@ def _reachable(web: Web, dns_minutes: float) -> None:
 
 def _allow_proxy_under_selinux() -> None:
     """Apache is confined, and may only connect to web ports: the tool's port becomes one."""
-    if _run("selinuxenabled", check=False).returncode != 0 or not shutil.which("semanage"):
+    if not (shutil.which("selinuxenabled") and shutil.which("semanage")):
+        return
+    if _run("selinuxenabled", check=False).returncode != 0:
         return
     listed = _run("semanage", "port", "-l", check=False).stdout
     if re.search(rf"^http_port_t\s+tcp\s+.*\b{PORT}\b", listed, re.MULTILINE):
@@ -1024,11 +1026,15 @@ def _allow_proxy_under_selinux() -> None:
 
 
 def _open_firewall() -> None:
-    if _run("firewall-cmd", "--state", check=False).returncode == 0:
+    """Only a firewall that's running: one that's off, or not there, isn't turned on here."""
+    if (
+        shutil.which("firewall-cmd")
+        and _run("firewall-cmd", "--state", check=False).returncode == 0
+    ):
         say("Opening ports 80 and 443 in the firewall.")
         _run("firewall-cmd", "--permanent", "--add-service=http", "--add-service=https")
         _run("firewall-cmd", "--reload")
-    elif "Status: active" in _run("ufw", "status", check=False).stdout:
+    elif shutil.which("ufw") and "Status: active" in _run("ufw", "status", check=False).stdout:
         say("Opening ports 80 and 443 in the firewall.")
         _run("ufw", "allow", "80/tcp")
         _run("ufw", "allow", "443/tcp")

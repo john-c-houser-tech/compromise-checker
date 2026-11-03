@@ -572,6 +572,17 @@ class WebAddress(unittest.TestCase):
         with self.assertRaises(installer.Stop):
             installer.new_link("https://other.example.org")
 
+    def test_commands_a_system_lacks_are_not_called(self):
+        called = []
+        real_run, real_which = installer._run, installer.shutil.which
+        installer._run = lambda *command, **more: called.append(command)
+        installer.shutil.which = lambda _: None
+        self.addCleanup(setattr, installer, "_run", real_run)
+        self.addCleanup(setattr, installer.shutil, "which", real_which)
+        installer._allow_proxy_under_selinux()
+        installer._open_firewall()
+        self.assertEqual(called, [])
+
     def test_the_first_certificate_in_a_chain(self):
         self.assertIsNone(installer.first_certificate("nothing here"))
 

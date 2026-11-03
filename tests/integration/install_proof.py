@@ -411,9 +411,12 @@ def prove(api, distro: str, region: str, release: Path, work: Path, route: str =
         check=True,
     )
     label = proof.run_label(distro)
-    made = api.create(
-        label, proof.IMAGES[distro], region, key.with_suffix(".pub").read_text().strip()
-    )
+    public = key.with_suffix(".pub").read_text().strip()
+    try:
+        made = api.create(label, proof.IMAGES[distro], region, public)
+    except Exception:  # an answer lost on the way may still have made it: look before trying again
+        time.sleep(15)
+        made = api.find(label) or api.create(label, proof.IMAGES[distro], region, public)
     try:
         node = Node(made["ipv4"][0], key, place / "known")
         node.wait()

@@ -14,7 +14,7 @@ Python that this script installs from the system's own packages."""
 import sys
 
 # Python looks for code beside a script first, and this runs as root: a json.py planted in the
-# folder would run before anything could be checked. So nothing else is imported until that's closed.
+# folder would run before anything could be checked. So nothing else is imported until that's shut.
 if __name__ == "__main__" and not (sys.flags.isolated or getattr(sys.flags, "safe_path", False)):
     del sys.path[0]
 

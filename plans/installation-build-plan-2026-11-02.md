@@ -153,7 +153,8 @@ running on a machine of their own and reach its first-setup page in a browser.
 - **I.8 First release.** The whole path on real machines, on both distributions and both routes, including a
   real download, which proofs before this replace with a local folder. Then the install page, with the pasted
   line that `release.py verify` prints. That line holds the installer's hash, which is all that protects the
-  installer, so the page has to live apart from the release's own files. John signs and publishes `0.1.0`.
+  installer, so the page has to live apart from the release's own files. Ubuntu Desktop may not come with `curl`,
+  so the page says what to do then. John signs and publishes `0.1.0`.
 
 ## Not known yet
 

@@ -244,11 +244,23 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
         )
         node.run("kill $(cat /root/other); while ss -Hltn | grep -q ':8123 '; do sleep 1; done")
 
-        # --- The install, from a folder with planted code, beside it too, and a strict umask ------
+        # --- Planted code, run without -I, stops there as the missing folder says -----------------
         node.run(PLANT)
+        done = node.run(
+            "cd /root/plant && python3 /root/release/install.py --from /root/nowhere --new-machine"
+        )
+        checks(
+            "planted code beside it doesn't run, even without -I",
+            done.returncode == 1
+            and "Couldn't read" in done.stderr
+            and node.out(f"ls {PLANTED} 2>/dev/null") == "",
+            done.stdout + done.stderr,
+        )
+
+        # --- The install, as the documented line runs it, under a strict umask --------------------
         started = time.monotonic()
         done = node.run(
-            "cd /root/plant && umask 077 && python3 /root/release/install.py --from /root/release"
+            "cd /root/release && umask 077 && sudo python3 -I install.py --from /root/release"
         )
         took = round(time.monotonic() - started)
         print(f"[{distro}] install took {took}s")
@@ -355,8 +367,6 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
         print(f"[{distro}] SELinux: {selinux}")
         if distro.startswith("rocky"):
             checks("SELinux is enforcing, so this means something", selinux == "Enforcing", selinux)
-        found = denials(node)
-        checks("SELinux refused nothing", not found, found)
 
         # --- What the page has to be able to do -------------------------------------------------
         pdf = node.run(
@@ -392,10 +402,12 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
         done = node.run(LINK)
         checks(
             "no link is made once there's an account",
-            done.returncode == 1 and "already an account" in done.stderr,
+            done.returncode == 1 and "already an account" in done.stdout,
             done.stdout + done.stderr,
         )
         checks("the spent link stops working", status_of(node, after[0]) != "200")
+        found = denials(node)  # last, to cover all of the above
+        checks("SELinux refused nothing", not found, found)
     finally:
         api.delete(made["id"])
     return results

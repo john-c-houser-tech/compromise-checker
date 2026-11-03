@@ -21,13 +21,13 @@ if __name__ == "__main__" and not (sys.flags.isolated or getattr(sys.flags, "saf
 import argparse  # noqa: E402
 import base64  # noqa: E402
 import hashlib  # noqa: E402
+import http.client  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import pwd  # noqa: E402
 import re  # noqa: E402
 import shutil  # noqa: E402
 import socket  # noqa: E402
-import stat  # noqa: E402
 import subprocess  # noqa: E402, S404
 import tempfile  # noqa: E402
 import time  # noqa: E402
@@ -67,6 +67,7 @@ PAGE_SECONDS = 180
 _CHUNK = 1024 * 1024
 _FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_LINK = re.compile(re.escape(ADDRESS) + r"/setup/[A-Za-z0-9_-]+")
 _PLAIN_ACCOUNTS = {"nobody", "root", "ubuntu", "rocky", "cloud-user", "linode"}
 _NO_LOGIN = ("nologin", "false", "sync", "shutdown", "halt")
 # What a new system already has open: rpcbind, and systemd holding Cockpit's port until it's used.
@@ -76,8 +77,7 @@ _ON_A_NEW_SYSTEM = {("rpcbind", "111"), ("systemd", "9090"), ("systemd", "22")}
 
 
 class Stop(Exception):
-    """Why the install can't go on, in words for the person running it. Nothing has been changed
-    unless the message says so."""
+    """Why the install can't go on, in words for the person running it."""
 
 
 # --- Signatures: Ed25519 (RFC 8032) as minisign uses it ------------------------------------------
@@ -184,12 +184,12 @@ def check_signature(data: bytes, signature: bytes, key_line: str) -> None:
     if len(blob) != 74 or blob[:2] != b"ED" or len(whole) != 64 or len(comment) > MAX_COMMENT:
         raise Stop("The release's signature file isn't in the right form.")
     if blob[2:10] != key[2:10]:
-        raise Stop("This release wasn't signed with the release key. Nothing has been installed.")
+        raise Stop("This release wasn't signed with the release key. It wasn't installed.")
     prehashed = hashlib.blake2b(data, digest_size=64).digest()
     if not ed25519_good(key[10:], prehashed, blob[10:]):
-        raise Stop("The release's signature doesn't match. Nothing has been installed.")
+        raise Stop("The release's signature doesn't match. It wasn't installed.")
     if not ed25519_good(key[10:], blob[10:] + comment, whole):
-        raise Stop("The release's signature has been altered. Nothing has been installed.")
+        raise Stop("The release's signature has been altered. It wasn't installed.")
 
 
 class Listed(NamedTuple):
@@ -211,7 +211,7 @@ def read_manifest(data: bytes, version: str) -> dict:
     if manifest.get("version") != version:
         raise Stop(
             f"This is an installer for version {version}, and it was offered version"
-            f" {manifest.get('version')}. Nothing has been installed."
+            f" {manifest.get('version')}. It wasn't installed."
         )
     files = manifest.get("files")
     if not isinstance(files, dict):
@@ -246,7 +246,7 @@ def _read_url(url: str, limit: int) -> bytes:
     try:
         with urllib.request.urlopen(url, timeout=60) as answer:  # noqa: S310
             data = answer.read(limit + 1)
-    except (urllib.error.URLError, OSError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
         raise Stop(f"Couldn't download {url}: {exc}. Check this machine's internet.") from None
     if len(data) > limit:
         raise Stop(f"{url} is larger than it should be.")
@@ -281,7 +281,7 @@ def get_release(
     for name, entry in listed.items():
         content = fetch(name, entry.size)
         if len(content) != entry.size or hashlib.sha256(content).hexdigest() != entry.sha256:
-            raise Stop(f"{name} isn't the file that was signed. Nothing has been installed.")
+            raise Stop(f"{name} isn't the file that was signed. It wasn't installed.")
         (into / name).write_bytes(content)
     return listed
 
@@ -297,9 +297,8 @@ class System(NamedTuple):
 
 
 _PANGO_APT = ("libpango-1.0-0", "libpangoft2-1.0-0", "libharfbuzz-subset0")
-# A new machine's own updates often hold the lock for its first minutes.
-_APT_WAIT = ("-o", "DPkg::Lock::Timeout=300")
-_APT = ("apt-get", *_APT_WAIT, "install", "-y", "-qq")
+_APT = ("apt-get", "install", "-y", "-qq")
+APT_WAIT_SECONDS = 300
 _DNF = ("dnf", "install", "-y", "-q")
 SYSTEMS = {
     ("ubuntu", "24.04"): System(
@@ -361,6 +360,16 @@ def _listeners(ss_output: str) -> list:
 
 def _loopback(address: str) -> bool:
     return address.startswith("127.") or address == "::1"
+
+
+def holders(ss_output: str, port: int) -> set:
+    """The process numbers listening on `port`."""
+    found = set()
+    for line in ss_output.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[3].rpartition(":")[2] == str(port):
+            found.update(int(number) for number in re.findall(r"pid=(\d+)", line))
+    return found
 
 
 def port_in_use(ss_output: str, port: int) -> Optional[str]:
@@ -463,10 +472,13 @@ if [ "$(id -u)" != 0 ]; then
     exit 1
 fi
 cd / || exit 1
-# In a session of its own, so what runs as the tool's account can't type into this administrator's
-# terminal.
-exec setsid --wait runuser -u {ACCOUNT} -- env CHECKER_HOME={DATA} \\
-    {PROGRAM}/current/bin/checker web-setup-link --address {ADDRESS} < /dev/null
+# In a session of its own, without this terminal, so what runs as the tool's account can't type
+# into it or read from it. What it printed is shown afterwards, as plain text and nothing else.
+out=$(setsid --wait runuser -u {ACCOUNT} -- env CHECKER_HOME={DATA} \\
+    {PROGRAM}/current/bin/checker web-setup-link --address {ADDRESS} < /dev/null 2>&1)
+code=$?
+printf '%s\\n' "$out" | tr -cd '[:print:]\\n'
+exit $code
 """
 
 
@@ -484,7 +496,7 @@ def ask_about_use(signs: list, answer: Callable[[], str]) -> None:
         say(f"  - {sign.what}.\n    {sign.matters}")
     say(
         "\nCompromise Checker holds keys that act as an administrator on every server it checks,"
-        "\nso it should have a machine to itself. Nothing has been changed yet."
+        "\nso it should have a machine to itself. This run hasn't changed anything."
         f"\n\nTo go ahead anyway, type exactly: {GO_AHEAD}\nTo stop, press Enter.\n"
     )
     try:
@@ -492,15 +504,29 @@ def ask_about_use(signs: list, answer: Callable[[], str]) -> None:
     except (EOFError, KeyboardInterrupt):
         typed = ""
     if typed.strip() != GO_AHEAD:
-        raise Stop("Stopped. Nothing has been changed.")
+        raise Stop("Stopped. This run changed nothing.")
+
+
+def run_apt(command: tuple, env: dict, seconds: float = APT_WAIT_SECONDS) -> None:
+    """A new machine's own updates often hold apt's locks for its first minutes. apt's own option
+    for waiting only covers one of them, so this waits for all of them."""
+    deadline = time.monotonic() + seconds
+    while True:
+        done = _run(*command, check=False, env=env)
+        if done.returncode == 0:
+            return
+        if "Could not get lock" not in done.stderr or time.monotonic() > deadline:
+            _run(*command, env=env)  # says what went wrong, if it still does
+            return
+        time.sleep(10)
 
 
 def _install_packages(system: System) -> None:
     say(f"Installing what the tool needs from {system.name}'s own packages.")
     if system.install is _APT:
         env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
-        _run("apt-get", *_APT_WAIT, "update", "-qq", env=env)
-        _run(*system.install, *system.packages, env=env)
+        run_apt(("apt-get", "update", "-qq"), env)
+        run_apt((*system.install, *system.packages), env)
     else:
         _run(*system.install, *system.packages)
 
@@ -530,11 +556,18 @@ def _make_account() -> int:
 def _own_folder(folder: Path, uid: int, gid: int) -> None:
     """The tool's account could have changed what's here if an earlier install got that far, and
     this runs as root: a link would hand over whatever it points to."""
-    folder.mkdir(mode=0o700, exist_ok=True)
-    if not stat.S_ISDIR(os.lstat(folder).st_mode):
-        raise Stop(f"{folder} isn't a plain folder, so it's been left alone. Please look at it.")
-    os.chown(folder, uid, gid, follow_symlinks=False)
-    os.chmod(folder, 0o700)  # noqa: S103
+    try:
+        folder.mkdir(mode=0o700, exist_ok=True)
+        opened = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except (OSError, FileExistsError):
+        raise Stop(
+            f"{folder} isn't a plain folder, so it's been left alone. Please look at it."
+        ) from None
+    try:
+        os.fchown(opened, uid, gid)
+        os.fchmod(opened, 0o700)
+    finally:
+        os.close(opened)
 
 
 def _make_folders() -> None:
@@ -608,50 +641,68 @@ def _service_running() -> bool:
     return _run("systemctl", "is-active", UNIT, check=False).stdout.strip() == "active"
 
 
+def _service_holds_port(port: int) -> bool:
+    """Answering isn't enough, nor is the service looking active: it flickers between that and
+    restarting when another program has the port. So it has to be its process that's listening."""
+    main_pid = _run("systemctl", "show", "-p", "MainPID", "--value", UNIT, check=False).stdout
+    if not main_pid.strip().isdigit() or int(main_pid) == 0:
+        return False
+    return int(main_pid) in holders(_run("ss", "-Hltnp", check=False).stdout, port)
+
+
 def page_answers(address: str) -> bool:
     """Directly, whatever proxy the environment names."""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         with opener.open(f"{address}/login", timeout=5):
             return True
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, http.client.HTTPException, OSError):
         return False
 
 
 def _wait_for_page(address: str, seconds: float = PAGE_SECONDS) -> None:
-    """The service has to be running too: another program could be answering on the port."""
     say("Starting the web interface.")
     deadline = time.monotonic() + seconds
-    while not (page_answers(address) and _service_running()):
+    while not (page_answers(address) and _service_holds_port(PORT)):
         if time.monotonic() > deadline:
             log = _run("journalctl", "-u", UNIT, "-n", "30", "--no-pager", check=False).stdout
             raise Stop(
-                f"The web interface didn't start. What it said:\n{log}\n"
+                f"The web interface didn't start. What it said:\n{plain_text(log)}\n"
                 "Run this installer again once that's dealt with."
             )
         time.sleep(2)
 
 
+def plain_text(text: str) -> str:
+    """What the tool's account or its log said, without anything that could steer a terminal."""
+    return "".join(c for c in text if c == "\n" or (c.isprintable() and c.isascii()))
+
+
 def new_link() -> Optional[str]:
-    """A new link, or None if there's already an account and so nothing to set up."""
+    """A new link, or None if there's already an account and so nothing to set up. Only something
+    that's exactly a link on this machine is passed on."""
     done = _run(str(LINK_COMMAND), check=False)
+    said = done.stdout + done.stderr
     if done.returncode == 0:
         lines = done.stdout.strip().splitlines()
-        if lines and "/setup/" in lines[-1]:
+        if lines and _LINK.fullmatch(lines[-1]):
             return lines[-1]
-    elif "already an account" in done.stderr:
+    elif "already an account" in said:
         return None
     raise Stop(
-        f"The web interface is running, but a setup link couldn't be made:\n{done.stdout}"
-        f"{done.stderr}\nRun this installer again once that's dealt with."
+        f"The web interface is running, but a setup link couldn't be made:\n{plain_text(said)}\n"
+        "Run this installer again once that's dealt with."
     )
 
 
 def _set_labels() -> None:
     """Where SELinux is on, files keep the label of where they were made."""
     if shutil.which("restorecon"):
-        paths = (PROGRAM, ACCOUNT_HOME, LINK_COMMAND, UNIT_FILE)
-        _run("restorecon", "-R", *(str(path) for path in paths), check=False)
+        _run("restorecon", "-R", str(PROGRAM), check=False)
+        # Not all the way down the account's folder, which it can change as this runs. What it
+        # makes there takes its label from these.
+        paths = (ACCOUNT_HOME, DATA, LINK_COMMAND, UNIT_FILE)
+        _run("restorecon", *(str(path) for path in paths), check=False)
 
 
 def install(version: str, source: Optional[Path], new_machine: bool) -> int:
@@ -661,7 +712,7 @@ def install(version: str, source: Optional[Path], new_machine: bool) -> int:
     if os.uname().machine != "x86_64":
         raise Stop(f"Only x86 machines are supported so far, and this is {os.uname().machine}.")
     if not Path("/run/systemd/system").is_dir():
-        raise Stop("This needs a machine running systemd. Nothing has been changed.")
+        raise Stop("This needs a machine running systemd. This run changed nothing.")
     system = which_system(Path("/etc/os-release").read_text(encoding="utf-8"))
     if installed():
         say(f"Compromise Checker is already installed here. For a setup link: sudo {LINK_COMMAND}")
@@ -677,7 +728,7 @@ def install(version: str, source: Optional[Path], new_machine: bool) -> int:
         if not port_free(PORT) and not _service_running():
             holder = port_in_use(ss_output, PORT) or "Something else"
             raise Stop(
-                f"{holder} is using port {PORT}, which this tool needs. Nothing has been changed."
+                f"{holder} is using port {PORT}, which this tool needs. This run changed nothing."
             )
         if not new_machine:
             passwd = Path("/etc/passwd").read_text(encoding="utf-8")
@@ -694,12 +745,14 @@ def install(version: str, source: Optional[Path], new_machine: bool) -> int:
                     listed = "".join(f"\n  - {sign.what}" for sign in signs)
                     raise Stop(
                         "This machine looks like it's being used for something else, and there's"
-                        f" nobody here to ask:{listed}\nRun this in a terminal. Nothing has been"
-                        " changed."
+                        f" nobody here to ask:{listed}\nRun this in a terminal. This run"
+                        " changed nothing."
                     )
                 ask_about_use(signs, input)
         _install_packages(system)
         _run("systemctl", "stop", UNIT, check=False)  # one left by an install that didn't finish
+        if not port_free(PORT):  # with that stopped, whatever's left isn't this tool
+            raise Stop(f"Something else is using port {PORT}, which this tool needs.")
         uid = _make_account()
         _make_folders()
         _install_program(system, version, staged)

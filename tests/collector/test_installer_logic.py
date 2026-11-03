@@ -1710,9 +1710,11 @@ class LoginsThatStillWork(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             backup, plain = Path(folder) / "backup", Path(folder) / "plain"
             backup.write_text('command="/usr/bin/rsync --server",no-pty ssh-ed25519 AAAA backup\n')
-            plain.write_text('restrict,from="10.0.0.0/8" ssh-ed25519 AAAA sam\n')
+            plain.write_text("restrict ssh-ed25519 AAAA sam\n")
             self.assertFalse(installer.has_a_key([backup]))
             self.assertTrue(installer.has_a_key([plain]))
+            plain.write_text('from="10.0.0.0/8" ssh-ed25519 AAAA sam\n')
+            self.assertFalse(installer.has_a_key([plain]))  # maybe not from where it logged in
 
     def test_a_key_file_that_isnt_a_plain_file_isnt_read(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2313,6 +2315,41 @@ class CopilotSecondRound(unittest.TestCase):
         finally:
             installer._run, installer.say, installer.DNF_DROP_IN = real
         self.assertIn(("systemctl", "start", installer.DNF_TIMER), called)
+
+
+class CopilotThirdRound(unittest.TestCase):
+    def test_apts_own_switch_counts(self):
+        off = 'APT::Periodic::Enable "0";\n' + APT_ON
+        self.assertFalse(installer.apt_updates_on(off))
+        self.assertTrue(installer.apt_updates_on(APT_ON))
+        self.assertIn('APT::Periodic::Enable "1";', installer.APT_UPDATES_TEXT)
+
+    def test_a_sudo_rule_taking_commands_away_fails_closed(self):
+        listing = "User sam may run:\n    (ALL) NOPASSWD: ALL\n    (ALL) !ALL\n"
+        self.assertIsNone(installer.sudo_rule(listing))
+
+    def test_an_expired_account_isnt_another_way_in(self):
+        shadow = "sam:$6$abc:19000:0:99999:7::20000:\npat:$6$abc:19000:0:99999:7:::\n"
+        self.assertTrue(installer.account_expired(shadow, "sam", today=20001))
+        self.assertFalse(installer.account_expired(shadow, "sam", today=19999))
+        self.assertFalse(installer.account_expired(shadow, "pat", today=20001))
+
+    def test_runtime_policy_changes_mean_firewalld_was_changed(self):
+        real = installer._run
+
+        def run(*command, **more):
+            out = ""
+            if command[-1] == "--list-all-policies":
+                out = "allow-host-ipv6\n  rich rules: \n"
+                if "--permanent" not in command:
+                    out += '\trule family="ipv4" accept\n'
+            return subprocess.CompletedProcess(list(command), 0, out, "")
+
+        installer._run = run
+        try:
+            self.assertFalse(installer.firewalld_untouched())
+        finally:
+            installer._run = real
 
 
 class Fetching(unittest.TestCase):

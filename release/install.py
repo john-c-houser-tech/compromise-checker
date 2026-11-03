@@ -1488,13 +1488,14 @@ def firewalld_untouched() -> bool:
         direct = _run("firewall-cmd", "--direct", query, check=False)
         if direct.returncode != 0 or direct.stdout.strip():
             return False  # rules for the running firewall alone, which stopping it would lose
-    running = _run("firewall-cmd", "--list-all-zones", check=False)
-    saved = _run("firewall-cmd", "--permanent", "--list-all-zones", check=False)
-    return (
-        running.returncode == 0
-        and saved.returncode == 0
-        and (zones_without_interfaces(running.stdout) == zones_without_interfaces(saved.stdout))
-    )
+    for listing in ("--list-all-zones", "--list-all-policies"):
+        running = _run("firewall-cmd", listing, check=False)
+        saved = _run("firewall-cmd", "--permanent", listing, check=False)
+        if running.returncode != 0 or saved.returncode != 0:
+            return False
+        if zones_without_interfaces(running.stdout) != zones_without_interfaces(saved.stdout):
+            return False
+    return True
 
 
 def zones_without_interfaces(listing: str) -> list:
@@ -1716,6 +1717,7 @@ DNF_DROP_IN = Path("/etc/systemd/system/dnf-automatic-install.service.d/compromi
 # Which updates are installed stays Ubuntu's own choice: the security ones.
 APT_UPDATES_TEXT = """\
 // Compromise Checker's installer: install security updates every day (installation plan, I.4).
+APT::Periodic::Enable "1";
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 """
@@ -1748,6 +1750,9 @@ def apt_value(dump: str, name: str) -> Optional[str]:
 
 
 def apt_updates_on(dump: str) -> bool:
+    """Both settings on, and apt's own switch for all of its daily work, which is on unless set."""
+    if apt_value(dump, "APT::Periodic::Enable") in ("0", ""):
+        return False
     return all(
         apt_value(dump, f"APT::Periodic::{name}") not in (None, "0", "")
         for name in ("Update-Package-Lists", "Unattended-Upgrade")
@@ -1953,8 +1958,10 @@ def key_fingerprints(paths: list) -> set:
             if key is None:
                 continue
             options = line[: key.start()].lower()
-            if any(word in options for word in ("command=", "cert-authority", "expiry-time=")):
-                continue  # an expired key doesn't log in; one that can expire may have
+            if any(
+                word in options for word in ("command=", "cert-authority", "expiry-time=", "from=")
+            ):
+                continue  # it may have expired, or not let in from where it logged in
             try:
                 blob = base64.b64decode(key.group(2), validate=True)
             except ValueError:
@@ -2069,11 +2076,23 @@ def sudo_rule(listing: str) -> Optional[bool]:
     no password."""
     found = None
     for line in listing.splitlines():
+        if "!" in line and line.lstrip().startswith("("):
+            return None  # a rule taking commands away: what's left can't be told for sure
         match = _SUDO_ALL.match(line)
         if match:  # sudo goes by the last rule that matches
             tags = match.group(1)
             found = "NOPASSWD:" in tags and "PASSWD:" not in tags.replace("NOPASSWD:", "")
     return found
+
+
+def account_expired(shadow: str, name: str, today: Optional[int] = None) -> bool:
+    """Whether the account's expiry date (in days since 1970, from chage -E) has come."""
+    day = int(time.time() // 86400) if today is None else today
+    for line in shadow.splitlines():
+        parts = line.split(":")
+        if len(parts) > 7 and parts[0] == name and parts[7].strip().isdigit():
+            return int(parts[7]) <= day
+    return False
 
 
 def usable_password(shadow: str, name: str) -> bool:
@@ -2154,7 +2173,7 @@ def ssh_state(ss_output: str) -> SshState:
     seen = accepted_logins(journal)
     keyed, logins, sources = set(), set(), []
     for name in admins:
-        if name not in seen or not _can_sudo(name, shadow):
+        if name not in seen or account_expired(shadow, name) or not _can_sudo(name, shadow):
             continue
         try:
             home = pwd.getpwnam(name).pw_dir
@@ -2921,7 +2940,8 @@ def install(
             _run("systemctl", "stop", apache.service, check=False)
         if web is None:
             _undo_web_address(apache_for(system))
-        answered = asking or lockdown is not None
+        # Answers only count when the questions could be asked: not with SSH off or unreadable.
+        answered = (asking or lockdown is not None) and state.running and not state.unreadable
         # Not asked: an earlier run's limit, if there is one, stays as it was.
         limit = (choices.block and kind == "ufw") if answered else None
         ufw_limited = set_up_firewall(system, limit=limit)

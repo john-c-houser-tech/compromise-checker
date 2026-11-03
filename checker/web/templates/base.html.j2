@@ -41,6 +41,7 @@
     </div>
   </div>
 </header>
+{% block band %}{% endblock %}
 <main>
 {% block nudge %}{% set nudge = two_factor_nudge(request) if request is defined else none %}{% if nudge == "off" %}
 <p class="nudge">Your results describe weaknesses an attacker could use, and a password alone can be stolen. <a href="{{ url('two_factor_setup') }}">Turn on two-factor sign-in</a>: it takes about two minutes and an authenticator app on your phone.</p>

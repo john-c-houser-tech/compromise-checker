@@ -548,10 +548,18 @@ def fleet_page(request) -> HttpResponse:
         and (tone is None or r.tone == tone)
     ]
     title, title_tone = wording.headline(rows)
+    # Every server, whatever the filter, as the answer is: how many of each result.
+    counts = [
+        (t, wording.TONE_NAMES[t], sum(1 for r in rows if r.tone == t))
+        for t in wording.TONE_NAMES
+        if any(r.tone == t for r in rows)
+    ]
     return render(
         request,
         "fleet.html.j2",
         {
+            "counts": counts,
+            "band_tag": wording.BAND_TAGS.get(title_tone) if rows else None,
             "key_unsaved": key_unsaved,
             "headline": title,
             "headline_tone": title_tone,

@@ -1,56 +1,85 @@
 {% extends "base.html.j2" %}
-{% from "parts.html.j2" import scale, notes %}
+{% from "parts.html.j2" import meter, notes %}
+{% import "icons.html.j2" as draw %}
 {% block title %}Your servers: {{ product_name() }}{% endblock %}
+{% block band %}
+<section class="band" aria-labelledby="answer">
+  <div class="band-in">
+    <div class="band-words tone-{{ headline_tone }}">
+      {% if band_tag %}<p class="tag">{{ band_tag }}</p>{% endif %}
+      <h1 id="answer">{{ headline }}</h1>
+      <p>This is an estimate from what each server's logs and settings show, not proof either way. A
+      server with no warnings can still have been broken into.</p>
+      {% if full_access(request) %}
+      <p class="actions">
+        {% if total %}<a class="button" href="{{ url('check_new') }}">{{ draw.icon("checks") }}Check your servers now</a>
+        <a class="button quiet" href="{{ url('manage_add') }}">{{ draw.icon("add") }}Add a server</a>
+        {% else %}<a class="button" href="{{ url('first_setup') }}">{{ draw.icon("forward") }}Start with first setup</a>{% endif %}
+      </p>
+      {% endif %}
+    </div>
+    <div class="band-side">
+      {% if total %}{{ draw.lighthouse() }}{% else %}{{ draw.buoy() }}{% endif %}
+      {% if counts %}
+      <ul class="counts" aria-label="Servers by result">
+        {% for value, name, n in counts %}
+        <li class="tone-{{ value }}"><a href="?show={{ value }}"><strong>{{ n }}</strong> <span>{{ name }}</span></a></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}
 {% block main %}
-<div class="answer tone-{{ headline_tone }}">
-  <h1>{{ headline }}</h1>
-  <p>This is an estimate from what each server's logs and settings show, not proof either way. A
-  server with no warnings can still have been broken into.</p>
-</div>
 {% if key_unsaved and full_access(request) %}<p class="nudge">Your stored evidence can't be read without its key, so a lost key loses all of it. <a href="{{ url('first_setup') }}">Back it up</a>.</p>{% endif %}
 {% if threat_problem %}
 <p class="error" role="alert">A threat update couldn't be used, so a new threat may not be covered. Ask whoever runs this tool to look at its log.</p>
 {% endif %}
-{% if total and full_access(request) %}<p><a href="{{ url('check_new') }}">Check your servers now</a></p>{% endif %}
 {% if not total and not full_access(request) %}
 <p>There are no results yet. Someone with full access has to add a server and check it first.</p>
 {% elif not total %}
-<p><a href="{{ url('first_setup') }}">Start with first setup</a>: it goes through getting your first server checked, step by step.</p>
+<p>First setup goes through getting your first server checked, step by step.</p>
 {% else %}
-{% if groups or tones | length > 1 or group or tone %}
-<nav class="filters" aria-label="Filter servers">
-  <a href="{{ url('fleet') }}"{% if not group and not tone %} aria-current="true"{% endif %}>All {{ total }}</a>
-  {% for value, name in tones %}
-  <a href="?show={{ value }}" class="tone-{{ value }}"{% if tone == value %} aria-current="true"{% endif %}>{{ name }}</a>
-  {% endfor %}
-  {% for value in groups %}
-  <a href="?group={{ value | urlencode }}"{% if group == value %} aria-current="true"{% endif %}>Group: {{ value }}</a>
-  {% endfor %}
-</nav>
-{% endif %}
+<div class="list-head">
+  <h2>Your servers</h2>
+  {% if groups or tones | length > 1 or group or tone %}
+  <nav class="filters" aria-label="Filter servers">
+    <a href="{{ url('fleet') }}"{% if not group and not tone %} aria-current="true"{% endif %}>All {{ total }}</a>
+    {% for value, name in tones %}
+    <a href="?show={{ value }}" class="tone-{{ value }}"{% if tone == value %} aria-current="true"{% endif %}>{{ name }}</a>
+    {% endfor %}
+    {% for value in groups %}
+    <a href="?group={{ value | urlencode }}"{% if group == value %} aria-current="true"{% endif %}>Group: {{ value }}</a>
+    {% endfor %}
+  </nav>
+  {% endif %}
+</div>
 {% if not rows %}<p>No servers match this filter.</p>{% endif %}
 <ol class="fleet" role="list">
 {% for row in rows %}
   <li class="server tone-{{ row.tone }}">
+    <span class="badge">{{ draw.icon(row.tone if row.tone in ("critical", "high", "elevated", "low") else "unknown") }}</span>
     <div class="who">
       {% set link = host_url(row.host.host) %}
-      <h2>{% if link %}<a href="{{ link }}">{{ row.host.host }}</a>{% else %}{{ row.host.host }}{% endif %}</h2>
-      {% if row.host.group %}<p>{{ row.host.group }}</p>{% endif %}
-      {% if row.checked %}<p>{{ row.checked }}</p>{% endif %}
+      <h3>{% if link %}<a href="{{ link }}">{{ row.host.host }}</a>{% else %}{{ row.host.host }}{% endif %}</h3>
+      <p>{% if row.host.group %}{{ row.host.group }} · {% endif %}{{ row.checked }}</p>
     </div>
     <div class="what">
       <p class="verdict">{{ row.verdict }}</p>
       {% if row.action %}<p class="action">{{ row.action }}</p>{% endif %}
       {% if row.changes %}
-      <p class="new">New since the last check:</p>
-      <ul>{% for change in row.changes %}<li>{{ change }}</li>{% endfor %}</ul>
+      <div class="new">
+        <p>New since the last check</p>
+        <ul>{% for change in row.changes %}<li>{{ change }}</li>{% endfor %}</ul>
+      </div>
       {% endif %}
       {{ notes(row) }}
     </div>
     <div class="chance">
       {% if row.host.probability is not none and row.host.state == "analysed" %}
-      <p><strong>{{ row.host.probability | percent }}</strong> estimated chance of a break-in</p>
-      {{ scale(row.host.probability) }}
+      <p><strong>{{ row.host.probability | percent }}</strong> <span>chance of a break-in</span></p>
+      {{ meter(row.host.probability) }}
       {% else %}
       <p class="none">No estimate</p>
       {% endif %}

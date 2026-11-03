@@ -42,6 +42,7 @@ PROGRAM = "/opt/compromise-checker"
 HOME = "/var/lib/compromise-checker"
 DATA = f"{HOME}/data"
 LINK = "/usr/local/sbin/compromise-checker-link"
+STATUS = "compromise-checker-status"
 _LINK_LINE = re.compile(r"http://127\.0\.0\.1:8088/setup/\S+")
 
 
@@ -107,8 +108,14 @@ def sign_release(directory: Path) -> None:
 
 
 class Node:
-    def __init__(self, address: str, key: Path, known: Path) -> None:
+    """Its commands share one SSH connection, so the limit the installer can put on new ones
+    doesn't hold the proof up."""
+
+    def __init__(self, address: str, key: Path, known: Path, user: str = "root") -> None:
         self.address = address
+        self.user = user
+        self.key, self.known = key, known
+        self.master = key.parent / f"m-{user}"
         self.options = [
             "-F",
             "/dev/null",
@@ -124,11 +131,63 @@ class Node:
             f"UserKnownHostsFile={known}",
             "-o",
             "ConnectTimeout=10",
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            f"ControlPath={self.master}",
+            "-o",
+            "ControlPersist=900",
+            "-o",
+            "ServerAliveInterval=5",  # a connection lost to a reboot is given up on quickly
+            "-o",
+            "ServerAliveCountMax=3",
         ]
+
+    def close(self) -> None:
+        subprocess.run(  # noqa: S603
+            ["ssh", *self.options, "-O", "exit", f"{self.user}@{self.address}"],  # noqa: S607
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+
+    def fresh_login(self, user: str, *more: str) -> subprocess.CompletedProcess:
+        """A new connection, not the shared one, as `user`."""
+        return subprocess.run(  # noqa: S603
+            [  # noqa: S607
+                "ssh",
+                "-F",
+                "/dev/null",
+                "-i",
+                str(self.key),
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                f"UserKnownHostsFile={self.known}",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ControlPath=none",
+                *more,
+                f"{user}@{self.address}",
+                "true",
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+            check=False,
+        )
 
     def run(self, command: str, timeout: int = 900) -> subprocess.CompletedProcess:
         return subprocess.run(  # noqa: S603
-            ["ssh", *self.options, f"root@{self.address}", command],  # noqa: S607
+            ["ssh", *self.options, f"{self.user}@{self.address}", command],  # noqa: S607
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
@@ -141,7 +200,7 @@ class Node:
 
     def copy(self, source: Path, target: str) -> None:
         subprocess.run(  # noqa: S603
-            ["scp", *self.options, "-q", "-r", str(source), f"root@{self.address}:{target}"],  # noqa: S607
+            ["scp", *self.options, "-q", "-r", str(source), f"{self.user}@{self.address}:{target}"],  # noqa: S607
             check=True,
             timeout=300,
         )
@@ -156,6 +215,180 @@ class Node:
                 pass
             time.sleep(5)
         raise RuntimeError(f"{self.address} never answered")
+
+
+STATUS_FILE = "/var/lib/compromise-checker-status/machine.json"
+OLD_SSH = ("ubuntu24.04", "rocky9")  # no PerSourcePenalties: the firewall limits them instead
+LOCKDOWN = " --ssh-passwords-off --root-login-off --block-login-failures"
+
+
+def port_answers(address: str, port: int, seconds: float = 5) -> bool:
+    """From this machine, which plays someone elsewhere on the internet."""
+    try:
+        with socket.create_connection((address, port), timeout=seconds):
+            return True
+    except OSError:
+        return False
+
+
+def connections_let_in(address: str, tries: int = 12) -> int:
+    """New SSH connections opened one after another, each closed at once."""
+    return sum(port_answers(address, 22, 3) for _ in range(tries))
+
+
+def machine_status(node: "Node") -> dict:
+    try:
+        return json.loads(node.out(f"cat {STATUS_FILE}"))
+    except ValueError:
+        return {}
+
+
+def prove_lockdown(node: "Node", checks, distro: str, said: str) -> None:
+    """Right after an install asked for all three SSH changes, from a root key login only."""
+    ubuntu = distro.startswith("ubuntu")
+    checks("it says it's setting up the firewall", "Setting up the firewall" in said, said)
+    if ubuntu:
+        status = node.out("ufw status")
+        rules = [line.split()[0] for line in status.splitlines()[4:] if line.strip()]
+        checks(
+            "ufw is on, letting in SSH alone",
+            "Status: active" in status and set(rules) == {"22/tcp"},
+            status,
+        )
+        if distro in OLD_SSH:
+            checks("ufw limits SSH connections", "LIMIT" in status, status)
+    else:
+        services = set(node.out("firewall-cmd --list-services").split())
+        ports = node.out("firewall-cmd --list-ports")
+        checks(
+            "firewalld is on, letting in SSH alone",
+            services == {"ssh", "dhcpv6-client"} and not ports,
+            f"{services} {ports}",
+        )
+        checks(
+            "it comes back after a reboot", node.out("systemctl is-enabled firewalld") == "enabled"
+        )
+    for port in (111, 9090):
+        checks(f"port {port} can't be reached from outside", not port_answers(node.address, port))
+    # Updates
+    if ubuntu:
+        dump = node.out(
+            "apt-config dump | grep -E '^APT::Periodic::(Unattended-Upgrade|Update-Package-Lists) '"
+        )
+        checks("security updates install by themselves", dump.count('"1";') == 2, dump)
+        timers = node.out("systemctl is-enabled apt-daily.timer apt-daily-upgrade.timer")
+        checks("their timers are on", timers.split() == ["enabled", "enabled"], timers)
+        dry = node.run("unattended-upgrade --dry-run 2>&1 | tail -5", timeout=900)
+        checks("unattended-upgrade runs", dry.returncode == 0, dry.stdout + dry.stderr)
+        reboot = node.out("apt-config dump Unattended-Upgrade::Automatic-Reboot")
+        checks("and never restarts the machine", '"true"' not in reboot, reboot)
+    else:
+        checks(
+            "security updates install by themselves",
+            node.out("systemctl is-enabled dnf-automatic-install.timer") == "enabled",
+        )
+        ran = node.run("systemctl start dnf-automatic-install.service", timeout=1500)
+        checks(
+            "and the update service runs, from its own settings",
+            ran.returncode == 0
+            and "automatic-compromise-checker.conf"
+            in node.out("systemctl cat dnf-automatic-install.service"),
+            ran.stdout
+            + ran.stderr
+            + node.out("journalctl -u dnf-automatic-install -n 20 --no-pager"),
+        )
+    # The three changes: root's key login allows passwords off, and nothing allows root off.
+    shown = node.out(
+        "sshd -T | grep -iE '^(passwordauthentication|kbdinteractiveauthentication"
+        "|permitrootlogin|persourcepenalties) '"
+    ).lower()
+    checks(
+        "SSH no longer accepts passwords",
+        "passwordauthentication no" in shown and "kbdinteractiveauthentication no" in shown,
+        shown,
+    )
+    refused = node.fresh_login(
+        "root",
+        "-o",
+        "PubkeyAuthentication=no",
+        "-o",
+        "PreferredAuthentications=password,keyboard-interactive",
+    )
+    checks(
+        "a password login isn't even offered",
+        "Permission denied (publickey)" in refused.stderr,
+        refused.stderr,
+    )
+    checks(
+        "root login stayed on, with nobody else to log in as",
+        "Root login over SSH stays on" in said and "permitrootlogin no" not in shown,
+        said,
+    )
+    checks("a key login still works", node.fresh_login("root").returncode == 0)
+    if distro in OLD_SSH:
+        checks(
+            "it says addresses are limited", "makes an address that opens more than 6" in said, said
+        )
+    else:
+        checks(
+            "SSH's own blocking is on",
+            "persourcepenalties" in shown and "persourcepenalties no" not in shown,
+            shown,
+        )
+    if distro == "rocky9":
+        table = node.out("nft list table inet compromise_checker_ssh")
+        checks("the limit's table is loaded", "recent4" in table and "dport 22" in table, table)
+    notes = machine_status(node)
+    checks("the page is told SSH refuses passwords", notes.get("ssh_passwords") is False, notes)
+    checks("and whether a restart is waiting", isinstance(notes.get("restart_needed"), bool), notes)
+    found = denials(node)
+    checks("SELinux refused nothing in the lockdown", not found, found)
+
+
+def prove_limit(node: "Node", checks, distro: str) -> None:
+    """Last but one, since it holds this machine's address up for a minute."""
+    if distro not in OLD_SSH:
+        return
+    let_in = connections_let_in(node.address)
+    checks("an address opening SSH connections fast is held off", let_in < 12, let_in)
+    time.sleep(70)
+    checks("and let in again after a minute", node.fresh_login("root").returncode == 0)
+
+
+def prove_root_off(node: "Node", checks, distro: str) -> None:
+    """With another administrator who has logged in with a key, root login can go: the installer's
+    own steps, run again as a later run would, keep passwords off too."""
+    group = "sudo" if distro.startswith("ubuntu") else "wheel"
+    node.run(
+        f"useradd -m -G {group} -s /bin/bash proofops && install -d -m 700 -o proofops"
+        " -g proofops ~proofops/.ssh && install -m 600 -o proofops -g proofops"
+        " /root/.ssh/authorized_keys ~proofops/.ssh/authorized_keys"
+        " && echo 'proofops ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/proofops"
+    )
+    checks(
+        "another administrator can log in with a key", node.fresh_login("proofops").returncode == 0
+    )
+    script = (
+        "import importlib.util, subprocess\n"
+        "s = importlib.util.spec_from_file_location('installer', '/root/release/install.py')\n"
+        "m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
+        "ss = subprocess.run(['ss', '-Hltnp'], capture_output=True, text=True).stdout\n"
+        "state = m.ssh_state(ss)\n"
+        "kind = m.blocking_kind(state, m.running_firewall() or 'ufw')\n"
+        "wanted = m.Choices(True, True, False)\n"
+        "m.apply_lockdown(m.choose_lockdown(state, 'ufw', None, wanted), kind)\n"
+    )
+    done = node.run(f"python3 -I - <<'EOF'\n{script}EOF")
+    checks(
+        "root login is turned off",
+        "no longer lets anyone log in as root" in done.stdout,
+        done.stdout + done.stderr,
+    )
+    checks("a new root login is refused", node.fresh_login("root").returncode != 0)
+    checks("the other administrator still gets in", node.fresh_login("proofops").returncode == 0)
+    shown = node.out("sshd -T | grep -iE '^passwordauthentication '").lower()
+    checks("and passwords are still off", shown == "passwordauthentication no", shown)
+    checks("the open session is still open", node.run("true").returncode == 0)
 
 
 def status_of(node: Node, url: str) -> str:
@@ -256,6 +489,16 @@ def prove_web(node: "Node", checks, distro: str) -> None:
     except OSError as exc:
         issuer = str(exc)
     checks("the certificate is Let's Encrypt's test one", "STAGING" in issuer, issuer)
+    if distro.startswith("ubuntu"):
+        status = node.out("ufw status")
+        rules = {line.split()[0] for line in status.splitlines()[4:] if line.strip()}
+        allowed = rules == {"22/tcp", "80/tcp", "443/tcp"}
+    else:
+        rules = set(node.out("firewall-cmd --list-services").split())
+        allowed = rules == {"ssh", "dhcpv6-client", "http", "https"}
+    checks("the firewall lets in SSH and the web address's ports, and no more", allowed, rules)
+    notes = machine_status(node)
+    checks("asked nothing about SSH, passwords stay on", notes.get("ssh_passwords") is True, notes)
     status = local(
         "curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"https://{name}/login"
     )
@@ -567,6 +810,7 @@ def prove(
         started = time.monotonic()
         done = node.run(
             "cd /root/release && umask 077 && sudo python3 -I install.py --from /root/release"
+            + LOCKDOWN
         )
         took = round(time.monotonic() - started)
         print(f"[{distro}] install took {took}s")
@@ -610,6 +854,7 @@ def prove(
             found.stdout + found.stderr,
         )
         checks("sleep is off", node.out("systemctl is-enabled suspend.target") == "masked")
+        prove_lockdown(node, checks, distro, done.stdout)
 
         # --- A new link -------------------------------------------------------------------------
         again = _LINK_LINE.findall(node.out(LINK))
@@ -652,6 +897,7 @@ def prove(
             done.stdout + done.stderr,
         )
         node.run("systemctl reboot")
+        node.close()
         time.sleep(15)
         node.wait()
         deadline = time.monotonic() + 120
@@ -667,6 +913,15 @@ def prove(
             "the service came back as itself", node.out(f"systemctl is-enabled {UNIT}") == "enabled"
         )
         checks("the timer came back", "compromise-checker" in node.out(timer), node.out(timer))
+        refused = node.fresh_login("root", "-o", "PubkeyAuthentication=no")
+        checks("passwords are still refused", "Permission denied (publickey)" in refused.stderr)
+        if distro == "rocky9":
+            table = node.out("nft list table inet compromise_checker_ssh")
+            checks("the limit came back", "recent4" in table, table)
+        checks(
+            "the machine's notes came back",
+            node.out("systemctl is-enabled compromise-checker-status.timer") == "enabled",
+        )
         after = _LINK_LINE.findall(node.out(LINK))
         checks("a link can still be made", len(after) == 1 and status_of(node, after[0]) == "200")
         selinux = node.out("getenforce 2>/dev/null") or "not on this system"
@@ -705,6 +960,14 @@ def prove(
             f" -d password={password} http://127.0.0.1:8088/login"
         )
         checks("that account can sign in", signed_in == "302", signed_in)
+        page = "curl -s -c /root/jar -b /root/jar http://127.0.0.1:8088/"
+        text = node.out(page)
+        checks("no notice about SSH passwords, which are off", "with a password" not in text)
+        if distro.startswith("ubuntu"):
+            node.run(f"touch /run/reboot-required && systemctl start {STATUS}.service")
+            checks("a waiting restart is noted", machine_status(node).get("restart_needed") is True)
+            checks("and shown on the page", "waiting for a restart" in node.out(page))
+            node.run(f"rm -f /run/reboot-required && systemctl start {STATUS}.service")
         done = node.run(LINK)
         checks(
             "no link is made once there's an account",
@@ -712,6 +975,8 @@ def prove(
             done.stdout + done.stderr,
         )
         checks("the spent link stops working", status_of(node, after[0]) != "200")
+        prove_limit(node, checks, distro)
+        prove_root_off(node, checks, distro)
         found = denials(node)  # last, to cover all of the above
         checks("SELinux refused nothing", not found, found)
     finally:

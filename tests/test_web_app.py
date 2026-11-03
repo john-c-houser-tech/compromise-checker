@@ -9406,3 +9406,19 @@ def settings_value(name):
     from django.conf import settings
 
     return getattr(settings, name)
+
+
+def test_every_page_file_is_in_an_installed_copy():
+    """An installed copy has only what package data lists: a file left out is a 500 there."""
+    import tomllib
+    from fnmatch import fnmatch
+
+    root = Path(__file__).resolve().parent.parent
+    listed = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["setuptools"]
+    patterns = listed["package-data"]["checker.web"]
+    web = root / "checker" / "web"
+    for folder in ("static", "templates"):
+        for path in (web / folder).rglob("*"):
+            if path.is_file():
+                name = path.relative_to(web).as_posix()
+                assert any(fnmatch(name, p) for p in patterns), name

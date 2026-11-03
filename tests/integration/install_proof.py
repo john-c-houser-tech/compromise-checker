@@ -338,6 +338,9 @@ def prove_lockdown(node: "Node", checks, distro: str, said: str) -> None:
     if distro == "rocky9":
         table = node.out("nft list table inet compromise_checker_ssh")
         checks("the limit's table is loaded", "recent4" in table and "dport 22" in table, table)
+        node.run("systemctl restart firewalld")
+        table = node.out("nft list table inet compromise_checker_ssh")
+        checks("and survives firewalld restarting", "recent4" in table, table)
     notes = machine_status(node)
     checks("the page is told SSH refuses passwords", notes.get("ssh_passwords") is False, notes)
     checks("and whether a restart is waiting", isinstance(notes.get("restart_needed"), bool), notes)

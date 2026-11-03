@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from datetime import UTC, datetime
 
 from checker import machine_status
 
@@ -68,31 +69,58 @@ def test_a_restart_is_needed(monkeypatch, tmp_path):
     assert machine_status.restart_needed() is True
     note.unlink()
     monkeypatch.setattr(machine_status.shutil, "which", lambda name, path=None: "/usr/bin/dnf")
-    for code, meaning in ((0, False), (1, True), (2, None)):
-        _commands(monkeypatch, {("/usr/bin/dnf", "-C", "-q", "needs-restarting", "-r"): (code, "")})
+    required = (
+        "Core libraries or services have been updated since boot-up:\n  * kernel\n\n"
+        "Reboot is required to fully utilize these updates.\n"
+    )
+    fine = (
+        "No core libraries or services have been updated since boot-up.\n"
+        "Reboot should not be necessary.\n"
+    )
+    for code, said, meaning in (
+        (0, fine, False),
+        (1, required, True),
+        (1, "Error: rpmdb open failed\n", None),
+        (0, "", None),
+        (2, "", None),
+    ):
+        _commands(
+            monkeypatch, {("/usr/bin/dnf", "-C", "-q", "needs-restarting", "-r"): (code, said)}
+        )
         assert machine_status.restart_needed() is meaning
 
 
 def test_what_is_written_is_read_back(tmp_path):
     path = tmp_path / "status" / "machine.json"
-    machine_status.write(path, {"checked": "now", "ssh_passwords": True, "restart_needed": None})
+    now = "2026-11-03T12:00:00+00:00"
+    machine_status.write(path, {"checked": now, "ssh_passwords": True, "restart_needed": None})
     assert path.stat().st_mode & 0o777 == 0o644
-    assert machine_status.read(path) == {"ssh_passwords": True}
-    assert machine_status.notices(path) == ["ssh_passwords"]
+    assert machine_status.read(path, datetime.fromisoformat(now)) == {"ssh_passwords": True}
+    later = datetime.fromisoformat("2026-11-03T16:00:00+00:00")
+    assert machine_status.read(path, later) == {"ssh_passwords": True, "stale": True}
+    assert machine_status.notices(path)[0] == "ssh_passwords"
     assert list(path.parent.iterdir()) == [path]
 
 
 def test_anything_odd_is_as_good_as_not_known(tmp_path):
     path = tmp_path / "machine.json"
     assert machine_status.notices(path) == []
-    for text in ("not json", "[true]", json.dumps({"ssh_passwords": "yes", "restart_needed": 1})):
+    for text in ("not json", "[true]"):
         path.write_text(text)
         assert machine_status.notices(path) == []
+    path.write_text(json.dumps({"ssh_passwords": "yes", "restart_needed": 1}))
+    assert machine_status.notices(path) == ["stale"]  # nor does it say when it was written
 
 
 def test_the_service_writes_where_it_is_told(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        machine_status, "collect", lambda: {"ssh_passwords": False, "restart_needed": True}
+        machine_status,
+        "collect",
+        lambda: {
+            "checked": datetime.now(UTC).isoformat(),
+            "ssh_passwords": False,
+            "restart_needed": True,
+        },
     )
     path = tmp_path / "machine.json"
     assert machine_status.main([str(path)]) == 0

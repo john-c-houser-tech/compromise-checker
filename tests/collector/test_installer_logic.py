@@ -1007,10 +1007,17 @@ class Lockdown(unittest.TestCase):
         self.assertEqual(installer.ssh_ports(SS_SSH, "[::]:9091 (Stream)\n"), ["22"])
 
     def test_what_else_an_active_ufw_lets_in(self):
-        self.assertEqual(installer.ufw_extras(UFW_ACTIVE, {"22/tcp"}), ["5432"])
+        self.assertEqual(installer.ufw_extras(UFW_ACTIVE, ["22"]), ["5432"])
         limited = "Status: active\n\n22/tcp                     LIMIT IN    Anywhere\n"
-        self.assertEqual(installer.ufw_extras(limited, {"22/tcp"}), [])
-        self.assertEqual(installer.ufw_extras(limited, set()), ["22/tcp"])
+        self.assertEqual(installer.ufw_extras(limited, ["22"]), [])
+        self.assertEqual(installer.ufw_extras(limited, []), ["22/tcp"])
+        named = (
+            "Status: active\n\nTo Action From\n-- ------ ----\n"
+            "OpenSSH                    ALLOW       Anywhere\n"
+            "22                         ALLOW       Anywhere\n"
+            "5432/tcp on eth1           ALLOW       10.0.0.0/8\n"
+        )
+        self.assertEqual(installer.ufw_extras(named, ["22"]), ["5432/tcp on eth1"])
 
     def test_what_else_a_firewalld_zone_lets_in(self):
         self.assertEqual(
@@ -1298,7 +1305,10 @@ class Questions(unittest.TestCase):
         )
         self.assertEqual(
             installer.accepted_logins(journal),
-            {"sam": {"publickey"}, "root": {"password", "publickey"}},
+            {
+                "sam": {("publickey", "192.0.2.9")},
+                "root": {("password", "192.0.2.9"), ("publickey", "192.0.2.9")},
+            },
         )
 
     def test_where_sshd_looks_for_keys(self):
@@ -1382,7 +1392,7 @@ class Questions(unittest.TestCase):
         found = installer.choose_lockdown(state(logins=["sam"]), "ufw", answers)
         self.assertFalse(found.passwords_off)
         self.assertTrue(found.root_off)
-        self.assertTrue(self.saw("SSH passwords stay on: no administrator account has logged in"))
+        self.assertTrue(self.saw("SSH passwords stay on: no administrator account has a key login"))
 
     def test_settings_already_made_arent_asked(self):
         settings = {
@@ -1439,7 +1449,9 @@ class Questions(unittest.TestCase):
     def test_the_limit_rules(self):
         rules = installer.ssh_limit_rules(("22", "2200"))
         self.assertIn("tcp dport { 22, 2200 } ct state new update @recent4", rules)
-        self.assertIn("ip6 saddr limit rate over 12/minute burst 6 packets", rules)
+        self.assertIn(
+            "ip6 saddr and ffff:ffff:ffff:ffff:: limit rate over 12/minute burst 6 packets", rules
+        )
         self.assertIn("priority filter - 10", rules)
         self.assertIn(f"delete table inet {installer.SSH_LIMIT_TABLE}\n", rules)
         unit = installer.ssh_limit_unit("/usr/sbin/nft")
@@ -1556,11 +1568,12 @@ class ChangingSsh(unittest.TestCase):
 
 class MachineNotes(unittest.TestCase):
     def test_the_status_service_runs_the_tools_own_module_as_root(self):
-        units = installer.status_units()
+        script = "/opt/compromise-checker/current/lib/python3.12/site-packages/checker/x.py"
+        units = installer.status_units(script)
         service = units[Path("/etc/systemd/system/compromise-checker-status.service")]
         timer = units[Path("/etc/systemd/system/compromise-checker-status.timer")]
         self.assertIn(
-            "ExecStart=/opt/compromise-checker/current/bin/python -I -m checker.machine_status"
+            f"ExecStart=/opt/compromise-checker/current/bin/python -I -S {script}"
             " /var/lib/compromise-checker-status/machine.json\n",
             service,
         )
@@ -1572,6 +1585,387 @@ class MachineNotes(unittest.TestCase):
     def test_the_status_file_is_where_the_tool_reads_it(self):
         text = (ROOT / "checker" / "machine_status.py").read_text(encoding="utf-8")
         self.assertIn(f'STATUS = Path("{installer.STATUS_FILE}")', text)
+
+
+SSHD_OPEN = {
+    "permitrootlogin": "yes",
+    "pubkeyauthentication": "yes",
+    "passwordauthentication": "yes",
+    "kbdinteractiveauthentication": "no",
+}
+
+
+class LoginsThatStillWork(unittest.TestCase):
+    """A login seen in SSH's log only counts if SSH, as it's set today, would let it in again."""
+
+    def works(self, settings, name="root", method="publickey", keyed=True, lists=None, groups=()):
+        merged = {**SSHD_OPEN, **settings}
+        return installer.login_still_works(
+            merged, lists or {}, name, groups, method, "192.0.2.9", keyed
+        )
+
+    def test_a_root_key_login_from_before_root_was_shut_out(self):
+        self.assertTrue(self.works({}))
+        self.assertTrue(self.works({"permitrootlogin": "prohibit-password"}))
+        self.assertFalse(self.works({"permitrootlogin": "no"}))
+        self.assertFalse(self.works({"permitrootlogin": "forced-commands-only"}))
+
+    def test_a_root_password_login_needs_root_passwords(self):
+        self.assertTrue(self.works({}, method="password"))
+        self.assertFalse(self.works({"permitrootlogin": "prohibit-password"}, method="password"))
+
+    def test_keys_turned_off_or_gone(self):
+        self.assertFalse(self.works({"pubkeyauthentication": "no"}, name="sam"))
+        self.assertFalse(self.works({}, name="sam", keyed=False))
+
+    def test_passwords_and_keyboard_interactive(self):
+        self.assertFalse(self.works({"passwordauthentication": "no"}, "sam", "password"))
+        method = "keyboard-interactive/pam"
+        self.assertFalse(self.works({}, "sam", method))
+        self.assertTrue(self.works({"kbdinteractiveauthentication": "yes"}, "sam", method))
+
+    def test_allow_and_deny_lists(self):
+        allowed = installer.user_allowed
+        self.assertTrue(allowed({}, "sam", ("sam",), "192.0.2.9"))
+        self.assertFalse(allowed({"denyusers": ["s*"]}, "sam", (), "192.0.2.9"))
+        self.assertFalse(allowed({"allowusers": ["pat"]}, "sam", (), "192.0.2.9"))
+        self.assertTrue(
+            allowed({"allowusers": ["pat", "sam@192.0.2.0/24"]}, "sam", (), "192.0.2.9")
+        )
+        self.assertFalse(allowed({"allowusers": ["sam@10.0.0.0/8"]}, "sam", (), "192.0.2.9"))
+        self.assertFalse(allowed({"denygroups": ["users"]}, "sam", ("sam", "users"), "192.0.2.9"))
+        self.assertFalse(allowed({"allowgroups": ["wheel"]}, "sam", ("sam",), "192.0.2.9"))
+        self.assertTrue(allowed({"allowgroups": ["wheel"]}, "sam", ("wheel",), "192.0.2.9"))
+
+    def test_sshd_lists_keep_every_value(self):
+        text = "allowusers sam\nallowusers pat@10.0.0.0/8\nport 22\n"
+        self.assertEqual(installer.sshd_lists(text), {"allowusers": ["sam", "pat@10.0.0.0/8"]})
+
+    def test_who_can_use_sudo(self):
+        self.assertTrue(installer.sudo_rule("User sam may run:\n    (ALL) NOPASSWD: ALL\n"))
+        self.assertIs(installer.sudo_rule("User sam may run:\n    (ALL : ALL) ALL\n"), False)
+        self.assertIsNone(installer.sudo_rule("User sam may run:\n    (ALL) /usr/bin/systemctl\n"))
+        self.assertIsNone(installer.sudo_rule("User sam is not allowed to run sudo on x.\n"))
+        shadow = "sam:$6$abc:1::\npat:!$6$abc:1::\nlee:*:1::\nkim::1::\n"
+        self.assertTrue(installer.usable_password(shadow, "sam"))
+        for name in ("pat", "lee", "kim", "nobody"):
+            self.assertFalse(installer.usable_password(shadow, name))
+
+    def test_a_key_held_to_one_command_gives_no_login(self):
+        with tempfile.TemporaryDirectory() as folder:
+            backup, plain = Path(folder) / "backup", Path(folder) / "plain"
+            backup.write_text('command="/usr/bin/rsync --server",no-pty ssh-ed25519 AAAA backup\n')
+            plain.write_text('restrict,from="10.0.0.0/8" ssh-ed25519 AAAA sam\n')
+            self.assertFalse(installer.has_a_key([backup]))
+            self.assertTrue(installer.has_a_key([plain]))
+
+    def test_a_key_file_that_isnt_a_plain_file_isnt_read(self):
+        with tempfile.TemporaryDirectory() as folder:
+            real = Path(folder) / "real"
+            real.write_text("ssh-ed25519 AAAA sam\n")
+            link = Path(folder) / "link"
+            link.symlink_to(real)
+            fifo = Path(folder) / "fifo"
+            os.mkfifo(fifo)
+            self.assertFalse(installer.has_a_key([link]))
+            self.assertFalse(installer.has_a_key([fifo]))  # and doesn't hang
+            self.assertTrue(installer.has_a_key([real]))
+
+
+class FakeSsh:
+    """sshd, journalctl and sudo for ssh_state, from what a machine is set to."""
+
+    def __init__(self, folder, settings, per_login=None, sudo="", journal=()):
+        self.folder, self.settings = folder, settings
+        self.per_login = per_login or {}
+        self.sudo, self.journal = sudo, journal
+
+    def __call__(self, *command, **more):
+        out, code = "", 0
+        if command[0] == "ss":
+            out = SS_SSH
+        elif command[:2] == ("systemctl", "is-active"):
+            out = "active\n"
+        elif command[:2] == ("systemctl", "show"):
+            out = ""
+        elif command[0].endswith("sshd") and command[1:] == ("-T",):
+            out = self.settings
+        elif command[0].endswith("sshd") and command[1:3] == ("-T", "-C"):
+            user = command[3].split(",")[0].split("=")[1]
+            out = self.per_login.get(user, self.settings)
+        elif command[0] == "journalctl":
+            out = "\n".join(journal_line(line) for line in self.journal)
+        elif command[0].endswith("sudo"):
+            out = self.sudo
+        return subprocess.CompletedProcess(list(command), code, out, "")
+
+
+class SshStateFromTheMachine(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        sshd = self.folder / "sshd"
+        sshd.write_text("")
+        for name in ("root", "sam"):
+            (self.folder / name / ".ssh").mkdir(parents=True)
+            (self.folder / name / ".ssh" / "authorized_keys").write_text("ssh-ed25519 AAAA x\n")
+        names = ("_run", "_sshd_command", "admin_accounts", "_groups_of", "_can_sudo")
+        real = {name: getattr(installer, name) for name in names}
+        real_getpwnam = installer.pwd.getpwnam
+        installer._sshd_command = lambda: str(sshd)
+        installer.admin_accounts = lambda group, passwd: ("root", "sam")
+        installer._groups_of = lambda name: (name,)
+        folder_path = self.folder
+
+        class Account:
+            def __init__(self, name):
+                self.pw_dir = str(folder_path / name)
+                self.pw_gid = 0
+
+        installer.pwd.getpwnam = Account
+
+        def restore():
+            for name, value in real.items():
+                setattr(installer, name, value)
+            installer.pwd.getpwnam = real_getpwnam
+
+        self.addCleanup(restore)
+
+    def state(self, settings, journal, sudo=True, per_login=None):
+        installer._run = FakeSsh(self.folder, settings, per_login, journal=journal)
+        installer._can_sudo = lambda name, shadow: sudo or name == "root"
+        return installer.ssh_state(SS_SSH)
+
+    def test_an_old_root_key_login_doesnt_count_once_root_is_shut_out(self):
+        settings = "permitrootlogin no\npasswordauthentication yes\npubkeyauthentication yes\n"
+        journal = [
+            "Accepted publickey for root from 192.0.2.9 port 5000 ssh2: ED25519 x",
+            "Accepted password for sam from 192.0.2.9 port 5001 ssh2",
+        ]
+        found = self.state(settings, journal)
+        self.assertEqual(found.key_logins, frozenset())
+        self.assertEqual(found.logins, frozenset({"sam"}))
+        self.assertIsNotNone(installer.passwords_problem(found))
+
+    def test_a_key_login_counts_while_ssh_would_still_take_it(self):
+        settings = "permitrootlogin prohibit-password\npasswordauthentication yes\n"
+        journal = ["Accepted publickey for root from 192.0.2.9 port 5000 ssh2: ED25519 x"]
+        found = self.state(settings, journal)
+        self.assertEqual(found.key_logins, frozenset({"root"}))
+        self.assertEqual(found.sources, (("root", "192.0.2.9"),))
+
+    def test_a_match_section_shutting_an_account_out_is_seen(self):
+        settings = "permitrootlogin yes\npasswordauthentication yes\n"
+        journal = ["Accepted publickey for sam from 192.0.2.9 port 5000 ssh2: ED25519 x"]
+        found = self.state(settings, journal, per_login={"sam": settings + "denyusers sam\n"})
+        self.assertEqual(found.key_logins, frozenset())
+
+    def test_an_administrator_who_cant_use_sudo_isnt_another_way_in(self):
+        settings = "permitrootlogin yes\npasswordauthentication yes\n"
+        journal = [
+            "Accepted publickey for root from 192.0.2.9 port 5000 ssh2: ED25519 x",
+            "Accepted publickey for sam from 192.0.2.9 port 5001 ssh2: ED25519 x",
+        ]
+        found = self.state(settings, journal, sudo=False)
+        self.assertEqual(found.logins, frozenset({"root"}))
+        self.assertIsNotNone(installer.root_problem(found, False))
+        found = self.state(settings, journal, sudo=True)
+        self.assertIsNone(installer.root_problem(found, True))
+
+    def test_the_person_running_this_through_sudo_can_use_it(self):
+        real = os.environ.get("SUDO_USER")
+        os.environ["SUDO_USER"] = "sam"
+        try:
+            self.assertTrue(installer._can_sudo("sam", ""))
+        finally:
+            if real is None:
+                del os.environ["SUDO_USER"]
+            else:
+                os.environ["SUDO_USER"] = real
+
+
+class FirewallsReviewed(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        real = (installer.LOCKDOWN_MARKER, installer._run, installer.shutil.which, installer.say)
+        installer.LOCKDOWN_MARKER = Path(folder.name) / "lockdown.json"
+        installer.shutil.which = lambda name: "/usr/sbin/" + name
+        self.said = []
+        installer.say = self.said.append
+
+        def restore():
+            (
+                installer.LOCKDOWN_MARKER,
+                installer._run,
+                installer.shutil.which,
+                installer.say,
+            ) = real
+
+        self.addCleanup(restore)
+
+    def test_saved_ufw_rules_are_seen(self):
+        self.assertFalse(
+            installer.ufw_saved_rules("Added user rules (see 'ufw status'):\n(None)\n")
+        )
+        self.assertTrue(installer.ufw_saved_rules("Added user rules:\nufw deny 22/tcp\n"))
+
+    def test_ssh_goes_in_front_of_saved_ufw_rules(self):
+        fake = FakeMachine()
+
+        def run(*command, **more):
+            if command[:3] == ("ufw", "show", "added"):
+                fake.called.append(command)
+                return subprocess.CompletedProcess(list(command), 0, "Added:\nufw deny 22\n", "")
+            return fake(*command, **more)
+
+        installer._run = run
+        installer.set_up_firewall(UBUNTU_24)
+        self.assertIn(("ufw", "insert", "1", "allow", "22/tcp"), fake.called)
+        self.assertLess(
+            fake.index("ufw", "insert", "1", "allow", "22/tcp"),
+            fake.index("ufw", "--force", "enable"),
+        )
+
+    def test_someone_elses_ufw_is_never_limited(self):
+        fake = FakeMachine(ufw=UFW_ACTIVE)
+        installer._run = fake
+        installer.set_up_firewall(UBUNTU_24, limit=True)
+        self.assertFalse(any(command[:2] == ("ufw", "limit") for command in fake.called))
+        self.assertEqual(installer.blocking_kind(state(), "someone else's"), "nft")
+
+    def test_ssh_running_on_a_port_that_cant_be_found_leaves_the_firewall_off(self):
+        fake = FakeMachine(ss="")
+
+        def run(*command, **more):
+            if command[:2] == ("systemctl", "is-active") and command[2] in installer.SSH_UNITS:
+                fake.called.append(command)
+                return subprocess.CompletedProcess(list(command), 0, "active\n", "")
+            return fake(*command, **more)
+
+        installer._run = run
+        installer.set_up_firewall(UBUNTU_24)
+        self.assertFalse(any(command[:2] == ("ufw", "--force") for command in fake.called))
+        self.assertTrue(any("no firewall was turned on" in line for line in self.said))
+
+    def test_a_firewall_of_another_kind_is_kept(self):
+        fake = FakeMachine()
+
+        def run(*command, **more):
+            if command == ("systemctl", "is-active", "nftables.service"):
+                return subprocess.CompletedProcess(list(command), 0, "active\n", "")
+            return fake(*command, **more)
+
+        installer._run = run
+        self.assertEqual(installer.running_firewall(), "nftables")
+        installer.set_up_firewall(UBUNTU_24)
+        self.assertFalse(any(command[:2] == ("ufw", "--force") for command in fake.called))
+        self.assertTrue(any("nftables, is already running" in line for line in self.said))
+
+    def test_every_zone_ssh_could_come_through_lets_it_in(self):
+        fake = FakeMachine()
+
+        def run(*command, **more):
+            if command[0] == "firewall-offline-cmd" and command[-1].startswith(
+                "--get-zone-of-interface="
+            ):
+                zone = "internal\n" if command[-1].endswith("=eth1") else ""
+                return subprocess.CompletedProcess(list(command), 0 if zone else 2, zone, "")
+            if command[0] == "nmcli":
+                return subprocess.CompletedProcess(list(command), 0, "", "")
+            return fake(*command, **more)
+
+        installer._run = run
+        real_iterdir = installer.Path.iterdir
+
+        def iterdir(self):
+            if str(self) == "/sys/class/net":
+                return iter(
+                    [
+                        Path("/sys/class/net/lo"),
+                        Path("/sys/class/net/eth0"),
+                        Path("/sys/class/net/eth1"),
+                    ]
+                )
+            return real_iterdir(self)
+
+        installer.Path.iterdir = iterdir
+        try:
+            installer.set_up_firewall(ROCKY_9)
+        finally:
+            installer.Path.iterdir = real_iterdir
+        zones = {
+            command[1]
+            for command in fake.called
+            if command[0] == "firewall-offline-cmd" and command[1].startswith("--zone=")
+        }
+        self.assertEqual(zones, {"--zone=public", "--zone=internal"})
+
+
+class LimitAndNotesReviewed(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        names = ("SSH_LIMIT_UNIT", "SSH_LIMIT_RULES", "_run", "say")
+        real = {name: getattr(installer, name) for name in names}
+        installer.SSH_LIMIT_UNIT = self.folder / "limit.service"
+        installer.SSH_LIMIT_RULES = self.folder / "limit.nft"
+        self.called, self.said = [], []
+        installer.say = self.said.append
+        installer._run = lambda *command, **more: (
+            self.called.append(command) or subprocess.CompletedProcess(list(command), 0, "", "")
+        )
+
+        def restore():
+            for name, value in real.items():
+                setattr(installer, name, value)
+
+        self.addCleanup(restore)
+
+    def test_an_earlier_runs_limit_goes_when_the_answer_is_now_no(self):
+        installer.SSH_LIMIT_UNIT.write_text("x")
+        installer.SSH_LIMIT_RULES.write_text("x")
+        installer._remove_nftables_limit()
+        self.assertFalse(installer.SSH_LIMIT_UNIT.exists())
+        self.assertFalse(installer.SSH_LIMIT_RULES.exists())
+        self.assertIn(
+            ("systemctl", "disable", "--now", f"{installer.SSH_LIMIT}.service"), self.called
+        )
+
+    def test_the_limit_comes_back_with_nftables(self):
+        unit = installer.ssh_limit_unit("/usr/sbin/nft")
+        self.assertIn("PartOf=nftables.service\n", unit)
+        self.assertIn("After=network-pre.target nftables.service firewalld.service\n", unit)
+
+    def test_the_status_service_is_kept_to_what_it_needs(self):
+        service = list(installer.status_units("/x/machine_status.py").values())[0]
+        for line in ("RestrictAddressFamilies=AF_UNIX", "PrivateNetwork=yes", "ProtectHome=yes"):
+            self.assertIn(line + "\n", service)
+        self.assertIn(" -I -S /x/machine_status.py ", service)
+
+
+class UdpSigns(unittest.TestCase):
+    def test_a_vpn_or_other_udp_service_is_a_sign_of_use(self):
+        udp = (
+            'UNCONN 0 0 0.0.0.0%eth0:68 0.0.0.0:* users:(("systemd-network",pid=500,fd=20))\n'
+            'UNCONN 0 0 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=501,fd=13))\n'
+            'UNCONN 0 0 127.0.0.1:323 0.0.0.0:* users:(("chronyd",pid=502,fd=5))\n'
+            'UNCONN 0 0 0.0.0.0:111 0.0.0.0:* users:(("rpcbind",pid=503,fd=5))\n'
+            "UNCONN 0 0 0.0.0.0:51820 0.0.0.0:*\n"
+            "UNCONN 0 0 [::]:51820 [::]:*\n"
+            'UNCONN 0 0 0.0.0.0:1194 0.0.0.0:* users:(("openvpn",pid=600,fd=6))\n'
+        )
+        signs = installer.udp_signs(udp)
+        self.assertEqual(
+            [sign.what for sign in signs],
+            [
+                "something in the kernel, such as a WireGuard VPN, is taking UDP on port 51820",
+                "openvpn is taking UDP on port 1194",
+            ],
+        )
+        self.assertIn("cut off", signs[0].matters)
 
 
 class Fetching(unittest.TestCase):

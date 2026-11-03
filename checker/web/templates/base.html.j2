@@ -37,6 +37,8 @@
 <p class="nudge">This machine still lets people log in over SSH with a password, which can be guessed. Once an administrator can log in with a key, turn passwords off: the install guide says how.</p>
 {% elif notice == "restart_needed" %}
 <p class="nudge">An update to this machine is waiting for a restart before it takes effect. Restart it when no check is running. It never restarts by itself.</p>
+{% elif notice == "stale" %}
+<p class="nudge">What this page knows about the machine itself hasn't been brought up to date for over three hours, so notices about its SSH and restarts may be wrong. The compromise-checker-status timer may have stopped.</p>
 {% endif %}
 {% endfor %}{% endblock %}
 {% block main %}{% endblock %}

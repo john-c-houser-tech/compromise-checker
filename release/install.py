@@ -21,6 +21,8 @@ if __name__ == "__main__" and not (sys.flags.isolated or getattr(sys.flags, "saf
 import argparse  # noqa: E402
 import base64  # noqa: E402
 import contextlib  # noqa: E402
+import fnmatch  # noqa: E402
+import grp  # noqa: E402
 import hashlib  # noqa: E402
 import http.client  # noqa: E402
 import http.server  # noqa: E402
@@ -32,6 +34,7 @@ import re  # noqa: E402
 import shutil  # noqa: E402
 import socket  # noqa: E402
 import ssl  # noqa: E402
+import stat  # noqa: E402
 import subprocess  # noqa: E402, S404
 import tempfile  # noqa: E402
 import threading  # noqa: E402
@@ -457,6 +460,46 @@ def signs_of_use(
             Sign(
                 f"{name} has an account that can log in",
                 "Anyone else who can log in here may be able to reach the keys this tool holds.",
+            )
+        )
+    return signs
+
+
+# What a system has listening for UDP by itself, for its own address, names and clock.
+_UDP_OF_THE_SYSTEM = {
+    "dhclient",
+    "dhcpcd",
+    "NetworkManager",
+    "systemd-network",
+    "systemd-resolve",
+    "systemd-timesyn",
+    "chronyd",
+    "avahi-daemon",
+    "cups-browsed",
+    "rpcbind",
+    "rpc.statd",
+}
+
+
+def udp_signs(ss_udp: str) -> list:
+    """What other machines may reach over UDP, from `ss -Hlunp`: a VPN such as WireGuard, which
+    shows no program because it's in the kernel, among them. The firewall would cut it off."""
+    signs = []
+    seen = set()
+    for address, port, program in _listeners(ss_udp):
+        if _loopback(address.split("%")[0]) or program in _UDP_OF_THE_SYSTEM:
+            continue
+        if (program, port) in seen:
+            continue
+        seen.add((program, port))
+        shown = (
+            "something in the kernel, such as a WireGuard VPN," if program == "unknown" else program
+        )
+        signs.append(
+            Sign(
+                f"{shown} is taking UDP on port {port}",
+                "The firewall this installer turns on would stop other machines reaching it, so"
+                " anyone using it would be cut off, and you too if you're connected through it.",
             )
         )
     return signs
@@ -1348,6 +1391,13 @@ _FIREWALLD_DROPPED = ("cockpit",)
 _FIREWALLD_KEPT = ("ssh", "dhcpv6-client")
 # The web address's openings: _open_firewall makes and notes them, so they aren't listed as extras.
 _WEB_OPENINGS = ("http", "https", "80/tcp", "443/tcp")
+# Firewalls set up some other way than ufw or firewalld, with a service of their own.
+_OTHER_FIREWALLS = {
+    "nftables.service": "nftables",
+    "netfilter-persistent.service": "iptables",
+    "iptables.service": "iptables",
+}
+SSH_UNITS = ("ssh.service", "sshd.service", "ssh.socket", "sshd.socket")
 LOCKDOWN_MARKER = PROGRAM / "lockdown.json"  # what this installer changed to lock the machine down
 
 
@@ -1368,8 +1418,8 @@ def note_lockdown(key: str, value) -> None:
 
 
 def ssh_ports(ss_output: str, socket_listen: str = "") -> list:
-    """The ports SSH takes connections on from other machines. On Ubuntu systemd may hold the port
-    for SSH until someone connects, which `socket_listen` (ssh.socket's Listen=) shows."""
+    """The ports SSH takes connections on from other machines. systemd may hold the port for SSH
+    until someone connects, which `socket_listen` (ssh.socket's and sshd.socket's Listen=) shows."""
     held_for_ssh = set(re.findall(r":(\d+) \(Stream\)", socket_listen))
     ports = set()
     for address, port, program in _listeners(ss_output):
@@ -1380,6 +1430,13 @@ def ssh_ports(ss_output: str, socket_listen: str = "") -> list:
     return sorted(ports, key=int)
 
 
+def ssh_active() -> bool:
+    return any(
+        _run("systemctl", "is-active", unit, check=False).stdout.strip() == "active"
+        for unit in SSH_UNITS
+    )
+
+
 def running_firewall() -> Optional[str]:
     if (
         shutil.which("firewall-cmd")
@@ -1388,20 +1445,35 @@ def running_firewall() -> Optional[str]:
         return "firewalld"
     if shutil.which("ufw") and "Status: active" in _ufw_status():
         return "ufw"
+    for unit, name in _OTHER_FIREWALLS.items():
+        if _run("systemctl", "is-active", unit, check=False).stdout.strip() == "active":
+            return name
     return None
 
 
-def ufw_extras(status: str, ours: set) -> list:
-    """What an active ufw lets in besides `ours`: each rule's "To" part, once."""
-    ours = set(ours) | set(_WEB_OPENINGS)
+def firewall_is_ours(found: Optional[str]) -> bool:
+    """None, or one an earlier run of this installer set up."""
+    return found is None or read_lockdown().get("firewall") == found
+
+
+def _ssh_rule(to: str, ports: list) -> bool:
+    port = to.split(" on ")[0].split("/")[0]
+    return port in ports or port in ("OpenSSH", "ssh")
+
+
+def ufw_extras(status: str, ports: list) -> list:
+    """What an active ufw lets in besides SSH and the web address: each rule's "To" part, once."""
     found = []
     for line in status.splitlines():
-        match = re.match(r"^(\S+(?: \(v6\))?)\s+(?:ALLOW|LIMIT)(?: IN)?\s", line)
+        match = re.match(
+            r"^(\S+(?: on \S+)?)(?: \(v6\))?(?: on \S+)?\s+(?:ALLOW|LIMIT)(?: IN)?\s", line
+        )
         if not match:
             continue
-        to = match.group(1).replace(" (v6)", "")
-        if to not in ours and to not in found:
-            found.append(to)
+        to = match.group(1)
+        if _ssh_rule(to, ports) or to.split(" on ")[0] in _WEB_OPENINGS or to in found:
+            continue
+        found.append(to)
     return found
 
 
@@ -1425,63 +1497,109 @@ def firewalld_extras(listing: str, ports: list) -> list:
 
 
 def _ssh_listen() -> str:
-    return _run("systemctl", "show", "-p", "Listen", "--value", "ssh.socket", check=False).stdout
+    command = ("systemctl", "show", "-p", "Listen", "--value", "ssh.socket", "sshd.socket")
+    return _run(*command, check=False).stdout
+
+
+def ufw_saved_rules(added: str) -> bool:
+    """Whether `ufw show added` lists rules saved while it was off."""
+    lines = [line for line in added.splitlines()[1:] if line.strip()]
+    return bool(lines) and lines != ["(None)"]
 
 
 def _set_up_ufw(ports: list, limit: bool) -> list:
+    """Rules saved while ufw was off come back with it, and the first rule that matches wins, so
+    SSH's goes in front of any of them."""
     say("Setting up the firewall, ufw, to let nothing in but SSH.")
+    saved = ufw_saved_rules(_run("ufw", "show", "added", check=False).stdout)
+    if saved:
+        say("It has rules saved from before, which come back with it. SSH's goes in front of them.")
     _run("ufw", "default", "deny", "incoming")
     _run("ufw", "default", "allow", "outgoing")
     for port in ports:
-        _run("ufw", "limit" if limit else "allow", f"{port}/tcp")
+        where = ("insert", "1") if saved else ()
+        _run("ufw", *where, "limit" if limit else "allow", f"{port}/tcp")
     _run("ufw", "--force", "enable")
-    return ufw_extras(_ufw_status(), {f"{port}/tcp" for port in ports})
+    return ufw_extras(_ufw_status(), ports)
+
+
+def _firewalld_zones(offline: tuple) -> list:
+    """The default zone, and the zone of each interface other than lo, whether firewalld or
+    NetworkManager sets it: SSH could arrive through any of them."""
+    zones = [_run(*offline, "--get-default-zone").stdout.strip() or "public"]
+    try:
+        interfaces = sorted(path.name for path in Path("/sys/class/net").iterdir())
+    except OSError:
+        interfaces = []
+    for interface in interfaces:
+        if interface == "lo":
+            continue
+        done = _run(*offline, f"--get-zone-of-interface={interface}", check=False)
+        if done.returncode == 0 and done.stdout.strip():
+            zones.append(done.stdout.strip())
+    if shutil.which("nmcli"):
+        active = _run("nmcli", "-g", "UUID", "connection", "show", "--active", check=False)
+        for uuid in active.stdout.split():
+            zone = _run("nmcli", "-g", "connection.zone", "connection", "show", uuid, check=False)
+            if zone.returncode == 0 and zone.stdout.strip():
+                zones.append(zone.stdout.strip())
+    return sorted(set(zones), key=zones.index)
 
 
 def _set_up_firewalld(ports: list) -> list:
     """Its saved settings are changed before it starts, so nothing it starts with can cut off SSH
-    on a port other than 22."""
+    on a port other than 22, or through an interface with a zone of its own."""
     say("Setting up the firewall, firewalld, to let nothing in but SSH.")
     if _run("firewall-cmd", "--state", check=False).returncode == 0:
         # an earlier run's, already started: its saved settings can't be changed offline now
         _run("systemctl", "stop", "firewalld")
-    zone = _run("firewall-offline-cmd", "--get-default-zone").stdout.strip() or "public"
-    offline = ("firewall-offline-cmd", f"--zone={zone}")
-    for service in _FIREWALLD_DROPPED:
-        if _run(*offline, f"--query-service={service}", check=False).returncode == 0:
-            say(f"Closing {service}, which this system lets in at first.")
-            _run(*offline, f"--remove-service={service}")
-    for port in ports:
-        if port == "22":
-            if _run(*offline, "--query-service=ssh", check=False).returncode != 0:
-                _run(*offline, "--add-service=ssh")
-        elif _run(*offline, f"--query-port={port}/tcp", check=False).returncode != 0:
-            _run(*offline, f"--add-port={port}/tcp")
+    zones = _firewalld_zones(("firewall-offline-cmd",))
+    for zone in zones:
+        offline = ("firewall-offline-cmd", f"--zone={zone}")
+        for service in _FIREWALLD_DROPPED:
+            if _run(*offline, f"--query-service={service}", check=False).returncode == 0:
+                say(f"Closing {service}, which this system lets in at first.")
+                _run(*offline, f"--remove-service={service}")
+        for port in ports:
+            if port == "22":
+                if _run(*offline, "--query-service=ssh", check=False).returncode != 0:
+                    _run(*offline, "--add-service=ssh")
+            elif _run(*offline, f"--query-port={port}/tcp", check=False).returncode != 0:
+                _run(*offline, f"--add-port={port}/tcp")
     _run("systemctl", "enable", "--now", "firewalld")
-    return firewalld_extras(_run("firewall-cmd", f"--zone={zone}", "--list-all").stdout, ports)
+    extras: list = []
+    for zone in zones:
+        listing = _run("firewall-cmd", f"--zone={zone}", "--list-all").stdout
+        extras += [extra for extra in firewalld_extras(listing, ports) if extra not in extras]
+    return extras
 
 
 def set_up_firewall(system: System, limit: bool = False) -> None:
     """A firewall letting in only SSH (and, later, the web address's two ports). One that's already
-    running is someone's, unless an earlier run of this installer set it up: its rules are kept,
-    and what else it lets in is listed. `limit` makes ufw hold off an address that keeps opening
-    SSH connections."""
+    running is someone's, unless an earlier run of this installer set it up: its rules are kept as
+    they are, and what else it lets in is listed. `limit` makes a new ufw hold off an address that
+    keeps opening SSH connections."""
     ports = ssh_ports(_run("ss", "-Hltnp", check=False).stdout, _ssh_listen())
     found = running_firewall()
     mine = "ufw" if system.install is _APT else "firewalld"
-    if found and read_lockdown().get("firewall") == found:
+    if found and firewall_is_ours(found):
         found = None  # this installer's own, from a run that didn't finish: set up the same again
     if found:
         say(f"A firewall, {found}, is already running here. Its rules are kept as they are.")
         if found == "ufw":
-            if limit:
-                for port in ports:
-                    _run("ufw", "limit", f"{port}/tcp")
-            extras = ufw_extras(_ufw_status(), {f"{port}/tcp" for port in ports})
-        else:
+            extras = ufw_extras(_ufw_status(), ports)
+        elif found == "firewalld":
             zone = _run("firewall-cmd", "--get-default-zone").stdout.strip()
             listing = _run("firewall-cmd", f"--zone={zone}", "--list-all").stdout
             extras = firewalld_extras(listing, ports)
+        else:
+            extras = []
+    elif not ports and ssh_active():
+        say(
+            "SSH is running, but which port it listens on couldn't be found, so no firewall was"
+            " turned on: it could have cut SSH off. Turn one on yourself once you know the port."
+        )
+        return
     elif mine == "ufw":
         note_lockdown("firewall", "ufw")
         extras = _set_up_ufw(ports, limit)
@@ -1601,11 +1719,14 @@ SSH_LIMIT_UNIT = Path("/etc/systemd/system") / f"{SSH_LIMIT}.service"
 SSH_LIMIT_RULES = Path("/etc/nftables") / f"{SSH_LIMIT}.nft"
 SSH_LIMIT_TABLE = "compromise_checker_ssh"
 _ADMIN_GROUPS = ("sudo", "admin", "wheel")
-_ACCEPTED = re.compile(r"^Accepted (publickey|password|keyboard-interactive/pam) for (\S+) from ")
+_ACCEPTED = re.compile(
+    r"^Accepted (publickey|password|keyboard-interactive/pam) for (\S+) from (\S+) port "
+)
 # What sshd's own processes are called: sshd, and from OpenSSH 9.8 sshd-session too.
 _SSHD_PROCESSES = ("sshd", "sshd-session")
 LIMITED = (
-    "The firewall now makes an address that opens more than 6 SSH connections in 30 seconds wait."
+    "The firewall now makes an address that opens SSH connections quickly, about 6 in 30 seconds,"
+    " wait before it can open more."
 )
 
 
@@ -1619,9 +1740,10 @@ class SshState(NamedTuple):
     running: bool
     settings: dict  # sshd -T, as SSH really runs
     admins: tuple  # accounts that can act as an administrator
-    key_logins: frozenset  # admins seen logging in with a key, that still have one
-    logins: frozenset  # admins seen logging in at all
+    key_logins: frozenset  # admins whose key login, seen in SSH's log, would still work today
+    logins: frozenset  # admins whose login of any kind, seen in SSH's log, would still work
     ports: tuple
+    sources: tuple = ()  # (account, address) of each of those logins, for checking afterwards
 
 
 def sshd_settings(text: str) -> dict:
@@ -1633,6 +1755,17 @@ def sshd_settings(text: str) -> dict:
         key = key.lower()
         if key and key not in found:
             found[key] = value.strip()
+    return found
+
+
+def sshd_lists(text: str) -> dict:
+    """The settings `sshd -T` writes a line for each value of, such as AllowUsers."""
+    found: dict = {}
+    for line in text.splitlines():
+        key, _, value = line.strip().partition(" ")
+        key = key.lower()
+        if key in ("allowusers", "denyusers", "allowgroups", "denygroups"):
+            found.setdefault(key, []).extend(value.split())
     return found
 
 
@@ -1659,8 +1792,9 @@ def admin_accounts(group: str, passwd: str) -> tuple:
 
 
 def accepted_logins(journal: str) -> dict:
-    """Who sshd says logged in, and how, from `journalctl -o json`. Only what sshd's own processes
-    wrote, as root, counts: anyone on the machine can write a line that looks like sshd's."""
+    """Who sshd says logged in, how and from where, from `journalctl -o json`, as
+    {account: {(method, address)}}. Only what sshd's own processes wrote, as root, counts: anyone
+    on the machine can write a line that looks like sshd's."""
     found: dict = {}
     for line in journal.splitlines():
         try:
@@ -1674,7 +1808,7 @@ def accepted_logins(journal: str) -> dict:
         message = entry.get("MESSAGE")
         match = _ACCEPTED.match(message) if isinstance(message, str) else None
         if match:
-            found.setdefault(match.group(2), set()).add(match.group(1))
+            found.setdefault(match.group(2), set()).add((match.group(1), match.group(3)))
     return found
 
 
@@ -1690,32 +1824,163 @@ def key_files(settings: dict, name: str, home: str) -> list:
     return files
 
 
+_KEY_TYPE = re.compile(r"(?:^|\s)(?:ssh-|ecdsa-|sk-)\S+\s+\S")
+_MAX_KEY_FILE = 1024 * 1024
+
+
+def _key_file_text(path: Path) -> str:
+    """Read as root from a folder its account controls, so only a plain file, and only so much."""
+    try:
+        opened = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return ""
+    try:
+        if not stat.S_ISREG(os.fstat(opened).st_mode):
+            return ""
+        return os.read(opened, _MAX_KEY_FILE).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    finally:
+        os.close(opened)
+
+
 def has_a_key(paths: list) -> bool:
+    """A key that gives a login: one held to a single command, as backup keys often are, doesn't."""
     for path in paths:
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        if any(line.strip() and not line.lstrip().startswith("#") for line in text.splitlines()):
-            return True
+        for line in _key_file_text(path).splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            key = _KEY_TYPE.search(line)
+            if key and "command=" not in line[: key.start()].lower():
+                return True
     return False
+
+
+def _matches(pattern: str, name: str, groups: tuple, address: str, of_groups: bool) -> bool:
+    """One AllowUsers-style pattern: NAME, or NAME@HOST where HOST may be an address or range."""
+    if pattern.startswith("!"):
+        return False
+    who, _, host = pattern.partition("@")
+    names = groups if of_groups else (name,)
+    if not any(fnmatch.fnmatchcase(each, who) for each in names):
+        return False
+    if not host or of_groups:
+        return True
+    try:
+        return ipaddress.ip_address(address) in ipaddress.ip_network(host, strict=False)
+    except ValueError:
+        return fnmatch.fnmatchcase(address, host)
+
+
+def user_allowed(lists: dict, name: str, groups: tuple, address: str) -> bool:
+    """sshd's own order: DenyUsers, AllowUsers, DenyGroups, then AllowGroups."""
+    for key, allow, of_groups in (
+        ("denyusers", False, False),
+        ("allowusers", True, False),
+        ("denygroups", False, True),
+        ("allowgroups", True, True),
+    ):
+        patterns = lists.get(key)
+        if not patterns:
+            continue
+        hit = any(_matches(each, name, groups, address, of_groups) for each in patterns)
+        if hit != allow:
+            return False
+    return True
+
+
+def login_still_works(
+    settings: dict, lists: dict, name: str, groups: tuple, method: str, address: str, keyed: bool
+) -> bool:
+    """Whether SSH, as it's set today for this account from this address, would let this kind of
+    login in again."""
+    if not user_allowed(lists, name, groups, address):
+        return False
+    root = settings.get("permitrootlogin", "prohibit-password")
+    if method == "publickey":
+        if not keyed or settings.get("pubkeyauthentication", "yes") == "no":
+            return False
+        return name != "root" or root not in ("no", "forced-commands-only")
+    if name == "root" and root != "yes":
+        return False
+    if method == "password":
+        return settings.get("passwordauthentication", "yes") != "no"
+    return settings.get("kbdinteractiveauthentication", "yes") != "no"
+
+
+_SUDO_ALL = re.compile(r"^\s*\((?:ALL|root)(?:\s*:\s*\S+)?\)\s*((?:[A-Z_]+:\s*)*)ALL\s*$")
+
+
+def sudo_rule(listing: str) -> Optional[bool]:
+    """From `sudo -l -U NAME`: None if it can't run everything as root, else whether that needs
+    no password."""
+    found = None
+    for line in listing.splitlines():
+        match = _SUDO_ALL.match(line)
+        if match:
+            free = "NOPASSWD:" in match.group(1)
+            found = free or bool(found)
+    return found
+
+
+def usable_password(shadow: str, name: str) -> bool:
+    for line in shadow.splitlines():
+        parts = line.split(":")
+        if len(parts) > 1 and parts[0] == name:
+            return bool(parts[1]) and parts[1][0] not in "!*"
+    return False
+
+
+def _can_sudo(name: str, shadow: str) -> bool:
+    """Whether this administrator could act as root once logged in. The person running this
+    installer through sudo just has."""
+    if name == "root" or name == os.environ.get("SUDO_USER"):
+        return True
+    sudo = shutil.which("sudo")
+    if sudo is None:
+        return False
+    rule = sudo_rule(_run(sudo, "-n", "-l", "-U", name, check=False).stdout)
+    return rule is True or (rule is False and usable_password(shadow, name))
+
+
+def _groups_of(name: str) -> tuple:
+    try:
+        account = pwd.getpwnam(name)
+        return tuple(grp.getgrgid(gid).gr_name for gid in os.getgrouplist(name, account.pw_gid))
+    except (KeyError, OSError):
+        return ()
+
+
+def _sshd_for(sshd: str, name: str, address: str) -> str:
+    """sshd's settings for a login by `name` from `address`, Match sections included."""
+    spec = f"user={name},host={address},addr={address}"
+    done = _run(sshd, "-T", "-C", spec, check=False)
+    return done.stdout if done.returncode == 0 else ""
+
+
+def _sshd_command() -> str:
+    """sshd, able to show its settings: Ubuntu's starts SSH on demand, and until it has, the folder
+    sshd insists on for itself isn't there."""
+    with contextlib.suppress(OSError):
+        Path("/run/sshd").mkdir(mode=0o755, exist_ok=True)
+    return shutil.which("sshd") or "/usr/sbin/sshd"
 
 
 def ssh_state(ss_output: str) -> SshState:
     ports = tuple(ssh_ports(ss_output, _ssh_listen()))
-    active = any(
-        _run("systemctl", "is-active", unit, check=False).stdout.strip() == "active"
-        for unit in ("ssh.service", "sshd.service", "ssh.socket")
-    )
-    sshd = shutil.which("sshd") or "/usr/sbin/sshd"
+    sshd = _sshd_command()
     shown = _run(sshd, "-T", check=False) if Path(sshd).exists() else None
-    if not (ports or active) or shown is None or shown.returncode != 0:
+    if not (ports or ssh_active()) or shown is None or shown.returncode != 0:
         return SshState(False, {}, (), frozenset(), frozenset(), ports)
     settings = sshd_settings(shown.stdout)
     admins = admin_accounts(
         Path("/etc/group").read_text(encoding="utf-8"),
         Path("/etc/passwd").read_text(encoding="utf-8"),
     )
+    try:
+        shadow = Path("/etc/shadow").read_text(encoding="utf-8")
+    except OSError:
+        shadow = ""
     journal = _run(
         "journalctl",
         "-q",
@@ -1727,22 +1992,36 @@ def ssh_state(ss_output: str) -> SshState:
         check=False,
     ).stdout
     seen = accepted_logins(journal)
-    keyed = set()
+    keyed, logins, sources = set(), set(), []
     for name in admins:
+        if name not in seen or not _can_sudo(name, shadow):
+            continue
         try:
             home = pwd.getpwnam(name).pw_dir
         except KeyError:
             continue
-        if "publickey" in seen.get(name, ()) and has_a_key(key_files(settings, name, home)):
-            keyed.add(name)
-    logins = frozenset(name for name in admins if name in seen)
-    return SshState(True, settings, admins, frozenset(keyed), logins, ports)
+        has_key = has_a_key(key_files(settings, name, home))
+        groups = _groups_of(name)
+        for method, address in sorted(seen[name]):
+            text = _sshd_for(sshd, name, address)
+            if not text:
+                continue
+            if login_still_works(
+                sshd_settings(text), sshd_lists(text), name, groups, method, address, has_key
+            ):
+                logins.add(name)
+                sources.append((name, address))
+                if method == "publickey":
+                    keyed.add(name)
+    return SshState(
+        True, settings, admins, frozenset(keyed), frozenset(logins), ports, tuple(sources)
+    )
 
 
 def passwords_on(settings: dict) -> bool:
     return (
         settings.get("passwordauthentication", "yes") != "no"
-        or settings.get("kbdinteractiveauthentication", "no") != "no"
+        or settings.get("kbdinteractiveauthentication", "yes") != "no"
     )
 
 
@@ -1750,8 +2029,8 @@ def passwords_problem(state: SshState) -> Optional[str]:
     """Why SSH passwords have to stay on, if they do."""
     if not state.key_logins:
         return (
-            "no administrator account has logged in here with a key yet, so turning passwords off"
-            " could lock everyone out"
+            "no administrator account has a key login here that SSH would still let in, so turning"
+            " passwords off could lock everyone out"
         )
     return None
 
@@ -1762,8 +2041,8 @@ def root_problem(state: SshState, passwords_off: bool) -> Optional[str]:
     if not others:
         how = " with a key" if passwords_off else ""
         return (
-            f"no other administrator account has logged in here{how}, so root may be the only way"
-            " in"
+            f"no other administrator account that can use sudo has logged in here{how}, so root"
+            " may be the only way in"
         )
     return None
 
@@ -1775,7 +2054,7 @@ def blocking_kind(state: SshState, firewall: str) -> str:
     penalties = state.settings.get("persourcepenalties")
     if penalties is not None:
         return "ssh" if penalties == "no" else "on"
-    return "ufw" if firewall == "ufw" else "nft"
+    return "ufw" if firewall == "ufw" else "nft"  # never ufw limit on someone else's ufw
 
 
 def _yes(answer: Callable[[], str], prompt: str) -> bool:
@@ -1848,8 +2127,8 @@ def choose_lockdown(
             "SSH then holds off an address that keeps failing to log in, for longer each time."
             if kind == "ssh"
             else "This system's SSH can't do that itself, so the firewall makes an address that"
-            " opens more than 6 SSH connections in 30 seconds wait. That could slow a tool that"
-            " logs in to this machine many times in a row."
+            " opens SSH connections quickly, about 6 in 30 seconds, wait. That could slow a tool"
+            " that logs in to this machine many times in a row."
         )
         block = _yes(
             answer,
@@ -1911,7 +2190,18 @@ def ssh_settings_took(shown: dict, wanted: dict) -> list:
     ]
 
 
-def _change_ssh(choices: Choices, kind: str) -> None:
+def still_with_passwords(sshd: str, sources: tuple) -> list:
+    """The logins seen in SSH's log that would still be asked for a password, because a Match
+    section in SSH's settings turns them back on for that account or address."""
+    found = []
+    for name, address in sources:
+        text = _sshd_for(sshd, name, address)
+        if text and passwords_on(sshd_settings(text)):
+            found.append(f"{name} from {address}")
+    return found
+
+
+def _change_ssh(choices: Choices, kind: str, sources: tuple = ()) -> None:
     try:
         before: Optional[str] = SSHD_DROP_IN.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -1919,7 +2209,7 @@ def _change_ssh(choices: Choices, kind: str) -> None:
     text = sshd_drop_in(choices, kind, before or "")
     if text is None:
         return
-    sshd = shutil.which("sshd") or "/usr/sbin/sshd"
+    sshd = _sshd_command()
     SSHD_DROP_IN.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     _write_file(SSHD_DROP_IN, text, 0o600)
     if shutil.which("restorecon"):
@@ -1941,7 +2231,14 @@ def _change_ssh(choices: Choices, kind: str) -> None:
     for unit in ("ssh.service", "sshd.service"):  # Ubuntu's name, then Rocky's
         _run("systemctl", "try-reload-or-restart", unit, check=False)
     if choices.passwords_off:
-        say("SSH no longer accepts passwords. Logins already open stay open.")
+        left = still_with_passwords(sshd, sources)
+        if left:
+            say(
+                "SSH no longer accepts passwords, except where a Match section in its settings"
+                f" turns them back on: {', '.join(left)}. Logins already open stay open."
+            )
+        else:
+            say("SSH no longer accepts passwords. Logins already open stay open.")
     if choices.root_off:
         say("SSH no longer lets anyone log in as root.")
     if choices.block and kind == "ssh":
@@ -1949,11 +2246,13 @@ def _change_ssh(choices: Choices, kind: str) -> None:
 
 
 def ssh_limit_rules(ports: tuple) -> str:
-    """An address opening more than 6 new SSH connections in 30 seconds has the rest dropped until
-    it slows down, the same as `ufw limit`. In a table of its own, before the firewall's own rules,
-    so firewalld can't remove it and dropping here is final."""
+    """About 6 new SSH connections from one address in 30 seconds, then one every 5 seconds: a
+    burst of 6, refilled at 12 a minute, much as `ufw limit`. IPv6 is counted by /64, since one
+    machine usually has a whole one. In a table of its own, before the firewall's own rules, so
+    firewalld can't remove it and dropping here is final."""
     listed = ", ".join(ports)
     rule = "limit rate over 12/minute burst 6 packets"
+    by64 = "ip6 saddr and ffff:ffff:ffff:ffff::"
     return f"""\
 #!/usr/sbin/nft -f
 # Compromise Checker's installer, with the permission of the person installing it (installation
@@ -1967,18 +2266,21 @@ table inet {SSH_LIMIT_TABLE} {{
         type filter hook input priority filter - 10; policy accept;
         iif "lo" accept
         tcp dport {{ {listed} }} ct state new update @recent4 {{ ip saddr {rule} }} drop
-        tcp dport {{ {listed} }} ct state new update @recent6 {{ ip6 saddr {rule} }} drop
+        tcp dport {{ {listed} }} ct state new update @recent6 {{ {by64} {rule} }} drop
     }}
 }}
 """
 
 
 def ssh_limit_unit(nft: str) -> str:
+    """After nftables.service, whose own rules begin by clearing everything, and taken down with
+    it, so a restart of it brings this back."""
     return f"""\
 [Unit]
 Description=Compromise Checker: a limit on new SSH connections from each address
-After=network-pre.target
+After=network-pre.target nftables.service firewalld.service
 Before=network.target
+PartOf=nftables.service
 
 [Service]
 Type=oneshot
@@ -1987,7 +2289,7 @@ ExecStart={nft} -f {SSH_LIMIT_RULES}
 ExecStop={nft} delete table inet {SSH_LIMIT_TABLE}
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target nftables.service
 """
 
 
@@ -2010,16 +2312,33 @@ def _limit_ssh_in_nftables(ports: tuple) -> None:
     if shutil.which("restorecon"):
         _run("restorecon", str(SSH_LIMIT_RULES), str(SSH_LIMIT_UNIT), check=False)
     _run("systemctl", "daemon-reload")
-    _run("systemctl", "enable", "--now", f"{SSH_LIMIT}.service")
+    _run("systemctl", "enable", f"{SSH_LIMIT}.service")
+    _run("systemctl", "restart", f"{SSH_LIMIT}.service")  # an earlier run's may hold other ports
     say(LIMITED)
 
 
-def apply_lockdown(choices: Choices, kind: str) -> None:
+def _remove_nftables_limit() -> None:
+    """An earlier run's limit, when this run's answer is no."""
+    if not SSH_LIMIT_UNIT.exists():
+        return
+    say("Taking away the limit on SSH connections an earlier run of this installer set up.")
+    _run("systemctl", "disable", "--now", f"{SSH_LIMIT}.service", check=False)
+    SSH_LIMIT_UNIT.unlink()
+    SSH_LIMIT_RULES.unlink(missing_ok=True)
+    _run("systemctl", "daemon-reload")
+
+
+def apply_lockdown(choices: Choices, kind: str, sources: tuple = ()) -> None:
     """At the end, once everything else has worked. ufw's limit is set with the firewall."""
-    _change_ssh(choices, kind)
-    ports = tuple(ssh_ports(_run("ss", "-Hltnp", check=False).stdout, _ssh_listen()))
-    if choices.block and kind == "nft" and ports:
-        _limit_ssh_in_nftables(ports)
+    _change_ssh(choices, kind, sources)
+    if not (choices.block and kind == "nft"):
+        _remove_nftables_limit()
+    if choices.block and kind == "nft":
+        ports = tuple(ssh_ports(_run("ss", "-Hltnp", check=False).stdout, _ssh_listen()))
+        if ports:
+            _limit_ssh_in_nftables(ports)
+        else:
+            say("Addresses aren't limited: which port SSH listens on couldn't be found.")
     elif choices.block and kind == "ufw":
         say(LIMITED)
 
@@ -2030,14 +2349,17 @@ STATUS = "compromise-checker-status"
 STATUS_FILE = Path("/var/lib") / STATUS / "machine.json"
 
 
-def status_units() -> dict:
+def status_units(script: str) -> dict:
+    """`script` is checker/machine_status.py in the installed release. It's run as a file, without
+    the release's other packages (-S), since it only needs the standard library and runs as root.
+    The path names the release's Python version, so an update to another one sets this again."""
     service = f"""[Unit]
 Description=Compromise Checker: what the web page says about this machine's SSH and restarts
 After=ssh.service sshd.service
 
 [Service]
 Type=oneshot
-ExecStart={PROGRAM}/current/bin/python -I -m checker.machine_status {STATUS_FILE}
+ExecStart={PROGRAM}/current/bin/python -I -S {script} {STATUS_FILE}
 StateDirectory={STATUS}
 StateDirectoryMode=0755
 UMask=0022
@@ -2046,6 +2368,12 @@ ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictRealtime=yes
 """
     timer = """[Unit]
 Description=Compromise Checker: note this machine's SSH and restarts every hour
@@ -2061,11 +2389,25 @@ WantedBy=timers.target
     return {folder / f"{STATUS}.service": service, folder / f"{STATUS}.timer": timer}
 
 
+def _status_script() -> str:
+    found = _run(
+        f"{PROGRAM}/current/bin/python",
+        "-I",
+        "-c",
+        "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+    ).stdout.strip()
+    script = Path(found) / "checker" / "machine_status.py"
+    if not script.is_file():
+        raise Stop(f"{script} isn't there after installing the tool. Run this installer again.")
+    return str(script)
+
+
 def _note_the_machine() -> None:
-    for path, text in status_units().items():
+    units = status_units(_status_script())
+    for path, text in units.items():
         _write_file(path, text, 0o644)
     if shutil.which("restorecon"):
-        _run("restorecon", *(str(path) for path in status_units()), check=False)
+        _run("restorecon", *(str(path) for path in units), check=False)
     _run("systemctl", "daemon-reload")
     _run("systemctl", "enable", f"{STATUS}.timer")
     _run("systemctl", "start", f"{STATUS}.service")  # now, so the page is right from the start
@@ -2290,6 +2632,8 @@ def install(
                 if ours
             )
             signs = signs_of_use(ss_output, passwd, os.environ.get("SUDO_USER"), left)
+            if can_look:
+                signs += udp_signs(_run("ss", "-Hlunp", check=False).stdout)
             if not can_look:
                 signs.append(
                     Sign(
@@ -2309,7 +2653,11 @@ def install(
         if ask and web is None:
             web = ask_route(input)
         apache = apache_for(system) if web else None
-        firewall = running_firewall() or ("ufw" if system.install is _APT else "firewalld")
+        found = running_firewall()
+        mine = "ufw" if system.install is _APT else "firewalld"
+        # ufw's limit only goes on a ufw this installer sets up: on someone else's it could open SSH
+        # wider than their own rule does, or sit behind it and do nothing.
+        firewall = (found or mine) if firewall_is_ours(found) else "someone else's"
         state = ssh_state(ss_output)
         kind = blocking_kind(state, firewall)
         asking = lockdown is None and sys.stdin.isatty()
@@ -2367,7 +2715,7 @@ def install(
     else:
         _wait_for_page(ADDRESS)
     link = new_link(address)
-    apply_lockdown(choices, kind)
+    apply_lockdown(choices, kind, state.sources)
     _note_the_machine()
     _write_file(FINISHED, f"{version}\n", 0o644)
     if web is None:

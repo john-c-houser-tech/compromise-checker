@@ -18,12 +18,14 @@ out what's beside it as well. In order, it:
 1. **Checks the release's signature,** before running anything from it. The installer knows the version it's
    for and the release key, so it refuses any other release, or one signed by anyone else. A file that doesn't
    match what was signed is refused. It can't tell you a newer version exists, so use the current install page.
-2. **Looks for other use.** Programs that other computers can reach, and other people's login accounts, are
-   listed with why they matter. It stops unless you type a short sentence to go ahead. This is a nudge rather
+2. **Looks for other use.** Programs that other computers can reach, over TCP or UDP (a VPN such as WireGuard
+   among them, since the firewall would cut it off), and other people's login accounts, are listed with why
+   they matter. It stops unless you type a short sentence to go ahead. This is a nudge rather
    than a guarantee: it can't see everything. Nothing has been changed up to this point. If something else is
    using port 8088, it stops with no way past.
-3. **Asks about SSH:** whether to turn off password logins, root logins, and to block addresses that keep
-   trying to log in. Each is asked separately, and Enter means no. [Locking the machine down](#locking-the-machine-down)
+3. **Asks about SSH,** after asking about [a web address](#a-web-address): whether to turn off password
+   logins, root logins, and to block addresses that keep trying to log in. Each is asked separately, and Enter
+   means no. [Locking the machine down](#locking-the-machine-down)
    says what each does and when one isn't offered. Nothing is changed yet.
 4. **Installs what's needed** from the system's own packages: a Python the tool can run on, the libraries
    PDF reports use, the firewall, and what installs security updates.
@@ -93,9 +95,13 @@ Done every time, and said as it's done:
 - **A firewall** that lets in only SSH, and ports 80 and 443 with a web address. Ubuntu's is `ufw` and Rocky's
   is `firewalld`. Before it starts, it lets in every port SSH is listening on, so the session you're
   installing from isn't cut off. On Rocky, the opening for Cockpit, the system's own web console, is closed.
-  If SSH isn't running, nothing is let in for it, and you'd need to open its port if you turn SSH on later.
-  If a firewall is already running, its rules are kept as they are, and the installer lists what else it
-  lets in, for you to close what this machine doesn't need.
+  Where an interface has a firewalld zone of its own, SSH is let in there too. Rules a stopped `ufw` saved
+  from before come back with it, so SSH's rule goes in front of them. If SSH isn't running, nothing is let in
+  for it, and you'd need to open its port if you turn SSH on later. If SSH is running but its port can't be
+  found, no firewall is turned on, and the installer says so.
+  If a firewall is already running, whether `ufw`, `firewalld`, or rules loaded by `nftables.service` or
+  `iptables`, its rules are kept as they are, and the installer lists what else `ufw` or `firewalld` lets in,
+  for you to close what this machine doesn't need.
 - **Automatic security updates,** with the system's own tools: `unattended-upgrades` on Ubuntu, and
   `dnf-automatic` on Rocky, from its own settings file so the system's `automatic.conf` is left alone. If
   updates already install by themselves, that's left as it is. The machine is never restarted for an update.
@@ -104,29 +110,36 @@ Done every time, and said as it's done:
 Each only if you say yes, asked separately:
 
 - **SSH passwords off.** Then only someone holding a key can log in, and a key can't be guessed. It's only
-  offered if an administrator account (root, or one in the `sudo` or `wheel` group) has logged in here with a
-  key, and still has one, so a key login is known to work. That's taken from what SSH itself logged, which
-  nobody else on the machine can write. If it isn't offered, the installer says why.
+  offered if an administrator account has logged in here with a key that SSH would still let in today. An
+  administrator is root, or an account in the `sudo`, `admin` or `wheel` group that can run anything through
+  `sudo`. The login is taken from what SSH itself logged, which nobody else on the machine can write. It's
+  then checked against SSH's settings as they stand, for that account and the address it came from: root
+  shut out, keys turned off, `AllowUsers` and the like, and `Match` sections. The key has to still be there,
+  and not be one held to a single command. If it isn't offered, the installer says why.
 - **Root login over SSH off.** Administrators then log in as themselves and use `sudo`, which leaves a record of
-  who did what. It's only offered if another administrator account has logged in here, with a key if
-  passwords are going off, so root isn't the only way in.
+  who did what. It's only offered if another administrator account has logged in here in a way SSH would
+  still let in, with a key if passwords are going off, so root isn't the only way in.
 - **Blocking addresses that keep trying to log in.** Where SSH can do this itself (Ubuntu 26.04 and Rocky 10,
   with OpenSSH 9.8 or later), it holds off an address that keeps failing to log in, for longer each time.
   That's usually on already, and then the installer just says so. Ubuntu 24.04 and Rocky 9 have an older SSH,
-  so the firewall does it instead: an address that opens more than 6 SSH connections in 30 seconds has to wait.
-  That could slow a tool that logs in to this machine many times in a row. On Ubuntu that's `ufw limit`;
-  elsewhere it's a small table of `nftables` rules, `/etc/nftables/compromise-checker-ssh-limit.nft`, loaded by
-  `compromise-checker-ssh-limit.service`. It only limits connections to this machine, never the tool's own
-  connections to the servers it checks.
+  so the firewall does it instead: an address that opens SSH connections quickly, about 6 in 30 seconds, has
+  to wait. That could slow a tool that logs in to this machine many times in a row. With a `ufw` the installer
+  set up, that's `ufw limit`. Elsewhere, including a firewall that was already running, it's a small table of
+  `nftables` rules, `/etc/nftables/compromise-checker-ssh-limit.nft`, loaded by
+  `compromise-checker-ssh-limit.service`, which only ever holds connections back and never lets anything in.
+  IPv6 addresses are counted by the /64 they're in. It only limits connections to this machine, never the
+  tool's own connections to the servers it checks.
 
 The SSH changes go in `/etc/ssh/sshd_config.d/01-compromise-checker.conf`. SSH takes the first value it reads,
 so this file comes before the one a cloud image adds. The installer checks that SSH accepts the file and that
-the settings took, and if not, it removes the file and says why. Without a terminal to ask in,
+the settings took, and if not, it puts the file back as it was and says why. If a `Match` section in SSH's
+settings still lets an account seen in the log use a password, it says that too. Without a terminal to ask in,
 `--ssh-passwords-off`, `--root-login-off` and `--block-login-failures` give the answers, with the same checks.
 
 A small service, `compromise-checker-status`, runs as root every hour and notes two things for the web page:
 whether SSH still accepts passwords, and whether an update is waiting for a restart. People with full access
-see a notice for each.
+see a notice for each, and another if those notes are over three hours old. The note about passwords is SSH's
+setting for everyone; it doesn't see a `Match` section that turns passwords back on for some.
 
 ### Turning SSH passwords off later
 
@@ -136,7 +149,8 @@ Log in once with your key, as an administrator, so you know it works. Then, as r
     PasswordAuthentication no
     KbdInteractiveAuthentication no
 
-Check with `sudo sshd -t`, then `sudo systemctl reload ssh` on Ubuntu or `sudo systemctl reload sshd` on Rocky.
+Check with `sudo sshd -t`, then `sudo systemctl try-reload-or-restart ssh` on Ubuntu or
+`sudo systemctl reload sshd` on Rocky.
 Keep the session you made the change from open, and check that a new key login still works before closing it.
 The notice goes within the hour.
 

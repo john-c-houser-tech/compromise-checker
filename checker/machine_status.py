@@ -8,18 +8,20 @@ installer sets up writes them down as root every hour:
 It uses only the standard library and reads nothing but SSH's settings and the system's own note
 of a restart. The page reads what it wrote, and shows nothing it can't make sense of."""
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess  # noqa: S404
 import sys
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 STATUS = Path("/var/lib/compromise-checker-status/machine.json")
 REBOOT_REQUIRED = Path("/run/reboot-required")  # Ubuntu's note that an update needs a restart
 FACTS = ("ssh_passwords", "restart_needed")
+STALE = timedelta(hours=3)  # the service runs hourly: older than this, it has stopped
 _SSH_UNITS = ("ssh.service", "sshd.service", "ssh.socket")
 _SECONDS = 120
 
@@ -62,6 +64,9 @@ def ssh_passwords() -> bool | None:
     sshd = shutil.which("sshd", path="/usr/sbin:/usr/bin") or "/usr/sbin/sshd"
     if not running or not Path(sshd).exists():
         return None
+    # Ubuntu starts SSH on demand, and until it has, sshd won't show its settings without this.
+    with contextlib.suppress(OSError):
+        Path("/run/sshd").mkdir(mode=0o755, exist_ok=True)
     shown = _run(sshd, "-T")
     if shown is None or shown.returncode != 0:
         return None
@@ -77,7 +82,16 @@ def restart_needed() -> bool | None:
     done = _run(dnf, "-C", "-q", "needs-restarting", "-r")  # from what's installed, not the network
     if done is None:
         return None
-    return {0: False, 1: True}.get(done.returncode)
+    return restart_from(done.returncode, done.stdout)
+
+
+def restart_from(code: int, said: str) -> bool | None:
+    """dnf also ends with 1 when it fails, so its words have to agree."""
+    if code == 1 and "Reboot is required" in said:
+        return True
+    if code == 0 and "Reboot should not be necessary" in said:
+        return False
+    return None
 
 
 def collect() -> dict:
@@ -103,21 +117,31 @@ def write(path: Path, status: dict) -> None:
         raise
 
 
-def read(path: Path | None = None) -> dict:
-    """Only the facts, and only as true or false: anything else is as good as not known."""
+def read(path: Path | None = None, now: datetime | None = None) -> dict:
+    """Only the facts, and only as true or false: anything else is as good as not known. "stale"
+    is true when the service hasn't written for a while, so they may be out of date."""
     try:
         found = json.loads((path or STATUS).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     if not isinstance(found, dict):
         return {}
-    return {fact: found[fact] for fact in FACTS if isinstance(found.get(fact), bool)}
+    facts = {fact: found[fact] for fact in FACTS if isinstance(found.get(fact), bool)}
+    try:
+        checked = datetime.fromisoformat(found["checked"])
+    except (KeyError, TypeError, ValueError):
+        checked = None
+    if checked is None or checked.tzinfo is None or (now or datetime.now(UTC)) - checked > STALE:
+        facts["stale"] = True
+    return facts
 
 
 def notices(path: Path | None = None) -> list[str]:
-    """The facts that call for a notice on the page."""
+    """What calls for a notice on the page: each fact that's true, then "stale" if they may be out
+    of date."""
     status = read(path)
-    return [fact for fact in FACTS if status.get(fact) is True]
+    found = [fact for fact in FACTS if status.get(fact) is True]
+    return found + (["stale"] if status.get("stale") else [])
 
 
 def main(argv: list[str] | None = None) -> int:

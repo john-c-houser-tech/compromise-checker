@@ -1032,7 +1032,7 @@ class Lockdown(unittest.TestCase):
         fake = self.machine()
         installer.set_up_firewall(UBUNTU_24)
         self.assertLess(
-            fake.index("ufw", "allow", "22/tcp"), fake.index("ufw", "--force", "enable")
+            fake.index("ufw", "prepend", "allow", "22/tcp"), fake.index("ufw", "--force", "enable")
         )
         self.assertLess(
             fake.index("ufw", "default", "deny", "incoming"), fake.index("ufw", "--force", "enable")
@@ -1043,8 +1043,8 @@ class Lockdown(unittest.TestCase):
     def test_ufw_can_limit_ssh_connections_instead(self):
         fake = self.machine()
         installer.set_up_firewall(UBUNTU_24, limit=True)
-        self.assertIn(("ufw", "limit", "22/tcp"), fake.called)
-        self.assertNotIn(("ufw", "allow", "22/tcp"), fake.called)
+        self.assertIn(("ufw", "prepend", "limit", "22/tcp"), fake.called)
+        self.assertNotIn(("ufw", "prepend", "allow", "22/tcp"), fake.called)
 
     def test_firewalld_is_set_up_before_it_starts(self):
         two = SS_SSH + 'LISTEN 0 128 0.0.0.0:2200 0.0.0.0:* users:(("sshd",pid=700,fd=5))\n'
@@ -1457,7 +1457,7 @@ class Questions(unittest.TestCase):
         unit = installer.ssh_limit_unit("/usr/sbin/nft")
         self.assertIn(f"ExecStart=/usr/sbin/nft -f {installer.SSH_LIMIT_RULES}\n", unit)
         self.assertIn(
-            f"ExecStop=/usr/sbin/nft delete table inet {installer.SSH_LIMIT_TABLE}\n", unit
+            f"ExecStop=-/usr/sbin/nft delete table inet {installer.SSH_LIMIT_TABLE}\n", unit
         )
 
 
@@ -1761,6 +1761,14 @@ class SshStateFromTheMachine(unittest.TestCase):
         found = self.state(settings, journal, per_login={"sam": settings + "denyusers sam\n"})
         self.assertEqual(found.key_logins, frozenset())
 
+    def test_a_key_login_that_also_needs_a_code_doesnt_let_passwords_go(self):
+        settings = "permitrootlogin yes\npasswordauthentication yes\n"
+        journal = ["Accepted publickey for sam from 192.0.2.9 port 5000 ssh2: ED25519 x"]
+        both = settings + "authenticationmethods publickey,keyboard-interactive\n"
+        found = self.state(settings, journal, per_login={"sam": both})
+        self.assertEqual(found.key_logins, frozenset())
+        self.assertEqual(found.logins, frozenset({"sam"}))  # it still works while passwords do
+
     def test_an_administrator_who_cant_use_sudo_isnt_another_way_in(self):
         settings = "permitrootlogin yes\npasswordauthentication yes\n"
         journal = [
@@ -1822,9 +1830,14 @@ class FirewallsReviewed(unittest.TestCase):
 
         installer._run = run
         installer.set_up_firewall(UBUNTU_24)
-        self.assertIn(("ufw", "insert", "1", "allow", "22/tcp"), fake.called)
+        self.assertIn(("ufw", "--force", "delete", "deny", "22/tcp"), fake.called)
         self.assertLess(
-            fake.index("ufw", "insert", "1", "allow", "22/tcp"),
+            fake.index("ufw", "--force", "delete", "deny", "22/tcp"),
+            fake.index("ufw", "prepend", "allow", "22/tcp"),
+        )
+        self.assertNotIn(("ufw", "--force", "delete", "allow", "22/tcp"), fake.called)
+        self.assertLess(
+            fake.index("ufw", "prepend", "allow", "22/tcp"),
             fake.index("ufw", "--force", "enable"),
         )
 
@@ -1966,6 +1979,74 @@ class UdpSigns(unittest.TestCase):
             ],
         )
         self.assertIn("cut off", signs[0].matters)
+
+
+class SecondReview(unittest.TestCase):
+    def setUp(self):
+        real = installer.say
+        self.said = []
+        installer.say = self.said.append
+        self.addCleanup(setattr, installer, "say", real)
+
+    def test_a_key_then_a_one_time_code_isnt_a_key_alone(self):
+        self.assertTrue(installer.keys_alone_suffice({}))
+        self.assertTrue(installer.keys_alone_suffice({"authenticationmethods": "any"}))
+        self.assertTrue(installer.keys_alone_suffice({"authenticationmethods": "publickey"}))
+        self.assertTrue(
+            installer.keys_alone_suffice(
+                {"authenticationmethods": "publickey,keyboard-interactive publickey"}
+            )
+        )
+        self.assertFalse(
+            installer.keys_alone_suffice(
+                {"authenticationmethods": "publickey,keyboard-interactive:pam"}
+            )
+        )
+        self.assertFalse(installer.keys_alone_suffice({"authenticationmethods": "password"}))
+
+    def test_host_lists_in_allow_and_deny_patterns(self):
+        allowed = installer.user_allowed
+        deny = {"denyusers": ["alice@10.0.0.0/8,192.168.0.0/16"]}
+        self.assertFalse(allowed(deny, "alice", (), "192.168.1.1"))
+        self.assertTrue(allowed(deny, "alice", (), "203.0.113.5"))
+        allow = {"allowusers": ["alice@192.168.0.0/16,!192.168.1.1"]}
+        self.assertFalse(allowed(allow, "alice", (), "192.168.1.1"))
+        self.assertTrue(allowed(allow, "alice", (), "192.168.2.1"))
+        self.assertTrue(allowed({"allowusers": ["a@b@10.0.0.1"]}, "a@b", (), "10.0.0.1"))
+
+    def test_unreadable_ssh_settings_ask_and_change_nothing(self):
+        state = installer.SshState(
+            True, {}, (), frozenset(), frozenset(), ("22",), (), "Match LocalPort"
+        )
+        found = installer.choose_lockdown(
+            state, "ufw", Answers(), installer.Choices(True, True, True)
+        )
+        self.assertEqual(found, installer.Choices())
+        self.assertTrue(any("couldn't be read (Match LocalPort)" in line for line in self.said))
+
+    def test_the_limit_follows_nftables_reloads(self):
+        unit = installer.ssh_limit_unit("/usr/sbin/nft")
+        self.assertIn("ReloadPropagatedFrom=nftables.service\n", unit)
+        self.assertIn(f"ExecReload=/usr/sbin/nft -f {installer.SSH_LIMIT_RULES}\n", unit)
+
+    def test_a_limit_that_wasnt_set_isnt_claimed(self):
+        real = (installer._change_ssh, installer._remove_nftables_limit)
+        removed = []
+        installer._change_ssh = lambda *a, **k: None
+        installer._remove_nftables_limit = lambda: removed.append(True)
+        try:
+            installer.apply_lockdown(installer.Choices(False, False, True), "ufw", (), False)
+            self.assertNotIn(installer.LIMITED, self.said)
+            self.assertTrue(any("aren't limited" in line for line in self.said))
+            installer.apply_lockdown(installer.Choices(False, False, True), "ufw", (), True)
+            self.assertIn(installer.LIMITED, self.said)
+            removed.clear()
+            installer.apply_lockdown(installer.Choices(), "nft", (), False, answered=False)
+            self.assertEqual(removed, [])
+            installer.apply_lockdown(installer.Choices(), "nft", (), False, answered=True)
+            self.assertEqual(removed, [True])
+        finally:
+            installer._change_ssh, installer._remove_nftables_limit = real
 
 
 class Fetching(unittest.TestCase):

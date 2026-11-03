@@ -3,7 +3,9 @@ SSH still accepts passwords, and whether an update is waiting for a restart. The
 can't find either out itself, since SSH's settings are root's to read, so a small service the
 installer sets up writes them down as root every hour:
 
-    python -I -m checker.machine_status /var/lib/compromise-checker-status/machine.json
+    python -I -S .../checker/machine_status.py /var/lib/compromise-checker-status/machine.json
+
+Run as a file, without -m and with -S, so nothing but the standard library is loaded as root.
 
 It uses only the standard library and reads nothing but SSH's settings and the system's own note
 of a restart. The page reads what it wrote, and shows nothing it can't make sense of."""
@@ -22,7 +24,7 @@ STATUS = Path("/var/lib/compromise-checker-status/machine.json")
 REBOOT_REQUIRED = Path("/run/reboot-required")  # Ubuntu's note that an update needs a restart
 FACTS = ("ssh_passwords", "restart_needed")
 STALE = timedelta(hours=3)  # the service runs hourly: older than this, it has stopped
-_SSH_UNITS = ("ssh.service", "sshd.service", "ssh.socket")
+_SSH_UNITS = ("ssh.service", "sshd.service", "ssh.socket", "sshd.socket")
 _SECONDS = 120
 
 

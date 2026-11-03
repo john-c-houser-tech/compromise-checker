@@ -95,8 +95,9 @@ Done every time, and said as it's done:
 - **A firewall** that lets in only SSH, and ports 80 and 443 with a web address. Ubuntu's is `ufw` and Rocky's
   is `firewalld`. Before it starts, it lets in every port SSH is listening on, so the session you're
   installing from isn't cut off. On Rocky, the opening for Cockpit, the system's own web console, is closed.
-  Where an interface has a firewalld zone of its own, SSH is let in there too. Rules a stopped `ufw` saved
-  from before come back with it, so SSH's rule goes in front of them. If SSH isn't running, nothing is let in
+  Where an interface or some source addresses have a firewalld zone of their own, SSH is let in there too.
+  Rules a stopped `ufw` saved from before come back with it, so any saved rule for SSH's port is replaced,
+  and SSH's own goes in front of the rest. If SSH isn't running, nothing is let in
   for it, and you'd need to open its port if you turn SSH on later. If SSH is running but its port can't be
   found, no firewall is turned on, and the installer says so.
   If a firewall is already running, whether `ufw`, `firewalld`, or rules loaded by `nftables.service` or
@@ -115,7 +116,9 @@ Each only if you say yes, asked separately:
   `sudo`. The login is taken from what SSH itself logged, which nobody else on the machine can write. It's
   then checked against SSH's settings as they stand, for that account and the address it came from: root
   shut out, keys turned off, `AllowUsers` and the like, and `Match` sections. The key has to still be there,
-  and not be one held to a single command. If it isn't offered, the installer says why.
+  and not be one held to a single command, and SSH mustn't want a one-time code after the key, which goes
+  with the passwords. If it isn't offered, the installer says why. If SSH's settings can't be read at all,
+  nothing about SSH is asked or changed.
 - **Root login over SSH off.** Administrators then log in as themselves and use `sudo`, which leaves a record of
   who did what. It's only offered if another administrator account has logged in here in a way SSH would
   still let in, with a key if passwords are going off, so root isn't the only way in.
@@ -127,7 +130,8 @@ Each only if you say yes, asked separately:
   set up, that's `ufw limit`. Elsewhere, including a firewall that was already running, it's a small table of
   `nftables` rules, `/etc/nftables/compromise-checker-ssh-limit.nft`, loaded by
   `compromise-checker-ssh-limit.service`, which only ever holds connections back and never lets anything in.
-  IPv6 addresses are counted by the /64 they're in. It only limits connections to this machine, never the
+  The `nftables` rules count IPv6 addresses by the /64 they're in, and `ufw limit` counts each address. It
+  only limits connections to this machine, never the
   tool's own connections to the servers it checks.
 
 The SSH changes go in `/etc/ssh/sshd_config.d/01-compromise-checker.conf`. SSH takes the first value it reads,

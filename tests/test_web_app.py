@@ -9427,6 +9427,22 @@ def test_the_band_answers_with_counts_and_no_full_stop(web, monkeypatch):
     assert '<a href="?show=critical"><strong>2</strong>' in counts
     assert '<a href="?show=low" aria-current="true"><strong>1</strong>' in counts
     assert '<a href="?show=critical"><strong>2</strong>' in counts  # not the filter in use
+    # A count of one is in the singular, of more in the plural.
+    assert "<strong>2</strong> <span>Strong signs</span>" in counts
+    assert "<strong>1</strong> <span>No strong signs</span>" in counts
+
+
+def test_a_count_of_one_server_is_singular():
+    from checker.web import wording
+
+    assert wording.count_name("elevated", 1) == "Warning sign"
+    assert wording.count_name("elevated", 3) == "Warning signs"
+    assert wording.count_name("unknown", 1) == "Needs a closer look"
+    assert wording.count_name("high", 1) == "Sign of a break-in"
+    assert wording.count_name("critical", 1) == "Strong sign"
+    # These read the same either way.
+    assert wording.count_name("low", 1) == "No strong signs"
+    assert wording.count_name("removed", 1) == "No longer checked"
 
 
 def test_the_band_tag_follows_the_answer(web, monkeypatch):
@@ -9510,6 +9526,43 @@ def test_each_finding_heading_names_its_severity(web):
     page = _host_page(client)
     assert '<h3><span class="visually-hidden">Very serious' in page
     assert '<p class="severity" aria-hidden="true">' in page
+    # The F- number is hidden with the strip, so the heading says it: the advisor uses it.
+    for text in (page, client.get("/hosts/web01/evidence").content.decode()):
+        assert re.search(r'<h3><span class="visually-hidden">[^<]*, F-1: </span>', text)
+
+
+def test_at_a_glance_counts_the_findings_folded_away_too(web, monkeypatch):
+    from checker.fleet import FleetHost
+    from checker.web import wording
+
+    client, _ = signed_in(web)
+    assessment = {
+        "findings": [
+            {"check": "account.uid0", "category": "hygiene", "band": "info"},
+            {"check": "account.uid0", "category": "compromise indicator", "band": "high"},
+        ]
+    }
+    host = FleetHost("web01", state="analysed", band="High", probability=0.6, first=False)
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, assessment, {}, True)
+    )
+    page = _host_page(client)
+    glance = page.split('<dl class="glance">')[1].split("</dl>")[0]
+    sections = wording.host_details(assessment)["sections"]
+    assert any(s["minor"] and not s["findings"] for s in sections)  # one only for information
+    for s in sections:
+        assert f"<dt>{html.escape(s['title'])}</dt><dd>1</dd>" in glance
+        assert f"{html.escape(s['title'])} <span>(1)</span></h2>" in page
+
+
+def test_the_server_notes_are_never_below_the_findings():
+    """Beside them in two columns or above them in one: the reorder comes with the columns."""
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    wide = css.split("@media (min-width: 52.01rem) {")[1].split("\n}")[0]
+    assert ".host-side { order: 2; }" in wide
+    assert "grid-template-columns: minmax(0, 1fr) 17rem" in wide
+    assert css.count(".host-side { order: 2; }") == 1
+    assert "flex-wrap" not in css.split(".host-layout")[1].split("}")[0]
 
 
 def test_the_evidence_link_once_for_each_kind_of_account(web):
@@ -9614,3 +9667,19 @@ def test_no_narrow_screen_rule_is_undone_by_a_later_one():
                     (media, sorted(selectors & later_selectors), sorted(props & later_props))
                 )
     assert not undone
+
+
+def test_every_page_file_is_in_an_installed_copy():
+    """An installed copy has only what package data lists: a file left out is a 500 there."""
+    import tomllib
+    from fnmatch import fnmatch
+
+    root = Path(__file__).resolve().parent.parent
+    listed = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["setuptools"]
+    patterns = listed["package-data"]["checker.web"]
+    web = root / "checker" / "web"
+    for folder in ("static", "templates"):
+        for path in (web / folder).rglob("*"):
+            if path.is_file():
+                name = path.relative_to(web).as_posix()
+                assert any(fnmatch(name, p) for p in patterns), name

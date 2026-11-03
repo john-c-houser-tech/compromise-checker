@@ -889,6 +889,12 @@ def hosts_file_names(text: str, name: str, loopback: bool = False) -> list:
 
 def name_problem(name: str, found: set, ours: list) -> Optional[str]:
     """Every address the name gives has to be this machine's: Let's Encrypt may use any of them."""
+    private = sorted(a for a in found if not ipaddress.ip_address(a).is_global)
+    if private:
+        return (
+            f"{name} points to {', '.join(private)}, which can't be reached from the internet."
+            " Change the DNS record to the machine's public address, then run this installer again."
+        )
     elsewhere = sorted(found - set(ours))
     if elsewhere:
         return (
@@ -930,9 +936,11 @@ def wait_for_name(
             pause(DNS_POLL_SECONDS)
             found = lookup(name)
     problem = name_problem(name, found, ours)
-    if problem and leads_here is not None and leads_here(name, set(found) - set(ours)):
-        problem = None
-    if problem and not ours:
+    private = any(not ipaddress.ip_address(a).is_global for a in found)
+    if problem and not private and leads_here is not None:
+        if leads_here(name, set(found) - set(ours)):
+            problem = None
+    if problem and not ours and not private:
         problem = (
             f"{name} points to {', '.join(sorted(found))}, but nothing sent there arrives at this"
             " machine. It may be behind a router, the provider's firewall may block port 80, or an"
@@ -947,8 +955,11 @@ def leads_here(name: str, addresses: set, seconds: float = 10) -> bool:
     """Ask each address for a one-time page by the name, from a server on port 80 here for the
     moment. Every one has to lead here, since Let's Encrypt may use any of them. A connection that
     never says anything can't hold it up: each is handled apart, and given up on after a while."""
-    token = base64.urlsafe_b64encode(os.urandom(18)).decode()
-    path = f"/.well-known/compromise-checker/{token}"
+    asked = base64.urlsafe_b64encode(os.urandom(18)).decode()
+    token = base64.urlsafe_b64encode(
+        os.urandom(18)
+    ).decode()  # never sent: only this machine knows it
+    path = f"/.well-known/compromise-checker/{asked}"
 
     class Answer(http.server.BaseHTTPRequestHandler):
         timeout = 3
@@ -1200,19 +1211,15 @@ def _reachable(web: Web, dns_minutes: float) -> None:
         hosts_text = Path("/etc/hosts").read_text(encoding="utf-8")
     except OSError:
         hosts_text = ""
-    hosts = hosts_file_names(hosts_text, web.name)
-    looped = hosts_file_names(hosts_text, web.name, loopback=True)
-    if looped:
+    given = hosts_file_names(hosts_text, web.name, loopback=True) + hosts_file_names(
+        hosts_text, web.name
+    )
+    if given:
         raise Stop(
-            f"This machine's own /etc/hosts gives {web.name} as {', '.join(looped)}, so it can't"
-            " see what everyone else sees for that name. That line often names the machine itself:"
-            " change it to give the machine's own name only, then run this installer again. This"
-            " run changed nothing."
-        )
-    if hosts:
-        say(
-            f"This machine's own /etc/hosts gives {web.name} as {', '.join(hosts)}, so the check"
-            " below sees that and not what everyone else sees. If it's wrong, remove that line."
+            f"This machine's own /etc/hosts gives {web.name} as {', '.join(given)}, so it can't"
+            " see what everyone else sees for that name. Take the name off that line, then run"
+            " this installer again. (A line like that often names the machine itself, and its"
+            " short name can stay.) This run changed nothing."
         )
     try:
         wait_for_name(web.name, ours, dns_minutes, leads_here=leads_here)
@@ -1360,27 +1367,69 @@ def _undo_web_address(apache: Apache) -> None:
     _run("systemctl", "disable", "--now", f"{RELOAD}.timer", f"{RELOAD}.path", check=False)
     # Apache must really stop passing requests on before this goes on: the tool is about to start
     # trusting whatever reaches it. If it can't, the marker stays, so a later run tries again.
-    if not marker.get("apache_before"):  # Apache came with this installer, and goes with it
+    exists = _run("systemctl", "cat", apache.service, check=False).returncode == 0
+    if not exists:
+        pass  # an earlier run stopped before Apache was installed
+    elif not marker.get("apache_before"):  # Apache came with this installer, and goes with it
         _run("systemctl", "disable", "--now", apache.service)
     elif _service_running(apache.service):
         _run("systemctl", "reload", apache.service)
-    if shutil.which("firewall-cmd"):
-        for service in marker.get("firewalld_runtime", []):
-            _run("firewall-cmd", f"--remove-service={service}", check=False)
-        for service in marker.get("firewalld_permanent", []):
-            _run("firewall-cmd", "--permanent", f"--remove-service={service}", check=False)
-    if shutil.which("ufw"):
-        for port in marker.get("ufw", []):
-            _run("ufw", "delete", "allow", port, check=False)
-    if marker.get("selinux_switch") and shutil.which("setsebool"):
-        _run("setsebool", "-P", SELINUX_SWITCH, "0", check=False)
-    label = marker.get("port_label")
-    if label and shutil.which("semanage"):
-        if label == "added":
-            _run("semanage", "port", "-d", "-p", "tcp", str(PORT), check=False)
+    left = _undo_openings(marker)
+    if left:
+        write_marker(left)
+        say(
+            "These couldn't be undone, and are noted so a later run of this installer tries again:"
+            f" {', '.join(sorted(left))}."
+        )
+    else:
+        WEB_MARKER.unlink(missing_ok=True)
+
+
+def _undo_openings(marker: dict) -> dict:
+    """The firewall openings and SELinux changes this installer made, each undone. What couldn't
+    be is returned, to stay on record."""
+    left: dict = {}
+
+    def keep(key: str, value) -> None:
+        if isinstance(value, str) and key not in ("port_label",):
+            left[key] = sorted(set(left.get(key, [])) | {value})
         else:
-            _run("semanage", "port", "-m", "-t", label, "-p", "tcp", str(PORT), check=False)
-    WEB_MARKER.unlink(missing_ok=True)
+            left[key] = value
+
+    running = (
+        shutil.which("firewall-cmd") is not None
+        and _run("firewall-cmd", "--state", check=False).returncode == 0
+    )
+    for service in marker.get("firewalld_runtime", []):
+        if running and _run("firewall-cmd", f"--remove-service={service}", check=False).returncode:
+            keep("firewalld_runtime", service)
+    for service in marker.get("firewalld_permanent", []):
+        # With firewalld stopped, its permanent rules can still be changed, offline.
+        command = ("firewall-cmd", "--permanent") if running else ("firewall-offline-cmd",)
+        if (
+            not shutil.which(command[0])
+            or _run(*command, f"--remove-service={service}", check=False).returncode
+        ):
+            keep("firewalld_permanent", service)
+    for port in marker.get("ufw", []):
+        if not shutil.which("ufw") or _run("ufw", "delete", "allow", port, check=False).returncode:
+            keep("ufw", port)
+    if marker.get("selinux_switch"):
+        if (
+            not shutil.which("setsebool")
+            or _run("setsebool", "-P", SELINUX_SWITCH, "0", check=False).returncode
+        ):
+            keep("selinux_switch", True)
+    label = marker.get("port_label")
+    if label:
+        command = (
+            ("semanage", "port", "-d", "-p", "tcp", str(PORT))
+            if label == "added"
+            else ("semanage", "port", "-m", "-t", label, "-p", "tcp", str(PORT))
+        )
+        if not shutil.which("semanage") or _run(*command, check=False).returncode:
+            keep("port_label", label)
+    return left
 
 
 def stored_certificate(web: Web, apache: Apache, where: str = "domains") -> Optional[Path]:

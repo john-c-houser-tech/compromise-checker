@@ -48,8 +48,9 @@ You'll be asked for the name, and whether only some addresses, such as your offi
 Before changing anything, the installer checks that the name leads to this machine. Some cloud providers
 give a machine only a private address and pass a public one on to it, so if the name leads elsewhere, the
 installer asks each address the name gives for a page, and sees whether the request arrives here. If a
-firewall is running here, it lets port 80 in for that moment only. If this machine's own `/etc/hosts` gives the
-name as one of its own addresses, it stops and says so, since it couldn't see what everyone else sees. If the name doesn't exist yet, it shows the DNS record to add and waits for it. If it leads
+firewall is running here, it lets port 80 in for that moment only. If this machine's own `/etc/hosts` gives
+the name an address, it stops and says so, since it couldn't see what everyone else sees. A name that leads to a
+private address, which the internet can't reach, is refused too. If the name doesn't exist yet, it shows the DNS record to add and waits for it. If it leads
 somewhere else, it stops.
 
 It then sets up Apache, from the system's own packages, in front of the tool:

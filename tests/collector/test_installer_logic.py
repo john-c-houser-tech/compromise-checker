@@ -606,11 +606,16 @@ class WebAddress(unittest.TestCase):
 
     def test_a_name_leading_here_through_the_providers_network_is_accepted(self):
         installer.wait_for_name(
-            "c.example.org", [], 1, lambda _: {"198.51.100.7"}, lambda _: None, lambda *_: True
+            "c.example.org", [], 1, lambda _: {"93.184.215.14"}, lambda _: None, lambda *_: True
         )
         with self.assertRaisesRegex(installer.Stop, "nothing sent there arrives"):
             installer.wait_for_name(
-                "c.example.org", [], 1, lambda _: {"198.51.100.7"}, lambda _: None, lambda *_: False
+                "c.example.org",
+                [],
+                1,
+                lambda _: {"93.184.215.14"},
+                lambda _: None,
+                lambda *_: False,
             )
 
     def test_every_address_of_the_name_is_tried(self):
@@ -624,11 +629,72 @@ class WebAddress(unittest.TestCase):
             "c.example.org",
             ["172.232.170.46"],
             1,
-            lambda _: {"172.232.170.46", "198.51.100.7", "2001:db8::7"},
+            lambda _: {"172.232.170.46", "93.184.215.14", "2606:4700::1111"},
             lambda _: None,
             leads,
         )
-        self.assertEqual(asked, [{"198.51.100.7", "2001:db8::7"}])
+        self.assertEqual(asked, [{"93.184.215.14", "2606:4700::1111"}])
+
+    def test_a_server_elsewhere_cannot_forge_the_answer_by_echoing(self):
+        if os.geteuid() != 0:
+            self.skipTest("port 80 needs root")
+        real = installer._page_from
+        installer._page_from = lambda address, name, path, seconds: path.rsplit("/", 1)[-1]
+        self.addCleanup(setattr, installer, "_page_from", real)
+        self.assertFalse(installer.leads_here("c.example.org", {"198.51.100.7"}, seconds=2))
+
+    def test_the_real_answer_is_recognised(self):
+        if os.geteuid() != 0:
+            self.skipTest("port 80 needs root")
+        self.assertTrue(installer.leads_here("c.example.org", {"127.0.0.1"}, seconds=5))
+
+    def test_a_name_pointing_to_a_private_address_is_refused_without_trying(self):
+        tried = []
+        with self.assertRaisesRegex(installer.Stop, "can't be reached from the internet"):
+            installer.wait_for_name(
+                "c.example.org",
+                [],
+                1,
+                lambda _: {"10.0.0.5"},
+                lambda _: None,
+                lambda *args: tried.append(args) or True,
+            )
+        self.assertEqual(tried, [])
+
+    def test_cleanup_that_fails_stays_on_record(self):
+        def run(*command, **more):
+            failed = command[:2] == ("ufw", "delete") or command[0] == "semanage"
+            return subprocess.CompletedProcess([], 1 if failed else 0, "", "")
+
+        real = (installer._run, installer.shutil.which)
+        installer._run = run
+        installer.shutil.which = lambda name: "/usr/sbin/" + name
+        try:
+            left = installer._undo_openings(
+                {"ufw": ["80/tcp"], "selinux_switch": True, "port_label": "added"}
+            )
+        finally:
+            installer._run, installer.shutil.which = real
+        self.assertEqual(left, {"ufw": ["80/tcp"], "port_label": "added"})
+
+    def test_an_apache_that_was_never_installed_is_not_stopped(self):
+        called = []
+
+        def run(*command, check=True, **more):
+            called.append(command)
+            missing = command[:2] == ("systemctl", "cat")
+            return subprocess.CompletedProcess([], 1 if missing else 0, "", "")
+
+        real = (installer._run, installer.shutil.which)
+        installer._run = run
+        installer.shutil.which = lambda name: None
+        try:
+            installer.write_marker({"apache_before": False})
+            installer._undo_web_address(installer.APACHE_APT)
+        finally:
+            installer._run, installer.shutil.which = real
+        self.assertNotIn(("systemctl", "disable", "--now", "apache2"), called)
+        self.assertFalse(installer.WEB_MARKER.exists())
 
     def test_a_silent_connection_cannot_hold_the_check_up(self):
         if os.geteuid() != 0:

@@ -1773,12 +1773,14 @@ class SshStateFromTheMachine(unittest.TestCase):
             (self.folder / name / ".ssh" / "authorized_keys").write_text(
                 f"ssh-ed25519 {KEY_B64} x\n"
             )
-        names = ("_run", "_sshd_command", "admin_accounts", "_groups_of", "_can_sudo")
+        names = ("_run", "_sshd_command", "admin_accounts", "_groups_of", "_can_sudo", "_shadow")
         real = {name: getattr(installer, name) for name in names}
         real_getpwnam = installer.pwd.getpwnam
         installer._sshd_command = lambda: str(sshd)
         installer.admin_accounts = lambda group, passwd: ("root", "sam")
         installer._groups_of = lambda name: (name,)
+        self.shadow = "root:$6$abc:1::\nsam:$6$abc:1::\n"
+        installer._shadow = lambda: self.shadow
         folder_path = self.folder
 
         class Account:
@@ -1819,6 +1821,13 @@ class SshStateFromTheMachine(unittest.TestCase):
         found = self.state(settings, journal)
         self.assertEqual(found.key_logins, frozenset({"root"}))
         self.assertEqual(found.sources, (("root", "192.0.2.9"),))
+
+    def test_a_password_login_with_the_password_since_locked_doesnt_count(self):
+        settings = "permitrootlogin yes\npasswordauthentication yes\n"
+        journal = ["Accepted password for sam from 192.0.2.9 port 5000 ssh2"]
+        self.assertEqual(self.state(settings, journal).logins, frozenset({"sam"}))
+        self.shadow = "root:$6$abc:1::\nsam:!$6$abc:1::\n"
+        self.assertEqual(self.state(settings, journal).logins, frozenset())
 
     def test_only_the_key_that_logged_in_counts(self):
         settings = "permitrootlogin prohibit-password\npasswordauthentication yes\n"
@@ -2241,6 +2250,69 @@ class CopilotFirstRound(unittest.TestCase):
             sorted(noted["firewalld_permanent"]),
             ["internal:http", "internal:https", "public:http", "public:https"],
         )
+
+
+class CopilotSecondRound(unittest.TestCase):
+    def test_a_zone_that_lets_everything_in_is_said(self):
+        listing = "trusted (active)\n  target: ACCEPT\n  interfaces: eth1\n  services: \n"
+        self.assertEqual(
+            installer.firewalld_extras(listing, ["22"]),
+            ["everything, through a zone whose target is ACCEPT"],
+        )
+
+    def test_a_key_that_can_expire_doesnt_count(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "keys"
+            path.write_text(f'expiry-time="20260101" ssh-ed25519 {KEY_B64} x\n')
+            self.assertEqual(installer.key_fingerprints([path]), set())
+            path.write_text(f"ssh-ed25519 {KEY_B64} x\n")
+            self.assertEqual(installer.key_fingerprints([path]), {FINGERPRINT})
+
+    def test_two_keys_in_a_row_arent_shown_by_one(self):
+        two = {"authenticationmethods": "publickey,publickey password"}
+        self.assertFalse(installer.way_in(two, {"publickey"}))
+        self.assertTrue(installer.way_in(two, {"password"}))
+
+    def test_sudos_last_matching_rule_decides(self):
+        listing = "User sam may run:\n    (ALL) NOPASSWD: ALL\n    (ALL) PASSWD: ALL\n"
+        self.assertIs(installer.sudo_rule(listing), False)
+        listing = "User sam may run:\n    (ALL) PASSWD: ALL\n    (ALL) NOPASSWD: ALL\n"
+        self.assertIs(installer.sudo_rule(listing), True)
+
+    def test_runtime_direct_rules_mean_firewalld_was_changed(self):
+        real = installer._run
+
+        def run(*command, **more):
+            out = (
+                "ipv4 filter INPUT 0 -j ACCEPT\n"
+                if command[1:3] == ("--direct", "--get-all-rules")
+                else ""
+            )
+            return subprocess.CompletedProcess(list(command), 0, out, "")
+
+        installer._run = run
+        try:
+            self.assertFalse(installer.firewalld_untouched())
+        finally:
+            installer._run = real
+
+    def test_an_enabled_timer_that_was_stopped_is_started(self):
+        called = []
+        real = (installer._run, installer.say, installer.DNF_DROP_IN)
+        installer.say = lambda text: None
+        installer.DNF_DROP_IN = Path("/nonexistent/drop-in.conf")
+
+        def run(*command, **more):
+            called.append(command)
+            out = "enabled\n" if command[:2] == ("systemctl", "is-enabled") else ""
+            return subprocess.CompletedProcess(list(command), 0, out, "")
+
+        installer._run = run
+        try:
+            installer.turn_updates_on(ROCKY_9)
+        finally:
+            installer._run, installer.say, installer.DNF_DROP_IN = real
+        self.assertIn(("systemctl", "start", installer.DNF_TIMER), called)
 
 
 class Fetching(unittest.TestCase):

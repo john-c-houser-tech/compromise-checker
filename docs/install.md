@@ -118,7 +118,8 @@ Each only if you say yes, asked separately:
   then checked against SSH's settings as they stand, for that account and the address it came from: root
   shut out, keys turned off, `AllowUsers` and the like, `ForceCommand` or `ChrootDirectory`, which keep a
   login from administering the machine, `AuthenticationMethods`, and `Match` sections. The very key that logged
-  in, by its fingerprint, has to still be where SSH looks for it, and not be one held to a single command, and SSH mustn't want a one-time code after the key, which goes
+  in, by its fingerprint, has to still be where SSH looks for it, and not be one held to a single command
+  or set to expire, and SSH mustn't want a one-time code after the key, which goes
   with the passwords. If it isn't offered, the installer says why. If SSH's settings can't be read at all,
   nothing about SSH is asked or changed.
 - **Root login over SSH off.** Administrators then log in as themselves and use `sudo`, which leaves a record of

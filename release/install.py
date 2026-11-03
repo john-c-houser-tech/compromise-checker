@@ -1484,6 +1484,10 @@ def firewalld_untouched() -> bool:
             continue
     if (own / "direct.xml").exists():
         return False
+    for query in ("--get-all-rules", "--get-all-chains", "--get-all-passthroughs"):
+        direct = _run("firewall-cmd", "--direct", query, check=False)
+        if direct.returncode != 0 or direct.stdout.strip():
+            return False  # rules for the running firewall alone, which stopping it would lose
     running = _run("firewall-cmd", "--list-all-zones", check=False)
     saved = _run("firewall-cmd", "--permanent", "--list-all-zones", check=False)
     return (
@@ -1536,7 +1540,9 @@ def firewalld_extras(listing: str, ports: list) -> list:
                 found.append("rules of its own")
             continue
         in_rich = key == "rich rules"
-        if key == "services":
+        if key == "target" and value.strip().upper() == "ACCEPT":
+            found.append("everything, through a zone whose target is ACCEPT")
+        elif key == "services":
             kept = _FIREWALLD_KEPT if "22" in ports else ("dhcpv6-client",)
             found += [
                 name for name in value.split() if name not in kept and name not in _WEB_OPENINGS
@@ -1773,6 +1779,7 @@ def _turn_updates_on_dnf() -> None:
     enabled = _run("systemctl", "is-enabled", DNF_TIMER, check=False).stdout.strip()
     if enabled == "enabled" and not DNF_DROP_IN.exists():
         say("Updates already install by themselves here, with this machine's own settings.")
+        _run("systemctl", "start", DNF_TIMER)  # enabled isn't running: it may have been stopped
         return
     say("Turning on automatic security updates, which Rocky installs every day.")
     _write_file(DNF_UPDATES, DNF_UPDATES_TEXT, 0o644)
@@ -1946,8 +1953,8 @@ def key_fingerprints(paths: list) -> set:
             if key is None:
                 continue
             options = line[: key.start()].lower()
-            if "command=" in options or "cert-authority" in options:
-                continue
+            if any(word in options for word in ("command=", "cert-authority", "expiry-time=")):
+                continue  # an expired key doesn't log in; one that can expire may have
             try:
                 blob = base64.b64decode(key.group(2), validate=True)
             except ValueError:
@@ -2038,9 +2045,14 @@ def login_still_works(
 def way_in(settings: dict, methods: set) -> bool:
     """Whether AuthenticationMethods lets someone in with only these methods."""
     ways = settings.get("authenticationmethods", "any").split()
-    return "any" in ways or any(
-        all(step.split(":")[0] in methods for step in way.split(",")) for way in ways
-    )
+    if "any" in ways:
+        return True
+    for way in ways:
+        steps = [step.split(":")[0] for step in way.split(",")]
+        # A step twice, publickey,publickey say, wants two different keys, and one login shows one.
+        if all(step in methods for step in steps) and len(steps) == len(set(steps)):
+            return True
+    return False
 
 
 def keys_alone_suffice(settings: dict) -> bool:
@@ -2058,9 +2070,9 @@ def sudo_rule(listing: str) -> Optional[bool]:
     found = None
     for line in listing.splitlines():
         match = _SUDO_ALL.match(line)
-        if match:
-            free = "NOPASSWD:" in match.group(1)
-            found = free or bool(found)
+        if match:  # sudo goes by the last rule that matches
+            tags = match.group(1)
+            found = "NOPASSWD:" in tags and "PASSWD:" not in tags.replace("NOPASSWD:", "")
     return found
 
 
@@ -2107,6 +2119,13 @@ def _sshd_command() -> str:
     return shutil.which("sshd") or "/usr/sbin/sshd"
 
 
+def _shadow() -> str:
+    try:
+        return Path("/etc/shadow").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 def ssh_state(ss_output: str) -> SshState:
     ports = tuple(ssh_ports(ss_output, _ssh_listen()))
     sshd = _sshd_command()
@@ -2121,10 +2140,7 @@ def ssh_state(ss_output: str) -> SshState:
         Path("/etc/group").read_text(encoding="utf-8"),
         Path("/etc/passwd").read_text(encoding="utf-8"),
     )
-    try:
-        shadow = Path("/etc/shadow").read_text(encoding="utf-8")
-    except OSError:
-        shadow = ""
+    shadow = _shadow()
     journal = _run(
         "journalctl",
         "-q",
@@ -2146,6 +2162,8 @@ def ssh_state(ss_output: str) -> SshState:
             continue
         groups = _groups_of(name)
         for method, address, fingerprint in sorted(seen[name]):
+            if method != "publickey" and not usable_password(shadow, name):
+                continue  # the password that logged in has since been locked or removed
             text = _sshd_for(sshd, name, address)
             if not text:
                 continue

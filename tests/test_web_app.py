@@ -9563,3 +9563,54 @@ def test_the_sign_in_pages_are_a_card_and_others_carry_no_empty_class(web):
     assert '<body class="auth">' in missing and 'class="nudge"' not in missing
     signed, _ = signed_in(web)
     assert "<body>" in signed.get("/").content.decode()
+
+
+def _css_rules(css: str):
+    """(media, selectors, properties) for each rule, in order. Enough of CSS for this file."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    rules, i = [], 0
+
+    def add(prelude, body, media):
+        props = {d.split(":", 1)[0].strip() for d in body.split(";") if ":" in d}
+        rules.append((media, {s.strip() for s in prelude.split(",")}, props))
+
+    while (at := css.find("{", i)) != -1:
+        prelude = css[i:at].strip()
+        body, i = _css_block(css, at)
+        if prelude.startswith("@media"):
+            j = 0
+            while (inner := body.find("{", j)) != -1:
+                inner_body, end = _css_block(body, inner)
+                add(body[j:inner].strip(), inner_body, prelude)
+                j = end
+        elif not prelude.startswith("@"):
+            add(prelude, body, None)
+    return rules
+
+
+def _css_block(text, at):
+    """The text between the brace at `at` and its partner, and where the block ends."""
+    depth, j = 0, at
+    while True:
+        depth += {"{": 1, "}": -1}.get(text[j], 0)
+        if depth == 0:
+            return text[at + 1 : j], j + 1
+        j += 1
+
+
+def test_no_narrow_screen_rule_is_undone_by_a_later_one():
+    """A rule for small screens only works if no later rule with the same selector sets the same
+    thing again: equal specificity, so the later one wins at every width."""
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    assert css.count("{") == css.count("}")  # or the rules below aren't the ones a browser sees
+    rules = _css_rules(css)
+    undone = []
+    for n, (media, selectors, props) in enumerate(rules):
+        if not media or "max-width" not in media:
+            continue
+        for later_media, later_selectors, later_props in rules[n + 1 :]:
+            if later_media is None and selectors & later_selectors and props & later_props:
+                undone.append(
+                    (media, sorted(selectors & later_selectors), sorted(props & later_props))
+                )
+    assert not undone

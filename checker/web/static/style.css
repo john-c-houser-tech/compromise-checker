@@ -140,18 +140,6 @@ a { color: inherit; text-underline-offset: 3px; }
 .brand-words span { font-size: 0.75rem; line-height: 1; letter-spacing: 0.1em; text-transform: uppercase; color: var(--bar-quiet); }
 .bar-nav { display: flex; flex-wrap: wrap; gap: 0.25rem; }
 .bar-nav .phone-only { display: none; }
-@media (max-width: 52rem) {
-  .bar-in { padding: 0.5rem 1rem; gap: 0.5rem 1rem; }
-  .bar-nav { order: 3; flex: 1 0 100%; flex-wrap: nowrap; overflow-x: auto; margin: 0 -0.25rem; padding: 0 0.25rem 0.25rem; }
-  .bar-nav a { flex: none; }
-  .brand-words span { display: none; }
-  .bar-end .avatar { display: none; }  /* Sign-in security is in the menu instead */
-  .bar-nav .phone-only { display: inline-flex; }
-  .brand { gap: 0.5rem; }
-  .brand-words strong { font-size: 0.9375rem; }
-  .bar-end { gap: 0.5rem; }
-  .bar-button { padding: 0 0.625rem; }
-}
 .bar-nav a,
 .bar-button,
 .theme-switch button,
@@ -199,6 +187,20 @@ a.avatar:hover, a.avatar[aria-current] { box-shadow: 0 0 0 2px var(--on-bar); }
 }
 :root[data-theme="dark"] .theme-switch .to-dark { display: none; }
 :root[data-theme="dark"] .theme-switch .to-light { display: inline-flex; }
+
+/* The bar on a phone, after the rules it changes so it wins. */
+@media (max-width: 52rem) {
+  .bar-in { padding: 0.5rem 1rem; gap: 0.5rem 1rem; }
+  .bar-nav { order: 3; flex: 1 0 100%; flex-wrap: nowrap; overflow-x: auto; margin: 0 -0.25rem; padding: 0 0.25rem 0.25rem; }
+  .bar-nav a { flex: none; }
+  .brand-words span { display: none; }
+  .bar-end .avatar { display: none; }  /* Sign-in security is in the menu instead */
+  .bar-nav .phone-only { display: inline-flex; }
+  .brand { gap: 0.5rem; }
+  .brand-words strong { font-size: 0.9375rem; }
+  .bar-end { gap: 0.5rem; }
+  .bar-button { padding: 0 0.625rem; }
+}
 
 /* Buttons: one main kind in NouriLoop green, a quieter outlined kind, and one for removing things. */
 button, .button {
@@ -491,9 +493,9 @@ details p, details li { font-size: 0.9375rem; color: var(--quiet); }
 
 .record { width: 100%; border-collapse: collapse; font-size: 0.9375rem; background: var(--sheet); }
 .record thead th { font-size: 0.8125rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--quiet); background: var(--code); white-space: nowrap; }
-@media (max-width: 52rem) { .record th, .record td { padding: 0.5rem 0.625rem; } }
 .record th, .record td { text-align: start; padding: 0.625rem 0.875rem; border-bottom: 1px solid var(--rule); overflow-wrap: break-word; vertical-align: top; }
 .record tbody tr:last-child td { border-bottom: 0; }
+@media (max-width: 52rem) { .record th, .record td { padding: 0.5rem 0.625rem; } }
 .record-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: var(--radius); }
 
 form label { display: block; margin: 0.75rem 0; font-weight: 700; }
@@ -548,7 +550,6 @@ code { font-size: 0.9em; overflow-wrap: anywhere; }
 
 /* Manage: each place as a card. */
 .tiles { list-style: none; margin: 0 0 2rem; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: 0.875rem; }
-@media (max-width: 52rem) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.625rem; } .tiles a { min-height: 3.75rem; padding: 0.625rem 0.75rem; font-size: 0.9375rem; } }
 .tiles a {
   min-height: 4.5rem;
   display: flex;
@@ -563,6 +564,7 @@ code { font-size: 0.9em; overflow-wrap: anywhere; }
   text-decoration: none;
 }
 .tiles a:hover { border-color: var(--accent); }
+@media (max-width: 52rem) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.625rem; } .tiles a { min-height: 3.75rem; padding: 0.625rem 0.75rem; font-size: 0.9375rem; } }
 .tile-icon { width: 2.5rem; height: 2.5rem; flex: none; display: grid; place-items: center; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
 .section-title { font-size: 1.375rem; margin: 2rem 0 0.5rem; }
 

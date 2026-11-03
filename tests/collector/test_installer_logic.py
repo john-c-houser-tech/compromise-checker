@@ -532,6 +532,12 @@ class WebAddress(unittest.TestCase):
         self.assertIn("Require all granted", config)
         self.assertNotIn("MDCertificateAuthority", config)
         self.assertIn("Redirect permanent / https://checker.example.org/", config)
+        self.assertIn("TraceEnable Off", config)
+        self.assertEqual(config.count("CustomLog /dev/null common"), 2)
+        self.assertIn("LimitRequestBody 131072", config)
+        self.assertIn("disablereuse=On", config)
+        self.assertIn('Require expr "%{HTTP_HOST} =~ /^checker\\.example\\.org(:443)?$/i"', config)
+        self.assertIn("<RequireAll>", config)
         self.assertIn("MDContactEmail webmaster@checker.example.org", config)
         self.assertNotIn("MDStoreDir", config)
         stored = installer.apache_config(web, secret, installer.APACHE_APT.store)
@@ -550,6 +556,55 @@ class WebAddress(unittest.TestCase):
         for bad in ("short", 'a" ' * 20, "a" * 40 + "\n"):
             with self.assertRaises(installer.Stop):
                 installer.apache_config(web, bad)
+
+    def test_a_new_certificate_is_used_as_soon_as_it_arrives(self):
+        web = installer.Web("checker.example.org", ())
+        for apache, store in (
+            (installer.APACHE_APT, "/var/lib/apache2/md"),
+            (installer.APACHE_DNF, "/var/lib/httpd/md"),
+        ):
+            units = installer.reload_units(apache, web)
+            path = [text for name, text in units.items() if name.suffix == ".path"][0]
+            self.assertIn(f"PathExists={store}/staging/checker.example.org/pubcert.pem", path)
+
+    def test_files_are_never_readable_by_others_even_for_a_moment(self):
+        seen = []
+        real_open = installer.os.open
+
+        def watching(path, flags, mode=0o777, **more):
+            if str(path).endswith(".secret.conf.new"):
+                seen.append(mode)
+            return real_open(path, flags, mode, **more)
+
+        installer.os.open = watching
+        self.addCleanup(setattr, installer.os, "open", real_open)
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "secret.conf"
+            installer._write_file(target, "x", 0o600)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(seen, [0o600])
+
+    def test_an_earlier_runs_apache_is_not_a_sign_of_use(self):
+        apache = 'LISTEN 0 511 *:80 *:* users:(("apache2",pid=7,fd=4))\n'
+        self.assertEqual(len(installer.signs_of_use(SS + apache, PASSWD, "sam")), 1)
+        ours = frozenset({("apache2", "80"), ("apache2", "443")})
+        self.assertEqual(installer.signs_of_use(SS + apache, PASSWD, "sam", ours), [])
+
+    def test_names_in_the_hosts_file_are_noticed(self):
+        hosts = (
+            "127.0.0.1 localhost\n127.0.1.1 checker.example.org checker\n"
+            "203.0.113.5 Checker.Example.Org # here\n"
+        )
+        self.assertEqual(installer.hosts_file_names(hosts, "checker.example.org"), ["203.0.113.5"])
+
+    def test_a_name_leading_here_through_the_providers_network_is_accepted(self):
+        installer.wait_for_name(
+            "c.example.org", [], 1, lambda _: {"198.51.100.7"}, lambda _: None, lambda _: True
+        )
+        with self.assertRaisesRegex(installer.Stop, "nothing sent there arrives"):
+            installer.wait_for_name(
+                "c.example.org", [], 1, lambda _: {"198.51.100.7"}, lambda _: None, lambda _: False
+            )
 
     def test_the_daily_reload(self):
         units = installer.reload_units(installer.APACHE_APT)
@@ -583,7 +638,7 @@ class WebAddress(unittest.TestCase):
         def run(*command, **more):
             called.append(command)
             out = {
-                "getsebool": "httpd_can_network_relay --> off\n",
+                "getsebool": "httpd_graceful_shutdown --> off\n",
                 "semanage": "http_port_t tcp 80, 443\n",
             }
             return subprocess.CompletedProcess([], 0, out.get(command[0], ""), "")
@@ -594,9 +649,10 @@ class WebAddress(unittest.TestCase):
         self.addCleanup(setattr, installer, "_run", real_run)
         self.addCleanup(setattr, installer.shutil, "which", real_which)
         installer._allow_proxy_under_selinux()
-        self.assertIn(("setsebool", "-P", "httpd_can_network_relay", "1"), called)
+        self.assertIn(("setsebool", "-P", "httpd_graceful_shutdown", "1"), called)
         self.assertIn(("semanage", "port", "-a", "-t", "http_port_t", "-p", "tcp", "8088"), called)
         self.assertNotIn("httpd_can_network_connect", str(called))
+        self.assertNotIn("httpd_can_network_relay", str(called))
 
     def test_commands_a_system_lacks_are_not_called(self):
         called = []

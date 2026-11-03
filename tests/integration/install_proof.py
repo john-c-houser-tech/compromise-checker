@@ -184,7 +184,7 @@ def denials(node: Node) -> str:
         return ""
     return node.out(
         "grep -E 'avc: +denied' /var/log/audit/audit.log 2>/dev/null"
-        " | grep -E 'compromise|gunicorn|checker|python|systemd-user|user@' | tail -5"
+        " | grep -E 'compromise|gunicorn|checker|python|systemd-user|user@|httpd' | tail -5"
     )
 
 
@@ -212,6 +212,8 @@ def prove_web(node: "Node", checks, distro: str) -> None:
     name = f"{address.replace('.', '-')}.sslip.io"
     laptop = node.out("echo ${SSH_CLIENT%% *}")
     install = "cd /root/release && umask 077 && sudo python3 -I install.py --from /root/release"
+    limited = distro in ("ubuntu24.04", "rocky9")  # the others prove a run with no limit
+    allow = f" --allow '{laptop}'" if limited else ""
 
     done = node.run(f"{install} --web-address 203-0-113-9.sslip.io --test-certificates")
     checks(
@@ -233,9 +235,7 @@ def prove_web(node: "Node", checks, distro: str) -> None:
     )
 
     started = time.monotonic()
-    done = node.run(
-        f"{install} --web-address {name} --test-certificates --allow '{laptop}'", timeout=1500
-    )
+    done = node.run(f"{install} --web-address {name} --test-certificates{allow}", timeout=1500)
     print(f"[{distro}] install took {round(time.monotonic() - started)}s")
     checks("it installs with a web address", done.returncode == 0, done.stdout + done.stderr)
     checks(
@@ -307,7 +307,41 @@ def prove_web(node: "Node", checks, distro: str) -> None:
         "on the machine, nothing gets past without Apache's secret", secretless == "403", secretless
     )
     outside = node.out(f"curl -k -s -o /dev/null -w '%{{http_code}}' https://{name}/login")
-    checks("an address outside the limit is turned away", outside == "403", outside)
+    if limited:
+        checks("an address outside the limit is turned away", outside == "403", outside)
+    else:
+        checks("with no limit, any address gets in", outside == "200", outside)
+    secret = node.out("cat /var/lib/compromise-checker/data/keys/web-proxy-secret.txt")
+    traced = local(
+        "curl",
+        "-k",
+        "-s",
+        "-X",
+        "TRACE",
+        "-H",
+        "Max-Forwards: 0",
+        "-w",
+        "\n%{http_code}",
+        f"https://{name}/login",
+    ).stdout
+    checks(
+        "TRACE gets nothing back, least of all the secret",
+        len(secret) >= 32 and secret not in traced and not traced.endswith("200"),
+        traced[-200:],
+    )
+    other = local(
+        "curl",
+        "-k",
+        "-s",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "-H",
+        "Host: localhost",
+        f"https://{name}/login",
+    ).stdout
+    checks("a request for another name doesn't reach the tool", other == "403", other)
     checks(
         "Apache's settings, which hold the secret, are private",
         node.out(
@@ -322,8 +356,16 @@ def prove_web(node: "Node", checks, distro: str) -> None:
     )
     if distro.startswith("rocky"):
         labelled = node.out("semanage port -l | grep -E '^http_port_t'")
+        checks("SELinux lets Apache reach the tool's port", "8088" in labelled, labelled)
+        switches = node.out(
+            "getsebool httpd_graceful_shutdown httpd_can_network_relay httpd_can_network_connect"
+        )
         checks(
-            "SELinux lets Apache reach the tool's port, and no more", "8088" in labelled, labelled
+            "and only through the narrowest switch",
+            "httpd_graceful_shutdown --> on" in switches
+            and "httpd_can_network_relay --> off" in switches
+            and "httpd_can_network_connect --> off" in switches,
+            switches,
         )
 
     # --- Someone elsewhere makes the first account and signs in, through Apache -----------------
@@ -392,6 +434,37 @@ def prove_web(node: "Node", checks, distro: str) -> None:
         checks("SELinux is enforcing, so this means something", selinux == "Enforcing", selinux)
     found = denials(node)
     checks("SELinux refused nothing", not found, found)
+
+    # --- An install that didn't finish, run again ---------------------------------------------
+    node.run("rm /opt/compromise-checker/installed")
+    done = node.run(f"{install} --web-address {name} --test-certificates{allow}", timeout=1500)
+    checks(
+        "an unfinished install carries on when run again, with nobody to ask",
+        done.returncode == 0 and "already an account" in done.stdout,
+        done.stdout + done.stderr,
+    )
+    status = local("curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", login).stdout
+    checks("and the web address still works", status == "200", status)
+
+    # --- Then the other answer: only from this machine ----------------------------------------
+    node.run("rm /opt/compromise-checker/installed")
+    done = node.run(install, timeout=1500)
+    checks(
+        "answering no afterwards takes the web address down",
+        done.returncode == 0 and "Taking down the web address" in done.stdout,
+        done.stdout + done.stderr,
+    )
+    gone = local("curl", "-k", "-s", "-m", "10", "-o", "/dev/null", "-w", "%{http_code}", login)
+    checks("nothing answers from elsewhere any more", gone.stdout in ("000", ""), gone.stdout)
+    listening = node.out("ss -Hltn | grep -E ':(80|443) ' || true")
+    checks("ports 80 and 443 are closed", listening == "", listening)
+    checks(
+        "and the tool answers on this machine",
+        status_of(node, "http://127.0.0.1:8088/login") == "200",
+    )
+    if distro.startswith("rocky"):
+        switch = node.out("getsebool httpd_graceful_shutdown")
+        checks("the SELinux switch is off again", switch.endswith("off"), switch)
 
 
 def status_of_with(node: "Node", url: str, extra: str) -> str:

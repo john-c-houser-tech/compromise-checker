@@ -45,8 +45,9 @@ the machine has to be reachable from the internet: a cloud server, typically. A 
 router can't get a certificate, and the installer says so rather than trying.
 
 You'll be asked for the name, and whether only some addresses, such as your office's, may reach the page.
-Before changing anything, the installer checks that this machine has an address on the internet and that the
-name leads to it. If the name doesn't exist yet, it shows the DNS record to add and waits for it. If it leads
+Before changing anything, the installer checks that the name leads to this machine. Some cloud providers
+give a machine only a private address and pass a public one on to it, so if the name leads elsewhere, the
+installer asks for a page by the name and sees whether the request arrives here. If the name doesn't exist yet, it shows the DNS record to add and waits for it. If it leads
 somewhere else, it stops.
 
 It then sets up Apache, from the system's own packages, in front of the tool:
@@ -59,14 +60,20 @@ It then sets up Apache, from the system's own packages, in front of the tool:
   off. If a firewall is running, ports 80 and 443 are opened in it.
 - The tool still listens only on this machine. Apache passes requests to it with a secret only they share, so
   nothing else on the machine can pass for Apache.
-- On Rocky, SELinux keeps Apache confined. Its switch for acting as a proxy, `httpd_can_network_relay`, is
-  turned on, which lets it reach web ports, Let's Encrypt's included, and the tool's port is added to those.
-  It still can't connect anywhere else.
+- On Rocky, SELinux keeps Apache confined. The narrowest switch that lets it connect out at all is turned
+  on: `httpd_graceful_shutdown`, which, despite its name, only lets it reach web ports, Let's Encrypt's
+  included. The tool's port is added to those.
+- Apache keeps no access log for the name, since a setup link would be in it, and only passes on requests
+  for the name itself.
 - With a limit, only those addresses get past Apache to the page. Let's Encrypt can still reach port 80, so
   renewals keep working.
 
-If Let's Encrypt can't reach the machine, the installer says so at the end, and Apache keeps trying. The
-usual cause is a firewall at the hosting provider that blocks port 80 or 443.
+If Let's Encrypt can't reach the machine, the installer says so at the end, and Apache keeps trying. The page
+doesn't work until it succeeds, and Apache starts using the certificate as soon as it arrives. The usual cause
+is a firewall at the hosting provider that blocks port 80 or 443.
+
+An installed machine can't be switched between the two yet. If an install with a web address stops part way and
+is run again with the other answer, the installer takes down what it had set up for the web address.
 
 Without a terminal to ask in, `--web-address NAME` and `--allow "ADDRESSES"` give the answers instead.
 

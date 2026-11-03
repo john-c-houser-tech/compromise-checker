@@ -608,11 +608,13 @@ def test_the_pasted_line_pins_the_installer_and_shuts_out_what_is_beside_it(tmp_
     key = Key()
     manifest = read_manifest(*signed(key, body()), public(key, tmp_path))
     line = script.pasted_line(manifest, "a" * 64)
-    assert f"/v{VERSION}/{INSTALLER} " in line
-    assert f'"{"a" * 64}  {INSTALLER}" | sha256sum -c -' in line
-    assert f"sudo python3 -I {INSTALLER}" in line
+    assert line.startswith("d=$(mktemp -d) && ")
+    assert f'/v{VERSION}/{INSTALLER} -o "$d/{INSTALLER}"' in line
+    assert f'"{"a" * 64}  $d/{INSTALLER}" | sha256sum -c -' in line
+    assert f'sudo python3 -I "$d/{INSTALLER}"' in line
     assert line.index("sha256sum") < line.index("sudo")
-    assert line.count("&&") == 2
+    assert line.count("&&") == 3
+    assert line.endswith('; rm -rf "$d"')
 
 
 def test_verify_refuses_a_folder_holding_anything_else(tmp_path):

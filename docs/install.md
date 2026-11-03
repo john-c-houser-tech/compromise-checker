@@ -9,8 +9,8 @@ isn't built yet.
 
 ## What the installer does
 
-A release's install page gives one line to paste. It downloads `install.py`, checks it against a hash on the
-page, and runs it with `sudo python3 -I install.py`. That hash is what protects the installer, since the file
+A release's install page gives one line to paste. In a new private folder, it downloads `install.py`, checks it
+against a hash on the page, and runs it with `sudo python3 -I`, removing the folder afterwards. That hash is what protects the installer, since the file
 comes from the same place as the rest of the release. So the line has to be copied from the install page, not
 from anywhere else. `-I` keeps Python from running code from the folder you're in, and the installer shuts
 out what's beside it as well. In order, it:
@@ -25,7 +25,8 @@ out what's beside it as well. In order, it:
 3. **Installs what's needed** from the system's own packages: a Python the tool can run on, and the libraries
    PDF reports use.
 4. **Makes an account** called `compromise-checker`, which nobody can log in to, with a private folder at
-   `/var/lib/compromise-checker`.
+   `/var/lib/compromise-checker`. If an account by that name already exists and doesn't look like one the
+   installer made, it stops, rather than hand that account the tool's keys.
 5. **Installs the tool** in `/opt/compromise-checker`, with exactly the dependency versions the release lists.
    Each is checked against its hash, and none is built from source. The tool's account can't change these files.
 6. **Starts the web interface** as a service, as that account, answering only on this machine. It starts again

@@ -340,6 +340,27 @@ class Steps(unittest.TestCase):
             installer.run_apt(("apt-get", "install", "x"), {})
         self.assertEqual(len(calls), 2)  # no waiting, and the second is what reports it
 
+    def test_apt_is_asked_to_answer_in_english(self):
+        seen = []
+
+        def run(*command, env=None, **more):
+            seen.append(env)
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        real = installer._run
+        installer._run = run
+        self.addCleanup(setattr, installer, "_run", real)
+        installer.run_apt(("apt-get", "update"), {"LANG": "de_DE.UTF-8", "LC_ALL": "de_DE.UTF-8"})
+        self.assertEqual(seen[0]["LC_ALL"], "C")
+
+    def test_an_account_this_installer_would_not_have_made_is_refused(self):
+        home = str(installer.ACCOUNT_HOME)
+        self.assertIsNone(installer.account_problem(990, home, "/usr/sbin/nologin"))
+        self.assertIsNone(installer.account_problem(990, home, "/sbin/nologin"))
+        self.assertIn("administrator", installer.account_problem(0, home, "/usr/sbin/nologin"))
+        self.assertIn("/home/sam", installer.account_problem(990, "/home/sam", "/usr/sbin/nologin"))
+        self.assertIn("can log in", installer.account_problem(990, home, "/bin/bash"))
+
     def test_who_holds_a_port(self):
         line = (
             "LISTEN 0 2048 127.0.0.1:8088 0.0.0.0:*"

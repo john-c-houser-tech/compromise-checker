@@ -512,11 +512,11 @@ def run_apt(command: tuple, env: dict, seconds: float = APT_WAIT_SECONDS) -> Non
     for waiting only covers one of them, so this waits for all of them."""
     deadline = time.monotonic() + seconds
     while True:
-        done = _run(*command, check=False, env=env)
+        done = _run(*command, check=False, env={**env, "LC_ALL": "C"})  # so it's in English here
         if done.returncode == 0:
             return
         if "Could not get lock" not in done.stderr or time.monotonic() > deadline:
-            _run(*command, env=env)  # says what went wrong, if it still does
+            _run(*command, env={**env, "LC_ALL": "C"})  # says what went wrong, if it still does
             return
         time.sleep(10)
 
@@ -531,11 +531,31 @@ def _install_packages(system: System) -> None:
         _run(*system.install, *system.packages)
 
 
+def account_problem(uid: int, home: str, shell: str) -> Optional[str]:
+    """An account by this name that this installer didn't make would be handed the tool's keys, so
+    it has to look just like one it did."""
+    if uid == 0:
+        return "it's an administrator"
+    if home != str(ACCOUNT_HOME):
+        return f"its home is {home}, not {ACCOUNT_HOME}"
+    if shell.rsplit("/", 1)[-1] not in _NO_LOGIN:
+        return f"it can log in, with {shell}"
+    return None
+
+
 def _make_account() -> int:
     try:
-        return pwd.getpwnam(ACCOUNT).pw_uid
+        found = pwd.getpwnam(ACCOUNT)
     except KeyError:
-        pass
+        found = None
+    if found is not None:
+        problem = account_problem(found.pw_uid, found.pw_dir, found.pw_shell)
+        if problem:
+            raise Stop(
+                f"There's already an account called {ACCOUNT}, and {problem}. This tool's keys"
+                " shouldn't be handed to it, so the install has stopped. Please look at it."
+            )
+        return found.pw_uid
     say(f"Making an account for the tool, {ACCOUNT}, that nobody can log in to.")
     _run(
         "useradd",

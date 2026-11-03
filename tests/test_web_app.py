@@ -9510,6 +9510,43 @@ def test_each_finding_heading_names_its_severity(web):
     page = _host_page(client)
     assert '<h3><span class="visually-hidden">Very serious' in page
     assert '<p class="severity" aria-hidden="true">' in page
+    # The F- number is hidden with the strip, so the heading says it: the advisor uses it.
+    for text in (page, client.get("/hosts/web01/evidence").content.decode()):
+        assert re.search(r'<h3><span class="visually-hidden">[^<]*, F-1: </span>', text)
+
+
+def test_at_a_glance_counts_the_findings_folded_away_too(web, monkeypatch):
+    from checker.fleet import FleetHost
+    from checker.web import wording
+
+    client, _ = signed_in(web)
+    assessment = {
+        "findings": [
+            {"check": "account.uid0", "category": "hygiene", "band": "info"},
+            {"check": "account.uid0", "category": "compromise indicator", "band": "high"},
+        ]
+    }
+    host = FleetHost("web01", state="analysed", band="High", probability=0.6, first=False)
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, assessment, {}, True)
+    )
+    page = _host_page(client)
+    glance = page.split('<dl class="glance">')[1].split("</dl>")[0]
+    sections = wording.host_details(assessment)["sections"]
+    assert any(s["minor"] and not s["findings"] for s in sections)  # one only for information
+    for s in sections:
+        assert f"<dt>{html.escape(s['title'])}</dt><dd>1</dd>" in glance
+        assert f"{html.escape(s['title'])} <span>(1)</span></h2>" in page
+
+
+def test_the_server_notes_are_never_below_the_findings():
+    """Beside them in two columns or above them in one: the reorder comes with the columns."""
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    wide = css.split("@media (min-width: 52.01rem) {")[1].split("\n}")[0]
+    assert ".host-side { order: 2; }" in wide
+    assert "grid-template-columns: minmax(0, 1fr) 17rem" in wide
+    assert css.count(".host-side { order: 2; }") == 1
+    assert "flex-wrap" not in css.split(".host-layout")[1].split("}")[0]
 
 
 def test_the_evidence_link_once_for_each_kind_of_account(web):

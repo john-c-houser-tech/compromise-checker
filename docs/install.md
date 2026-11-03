@@ -4,8 +4,8 @@ Compromise Checker needs a machine of its own: it holds keys that act as an admi
 checks. It installs on x86 machines running Ubuntu 24.04 or 26.04, or Rocky Linux 9 or 10. Close relatives of
 those, such as Linux Mint, aren't supported yet, and the installer stops with a message.
 
-This covers using the tool from the machine it's on, with a browser there. Reaching it from other computers
-isn't built yet.
+The installer asks whether people will use the tool from other computers. If not, it answers only on the
+machine itself, for a browser there. If so, it needs [a web address](#a-web-address) of its own.
 
 ## What the installer does
 
@@ -37,6 +37,35 @@ out what's beside it as well. In order, it:
 
 If it stops part way, run it again to carry on, whether or not an account has been made in the meantime. Once
 it has finished, running it again changes nothing.
+
+## A web address
+
+For people to use it from other computers, the tool needs a name of its own, such as `checker.example.org`, and
+the machine has to be reachable from the internet: a cloud server, typically. A PC behind a home or office
+router can't get a certificate, and the installer says so rather than trying.
+
+You'll be asked for the name, and whether only some addresses, such as your office's, may reach the page.
+Before changing anything, the installer checks that this machine has an address on the internet and that the
+name leads to it. If the name doesn't exist yet, it shows the DNS record to add and waits for it. If it leads
+somewhere else, it stops.
+
+It then sets up Apache, from the system's own packages, in front of the tool:
+
+- Apache gets a certificate from Let's Encrypt for the name, with its own `mod_md` module, and renews it. A daily
+  reload lets Apache use a renewed certificate. Let's Encrypt checks that the name leads to this machine, and
+  the name appears in public certificate logs.
+- It answers on port 443, and port 80 only sends people to 443 and lets Let's Encrypt check the name. HTTP/2 is
+  off. If a firewall is running, ports 80 and 443 are opened in it.
+- The tool still listens only on this machine. Apache passes requests to it with a secret only they share, so
+  nothing else on the machine can pass for Apache.
+- On Rocky, SELinux keeps Apache confined, and the tool's port is added to those it may reach.
+- With a limit, only those addresses get past Apache to the page. Let's Encrypt can still reach port 80, so
+  renewals keep working.
+
+If Let's Encrypt can't reach the machine, the installer says so at the end, and Apache keeps trying. The
+usual cause is a firewall at the hosting provider that blocks port 80 or 443.
+
+Without a terminal to ask in, `--web-address NAME` and `--allow "ADDRESSES"` give the answers instead.
 
 ## The setup link
 

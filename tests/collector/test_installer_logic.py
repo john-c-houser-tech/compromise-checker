@@ -430,6 +430,152 @@ class BesideTheScript(unittest.TestCase):
                 self.assertEqual(done.returncode, 2, done.stderr)  # the source form says so
 
 
+IP_JSON = json.dumps(
+    [
+        {"ifname": "lo", "addr_info": [{"local": "127.0.0.1"}, {"local": "::1"}]},
+        {
+            "ifname": "eth0",
+            "addr_info": [
+                {"local": "172.232.170.46"},
+                {"local": "10.0.0.5"},
+                {"local": "2600:3c01::f03c:95ff:fe00:1"},
+                {"local": "fe80::1"},
+            ],
+        },
+    ]
+)
+HOME_JSON = json.dumps([{"ifname": "eth0", "addr_info": [{"local": "192.168.1.20"}]}])
+
+
+class WebAddress(unittest.TestCase):
+    def test_a_name_is_tidied_and_checked(self):
+        self.assertEqual(installer.web_name(" Checker.Example.ORG. "), "checker.example.org")
+        for bad in (
+            "",
+            "checker",
+            "203.0.113.10",
+            "::1",
+            "a..b.org",
+            "-a.b.org",
+            "a_b.example.org",
+            "checker.example.org/x",
+            "https://checker.example.org",
+        ):
+            with self.assertRaises(installer.Stop):
+                installer.web_name(bad)
+
+    def test_allowed_ranges(self):
+        self.assertEqual(
+            installer.allowed_ranges("203.0.113.10, 198.51.100.0/24 2001:db8::/56"),
+            ("203.0.113.10/32", "198.51.100.0/24", "2001:db8::/56"),
+        )
+        self.assertEqual(installer.allowed_ranges("  "), ())
+        for bad in ("not-an-address", "10.0.0.0/8", "2001:db8::/32", "0.0.0.0/0"):
+            with self.assertRaises(installer.Stop):
+                installer.allowed_ranges(bad)
+
+    def test_only_addresses_the_internet_can_reach_count(self):
+        self.assertEqual(
+            installer.global_addresses(IP_JSON),
+            ["172.232.170.46", "2600:3c01::f03c:95ff:fe00:1"],
+        )
+        self.assertEqual(installer.global_addresses(HOME_JSON), [])
+        self.assertEqual(installer.global_addresses("not json"), [])
+
+    def test_every_address_of_the_name_has_to_be_this_machine(self):
+        ours = ["172.232.170.46", "2600:3c01::f03c:95ff:fe00:1"]
+        self.assertIsNone(installer.name_problem("c.example.org", {"172.232.170.46"}, ours))
+        problem = installer.name_problem("c.example.org", {"172.232.170.46", "203.0.113.9"}, ours)
+        self.assertIn("203.0.113.9", problem)
+
+    def test_waiting_for_the_name_to_appear(self):
+        answers = [set(), set(), {"172.232.170.46"}]
+        installer.wait_for_name(
+            "c.example.org", ["172.232.170.46"], 1, lambda _: answers.pop(0), lambda _: None
+        )
+        self.assertEqual(answers, [])
+
+    def test_a_name_that_never_appears_stops_in_time(self):
+        clock = [0.0]
+        real = installer.time.monotonic
+        installer.time.monotonic = lambda: clock[0]
+        self.addCleanup(setattr, installer.time, "monotonic", real)
+
+        def pause(seconds):
+            clock[0] += seconds
+
+        with self.assertRaisesRegex(installer.Stop, "still doesn't point anywhere"):
+            installer.wait_for_name("c.example.org", ["172.232.170.46"], 1, lambda _: set(), pause)
+
+    def test_a_name_pointing_elsewhere_stops_at_once(self):
+        with self.assertRaisesRegex(installer.Stop, "changed nothing"):
+            installer.wait_for_name(
+                "c.example.org", ["172.232.170.46"], 1, lambda _: {"203.0.113.9"}, lambda _: None
+            )
+
+    def test_the_route_question(self):
+        answers = ["yes", "checker.example.org", "203.0.113.10"]
+        web = installer.ask_route(lambda: answers.pop(0))
+        self.assertEqual(web, installer.Web("checker.example.org", ("203.0.113.10/32",)))
+        self.assertIsNone(installer.ask_route(lambda: "no"))
+        self.assertIsNone(installer.ask_route(lambda: ""))
+
+    def test_apache_is_told_exactly_what_it_needs(self):
+        secret = "a" * 43
+        web = installer.Web("checker.example.org", ())
+        config = installer.apache_config(web, secret)
+        self.assertIn("Protocols http/1.1", config)
+        self.assertNotIn("h2", config)
+        self.assertIn("MDomain checker.example.org", config)
+        self.assertIn(f'RequestHeader set X-Checker-Proxy-Secret "{secret}"', config)
+        self.assertIn("ProxyPass / http://127.0.0.1:8088/", config)
+        self.assertIn("Require all granted", config)
+        self.assertNotIn("MDCertificateAuthority", config)
+        self.assertIn("Redirect permanent / https://checker.example.org/", config)
+
+    def test_a_limit_and_test_certificates(self):
+        web = installer.Web("checker.example.org", ("203.0.113.0/24",), True)
+        config = installer.apache_config(web, "a" * 43)
+        self.assertIn("Require ip 203.0.113.0/24", config)
+        self.assertNotIn("Require all granted", config)
+        self.assertIn(f"MDCertificateAuthority {installer.STAGING_CA}", config)
+
+    def test_a_strange_secret_never_reaches_apaches_settings(self):
+        web = installer.Web("checker.example.org", ())
+        for bad in ("short", 'a" ' * 20, "a" * 40 + "\n"):
+            with self.assertRaises(installer.Stop):
+                installer.apache_config(web, bad)
+
+    def test_the_daily_reload(self):
+        units = installer.reload_units(installer.APACHE_APT)
+        texts = "".join(units.values())
+        self.assertIn("ExecStart=/usr/bin/systemctl reload apache2", texts)
+        self.assertIn("OnCalendar=daily", texts)
+
+    def test_the_tool_is_told_its_public_address(self):
+        unit = installer.web_unit(990, "https://checker.example.org")
+        self.assertIn("checker web --public-url https://checker.example.org\n", unit)
+
+    def test_the_link_is_for_the_web_address(self):
+        self.assertIn(
+            "--address https://checker.example.org",
+            installer.link_command("https://checker.example.org"),
+        )
+
+    def test_only_a_link_to_the_web_address_is_passed_on(self):
+        good = "https://checker.example.org/setup/abc"
+        done = subprocess.CompletedProcess([], 0, f"Open this\n{good}\n", "")
+        real = installer._run
+        installer._run = lambda *_, **__: done
+        self.addCleanup(setattr, installer, "_run", real)
+        self.assertEqual(installer.new_link("https://checker.example.org"), good)
+        with self.assertRaises(installer.Stop):
+            installer.new_link("https://other.example.org")
+
+    def test_the_first_certificate_in_a_chain(self):
+        self.assertIsNone(installer.first_certificate("nothing here"))
+
+
 class Fetching(unittest.TestCase):
     def test_only_https_is_downloaded(self):
         with self.assertRaisesRegex(installer.Stop, "unprotected"):

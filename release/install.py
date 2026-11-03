@@ -22,12 +22,14 @@ import argparse  # noqa: E402
 import base64  # noqa: E402
 import hashlib  # noqa: E402
 import http.client  # noqa: E402
+import ipaddress  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import pwd  # noqa: E402
 import re  # noqa: E402
 import shutil  # noqa: E402
 import socket  # noqa: E402
+import ssl  # noqa: E402
 import subprocess  # noqa: E402, S404
 import tempfile  # noqa: E402
 import time  # noqa: E402
@@ -67,7 +69,6 @@ PAGE_SECONDS = 180
 _CHUNK = 1024 * 1024
 _FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_LINK = re.compile(re.escape(ADDRESS) + r"/setup/[A-Za-z0-9_-]+")
 _PLAIN_ACCOUNTS = {"nobody", "root", "ubuntu", "rocky", "cloud-user", "linode"}
 _NO_LOGIN = ("nologin", "false", "sync", "shutdown", "halt")
 # What a new system already has open: rpcbind, and systemd holding Cockpit's port until it's used.
@@ -432,10 +433,14 @@ def _run(*command: str, check: bool = True, **more) -> subprocess.CompletedProce
     return done
 
 
-def web_unit(uid: int) -> str:
+def web_unit(uid: int, public_address: Optional[str] = None) -> str:
     """The web interface, as the tool's own account, able to write only to the tool's own folder.
     The running user manager is what its Check every day page sets the daily timer with. That's
-    why people's homes are closed off by name: ProtectHome would hide /run/user too."""
+    why people's homes are closed off by name: ProtectHome would hide /run/user too. With a public
+    address it still listens only on this machine, and Apache stands in front of it."""
+    command = f"{PROGRAM}/current/bin/checker web"
+    if public_address:
+        command += f" --public-url {public_address}"
     return f"""[Unit]
 Description=Compromise Checker web interface
 After=network.target user@{uid}.service
@@ -447,7 +452,7 @@ Group={ACCOUNT}
 Environment=CHECKER_HOME={DATA}
 Environment=XDG_RUNTIME_DIR=/run/user/{uid}
 UMask=0077
-ExecStart={PROGRAM}/current/bin/checker web
+ExecStart={command}
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
@@ -464,7 +469,7 @@ WantedBy=multi-user.target
 """
 
 
-def link_command() -> str:
+def link_command(address: str = ADDRESS) -> str:
     """Shows a new first-setup link. Any before it stops working, so only the newest one is live."""
     return f"""#!/bin/sh
 if [ "$(id -u)" != 0 ]; then
@@ -475,7 +480,7 @@ cd / || exit 1
 # In a session of its own, without this terminal, so what runs as the tool's account can't type
 # into it or read from it. What it printed is shown afterwards, as plain text and nothing else.
 out=$(setsid --wait runuser -u {ACCOUNT} -- env CHECKER_HOME={DATA} \\
-    {PROGRAM}/current/bin/checker web-setup-link --address {ADDRESS} < /dev/null 2>&1)
+    {PROGRAM}/current/bin/checker web-setup-link --address {address} < /dev/null 2>&1)
 code=$?
 printf '%s\\n' "$out" | tr -cd '[:print:]\\n'
 exit $code
@@ -521,14 +526,14 @@ def run_apt(command: tuple, env: dict, seconds: float = APT_WAIT_SECONDS) -> Non
         time.sleep(10)
 
 
-def _install_packages(system: System) -> None:
+def _install_packages(system: System, more: tuple = ()) -> None:
     say(f"Installing what the tool needs from {system.name}'s own packages.")
     if system.install is _APT:
         env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
         run_apt(("apt-get", "update", "-qq"), env)
-        run_apt((*system.install, *system.packages), env)
+        run_apt((*system.install, *system.packages, *more), env)
     else:
-        _run(*system.install, *system.packages)
+        _run(*system.install, *system.packages, *more)
 
 
 def account_problem(uid: int, home: str, shell: str) -> Optional[str]:
@@ -646,44 +651,47 @@ def _turn_sleep_off() -> None:
     _run("systemctl", "mask", *SLEEP_UNITS)
 
 
-def port_free(port: int) -> bool:
-    """Whether the tool could listen here: the only way to be sure is to try."""
+def port_free(port: int, host: str = "127.0.0.1") -> bool:
+    """Whether something could listen here: the only way to be sure is to try."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as trial:
         trial.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            trial.bind(("127.0.0.1", port))
+            trial.bind((host, port))
         except OSError:
             return False
     return True
 
 
-def _service_running() -> bool:
-    return _run("systemctl", "is-active", UNIT, check=False).stdout.strip() == "active"
+def _service_running(unit: str = UNIT) -> bool:
+    return _run("systemctl", "is-active", unit, check=False).stdout.strip() == "active"
 
 
-def _service_holds_port(port: int) -> bool:
+def _service_holds_port(port: int, unit: str = UNIT) -> bool:
     """Answering isn't enough, nor is the service looking active: it flickers between that and
     restarting when another program has the port. So it has to be its process that's listening."""
-    main_pid = _run("systemctl", "show", "-p", "MainPID", "--value", UNIT, check=False).stdout
+    main_pid = _run("systemctl", "show", "-p", "MainPID", "--value", unit, check=False).stdout
     if not main_pid.strip().isdigit() or int(main_pid) == 0:
         return False
     return int(main_pid) in holders(_run("ss", "-Hltnp", check=False).stdout, port)
 
 
-def page_answers(address: str) -> bool:
+def page_answers(address: str, headers: Optional[dict] = None) -> bool:
     """Directly, whatever proxy the environment names."""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(f"{address}/login", headers=headers or {})  # noqa: S310
     try:
-        with opener.open(f"{address}/login", timeout=5):
+        with opener.open(request, timeout=5):
             return True
     except (urllib.error.URLError, http.client.HTTPException, OSError):
         return False
 
 
-def _wait_for_page(address: str, seconds: float = PAGE_SECONDS) -> None:
+def _wait_for_page(
+    address: str, headers: Optional[dict] = None, seconds: float = PAGE_SECONDS
+) -> None:
     say("Starting the web interface.")
     deadline = time.monotonic() + seconds
-    while not (page_answers(address) and _service_holds_port(PORT)):
+    while not (page_answers(address, headers) and _service_holds_port(PORT)):
         if time.monotonic() > deadline:
             log = _run("journalctl", "-u", UNIT, "-n", "30", "--no-pager", check=False).stdout
             raise Stop(
@@ -698,14 +706,14 @@ def plain_text(text: str) -> str:
     return "".join(c for c in text if c == "\n" or (c.isprintable() and c.isascii()))
 
 
-def new_link() -> Optional[str]:
+def new_link(address: str = ADDRESS) -> Optional[str]:
     """A new link, or None if there's already an account and so nothing to set up. Only something
-    that's exactly a link on this machine is passed on."""
+    that's exactly a link to the tool's own address is passed on."""
     done = _run(str(LINK_COMMAND), check=False)
     said = done.stdout + done.stderr
     if done.returncode == 0:
         lines = done.stdout.strip().splitlines()
-        if lines and _LINK.fullmatch(lines[-1]):
+        if lines and re.fullmatch(re.escape(address) + r"/setup/[A-Za-z0-9_-]+", lines[-1]):
             return lines[-1]
     elif "already an account" in said:
         return None
@@ -725,7 +733,399 @@ def _set_labels() -> None:
         _run("restorecon", *(str(path) for path in paths), check=False)
 
 
-def install(version: str, source: Optional[Path], new_machine: bool) -> int:
+# --- The web address route ------------------------------------------------------------------------
+# Apache with its own certificate module, mod_md, all from each system's base packages, so their
+# security fixes arrive with the system's own updates. HTTP/2 stays off: most of Apache's serious
+# bugs lately have been there.
+
+STAGING_CA = "https://acme-staging-v02.api.letsencrypt.org/directory"
+CERTIFICATE_SECONDS = 300
+DNS_WAIT_MINUTES = 30
+DNS_POLL_SECONDS = 15
+PROXY_SECRET = DATA / "keys" / "web-proxy-secret.txt"
+PROXY_HEADER = "X-Checker-Proxy-Secret"
+RELOAD = "compromise-checker-certificate-reload"
+_NAME = re.compile(
+    r"(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?"
+)
+_SECRET = re.compile(r"[A-Za-z0-9_-]{32,}")
+SHORTEST_V4, SHORTEST_V6 = 16, 48  # a range wider than this hardly limits anything
+
+
+class Web(NamedTuple):
+    name: str
+    allowed: tuple  # address ranges as text; none means anyone
+    test_certificates: bool = False
+
+    @property
+    def address(self) -> str:
+        return f"https://{self.name}"
+
+
+class Apache(NamedTuple):
+    service: str
+    packages: tuple
+    config: Path
+    stores: tuple  # where mod_md may keep certificates, by its default for this system
+    check: tuple  # the command that checks the settings
+
+
+APACHE_APT = Apache(
+    "apache2",
+    ("apache2",),
+    Path("/etc/apache2/sites-available/compromise-checker.conf"),
+    (Path("/etc/apache2/md"),),
+    ("apache2ctl", "-t"),
+)
+APACHE_DNF = Apache(
+    "httpd",
+    ("httpd", "mod_ssl", "mod_md", "policycoreutils-python-utils"),
+    Path("/etc/httpd/conf.d/compromise-checker.conf"),
+    (Path("/etc/httpd/state/md"), Path("/etc/httpd/md")),
+    ("apachectl", "-t"),
+)
+
+
+def apache_for(system: System) -> Apache:
+    return APACHE_APT if system.install is _APT else APACHE_DNF
+
+
+def web_name(text: str) -> str:
+    """The name people will type, such as checker.example.org, or why it can't be one."""
+    name = text.strip().lower().rstrip(".")
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        pass
+    else:
+        raise Stop(
+            "That's an address, and a certificate needs a name, such as checker.example.org."
+        )
+    if not _NAME.fullmatch(name):
+        raise Stop(f"{text.strip()!r} isn't a web address such as checker.example.org.")
+    return name
+
+
+def allowed_ranges(text: str) -> tuple:
+    """Addresses or ranges such as 203.0.113.10 or 203.0.113.0/24, apart by spaces or commas."""
+    ranges = []
+    for part in re.split(r"[\s,]+", text.strip()):
+        if not part:
+            continue
+        try:
+            network = ipaddress.ip_network(part, strict=False)
+        except ValueError:
+            raise Stop(f"{part!r} isn't an address or a range such as 203.0.113.0/24.") from None
+        shortest = SHORTEST_V4 if network.version == 4 else SHORTEST_V6
+        if network.prefixlen < shortest:
+            raise Stop(f"{part} is so wide it hardly limits anything. Name a narrower range.")
+        ranges.append(str(network))
+    return tuple(ranges)
+
+
+def global_addresses(ip_json: str) -> list:
+    """This machine's own addresses that the internet can reach, from `ip -j address`."""
+    try:
+        interfaces = json.loads(ip_json or "[]")
+    except ValueError:
+        return []
+    found = []
+    for interface in interfaces if isinstance(interfaces, list) else []:
+        for entry in interface.get("addr_info", []) if isinstance(interface, dict) else []:
+            try:
+                address = ipaddress.ip_address(entry.get("local", ""))
+            except ValueError:
+                continue
+            if address.is_global and str(address) not in found:
+                found.append(str(address))
+    return found
+
+
+def resolve(name: str) -> set:
+    try:
+        answers = socket.getaddrinfo(name, 443, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError):
+        return set()
+    return {str(ipaddress.ip_address(answer[4][0])) for answer in answers}
+
+
+def name_problem(name: str, found: set, ours: list) -> Optional[str]:
+    """Every address the name gives has to be this machine's: Let's Encrypt may use any of them."""
+    elsewhere = sorted(found - set(ours))
+    if elsewhere:
+        return (
+            f"{name} points to {', '.join(elsewhere)}, but this machine is {', '.join(ours)}."
+            " Change the DNS record so it points here, then run this installer again."
+        )
+    return None
+
+
+def wait_for_name(
+    name: str,
+    ours: list,
+    minutes: float,
+    lookup: Callable[[str], set] = resolve,
+    pause: Callable[[float], None] = time.sleep,
+) -> None:
+    found = lookup(name)
+    if not found:
+        records = [
+            f"  {'A' if ipaddress.ip_address(address).version == 4 else 'AAAA'} record:"
+            f" {name} -> {address}"
+            for address in ours
+        ]
+        say(
+            f"\n{name} doesn't point anywhere yet. Add this at whoever looks after your domain's"
+            " DNS:\n" + "\n".join(records) + "\nWaiting for it to appear. That can take a few"
+            " minutes. Press Ctrl-C to stop, and run this installer again later."
+        )
+        deadline = time.monotonic() + minutes * 60
+        while not found:
+            if time.monotonic() > deadline:
+                raise Stop(
+                    f"{name} still doesn't point anywhere. Once the DNS record is there, run this"
+                    " installer again. This run changed nothing."
+                )
+            pause(DNS_POLL_SECONDS)
+            found = lookup(name)
+    problem = name_problem(name, found, ours)
+    if problem:
+        raise Stop(f"{problem} This run changed nothing.")
+    say(f"{name} points to this machine.")
+
+
+def ask_route(answer: Callable[[], str]) -> Optional[Web]:
+    say(
+        "\nWill people use Compromise Checker from other computers? It then needs a web address"
+        " of its own, such as checker.example.org, and this machine has to be reachable from the"
+        " internet. Type yes or no. No keeps it to a browser on this machine."
+    )
+    try:
+        said = answer()
+    except (EOFError, KeyboardInterrupt):
+        raise Stop("Stopped. This run changed nothing.") from None
+    if said.strip().lower() not in ("y", "yes"):
+        return None
+    name = web_name(answer_with_prompt(answer, "\nThe web address, such as checker.example.org:"))
+    allowed = allowed_ranges(
+        answer_with_prompt(
+            answer,
+            "\nShould only some addresses be able to reach the page, such as your office's? Type"
+            " them, apart by spaces, or press Enter for anyone. Let's Encrypt can still reach"
+            " this machine, so the certificate keeps renewing.",
+        )
+    )
+    return Web(name, allowed)
+
+
+def answer_with_prompt(answer: Callable[[], str], prompt: str) -> str:
+    say(prompt)
+    try:
+        return answer()
+    except (EOFError, KeyboardInterrupt):
+        raise Stop("Stopped. This run changed nothing.") from None
+
+
+def apache_config(web: Web, secret: str) -> str:
+    """Port 80 only redirects, apart from Let's Encrypt's checks, which mod_md answers before the
+    redirect. Only Apache knows the secret it sends to the tool, so nothing else on this machine can
+    pass for it."""
+    if not _SECRET.fullmatch(secret):
+        raise Stop("The tool's proxy secret isn't what it should be. Run this installer again.")
+    who = " ".join(web.allowed) if web.allowed else ""
+    access = f"Require ip {who}" if who else "Require all granted"
+    staging = f"MDCertificateAuthority {STAGING_CA}\n" if web.test_certificates else ""
+    return f"""# Written by the Compromise Checker installer, and replaced when it runs again.
+Protocols http/1.1
+MDCertificateAgreement accepted
+{staging}MDomain {web.name}
+
+<VirtualHost *:80>
+    ServerName {web.name}
+    Protocols http/1.1
+    Redirect permanent / https://{web.name}/
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName {web.name}
+    Protocols http/1.1
+    SSLEngine on
+    SSLProtocol -all +TLSv1.2 +TLSv1.3
+    ProxyRequests Off
+    ProxyPreserveHost On
+    ProxyTimeout 300
+    RequestHeader set {PROXY_HEADER} "{secret}"
+    RequestHeader set X-Forwarded-Proto "https"
+    ProxyPass / http://127.0.0.1:{PORT}/
+    ProxyPassReverse / http://127.0.0.1:{PORT}/
+    <Location />
+        {access}
+    </Location>
+</VirtualHost>
+"""
+
+
+def reload_units(apache: Apache) -> dict:
+    """mod_md renews certificates by itself, but Apache only uses a renewed one once it reloads."""
+    service = f"""[Unit]
+Description=Compromise Checker: let Apache use a renewed certificate
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl reload {apache.service}
+"""
+    timer = """[Unit]
+Description=Compromise Checker: let Apache use a renewed certificate, daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+    folder = Path("/etc/systemd/system")
+    return {folder / f"{RELOAD}.service": service, folder / f"{RELOAD}.timer": timer}
+
+
+def _web_ports_problem(apache: Apache) -> Optional[str]:
+    for port in (80, 443):
+        if not port_free(port, "0.0.0.0") and not _service_holds_port(port, apache.service):  # noqa: S104
+            return f"Something else is using port {port}, which the web address needs."
+    return None
+
+
+def _reachable(web: Web, dns_minutes: float) -> None:
+    """Before anything changes: this machine has to be on the internet, and the name has to lead
+    here. Whether a firewall outside lets Let's Encrypt in only shows when it tries."""
+    ours = global_addresses(_run("ip", "-j", "address", check=False).stdout)
+    if not ours:
+        raise Stop(
+            "This machine has no address on the internet: it's probably behind a router. People"
+            " elsewhere couldn't reach it, and it couldn't get a certificate. Run this installer"
+            " again and answer no, to use it from this machine only, or use a cloud server for a"
+            " web address. This run changed nothing."
+        )
+    wait_for_name(web.name, ours, dns_minutes)
+
+
+def _allow_proxy_under_selinux() -> None:
+    """Apache is confined, and may only connect to web ports: the tool's port becomes one."""
+    if _run("selinuxenabled", check=False).returncode != 0 or not shutil.which("semanage"):
+        return
+    listed = _run("semanage", "port", "-l", check=False).stdout
+    if re.search(rf"^http_port_t\s+tcp\s+.*\b{PORT}\b", listed, re.MULTILINE):
+        return
+    say(f"Letting Apache reach the tool's port, {PORT}, under SELinux.")
+    added = _run("semanage", "port", "-a", "-t", "http_port_t", "-p", "tcp", str(PORT), check=False)
+    if added.returncode != 0:
+        _run("semanage", "port", "-m", "-t", "http_port_t", "-p", "tcp", str(PORT))
+
+
+def _open_firewall() -> None:
+    if _run("firewall-cmd", "--state", check=False).returncode == 0:
+        say("Opening ports 80 and 443 in the firewall.")
+        _run("firewall-cmd", "--permanent", "--add-service=http", "--add-service=https")
+        _run("firewall-cmd", "--reload")
+    elif "Status: active" in _run("ufw", "status", check=False).stdout:
+        say("Opening ports 80 and 443 in the firewall.")
+        _run("ufw", "allow", "80/tcp")
+        _run("ufw", "allow", "443/tcp")
+
+
+def _set_up_apache(web: Web, apache: Apache, secret: str) -> None:
+    say(f"Setting up Apache to give {web.name} a certificate and pass requests to the tool.")
+    _allow_proxy_under_selinux()
+    if apache is APACHE_APT:
+        _run("a2enmod", "-q", "md", "ssl", "proxy", "proxy_http", "headers")
+        _run("a2dismod", "-q", "-f", "http2", check=False)
+        _run("a2dissite", "-q", "000-default", check=False)
+    _write_file(apache.config, apache_config(web, secret), 0o600)
+    if apache is APACHE_APT:
+        _run("a2ensite", "-q", "compromise-checker")
+    if shutil.which("restorecon"):
+        _run("restorecon", str(apache.config), check=False)
+    checked = _run(*apache.check, check=False)
+    if checked.returncode != 0:
+        raise Stop(
+            f"Apache's settings didn't pass its own check:\n{plain_text(checked.stderr)}\n"
+            "Run this installer again once that's dealt with."
+        )
+    for path, text in reload_units(apache).items():
+        _write_file(path, text, 0o644)
+    _run("systemctl", "daemon-reload")
+    _run("systemctl", "enable", "--now", f"{RELOAD}.timer")
+    _run("systemctl", "enable", apache.service)
+    _run("systemctl", "restart", apache.service)
+    _open_firewall()
+
+
+def stored_certificate(web: Web, apache: Apache) -> Optional[Path]:
+    for store in apache.stores:
+        path = store / "domains" / web.name / "pubcert.pem"
+        if path.is_file():
+            return path
+    return None
+
+
+def served_certificate(name: str) -> Optional[bytes]:
+    """What Apache hands someone asking for `name`, read without judging it: a test certificate
+    isn't trusted, and the comparison with what mod_md stored is what counts here."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection(("127.0.0.1", 443), timeout=10) as raw:
+            with context.wrap_socket(raw, server_hostname=name) as tls:
+                return tls.getpeercert(binary_form=True)
+    except (OSError, ssl.SSLError):
+        return None
+
+
+def first_certificate(pem: str) -> Optional[bytes]:
+    match = re.search(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", pem, re.DOTALL)
+    return ssl.PEM_cert_to_DER_cert(match.group(0)) if match else None
+
+
+def wait_for_certificate(web: Web, apache: Apache, seconds: float = CERTIFICATE_SECONDS) -> bool:
+    say("Getting a certificate from Let's Encrypt. This usually takes under a minute.")
+    deadline = time.monotonic() + seconds
+    reloaded = False
+    while time.monotonic() < deadline:
+        stored = stored_certificate(web, apache)
+        if stored is not None:
+            if not reloaded:
+                _run("systemctl", "reload", apache.service)
+                reloaded = True
+                time.sleep(2)
+            wanted = first_certificate(stored.read_text(encoding="utf-8", errors="replace"))
+            if wanted is not None and served_certificate(web.name) == wanted:
+                return True
+        time.sleep(5)
+    return False
+
+
+def _proxy_secret(seconds: float = PAGE_SECONDS) -> str:
+    """The tool makes it when it first starts with a public address."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if PROXY_SECRET.is_file() and not PROXY_SECRET.is_symlink():
+            text = PROXY_SECRET.read_text(encoding="utf-8", errors="replace").strip()
+            if _SECRET.fullmatch(text):
+                return text
+        time.sleep(2)
+    raise Stop("The web interface didn't make its proxy secret. Run this installer again.")
+
+
+def install(
+    version: str,
+    source: Optional[Path],
+    new_machine: bool,
+    web: Optional[Web] = None,
+    ask: bool = False,
+    dns_minutes: float = DNS_WAIT_MINUTES,
+) -> int:
     os.umask(0o022)  # what's installed has to be readable by the tool's account, and no more
     if os.geteuid() != 0:
         raise Stop("This has to be run as an administrator: sudo python3 -I install.py")
@@ -769,31 +1169,61 @@ def install(version: str, source: Optional[Path], new_machine: bool) -> int:
                         " changed nothing."
                     )
                 ask_about_use(signs, input)
-        _install_packages(system)
+        if ask and web is None:
+            web = ask_route(input)
+        apache = apache_for(system) if web else None
+        if web is not None and apache is not None:
+            problem = _web_ports_problem(apache)
+            if problem:
+                raise Stop(f"{problem} This run changed nothing.")
+            _reachable(web, dns_minutes)
+        _install_packages(system, apache.packages if apache else ())
         _run("systemctl", "stop", UNIT, check=False)  # one left by an install that didn't finish
         if not port_free(PORT):  # with that stopped, whatever's left isn't this tool
             raise Stop(f"Something else is using port {PORT}, which this tool needs.")
         uid = _make_account()
         _make_folders()
         _install_program(system, version, staged)
-    _write_file(LINK_COMMAND, link_command(), 0o755)
+    address = web.address if web else ADDRESS
+    _write_file(LINK_COMMAND, link_command(address), 0o755)
     _start_user_manager(uid)
-    _write_file(UNIT_FILE, web_unit(uid), 0o644)
+    _write_file(UNIT_FILE, web_unit(uid, web.address if web else None), 0o644)
     _set_labels()
     _run("systemctl", "daemon-reload")
     _turn_sleep_off()
     _run("systemctl", "enable", "--now", UNIT)
-    _wait_for_page(ADDRESS)
-    link = new_link()
+    headers = None
+    certified = True
+    if web is not None and apache is not None:
+        secret = _proxy_secret()
+        headers = {"Host": web.name, PROXY_HEADER: secret, "X-Forwarded-For": "127.0.0.1"}
+        _wait_for_page(ADDRESS, headers)
+        _set_up_apache(web, apache, secret)
+        certified = wait_for_certificate(web, apache)
+    else:
+        _wait_for_page(ADDRESS)
+    link = new_link(address)
     _write_file(FINISHED, f"{version}\n", 0o644)
-    say("\nCompromise Checker is installed, and it only answers on this machine for now.")
+    if web is None:
+        say("\nCompromise Checker is installed, and it only answers on this machine for now.")
+        where = "in a browser on this machine"
+    else:
+        say(f"\nCompromise Checker is installed at {web.address}")
+        where = "in a browser"
+        if web.allowed:
+            say(f"Only these addresses can reach it: {', '.join(web.allowed)}")
+        if not certified:
+            say(
+                "\nLet's Encrypt hasn't given it a certificate yet, so browsers will warn about it."
+                " Don't use it until they stop. Apache keeps trying by itself. The usual cause is"
+                " a firewall at the hosting provider that blocks port 80 or 443: let both in."
+            )
     if link is None:
-        say(f"\nThere's already an account, so sign in at {ADDRESS}/login")
+        say(f"\nThere's already an account, so sign in at {address}/login")
     else:
         say(
-            "\nOpen this link in a browser on this machine to create the first account."
-            " It works once, within an hour:"
-            f"\n\n  {link}\n"
+            f"\nOpen this link {where} to create the first account. It works once, within an"
+            f" hour:\n\n  {link}\n"
             f"\nIf you lose it, or it runs out, this makes a new one: sudo {LINK_COMMAND}"
         )
     say("\nThe machine is meant to stay on and be used only for this.")
@@ -814,12 +1244,39 @@ def main(argv: Optional[list] = None) -> int:
         action="store_true",
         help="skip the check for other use, on a machine just created for this",
     )
+    parser.add_argument(
+        "--web-address",
+        metavar="NAME",
+        help="the web address people will use, such as checker.example.org, instead of asking",
+    )
+    parser.add_argument(
+        "--allow",
+        metavar="ADDRESSES",
+        default="",
+        help="only these addresses or ranges can reach the page, apart by spaces",
+    )
+    parser.add_argument("--test-certificates", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--dns-wait-minutes", type=float, default=DNS_WAIT_MINUTES, help=argparse.SUPPRESS
+    )
     arguments = parser.parse_args(argv)
     if "@" in VERSION:
         print("This is the installer's source. Use the one from a release.", file=sys.stderr)
         return 2
     try:
-        return install(VERSION, arguments.source, arguments.new_machine)
+        web = None
+        if arguments.web_address:
+            web = Web(
+                web_name(arguments.web_address),
+                allowed_ranges(arguments.allow),
+                arguments.test_certificates,
+            )
+        elif arguments.allow:
+            raise Stop("--allow only means something with --web-address.")
+        ask = web is None and sys.stdin.isatty()
+        return install(
+            VERSION, arguments.source, arguments.new_machine, web, ask, arguments.dns_wait_minutes
+        )
     except Stop as exc:
         print(f"\n{exc}", file=sys.stderr)
         return 1

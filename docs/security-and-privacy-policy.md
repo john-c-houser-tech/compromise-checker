@@ -457,16 +457,17 @@ new release of the tool.
   anyone can inspect them.
 - Releases and threat packs are signed.
 - Dependencies are kept few and pinned.
-- **What installing changes on the machine.** The installer makes an account for the tool that nobody can log
-  in to, runs the tool's web interface as a service, and turns sleep off so a daily check isn't missed. It turns
-  on a firewall that lets in only SSH, which closes what else a new system leaves open, and turns on the
-  system's own automatic security updates, which never restart the machine. A firewall that's already running
-  keeps its rules. Only if the person installing says yes to each, it turns off SSH logins with a password,
-  turns off SSH logins as root, and has SSH or the firewall hold off addresses that keep trying to log in. To
-  decide whether those are safe, it reads SSH's log for which administrator accounts have logged in and how,
-  and keeps nothing from it. It adds a small service that runs as root every hour and notes, for the web page,
-  whether SSH still accepts passwords and whether an update is waiting for a restart. With a web address, it
-  also installs Apache from the system's own packages, opens ports 80 and 443 in the firewall, adds an hourly
+- **What installing changes on the machine.** The installer makes an account for the tool that nobody can log in
+  to, runs the tool's web interface as a service, and turns sleep off so a daily check isn't missed. It turns on
+  a firewall that lets in only SSH, which closes what else a new system leaves open, and turns on the system's
+  own automatic security updates, which never restart the machine. A firewall that's already running keeps its
+  rules, unless it's still just as the system set it up, as Rocky's is from the start; that one is set up the
+  same way as a new one. Only if the person installing says yes to each, it turns off SSH logins with a
+  password, turns off SSH logins as root, and has SSH or the firewall hold off addresses that keep trying to log
+  in. To decide whether those are safe, it reads SSH's log for which administrator accounts have logged in and
+  how, and keeps nothing from it. It adds a small service that runs as root every hour and notes, for the web
+  page, whether SSH still accepts passwords and whether an update is waiting for a restart. With a web address,
+  it also installs Apache from the system's own packages, opens ports 80 and 443 in the firewall, adds an hourly
   reload of Apache, and on Rocky lets Apache act as a proxy under SELinux. It says what it's doing at each step.
 - Text collected from a server is treated as hostile, since a compromised
   server can write anything into its logs. In reports and the web interface it

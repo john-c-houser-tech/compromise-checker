@@ -306,19 +306,28 @@ APT_WAIT_SECONDS = 300
 _DNF = ("dnf", "install", "-y", "-q")
 SYSTEMS = {
     ("ubuntu", "24.04"): System(
-        "Ubuntu 24.04", "python3", ("python3-venv", "iproute2", "ufw", *_PANGO_APT), _APT
+        "Ubuntu 24.04",
+        "python3",
+        ("python3-venv", "iproute2", "ufw", "unattended-upgrades", *_PANGO_APT),
+        _APT,
     ),
     ("ubuntu", "26.04"): System(
-        "Ubuntu 26.04", "python3", ("python3-venv", "iproute2", "ufw", *_PANGO_APT), _APT
+        "Ubuntu 26.04",
+        "python3",
+        ("python3-venv", "iproute2", "ufw", "unattended-upgrades", *_PANGO_APT),
+        _APT,
     ),
     ("rocky", "9"): System(
         "Rocky Linux 9",
         "python3.12",
-        ("python3.12", "iproute", "firewalld", "pango", "harfbuzz"),
+        ("python3.12", "iproute", "firewalld", "dnf-automatic", "pango", "harfbuzz"),
         _DNF,
     ),
     ("rocky", "10"): System(
-        "Rocky Linux 10", "python3", ("iproute", "firewalld", "pango", "harfbuzz"), _DNF
+        "Rocky Linux 10",
+        "python3",
+        ("iproute", "firewalld", "dnf-automatic", "pango", "harfbuzz"),
+        _DNF,
     ),
 }
 
@@ -1470,6 +1479,97 @@ def set_up_firewall(system: System, limit: bool = False) -> None:
         )
 
 
+APT_UPDATES = Path("/etc/apt/apt.conf.d/52compromise-checker-updates")
+DNF_UPDATES = Path("/etc/dnf/automatic-compromise-checker.conf")
+DNF_TIMER = "dnf-automatic-install.timer"
+DNF_DROP_IN = Path("/etc/systemd/system/dnf-automatic-install.service.d/compromise-checker.conf")
+
+# apt reads its files in order and the last one wins, so this comes after Ubuntu's 20auto-upgrades.
+# Which updates are installed stays Ubuntu's own choice: the security ones.
+APT_UPDATES_TEXT = """\
+// Compromise Checker's installer: install security updates every day (installation plan, I.4).
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+"""
+
+# Its own file, so Rocky's automatic.conf stays as the package left it.
+DNF_UPDATES_TEXT = """\
+# Compromise Checker's installer: install security updates every day (installation plan, I.4).
+# The machine isn't restarted: the web page says when an update needs that.
+[commands]
+upgrade_type = security
+download_updates = yes
+apply_updates = yes
+
+[emitters]
+emit_via = stdio
+"""
+
+DNF_DROP_IN_TEXT = f"""\
+# Compromise Checker's installer: the security updates only, from its own settings.
+[Service]
+ExecStart=
+ExecStart=/usr/bin/dnf-automatic {DNF_UPDATES} --timer --installupdates
+"""
+
+
+def apt_value(dump: str, name: str) -> Optional[str]:
+    """One setting from `apt-config dump`."""
+    match = re.search(rf'^{re.escape(name)} "([^"]*)";$', dump, re.M)
+    return match.group(1) if match else None
+
+
+def apt_updates_on(dump: str) -> bool:
+    return all(
+        apt_value(dump, f"APT::Periodic::{name}") not in (None, "0", "")
+        for name in ("Update-Package-Lists", "Unattended-Upgrade")
+    )
+
+
+def _apt_dump() -> str:
+    return _run("apt-config", "dump", check=False, env={**os.environ, "LC_ALL": "C"}).stdout
+
+
+def _turn_updates_on_apt() -> None:
+    if apt_updates_on(_apt_dump()):
+        say("Security updates already install by themselves here.")
+    else:
+        say("Turning on automatic security updates, which Ubuntu installs every day.")
+        _write_file(APT_UPDATES, APT_UPDATES_TEXT, 0o644)
+        if not apt_updates_on(_apt_dump()):
+            raise Stop(
+                "Automatic security updates didn't turn on, so something else here turns them"
+                " off. Look in /etc/apt/apt.conf.d, then run this installer again."
+            )
+    _run("systemctl", "enable", "--now", "apt-daily.timer", "apt-daily-upgrade.timer")
+    reboot = apt_value(_apt_dump(), "Unattended-Upgrade::Automatic-Reboot")
+    if reboot == "true":
+        say("They're set to restart the machine when one needs it, which was already the case.")
+
+
+def _turn_updates_on_dnf() -> None:
+    enabled = _run("systemctl", "is-enabled", DNF_TIMER, check=False).stdout.strip()
+    if enabled == "enabled" and not DNF_DROP_IN.exists():
+        say("Updates already install by themselves here, with this machine's own settings.")
+        return
+    say("Turning on automatic security updates, which Rocky installs every day.")
+    _write_file(DNF_UPDATES, DNF_UPDATES_TEXT, 0o644)
+    DNF_DROP_IN.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    _write_file(DNF_DROP_IN, DNF_DROP_IN_TEXT, 0o644)
+    if shutil.which("restorecon"):
+        _run("restorecon", str(DNF_UPDATES), str(DNF_DROP_IN.parent), str(DNF_DROP_IN), check=False)
+    _run("systemctl", "daemon-reload")
+    _run("systemctl", "enable", "--now", DNF_TIMER)
+
+
+def turn_updates_on(system: System) -> None:
+    """The system's own security updates, every day. The machine is never restarted for one."""
+    if system.install is _APT:
+        _turn_updates_on_apt()
+    else:
+        _turn_updates_on_dnf()
+
+
 def _set_up_apache(web: Web, apache: Apache, secret: str) -> None:
     say(f"Setting up Apache to give {web.name} a certificate and pass requests to the tool.")
     _allow_proxy_under_selinux()
@@ -1731,6 +1831,7 @@ def install(
         if web is None:
             _undo_web_address(apache_for(system))
         set_up_firewall(system)
+        turn_updates_on(system)
         _run("systemctl", "stop", UNIT, check=False)  # one left by an install that didn't finish
         if not port_free(PORT):  # with that stopped, whatever's left isn't this tool
             raise Stop(f"Something else is using port {PORT}, which this tool needs.")

@@ -1100,6 +1100,124 @@ class Lockdown(unittest.TestCase):
         self.assertTrue(any("SSH isn't running here" in line for line in self.said))
 
 
+APT_ON = 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n'
+
+
+class Updates(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        names = ("APT_UPDATES", "DNF_UPDATES", "DNF_DROP_IN", "_run", "say")
+        real = {name: getattr(installer, name) for name in names}
+        real_which = installer.shutil.which
+        installer.APT_UPDATES = self.folder / "52compromise-checker-updates"
+        installer.DNF_UPDATES = self.folder / "automatic-compromise-checker.conf"
+        installer.DNF_DROP_IN = self.folder / "drop-in" / "compromise-checker.conf"
+        installer.shutil.which = lambda name: None
+        self.said = []
+        installer.say = self.said.append
+        self.called = []
+
+        def restore():
+            for name, value in real.items():
+                setattr(installer, name, value)
+            installer.shutil.which = real_which
+
+        self.addCleanup(restore)
+
+    def apt(self, before: str, after: str = APT_ON, reboot: str = ""):
+        def run(*command, **more):
+            self.called.append(command)
+            out = ""
+            if command[0] == "apt-config":
+                out = after if installer.APT_UPDATES.exists() else before
+                out += reboot
+            return subprocess.CompletedProcess(list(command), 0, out, "")
+
+        installer._run = run
+
+    def test_apt_settings_are_read(self):
+        self.assertTrue(installer.apt_updates_on(APT_ON))
+        self.assertFalse(installer.apt_updates_on(APT_ON.replace('Upgrade "1"', 'Upgrade "0"')))
+        self.assertFalse(installer.apt_updates_on('APT::Periodic::Update-Package-Lists "1";\n'))
+        self.assertEqual(
+            installer.apt_value(
+                'Unattended-Upgrade::Automatic-Reboot "false";\n',
+                "Unattended-Upgrade::Automatic-Reboot",
+            ),
+            "false",
+        )
+
+    def test_ubuntu_updates_are_turned_on(self):
+        self.apt("")
+        installer.turn_updates_on(UBUNTU_24)
+        self.assertEqual(installer.APT_UPDATES.read_text(), installer.APT_UPDATES_TEXT)
+        self.assertIn(
+            ("systemctl", "enable", "--now", "apt-daily.timer", "apt-daily-upgrade.timer"),
+            self.called,
+        )
+        self.assertTrue(any("Turning on automatic security updates" in line for line in self.said))
+
+    def test_ubuntu_updates_already_on_are_left(self):
+        self.apt(APT_ON)
+        installer.turn_updates_on(UBUNTU_24)
+        self.assertFalse(installer.APT_UPDATES.exists())
+        self.assertTrue(any("already install by themselves" in line for line in self.said))
+
+    def test_a_later_file_turning_them_off_stops_the_install(self):
+        self.apt("", after="")
+        with self.assertRaisesRegex(installer.Stop, "didn't turn on"):
+            installer.turn_updates_on(UBUNTU_24)
+
+    def test_a_restart_the_owner_set_is_mentioned(self):
+        self.apt(APT_ON, reboot='Unattended-Upgrade::Automatic-Reboot "true";\n')
+        installer.turn_updates_on(UBUNTU_24)
+        self.assertTrue(any("restart the machine" in line for line in self.said))
+
+    def dnf(self, enabled: str):
+        def run(*command, **more):
+            self.called.append(command)
+            out = enabled if command[:2] == ("systemctl", "is-enabled") else ""
+            return subprocess.CompletedProcess(list(command), 0, out, "")
+
+        installer._run = run
+
+    def test_rocky_gets_security_updates_from_its_own_settings(self):
+        self.dnf("disabled\n")
+        installer.turn_updates_on(ROCKY_9)
+        settings = installer.DNF_UPDATES.read_text()
+        self.assertIn("upgrade_type = security\n", settings)
+        self.assertIn("apply_updates = yes\n", settings)
+        self.assertIn(
+            "ExecStart=\nExecStart=/usr/bin/dnf-automatic"
+            " /etc/dnf/automatic-compromise-checker.conf --timer --installupdates\n",
+            installer.DNF_DROP_IN.read_text(),
+        )
+        self.assertLess(
+            self.called.index(("systemctl", "daemon-reload")),
+            self.called.index(("systemctl", "enable", "--now", installer.DNF_TIMER)),
+        )
+
+    def test_rockys_own_automatic_updates_are_left(self):
+        self.dnf("enabled\n")
+        installer.turn_updates_on(ROCKY_9)
+        self.assertFalse(installer.DNF_UPDATES.exists())
+        self.assertFalse(installer.DNF_DROP_IN.exists())
+
+    def test_an_earlier_runs_rocky_updates_are_set_again(self):
+        installer.DNF_DROP_IN.parent.mkdir()
+        installer.DNF_DROP_IN.write_text("old\n")
+        self.dnf("enabled\n")
+        installer.turn_updates_on(ROCKY_9)
+        self.assertIn("--installupdates", installer.DNF_DROP_IN.read_text())
+
+    def test_the_settings_never_restart_the_machine(self):
+        for text in (installer.APT_UPDATES_TEXT, installer.DNF_UPDATES_TEXT):
+            self.assertNotIn("Automatic-Reboot", text)
+            self.assertNotIn("reboot =", text)
+
+
 class Fetching(unittest.TestCase):
     def test_only_https_is_downloaded(self):
         with self.assertRaisesRegex(installer.Stop, "unprotected"):

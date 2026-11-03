@@ -467,14 +467,16 @@ def publish_command(directory: Path, manifest: Manifest) -> str:
 def pasted_line(manifest: Manifest, installer_hash: str) -> str:
     """The line an install page gives people. The hash is what protects the installer, so the page
     has to be somewhere other than the release's own files. It works in a new private folder: in a
-    shared one, someone else could swap the file while sudo waits for a password."""
+    shared one, someone else could swap the file while sudo waits for a password. In brackets, so
+    that what went wrong is still the line's result after the folder is removed."""
     version = manifest.version
     url = f"{DOWNLOADS}/v{version}/{INSTALLER}"
     place = f'"$d/{INSTALLER}"'
     return (
-        f"d=$(mktemp -d) && curl -fsSL {url} -o {place}"
+        "(d=$(mktemp -d) && trap 'rm -rf \"$d\"' EXIT"
+        f" && curl -fsSL {url} -o {place}"
         f' && echo "{installer_hash}  $d/{INSTALLER}" | sha256sum -c -'
-        f' && sudo python3 -I {place}; rm -rf "$d"'
+        f" && sudo python3 -I {place})"
     )
 
 

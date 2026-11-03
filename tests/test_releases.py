@@ -2,11 +2,13 @@
 checks made before a release is built. Keys here are throwaway ones."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
 import re
 import shlex
+import subprocess
 import tomllib
 import zipfile
 from pathlib import Path
@@ -608,13 +610,58 @@ def test_the_pasted_line_pins_the_installer_and_shuts_out_what_is_beside_it(tmp_
     key = Key()
     manifest = read_manifest(*signed(key, body()), public(key, tmp_path))
     line = script.pasted_line(manifest, "a" * 64)
-    assert line.startswith("d=$(mktemp -d) && ")
     assert f'/v{VERSION}/{INSTALLER} -o "$d/{INSTALLER}"' in line
     assert f'"{"a" * 64}  $d/{INSTALLER}" | sha256sum -c -' in line
     assert f'sudo python3 -I "$d/{INSTALLER}"' in line
     assert line.index("sha256sum") < line.index("sudo")
-    assert line.count("&&") == 3
-    assert line.endswith('; rm -rf "$d"')
+
+
+def _pasted_run(tmp_path, content: bytes, wanted_hash: str, installer_exit: int = 0):
+    """The line itself, in a real shell, with stand-ins for what reaches the network and root."""
+    key = Key()
+    manifest = read_manifest(*signed(key, body()), public(key, tmp_path))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    payload = tmp_path / "payload"
+    payload.write_bytes(content)
+    ran = tmp_path / "sudo-ran"
+    (tools / "curl").write_text(f'#!/bin/sh\nfor a; do t="$a"; done\ncp {payload} "$t"\n')
+    (tools / "sudo").write_text(f'#!/bin/sh\necho "$@" > {ran}\nexit {installer_exit}\n')
+    (tools / "curl").chmod(0o755)
+    (tools / "sudo").chmod(0o755)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    done = subprocess.run(
+        ["/bin/bash", "-c", script.pasted_line(manifest, wanted_hash)],
+        env={"PATH": f"{tools}:/usr/bin:/bin", "TMPDIR": str(scratch)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return done, ran, scratch
+
+
+def test_the_pasted_line_runs_the_installer_and_cleans_up(tmp_path):
+    good = hashlib.sha256(b"the installer").hexdigest()
+    done, ran, scratch = _pasted_run(tmp_path, b"the installer", good)
+    assert done.returncode == 0, done.stderr
+    assert ran.read_text().startswith("python3 -I ")
+    assert list(scratch.iterdir()) == []
+
+
+def test_the_pasted_line_stops_at_a_bad_hash_and_says_so(tmp_path):
+    good = hashlib.sha256(b"the installer").hexdigest()
+    done, ran, scratch = _pasted_run(tmp_path, b"something else", good)
+    assert done.returncode != 0
+    assert not ran.exists()
+    assert list(scratch.iterdir()) == []
+
+
+def test_the_pasted_line_passes_on_the_installers_result(tmp_path):
+    good = hashlib.sha256(b"the installer").hexdigest()
+    done, _, scratch = _pasted_run(tmp_path, b"the installer", good, installer_exit=23)
+    assert done.returncode == 23
+    assert list(scratch.iterdir()) == []
 
 
 def test_verify_refuses_a_folder_holding_anything_else(tmp_path):

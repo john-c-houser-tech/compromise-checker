@@ -88,6 +88,13 @@ running on a machine of their own and reach its first-setup page in a browser.
   provider's machine backups, including that those hold the keys and evidence together. A built-in daily
   backup to storage the organization chooses may follow if people ask. It gets its own plan, because
   purged evidence staying in a backup conflicts with the retention promises.
+- **I4 changed: Apache, not Caddy (John, 2026-11-02).** The web address route uses Apache with its own
+  certificate module, `mod_md`, with HTTP/2 off. Every part comes from each system's base packages (Ubuntu's
+  main section, Rocky's AppStream), so security fixes arrive through the automatic updates with no work for us.
+  Caddy has no fully supported source on these systems: pinning it in our releases would mean a release for each
+  of its fixes (seven high-rated ones in 2026), and the alternatives add outside package sources. Apache only
+  takes up a renewed certificate when it reloads, so the installer adds a daily reload. Most of Apache's serious
+  bugs lately have been in HTTP/2, hence leaving it off.
 - **I10. A machine already in use. DECIDED (John, 2026-11-02):** before changing anything, the script looks
   for other programs accepting connections and other people's login accounts. It lists what it found, says
   why each matters and what could break, and stops unless the person types a short sentence to go ahead. If

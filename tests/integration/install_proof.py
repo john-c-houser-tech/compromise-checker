@@ -18,6 +18,8 @@ import json
 import os
 import re
 import signal
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -25,6 +27,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -181,19 +184,316 @@ def denials(node: Node) -> str:
         return ""
     return node.out(
         "grep -E 'avc: +denied' /var/log/audit/audit.log 2>/dev/null"
-        " | grep -E 'compromise|gunicorn|checker|python|systemd-user|user@' | tail -5"
+        " | grep -E 'compromise|gunicorn|checker|python|systemd-user|user@|httpd' | tail -5"
     )
 
 
-def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
+def local(*words: str) -> subprocess.CompletedProcess:
+    """A command from this machine, which plays someone elsewhere on the internet."""
+    return subprocess.run(  # noqa: S603
+        list(words), capture_output=True, text=True, timeout=120, check=False
+    )
+
+
+def served_certificate_issuer(name: str) -> str:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    with socket.create_connection((name, 443), timeout=20) as raw:
+        with context.wrap_socket(raw, server_hostname=name) as tls:
+            der = tls.getpeercert(binary_form=True)
+    return x509.load_der_x509_certificate(der).issuer.rfc4514_string()
+
+
+def prove_web(node: "Node", checks, distro: str) -> None:
+    """The web address route, from a name that leads to the new server, with Let's Encrypt's
+    test certificates. This machine plays someone using it from elsewhere."""
+    address = node.address
+    name = f"{address.replace('.', '-')}.sslip.io"
+    laptop = node.out("echo ${SSH_CLIENT%% *}")
+    install = "cd /root/release && umask 077 && sudo python3 -I install.py --from /root/release"
+    limited = distro in ("ubuntu24.04", "rocky9")  # the others prove a run with no limit
+    allow = f" --allow '{laptop}'" if limited else ""
+
+    done = node.run(f"{install} --web-address 203-0-113-9.sslip.io --test-certificates")
+    checks(
+        "a name pointing elsewhere is refused, with nothing changed",
+        done.returncode == 1 and "points to 203.0.113.9" in done.stderr and untouched(node),
+        done.stdout + done.stderr,
+    )
+    done = node.run(
+        f"{install} --web-address nowhere-{os.urandom(4).hex()}.invalid --test-certificates"
+        " --dns-wait-minutes 0.2"
+    )
+    checks(
+        "a name that doesn't exist yet is waited for, then refused, with nothing changed",
+        done.returncode == 1
+        and "A record: nowhere-" in done.stdout
+        and "still doesn't point anywhere" in done.stderr
+        and untouched(node),
+        done.stdout + done.stderr,
+    )
+
+    started = time.monotonic()
+    done = node.run(f"{install} --web-address {name} --test-certificates{allow}", timeout=1500)
+    print(f"[{distro}] install took {round(time.monotonic() - started)}s")
+    checks("it installs with a web address", done.returncode == 0, done.stdout + done.stderr)
+    checks(
+        "and gets its certificate",
+        f"installed at https://{name}" in done.stdout and "hasn't given it" not in done.stdout,
+        done.stdout,
+    )
+    links = re.findall(rf"https://{re.escape(name)}/setup/\S+", done.stdout)
+    checks("it hands over a link to the web address", len(links) == 1, done.stdout)
+    if done.returncode or not links:
+        print(node.out("journalctl -u compromise-checker-web -u apache2 -u httpd -n 80 --no-pager"))
+        print(
+            node.out("tail -n 60 /var/log/apache2/error.log /var/log/httpd/error_log 2>/dev/null")
+        )
+        return
+    try:
+        issuer = served_certificate_issuer(name)
+    except OSError as exc:
+        issuer = str(exc)
+    checks("the certificate is Let's Encrypt's test one", "STAGING" in issuer, issuer)
+    status = local(
+        "curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"https://{name}/login"
+    )
+    checks("the sign-in page answers from elsewhere", status.stdout == "200", status.stdout)
+    version = local(
+        "curl",
+        "-k",
+        "--http2",
+        "-s",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_version}",
+        f"https://{name}/login",
+    )
+    checks("HTTP/2 is off", version.stdout == "1.1", version.stdout)
+    plain = local(
+        "curl",
+        "-s",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code} %{redirect_url}",
+        f"http://{name}/login",
+    )
+    checks(
+        "plain http only redirects to https",
+        plain.stdout == f"301 https://{name}/login",
+        plain.stdout,
+    )
+    direct = local(
+        "curl",
+        "-s",
+        "-m",
+        "10",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        f"http://{address}:8088/login",
+    )
+    checks(
+        "the tool itself can't be reached from elsewhere",
+        direct.stdout in ("000", ""),
+        direct.stdout,
+    )
+    secretless = status_of_with(node, "http://127.0.0.1:8088/login", f"-H 'Host: {name}'")
+    checks(
+        "on the machine, nothing gets past without Apache's secret", secretless == "403", secretless
+    )
+    outside = node.out(f"curl -k -s -o /dev/null -w '%{{http_code}}' https://{name}/login")
+    if limited:
+        checks("an address outside the limit is turned away", outside == "403", outside)
+    else:
+        checks("with no limit, any address gets in", outside == "200", outside)
+    secret = node.out("cat /var/lib/compromise-checker/data/keys/web-proxy-secret.txt")
+    traced = local(
+        "curl",
+        "-k",
+        "-s",
+        "-X",
+        "TRACE",
+        "-H",
+        "Max-Forwards: 0",
+        "-w",
+        "\n%{http_code}",
+        f"https://{name}/login",
+    ).stdout
+    checks(
+        "TRACE gets nothing back, least of all the secret",
+        len(secret) >= 32 and secret not in traced and not traced.endswith("200"),
+        traced[-200:],
+    )
+    other = local(
+        "curl",
+        "-k",
+        "-s",
+        "-w",
+        "\n%{http_code}",
+        "-H",
+        "Host: other.invalid",
+        f"https://{name}/login",
+    ).stdout
+    checks(
+        "a request for another name doesn't reach the tool",
+        not other.endswith("200") and 'name="password"' not in other,
+        other[-200:],
+    )
+    checks(
+        "Apache's settings, which hold the secret, are private",
+        node.out(
+            "stat -c '%a %U' /etc/apache2/sites-available/compromise-checker.conf"
+            " /etc/httpd/conf.d/compromise-checker.conf 2>/dev/null"
+        )
+        == "600 root",
+    )
+    checks(
+        "the hourly reload is set",
+        node.out("systemctl is-enabled compromise-checker-certificate-reload.timer") == "enabled",
+    )
+    if distro.startswith("rocky"):
+        labelled = node.out("semanage port -l | grep -E '^http_port_t'")
+        checks("SELinux lets Apache reach the tool's port", "8088" in labelled, labelled)
+        switches = node.out(
+            "getsebool httpd_graceful_shutdown httpd_can_network_relay httpd_can_network_connect"
+        )
+        checks(
+            "and only through the narrowest switch",
+            "httpd_graceful_shutdown --> on" in switches
+            and "httpd_can_network_relay --> off" in switches
+            and "httpd_can_network_connect --> off" in switches,
+            switches,
+        )
+
+    # --- Someone elsewhere makes the first account and signs in, through Apache -----------------
+    jar = Path(tempfile.mkdtemp()) / "jar"
+    password = "proof-password-" + os.urandom(8).hex()
+
+    def token(url: str) -> str:
+        page = local("curl", "-k", "-s", "-c", str(jar), "-b", str(jar), url).stdout
+        found = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', page)
+        return found.group(1) if found else ""
+
+    def post(url: str, *fields: str) -> str:
+        words = [
+            "curl",
+            "-k",
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "-c",
+            str(jar),
+            "-b",
+            str(jar),
+        ]
+        words += ["-H", f"Referer: https://{name}/"]
+        for field in fields:
+            words += ["--data-urlencode", field]
+        return local(*words, url).stdout
+
+    made = post(
+        links[0],
+        f"csrfmiddlewaretoken={token(links[0])}",
+        "username=proofadmin",
+        f"password={password}",
+        f"password2={password}",
+    )
+    checks("the first account can be made from elsewhere", made == "302", made)
+    jar.unlink(missing_ok=True)
+    login = f"https://{name}/login"
+    signed = post(
+        login, f"csrfmiddlewaretoken={token(login)}", "username=proofadmin", f"password={password}"
+    )
+    checks("and that account can sign in", signed == "302", signed)
+    logged = node.out(
+        "grep -l '/setup/' /var/log/apache2/*access* /var/log/httpd/*access* 2>/dev/null || true"
+    )
+    checks("no setup link is in Apache's logs", logged == "", logged)
+
+    done = node.run(f"{install} --web-address {name} --test-certificates --allow '{laptop}'")
+    checks(
+        "running it again changes nothing",
+        done.returncode == 0 and "already installed" in done.stdout,
+        done.stdout + done.stderr,
+    )
+    node.run("systemctl reboot")
+    time.sleep(15)
+    node.wait()
+    deadline = time.monotonic() + 120
+    status = None
+    while time.monotonic() < deadline:
+        status = local("curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", login).stdout
+        if status == "200":
+            break
+        time.sleep(3)
+    checks("after a reboot the web address is back", status == "200", status)
+    selinux = node.out("getenforce 2>/dev/null") or "not on this system"
+    print(f"[{distro}] SELinux: {selinux}")
+    if distro.startswith("rocky"):
+        checks("SELinux is enforcing, so this means something", selinux == "Enforcing", selinux)
+    found = denials(node)
+    checks("SELinux refused nothing", not found, found)
+
+    # --- An install that didn't finish, run again ---------------------------------------------
+    node.run("rm /opt/compromise-checker/installed")
+    done = node.run(f"{install} --web-address {name} --test-certificates{allow}", timeout=1500)
+    checks(
+        "an unfinished install carries on when run again, with nobody to ask",
+        done.returncode == 0 and "already an account" in done.stdout,
+        done.stdout + done.stderr,
+    )
+    status = local("curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", login).stdout
+    checks("and the web address still works", status == "200", status)
+
+    # --- Then the other answer: only from this machine ----------------------------------------
+    node.run("rm /opt/compromise-checker/installed")
+    done = node.run(install, timeout=1500)
+    checks(
+        "answering no afterwards takes the web address down",
+        done.returncode == 0 and "Taking down the web address" in done.stdout,
+        done.stdout + done.stderr,
+    )
+    gone = local("curl", "-k", "-s", "-m", "10", "-o", "/dev/null", "-w", "%{http_code}", login)
+    checks("nothing answers from elsewhere any more", gone.stdout in ("000", ""), gone.stdout)
+    listening = node.out("ss -Hltn | grep -E ':(80|443) ' || true")
+    checks("ports 80 and 443 are closed", listening == "", listening)
+    checks(
+        "and the tool answers on this machine",
+        status_of(node, "http://127.0.0.1:8088/login") == "200",
+    )
+    if distro.startswith("rocky"):
+        switch = node.out("getsebool httpd_graceful_shutdown")
+        checks("the SELinux switch is off again", switch.endswith("off"), switch)
+
+
+def status_of_with(node: "Node", url: str, extra: str) -> str:
+    return node.out(f"curl -s -o /dev/null -w '%{{http_code}}' {extra} '{url}'")
+
+
+def prove(
+    api,
+    distro: str,
+    region: str,
+    release: Path,
+    work: Path,
+    route: str = "local",
+    keep_minutes: float = 0,
+) -> list:
     results = []
 
     def checks(what: str, good: bool, detail: object = "") -> None:
         results.append((what, good, detail))
-        shown = f" ({str(detail)[:600]})" if detail and not good else ""
-        print(f"[{distro}] {'PASS' if good else 'FAIL'} {what}{shown}")
+        shown = f" (...{str(detail)[-1500:]})" if detail and not good else ""
+        print(f"[{distro} {route}] {'PASS' if good else 'FAIL'} {what}{shown}")
 
-    place = work / distro
+    place = work / f"{distro}-{route}"
     place.mkdir()
     key = place / "key"
     subprocess.run(  # noqa: S603
@@ -201,13 +501,19 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
         check=True,
     )
     label = proof.run_label(distro)
-    made = api.create(
-        label, proof.IMAGES[distro], region, key.with_suffix(".pub").read_text().strip()
-    )
+    public = key.with_suffix(".pub").read_text().strip()
+    try:
+        made = api.create(label, proof.IMAGES[distro], region, public)
+    except Exception:  # an answer lost on the way may still have made it: look before trying again
+        time.sleep(15)
+        made = api.find(label) or api.create(label, proof.IMAGES[distro], region, public)
     try:
         node = Node(made["ipv4"][0], key, place / "known")
         node.wait()
         node.copy(release, "/root/release")
+        if route == "web":
+            prove_web(node, checks, distro)
+            return results
 
         # --- Refusals, each leaving the machine as it was ---------------------------------------
         node.run("cp -r /root/release /root/bad && sed -i '1s/^./X/' /root/bad/requirements.lock")
@@ -409,6 +715,10 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
         found = denials(node)  # last, to cover all of the above
         checks("SELinux refused nothing", not found, found)
     finally:
+        if keep_minutes:
+            where = f"ssh -i {key} root@{made['ipv4'][0]}"
+            print(f"[{distro} {route}] kept for {keep_minutes} minutes: {where}")
+            time.sleep(keep_minutes * 60)
         api.delete(made["id"])
     return results
 
@@ -417,6 +727,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--distro", nargs="+", default=SYSTEMS, choices=[*SYSTEMS, "all"])
     parser.add_argument("--region", default="us-sea")
+    parser.add_argument(
+        "--route",
+        nargs="+",
+        default=["local", "web"],
+        choices=["local", "web"],
+        help="from this machine only, or with a web address",
+    )
+    parser.add_argument(
+        "--keep-minutes", type=float, default=0, help="keep each server this long, to look at it"
+    )
+    parser.add_argument("--work", type=Path, help="a folder to keep the servers' keys in")
     arguments = parser.parse_args()
 
     def stop(number, _frame):  # so the servers are still deleted when this is killed
@@ -428,13 +749,23 @@ def main() -> int:
     api = proof.Linode(proof.linode_token())
     proof.sweep(api)
     try:
-        with tempfile.TemporaryDirectory(prefix="cc-install-") as work:
+        with tempfile.TemporaryDirectory(prefix="cc-install-", dir=arguments.work) as work:
             release = build_release(Path(work))
             sign_release(release)
-            with ThreadPoolExecutor(len(systems)) as pool:
+            runs = [(system, route) for system in systems for route in arguments.route]
+            with ThreadPoolExecutor(len(runs)) as pool:
                 futures = {
-                    system: pool.submit(prove, api, system, arguments.region, release, Path(work))
-                    for system in systems
+                    f"{system} {route}": pool.submit(
+                        prove,
+                        api,
+                        system,
+                        arguments.region,
+                        release,
+                        Path(work),
+                        route,
+                        arguments.keep_minutes,
+                    )
+                    for system, route in runs
                 }
             failed = 0
             for system, future in futures.items():

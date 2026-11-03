@@ -4,8 +4,8 @@ Compromise Checker needs a machine of its own: it holds keys that act as an admi
 checks. It installs on x86 machines running Ubuntu 24.04 or 26.04, or Rocky Linux 9 or 10. Close relatives of
 those, such as Linux Mint, aren't supported yet, and the installer stops with a message.
 
-This covers using the tool from the machine it's on, with a browser there. Reaching it from other computers
-isn't built yet.
+The installer asks whether people will use the tool from other computers. If not, it answers only on the
+machine itself, for a browser there. If so, it needs [a web address](#a-web-address) of its own.
 
 ## What the installer does
 
@@ -37,6 +37,49 @@ out what's beside it as well. In order, it:
 
 If it stops part way, run it again to carry on, whether or not an account has been made in the meantime. Once
 it has finished, running it again changes nothing.
+
+## A web address
+
+For people to use it from other computers, the tool needs a name of its own, such as `checker.example.org`, and
+the machine has to be reachable from the internet: a cloud server, typically. A PC behind a home or office
+router can't get a certificate, and the installer says so rather than trying.
+
+You'll be asked for the name, and whether only some addresses, such as your office's, may reach the page.
+Before changing anything, the installer checks that the name leads to this machine. Some cloud providers
+give a machine only a private address and pass a public one on to it, so if the name leads elsewhere, the
+installer asks each address the name gives for a page, and sees whether the request arrives here. If a
+firewall is running here, it lets port 80 in for that moment only. If this machine's own `/etc/hosts` gives
+the name an address, it stops and says so, since it couldn't see what everyone else sees. A name that leads to a
+private address, which the internet can't reach, is refused too. If the name doesn't exist yet, it shows the DNS record to add and waits for it. If it leads
+somewhere else, it stops.
+
+It then sets up Apache, from the system's own packages, in front of the tool:
+
+- Apache gets a certificate from Let's Encrypt for the name, with its own `mod_md` module, and renews it. An hourly
+  reload lets Apache use a new certificate. Let's Encrypt checks that the name leads to this machine, and
+  the name appears in public certificate logs. The account it makes there gives `webmaster@` and the name as
+  its contact, since `mod_md` needs one, so nothing personal is sent.
+- It answers on port 443, and port 80 only sends people to 443 and lets Let's Encrypt check the name. HTTP/2 is
+  off. If a firewall is running, ports 80 and 443 are opened in it.
+- The tool still listens only on this machine. Apache passes requests to it with a secret only they share, so
+  nothing else on the machine can pass for Apache.
+- On Rocky, SELinux keeps Apache confined. The narrowest switch that lets it connect out at all is turned
+  on: `httpd_graceful_shutdown`, which, despite its name, only lets it reach web ports, Let's Encrypt's
+  included. The tool's port is added to those.
+- Apache keeps no access log for the name, since a setup link would be in it, and doesn't log the requests
+  it refuses. It only passes on requests for the name itself.
+- With a limit, only those addresses get past Apache to the page. Let's Encrypt can still reach port 80, so
+  renewals keep working.
+
+If Let's Encrypt can't reach the machine, the installer says so at the end, and Apache keeps trying. The page
+doesn't work until it succeeds, and Apache starts using the certificate within the hour after it arrives. The usual cause
+is a firewall at the hosting provider that blocks port 80 or 443.
+
+An installed machine can't be switched between the two yet. If an install with a web address stops part way and
+is run again with the other answer, the installer takes down what it had set up for the web address, and only
+that: Apache is only stopped if it came with the installer, and only the firewall openings it made are closed.
+
+Without a terminal to ask in, `--web-address NAME` and `--allow "ADDRESSES"` give the answers instead.
 
 ## The setup link
 

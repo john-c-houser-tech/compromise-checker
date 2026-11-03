@@ -9425,8 +9425,31 @@ def test_the_band_answers_with_counts_and_no_full_stop(web, monkeypatch):
     counts = band.split('<ul class="counts"')[1].split("</ul>")[0]
     # Every server, not just the ones the filter shows; each count is its own filter.
     assert '<a href="?show=critical"><strong>2</strong>' in counts
-    assert '<a href="?show=low"><strong>1</strong>' in counts
-    assert "<img" not in band  # the lighthouse is drawn inline, so nothing is fetched
+    assert '<a href="?show=low" aria-current="true"><strong>1</strong>' in counts
+    assert '<a href="?show=critical"><strong>2</strong>' in counts  # not the filter in use
+
+
+def test_the_band_tag_follows_the_answer(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+
+    def band_for(*hosts):
+        monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (list(hosts), []))
+        text = client.get("/").content.decode()
+        return text.split('<section class="band"')[1].split("</section>")[0]
+
+    assert '<p class="tag">' not in band_for(FleetHost("fine", "web", "analysed", "Low", 0.02))
+    amber = band_for(FleetHost("meh", "web", "analysed", "Elevated", 0.3))
+    assert '<p class="tag">Look into this soon</p>' in amber
+    gone = band_for(FleetHost("gone", None, "analysed", "Low", 0.02, removed=True))
+    assert "No servers being checked" in gone and '<p class="tag">' not in gone
+
+
+def test_the_answer_is_in_the_main_content(web):
+    client, _ = signed_in(web)
+    text = client.get("/").content.decode()
+    assert text.index("<main>") < text.index('<section class="band"') < text.index("</main>")
 
 
 def test_no_servers_yet_points_to_first_setup(web):
@@ -9444,3 +9467,15 @@ def test_view_only_gets_no_buttons_in_the_band(web, monkeypatch):
     band = person("viewer").get("/").content.decode().split('<section class="band"')[1]
     band = band.split("</section>")[0]
     assert 'class="actions"' not in band and "/checks/new" not in band
+
+
+def test_only_the_headline_band_is_a_band():
+    """Its class styles a whole section, so nothing else may carry it: a finding's severity
+    line is 'severity'."""
+    import re
+    from pathlib import Path
+
+    templates = Path(__file__).parent.parent / "checker" / "web" / "templates"
+    for template in templates.glob("*.j2"):
+        for tag in re.findall(r'<(\w+)[^>]*class="band"', template.read_text(encoding="utf-8")):
+            assert tag == "section", template.name

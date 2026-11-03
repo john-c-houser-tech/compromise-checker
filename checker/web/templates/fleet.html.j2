@@ -23,7 +23,7 @@
       {% if counts %}
       <ul class="counts" aria-label="Servers by result">
         {% for value, name, n in counts %}
-        <li class="tone-{{ value }}"><a href="?show={{ value }}"><strong>{{ n }}</strong> <span>{{ name }}</span></a></li>
+        <li class="tone-{{ value }}"><a href="?show={{ value }}"{% if tone == value %} aria-current="true"{% endif %}><strong>{{ n }}</strong> <span>{{ name }}</span></a></li>
         {% endfor %}
       </ul>
       {% endif %}

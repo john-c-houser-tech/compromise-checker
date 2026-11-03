@@ -1570,6 +1570,421 @@ def turn_updates_on(system: System) -> None:
         _turn_updates_on_dnf()
 
 
+# The three changes made only with the person's permission, each behind a safety check, so nobody
+# is locked out of their own machine.
+
+SSHD_DROP_IN = Path("/etc/ssh/sshd_config.d/01-compromise-checker.conf")  # first, so it wins
+SSH_LIMIT = "compromise-checker-ssh-limit"
+SSH_LIMIT_UNIT = Path("/etc/systemd/system") / f"{SSH_LIMIT}.service"
+SSH_LIMIT_RULES = Path("/etc/nftables") / f"{SSH_LIMIT}.nft"
+SSH_LIMIT_TABLE = "compromise_checker_ssh"
+_ADMIN_GROUPS = ("sudo", "admin", "wheel")
+_ACCEPTED = re.compile(r"^Accepted (publickey|password|keyboard-interactive/pam) for (\S+) from ")
+# What sshd's own processes are called: sshd, and from OpenSSH 9.8 sshd-session too.
+_SSHD_PROCESSES = ("sshd", "sshd-session")
+LIMITED = (
+    "The firewall now makes an address that opens more than 6 SSH connections in 30 seconds wait."
+)
+
+
+class Choices(NamedTuple):
+    passwords_off: bool = False
+    root_off: bool = False
+    block: bool = False
+
+
+class SshState(NamedTuple):
+    running: bool
+    settings: dict  # sshd -T, as SSH really runs
+    admins: tuple  # accounts that can act as an administrator
+    key_logins: frozenset  # admins seen logging in with a key, that still have one
+    logins: frozenset  # admins seen logging in at all
+    ports: tuple
+
+
+def sshd_settings(text: str) -> dict:
+    """`sshd -T`: one setting a line, the first of each being the one in force. OpenSSH 10 writes
+    the names as they're written in its settings, and older versions in lower case."""
+    found: dict = {}
+    for line in text.splitlines():
+        key, _, value = line.strip().partition(" ")
+        key = key.lower()
+        if key and key not in found:
+            found[key] = value.strip()
+    return found
+
+
+def admin_accounts(group: str, passwd: str) -> tuple:
+    """root, and each account in an administrators' group that can log in."""
+    shells = {}
+    for line in passwd.splitlines():
+        parts = line.split(":")
+        if len(parts) >= 7:
+            shells[parts[0]] = parts[6]
+    found = ["root"]
+    for line in group.splitlines():
+        parts = line.split(":")
+        if len(parts) < 4 or parts[0] not in _ADMIN_GROUPS:
+            continue
+        for name in parts[3].split(","):
+            name = name.strip()
+            shell = shells.get(name)
+            if shell is None or name in found:
+                continue  # a member with no account here
+            if shell.rsplit("/", 1)[-1] not in _NO_LOGIN:
+                found.append(name)
+    return tuple(found)
+
+
+def accepted_logins(journal: str) -> dict:
+    """Who sshd says logged in, and how, from `journalctl -o json`. Only what sshd's own processes
+    wrote, as root, counts: anyone on the machine can write a line that looks like sshd's."""
+    found: dict = {}
+    for line in journal.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("_COMM") not in _SSHD_PROCESSES or entry.get("_UID") != "0":
+            continue
+        message = entry.get("MESSAGE")
+        match = _ACCEPTED.match(message) if isinstance(message, str) else None
+        if match:
+            found.setdefault(match.group(2), set()).add(match.group(1))
+    return found
+
+
+def key_files(settings: dict, name: str, home: str) -> list:
+    """Where sshd looks for this account's keys."""
+    files = []
+    for pattern in settings.get("authorizedkeysfile", ".ssh/authorized_keys").split():
+        if pattern.lower() == "none":
+            continue
+        path = pattern.replace("%%", "\0").replace("%h", home).replace("%u", name)
+        path = path.replace("\0", "%")
+        files.append(Path(path) if path.startswith("/") else Path(home) / path)
+    return files
+
+
+def has_a_key(paths: list) -> bool:
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if any(line.strip() and not line.lstrip().startswith("#") for line in text.splitlines()):
+            return True
+    return False
+
+
+def ssh_state(ss_output: str) -> SshState:
+    ports = tuple(ssh_ports(ss_output, _ssh_listen()))
+    active = any(
+        _run("systemctl", "is-active", unit, check=False).stdout.strip() == "active"
+        for unit in ("ssh.service", "sshd.service", "ssh.socket")
+    )
+    sshd = shutil.which("sshd") or "/usr/sbin/sshd"
+    shown = _run(sshd, "-T", check=False) if Path(sshd).exists() else None
+    if not (ports or active) or shown is None or shown.returncode != 0:
+        return SshState(False, {}, (), frozenset(), frozenset(), ports)
+    settings = sshd_settings(shown.stdout)
+    admins = admin_accounts(
+        Path("/etc/group").read_text(encoding="utf-8"),
+        Path("/etc/passwd").read_text(encoding="utf-8"),
+    )
+    journal = _run(
+        "journalctl",
+        "-q",
+        "--no-pager",
+        "-o",
+        "json",
+        "--output-fields=MESSAGE,_COMM,_UID",
+        *(f"_COMM={name}" for name in _SSHD_PROCESSES),
+        check=False,
+    ).stdout
+    seen = accepted_logins(journal)
+    keyed = set()
+    for name in admins:
+        try:
+            home = pwd.getpwnam(name).pw_dir
+        except KeyError:
+            continue
+        if "publickey" in seen.get(name, ()) and has_a_key(key_files(settings, name, home)):
+            keyed.add(name)
+    logins = frozenset(name for name in admins if name in seen)
+    return SshState(True, settings, admins, frozenset(keyed), logins, ports)
+
+
+def passwords_on(settings: dict) -> bool:
+    return (
+        settings.get("passwordauthentication", "yes") != "no"
+        or settings.get("kbdinteractiveauthentication", "no") != "no"
+    )
+
+
+def passwords_problem(state: SshState) -> Optional[str]:
+    """Why SSH passwords have to stay on, if they do."""
+    if not state.key_logins:
+        return (
+            "no administrator account has logged in here with a key yet, so turning passwords off"
+            " could lock everyone out"
+        )
+    return None
+
+
+def root_problem(state: SshState, passwords_off: bool) -> Optional[str]:
+    """Why root login has to stay on, if it does."""
+    others = (state.key_logins if passwords_off else state.logins) - {"root"}
+    if not others:
+        how = " with a key" if passwords_off else ""
+        return (
+            f"no other administrator account has logged in here{how}, so root may be the only way"
+            " in"
+        )
+    return None
+
+
+def blocking_kind(state: SshState, firewall: str) -> str:
+    """What blocks repeated login failures here. "on": SSH's own blocking, on already. "ssh": SSH
+    has it, turned off. Otherwise the firewall limits new connections: "ufw", or "nft" for a table
+    of our own."""
+    penalties = state.settings.get("persourcepenalties")
+    if penalties is not None:
+        return "ssh" if penalties == "no" else "on"
+    return "ufw" if firewall == "ufw" else "nft"
+
+
+def _yes(answer: Callable[[], str], prompt: str) -> bool:
+    while True:
+        typed = answer_with_prompt(answer, prompt).strip().lower()
+        if typed in ("", "n", "no"):
+            return False
+        if typed in ("y", "yes"):
+            return True
+        say("Type yes or no.")
+
+
+def choose_lockdown(
+    state: SshState,
+    firewall: str,
+    answer: Optional[Callable[[], str]] = None,
+    wanted: Optional[Choices] = None,
+) -> Choices:
+    """Each change, asked separately when there's someone to ask, or taken from `wanted` when not.
+    A safety check that fails leaves that setting alone, and says why."""
+    if not state.running:
+        say(
+            "\nSSH isn't running here, so its settings are left as they are. Turning it on isn't"
+            " needed for this tool."
+        )
+        return Choices()
+    say("\nThree changes to how people log in to this machine over SSH are up to you.")
+    wanted = wanted or Choices()
+    passwords_off = root_off = block = False
+    if not passwords_on(state.settings):
+        say("SSH already refuses passwords here.")
+    else:
+        problem = passwords_problem(state)
+        if problem:
+            say(f"SSH passwords stay on: {problem}. The web page reminds you while they're on.")
+        elif answer is not None:
+            names = ", ".join(sorted(state.key_logins))
+            passwords_off = _yes(
+                answer,
+                "\nTurn off logging in to SSH with a password? Then only someone holding a key can"
+                f" log in, and a key can't be guessed. A key login has worked here for: {names}."
+                "\nType yes or no. Enter keeps passwords on.",
+            )
+        else:
+            passwords_off = wanted.passwords_off
+    if state.settings.get("permitrootlogin", "yes") == "no":
+        say("SSH already refuses root logins here.")
+    else:
+        problem = root_problem(state, passwords_off)
+        if problem:
+            if answer is not None or wanted.root_off:
+                say(f"Root login over SSH stays on: {problem}.")
+        elif answer is not None:
+            names = ", ".join(
+                sorted((state.key_logins if passwords_off else state.logins) - {"root"})
+            )
+            root_off = _yes(
+                answer,
+                "\nTurn off logging in to SSH as root? Administrators then log in as themselves and"
+                " use sudo, which leaves a record of who did what. Another administrator account"
+                f" has logged in here: {names}.\nType yes or no. Enter keeps root login on.",
+            )
+        else:
+            root_off = wanted.root_off
+    kind = blocking_kind(state, firewall)
+    if kind == "on":
+        say("SSH already holds off an address that keeps failing to log in, for longer each time.")
+    elif answer is not None:
+        how = (
+            "SSH then holds off an address that keeps failing to log in, for longer each time."
+            if kind == "ssh"
+            else "This system's SSH can't do that itself, so the firewall makes an address that"
+            " opens more than 6 SSH connections in 30 seconds wait. That could slow a tool that"
+            " logs in to this machine many times in a row."
+        )
+        block = _yes(
+            answer,
+            f"\nBlock addresses that keep trying to log in? {how}"
+            "\nType yes or no. Enter leaves it off.",
+        )
+    else:
+        block = wanted.block
+    return Choices(passwords_off, root_off, block and kind != "on")
+
+
+def wanted_ssh_settings(choices: Choices, kind: str) -> dict:
+    """What `sshd -T` should say once SSH has taken the changes."""
+    wanted = {}
+    if choices.passwords_off:
+        wanted["passwordauthentication"] = "no"
+        wanted["kbdinteractiveauthentication"] = "no"
+    if choices.root_off:
+        wanted["permitrootlogin"] = "no"
+    if choices.block and kind == "ssh":
+        wanted["persourcepenalties"] = None  # anything but "no"
+    return wanted
+
+
+def sshd_drop_in(choices: Choices, kind: str) -> Optional[str]:
+    wanted = wanted_ssh_settings(choices, kind)
+    if not wanted:
+        return None
+    names = {
+        "passwordauthentication": "PasswordAuthentication no",
+        "kbdinteractiveauthentication": "KbdInteractiveAuthentication no",
+        "permitrootlogin": "PermitRootLogin no",
+        "persourcepenalties": "PerSourcePenalties yes",
+    }
+    lines = [
+        "# Compromise Checker's installer, with the permission of the person installing it",
+        "# (installation plan, I.4). SSH takes the first value it reads, so this file comes first.",
+        *(names[key] for key in wanted),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def ssh_settings_took(shown: dict, wanted: dict) -> list:
+    """The settings SSH didn't take."""
+    return [
+        key
+        for key, value in wanted.items()
+        if (shown.get(key, "no") == "no" if value is None else shown.get(key) != value)
+    ]
+
+
+def _change_ssh(choices: Choices, kind: str) -> None:
+    text = sshd_drop_in(choices, kind)
+    if text is None:
+        return
+    sshd = shutil.which("sshd") or "/usr/sbin/sshd"
+    SSHD_DROP_IN.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    _write_file(SSHD_DROP_IN, text, 0o600)
+    if shutil.which("restorecon"):
+        _run("restorecon", str(SSHD_DROP_IN), check=False)
+    checked = _run(sshd, "-t", check=False)
+    shown = sshd_settings(_run(sshd, "-T", check=False).stdout) if checked.returncode == 0 else {}
+    missed = ssh_settings_took(shown, wanted_ssh_settings(choices, kind))
+    if checked.returncode != 0 or missed:
+        SSHD_DROP_IN.unlink()
+        why = plain_text(checked.stderr).strip() or f"SSH didn't take: {', '.join(missed)}"
+        say(
+            "SSH's settings were left as they were, because the change didn't work:"
+            f" {why}. The rest of the install went ahead."
+        )
+        return
+    for unit in ("ssh.service", "sshd.service"):  # Ubuntu's name, then Rocky's
+        _run("systemctl", "try-reload-or-restart", unit, check=False)
+    if choices.passwords_off:
+        say("SSH no longer accepts passwords. Logins already open stay open.")
+    if choices.root_off:
+        say("SSH no longer lets anyone log in as root.")
+    if choices.block and kind == "ssh":
+        say("SSH now holds off an address that keeps failing to log in.")
+
+
+def ssh_limit_rules(ports: tuple) -> str:
+    """An address opening more than 6 new SSH connections in 30 seconds has the rest dropped until
+    it slows down, the same as `ufw limit`. In a table of its own, before the firewall's own rules,
+    so firewalld can't remove it and dropping here is final."""
+    listed = ", ".join(ports)
+    rule = "limit rate over 12/minute burst 6 packets"
+    return f"""\
+#!/usr/sbin/nft -f
+# Compromise Checker's installer, with the permission of the person installing it (installation
+# plan, I.4): this system's SSH can't hold off an address that keeps failing to log in by itself.
+table inet {SSH_LIMIT_TABLE}
+delete table inet {SSH_LIMIT_TABLE}
+table inet {SSH_LIMIT_TABLE} {{
+    set recent4 {{ type ipv4_addr; flags dynamic, timeout; timeout 1m; }}
+    set recent6 {{ type ipv6_addr; flags dynamic, timeout; timeout 1m; }}
+    chain input {{
+        type filter hook input priority filter - 10; policy accept;
+        iif "lo" accept
+        tcp dport {{ {listed} }} ct state new update @recent4 {{ ip saddr {rule} }} drop
+        tcp dport {{ {listed} }} ct state new update @recent6 {{ ip6 saddr {rule} }} drop
+    }}
+}}
+"""
+
+
+def ssh_limit_unit(nft: str) -> str:
+    return f"""\
+[Unit]
+Description=Compromise Checker: a limit on new SSH connections from each address
+After=network-pre.target
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={nft} -f {SSH_LIMIT_RULES}
+ExecStop={nft} delete table inet {SSH_LIMIT_TABLE}
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _limit_ssh_in_nftables(ports: tuple) -> None:
+    nft = shutil.which("nft")
+    if nft is None:
+        say("Addresses aren't limited: this system has no nft command.")
+        return
+    SSH_LIMIT_RULES.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    _write_file(SSH_LIMIT_RULES, ssh_limit_rules(ports), 0o644)
+    checked = _run(nft, "-c", "-f", str(SSH_LIMIT_RULES), check=False)
+    if checked.returncode != 0:
+        SSH_LIMIT_RULES.unlink()
+        say(
+            "Addresses aren't limited: the rules didn't pass nft's check:"
+            f" {plain_text(checked.stderr)}"
+        )
+        return
+    _write_file(SSH_LIMIT_UNIT, ssh_limit_unit(nft), 0o644)
+    if shutil.which("restorecon"):
+        _run("restorecon", str(SSH_LIMIT_RULES), str(SSH_LIMIT_UNIT), check=False)
+    _run("systemctl", "daemon-reload")
+    _run("systemctl", "enable", "--now", f"{SSH_LIMIT}.service")
+    say(LIMITED)
+
+
+def apply_lockdown(choices: Choices, kind: str) -> None:
+    """At the end, once everything else has worked. ufw's limit is set with the firewall."""
+    _change_ssh(choices, kind)
+    ports = tuple(ssh_ports(_run("ss", "-Hltnp", check=False).stdout, _ssh_listen()))
+    if choices.block and kind == "nft" and ports:
+        _limit_ssh_in_nftables(ports)
+    elif choices.block and kind == "ufw":
+        say(LIMITED)
+
+
 def _set_up_apache(web: Web, apache: Apache, secret: str) -> None:
     say(f"Setting up Apache to give {web.name} a certificate and pass requests to the tool.")
     _allow_proxy_under_selinux()
@@ -1744,7 +2159,10 @@ def install(
     web: Optional[Web] = None,
     ask: bool = False,
     dns_minutes: float = DNS_WAIT_MINUTES,
+    lockdown: Optional[Choices] = None,
 ) -> int:
+    """`lockdown` holds the answers to the three questions about SSH, when they aren't to be asked.
+    With neither those nor a terminal, nothing about SSH is changed."""
     os.umask(0o022)  # what's installed has to be readable by the tool's account, and no more
     if os.geteuid() != 0:
         raise Stop("This has to be run as an administrator: sudo python3 -I install.py")
@@ -1804,6 +2222,11 @@ def install(
         if ask and web is None:
             web = ask_route(input)
         apache = apache_for(system) if web else None
+        firewall = running_firewall() or ("ufw" if system.install is _APT else "firewalld")
+        state = ssh_state(ss_output)
+        kind = blocking_kind(state, firewall)
+        asking = lockdown is None and sys.stdin.isatty()
+        choices = choose_lockdown(state, firewall, input if asking else None, lockdown)
         if web is not None and apache is not None:
             problem = _web_ports_problem(apache)
             if problem:
@@ -1830,7 +2253,7 @@ def install(
             _run("systemctl", "stop", apache.service, check=False)
         if web is None:
             _undo_web_address(apache_for(system))
-        set_up_firewall(system)
+        set_up_firewall(system, limit=choices.block and kind == "ufw")
         turn_updates_on(system)
         _run("systemctl", "stop", UNIT, check=False)  # one left by an install that didn't finish
         if not port_free(PORT):  # with that stopped, whatever's left isn't this tool
@@ -1857,6 +2280,7 @@ def install(
     else:
         _wait_for_page(ADDRESS)
     link = new_link(address)
+    apply_lockdown(choices, kind)
     _write_file(FINISHED, f"{version}\n", 0o644)
     if web is None:
         say("\nCompromise Checker is installed, and it only answers on this machine for now.")
@@ -1910,6 +2334,23 @@ def main(argv: Optional[list] = None) -> int:
         default="",
         help="only these addresses or ranges can reach the page, apart by spaces",
     )
+    parser.add_argument(
+        "--ssh-passwords-off",
+        action="store_true",
+        help="turn off SSH logins with a password, instead of asking; only done if a key login has"
+        " worked for an administrator account",
+    )
+    parser.add_argument(
+        "--root-login-off",
+        action="store_true",
+        help="turn off SSH logins as root, instead of asking; only done if another administrator"
+        " account has logged in",
+    )
+    parser.add_argument(
+        "--block-login-failures",
+        action="store_true",
+        help="hold off addresses that keep trying to log in over SSH, instead of asking",
+    )
     parser.add_argument("--test-certificates", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--dns-wait-minutes", type=float, default=DNS_WAIT_MINUTES, help=argparse.SUPPRESS
@@ -1929,8 +2370,17 @@ def main(argv: Optional[list] = None) -> int:
         elif arguments.allow:
             raise Stop("--allow only means something with --web-address.")
         ask = web is None and sys.stdin.isatty()
+        wanted = Choices(
+            arguments.ssh_passwords_off, arguments.root_login_off, arguments.block_login_failures
+        )
         return install(
-            VERSION, arguments.source, arguments.new_machine, web, ask, arguments.dns_wait_minutes
+            VERSION,
+            arguments.source,
+            arguments.new_machine,
+            web,
+            ask,
+            arguments.dns_wait_minutes,
+            wanted if any(wanted) else None,
         )
     except Stop as exc:
         print(f"\n{exc}", file=sys.stderr)

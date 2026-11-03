@@ -5,6 +5,7 @@ files with a real key is in tests/test_installer.py."""
 import importlib.util
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -1216,6 +1217,321 @@ class Updates(unittest.TestCase):
         for text in (installer.APT_UPDATES_TEXT, installer.DNF_UPDATES_TEXT):
             self.assertNotIn("Automatic-Reboot", text)
             self.assertNotIn("reboot =", text)
+
+
+shutil_which = shutil.which
+
+SSHD_T = (
+    "port 22\npasswordauthentication yes\nkbdinteractiveauthentication no\n"
+    "permitrootlogin yes\nauthorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n"
+)
+ADMIN_GROUP = "root:x:0:\nsudo:x:27:sam,gone,daemonish\nwheel:x:10:pat\nusers:x:100:lee\n"
+ADMIN_PASSWD = (
+    "root:x:0:0:root:/root:/bin/bash\nsam:x:1000:1000::/home/sam:/bin/bash\n"
+    "pat:x:1001:1001::/home/pat:/bin/zsh\nlee:x:1002:1002::/home/lee:/bin/bash\n"
+    "daemonish:x:998:998::/var/lib/d:/usr/sbin/nologin\n"
+)
+
+
+def journal_line(message, comm="sshd", uid="0"):
+    return json.dumps({"MESSAGE": message, "_COMM": comm, "_UID": uid})
+
+
+def state(key_logins=(), logins=(), settings=None, running=True):
+    return installer.SshState(
+        running,
+        installer.sshd_settings(SSHD_T) if settings is None else settings,
+        ("root", "sam"),
+        frozenset(key_logins),
+        frozenset(set(logins) | set(key_logins)),
+        ("22",),
+    )
+
+
+class Answers:
+    def __init__(self, *typed):
+        self.typed = list(typed)
+        self.asked = 0
+
+    def __call__(self):
+        self.asked += 1
+        return self.typed.pop(0)
+
+
+class Questions(unittest.TestCase):
+    def setUp(self):
+        real = installer.say
+        self.said = []
+        installer.say = self.said.append
+        self.addCleanup(setattr, installer, "say", real)
+
+    def saw(self, text):
+        return any(text in line for line in self.said)
+
+    def test_sshds_settings_are_read_first_value_first(self):
+        found = installer.sshd_settings("port 22\nport 2200\nPasswordAuthentication no\n")
+        self.assertEqual(installer.sshd_settings("Port 2200\n")["port"], "2200")
+        self.assertEqual(found["port"], "22")
+        self.assertEqual(found["passwordauthentication"], "no")
+
+    def test_administrators_are_root_and_the_groups_members_who_can_log_in(self):
+        self.assertEqual(
+            installer.admin_accounts(ADMIN_GROUP, ADMIN_PASSWD), ("root", "sam", "pat")
+        )
+
+    def test_only_sshds_own_lines_count_as_logins(self):
+        journal = "\n".join(
+            [
+                journal_line("Accepted publickey for sam from 192.0.2.9 port 5000 ssh2: ED25519 x"),
+                journal_line("Accepted password for root from 192.0.2.9 port 5001 ssh2"),
+                journal_line("Accepted publickey for pat from 192.0.2.9 port 5002 ssh2", "logger"),
+                journal_line(
+                    "Accepted publickey for lee from 192.0.2.9 port 5003 ssh2", uid="1000"
+                ),
+                journal_line(
+                    "Accepted publickey for root from 192.0.2.9 port 5004 ssh2", "sshd-session"
+                ),
+                journal_line("Failed password for pat from 192.0.2.9 port 5005 ssh2"),
+                "not json",
+                "[1]",
+            ]
+        )
+        self.assertEqual(
+            installer.accepted_logins(journal),
+            {"sam": {"publickey"}, "root": {"password", "publickey"}},
+        )
+
+    def test_where_sshd_looks_for_keys(self):
+        settings = {"authorizedkeysfile": ".ssh/authorized_keys /etc/keys/%u %h/k%%"}
+        self.assertEqual(
+            installer.key_files(settings, "sam", "/home/sam"),
+            [Path("/home/sam/.ssh/authorized_keys"), Path("/etc/keys/sam"), Path("/home/sam/k%")],
+        )
+        self.assertEqual(installer.key_files({"authorizedkeysfile": "none"}, "sam", "/h"), [])
+
+    def test_a_key_file_of_comments_holds_no_key(self):
+        with tempfile.TemporaryDirectory() as folder:
+            empty, keyed = Path(folder) / "empty", Path(folder) / "keyed"
+            empty.write_text("# nothing\n\n")
+            keyed.write_text("# a key\nssh-ed25519 AAAA sam\n")
+            self.assertFalse(installer.has_a_key([empty, Path(folder) / "missing"]))
+            self.assertTrue(installer.has_a_key([empty, keyed]))
+
+    def test_passwords_stay_on_without_a_key_login(self):
+        self.assertIsNotNone(installer.passwords_problem(state(logins=["root", "sam"])))
+        self.assertIsNone(installer.passwords_problem(state(key_logins=["root"])))
+
+    def test_root_login_stays_on_without_another_way_in(self):
+        self.assertIsNotNone(installer.root_problem(state(key_logins=["root"]), False))
+        self.assertIsNone(installer.root_problem(state(logins=["sam"]), False))
+        # With passwords going off, sam's password login no longer counts.
+        self.assertIsNotNone(
+            installer.root_problem(state(key_logins=["root"], logins=["sam"]), True)
+        )
+        self.assertIsNone(installer.root_problem(state(key_logins=["sam"]), True))
+
+    def test_what_does_the_blocking(self):
+        on = state(settings={"persourcepenalties": "crash:90s authfail:5s"})
+        off = state(settings={"persourcepenalties": "no"})
+        self.assertEqual(installer.blocking_kind(on, "ufw"), "on")
+        self.assertEqual(installer.blocking_kind(off, "ufw"), "ssh")
+        self.assertEqual(installer.blocking_kind(state(), "ufw"), "ufw")
+        self.assertEqual(installer.blocking_kind(state(), "firewalld"), "nft")
+
+    def test_without_ssh_nothing_is_asked(self):
+        answers = Answers()
+        found = installer.choose_lockdown(state(running=False), "ufw", answers)
+        self.assertEqual(found, installer.Choices())
+        self.assertEqual(answers.asked, 0)
+        self.assertTrue(self.saw("SSH isn't running here"))
+
+    def test_each_change_is_asked_separately(self):
+        answers = Answers("yes", "no", "y")
+        found = installer.choose_lockdown(state(key_logins=["sam"]), "ufw", answers)
+        self.assertEqual(found, installer.Choices(True, False, True))
+        self.assertEqual(answers.asked, 3)
+
+    def test_enter_is_no(self):
+        answers = Answers("", "", "")
+        found = installer.choose_lockdown(state(key_logins=["sam"]), "ufw", answers)
+        self.assertEqual(found, installer.Choices())
+
+    def test_an_unclear_answer_is_asked_again(self):
+        answers = Answers("maybe", "yes", "", "")
+        found = installer.choose_lockdown(state(key_logins=["sam"]), "ufw", answers)
+        self.assertTrue(found.passwords_off)
+        self.assertTrue(self.saw("Type yes or no."))
+
+    def test_ctrl_d_stops_before_anything_changes(self):
+        def gone():
+            raise EOFError
+
+        with self.assertRaisesRegex(installer.Stop, "changed nothing"):
+            installer.choose_lockdown(state(key_logins=["sam"]), "ufw", gone)
+
+    def test_a_question_that_could_lock_someone_out_isnt_asked(self):
+        # Only root has a key login: passwords can go, but then root is the only way in.
+        answers = Answers("yes", "yes")
+        found = installer.choose_lockdown(state(key_logins=["root"]), "ufw", answers)
+        self.assertEqual(found, installer.Choices(True, False, True))
+        self.assertEqual(answers.asked, 2)
+        self.assertTrue(self.saw("Root login over SSH stays on"))
+
+    def test_no_key_login_keeps_passwords_on_and_says_why(self):
+        answers = Answers("yes", "no")
+        found = installer.choose_lockdown(state(logins=["sam"]), "ufw", answers)
+        self.assertFalse(found.passwords_off)
+        self.assertTrue(found.root_off)
+        self.assertTrue(self.saw("SSH passwords stay on: no administrator account has logged in"))
+
+    def test_settings_already_made_arent_asked(self):
+        settings = {
+            "passwordauthentication": "no",
+            "kbdinteractiveauthentication": "no",
+            "permitrootlogin": "no",
+            "persourcepenalties": "authfail:5s",
+        }
+        answers = Answers()
+        found = installer.choose_lockdown(state(settings=settings), "ufw", answers)
+        self.assertEqual(found, installer.Choices())
+        self.assertEqual(answers.asked, 0)
+        self.assertTrue(self.saw("already refuses passwords"))
+        self.assertTrue(self.saw("already refuses root logins"))
+        self.assertTrue(self.saw("already holds off"))
+
+    def test_keyboard_interactive_counts_as_a_password(self):
+        settings = {"passwordauthentication": "no", "kbdinteractiveauthentication": "yes"}
+        self.assertTrue(installer.passwords_on(settings))
+
+    def test_answers_given_ahead_still_pass_the_safety_checks(self):
+        wanted = installer.Choices(True, True, True)
+        found = installer.choose_lockdown(state(key_logins=["root"]), "ufw", None, wanted)
+        self.assertEqual(found, installer.Choices(True, False, True))
+        self.assertEqual(installer.choose_lockdown(state(), "ufw", None), installer.Choices())
+        nothing = installer.choose_lockdown(state(key_logins=["sam"]), "ufw", None)
+        self.assertEqual(nothing, installer.Choices())
+        some = installer.Choices(False, True, False)
+        found = installer.choose_lockdown(state(key_logins=["sam"]), "ufw", None, some)
+        self.assertEqual(found, some)
+
+    def test_the_ssh_file_holds_only_what_was_agreed(self):
+        text = installer.sshd_drop_in(installer.Choices(True, False, True), "ssh")
+        self.assertIn("PasswordAuthentication no\nKbdInteractiveAuthentication no\n", text)
+        self.assertIn("PerSourcePenalties yes\n", text)
+        self.assertNotIn("PermitRootLogin", text)
+        self.assertIsNone(installer.sshd_drop_in(installer.Choices(False, False, True), "ufw"))
+        self.assertTrue(installer.SSHD_DROP_IN.name.startswith("01-"))
+
+    def test_what_ssh_didnt_take(self):
+        wanted = installer.wanted_ssh_settings(installer.Choices(True, True, True), "ssh")
+        shown = {
+            "passwordauthentication": "no",
+            "kbdinteractiveauthentication": "no",
+            "permitrootlogin": "yes",
+            "persourcepenalties": "authfail:5s",
+        }
+        self.assertEqual(installer.ssh_settings_took(shown, wanted), ["permitrootlogin"])
+        self.assertEqual(
+            installer.ssh_settings_took({}, wanted),
+            list(wanted),
+        )
+
+    def test_the_limit_rules(self):
+        rules = installer.ssh_limit_rules(("22", "2200"))
+        self.assertIn("tcp dport { 22, 2200 } ct state new update @recent4", rules)
+        self.assertIn("ip6 saddr limit rate over 12/minute burst 6 packets", rules)
+        self.assertIn("priority filter - 10", rules)
+        self.assertIn(f"delete table inet {installer.SSH_LIMIT_TABLE}\n", rules)
+        unit = installer.ssh_limit_unit("/usr/sbin/nft")
+        self.assertIn(f"ExecStart=/usr/sbin/nft -f {installer.SSH_LIMIT_RULES}\n", unit)
+        self.assertIn(
+            f"ExecStop=/usr/sbin/nft delete table inet {installer.SSH_LIMIT_TABLE}\n", unit
+        )
+
+
+class ChangingSsh(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        real = (installer.SSHD_DROP_IN, installer._run, installer.say, installer.shutil.which)
+        installer.SSHD_DROP_IN = Path(folder.name) / "sshd_config.d" / "01-compromise-checker.conf"
+        installer.shutil.which = lambda name: None
+        self.said = []
+        installer.say = self.said.append
+        self.called = []
+
+        def restore():
+            installer.SSHD_DROP_IN, installer._run, installer.say, installer.shutil.which = real
+
+        self.addCleanup(restore)
+
+    def sshd(self, check=0, shown="passwordauthentication no\nkbdinteractiveauthentication no\n"):
+        def run(*command, **more):
+            self.called.append(command)
+            if command[-1] == "-t":
+                return subprocess.CompletedProcess(
+                    list(command), check, "", "bad line 3\n" if check else ""
+                )
+            if command[-1] == "-T":
+                return subprocess.CompletedProcess(list(command), 0, shown, "")
+            return subprocess.CompletedProcess(list(command), 0, "", "")
+
+        installer._run = run
+
+    def test_ssh_takes_the_change_and_reloads(self):
+        self.sshd()
+        installer._change_ssh(installer.Choices(True, False, False), "ufw")
+        self.assertEqual(installer.SSHD_DROP_IN.stat().st_mode & 0o777, 0o600)
+        self.assertIn(("systemctl", "try-reload-or-restart", "ssh.service"), self.called)
+        self.assertIn(("systemctl", "try-reload-or-restart", "sshd.service"), self.called)
+        self.assertTrue(any("no longer accepts passwords" in line for line in self.said))
+
+    def test_a_change_ssh_refuses_is_taken_back(self):
+        self.sshd(check=255)
+        installer._change_ssh(installer.Choices(True, False, False), "ufw")
+        self.assertFalse(installer.SSHD_DROP_IN.exists())
+        self.assertFalse(any(command[0] == "systemctl" for command in self.called))
+        self.assertTrue(any("bad line 3" in line for line in self.said))
+
+    def test_a_change_that_doesnt_take_is_taken_back(self):
+        self.sshd(shown="passwordauthentication yes\n")
+        installer._change_ssh(installer.Choices(True, False, False), "ufw")
+        self.assertFalse(installer.SSHD_DROP_IN.exists())
+        self.assertFalse(any(command[0] == "systemctl" for command in self.called))
+
+    def test_nothing_agreed_changes_nothing(self):
+        self.sshd()
+        installer._change_ssh(installer.Choices(), "ufw")
+        self.assertFalse(installer.SSHD_DROP_IN.exists())
+        self.assertEqual(self.called, [])
+
+    @unittest.skipUnless(
+        Path("/usr/sbin/sshd").exists() or shutil_which("sshd"), "no sshd here to check against"
+    )
+    def test_real_sshd_takes_the_file_first(self):
+        """The drop-in, read before a later file turning passwords on, as a cloud image has."""
+        sshd = shutil_which("sshd") or "/usr/sbin/sshd"
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            (base / "d").mkdir()
+            key = base / "host_key"
+            keygen = shutil_which("ssh-keygen")
+            if keygen is None:
+                self.skipTest("no ssh-keygen here")
+            subprocess.run([keygen, "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+            text = installer.sshd_drop_in(installer.Choices(True, True, False), "ufw")
+            (base / "d" / installer.SSHD_DROP_IN.name).write_text(text)
+            (base / "d" / "50-cloud-init.conf").write_text("PasswordAuthentication yes\n")
+            config = base / "sshd_config"
+            config.write_text(f"Include {base}/d/*.conf\nHostKey {key}\nPermitRootLogin yes\n")
+            done = subprocess.run(
+                [sshd, "-T", "-f", str(config)], capture_output=True, text=True, check=False
+            )
+            if done.returncode != 0:
+                self.skipTest(f"sshd -T can't run here: {done.stderr.strip()}")
+            shown = installer.sshd_settings(done.stdout)
+            wanted = installer.wanted_ssh_settings(installer.Choices(True, True, False), "ufw")
+            self.assertEqual(installer.ssh_settings_took(shown, wanted), [])
 
 
 class Fetching(unittest.TestCase):

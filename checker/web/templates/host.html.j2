@@ -12,7 +12,8 @@
         <h1 id="server-name">{{ row.host.host }}</h1>
         <p class="verdict">{{ row.verdict }}</p>
         {% if row.action %}<p class="action">{{ row.action }}</p>{% endif %}
-        <p class="meta">{% if row.host.group %}{{ row.host.group }} · {% endif %}{{ row.checked }}</p>
+        {% set meta = [row.host.group, row.checked] | select | list %}
+        {% if meta %}<p class="meta">{{ meta | join(" · ") }}</p>{% endif %}
       </div>
     </div>
     <div class="chance host-chance">
@@ -42,6 +43,26 @@
 {% endblock %}
 {% block main %}
 <div class="host-layout">
+<div class="host-side">
+  {% if sections %}
+  <section class="side-card">
+    <h2>At a glance</h2>
+    <dl class="glance">
+      {% for section in sections %}<dt>{{ section.title }}</dt><dd>{{ section.findings | length }}</dd>{% endfor %}
+      {% if suppressed %}<dt>Hidden as accepted</dt><dd>{{ suppressed | length }}</dd>{% endif %}
+      {% if gaps %}<dt>Couldn't be checked</dt><dd>{{ gaps | length }}</dd>{% endif %}
+      {% if row.exposures %}<dt>Known threats open</dt><dd>{{ row.exposures | length }}</dd>{% endif %}
+    </dl>
+  </section>
+  {% endif %}
+  <section class="side-card side-note">
+    {{ draw.buoy() }}
+    <div>
+      <p>This is an estimate, not proof either way. A finding is a reason to look, and many have innocent explanations. Before changing anything on a server you think was broken into, get advice: what's on it may be evidence.</p>
+      <p>Text in a box like <span class="from-server">this</span> comes from the server, and an intruder could have written it. This tool's advice only appears under "What to do", and the AI advisor's words, if any, have their own labelled section.</p>
+    </div>
+  </section>
+</div>
 <div class="host-main">
 {% if (sections or suppressed) and not full_access(request) %}<p><a href="{{ url('evidence', name=row.host.host) }}">See the evidence behind these findings</a></p>{% endif %}
 {% for section in sections %}
@@ -49,9 +70,9 @@
   <h2>{{ section.title }} <span>({{ section.findings | length }})</span></h2>
   {% for f in section.findings %}
   <article class="finding band-{{ f.band_class }}">
-    <p class="severity">{{ draw.icon("high") }}<span>{{ f.band_words }}</span>{% if f.new %}<span class="fresh">New since the last check</span>{% endif %}{% if f.number %} <span class="number">F-{{ f.number }}</span>{% endif %}</p>
+    <p class="severity" aria-hidden="true">{% if f.band_class in ("critical", "high", "medium") %}{{ draw.icon({"critical": "critical", "high": "high", "medium": "elevated"}[f.band_class]) }}{% endif %}<span>{{ f.band_words }}</span>{% if f.new %}<span class="fresh">New since the last check</span>{% endif %}{% if f.number %} <span class="number">F-{{ f.number }}</span>{% endif %}</p>
     <div class="finding-body">
-      <h3>{{ f.meaning }}</h3>
+      <h3><span class="visually-hidden">{{ f.band_words }}{% if f.new %}, new since the last check{% endif %}: </span>{{ f.meaning }}</h3>
       {% if f.raised_by %}<p class="raised">A known threat makes this more serious: {{ f.raised_by }}.</p>{% endif %}
       <p>{{ f.title }}</p>
       <p class="from-server">{{ f.summary | visible(400) }}</p>
@@ -123,25 +144,5 @@
 </section>
 {% endif %}
 </div>
-<aside class="host-side">
-  {% if sections %}
-  <section class="side-card">
-    <h2>At a glance</h2>
-    <dl class="glance">
-      {% for section in sections %}<dt>{{ section.title }}</dt><dd>{{ section.findings | length }}</dd>{% endfor %}
-      {% if suppressed %}<dt>Hidden as accepted</dt><dd>{{ suppressed | length }}</dd>{% endif %}
-      {% if gaps %}<dt>Couldn't be checked</dt><dd>{{ gaps | length }}</dd>{% endif %}
-      {% if row.exposures %}<dt>Known threats open</dt><dd>{{ row.exposures | length }}</dd>{% endif %}
-    </dl>
-  </section>
-  {% endif %}
-  <section class="side-card side-note">
-    {{ draw.buoy() }}
-    <div>
-      <p>This is an estimate, not proof either way. A finding is a reason to look, and many have innocent explanations. Before changing anything on a server you think was broken into, get advice: what's on it may be evidence.</p>
-      <p>Text in a box like <span class="from-server">this</span> comes from the server, and an intruder could have written it. This tool's advice only appears under "What to do", and the AI advisor's words, if any, have their own labelled section.</p>
-    </div>
-  </section>
-</aside>
 </div>
 {% endblock %}

@@ -18,9 +18,9 @@
   <h2>What each finding is based on</h2>
   {% for f in findings %}
   <article class="finding band-{{ f.band_class }}" id="finding-{{ loop.index }}">
-    <p class="severity">{{ draw.icon("high") }}<span>{{ f.band_words }}</span>{% if f.number %} <span class="number">F-{{ f.number }}</span>{% endif %}</p>
+    <p class="severity" aria-hidden="true">{% if f.band_class in ("critical", "high", "medium") %}{{ draw.icon({"critical": "critical", "high": "high", "medium": "elevated"}[f.band_class]) }}{% endif %}<span>{{ f.band_words }}</span>{% if f.number %} <span class="number">F-{{ f.number }}</span>{% endif %}</p>
     <div class="finding-body">
-    <h3>{{ f.title }}</h3>
+    <h3><span class="visually-hidden">{{ f.band_words }}: </span>{{ f.title }}</h3>
     {% if f.excerpts %}
     <ul class="excerpts">
       {% for e in f.excerpts %}

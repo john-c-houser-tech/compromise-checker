@@ -353,12 +353,8 @@ def prove_web(node: "Node", checks, distro: str) -> None:
         == "600 root",
     )
     checks(
-        "the daily reload is set, and the one for a certificate as it arrives",
-        node.out(
-            "systemctl is-enabled compromise-checker-certificate-reload.timer"
-            " compromise-checker-certificate-reload.path"
-        ).split()
-        == ["enabled", "enabled"],
+        "the hourly reload is set",
+        node.out("systemctl is-enabled compromise-checker-certificate-reload.timer") == "enabled",
     )
     if distro.startswith("rocky"):
         labelled = node.out("semanage port -l | grep -E '^http_port_t'")

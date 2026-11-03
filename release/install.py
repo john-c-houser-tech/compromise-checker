@@ -1128,49 +1128,30 @@ MDContactEmail webmaster@{web.name}
 
 
 def reload_units(apache: Apache, web: Optional[Web] = None) -> dict:
-    """mod_md renews certificates by itself, but Apache only uses a renewed one once it reloads.
-    The reload returns before Apache has moved the certificate out of staging, so the service waits
-    for that: otherwise the path unit would fire again and again until systemd gave up on it."""
-    wait = ""
-    if web is not None:
-        staged = f"{apache.real_store}/staging/{web.name}/pubcert.pem"
-        wait = (
-            "ExecStartPost=/bin/sh -c 'for i in $(seq 30); do"
-            f' [ -e "{staged}" ] || exit 0; sleep 1; done; exit 0\'\n'
-        )
+    """mod_md renews certificates by itself, but Apache only uses a new one once it reloads. Hourly,
+    so one that arrives late is in use within the hour: until then the page doesn't work at all.
+    A reload with nothing new costs next to nothing. (Watching for the file instead would need
+    systemd to read Apache's files, which SELinux on Rocky 9 doesn't allow.)"""
     service = f"""[Unit]
-Description=Compromise Checker: let Apache use a renewed certificate
+Description=Compromise Checker: let Apache use a new certificate
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/systemctl reload {apache.service}
-{wait}"""
+"""
     timer = """[Unit]
-Description=Compromise Checker: let Apache use a renewed certificate, daily
+Description=Compromise Checker: let Apache use a new certificate, hourly
 
 [Timer]
-OnCalendar=daily
-RandomizedDelaySec=1h
+OnCalendar=hourly
+RandomizedDelaySec=5min
 Persistent=true
 
 [Install]
 WantedBy=timers.target
 """
     folder = Path("/etc/systemd/system")
-    units = {folder / f"{RELOAD}.service": service, folder / f"{RELOAD}.timer": timer}
-    if web is not None:
-        # And as soon as one arrives, however late: until then the page doesn't work at all.
-        units[folder / f"{RELOAD}.path"] = f"""[Unit]
-Description=Compromise Checker: let Apache use a new certificate as soon as it arrives
-
-[Path]
-PathExists={apache.real_store}/staging/{web.name}/pubcert.pem
-Unit={RELOAD}.service
-
-[Install]
-WantedBy=paths.target
-"""
-    return units
+    return {folder / f"{RELOAD}.service": service, folder / f"{RELOAD}.timer": timer}
 
 
 def port_free_everywhere(port: int) -> bool:
@@ -1347,7 +1328,7 @@ def _set_up_apache(web: Web, apache: Apache, secret: str) -> None:
     for path, text in reload_units(apache, web).items():
         _write_file(path, text, 0o644)
     _run("systemctl", "daemon-reload")
-    _run("systemctl", "enable", "--now", f"{RELOAD}.timer", f"{RELOAD}.path")
+    _run("systemctl", "enable", "--now", f"{RELOAD}.timer")
     _open_firewall()  # first, so Let's Encrypt's check can get in as soon as Apache asks
     _run("systemctl", "enable", apache.service)
     _run("systemctl", "restart", apache.service)
@@ -1364,7 +1345,7 @@ def _undo_web_address(apache: Apache) -> None:
         if apache is APACHE_APT:
             _run("a2dissite", "-q", "compromise-checker", check=False)
         apache.config.unlink()
-    _run("systemctl", "disable", "--now", f"{RELOAD}.timer", f"{RELOAD}.path", check=False)
+    _run("systemctl", "disable", "--now", f"{RELOAD}.timer", check=False)
     # Apache must really stop passing requests on before this goes on: the tool is about to start
     # trusting whatever reaches it. If it can't, the marker stays, so a later run tries again.
     exists = _run("systemctl", "cat", apache.service, check=False).returncode == 0
@@ -1619,9 +1600,9 @@ def install(
         if not certified:
             say(
                 "\nLet's Encrypt hasn't given it a certificate yet, so the page won't work until it"
-                " does. Apache keeps trying by itself, and starts using the certificate as soon as"
-                " it arrives. The usual cause is a firewall at the hosting provider that blocks"
-                " port 80 or 443: let both in."
+                " does. Apache keeps trying by itself, and starts using the certificate within the"
+                " hour after it arrives. The usual cause is a firewall at the hosting provider that"
+                " blocks port 80 or 443: let both in."
             )
     if link is None:
         say(f"\nThere's already an account, so sign in at {address}/login")

@@ -564,16 +564,6 @@ class WebAddress(unittest.TestCase):
             with self.assertRaises(installer.Stop):
                 installer.apache_config(web, bad)
 
-    def test_a_new_certificate_is_used_as_soon_as_it_arrives(self):
-        web = installer.Web("checker.example.org", ())
-        for apache, store in (
-            (installer.APACHE_APT, "/var/lib/apache2/md"),
-            (installer.APACHE_DNF, "/var/lib/httpd/md"),
-        ):
-            units = installer.reload_units(apache, web)
-            path = [text for name, text in units.items() if name.suffix == ".path"][0]
-            self.assertIn(f"PathExists={store}/staging/checker.example.org/pubcert.pem", path)
-
     def test_files_are_never_readable_by_others_even_for_a_moment(self):
         seen = []
         real_open = installer.os.open
@@ -723,15 +713,6 @@ class WebAddress(unittest.TestCase):
         )
         self.assertEqual(installer.hosts_file_names(hosts, "checker.example.org"), [])
 
-    def test_the_reload_waits_for_the_certificate_to_move(self):
-        web = installer.Web("checker.example.org", ())
-        units = installer.reload_units(installer.APACHE_APT, web)
-        service = [text for name, text in units.items() if name.suffix == ".service"][0]
-        self.assertIn("ExecStartPost=/bin/sh -c", service)
-        self.assertIn("/var/lib/apache2/md/staging/checker.example.org/pubcert.pem", service)
-        plain = installer.reload_units(installer.APACHE_APT)
-        self.assertNotIn("ExecStartPost", "".join(plain.values()))
-
     def test_taking_the_web_address_down_undoes_only_what_this_installer_did(self):
         called = []
         real = (installer._run, installer.shutil.which, installer.WEB_MARKER)
@@ -856,7 +837,8 @@ class WebAddress(unittest.TestCase):
         units = installer.reload_units(installer.APACHE_APT)
         texts = "".join(units.values())
         self.assertIn("ExecStart=/usr/bin/systemctl reload apache2", texts)
-        self.assertIn("OnCalendar=daily", texts)
+        self.assertIn("OnCalendar=hourly", texts)
+        self.assertNotIn("[Path]", texts)  # SELinux on Rocky 9 won't let systemd watch the file
 
     def test_the_tool_is_told_its_public_address(self):
         unit = installer.web_unit(990, "https://checker.example.org")

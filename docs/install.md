@@ -55,8 +55,8 @@ somewhere else, it stops.
 
 It then sets up Apache, from the system's own packages, in front of the tool:
 
-- Apache gets a certificate from Let's Encrypt for the name, with its own `mod_md` module, and renews it. A daily
-  reload lets Apache use a renewed certificate. Let's Encrypt checks that the name leads to this machine, and
+- Apache gets a certificate from Let's Encrypt for the name, with its own `mod_md` module, and renews it. An hourly
+  reload lets Apache use a new certificate. Let's Encrypt checks that the name leads to this machine, and
   the name appears in public certificate logs. The account it makes there gives `webmaster@` and the name as
   its contact, since `mod_md` needs one, so nothing personal is sent.
 - It answers on port 443, and port 80 only sends people to 443 and lets Let's Encrypt check the name. HTTP/2 is
@@ -72,7 +72,7 @@ It then sets up Apache, from the system's own packages, in front of the tool:
   renewals keep working.
 
 If Let's Encrypt can't reach the machine, the installer says so at the end, and Apache keeps trying. The page
-doesn't work until it succeeds, and Apache starts using the certificate as soon as it arrives. The usual cause
+doesn't work until it succeeds, and Apache starts using the certificate within the hour after it arrives. The usual cause
 is a firewall at the hosting provider that blocks port 80 or 443.
 
 An installed machine can't be switched between the two yet. If an install with a web address stops part way and

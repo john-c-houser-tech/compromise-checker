@@ -133,7 +133,8 @@ running on a machine of their own and reach its first-setup page in a browser.
 - **I.3 The web address route.** The question at the start, the check that the machine can be reached,
   Caddy with the proxy secret, retrying until DNS works, the stop if port 80 or 443 is taken, and the
   optional address limit.
-- **I.4 Lockdown.** The automatic changes and how they're reported, the three permission questions and their
+- **I.4 Lockdown.** Check that the firewall really closes what a new system leaves open (Linode's Rocky 10 has
+  `rpcbind` on port 111 and Cockpit's socket on port 9090). The automatic changes and how they're reported, the three permission questions and their
   safety checks, and the notices on the page. The SELinux test on a Rocky Linode goes here, and the
   policy wording for what the script changes.
 - **I.5 Keys and lost machines.** The evidence key on the page, first setup pointing to it, the statement

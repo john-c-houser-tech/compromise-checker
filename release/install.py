@@ -62,6 +62,9 @@ _FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _PLAIN_ACCOUNTS = {"nobody", "root", "ubuntu", "rocky", "cloud-user", "linode"}
 _NO_LOGIN = ("nologin", "false", "sync", "shutdown", "halt")
+# What a new system already has open: rpcbind, and systemd holding Cockpit's port until it's used.
+# These say nothing about the machine being in use. The firewall step is what closes them.
+_ON_A_NEW_SYSTEM = {("rpcbind", "111"), ("systemd", "9090")}
 
 
 class Stop(Exception):
@@ -363,9 +366,13 @@ def signs_of_use(ss_output: str, passwd: str, invoker: str | None) -> list:
     itself, and the SSH that's probably how the person got here, aren't counted. Nor is the person,
     or an account a cloud provider makes."""
     signs = []
+    seen = set()
     for address, port, program in _listeners(ss_output):
-        if _loopback(address) or program == "sshd":
+        if _loopback(address) or program == "sshd" or (program, port) in _ON_A_NEW_SYSTEM:
             continue
+        if (program, port) in seen:  # the same thing on IPv4 and IPv6
+            continue
+        seen.add((program, port))
         signs.append(
             Sign(
                 f"{program} is accepting connections on port {port}",

@@ -145,6 +145,24 @@ class SignsOfUse(unittest.TestCase):
     def test_a_new_machine_shows_nothing(self):
         self.assertEqual(installer.signs_of_use(SS, PASSWD, "sam"), [])
 
+    def test_what_a_new_system_already_has_open_is_not_a_sign_of_use(self):
+        new = (
+            'LISTEN 0 4096 0.0.0.0:111 0.0.0.0:* users:(("rpcbind",pid=5,fd=4))\n'
+            'LISTEN 0 4096 [::]:111 [::]:* users:(("rpcbind",pid=5,fd=6))\n'
+            'LISTEN 0 4096 *:9090 *:* users:(("systemd",pid=1,fd=50))\n'
+        )
+        self.assertEqual(installer.signs_of_use(SS + new, PASSWD, "sam"), [])
+
+    def test_the_same_program_on_another_port_still_is(self):
+        other = 'LISTEN 0 4096 0.0.0.0:8000 0.0.0.0:* users:(("rpcbind",pid=5,fd=4))\n'
+        self.assertEqual(len(installer.signs_of_use(SS + other, PASSWD, "sam")), 1)
+        other = 'LISTEN 0 4096 *:8000 *:* users:(("systemd",pid=1,fd=50))\n'
+        self.assertEqual(len(installer.signs_of_use(SS + other, PASSWD, "sam")), 1)
+
+    def test_one_program_on_ipv4_and_ipv6_is_listed_once(self):
+        both = WEB + 'LISTEN 0 511 [::]:443 [::]:* users:(("nginx",pid=4,fd=7))\n'
+        self.assertEqual(len(installer.signs_of_use(SS + both, PASSWD, "sam")), 1)
+
     def test_a_program_others_can_reach_is_listed(self):
         signs = installer.signs_of_use(SS + WEB, PASSWD, "sam")
         self.assertEqual(len(signs), 1)

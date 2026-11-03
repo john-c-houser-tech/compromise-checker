@@ -402,7 +402,9 @@ Nothing, unless you choose one of these:
 - the web interface's accounts, sessions, two-factor secrets and activity record, if the index is in a PostgreSQL database on a server outside your organization (section 8 says what that means).
 - your web address, if you give one when installing: Apache asks Let's Encrypt for a certificate for that name
   and renews it before it runs out. Let's Encrypt checks that the name leads to the machine, and the name then
-  appears in public certificate logs, where anyone can see it. The account it makes there gives `webmaster@`
+  appears in public certificate logs, where anyone can see it. Before that, the installer asks for one page by
+  that name, to check it leads to the machine; if the name points somewhere else, that one request goes there,
+  with nothing in it but a random path. The account it makes there gives `webmaster@`
   and the name as its contact, so nothing personal is sent, and nothing about your servers or evidence.
 
 The tool has no telemetry, usage reporting or licence check, and it never

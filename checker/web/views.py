@@ -559,7 +559,10 @@ def fleet_page(request) -> HttpResponse:
         "fleet.html.j2",
         {
             "counts": counts,
-            "band_tag": wording.BAND_TAGS.get(title_tone) if rows else None,
+            # Only about servers still being checked: removed ones were removed on purpose.
+            "band_tag": wording.BAND_TAGS.get(title_tone)
+            if any(r.tone != "removed" for r in rows)
+            else None,
             "key_unsaved": key_unsaved,
             "headline": title,
             "headline_tone": title_tone,

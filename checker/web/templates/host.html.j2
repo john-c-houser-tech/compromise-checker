@@ -38,7 +38,7 @@
   {% for f in section.findings %}
   <article class="finding band-{{ f.band_class }}">
     <h3>{{ f.meaning }}</h3>
-    <p class="band">{{ f.band_words }}{% if f.new %}, new since the last check{% endif %}{% if f.number %} <span class="number">F-{{ f.number }}</span>{% endif %}</p>
+    <p class="severity">{{ f.band_words }}{% if f.new %}, new since the last check{% endif %}{% if f.number %} <span class="number">F-{{ f.number }}</span>{% endif %}</p>
     {% if f.raised_by %}<p class="raised">A known threat makes this more serious: {{ f.raised_by }}.</p>{% endif %}
     <p>{{ f.title }}</p>
     <p class="from-server">{{ f.summary | visible(400) }}</p>

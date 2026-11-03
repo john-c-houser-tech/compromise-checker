@@ -187,6 +187,8 @@ class Units(unittest.TestCase):
         self.assertIn("ProtectSystem=strict", unit)
         self.assertIn(f"ReadWritePaths={installer.ACCOUNT_HOME}", unit)
         self.assertIn("XDG_RUNTIME_DIR=/run/user/990", unit)
+        self.assertIn("InaccessiblePaths=-/home -/root", unit)
+        self.assertNotIn("ProtectHome", unit)  # would hide /run/user, and so the daily timer
         self.assertIn("/current/bin/checker web\n", unit)
         self.assertNotIn("--bind", unit)  # stays on this machine, the tool's own default
 

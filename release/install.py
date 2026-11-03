@@ -405,7 +405,8 @@ def _run(*command: str, check: bool = True, **more) -> subprocess.CompletedProce
 
 def web_unit(uid: int) -> str:
     """The web interface, as the tool's own account, able to write only to the tool's own folder.
-    The running user manager is what its Check every day page sets the daily timer with."""
+    The running user manager is what its Check every day page sets the daily timer with. That's
+    why people's homes are closed off by name: ProtectHome would hide /run/user too."""
     return f"""[Unit]
 Description=Compromise Checker web interface
 After=network.target user@{uid}.service
@@ -423,7 +424,7 @@ RestartSec=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths={ACCOUNT_HOME}
-ProtectHome=yes
+InaccessiblePaths=-/home -/root
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -619,9 +620,11 @@ def install(version: str, source: Path | None, new_machine: bool) -> int:
                 )
             if signs:
                 if not sys.stdin.isatty():
+                    listed = "".join(f"\n  - {sign.what}" for sign in signs)
                     raise Stop(
                         "This machine looks like it's being used for something else, and there's"
-                        " nobody here to ask. Run this in a terminal. Nothing has been changed."
+                        f" nobody here to ask:{listed}\nRun this in a terminal. Nothing has been"
+                        " changed."
                     )
                 ask_about_use(signs, input)
         _install_packages(system)

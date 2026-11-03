@@ -201,9 +201,7 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
         node.copy(release, "/root/release")
 
         # --- Refusals, each leaving the machine as it was ---------------------------------------
-        node.run(
-            "cp -r /root/release /root/bad && echo x >> /root/bad/requirements.lock",
-        )
+        node.run("cp -r /root/release /root/bad && sed -i '1s/^./X/' /root/bad/requirements.lock")
         done = node.run("python3 /root/bad/install.py --from /root/bad --new-machine")
         checks(
             "a changed file is refused, with nothing changed",
@@ -226,14 +224,16 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
             done.returncode == 1 and "doesn't match" in done.stderr and untouched(node),
             done.stdout + done.stderr,
         )
-        node.run("nohup python3 -m http.server 8123 >/dev/null 2>&1 & sleep 2")
+        node.run(
+            "nohup python3 -m http.server 8123 >/dev/null 2>&1 & echo $! > /root/other; sleep 2"
+        )
         done = node.run("python3 /root/release/install.py --from /root/release")
         checks(
             "signs of other use stop it when nobody can be asked, with nothing changed",
             done.returncode == 1 and "nobody here to ask" in done.stderr and untouched(node),
             done.stdout + done.stderr,
         )
-        node.run("pkill -f 'http.server 8123'; sleep 1")
+        node.run("kill $(cat /root/other); while ss -Hltn | grep -q ':8123 '; do sleep 1; done")
 
         # --- The install ------------------------------------------------------------------------
         started = time.monotonic()
@@ -259,11 +259,8 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
             pid,
         )
         listening = node.out("ss -Hltn | grep ':8088 '")
-        checks(
-            "only on this machine",
-            "127.0.0.1:8088" in listening and "0.0.0.0" not in listening,
-            listening,
-        )
+        bound = [line.split()[3] for line in listening.splitlines()]
+        checks("only on this machine", bound == ["127.0.0.1:8088"], listening)
         checks("the sign-in page answers", status_of(node, "http://127.0.0.1:8088/login") == "200")
         checks(
             "its folder is private",
@@ -287,18 +284,12 @@ def prove(api, distro: str, region: str, release: Path, work: Path) -> list:
 
         # --- The daily timer, under the same limits as the web interface ------------------------
         uid = node.out(f"id -u {ACCOUNT}")
+        unit = node.out(f"systemctl cat {UNIT}")
+        service = unit.split("[Service]")[1].split("[Install]")[0]
         limits = " ".join(
-            f"-p {limit}"
-            for limit in (
-                f"User={ACCOUNT}",
-                f"Environment=CHECKER_HOME={DATA}",
-                f"Environment=XDG_RUNTIME_DIR=/run/user/{uid}",
-                "NoNewPrivileges=yes",
-                "ProtectSystem=strict",
-                f"ReadWritePaths={HOME}",
-                "ProtectHome=yes",
-                "PrivateTmp=yes",
-            )
+            f"-p '{line}'"
+            for line in service.splitlines()
+            if line.strip() and not line.startswith(("ExecStart=", "Restart"))
         )
         done = node.run(
             f"systemd-run --wait --pipe {limits} {PROGRAM}/current/bin/checker"

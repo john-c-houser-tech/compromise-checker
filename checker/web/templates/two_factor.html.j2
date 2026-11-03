@@ -1,6 +1,9 @@
 {% extends "base.html.j2" %}
+{% import "icons.html.j2" as draw %}
+{% block body_class %}auth{% endblock %}
 {% block nudge %}{% endblock %}
 {% block main %}
+{{ draw.coil("coil coil-large") }}
 <h1>Enter your code</h1>
 <p>Open your authenticator app and type the six digits it shows for this account. If you've lost your phone, type one of your recovery codes instead.</p>
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}

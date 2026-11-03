@@ -1,5 +1,8 @@
 {% extends "base.html.j2" %}
+{% import "icons.html.j2" as draw %}
+{% block body_class %}auth{% endblock %}
 {% block main %}
+{{ draw.coil("coil coil-large") }}
 <h1>Create your account</h1>
 <p>This is the account you'll use to see your servers' results. Use a long password, at least
 12 characters, that you don't use anywhere else: these results describe weaknesses an attacker could use.</p>

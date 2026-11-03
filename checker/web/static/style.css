@@ -473,12 +473,12 @@ details p, details li { font-size: 0.9375rem; color: var(--quiet); }
 .facts dd { margin: 0; }
 .custody { font-size: 0.875rem; padding-inline-start: 1.25rem; }
 
-.threat { background: var(--sheet); padding: 1.25rem 1rem; margin-top: 1.5rem; border-top: 2px solid var(--ink); overflow-wrap: anywhere; }
+.threat { background: var(--sheet); padding: 1.25rem 1.375rem; margin-top: 1.25rem; border: 1px solid var(--rule); border-radius: var(--radius); box-shadow: var(--shadow); overflow-wrap: anywhere; }
 .threat h2 { font-size: 1.375rem; line-height: 1.25; margin: 0 0 0.25rem; }
 .threat h3 { font-size: 1rem; margin: 1rem 0 0.25rem; }
 .threat ul { margin: 0.25rem 0; padding-inline-start: 1.1rem; }
 .threat .note { margin: 0; }
-.affected { border-inline-start: 6px solid var(--tone); padding-inline-start: 0.75rem; margin-top: 0.75rem; }
+.affected { padding: 0.625rem 0.875rem; margin-top: 0.75rem; border-radius: 10px; background: color-mix(in srgb, var(--tone) var(--wash), var(--sheet)); }
 .affected h3 { margin: 0; color: var(--tone); }
 .affected h3 span { font-weight: 400; }
 .from-ai { border: 1px solid var(--unknown); border-radius: var(--radius); background: var(--sheet); padding: 1rem 1.125rem; margin-top: 0.75rem; max-width: 54rem; }
@@ -487,9 +487,11 @@ details p, details li { font-size: 0.9375rem; color: var(--quiet); }
 .from-ai p:first-child, .from-ai h3:first-child { margin-top: 0; }
 .from-ai code { display: inline-block; overflow-wrap: anywhere; }
 
-.record { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
-.record th, .record td { text-align: start; padding: 0.375rem 0.75rem 0.375rem 0; border-bottom: 1px solid var(--rule); overflow-wrap: anywhere; vertical-align: top; }
-.record-wrap { overflow-x: auto; }
+.record { width: 100%; border-collapse: collapse; font-size: 0.9375rem; background: var(--sheet); }
+.record thead th { font-size: 0.8125rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--quiet); background: var(--code); }
+.record th, .record td { text-align: start; padding: 0.625rem 0.875rem; border-bottom: 1px solid var(--rule); overflow-wrap: anywhere; vertical-align: top; }
+.record tbody tr:last-child td { border-bottom: 0; }
+.record-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: var(--radius); }
 
 form label { display: block; margin: 0.75rem 0; font-weight: 700; }
 form input { display: block; width: 100%; max-width: 24rem; min-height: 44px; padding: 0.5rem 0.75rem; font: inherit; color: inherit; background: var(--sheet); border: 1px solid var(--quiet); border-radius: 10px; }
@@ -500,9 +502,12 @@ form label.tick input { display: inline; width: auto; min-height: 0; }
 form label small { display: block; font-weight: 400; color: var(--quiet); max-width: 62ch; }
 main form button { margin-top: 0.5rem; }
 .error { color: var(--critical); font-weight: 700; }
-.command { overflow-x: auto; padding: 0.75rem; background: var(--sheet); border: 1px solid var(--rule); font-size: 0.875rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-.steps { padding-inline-start: 1.5rem; max-width: 70ch; }
-.steps > li { margin-bottom: 1.5rem; }
+p.error { padding: 0.75rem 1rem; border-radius: 12px; max-width: 75ch; background: color-mix(in srgb, var(--critical) var(--wash), var(--sheet)); border: 1px solid color-mix(in srgb, var(--critical) 35%, transparent); }
+.command { overflow-x: auto; padding: 0.875rem 1rem; background: var(--code); border: 1px solid var(--rule); border-radius: 10px; font-size: 0.875rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.steps { list-style: none; counter-reset: step; padding: 0; max-width: 70ch; }
+.steps > li { counter-increment: step; position: relative; padding: 1rem 1.125rem 1rem 3.75rem; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--sheet); }
+.steps > li::before { content: counter(step); position: absolute; left: 1rem; top: 1rem; width: 2rem; height: 2rem; border-radius: 50%; display: grid; place-items: center; font-weight: 700; background: var(--accent); color: var(--on-accent); }
+.steps > li + li { margin-top: 0.875rem; }
 .steps > li > h2 { font-size: 1.125rem; margin: 0 0 0.25rem; }
 .steps .done { color: var(--quiet); font-weight: 400; }
 code { font-size: 0.9em; overflow-wrap: anywhere; }
@@ -516,3 +521,44 @@ code { font-size: 0.9em; overflow-wrap: anywhere; }
 .nudge a { font-weight: 700; }
 .qr svg { display: block; }
 .recovery-codes { columns: 2; max-width: 28rem; }
+
+/* Signing in, setting up, joining, two-factor and the problem page: one card in the middle. */
+.auth .main-in {
+  max-width: 34rem;
+  margin: 3rem auto;
+  padding: 2rem;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+.auth h1 { font-size: 1.875rem; margin: 0.75rem 0 0.75rem; }
+.auth main form input { max-width: none; }
+.auth main form button { width: 100%; justify-content: center; margin-top: 1rem; }
+.coil-large { width: 52px; height: 52px; }
+.problem-icon { width: 44px; height: 44px; color: var(--unknown); }
+@media (max-width: 52rem) {
+  .auth .main-in { margin: 1rem; padding: 1.5rem; }
+}
+
+/* A page's own band: its title and what it's for. */
+.page-band .actions { margin: 1rem 0 0; }
+
+/* Manage: each place as a card. */
+.tiles { list-style: none; margin: 0 0 2rem; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: 0.875rem; }
+.tiles a {
+  min-height: 4.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--sheet);
+  box-shadow: var(--shadow);
+  font-weight: 700;
+  text-decoration: none;
+}
+.tiles a:hover { border-color: var(--accent); }
+.tile-icon { width: 2.5rem; height: 2.5rem; flex: none; display: grid; place-items: center; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
+.section-title { font-size: 1.375rem; margin: 2rem 0 0.5rem; }

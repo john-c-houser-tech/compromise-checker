@@ -460,7 +460,7 @@ new release of the tool.
 - **What installing changes on the machine.** The installer makes an account for the tool that nobody can log
   in to, runs the tool's web interface as a service, and turns sleep off so a daily check isn't missed. With a
   web address, it also installs Apache from the system's own packages, opens ports 80 and 443 if a firewall is
-  running, adds a daily reload of Apache, and on Rocky lets Apache act as a proxy under SELinux. It says what
+  running, adds an hourly reload of Apache, and on Rocky lets Apache act as a proxy under SELinux. It says what
   it's doing at each step.
 - Text collected from a server is treated as hostile, since a compromised
   server can write anything into its logs. In reports and the web interface it

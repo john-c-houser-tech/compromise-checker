@@ -80,7 +80,9 @@ running on a machine of their own and reach its first-setup page in a browser.
     it, firewall rules where it doesn't. OpenSSH 9.8 and later has `PerSourcePenalties`, which holds off an
     address that keeps failing to log in: Ubuntu 26.04 and Rocky 10 have it. Ubuntu 24.04 (OpenSSH 9.6) and
     Rocky 9 (8.7) get a limit on new SSH connections from each address instead, through `ufw limit` and a
-    small table of nftables rules. fail2ban isn't used: it's only in Ubuntu's universe section and Rocky's
+    small table of nftables rules. (2026-11-03 real-machine proof: Rocky 9's OpenSSH has had
+    PerSourcePenalties added, so only Ubuntu 24.04 needs the firewall's limit; the nftables table stays for
+    firewalls the installer didn't set up.) fail2ban isn't used: it's only in Ubuntu's universe section and Rocky's
     EPEL, outside the base packages the Apache choice kept to.
 - **I8. Backing up the evidence key. DECIDED (John, 2026-11-02):** a person with full access confirms with
   their password and code, and the one line of the key appears with a button to copy it, for pasting into a

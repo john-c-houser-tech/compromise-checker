@@ -1452,8 +1452,43 @@ def running_firewall() -> Optional[str]:
 
 
 def firewall_is_ours(found: Optional[str]) -> bool:
-    """None, or one an earlier run of this installer set up."""
-    return found is None or read_lockdown().get("firewall") == found
+    """None, or one an earlier run of this installer set up, or firewalld just as the system set it
+    up: Rocky runs it from the start."""
+    if found is None or read_lockdown().get("firewall") == found:
+        return True
+    return found == "firewalld" and firewalld_untouched()
+
+
+def firewalld_untouched() -> bool:
+    """Nobody has changed firewalld: no settings of its own saved in /etc/firewalld, beyond its
+    main file, and nothing running that isn't saved, which stopping it would lose."""
+    own = Path("/etc/firewalld")
+    for folder in ("zones", "services", "policies", "ipsets", "icmptypes", "helpers"):
+        try:
+            if any((own / folder).iterdir()):
+                return False
+        except OSError:
+            continue
+    if (own / "direct.xml").exists():
+        return False
+    running = _run("firewall-cmd", "--list-all-zones", check=False)
+    saved = _run("firewall-cmd", "--permanent", "--list-all-zones", check=False)
+    return (
+        running.returncode == 0
+        and saved.returncode == 0
+        and (zones_without_interfaces(running.stdout) == zones_without_interfaces(saved.stdout))
+    )
+
+
+def zones_without_interfaces(listing: str) -> list:
+    """`--list-all-zones` without what only the running firewalld has: the interfaces
+    NetworkManager hands it, and which zones are in use."""
+    found = []
+    for line in listing.splitlines():
+        if line.strip().startswith("interfaces:"):
+            continue
+        found.append(re.sub(r"^(\S+) \((?:default|active|, )+\)$", r"\1", line.rstrip()))
+    return found
 
 
 def _ssh_rule(to: str, ports: list) -> bool:
@@ -1573,7 +1608,8 @@ def _set_up_firewalld(ports: list) -> list:
         for service in _FIREWALLD_DROPPED:
             if _run(*offline, f"--query-service={service}", check=False).returncode == 0:
                 say(f"Closing {service}, which this system lets in at first.")
-                _run(*offline, f"--remove-service={service}")
+                # --remove-service is lokkit's, which firewall-offline-cmd refuses with a zone
+                _run(*offline, f"--remove-service-from-zone={service}")
         for port in ports:
             if port == "22":
                 if _run(*offline, "--query-service=ssh", check=False).returncode != 0:
@@ -1598,7 +1634,11 @@ def set_up_firewall(system: System, limit: bool = False) -> bool:
     found = running_firewall()
     mine = "ufw" if system.install is _APT else "firewalld"
     if found and firewall_is_ours(found):
-        found = None  # this installer's own, from a run that didn't finish: set up the same again
+        if read_lockdown().get("firewall") != found:
+            say(
+                f"{found} is running just as the system set it up, so it's set up for this machine."
+            )
+        found = None  # the system's, or an earlier run's that didn't finish: set up the same again
     if found:
         say(f"A firewall, {found}, is already running here. Its rules are kept as they are.")
         if found == "ufw":

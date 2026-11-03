@@ -929,8 +929,11 @@ UBUNTU_24 = installer.SYSTEMS[("ubuntu", "24.04")]
 class FakeMachine:
     """Answers the commands the lockdown steps run, and keeps them in order."""
 
-    def __init__(self, ss=SS_SSH, ufw="Status: inactive\n", firewalld=False, listen=""):
+    def __init__(
+        self, ss=SS_SSH, ufw="Status: inactive\n", firewalld=False, listen="", touched=True
+    ):
         self.ss, self.ufw, self.firewalld, self.listen = ss, ufw, firewalld, listen
+        self.touched = touched  # someone has changed firewalld's running rules
         self.offline = {"cockpit", "ssh", "dhcpv6-client"}
         self.called = []
 
@@ -960,7 +963,7 @@ class FakeMachine:
                     code = 0 if value in self.offline else 1
                 elif word in ("--add-service", "--add-port"):
                     self.offline.add(value)
-                elif word == "--remove-service":
+                elif word == "--remove-service-from-zone":
                     self.offline.discard(value)
         elif command[0] == "firewall-cmd" and command[-1] == "--list-all":
             services = " ".join(sorted(s for s in self.offline if "/" not in s))
@@ -968,6 +971,17 @@ class FakeMachine:
             out = f"public (active)\n  services: {services}\n  ports: {ports}\n"
         elif command[:2] == ("firewall-cmd", "--get-default-zone"):
             out = "public\n"
+        elif command[0] == "firewall-cmd" and command[-1] == "--list-all-zones":
+            saved = "--permanent" in command
+            out = (
+                "public (default)\n  interfaces: \n  services: ssh\n"
+                if saved
+                else (
+                    "public (default, active)\n  interfaces: eth0\n  services: ssh"
+                    + (" http" if self.touched else "")
+                    + "\n"
+                )
+            )
         return subprocess.CompletedProcess(list(command), code, out, "")
 
     def index(self, *command):
@@ -1052,7 +1066,10 @@ class Lockdown(unittest.TestCase):
         installer.set_up_firewall(ROCKY_9)
         start = fake.index("systemctl", "enable", "--now", "firewalld")
         self.assertLess(
-            fake.index("firewall-offline-cmd", "--zone=public", "--remove-service=cockpit"), start
+            fake.index(
+                "firewall-offline-cmd", "--zone=public", "--remove-service-from-zone=cockpit"
+            ),
+            start,
         )
         self.assertLess(
             fake.index("firewall-offline-cmd", "--zone=public", "--add-port=2200/tcp"), start
@@ -1077,6 +1094,22 @@ class Lockdown(unittest.TestCase):
         self.assertNotIn(("systemctl", "stop", "firewalld"), fake.called)
         self.assertFalse(any(command[0] == "firewall-offline-cmd" for command in fake.called))
         self.assertTrue(any("cockpit" in line and "also lets in" in line for line in self.said))
+
+    def test_firewalld_as_the_system_set_it_up_is_set_up_for_this_machine(self):
+        fake = self.machine(firewalld=True, touched=False)
+        installer.set_up_firewall(ROCKY_9)
+        stop = fake.index("systemctl", "stop", "firewalld")
+        self.assertLess(stop, fake.index("systemctl", "enable", "--now", "firewalld"))
+        self.assertNotIn("cockpit", fake.offline)
+        self.assertEqual(installer.read_lockdown(), {"firewall": "firewalld"})
+        self.assertTrue(any("just as the system set it up" in line for line in self.said))
+
+    def test_zones_compare_without_what_only_the_running_one_has(self):
+        running = "public (default, active)\n  interfaces: eth0\n  services: ssh\n"
+        saved = "public (default)\n  interfaces: \n  services: ssh\n"
+        self.assertEqual(
+            installer.zones_without_interfaces(running), installer.zones_without_interfaces(saved)
+        )
 
     def test_an_earlier_runs_firewall_is_set_up_again(self):
         installer.note_lockdown("firewall", "firewalld")

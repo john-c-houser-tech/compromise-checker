@@ -218,7 +218,21 @@ class Node:
 
 
 STATUS_FILE = "/var/lib/compromise-checker-status/machine.json"
-OLD_SSH = ("ubuntu24.04", "rocky9")  # no PerSourcePenalties: the firewall limits them instead
+LIMITED_WORDS = "makes an address that opens SSH connections quickly"
+
+
+def penalties_said(said: str) -> bool:
+    """Whether the installer found SSH's own blocking, which some older SSH has had added."""
+    return "already holds off an address" in said or "now holds off an address" in said
+
+
+def passwords_refused(refused: subprocess.CompletedProcess) -> bool:
+    """SSH lists the ways it would take: none of them a password. Rocky's lists gssapi too."""
+    found = re.search(r"Permission denied \(([^)]*)\)", refused.stderr)
+    ways = set(found.group(1).split(",")) if found else {"password"}
+    return refused.returncode != 0 and not ways & {"password", "keyboard-interactive"}
+
+
 LOCKDOWN = " --ssh-passwords-off --root-login-off --block-login-failures"
 
 
@@ -255,7 +269,7 @@ def prove_lockdown(node: "Node", checks, distro: str, said: str) -> None:
             "Status: active" in status and set(rules) == {"22/tcp"},
             status,
         )
-        if distro in OLD_SSH:
+        if not penalties_said(said):
             checks("ufw limits SSH connections", "LIMIT" in status, status)
     else:
         services = set(node.out("firewall-cmd --list-services").split())
@@ -314,33 +328,21 @@ def prove_lockdown(node: "Node", checks, distro: str, said: str) -> None:
         "-o",
         "PreferredAuthentications=password,keyboard-interactive",
     )
-    checks(
-        "a password login isn't even offered",
-        "Permission denied (publickey)" in refused.stderr,
-        refused.stderr,
-    )
+    checks("a password login isn't even offered", passwords_refused(refused), refused.stderr)
     checks(
         "root login stayed on, with nobody else to log in as",
         "Root login over SSH stays on" in said and "permitrootlogin no" not in shown,
         said,
     )
     checks("a key login still works", node.fresh_login("root").returncode == 0)
-    if distro in OLD_SSH:
-        checks(
-            "it says addresses are limited", "makes an address that opens more than 6" in said, said
-        )
-    else:
+    if penalties_said(said):
         checks(
             "SSH's own blocking is on",
             "persourcepenalties" in shown and "persourcepenalties no" not in shown,
             shown,
         )
-    if distro == "rocky9":
-        table = node.out("nft list table inet compromise_checker_ssh")
-        checks("the limit's table is loaded", "recent4" in table and "dport 22" in table, table)
-        node.run("systemctl restart firewalld")
-        table = node.out("nft list table inet compromise_checker_ssh")
-        checks("and survives firewalld restarting", "recent4" in table, table)
+    else:
+        checks("it says addresses are limited", LIMITED_WORDS in said, said)
     notes = machine_status(node)
     checks("the page is told SSH refuses passwords", notes.get("ssh_passwords") is False, notes)
     checks("and whether a restart is waiting", isinstance(notes.get("restart_needed"), bool), notes)
@@ -348,9 +350,31 @@ def prove_lockdown(node: "Node", checks, distro: str, said: str) -> None:
     checks("SELinux refused nothing in the lockdown", not found, found)
 
 
-def prove_limit(node: "Node", checks, distro: str) -> None:
-    """Last but one, since it holds this machine's address up for a minute."""
-    if distro not in OLD_SSH:
+INSTALLER = (
+    "import importlib.util, subprocess\n"
+    "s = importlib.util.spec_from_file_location('installer', '/root/release/install.py')\n"
+    "m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
+)
+
+
+def prove_limit(node: "Node", checks, distro: str, said: str) -> None:
+    """Last but one, since it holds this machine's address up for a minute. ufw's limit where the
+    install set it; on Rocky, the nftables table too, through the installer's own step, since no
+    system here goes without SSH's own blocking and without a ufw of the installer's."""
+    if distro.startswith("rocky"):
+        done = node.run(f"python3 -I - <<'EOF'\n{INSTALLER}m._limit_ssh_in_nftables(('22',))\nEOF")
+        table = node.out("nft list table inet compromise_checker_ssh")
+        checks(
+            "the nftables limit loads",
+            "recent4" in table and "dport 22" in table,
+            done.stdout + done.stderr + table,
+        )
+        node.run("systemctl restart firewalld")
+        table = node.out("nft list table inet compromise_checker_ssh")
+        checks("and survives firewalld restarting", "recent4" in table, table)
+        found = denials(node)
+        checks("SELinux refused nothing in the limit", not found, found)
+    elif LIMITED_WORDS not in said:
         return
     let_in = connections_let_in(node.address)
     checks("an address opening SSH connections fast is held off", let_in < 12, let_in)
@@ -371,10 +395,7 @@ def prove_root_off(node: "Node", checks, distro: str) -> None:
     checks(
         "another administrator can log in with a key", node.fresh_login("proofops").returncode == 0
     )
-    script = (
-        "import importlib.util, subprocess\n"
-        "s = importlib.util.spec_from_file_location('installer', '/root/release/install.py')\n"
-        "m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
+    script = INSTALLER + (
         "ss = subprocess.run(['ss', '-Hltnp'], capture_output=True, text=True).stdout\n"
         "state = m.ssh_state(ss)\n"
         "kind = m.blocking_kind(state, m.running_firewall() or 'ufw')\n"
@@ -474,11 +495,17 @@ def prove_web(node: "Node", checks, distro: str) -> None:
     done = node.run(f"{install} --web-address {name} --test-certificates{allow}", timeout=1500)
     print(f"[{distro}] install took {round(time.monotonic() - started)}s")
     checks("it installs with a web address", done.returncode == 0, done.stdout + done.stderr)
-    checks(
-        "and gets its certificate",
-        f"installed at https://{name}" in done.stdout and "hasn't given it" not in done.stdout,
-        done.stdout,
+    certified = (
+        f"installed at https://{name}" in done.stdout and "hasn't given it" not in done.stdout
     )
+    checks("and gets its certificate", certified, done.stdout)
+    if not certified:
+        print(
+            node.out(
+                "grep -hiE 'md|acme|challenge' /var/log/apache2/error.log /var/log/httpd/error_log"
+                " 2>/dev/null | tail -n 30"
+            )
+        )
     links = re.findall(rf"https://{re.escape(name)}/setup/\S+", done.stdout)
     checks("it hands over a link to the web address", len(links) == 1, done.stdout)
     if done.returncode or not links:
@@ -857,7 +884,8 @@ def prove(
             found.stdout + found.stderr,
         )
         checks("sleep is off", node.out("systemctl is-enabled suspend.target") == "masked")
-        prove_lockdown(node, checks, distro, done.stdout)
+        installed_said = done.stdout
+        prove_lockdown(node, checks, distro, installed_said)
 
         # --- A new link -------------------------------------------------------------------------
         again = _LINK_LINE.findall(node.out(LINK))
@@ -917,10 +945,7 @@ def prove(
         )
         checks("the timer came back", "compromise-checker" in node.out(timer), node.out(timer))
         refused = node.fresh_login("root", "-o", "PubkeyAuthentication=no")
-        checks("passwords are still refused", "Permission denied (publickey)" in refused.stderr)
-        if distro == "rocky9":
-            table = node.out("nft list table inet compromise_checker_ssh")
-            checks("the limit came back", "recent4" in table, table)
+        checks("passwords are still refused", passwords_refused(refused), refused.stderr)
         checks(
             "the machine's notes came back",
             node.out("systemctl is-enabled compromise-checker-status.timer") == "enabled",
@@ -978,7 +1003,7 @@ def prove(
             done.stdout + done.stderr,
         )
         checks("the spent link stops working", status_of(node, after[0]) != "200")
-        prove_limit(node, checks, distro)
+        prove_limit(node, checks, distro, installed_said)
         prove_root_off(node, checks, distro)
         found = denials(node)  # last, to cover all of the above
         checks("SELinux refused nothing", not found, found)

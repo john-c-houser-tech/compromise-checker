@@ -93,7 +93,8 @@ Without a terminal to ask in, `--web-address NAME` and `--allow "ADDRESSES"` giv
 Done every time, and said as it's done:
 
 - **A firewall** that lets in only SSH, and ports 80 and 443 with a web address. Ubuntu's is `ufw` and Rocky's
-  is `firewalld`. Before it starts, it lets in every port SSH is listening on, so the session you're
+  is `firewalld`. Rocky runs `firewalld` from the start: while it's just as the system set it up, it's set up
+  like a new one. Before it starts, it lets in every port SSH is listening on, so the session you're
   installing from isn't cut off. On Rocky, the opening for Cockpit, the system's own web console, is closed.
   Where an interface or some source addresses have a firewalld zone of their own, SSH is let in there too.
   Rules a stopped `ufw` saved from before come back with it, so any saved rule for SSH's port is replaced,
@@ -124,9 +125,9 @@ Each only if you say yes, asked separately:
   still let in, with a key if passwords are going off, so root isn't the only way in.
 - **Blocking addresses that keep trying to log in.** Where SSH can do this itself (Ubuntu 26.04 and Rocky 10,
   with OpenSSH 9.8 or later), it holds off an address that keeps failing to log in, for longer each time.
-  That's usually on already, and then the installer just says so. Ubuntu 24.04 and Rocky 9 have an older SSH,
-  so the firewall does it instead: an address that opens SSH connections quickly, about 6 in 30 seconds, has
-  to wait. That could slow a tool that logs in to this machine many times in a row. With a `ufw` the installer
+  That's usually on already, and then the installer just says so. Rocky 9's SSH is older, but has had it
+  added. Ubuntu 24.04's hasn't, so the firewall does it instead: an address that opens SSH connections
+  quickly, about 6 in 30 seconds, has to wait. That could slow a tool that logs in to this machine many times in a row. With a `ufw` the installer
   set up, that's `ufw limit`. Elsewhere, including a firewall that was already running, it's a small table of
   `nftables` rules, `/etc/nftables/compromise-checker-ssh-limit.nft`, loaded by
   `compromise-checker-ssh-limit.service`, which only ever holds connections back and never lets anything in.

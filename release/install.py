@@ -306,15 +306,20 @@ APT_WAIT_SECONDS = 300
 _DNF = ("dnf", "install", "-y", "-q")
 SYSTEMS = {
     ("ubuntu", "24.04"): System(
-        "Ubuntu 24.04", "python3", ("python3-venv", "iproute2", *_PANGO_APT), _APT
+        "Ubuntu 24.04", "python3", ("python3-venv", "iproute2", "ufw", *_PANGO_APT), _APT
     ),
     ("ubuntu", "26.04"): System(
-        "Ubuntu 26.04", "python3", ("python3-venv", "iproute2", *_PANGO_APT), _APT
+        "Ubuntu 26.04", "python3", ("python3-venv", "iproute2", "ufw", *_PANGO_APT), _APT
     ),
     ("rocky", "9"): System(
-        "Rocky Linux 9", "python3.12", ("python3.12", "iproute", "pango", "harfbuzz"), _DNF
+        "Rocky Linux 9",
+        "python3.12",
+        ("python3.12", "iproute", "firewalld", "pango", "harfbuzz"),
+        _DNF,
     ),
-    ("rocky", "10"): System("Rocky Linux 10", "python3", ("iproute", "pango", "harfbuzz"), _DNF),
+    ("rocky", "10"): System(
+        "Rocky Linux 10", "python3", ("iproute", "firewalld", "pango", "harfbuzz"), _DNF
+    ),
 }
 
 
@@ -1303,6 +1308,168 @@ def _open_firewall() -> None:
                 _run("ufw", "allow", port)
 
 
+# Locking the machine down (installation plan, I.4). Every change is said as it's made.
+
+# What a new system's own firewall lets in that this machine has no use for. Anything else
+# someone allowed is listed, not removed.
+_FIREWALLD_DROPPED = ("cockpit",)
+# Kept: some networks give the machine its IPv6 address through it.
+_FIREWALLD_KEPT = ("ssh", "dhcpv6-client")
+# The web address's openings: _open_firewall makes and notes them, so they aren't listed as extras.
+_WEB_OPENINGS = ("http", "https", "80/tcp", "443/tcp")
+LOCKDOWN_MARKER = PROGRAM / "lockdown.json"  # what this installer changed to lock the machine down
+
+
+def read_lockdown() -> dict:
+    try:
+        found = json.loads(LOCKDOWN_MARKER.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def note_lockdown(key: str, value) -> None:
+    """Noted before it's done, so a later run knows it was this installer's doing."""
+    marker = read_lockdown()
+    marker[key] = value
+    LOCKDOWN_MARKER.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    _write_file(LOCKDOWN_MARKER, json.dumps(marker, sort_keys=True) + "\n", 0o644)
+
+
+def ssh_ports(ss_output: str, socket_listen: str = "") -> list:
+    """The ports SSH takes connections on from other machines. On Ubuntu systemd may hold the port
+    for SSH until someone connects, which `socket_listen` (ssh.socket's Listen=) shows."""
+    held_for_ssh = set(re.findall(r":(\d+) \(Stream\)", socket_listen))
+    ports = set()
+    for address, port, program in _listeners(ss_output):
+        if _loopback(address):
+            continue
+        if program == "sshd" or (program == "systemd" and port in held_for_ssh):
+            ports.add(port)
+    return sorted(ports, key=int)
+
+
+def running_firewall() -> Optional[str]:
+    if (
+        shutil.which("firewall-cmd")
+        and _run("firewall-cmd", "--state", check=False).returncode == 0
+    ):
+        return "firewalld"
+    if shutil.which("ufw") and "Status: active" in _ufw_status():
+        return "ufw"
+    return None
+
+
+def ufw_extras(status: str, ours: set) -> list:
+    """What an active ufw lets in besides `ours`: each rule's "To" part, once."""
+    ours = set(ours) | set(_WEB_OPENINGS)
+    found = []
+    for line in status.splitlines():
+        match = re.match(r"^(\S+(?: \(v6\))?)\s+(?:ALLOW|LIMIT)(?: IN)?\s", line)
+        if not match:
+            continue
+        to = match.group(1).replace(" (v6)", "")
+        if to not in ours and to not in found:
+            found.append(to)
+    return found
+
+
+def firewalld_extras(listing: str, ports: list) -> list:
+    """What a firewalld zone lets in besides SSH's ports, from `--list-all`."""
+    found = []
+    for line in listing.splitlines():
+        key, _, value = line.strip().partition(":")
+        if key == "services":
+            found += [
+                name
+                for name in value.split()
+                if name not in _FIREWALLD_KEPT and name not in _WEB_OPENINGS
+            ]
+        elif key == "ports":
+            ours = {f"{p}/tcp" for p in ports} | set(_WEB_OPENINGS)
+            found += [port for port in value.split() if port not in ours]
+        elif key == "rich rules" and value.strip():
+            found.append("rules of its own")
+    return found
+
+
+def _ssh_listen() -> str:
+    return _run("systemctl", "show", "-p", "Listen", "--value", "ssh.socket", check=False).stdout
+
+
+def _set_up_ufw(ports: list, limit: bool) -> list:
+    say("Setting up the firewall, ufw, to let nothing in but SSH.")
+    _run("ufw", "default", "deny", "incoming")
+    _run("ufw", "default", "allow", "outgoing")
+    for port in ports:
+        _run("ufw", "limit" if limit else "allow", f"{port}/tcp")
+    _run("ufw", "--force", "enable")
+    return ufw_extras(_ufw_status(), {f"{port}/tcp" for port in ports})
+
+
+def _set_up_firewalld(ports: list) -> list:
+    """Its saved settings are changed before it starts, so nothing it starts with can cut off SSH
+    on a port other than 22."""
+    say("Setting up the firewall, firewalld, to let nothing in but SSH.")
+    if _run("firewall-cmd", "--state", check=False).returncode == 0:
+        # an earlier run's, already started: its saved settings can't be changed offline now
+        _run("systemctl", "stop", "firewalld")
+    zone = _run("firewall-offline-cmd", "--get-default-zone").stdout.strip() or "public"
+    offline = ("firewall-offline-cmd", f"--zone={zone}")
+    for service in _FIREWALLD_DROPPED:
+        if _run(*offline, f"--query-service={service}", check=False).returncode == 0:
+            say(f"Closing {service}, which this system lets in at first.")
+            _run(*offline, f"--remove-service={service}")
+    for port in ports:
+        if port == "22":
+            if _run(*offline, "--query-service=ssh", check=False).returncode != 0:
+                _run(*offline, "--add-service=ssh")
+        elif _run(*offline, f"--query-port={port}/tcp", check=False).returncode != 0:
+            _run(*offline, f"--add-port={port}/tcp")
+    _run("systemctl", "enable", "--now", "firewalld")
+    return firewalld_extras(_run("firewall-cmd", f"--zone={zone}", "--list-all").stdout, ports)
+
+
+def set_up_firewall(system: System, limit: bool = False) -> None:
+    """A firewall letting in only SSH (and, later, the web address's two ports). One that's already
+    running is someone's, unless an earlier run of this installer set it up: its rules are kept,
+    and what else it lets in is listed. `limit` makes ufw hold off an address that keeps opening
+    SSH connections."""
+    ports = ssh_ports(_run("ss", "-Hltnp", check=False).stdout, _ssh_listen())
+    found = running_firewall()
+    mine = "ufw" if system.install is _APT else "firewalld"
+    if found and read_lockdown().get("firewall") == found:
+        found = None  # this installer's own, from a run that didn't finish: set up the same again
+    if found:
+        say(f"A firewall, {found}, is already running here. Its rules are kept as they are.")
+        if found == "ufw":
+            if limit:
+                for port in ports:
+                    _run("ufw", "limit", f"{port}/tcp")
+            extras = ufw_extras(_ufw_status(), {f"{port}/tcp" for port in ports})
+        else:
+            zone = _run("firewall-cmd", "--get-default-zone").stdout.strip()
+            listing = _run("firewall-cmd", f"--zone={zone}", "--list-all").stdout
+            extras = firewalld_extras(listing, ports)
+    elif mine == "ufw":
+        note_lockdown("firewall", "ufw")
+        extras = _set_up_ufw(ports, limit)
+    else:
+        note_lockdown("firewall", "firewalld")
+        extras = _set_up_firewalld(ports)
+    if ports:
+        say(f"SSH can still be reached, on port {', '.join(ports)}.")
+    else:
+        say(
+            "SSH isn't running here, so the firewall lets nothing in for it. If you turn SSH on"
+            " later, let its port in through the firewall as well."
+        )
+    if extras:
+        say(
+            f"The firewall also lets in: {', '.join(extras)}. Close what this machine doesn't need."
+        )
+
+
 def _set_up_apache(web: Web, apache: Apache, secret: str) -> None:
     say(f"Setting up Apache to give {web.name} a certificate and pass requests to the tool.")
     _allow_proxy_under_selinux()
@@ -1563,6 +1730,7 @@ def install(
             _run("systemctl", "stop", apache.service, check=False)
         if web is None:
             _undo_web_address(apache_for(system))
+        set_up_firewall(system)
         _run("systemctl", "stop", UNIT, check=False)  # one left by an install that didn't finish
         if not port_free(PORT):  # with that stopped, whatever's left isn't this tool
             raise Stop(f"Something else is using port {PORT}, which this tool needs.")

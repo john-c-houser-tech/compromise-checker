@@ -897,6 +897,209 @@ class WebAddress(unittest.TestCase):
         self.assertIsNone(installer.first_certificate("nothing here"))
 
 
+SS_SSH = (
+    'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=700,fd=3))\n'
+    'LISTEN 0 128 [::]:22 [::]:* users:(("sshd",pid=700,fd=4))\n'
+    'LISTEN 0 128 127.0.0.1:2222 0.0.0.0:* users:(("sshd",pid=701,fd=3))\n'
+    'LISTEN 0 4096 0.0.0.0:111 0.0.0.0:* users:(("rpcbind",pid=600,fd=4))\n'
+    'LISTEN 0 4096 *:9090 *:* users:(("systemd",pid=1,fd=60))\n'
+)
+
+UFW_ACTIVE = (
+    "Status: active\n\nTo                         Action      From\n"
+    "--                         ------      ----\n"
+    "22/tcp                     ALLOW       Anywhere\n"
+    "80/tcp                     ALLOW       Anywhere\n"
+    "5432                       ALLOW       10.0.0.0/8\n"
+    "22/tcp (v6)                ALLOW       Anywhere (v6)\n"
+    "5432 (v6)                  ALLOW       Anywhere (v6)\n"
+)
+
+FIREWALLD_LISTING = (
+    "public (active)\n  target: default\n  interfaces: eth0\n"
+    "  services: cockpit dhcpv6-client https ssh\n  ports: 2200/tcp 8080/tcp\n"
+    "  forward: yes\n  rich rules: \n"
+)
+
+ROCKY_9 = installer.SYSTEMS[("rocky", "9")]
+UBUNTU_24 = installer.SYSTEMS[("ubuntu", "24.04")]
+
+
+class FakeMachine:
+    """Answers the commands the lockdown steps run, and keeps them in order."""
+
+    def __init__(self, ss=SS_SSH, ufw="Status: inactive\n", firewalld=False, listen=""):
+        self.ss, self.ufw, self.firewalld, self.listen = ss, ufw, firewalld, listen
+        self.offline = {"cockpit", "ssh", "dhcpv6-client"}
+        self.called = []
+
+    def __call__(self, *command, **more):
+        self.called.append(command)
+        out, code = "", 0
+        if command[0] == "ss":
+            out = self.ss
+        elif command[:2] == ("ufw", "status"):
+            out = self.ufw
+        elif command[:2] == ("ufw", "--force"):
+            self.ufw = "Status: active\n\nTo Action From\n-- ------ ----\n22/tcp ALLOW Anywhere\n"
+        elif command[:2] == ("firewall-cmd", "--state"):
+            code = 0 if self.firewalld else 252
+        elif command[:2] == ("systemctl", "show"):
+            out = self.listen
+        elif command[:3] == ("systemctl", "enable", "--now") and command[3] == "firewalld":
+            self.firewalld = True
+        elif command[:2] == ("systemctl", "stop") and command[2] == "firewalld":
+            self.firewalld = False
+        elif command[0] == "firewall-offline-cmd":
+            if command[1] == "--get-default-zone":
+                out = "public\n"
+            else:
+                word, _, value = command[-1].partition("=")
+                if word in ("--query-service", "--query-port"):
+                    code = 0 if value in self.offline else 1
+                elif word in ("--add-service", "--add-port"):
+                    self.offline.add(value)
+                elif word == "--remove-service":
+                    self.offline.discard(value)
+        elif command[0] == "firewall-cmd" and command[-1] == "--list-all":
+            services = " ".join(sorted(s for s in self.offline if "/" not in s))
+            ports = " ".join(sorted(p for p in self.offline if "/" in p))
+            out = f"public (active)\n  services: {services}\n  ports: {ports}\n"
+        elif command[:2] == ("firewall-cmd", "--get-default-zone"):
+            out = "public\n"
+        return subprocess.CompletedProcess(list(command), code, out, "")
+
+    def index(self, *command):
+        return self.called.index(command)
+
+
+class Lockdown(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        real = (installer.LOCKDOWN_MARKER, installer._run, installer.shutil.which, installer.say)
+        installer.LOCKDOWN_MARKER = Path(folder.name) / "lockdown.json"
+        installer.shutil.which = lambda name: "/usr/sbin/" + name
+        self.said = []
+        installer.say = self.said.append
+
+        def restore():
+            (
+                installer.LOCKDOWN_MARKER,
+                installer._run,
+                installer.shutil.which,
+                installer.say,
+            ) = real
+
+        self.addCleanup(restore)
+
+    def machine(self, **more):
+        fake = FakeMachine(**more)
+        installer._run = fake
+        return fake
+
+    def test_ssh_ports_are_those_other_machines_can_reach(self):
+        self.assertEqual(installer.ssh_ports(SS_SSH), ["22"])
+        held = 'LISTEN 0 4096 *:22 *:* users:(("systemd",pid=1,fd=200))\n'
+        self.assertEqual(installer.ssh_ports(held), [])
+        self.assertEqual(installer.ssh_ports(held, "[::]:22 (Stream)\n"), ["22"])
+        self.assertEqual(installer.ssh_ports(SS_SSH, "[::]:9091 (Stream)\n"), ["22"])
+
+    def test_what_else_an_active_ufw_lets_in(self):
+        self.assertEqual(installer.ufw_extras(UFW_ACTIVE, {"22/tcp"}), ["5432"])
+        limited = "Status: active\n\n22/tcp                     LIMIT IN    Anywhere\n"
+        self.assertEqual(installer.ufw_extras(limited, {"22/tcp"}), [])
+        self.assertEqual(installer.ufw_extras(limited, set()), ["22/tcp"])
+
+    def test_what_else_a_firewalld_zone_lets_in(self):
+        self.assertEqual(
+            installer.firewalld_extras(FIREWALLD_LISTING, ["22", "2200"]), ["cockpit", "8080/tcp"]
+        )
+        ruled = (
+            '  services: ssh\n  rich rules: rule family="ipv4" source address="10.0.0.0/8" accept\n'
+        )
+        self.assertEqual(installer.firewalld_extras(ruled, ["22"]), ["rules of its own"])
+
+    def test_ufw_lets_ssh_in_before_it_is_turned_on(self):
+        fake = self.machine()
+        installer.set_up_firewall(UBUNTU_24)
+        self.assertLess(
+            fake.index("ufw", "allow", "22/tcp"), fake.index("ufw", "--force", "enable")
+        )
+        self.assertLess(
+            fake.index("ufw", "default", "deny", "incoming"), fake.index("ufw", "--force", "enable")
+        )
+        self.assertEqual(installer.read_lockdown(), {"firewall": "ufw"})
+        self.assertIn("SSH can still be reached, on port 22.", self.said)
+
+    def test_ufw_can_limit_ssh_connections_instead(self):
+        fake = self.machine()
+        installer.set_up_firewall(UBUNTU_24, limit=True)
+        self.assertIn(("ufw", "limit", "22/tcp"), fake.called)
+        self.assertNotIn(("ufw", "allow", "22/tcp"), fake.called)
+
+    def test_firewalld_is_set_up_before_it_starts(self):
+        two = SS_SSH + 'LISTEN 0 128 0.0.0.0:2200 0.0.0.0:* users:(("sshd",pid=700,fd=5))\n'
+        fake = self.machine(ss=two)
+        installer.set_up_firewall(ROCKY_9)
+        start = fake.index("systemctl", "enable", "--now", "firewalld")
+        self.assertLess(
+            fake.index("firewall-offline-cmd", "--zone=public", "--remove-service=cockpit"), start
+        )
+        self.assertLess(
+            fake.index("firewall-offline-cmd", "--zone=public", "--add-port=2200/tcp"), start
+        )
+        self.assertNotIn("cockpit", fake.offline)
+        self.assertIn("dhcpv6-client", fake.offline)
+        self.assertEqual(installer.read_lockdown(), {"firewall": "firewalld"})
+        self.assertFalse(any("also lets in" in line for line in self.said))
+
+    def test_someone_elses_firewall_keeps_its_rules(self):
+        fake = self.machine(ufw=UFW_ACTIVE)
+        installer.set_up_firewall(UBUNTU_24)
+        self.assertFalse(any(command[:2] == ("ufw", "default") for command in fake.called))
+        self.assertFalse(any(command[:2] == ("ufw", "--force") for command in fake.called))
+        self.assertEqual(installer.read_lockdown(), {})
+        self.assertTrue(any("5432" in line and "also lets in" in line for line in self.said))
+        self.assertTrue(any("already running" in line for line in self.said))
+
+    def test_someone_elses_firewalld_is_not_stopped(self):
+        fake = self.machine(firewalld=True)
+        installer.set_up_firewall(ROCKY_9)
+        self.assertNotIn(("systemctl", "stop", "firewalld"), fake.called)
+        self.assertFalse(any(command[0] == "firewall-offline-cmd" for command in fake.called))
+        self.assertTrue(any("cockpit" in line and "also lets in" in line for line in self.said))
+
+    def test_an_earlier_runs_firewall_is_set_up_again(self):
+        installer.note_lockdown("firewall", "firewalld")
+        fake = self.machine(firewalld=True)
+        installer.set_up_firewall(ROCKY_9)
+        stop = fake.index("systemctl", "stop", "firewalld")
+        self.assertLess(stop, fake.index("firewall-offline-cmd", "--get-default-zone"))
+        self.assertNotIn("cockpit", fake.offline)
+        self.assertFalse(any("already running" in line for line in self.said))
+
+    def test_the_firewall_note_comes_before_the_firewall(self):
+        noted = []
+        fake = self.machine()
+
+        def run(*command, **more):
+            if command[:2] == ("ufw", "default"):
+                noted.append(installer.read_lockdown())
+            return fake(*command, **more)
+
+        installer._run = run
+        installer.set_up_firewall(UBUNTU_24)
+        self.assertEqual(noted[0], {"firewall": "ufw"})
+
+    def test_without_ssh_nothing_is_let_in_for_it(self):
+        fake = self.machine(ss="")
+        installer.set_up_firewall(UBUNTU_24)
+        self.assertFalse(any(command[:2] == ("ufw", "allow") for command in fake.called))
+        self.assertIn(("ufw", "--force", "enable"), fake.called)
+        self.assertTrue(any("SSH isn't running here" in line for line in self.said))
+
+
 class Fetching(unittest.TestCase):
     def test_only_https_is_downloaded(self):
         with self.assertRaisesRegex(installer.Stop, "unprotected"):

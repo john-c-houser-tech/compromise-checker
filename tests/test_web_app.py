@@ -9427,6 +9427,22 @@ def test_the_band_answers_with_counts_and_no_full_stop(web, monkeypatch):
     assert '<a href="?show=critical"><strong>2</strong>' in counts
     assert '<a href="?show=low" aria-current="true"><strong>1</strong>' in counts
     assert '<a href="?show=critical"><strong>2</strong>' in counts  # not the filter in use
+    # A count of one is in the singular, of more in the plural.
+    assert "<strong>2</strong> <span>Strong signs</span>" in counts
+    assert "<strong>1</strong> <span>No strong signs</span>" in counts
+
+
+def test_a_count_of_one_server_is_singular():
+    from checker.web import wording
+
+    assert wording.count_name("elevated", 1) == "Warning sign"
+    assert wording.count_name("elevated", 3) == "Warning signs"
+    assert wording.count_name("unknown", 1) == "Needs a closer look"
+    assert wording.count_name("high", 1) == "Sign of a break-in"
+    assert wording.count_name("critical", 1) == "Strong sign"
+    # These read the same either way.
+    assert wording.count_name("low", 1) == "No strong signs"
+    assert wording.count_name("removed", 1) == "No longer checked"
 
 
 def test_the_band_tag_follows_the_answer(web, monkeypatch):

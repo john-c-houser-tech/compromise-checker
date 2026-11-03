@@ -72,6 +72,54 @@ def two_factor_nudge(request) -> str | None:
         return None
 
 
+def theme(request) -> str:
+    """ "light" or "dark" when chosen in the top bar; empty to follow the browser."""
+    from django.conf import settings
+
+    chosen = getattr(request, "COOKIES", {}).get(settings.CHECKER_THEME_COOKIE, "")
+    return chosen if chosen in ("light", "dark") else ""
+
+
+def page_back(request) -> str:
+    """Where choosing a theme returns to: this page, unless it came from a form."""
+    if getattr(request, "method", "") == "GET":
+        return request.get_full_path()
+    return reverse("fleet")
+
+
+def initial(request) -> str:
+    """The first letter of the signed-in name, for the round badge in the top bar."""
+    user = getattr(request, "user", None)
+    name = user.get_username() if user is not None and user.is_authenticated else ""
+    return name[:1].upper()
+
+
+SECTIONS = (  # which part of the top bar each page belongs to, by its URL name's start
+    ("two_factor", "security"),
+    ("password_change", "security"),
+    ("check", "checks"),
+    ("analyze", "checks"),
+    ("threats", "threats"),
+    ("activity", "activity"),
+    ("fleet", "servers"),
+    ("host", "servers"),
+    ("evidence", "servers"),
+    ("decide", "servers"),
+    ("baseline", "servers"),
+    ("rule", "servers"),
+)
+
+
+def section(request) -> str:
+    """The top bar's entry for this page: everything not named above is under Manage."""
+    match = getattr(request, "resolver_match", None)
+    name = getattr(match, "url_name", "") or ""
+    for start, part in SECTIONS:
+        if name.startswith(start):
+            return part
+    return "manage" if name else ""
+
+
 def environment(**options) -> Environment:
     options.update(autoescape=True, finalize=_finalize_page, trim_blocks=True, lstrip_blocks=True)
     env = Environment(**options)  # noqa: S701 - autoescape is set just above
@@ -81,6 +129,10 @@ def environment(**options) -> Environment:
     env.globals["url"] = lambda view, **kwargs: reverse(view, kwargs=kwargs or None)
     env.globals["product_name"] = product_name
     env.globals["two_factor_nudge"] = two_factor_nudge
+    env.globals["theme"] = theme
+    env.globals["page_back"] = page_back
+    env.globals["initial"] = initial
+    env.globals["section"] = section
     env.globals["fully_signed_in"] = fully_signed_in
     env.globals["full_access"] = full_access
     env.globals["host_url"] = host_url

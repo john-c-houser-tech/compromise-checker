@@ -1757,6 +1757,7 @@ def route_problems(client):
         views.setup_page,
         views.join_page,
         views.two_factor_page,
+        views.theme,  # changes nothing here: only a cookie in the browser that chose it
     }
     problems = []
     for pattern in get_resolver("checker.web.urls").url_patterns:
@@ -2663,6 +2664,8 @@ def test_with_only_a_password_nothing_opens_but_the_second_step(web):
     assert BEFORE_SECOND_STEP == {
         views.font,
         views.stylesheet,
+        views.icon,
+        views.theme,
         views.setup_page,
         views.join_page,
         views.login_page,
@@ -2889,7 +2892,7 @@ def test_turning_it_on_needs_the_password_then_a_right_code(web):
     wrong = client.post("/two-factor/turn-on", {"code": "000000"})
     text = wrong.content.decode()
     assert wrong.status_code == 400 and 'name="code"' in text  # and the secret isn't sent again
-    assert "<svg" not in text and two_factor.secret_text(device) not in text
+    assert '<p class="qr">' not in text and two_factor.secret_text(device) not in text
     assert not two_factor.is_on(user)
     before = client.cookies["checker_session"].value
     response = client.post("/two-factor/turn-on", {"code": fresh(device)})
@@ -2927,17 +2930,17 @@ def test_the_secret_is_shown_only_in_answer_to_the_password(web):
     from checker.web import two_factor
 
     client, _ = signed_in(web)
-    assert "<svg" not in client.get("/two-factor/setup").content.decode()
+    assert '<p class="qr">' not in client.get("/two-factor/setup").content.decode()
     assert TOTPDevice.objects.count() == 0  # a GET changes nothing
     response = start_two_factor(client)
     device = TOTPDevice.objects.get()
     text = response.content.decode()
-    assert "<svg" in text and two_factor.secret_text(device) in text
+    assert '<p class="qr"><svg' in text and two_factor.secret_text(device) in text
     assert "<script" not in text and not re.search(r"<svg[^>]*style=", text)
     assert "unsafe-inline" not in response["Content-Security-Policy"]
     assert "no-store" in response["Cache-Control"]
     later = client.get("/two-factor/setup").content.decode()  # all a stolen session could do
-    assert "<svg" not in later and two_factor.secret_text(device) not in later
+    assert '<p class="qr">' not in later and two_factor.secret_text(device) not in later
 
 
 def test_a_thief_who_started_setup_cant_plant_their_secret(web, settings_override):
@@ -2952,7 +2955,7 @@ def test_a_thief_who_started_setup_cant_plant_their_secret(web, settings_overrid
     theirs = pending_device()
     owner = browser()
     past_the_password(owner)
-    assert "<svg" not in owner.get("/two-factor/setup").content.decode()
+    assert '<p class="qr">' not in owner.get("/two-factor/setup").content.decode()
     start_two_factor(owner)
     mine = pending_device()
     assert mine.key != theirs.key
@@ -3166,7 +3169,7 @@ def test_a_stolen_session_with_no_device_cant_get_a_secret(web):
 
     client, _ = signed_in(web)
     response = client.post("/two-factor/start", {"x": "1"})
-    assert response.status_code == 403 and "<svg" not in response.content.decode()
+    assert response.status_code == 403 and '<p class="qr">' not in response.content.decode()
     assert not two_factor.pending_devices_for(get_account("jo"))
 
 
@@ -3979,6 +3982,8 @@ def test_every_page_but_the_open_ones_asks_who_you_are(web):
     open_ones = {
         views.font,
         views.stylesheet,
+        views.icon,
+        views.theme,
         views.setup_page,
         views.join_page,
         views.login_page,
@@ -7993,6 +7998,9 @@ def invite(client, name="sam", access="view"):
 
 # Every page, by what someone who can only view may do with it. A new page has to be added here.
 VIEW_ONLY_MAY_USE = {
+    "favicon_svg",
+    "favicon_ico",
+    "theme",
     "fleet",
     "host",
     "evidence",
@@ -9299,3 +9307,66 @@ def test_a_failed_taking_away_adds_to_what_went_wrong_and_doesnt_replace_it(
     monkeypatch.setattr(postgres, "drop_ours", gone)
     moving.take_accounts_back()
     assert "empty that database" in capsys.readouterr().err
+
+
+def test_a_theme_is_chosen_without_a_script(web):
+    client, _ = signed_in(web)
+    page = client.get("/").content.decode()
+    assert 'action="/theme"' in page and 'value="dark"' in page and 'value="light"' in page
+    assert "<script" not in page and "data-theme" not in page.split("<head>")[0]
+    response = client.post("/theme", {"theme": "dark", "back": "/threats"})
+    assert response.status_code == 302 and response["Location"] == "/threats"
+    cookie = response.cookies[settings_value("CHECKER_THEME_COOKIE")]
+    assert cookie.value == "dark" and cookie["httponly"] and cookie["samesite"] == "Strict"
+    assert '<html lang="en" data-theme="dark">' in client.get("/").content.decode()
+    client.post("/theme", {"theme": "light", "back": "/"})
+    assert '<html lang="en" data-theme="light">' in client.get("/").content.decode()
+
+
+def test_a_theme_that_isnt_one_goes_back_to_the_browsers(web):
+    client, _ = signed_in(web)
+    client.post("/theme", {"theme": "dark", "back": "/"})
+    response = client.post("/theme", {"theme": '"><script>', "back": "/"})
+    assert response.cookies[settings_value("CHECKER_THEME_COOKIE")].value == ""
+    assert "data-theme" not in client.get("/").content.decode()
+
+
+def test_the_theme_only_ever_returns_to_this_site(web):
+    client, _ = signed_in(web)
+    for back in ("https://evil.example/", "//evil.example/", "/no-such-page", "javascript:x", ""):
+        response = client.post("/theme", {"theme": "dark", "back": back})
+        assert response["Location"] == "/", back
+
+
+def test_the_theme_can_be_chosen_before_signing_in(web):
+    client, _ = web
+    page = client.get("/login").content.decode()
+    assert 'action="/theme"' in page and "Sign out" not in page
+    response = client.post("/theme", {"theme": "dark", "back": "/login"})
+    assert response.status_code == 302 and response["Location"] == "/login"
+    assert '<html lang="en" data-theme="dark">' in client.get("/login").content.decode()
+
+
+def test_nouriloops_coil_is_the_icon(web):
+    client, _ = web
+    svg = client.get("/favicon.svg")
+    assert svg.status_code == 200 and svg["Content-Type"] == "image/svg+xml"
+    assert b"M28 30a4 4 0 0 1 8 0" in svg.content  # the Coil's rope
+    assert client.get("/favicon.ico")["Content-Type"] == "image/x-icon"
+    assert 'href="/favicon.svg"' in client.get("/login").content.decode()
+
+
+def test_the_top_bar_marks_where_you_are(web):
+    client, _ = signed_in(web)
+    page = client.get("/threats").content.decode()
+    nav = page.split('<nav class="bar-nav"')[1].split("</nav>")[0]
+    assert nav.count("aria-current") == 1 and 'href="/threats" aria-current="page"' in nav
+    security = client.get("/two-factor/manage").content.decode()
+    assert 'class="avatar" href="/two-factor/manage"' in security
+    assert 'aria-current="page"><span class="visually-hidden">' in security
+
+
+def settings_value(name):
+    from django.conf import settings
+
+    return getattr(settings, name)

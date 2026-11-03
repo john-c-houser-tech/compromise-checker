@@ -339,8 +339,12 @@ check, and any check started from a page, delete what's past them.
   and the content security policy allows no scripts at all and nothing from other sites.
 - **Sessions** last 8 hours or until the browser closes. Cookies can't be read by scripts or sent
   from other sites.
+- **Light or dark** follows the browser's own setting until someone picks one with the switch in the
+  top bar. The choice is kept in a cookie of its own in that browser, for a year, holding only `light`
+  or `dark`, and nowhere on the machine. The switch is a plain form, so pages still run no script.
 - **Nothing is fetched from elsewhere:** no analytics or content delivery networks. The font,
   Atkinson Hyperlegible from the Braille Institute, ships with the tool under the SIL Open Font
   License (`checker/web/static/fonts/OFL.txt`).
+  The icons are drawn in the pages themselves, and the Coil mark and favicon are NouriLoop LLC's.
 
 The name shown can be changed with the environment variable `CHECKER_PRODUCT_NAME`.

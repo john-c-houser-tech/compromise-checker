@@ -626,7 +626,7 @@ def test_the_page_shows_the_same_order_as_the_command(web):
     analysed(home, "a", 10, CLEAN, host="clean")
     analysed(home, "b", 10, ROOTED, host="rooted")
     text = client.get("/").content.decode()
-    assert text.index(">rooted</a></h2>") < text.index(">clean</a></h2>")
+    assert text.index(">rooted</a></h3>") < text.index(">clean</a></h3>")
     assert "not proof" in text
 
 
@@ -716,10 +716,10 @@ def test_filters_narrow_the_list_but_not_the_answer(web, monkeypatch):
     monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (hosts, []))
     text = client.get("/", {"group": "db"}).content.decode()
     assert "needs attention" in text or "need attention" in text
-    assert ">fine</a></h2>" in text and ">bad</a></h2>" not in text
-    assert ">gone</a></h2>" in text  # a removed host's bad result isn't filtered out of sight
+    assert ">fine</a></h3>" in text and ">bad</a></h3>" not in text
+    assert ">gone</a></h3>" in text  # a removed host's bad result isn't filtered out of sight
     text = client.get("/", {"show": "low"}).content.decode()
-    assert ">fine</a></h2>" in text and ">bad</a></h2>" not in text
+    assert ">fine</a></h3>" in text and ">bad</a></h3>" not in text
 
 
 def test_the_page_shows_what_it_worked_out(web, monkeypatch):
@@ -743,7 +743,7 @@ def test_the_page_shows_what_it_worked_out(web, monkeypatch):
     )
     text = client.get("/").content.decode()
     for words in (
-        "Your server needs attention now.",
+        "Your server needs attention now",
         "Signs of a break-in",
         "Look into this today.",
         "A shell was started",
@@ -751,7 +751,7 @@ def test_the_page_shows_what_it_worked_out(web, monkeypatch):
         "Open to a known threat now: p1.",
         "A threat update couldn't be used",
         "67%",
-        'x1="67.0"',
+        'class="meter-fill" x="0" y="0" width="67.0"',
     ):
         assert words in text, words
     assert "pack-file-detail" not in text
@@ -802,7 +802,7 @@ def test_one_hosts_odd_stored_data_never_takes_the_page_down(web, monkeypatch, f
     monkeypatch.setattr(fleet_module, "load_assessment", load)
     response = client.get("/")
     text = response.content.decode()
-    assert response.status_code == 200 and ">rooted</a></h2>" in text and ">odd</a></h2>" in text
+    assert response.status_code == 200 and ">rooted</a></h3>" in text and ">odd</a></h3>" in text
     assert "No strong signs of a break-in on" not in text
 
 
@@ -9413,6 +9413,95 @@ def settings_value(name):
     from django.conf import settings
 
     return getattr(settings, name)
+
+
+def test_the_band_answers_with_counts_and_no_full_stop(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    hosts = [
+        FleetHost("bad", "web", "analysed", "Critical", 0.99),
+        FleetHost("worse", "web", "analysed", "Critical", 0.995),
+        FleetHost("fine", "db", "analysed", "Low", 0.02),
+    ]
+    monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (hosts, []))
+    text = client.get("/?show=low").content.decode()
+    band = text.split('<section class="band"')[1].split("</section>")[0]
+    assert '<p class="tag">Act on this now</p>' in band
+    assert '<h1 id="answer">2 of your 3 servers need attention now</h1>' in band
+    counts = band.split('<ul class="counts"')[1].split("</ul>")[0]
+    # Every server, not just the ones the filter shows; each count is its own filter.
+    assert '<a href="?show=critical"><strong>2</strong>' in counts
+    assert '<a href="?show=low" aria-current="true"><strong>1</strong>' in counts
+    assert '<a href="?show=critical"><strong>2</strong>' in counts  # not the filter in use
+    # A count of one is in the singular, of more in the plural.
+    assert "<strong>2</strong> <span>Strong signs</span>" in counts
+    assert "<strong>1</strong> <span>No strong signs</span>" in counts
+
+
+def test_a_count_of_one_server_is_singular():
+    from checker.web import wording
+
+    assert wording.count_name("elevated", 1) == "Warning sign"
+    assert wording.count_name("elevated", 3) == "Warning signs"
+    assert wording.count_name("unknown", 1) == "Needs a closer look"
+    assert wording.count_name("high", 1) == "Sign of a break-in"
+    assert wording.count_name("critical", 1) == "Strong sign"
+    # These read the same either way.
+    assert wording.count_name("low", 1) == "No strong signs"
+    assert wording.count_name("removed", 1) == "No longer checked"
+
+
+def test_the_band_tag_follows_the_answer(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+
+    def band_for(*hosts):
+        monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (list(hosts), []))
+        text = client.get("/").content.decode()
+        return text.split('<section class="band"')[1].split("</section>")[0]
+
+    assert '<p class="tag">' not in band_for(FleetHost("fine", "web", "analysed", "Low", 0.02))
+    amber = band_for(FleetHost("meh", "web", "analysed", "Elevated", 0.3))
+    assert '<p class="tag">Look into this soon</p>' in amber
+    gone = band_for(FleetHost("gone", None, "analysed", "Low", 0.02, removed=True))
+    assert "No servers being checked" in gone and '<p class="tag">' not in gone
+
+
+def test_the_answer_is_in_the_main_content(web):
+    client, _ = signed_in(web)
+    text = client.get("/").content.decode()
+    assert text.index("<main>") < text.index('<section class="band"') < text.index("</main>")
+
+
+def test_no_servers_yet_points_to_first_setup(web):
+    client, _ = signed_in(web)
+    band = client.get("/").content.decode().split('<section class="band"')[1]
+    assert '<h1 id="answer">No servers yet</h1>' in band
+    assert 'class="button" href="/first-setup"' in band and '<ul class="counts"' not in band
+
+
+def test_view_only_gets_no_buttons_in_the_band(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    hosts = [FleetHost("bad", "web", "analysed", "Critical", 0.99)]
+    monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (hosts, []))
+    band = person("viewer").get("/").content.decode().split('<section class="band"')[1]
+    band = band.split("</section>")[0]
+    assert 'class="actions"' not in band and "/checks/new" not in band
+
+
+def test_only_the_headline_band_is_a_band():
+    """Its class styles a whole section, so nothing else may carry it: a finding's severity
+    line is 'severity'."""
+    import re
+    from pathlib import Path
+
+    templates = Path(__file__).parent.parent / "checker" / "web" / "templates"
+    for template in templates.glob("*.j2"):
+        for tag in re.findall(r'<(\w+)[^>]*class="band"', template.read_text(encoding="utf-8")):
+            assert tag == "section", template.name
 
 
 def test_every_page_file_is_in_an_installed_copy():

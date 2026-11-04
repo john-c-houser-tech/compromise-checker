@@ -7636,6 +7636,82 @@ def test_first_setup_goes_step_by_step_from_what_s_really_there(web, inventory):
     assert records_of("said the evidence key is backed up")[-1].who == "jo"
 
 
+def test_first_setup_points_to_the_key_page_and_says_what_a_lost_machine_means(web):
+    client, _ = signed_in(web)
+    text = setup_page(client)
+    assert text.count('href="/manage/evidence-key"') == 2
+    assert "doesn't back up the evidence itself" in text
+    assert "AGE-SECRET-KEY-" not in text
+
+
+# --- The evidence key ---------------------------------------------------------------------
+
+
+def key_page(client):
+    response = client.get("/manage/evidence-key")
+    assert response.status_code == 200
+    return said(response)
+
+
+def secret_key_of(home):
+    lines = (home[0] / "keys" / "evidence-identity.txt").read_text().splitlines()
+    return next(line for line in lines if line.startswith("AGE-SECRET-KEY-"))
+
+
+def show_key(client, password=PASSWORD):
+    return client.post("/manage/evidence-key/show", {"confirm_password": password})
+
+
+def test_the_evidence_key_is_shown_only_after_confirming_and_each_showing_is_recorded(web):
+    client, home = signed_in(web)
+    secret = secret_key_of(home)
+    text = key_page(client)
+    assert "Show the key" in text and "evidence-identity.txt" in text
+    assert "AGE-SECRET-KEY-" not in text, "looking at the page shows nothing"
+    assert "If this machine is lost" in text and "doesn't back up the evidence itself" in text
+    refused = show_key(client, "no")
+    assert refused.status_code == 403 and "AGE-SECRET-KEY-" not in said(refused)
+    assert records_of("showed the evidence key")[-1].outcome == "refused"
+    shown = show_key(client)
+    assert shown.status_code == 200 and shown["Cache-Control"] == "no-store"
+    page = said(shown)
+    assert secret in page and "I've backed it up" in page
+    assert "Content-Disposition" not in shown, "shown in the page, never as a file"
+    record = records_of("showed the evidence key")[-1]
+    assert (record.who, record.outcome) == ("jo", "done")
+    assert record.target == config_now().recipients[0], "the record names the public half"
+    assert "AGE-SECRET-KEY-" not in record.target + record.detail
+    assert secret in said(show_key(client)), "and again, the same way"
+    assert "AGE-SECRET-KEY-" not in key_page(client)
+    assert client.post("/first-setup/key-saved", {"a": "b"}).status_code == 302
+    assert "I've backed it up" not in said(show_key(client))
+    assert "(done)" in setup_page(client)
+
+
+def test_a_key_that_is_lost_or_kept_elsewhere_is_said_so_and_not_shown(web):
+    client, home = signed_in(web)
+    key = home[0] / "keys" / "evidence-identity.txt"
+    key.rename(key.with_name("elsewhere"))
+    text = key_page(client)
+    assert "isn't where it should be" in text and "Show the key" not in text
+    response = show_key(client)
+    assert response.status_code == 400 and "can't be read" in said(response)
+    assert records_of("showed the evidence key")[-1].outcome == "failed"
+    key.with_name("elsewhere").rename(key)
+    import yaml
+
+    from checker.inventory import home as checker_home
+
+    path = checker_home() / "config.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["identity_file"] = None
+    path.write_text(yaml.safe_dump(data))
+    text = key_page(client)
+    assert "isn't kept on this machine" in text and "Show the key" not in text
+    assert show_key(client).status_code == 400
+    assert "AGE-SECRET-KEY-" not in said(show_key(client))
+
+
 def test_the_first_choices_are_confirmed_and_are_the_real_settings(web, inventory):
     client, _ = signed_in(web)
     reader = _FormReader("/first-setup/choices")
@@ -7718,6 +7794,22 @@ def keyed(web, unconfirmed):
         )
     )
     return client, home
+
+
+def test_a_pc_install_warns_that_limiting_the_key_to_its_address_can_lock_it_out(
+    keyed, monkeypatch, tmp_path
+):
+    from checker import machine_status
+
+    client, _ = keyed
+    warning = "That kind of address can change"
+    assert warning not in prepared(client), "not installed by the script: nothing is known"
+    (tmp_path / "installed").write_text("0.1.0\n")
+    monkeypatch.setattr(machine_status, "INSTALLED", tmp_path / "installed")
+    monkeypatch.setattr(machine_status, "WEB_ADDRESS", tmp_path / "web-address.json")
+    assert warning in prepared(client)
+    (tmp_path / "web-address.json").write_text("{}\n")
+    assert warning not in prepared(client), "a server with a web address keeps its address"
 
 
 def test_the_commands_are_filled_in_with_the_real_key_and_nothing_private(keyed):

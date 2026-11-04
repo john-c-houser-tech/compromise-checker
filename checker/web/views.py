@@ -31,7 +31,7 @@ from django_otp import login as otp_login
 from markupsafe import escape
 from pydantic import ValidationError as InvalidSettings
 
-from checker import schedule
+from checker import machine_status, schedule
 from checker.database import DATABASE_ERRORS
 from checker.evidence import EvidenceError, load_config
 from checker.fleet import read_evidence, read_fleet, read_host, read_threats
@@ -1350,6 +1350,39 @@ def first_setup_key_saved(request) -> HttpResponse:
     return HttpResponseRedirect(reverse("first_setup"))
 
 
+def _key_page(request, shown: str = "", status: int = 200) -> HttpResponse:
+    context = {
+        **first_setup.key_facts(home()),
+        "shown": shown,
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_evidence_key.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def manage_evidence_key(request) -> HttpResponse:
+    """What the key is for and what losing it, or this machine, means. Never the key itself: that
+    takes the confirmation below."""
+    try:
+        return _key_page(request)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't read the key's settings: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The settings can't be read.")
+
+
+@action(first_setup.SHOWED_KEY, consequential=True, target=_evidence_key_named)
+def evidence_key_show(request) -> HttpResponse:
+    """Password again, and a code: this is the key to all the evidence. It's shown in the page, to
+    paste into a password manager, and never offered as a file."""
+    try:
+        line = first_setup.evidence_key_line(home())
+    except (OSError, EvidenceError) as exc:
+        print(f"checker web: the evidence key can't be read: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed("The evidence key can't be read from this machine.") from None
+    return _key_page(request, shown=line)
+
+
 @action(first_setup.CHOSE, consequential=True)
 def first_setup_choices(request) -> HttpResponse:
     """Password again, as on the settings page: it's the same settings, by the same code."""
@@ -1393,7 +1426,10 @@ def manage_prepare(request) -> HttpResponse:
         context = first_setup.commands_for(home(), host, request.GET.get("from", ""))
     except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
         return _unreadable_inventory(request, exc)
-    return render(request, "manage_prepare.html.j2", {"host": host, **context})
+    local_pc = machine_status.install_route() == "local"
+    return render(
+        request, "manage_prepare.html.j2", {"host": host, "local_pc": local_pc, **context}
+    )
 
 
 @for_viewers

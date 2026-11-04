@@ -1,0 +1,41 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}Evidence key: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage') }}">Back to Manage</a></p>
+<h1 class="page-title">The evidence key</h1>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+{% if not evidence_key %}
+<p>Everything this tool stores is encrypted to one key, and that key isn't kept on this machine, so it can't be shown here. Whoever keeps it looks after its backup.</p>
+{% else %}
+<p>Everything this tool stores is encrypted to one key, which is on this machine. Without it, stored evidence can't be read by anyone, this tool included. Back it up somewhere safe and separate, such as a password manager, and not on this machine.</p>
+{% if evidence_key_lost %}
+<p class="error" role="alert">The evidence key isn't where it should be, at {{ evidence_key | visible(2000) }}. Without it, what's stored can't be read. Put your backup back there.</p>
+{% elif shown %}
+<section role="status">
+<h2>Your evidence key</h2>
+<p>Paste this one line into a password manager, under a name such as "Compromise Checker evidence key", then leave this page.</p>
+<p class="command">{{ shown }}</p>
+<p class="note">Anyone with this line and a copy of the evidence can read it, so keep it as private as the evidence. Showing it has gone in the activity record.</p>
+{% if not key_saved %}
+<form method="post" action="{{ url('first_setup_key_saved') }}">
+  {{ csrf_input }}
+  <button>I've backed it up</button>
+</form>
+{% endif %}
+</section>
+{% else %}
+<h2>Show the key</h2>
+<p>It appears here as one line to paste into a password manager. It's never offered as a file: a browser's downloads folder is a worse place for it than where it is. Showing it goes in the activity record, and you can show it again the same way.</p>
+<form method="post" action="{{ url('evidence_key_show') }}">
+  {{ csrf_input }}
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Show the key</button>
+</form>
+<p class="note">If you'd rather copy the file, it's at {{ evidence_key | visible(2000) }}, readable only by the tool's account. If this machine is somewhere else, whoever looks after it can copy it for you.</p>
+{% endif %}
+{% endif %}
+<h2>If this machine is lost</h2>
+<p>The tool doesn't back up the evidence itself. If this machine is lost, or its disk fails, each server's history goes with it, and the tool starts again from what each server looks like the day it's next checked. A backed-up key lets you read a copy of the evidence you kept yourself; it doesn't bring the evidence back.</p>
+<p>If the machine is at a hosting provider, the provider's machine backups are the simplest protection, if your organization accepts that the provider then holds a copy. Such a backup holds the key and the evidence together, so whoever can restore it can read everything: protect it like the evidence itself.</p>
+{% endblock %}

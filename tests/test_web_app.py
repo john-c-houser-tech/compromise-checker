@@ -9504,6 +9504,91 @@ def test_only_the_headline_band_is_a_band():
             assert tag == "section", template.name
 
 
+def _host_page(client):
+    return client.get("/hosts/web01").content.decode()
+
+
+def test_the_server_page_says_what_server_text_is_before_showing_any(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    page = _host_page(client)
+    explained = page.index("comes from the server, and an intruder could have written it")
+    assert explained < page.index('<article class="finding')
+
+
+def test_no_server_text_in_the_band_or_a_severity_heading(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    page = _host_page(client)
+    band = page.split('<section class="band"')[1].split("</section>")[0]
+    assert "from-server" not in band
+    for strip in page.split('<p class="severity"')[1:]:
+        assert "from-server" not in strip.split("</p>")[0]
+    assert '<p class="meta"></p>' not in page and " · </p>" not in page
+
+
+def test_each_finding_heading_names_its_severity(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    page = _host_page(client)
+    assert '<h3><span class="visually-hidden">Very serious' in page
+    assert '<p class="severity" aria-hidden="true">' in page
+    # The F- number is hidden with the strip, so the heading says it: the advisor uses it.
+    for text in (page, client.get("/hosts/web01/evidence").content.decode()):
+        assert re.search(r'<h3><span class="visually-hidden">[^<]*, F-1: </span>', text)
+
+
+def test_at_a_glance_counts_the_cards_and_what_is_only_for_information(web, monkeypatch):
+    """Each section's count is its cards, as its heading says; the findings only for information
+    are counted on their own line, so a section with only those isn't a 0."""
+    from checker.fleet import FleetHost
+    from checker.web import wording
+
+    client, _ = signed_in(web)
+    assessment = {
+        "findings": [
+            {"check": "account.uid0", "category": "hygiene", "band": "info"},
+            {"check": "account.uid0", "category": "compromise indicator", "band": "high"},
+        ]
+    }
+    host = FleetHost("web01", state="analysed", band="High", probability=0.6, first=False)
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, assessment, {}, True)
+    )
+    page = _host_page(client)
+    glance = page.split('<dl class="glance">')[1].split("</dl>")[0]
+    sections = wording.host_details(assessment)["sections"]
+    assert any(s["minor"] and not s["findings"] for s in sections)  # one only for information
+    for s in sections:
+        title = html.escape(s["title"])
+        if s["findings"]:
+            assert f"<dt>{title}</dt><dd>1</dd>" in glance
+            assert f"{title} <span>(1)</span></h2>" in page
+        else:  # its heading counts its cards too: none
+            assert title not in glance and f"{title} <span>(0)</span></h2>" in page
+    assert "<dt>For information</dt><dd>1</dd>" in glance
+
+
+def test_the_server_notes_are_never_below_the_findings():
+    """Beside them in two columns or above them in one: the reorder comes with the columns."""
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    wide = css.split("@media (min-width: 52.01rem) {")[1].split("\n}")[0]
+    assert ".host-side { order: 2; }" in wide
+    assert "grid-template-columns: minmax(0, 1fr) 17rem" in wide
+    assert css.count(".host-side { order: 2; }") == 1
+    assert "flex-wrap" not in css.split(".host-layout")[1].split("}")[0]
+
+
+def test_the_evidence_link_once_for_each_kind_of_account(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    full = _host_page(client)
+    assert full.count('href="/hosts/web01/evidence"') == 1
+    viewer = _host_page(person("viewer"))
+    assert viewer.count('href="/hosts/web01/evidence"') == 1
+    assert 'class="actions"' not in viewer and "/checks/analyze" not in viewer
+
+
 def test_every_page_file_is_in_an_installed_copy():
     """An installed copy has only what package data lists: a file left out is a 500 there."""
     import tomllib
@@ -9518,3 +9603,43 @@ def test_every_page_file_is_in_an_installed_copy():
             if path.is_file():
                 name = path.relative_to(web).as_posix()
                 assert any(fnmatch(name, p) for p in patterns), name
+
+
+def test_at_a_glance_shows_with_only_accepted_findings_and_threats(web, monkeypatch):
+    """Everything accepted still has counts worth showing; a fixed threat isn't called open."""
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    assessment = {
+        "findings": [
+            {
+                "check": "account.uid0",
+                "category": "compromise indicator",
+                "band": "high",
+                "suppressed_by": "r1",
+            }
+        ]
+    }
+    host = FleetHost(
+        "web01",
+        state="analysed",
+        band="Low",
+        probability=0.02,
+        first=False,
+        exposed={"php2shell-2026-10": "fixed"},
+    )
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, assessment, {}, True)
+    )
+    page = _host_page(client)
+    glance = page.split('<dl class="glance">')[1].split("</dl>")[0]
+    assert "<dt>Hidden as accepted</dt><dd>1</dd>" in glance
+    assert "<dt>Known threats</dt><dd>1</dd>" in glance
+    assert "open" not in glance
+
+
+def test_a_long_group_name_wraps_in_the_server_band():
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    meta = css.split(".host-title .meta {")[1].split("}")[0]
+    assert "overflow-wrap: anywhere" in meta
+    assert ".host-title > div { min-width: 0; }" in css

@@ -26,6 +26,7 @@ class Machine:
         self.program = tmp_path / "opt"
         self.updates = tmp_path / "data" / "updates"
         self.updates.mkdir(parents=True)
+        self.state = tmp_path / "state"
         self.commands: list[list[str]] = []
         self.restarts = 0
         self.fail = set(fail)
@@ -40,6 +41,7 @@ class Machine:
         self.status_script.write_text("# old status script\n")
         monkeypatch.setattr(update_service, "STATUS_SCRIPT", self.status_script)
         monkeypatch.setattr(update_service, "PROGRAM", self.program)
+        monkeypatch.setattr(update_service, "account_uid", os.getuid)
         monkeypatch.setattr(update_service, "ANSWER_SECONDS", 0.2)
         monkeypatch.setattr(subprocess, "run", self.run)
         monkeypatch.setattr(update_service, "answers", self.answers)
@@ -68,6 +70,8 @@ class Machine:
         if list(command[:2]) == ["systemctl", "restart"]:
             self.restarts += 1
             return subprocess.CompletedProcess(command, 0, "", "")
+        if list(command[:2]) == ["systemctl", "stop"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
         raise AssertionError(f"unexpected command {command}")
 
     def answers(self, port=8088, seconds=0):
@@ -86,7 +90,10 @@ class Machine:
         return Path(os.readlink(self.program / "current")).name
 
     def outcome(self) -> dict:
-        return json.loads((self.updates / "outcome.json").read_text())
+        return json.loads((self.state / "outcome.json").read_text())
+
+    def go(self) -> int:
+        return update_service.main([str(self.updates), str(self.state)])
 
 
 def test_a_newer_signed_release_is_installed_beside_the_old_and_switched_to(
@@ -94,7 +101,7 @@ def test_a_newer_signed_release_is_installed_beside_the_old_and_switched_to(
 ):
     machine = Machine(tmp_path, monkeypatch, answers_after=1)
     machine.offer("0.2.0")
-    assert update_service.main([str(machine.updates)]) == 0
+    assert machine.go() == 0
     assert machine.current() == "0.2.0"
     assert machine.outcome()["outcome"] == "installed"
     assert machine.outcome()["from"] == "0.1.0"
@@ -103,19 +110,20 @@ def test_a_newer_signed_release_is_installed_beside_the_old_and_switched_to(
     assert (new / releases.MANIFEST).exists() and (new / releases.SIGNATURE).exists()
     assert machine.status_script.read_text() == "# status of 0.2.0\n"
     assert not (machine.updates / "request").exists()
-    assert not (machine.updates / "incoming" / "0.2.0").exists()
+    assert (machine.updates / "incoming" / "0.2.0").is_dir(), "the account's folder is left to it"
     assert not any((machine.program / "staged").iterdir()), "root's copy is cleared away"
     pip_installs = [c for c in machine.commands if "pip" in c and "install" in c]
     assert all("--no-index" in c for c in pip_installs), "root never fetches"
     assert any("--require-hashes" in c and "--find-links" in c for c in pip_installs)
     assert machine.restarts == 1
-    assert (machine.updates / "outcome.json").stat().st_mode & 0o777 == 0o644
+    assert (machine.state / "outcome.json").stat().st_mode & 0o777 == 0o644
+    assert not (machine.updates / "outcome.json").exists(), "root writes nothing in the account's"
 
 
 def test_a_version_that_does_not_answer_is_rolled_back(tmp_path, monkeypatch, trusted):
     machine = Machine(tmp_path, monkeypatch, answers_after=99)
     machine.offer("0.2.0")
-    assert update_service.main([str(machine.updates)]) == 1
+    assert machine.go() == 1
     assert machine.current() == "0.1.0"
     outcome = machine.outcome()
     assert outcome["outcome"] == "rolled back" and "didn't answer" in outcome["words"]
@@ -127,7 +135,7 @@ def test_a_version_that_does_not_answer_is_rolled_back(tmp_path, monkeypatch, tr
 def test_a_build_that_fails_leaves_the_old_version_running(tmp_path, monkeypatch, trusted):
     machine = Machine(tmp_path, monkeypatch, answers_after=1, fail={"deps"})
     machine.offer("0.2.0")
-    assert update_service.main([str(machine.updates)]) == 1
+    assert machine.go() == 1
     assert machine.current() == "0.1.0"
     assert machine.outcome()["outcome"] == "rolled back"
     assert "hashes don't match" in machine.outcome()["words"]
@@ -138,7 +146,7 @@ def test_a_build_that_fails_leaves_the_old_version_running(tmp_path, monkeypatch
 def test_nothing_not_newer_is_installed(tmp_path, monkeypatch, trusted, version):
     machine = Machine(tmp_path, monkeypatch, answers_after=1)
     machine.offer(version)
-    assert update_service.main([str(machine.updates)]) == 1
+    assert machine.go() == 1
     assert machine.current() == "0.1.0"
     assert machine.outcome()["outcome"] == "refused"
     assert "isn't newer" in machine.outcome()["words"]
@@ -150,32 +158,77 @@ def test_a_release_signed_by_someone_else_or_changed_is_refused(tmp_path, monkey
     machine = Machine(tmp_path, monkeypatch, answers_after=1)
     source = machine.offer("0.2.0")
     (source / releases.REQUIREMENTS).write_bytes(b"evil==1 --hash=sha256:0\n")
-    assert update_service.main([str(machine.updates)]) == 1
+    assert machine.go() == 1
     assert machine.outcome()["outcome"] == "refused"
     assert machine.current() == "0.1.0" and machine.restarts == 0
-    assert not (machine.updates / "incoming").exists(), "what was refused is gone"
+    import shutil
+
+    shutil.rmtree(source)
     source = machine.offer("0.2.0")
     data = (source / releases.MANIFEST).read_bytes()
     (source / releases.SIGNATURE).write_bytes(Key().sign(data))
-    assert update_service.main([str(machine.updates)]) == 1
+    assert machine.go() == 1
     assert machine.outcome()["outcome"] == "refused" and machine.current() == "0.1.0"
 
 
 def test_the_request_file_is_never_read_and_nothing_waiting_is_said(tmp_path, monkeypatch, trusted):
     machine = Machine(tmp_path, monkeypatch, answers_after=1)
     (machine.updates / "request").write_text("/etc/shadow\n")
-    assert update_service.main([str(machine.updates)]) == 1
+    assert machine.go() == 1
     assert machine.outcome()["outcome"] == "failed"
     assert "nothing is waiting" in machine.outcome()["words"]
     assert machine.restarts == 0 and not machine.commands
     # Two folders: the service won't choose.
     machine.offer("0.2.0")
     machine.offer("0.3.0")
-    assert update_service.main([str(machine.updates)]) == 1
+    assert machine.go() == 1
     assert "more than one" in machine.outcome()["words"]
     # No request at all: nothing happens, and the outcome says so without touching the folder.
-    assert update_service.main([str(machine.updates)]) == 0
+    assert machine.go() == 0
     assert machine.outcome()["outcome"] == "nothing"
+
+
+def test_a_request_that_cannot_be_removed_stops_the_watcher_instead_of_looping(
+    tmp_path, monkeypatch, trusted
+):
+    machine = Machine(tmp_path, monkeypatch, answers_after=1)
+    (machine.updates / "request").mkdir()  # an empty folder is simply removed
+    assert machine.go() == 1
+    assert "nothing is waiting" in machine.outcome()["words"]
+    assert not (machine.updates / "request").exists()
+    (machine.updates / "request" / "x").mkdir(parents=True)  # one that can't be
+    assert machine.go() == 1
+    outcome = machine.outcome()
+    assert "watcher was stopped" in outcome["words"] and "systemctl start" in outcome["words"]
+    assert ["systemctl", "stop", "compromise-checker-update.path"] in machine.commands
+    assert machine.restarts == 0
+
+
+def test_the_account_s_folders_must_be_its_own(tmp_path, monkeypatch, trusted):
+    machine = Machine(tmp_path, monkeypatch, answers_after=1)
+    machine.offer("0.2.0")
+    (machine.updates / "incoming" / "0.2.0").chmod(0o707)  # anyone could swap things in it
+    assert machine.go() == 1
+    assert "isn't the tool's own folder" in machine.outcome()["words"]
+    assert machine.restarts == 0 and machine.current() == "0.1.0"
+
+
+def test_a_huge_or_odd_wheel_is_refused_or_left_behind(tmp_path, monkeypatch, trusted):
+    machine = Machine(tmp_path, monkeypatch, answers_after=1)
+    source = machine.offer("0.2.0")
+    os.mkfifo(source / "wheels" / "pipe-1.0-py3-none-any.whl")  # would hang a plain open
+    assert machine.go() == 0, "left behind, and the rest installed"
+    import shutil
+
+    shutil.rmtree(source)  # as `checker update` does before the next release
+    machine.offer("0.3.0", wheels=(("big-1.0-py3-none-any.whl", b""),))
+    big = machine.updates / "incoming" / "0.3.0" / "wheels" / "big-1.0-py3-none-any.whl"
+    with big.open("r+b") as out:
+        out.truncate(update_service.MAX_WHEEL_BYTES + 1)  # sparse: no disk is used here
+    assert machine.go() == 1
+    assert "larger than any release's" in machine.outcome()["words"]
+    assert not (machine.program / "versions" / "0.3.0").exists()
+    assert machine.current() == "0.2.0"
 
 
 def test_only_plain_wheel_files_are_taken_from_the_account_s_folder(tmp_path, monkeypatch, trusted):
@@ -183,6 +236,7 @@ def test_only_plain_wheel_files_are_taken_from_the_account_s_folder(tmp_path, mo
     source = machine.offer("0.2.0")
     (source / "wheels" / "planted.txt").write_text("not a wheel")
     (source / "wheels" / "link-1.0-py3-none-any.whl").symlink_to("/etc/hostname")
+    (source / "wheels" / "folder-1.0-py3-none-any.whl").mkdir()
     staged = machine.program / "staged" / "0.2.0"
     copied = []
     real_build = update_service.build
@@ -192,7 +246,7 @@ def test_only_plain_wheel_files_are_taken_from_the_account_s_folder(tmp_path, mo
         return real_build(staged_folder, version, program)
 
     monkeypatch.setattr(update_service, "build", build)
-    assert update_service.main([str(machine.updates)]) == 0
+    assert machine.go() == 0
     assert copied == ["dep-1.0-py3-none-any.whl"]
     assert not staged.exists()
 
@@ -201,7 +255,7 @@ def test_older_versions_are_removed_but_the_previous_kept(tmp_path, monkeypatch,
     machine = Machine(tmp_path, monkeypatch, answers_after=1)
     (machine.program / "versions" / "0.0.1").mkdir()
     machine.offer("0.2.0")
-    assert update_service.main([str(machine.updates)]) == 0
+    assert machine.go() == 0
     kept = sorted(p.name for p in (machine.program / "versions").iterdir())
     assert kept == ["0.1.0", "0.2.0"]
 

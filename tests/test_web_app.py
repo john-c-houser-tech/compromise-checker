@@ -7852,6 +7852,14 @@ def test_checking_now_is_recorded_and_says_what_it_found(web, monkeypatch, tmp_p
         response = client.post("/manage/updates/check", {"a": "b"})
         assert response.status_code == 200 and words in said(response)
         assert records_of("asked whether a newer version exists")[-1].detail == detail
+    from datetime import UTC, datetime
+
+    folder = home[0] / "updates"
+    folder.mkdir(exist_ok=True)
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    (folder / "check.json").write_text(json.dumps({"checked": now, "newest": None}))
+    soon = client.post("/manage/updates/check", {"a": "b"})
+    assert soon.status_code == 400 and "less than a minute ago" in said(soon)
 
 
 def test_starting_an_update_needs_the_password_and_the_newest_known_version(
@@ -7897,17 +7905,33 @@ def test_a_machine_not_set_up_by_the_installer_is_not_offered_the_button(
 
 
 def test_progress_and_outcome_are_shown_and_a_request_can_be_taken_back(web, monkeypatch, tmp_path):
+    from checker import updates
+
     client, home = signed_in(web)
     _installed(monkeypatch, tmp_path)
     _found(home)
     folder = home[0] / "updates"
     (folder / "progress.json").write_text(
-        json.dumps({"at": "x", "version": "0.2.0", "state": "dependencies", "words": ""})
+        json.dumps(
+            {
+                "at": "2026-11-04T00:00:00+00:00",
+                "version": "0.2.0",
+                "state": "dependencies",
+                "words": "",
+            }
+        )
     )
     text = said(client.get("/manage/updates"))
     assert "Fetching version 0.2.0's dependencies" in text and "Update to" not in text
     (folder / "progress.json").write_text(
-        json.dumps({"at": "x", "version": "0.2.0", "state": "handed over", "words": ""})
+        json.dumps(
+            {
+                "at": "2026-11-04T00:00:01+00:00",
+                "version": "0.2.0",
+                "state": "handed over",
+                "words": "",
+            }
+        )
     )
     (folder / "request").write_text("0.2.0\n")
     text = said(client.get("/manage/updates"))
@@ -7918,10 +7942,13 @@ def test_progress_and_outcome_are_shown_and_a_request_can_be_taken_back(web, mon
     assert records_of("took back an update request")[-1].outcome == "done"
     again = client.post("/manage/updates/cancel", {"a": "b"})
     assert again.status_code == 400
-    (folder / "outcome.json").write_text(
+    outcome = tmp_path / "state" / "outcome.json"
+    outcome.parent.mkdir()
+    monkeypatch.setattr(updates, "OUTCOME_FILE", outcome)
+    outcome.write_text(
         json.dumps(
             {
-                "at": "2026-11-21T11:00:00+00:00",
+                "at": "2099-11-21T11:00:00+00:00",
                 "outcome": "rolled back",
                 "version": "0.2.0",
                 "from": "0.1.0",

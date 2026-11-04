@@ -19,6 +19,7 @@ for a release copied over by hand."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shutil
@@ -47,7 +48,7 @@ WHEELS = "wheels"
 REQUEST = "request"
 CHECKED = "check.json"
 PROGRESS = "progress.json"
-OUTCOME = "outcome.json"  # written by the root service
+OUTCOME_FILE = Path("/var/lib/compromise-checker-update/outcome.json")  # the root service's
 PIP_SECONDS = 1200
 _TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 _lock = threading.Lock()  # one check or preparation at a time in this process
@@ -218,6 +219,15 @@ def check_in_background(base: Path) -> bool:
                 f"checker web: the check for updates failed: {type(exc).__name__}",
                 file=sys.stderr,
             )
+            with contextlib.suppress(Exception):  # written down, so the next page doesn't retry
+                _write(
+                    updates_folder(base) / CHECKED,
+                    {
+                        "checked": _now(),
+                        "newest": None,
+                        "problem": "something went wrong in the tool",
+                    },
+                )
         finally:
             _lock.release()
 
@@ -228,7 +238,9 @@ def check_in_background(base: Path) -> bool:
 # --- Getting a release ready ----------------------------------------------------------------------
 
 
-def status(base: Path, program: Path | None = None) -> dict[str, Any]:
+def status(
+    base: Path, program: Path | None = None, outcome_file: Path | None = None
+) -> dict[str, Any]:
     """Everything the Updates page shows, from files alone."""
     folder = updates_folder(base)
     checked = _read(folder / CHECKED)
@@ -240,14 +252,19 @@ def status(base: Path, program: Path | None = None) -> dict[str, Any]:
     newest_found = checked.get("newest")
     if not isinstance(newest_found, dict) or not newest_found.get("version"):
         newest_found = None
+    progress = _read(folder / PROGRESS)
+    outcome = _read(outcome_file or OUTCOME_FILE)
+    # An outcome from before the release now being got ready is about an earlier update.
+    if str(outcome.get("at", "")) < str(progress.get("at", "")):
+        outcome = {}
     return {
         **running,
         "enabled": enabled,
         "checked": _when(checked.get("checked")),
         "newest": newest_found,
         "problem": checked.get("problem") if isinstance(checked.get("problem"), str) else None,
-        "progress": _read(folder / PROGRESS),
-        "outcome": _read(folder / OUTCOME),
+        "progress": progress,
+        "outcome": outcome,
         "requested": (folder / REQUEST).exists(),
     }
 
@@ -341,7 +358,6 @@ def prepare(
         _progress(base, shown, "failed", str(exc))
         raise
     _progress(base, manifest.version, "handed over")
-    (folder / OUTCOME).unlink(missing_ok=True)  # the last update's: this one's is to come
     atomic_write(folder / REQUEST, f"{manifest.version}\n", 0o600)
     return manifest
 

@@ -320,6 +320,8 @@ def test_the_update_units_watch_the_account_s_request_and_run_the_installed_code
         in service
     )
     assert "IPAddressDeny=any" in service and "IPAddressAllow=localhost" in service
+    assert "ProtectSystem=full" in service and "StateDirectoryMode=0755" in service
+    assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE" in service
     assert "NoNewPrivileges=yes" in service and "ProtectHome=yes" in service
     assert "User=" not in service, "root: it writes /opt and restarts the web service"
 

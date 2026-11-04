@@ -797,7 +797,7 @@ def prove_update(node: "Node", checks, distro: str, newer: Path, broken: Path) -
     """A newer release got ready by the tool's account and installed by the root service, a refused
     one, one that doesn't answer and is rolled back, and a request file that says nothing."""
     as_account = f"runuser -u {ACCOUNT} -- env CHECKER_HOME={DATA} {PROGRAM}/current/bin/checker"
-    outcome = f"cat {DATA}/updates/outcome.json 2>/dev/null"
+    outcome = f"cat /var/lib/{UPDATE_SERVICE}/outcome.json 2>/dev/null"
     current = f"readlink {PROGRAM}/current"
     version = f"{PROGRAM}/current/bin/python -I -c 'import checker; print(checker.__version__)'"
 
@@ -928,10 +928,14 @@ def prove_update(node: "Node", checks, distro: str, newer: Path, broken: Path) -
     )
     checks("the previous version is kept", node.out(f"ls -d {PROGRAM}/versions/{VERSION}") != "")
     checks(
-        "root's working copies are cleared away",
-        node.out(f"ls {PROGRAM}/staged {DATA}/updates/incoming 2>/dev/null | grep -v : | wc -l")
-        == "0",
-        node.out(f"ls -R {PROGRAM}/staged {DATA}/updates/incoming 2>/dev/null"),
+        "root's working copy is cleared away",
+        node.out(f"ls {PROGRAM}/staged 2>/dev/null | wc -l") == "0",
+        node.out(f"ls -R {PROGRAM}/staged 2>/dev/null"),
+    )
+    checks(
+        "root wrote nothing in the account's folder",
+        node.out(f"find {DATA} -user root 2>/dev/null") == "",
+        node.out(f"find {DATA} -user root 2>/dev/null"),
     )
     checks(
         "the tool still can't change its own program",

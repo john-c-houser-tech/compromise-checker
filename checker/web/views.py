@@ -6,6 +6,7 @@ from __future__ import annotations
 import getpass
 import json
 import sys
+from datetime import timedelta
 from urllib.parse import urlencode, urlsplit
 
 import yaml
@@ -25,6 +26,7 @@ from django.db import DatabaseError, transaction
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.urls import Resolver404, resolve, reverse
+from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_otp import login as otp_login
@@ -1337,10 +1339,17 @@ def manage_updates(request) -> HttpResponse:
         return _unavailable(request, "The settings can't be read.")
 
 
-@action("asked whether a newer version exists")
+def _not_just_checked(request) -> None:
+    checked = updates.status(home()).get("checked")
+    if checked is not None and (timezone.now() - checked) < timedelta(seconds=60):
+        raise ActionFailed("It was checked less than a minute ago. The page shows what was found.")
+
+
+@action("asked whether a newer version exists", check=_not_just_checked)
 def update_check(request) -> HttpResponse:
-    """A POST, since it makes this machine contact GitHub. No password: it fetches a public list and
-    a signed description, and a stolen session gets nothing from it."""
+    """A POST, since it makes this machine contact GitHub, and at most once a minute from these
+    pages. No password: it fetches a public list and a signed description, and a stolen session
+    gets nothing from it."""
     try:
         found = updates.check(home())
     except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
@@ -1360,7 +1369,7 @@ def update_check(request) -> HttpResponse:
 
 
 def _posted_version(request, **kwargs) -> str:
-    return request.POST.get("version", "")
+    return request.POST.get("version", "")[:40]
 
 
 @action("started an update", consequential=True, target=_posted_version)

@@ -332,3 +332,16 @@ def test_pip_s_failure_is_said_in_words(base, tmp_path, trusted):
     with pytest.raises(updates.UpdateError, match="DO NOT MATCH"):
         updates.prepare(base, "0.2.0", fetch=fetcher(served), program=program, run=failing)
     assert not (base / "updates" / "request").exists()
+
+
+def test_an_outcome_from_before_the_current_preparation_is_not_shown(base, tmp_path, trusted):
+    program = tmp_path / "opt"
+    installed_at(program, "0.1.0")
+    outcome = tmp_path / "state" / "outcome.json"
+    outcome.parent.mkdir()
+    outcome.write_text(json.dumps({"at": "2026-01-01T10:00:00+00:00", "outcome": "installed"}))
+    assert updates.status(base, program, outcome)["outcome"]["outcome"] == "installed"
+    updates._progress(base, "0.3.0", "getting")  # now: later than that outcome
+    assert updates.status(base, program, outcome)["outcome"] == {}
+    outcome.write_text(json.dumps({"at": "2099-01-01T00:00:00+00:00", "outcome": "rolled back"}))
+    assert updates.status(base, program, outcome)["outcome"]["outcome"] == "rolled back"

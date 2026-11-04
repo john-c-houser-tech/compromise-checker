@@ -2660,7 +2660,8 @@ def _status_script() -> str:
 # A newer release is got ready by the tool's own account (checker/updates.py) and installed by this
 # root service (checker/update_service.py), started by a path unit when a request file appears. The
 # service reads nothing from the request: it checks the release again from scratch. It never
-# contacts the network; the dependencies' wheels are fetched beforehand by the account.
+# contacts the network; the dependencies' wheels are fetched beforehand by the account. Its state
+# folder is readable by all: the outcome it writes there is what the Updates page shows.
 UPDATE = "compromise-checker-update"
 UPDATES_FOLDER = DATA / "updates"
 
@@ -2677,14 +2678,20 @@ Environment=HOME=/var/lib/{UPDATE}
 Environment=PIP_NO_CACHE_DIR=1
 Environment=PIP_DISABLE_PIP_VERSION_CHECK=1
 StateDirectory={UPDATE}
-StateDirectoryMode=0700
+StateDirectoryMode=0755
 TimeoutStartSec=45min
 UMask=0022
 NoNewPrivileges=yes
+ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=yes
 IPAddressDeny=any
 IPAddressAllow=localhost
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

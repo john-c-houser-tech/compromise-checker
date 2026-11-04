@@ -283,13 +283,17 @@ def get_release(
     """Into a private folder, nothing kept that hasn't been checked: first the signature, then each
     file against the hash in what was signed."""
     data = fetch(MANIFEST, MAX_MANIFEST_BYTES)
-    check_signature(data, fetch(SIGNATURE, MAX_SIGNATURE_BYTES), key_line)
+    signature = fetch(SIGNATURE, MAX_SIGNATURE_BYTES)
+    check_signature(data, signature, key_line)
     listed = read_manifest(data, version)
     for name, entry in listed.items():
         content = fetch(name, entry.size)
         if len(content) != entry.size or hashlib.sha256(content).hexdigest() != entry.sha256:
             raise Stop(f"{name} isn't the file that was signed. It wasn't installed.")
         (into / name).write_bytes(content)
+    # The signed manifest goes with the installed version, as the record of what it is.
+    (into / MANIFEST).write_bytes(data)
+    (into / SIGNATURE).write_bytes(signature)
     return listed
 
 

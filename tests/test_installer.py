@@ -223,6 +223,11 @@ def test_a_good_release_is_fetched(tmp_path):
     listed = _get(source, key, tmp_path / "into")
     assert set(listed) == {installer.wheel_name("1.2.3"), installer.REQUIREMENTS}
     assert (tmp_path / "into" / installer.REQUIREMENTS).read_bytes() == b"list"
+    # The checked manifest and its signature too: the installer keeps them beside the version.
+    assert (tmp_path / "into" / installer.MANIFEST).read_bytes() == (
+        source / installer.MANIFEST
+    ).read_bytes()
+    assert (tmp_path / "into" / installer.SIGNATURE).exists()
 
 
 def test_a_changed_file_is_refused_and_not_kept(tmp_path):

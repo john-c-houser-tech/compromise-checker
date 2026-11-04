@@ -170,6 +170,23 @@ SECTIONS: tuple[tuple[str, str, tuple[Field, ...]], ...] = (
         ),
     ),
 )
+SECTIONS += (
+    (
+        "Newer versions",
+        "The Updates page shows when a newer release exists, and installs it when someone with"
+        " full access asks.",
+        (
+            Field(
+                "updates.check",
+                "Ask GitHub once a day whether a newer version exists",
+                "Fetches the public list of releases and the newest one's signed description."
+                " Nothing about this machine or its servers is sent. Off, the Updates page's own"
+                " button still works.",
+                "onoff",
+            ),
+        ),
+    ),
+)
 BY_KEY = {field.key: field for _, _, fields in SECTIONS for field in fields}
 
 

@@ -46,9 +46,23 @@ STATUS = "compromise-checker-status"
 _LINK_LINE = re.compile(r"http://127\.0\.0\.1:8088/setup/\S+")
 
 
-def build_release(work: Path) -> Path:
-    """A release as `scripts/release.py` builds one, of a copy of this commit at a final version."""
-    clone = work / "clone"
+class ProofKey:
+    """A throwaway release key: the releases built for a run trust it instead of NouriLoop's."""
+
+    def __init__(self) -> None:
+        self.secret = Ed25519PrivateKey.generate()
+        self.key_id = os.urandom(8)
+        public = self.secret.public_key().public_bytes_raw()
+        self.line = base64.b64encode(b"Ed" + self.key_id + public).decode()
+
+
+def build_release(
+    work: Path, version: str = VERSION, key: ProofKey | None = None, broken: bool = False
+) -> Path:
+    """A release as `scripts/release.py` builds one, of a copy of this commit at a final version.
+    With `key`, the tool inside trusts that key for releases, so an update signed with it is
+    accepted. `broken` makes a release whose web interface stops at once, to see it rolled back."""
+    clone = work / f"clone-{version}"
     subprocess.run(["git", "clone", "-q", str(ROOT), str(clone)], check=True)  # noqa: S603, S607
     head = subprocess.run(  # noqa: S603
         ["git", "rev-parse", "HEAD"],  # noqa: S607
@@ -60,7 +74,23 @@ def build_release(work: Path) -> Path:
     subprocess.run(["git", "checkout", "-q", head], cwd=clone, check=True)  # noqa: S603, S607
     for name in ("checker/__init__.py", "checker/collector/collector.py"):
         path = clone / name
-        path.write_text(path.read_text(encoding="utf-8").replace("0.1.0.dev0", VERSION), "utf-8")
+        path.write_text(path.read_text(encoding="utf-8").replace("0.1.0.dev0", version), "utf-8")
+    if key is not None:
+        path = clone / "checker" / "releases.py"
+        text, changed = re.subn(
+            r'RELEASE_KEYS: tuple\[str, \.\.\.\] = \("[^"]+",\)',
+            f'RELEASE_KEYS: tuple[str, ...] = ("{key.line}",)',
+            path.read_text(encoding="utf-8"),
+        )
+        assert changed == 1, "the tool's release key has its one place"
+        path.write_text(text, encoding="utf-8")
+    if broken:
+        path = clone / "checker" / "web" / "app.py"
+        path.write_text(
+            'import sys\nsys.exit("broken on purpose, for the proof")\n'
+            + path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
     subprocess.run(  # noqa: S603
         ["git", "-c", "user.name=proof", "-c", "user.email=proof@example.test"]  # noqa: S607
         + ["commit", "-qam", "proof version"],
@@ -72,15 +102,13 @@ def build_release(work: Path) -> Path:
         cwd=clone,
         check=True,
     )
-    return clone / "dist" / f"trial-{VERSION}"
+    return clone / "dist" / f"trial-{version}"
 
 
-def sign_release(directory: Path) -> None:
+def sign_release(directory: Path, key: ProofKey | None = None) -> None:
     """Trust a throwaway key instead, and sign with it, as minisign signs."""
-    secret = Ed25519PrivateKey.generate()
-    key_id = os.urandom(8)
-    public = secret.public_key().public_bytes_raw()
-    line = base64.b64encode(b"Ed" + key_id + public).decode()
+    key = key or ProofKey()
+    secret, key_id, line = key.secret, key.key_id, key.line
     installer = directory / "install.py"
     text = installer.read_text(encoding="utf-8")
     text, changed = re.subn(r'RELEASE_KEY = "[^"]+"', f'RELEASE_KEY = "{line}"', text)
@@ -750,6 +778,210 @@ def prove_web(node: "Node", checks, distro: str) -> None:
         checks("the SELinux switch is off again", switch.endswith("off"), switch)
 
 
+UPDATE_SERVICE = "compromise-checker-update"
+
+
+def wait_for(node: "Node", command: str, wanted: str, seconds: int = 420) -> str:
+    """The command's output once it says `wanted`, or whatever it last said."""
+    deadline = time.monotonic() + seconds
+    said = ""
+    while time.monotonic() < deadline:
+        said = node.out(command)
+        if wanted in said:
+            return said
+        time.sleep(5)
+    return said
+
+
+def prove_update(node: "Node", checks, distro: str, newer: Path, broken: Path) -> None:
+    """A newer release got ready by the tool's account and installed by the root service, a refused
+    one, one that doesn't answer and is rolled back, and a request file that says nothing."""
+    as_account = f"runuser -u {ACCOUNT} -- env CHECKER_HOME={DATA} {PROGRAM}/current/bin/checker"
+    outcome = f"cat {DATA}/updates/outcome.json 2>/dev/null"
+    current = f"readlink {PROGRAM}/current"
+    version = f"{PROGRAM}/current/bin/python -I -c 'import checker; print(checker.__version__)'"
+
+    done = node.run(
+        "cd /root/release && umask 077 && sudo python3 -I install.py --from /root/release"
+        " --new-machine"
+    )
+    checks("it installs", done.returncode == 0, done.stdout + done.stderr)
+    links = _LINK_LINE.findall(done.stdout)
+    if done.returncode or not links:
+        print(node.out(f"journalctl -u {UNIT} -n 40 --no-pager"))
+        return
+    unit = node.out(f"systemctl cat {UNIT}")
+    checks(
+        "the web interface runs through the link's own Python",
+        f"ExecStart={PROGRAM}/current/bin/python -P -m checker web" in unit,
+        unit,
+    )
+    checks(
+        "the update watcher is running",
+        node.out(f"systemctl is-active {UPDATE_SERVICE}.path") == "active",
+        node.out(f"systemctl status {UPDATE_SERVICE}.path --no-pager"),
+    )
+    checks(
+        "the signed description is kept beside the version",
+        node.out(
+            f"ls {PROGRAM}/versions/{VERSION}/release.json"
+            f" {PROGRAM}/versions/{VERSION}/release.json.minisig | wc -l"
+        )
+        == "2",
+    )
+    checks(
+        "root has its own copy of the status script, and the status service uses it",
+        node.out(
+            f"test -f {PROGRAM}/machine_status.py && systemctl cat {STATUS}.service"
+            " | grep -c 'machine_status.py'"
+        )
+        == "1",
+    )
+    checks(
+        "the status service runs from it",
+        node.run(f"systemctl start {STATUS}.service").returncode == 0,
+    )
+
+    # Someone makes the first account and signs in: the Updates page knows the version.
+    jar = "/root/jar"
+    form = (
+        f"curl -s -c {jar} -b {jar} '{{url}}' |"
+        ' sed -n \'s/.*name="csrfmiddlewaretoken" value="\\([^"]*\\)".*/\\1/p\' | head -1'
+    )
+    password = "proof-password-" + os.urandom(8).hex()
+    token = node.out(form.format(url=links[0]))
+    made = node.out(
+        f"curl -s -o /dev/null -w '%{{http_code}}' -c {jar} -b {jar} -H 'Referer: http://127.0.0.1:8088/'"
+        f" --data-urlencode csrfmiddlewaretoken={token} -d username=proofadmin"
+        f" --data-urlencode password={password} --data-urlencode password2={password} '{links[0]}'"
+    )
+    checks("the first account can be made", made == "302", made)
+    login = "http://127.0.0.1:8088/login"
+    token = node.out(form.format(url=login))
+    signed = node.out(
+        f"curl -s -o /dev/null -w '%{{http_code}}' -c {jar} -b {jar} -H 'Referer: http://127.0.0.1:8088/'"
+        f" --data-urlencode csrfmiddlewaretoken={token} -d username=proofadmin"
+        f" --data-urlencode password={password} '{login}'"
+    )
+    checks("and sign in", signed == "302", signed)
+    page = node.out(f"curl -s -b {jar} http://127.0.0.1:8088/manage/updates")
+    checks(
+        "the Updates page knows the version the installer kept",
+        f"<strong>{VERSION}</strong>" in page and "not installed by the installer" not in page,
+        page[-1500:],
+    )
+
+    # --- Refusals on the account's side, with nothing handed over -----------------------------
+    done = node.run(f"{as_account} update --from /root/release")
+    checks(
+        "the release that's running isn't newer, so it's refused",
+        done.returncode == 1 and "isn't newer" in done.stderr,
+        done.stdout + done.stderr,
+    )
+    node.copy(newer, "/root/newer")
+    node.run(
+        "cp -r /root/newer /root/tampered && sed -i '1s/^./X/' /root/tampered/requirements.lock"
+    )
+    done = node.run(f"{as_account} update --from /root/tampered")
+    checks(
+        "a changed file in a newer release is refused",
+        done.returncode == 1 and "requirements.lock" in done.stderr,
+        done.stdout + done.stderr,
+    )
+    checks("nothing was handed over", node.out(f"ls {DATA}/updates/request 2>/dev/null") == "")
+
+    # --- The root service takes nothing from the request file -------------------------------
+    node.run(
+        f"runuser -u {ACCOUNT} -- sh -c 'mkdir -p -m 700 {DATA}/updates &&"
+        f" echo /etc/shadow > {DATA}/updates/request'"
+    )
+    said = wait_for(node, outcome, '"outcome"', seconds=120)
+    checks(
+        "a request with nothing waiting installs nothing, and says so",
+        '"failed"' in said and "nothing is waiting" in said and node.out(current).endswith(VERSION),
+        said,
+    )
+    checks("the request file is gone", node.out(f"ls {DATA}/updates/request 2>/dev/null") == "")
+
+    # --- The update ---------------------------------------------------------------------------
+    started = time.monotonic()
+    done = node.run(f"{as_account} update --from /root/newer", timeout=1500)
+    checks(
+        "the account gets a newer release ready and hands it over",
+        done.returncode == 0 and "ready" in done.stdout,
+        done.stdout + done.stderr,
+    )
+    said = wait_for(node, outcome, '"installed"')
+    took = round(time.monotonic() - started)
+    print(f"[{distro}] update took {took}s")
+    checks("the root service installed it", '"installed"' in said, said)
+    if '"installed"' not in said:
+        print(node.out(f"journalctl -u {UPDATE_SERVICE} -n 60 --no-pager"))
+        return
+    checks("current points at the new version", node.out(current).endswith("/versions/9.9.10"))
+    checks("and that version runs", node.out(version) == "9.9.10", node.out(version))
+    checks(
+        "the web interface is back",
+        node.out(f"systemctl is-active {UNIT}") == "active"
+        and status_of(node, "http://127.0.0.1:8088/login") == "200",
+        node.out(f"systemctl status {UNIT} --no-pager"),
+    )
+    checks("the previous version is kept", node.out(f"ls -d {PROGRAM}/versions/{VERSION}") != "")
+    checks(
+        "root's working copies are cleared away",
+        node.out(f"ls {PROGRAM}/staged {DATA}/updates/incoming 2>/dev/null | grep -v : | wc -l")
+        == "0",
+        node.out(f"ls -R {PROGRAM}/staged {DATA}/updates/incoming 2>/dev/null"),
+    )
+    checks(
+        "the tool still can't change its own program",
+        node.out(
+            f"cd / && runuser -u {ACCOUNT} -- find {PROGRAM}/ -writable -not -type l -print -quit"
+        )
+        == "",
+    )
+    checks(
+        "the status service still runs",
+        node.run(f"systemctl start {STATUS}.service").returncode == 0,
+    )
+    page = node.out(f"curl -s -b {jar} http://127.0.0.1:8088/manage/updates")
+    checks(
+        "the Updates page shows the outcome, to the same signed-in person",
+        "<strong>9.9.10</strong>" in page and "was installed" in page,
+        page[-1500:],
+    )
+    checks("SELinux refused nothing", denials(node) == "", denials(node))
+
+    # --- A version that doesn't answer is rolled back -----------------------------------------
+    node.copy(broken, "/root/broken")
+    done = node.run(f"{as_account} update --from /root/broken", timeout=1500)
+    checks(
+        "a broken release is got ready like any other",
+        done.returncode == 0,
+        done.stdout + done.stderr,
+    )
+    said = wait_for(node, outcome, '"rolled back"')
+    checks(
+        "the root service rolled it back", '"rolled back"' in said and "didn't answer" in said, said
+    )
+    if '"rolled back"' not in said:
+        print(node.out(f"journalctl -u {UPDATE_SERVICE} -n 60 --no-pager"))
+    checks(
+        "current points at the version before it", node.out(current).endswith("/versions/9.9.10")
+    )
+    checks(
+        "and the web interface answers again",
+        node.out(f"systemctl is-active {UNIT}") == "active"
+        and status_of(node, "http://127.0.0.1:8088/login") == "200",
+        node.out(f"journalctl -u {UNIT} -n 20 --no-pager"),
+    )
+    checks(
+        "the broken version is gone", node.out(f"ls -d {PROGRAM}/versions/9.9.11 2>/dev/null") == ""
+    )
+    page = node.out(f"curl -s -b {jar} http://127.0.0.1:8088/manage/updates")
+    checks("the page says it went back", "went back to 9.9.10" in page, page[-1500:])
+
+
 def status_of_with(node: "Node", url: str, extra: str) -> str:
     return node.out(f"curl -s -o /dev/null -w '%{{http_code}}' {extra} '{url}'")
 
@@ -762,6 +994,7 @@ def prove(
     work: Path,
     route: str = "local",
     keep_minutes: float = 0,
+    more: dict | None = None,
 ) -> list:
     results = []
 
@@ -790,6 +1023,9 @@ def prove(
         node.copy(release, "/root/release")
         if route == "web":
             prove_web(node, checks, distro)
+            return results
+        if route == "update":
+            prove_update(node, checks, distro, more["newer"], more["broken"])
             return results
 
         # --- Refusals, each leaving the machine as it was ---------------------------------------
@@ -1028,8 +1264,8 @@ def main() -> int:
         "--route",
         nargs="+",
         default=["local", "web"],
-        choices=["local", "web"],
-        help="from this machine only, or with a web address",
+        choices=["local", "web", "update"],
+        help="from this machine only, with a web address, or updated to a newer release",
     )
     parser.add_argument(
         "--keep-minutes", type=float, default=0, help="keep each server this long, to look at it"
@@ -1047,8 +1283,15 @@ def main() -> int:
     proof.sweep(api)
     try:
         with tempfile.TemporaryDirectory(prefix="cc-install-", dir=arguments.work) as work:
-            release = build_release(Path(work))
-            sign_release(release)
+            key = ProofKey()
+            release = build_release(Path(work), key=key)
+            sign_release(release, key)
+            more = {}
+            if "update" in arguments.route:
+                more["newer"] = build_release(Path(work), "9.9.10", key)
+                more["broken"] = build_release(Path(work), "9.9.11", key, broken=True)
+                for built in more.values():
+                    sign_release(built, key)
             runs = [(system, route) for system in systems for route in arguments.route]
             with ThreadPoolExecutor(len(runs)) as pool:
                 futures = {
@@ -1061,6 +1304,7 @@ def main() -> int:
                         Path(work),
                         route,
                         arguments.keep_minutes,
+                        more,
                     )
                     for system, route in runs
                 }

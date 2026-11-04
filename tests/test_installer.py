@@ -299,3 +299,32 @@ def test_the_setup_link_command(tmp_path):
     assert done.returncode == 1
     assert "already an account" in done.stderr
     assert "/setup/" not in done.stdout
+
+
+def test_the_web_service_runs_through_the_link_s_own_python():
+    """So what the running tool starts, such as the daily timer, follows the link after an
+    update."""
+    unit = installer.web_unit(1001)
+    assert "ExecStart=/opt/compromise-checker/current/bin/python -P -m checker web" in unit
+    assert "current/bin/checker" not in unit
+
+
+def test_the_update_units_watch_the_account_s_request_and_run_the_installed_code():
+    units = installer.update_units()
+    path = units[Path("/etc/systemd/system/compromise-checker-update.path")]
+    service = units[Path("/etc/systemd/system/compromise-checker-update.service")]
+    assert "PathExists=/var/lib/compromise-checker/data/updates/request" in path
+    assert "Unit=compromise-checker-update.service" in path
+    assert (
+        "ExecStart=/opt/compromise-checker/current/bin/python -I -P -m checker.update_service"
+        in service
+    )
+    assert "IPAddressDeny=any" in service and "IPAddressAllow=localhost" in service
+    assert "NoNewPrivileges=yes" in service and "ProtectHome=yes" in service
+    assert "User=" not in service, "root: it writes /opt and restarts the web service"
+
+
+def test_the_status_units_name_root_s_own_copy_of_the_script():
+    units = installer.status_units()
+    service = units[Path("/etc/systemd/system/compromise-checker-status.service")]
+    assert "-I -S /opt/compromise-checker/machine_status.py" in service

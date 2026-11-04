@@ -63,6 +63,7 @@ from checker.inventory import (
 )
 from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
+from checker.releases import ReleaseError
 from checker.report import visible, write_report
 from checker.scoring import percent
 from checker.settings import (
@@ -1011,6 +1012,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--address", default="http://127.0.0.1:8088", help="the address people use for the page"
     )
     web_setup_link.set_defaults(handler=cmd_web_setup_link)
+    update = commands.add_parser(
+        "update",
+        help="get a newer release ready and ask the update service to install it (installed"
+        " machines; run as the tool's account)",
+    )
+    update.add_argument("version", nargs="?", help="the version to get; default: the newest")
+    update.add_argument(
+        "--from", dest="source", type=Path, help="a folder holding the release, instead of GitHub"
+    )
+    update.add_argument("--check", action="store_true", help="only say what the newest version is")
+    update.set_defaults(handler=cmd_update)
     web_password = commands.add_parser(
         "web-password", help="set a new password for a web interface account"
     )
@@ -1858,6 +1870,49 @@ def _web_has_run(base: Path) -> bool:
 
 
 @_plain_database_errors
+def cmd_update(args: argparse.Namespace) -> int:
+    """The same path the Updates page takes, for a terminal, or for a release copied over by hand
+    on a machine without internet. The root service does the installing, afterwards."""
+    from checker import updates
+
+    base = home()
+    running = updates.installed()
+    if args.check:
+        try:
+            found = updates.newest(running)
+        except (updates.UpdateError, updates.PullError, ReleaseError) as exc:
+            print(f"checker: {exc}", file=sys.stderr)
+            return 1
+        if found is None:
+            print(f"This is version {running['version']}, and nothing newer is published.")
+        else:
+            fix = ", which fixes a security problem" if found["security_fix"] else ""
+            print(f"Version {found['version']} is available, published {found['published']}{fix}.")
+        return 0
+    version = args.version
+    if version is None and args.source is None:
+        try:
+            found = updates.newest(running)
+        except (updates.UpdateError, updates.PullError, ReleaseError) as exc:
+            print(f"checker: {exc}", file=sys.stderr)
+            return 1
+        if found is None:
+            print(f"This is version {running['version']}, and nothing newer is published.")
+            return 0
+        version = found["version"]
+    try:
+        manifest = updates.prepare(base, version, args.source)
+    except updates.UpdateError as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"Version {manifest.version} is ready, and the update service has been asked to install"
+        " it. It restarts the web interface; the Updates page shows the outcome, as does"
+        " journalctl -u compromise-checker-update."
+    )
+    return 0
+
+
 def cmd_web_setup_link(args: argparse.Namespace) -> int:
     """A new link for the first account, for when the one from starting the server isn't to hand: on
     a machine with nobody at it, that's in its log. Any link before it stops working."""

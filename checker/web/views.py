@@ -31,7 +31,7 @@ from django_otp import login as otp_login
 from markupsafe import escape
 from pydantic import ValidationError as InvalidSettings
 
-from checker import machine_status, schedule
+from checker import machine_status, schedule, updates
 from checker.database import DATABASE_ERRORS
 from checker.evidence import EvidenceError, load_config
 from checker.fleet import read_evidence, read_fleet, read_host, read_threats
@@ -1311,6 +1311,84 @@ def purge_confirm(request) -> HttpResponse:
     except Exception as exc:  # noqa: BLE001 - it did happen: a plain page, and the record says so
         print(f"checker web: can't show the purge: {type(exc).__name__}", file=sys.stderr)
         return _unavailable(request, "The evidence was deleted, but this page can't be shown.")
+
+
+def _updates_page(request, problem: str = "", said: str = "", status: int = 200) -> HttpResponse:
+    found = updates.status(home())
+    context = {
+        **found,
+        "problem_found": found.pop("problem", None),
+        "problem": problem,
+        "said": said,
+        "progress_words": updates.words_for(found["progress"]),
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_updates.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def manage_updates(request) -> HttpResponse:
+    """From this machine's files alone: asking GitHub is its own action, and installing another."""
+    try:
+        return _updates_page(request)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't show the updates: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The settings can't be read.")
+
+
+@action("asked whether a newer version exists")
+def update_check(request) -> HttpResponse:
+    """A POST, since it makes this machine contact GitHub. No password: it fetches a public list and
+    a signed description, and a stolen session gets nothing from it."""
+    try:
+        found = updates.check(home())
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: the check for updates failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed("The check couldn't be made.") from None
+    newest = found.get("newest")
+    if found.get("problem"):
+        request.action_detail = f"couldn't tell: {found['problem']}"
+        said = "The check didn't finish. " + found["problem"]
+    elif newest:
+        request.action_detail = f"version {newest['version']} is available"
+        said = f"Version {newest['version']} is available."
+    else:
+        request.action_detail = "nothing newer"
+        said = "No newer version was found."
+    return _updates_page(request, said=said)
+
+
+def _posted_version(request, **kwargs) -> str:
+    return request.POST.get("version", "")
+
+
+@action("started an update", consequential=True, target=_posted_version)
+def update_start(request) -> HttpResponse:
+    """Password again: this replaces the tool's code, through the root service."""
+    version = _posted_version(request)
+    try:
+        updates.releases.version_key(version)
+    except updates.releases.ReleaseError:
+        raise ActionFailed("That isn't a version.") from None
+    found = updates.status(home())
+    newest = found.get("newest") or {}
+    if newest.get("version") != version:
+        raise ActionFailed(
+            "That isn't the newest version this machine knows of. Check again, then try again."
+        )
+    if not found.get("by_installer"):
+        raise ActionFailed("This machine wasn't set up by the installer, so updates are by hand.")
+    if not updates.prepare_in_background(home(), version):
+        raise ActionFailed("A check or an update is already under way. Reload the page.")
+    return _updates_page(request, said=f"Getting version {version}. Reload this page to follow it.")
+
+
+@action("took back an update request")
+def update_cancel(request) -> HttpResponse:
+    if not updates.cancel(home()):
+        raise ActionFailed("There was no request waiting.")
+    return _updates_page(request, said="The request is taken back. Nothing was installed.")
 
 
 def _first_setup_page(request, problem="", status: int = 200) -> HttpResponse:

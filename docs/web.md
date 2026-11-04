@@ -317,6 +317,24 @@ Some things stay on the command line, and the pages only say whether they're set
 From a form, these would let anyone with an account run programs here, collect the API key, or choose
 who may sign what the tool believes.
 
+## Updates
+
+Manage → Updates says which version this machine runs, whether a newer release exists, and installs it.
+Once a day, when someone with full access opens a page, the web interface asks GitHub for the public list of
+releases and downloads the newest one's signed description; nothing from that list is trusted until the
+release key's signature on the description checks out, and nothing about this machine is sent. The setting
+`updates.check` turns the daily check off; the page's own button still works. A newer version is announced
+on every page to people with full access, in the warning style when the release is marked as a security fix. A
+machine on a final version isn't offered pre-releases, which is read from the signed description the
+installer kept beside the running version.
+
+Installing needs the password again, and a code if two-factor sign-in is on, and goes in the activity record
+as `started an update`. The web interface fetches the release and its dependencies as the tool's own account,
+checks them, and writes a request; a root service checks everything again from scratch and installs it
+([installing](install.md#updating) says how, and what happens when the new version doesn't answer). The web
+interface restarts, so everyone is signed out for a moment, and the page then shows the outcome. A request the
+service hasn't acted on can be taken back from the page.
+
 ## Checking every day, and deleting evidence
 
 Manage can set a check to run every day at a time you choose, and stop it. That's the same run as

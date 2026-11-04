@@ -4268,6 +4268,16 @@ ROOTED_AND_CHANGED = host_records(
 
 
 @pytest.fixture(autouse=True)
+def _no_check_for_updates_reaches_out(request, monkeypatch):
+    """Opening a page starts the daily check for a newer version, which asks GitHub: not from a
+    test. A test of that check sets its own stand-in."""
+    if "web" in request.fixturenames:
+        from checker import updates
+
+        monkeypatch.setattr(updates, "check_in_background", lambda base: False)
+
+
+@pytest.fixture(autouse=True)
 def _decisions_look_back_far_enough(request, monkeypatch):
     """The test bundles have fixed dates."""
     if "web" in request.fixturenames:
@@ -7736,6 +7746,191 @@ def test_a_key_that_is_lost_or_kept_elsewhere_is_said_so_and_not_shown(web):
     assert "isn't kept on this machine" in text and "Show the key" not in text
     assert show_key(client).status_code == 400
     assert "AGE-SECRET-KEY-" not in said(show_key(client))
+
+
+# --- Updates ------------------------------------------------------------------------------------
+
+
+def _installed(monkeypatch, tmp_path, version="0.1.0", prerelease=False):
+    """A machine the installer set up, at `version`, from the kept manifest's point of view."""
+    from test_updates import KEY, _release
+
+    from checker import releases, updates
+
+    monkeypatch.setattr(releases, "RELEASE_KEYS", (KEY.line,))
+    program = tmp_path / "opt"
+    current = program / "versions" / version
+    _release(current, version, prerelease=prerelease)
+    (program / "current").symlink_to(current)
+    monkeypatch.setattr(updates, "PROGRAM", program)
+    return program
+
+
+def _found(home, version="0.2.0", security_fix=False, problem=None):
+    folder = home[0] / "updates"
+    folder.mkdir(exist_ok=True)
+    newest = None
+    if version:
+        newest = {
+            "version": version,
+            "published": "2026-11-20",
+            "prerelease": False,
+            "security_fix": security_fix,
+        }
+    found = {"checked": "2026-11-21T10:00:00+00:00", "installed": "0.1.0", "newest": newest}
+    if problem:
+        found["problem"] = problem
+    (folder / "check.json").write_text(json.dumps(found))
+
+
+def test_the_updates_page_shows_what_the_last_check_found(web, monkeypatch, tmp_path):
+    from checker import updates
+
+    client, home = signed_in(web)
+    _installed(monkeypatch, tmp_path)
+    monkeypatch.setattr(updates, "check_in_background", lambda base: False)
+    text = said(client.get("/manage/updates"))
+    assert "runs version <strong>0.1.0</strong>" in text and "no check has run" in text
+    assert "Update to" not in text and "Check now" in text
+    _found(home)
+    text = said(client.get("/manage/updates"))
+    assert "Version 0.2.0 is available" in text and "Update to 0.2.0" in text
+    assert "fixes a security problem" not in text
+    _found(home, security_fix=True)
+    text = said(client.get("/manage/updates"))
+    assert "fixes a security problem" in text
+    _found(home, version=None, problem="GitHub answered 503")
+    text = said(client.get("/manage/updates"))
+    assert "No newer version was found" in text and "GitHub answered 503" in text
+
+
+def test_the_notice_is_on_every_page_for_full_access_only(web, monkeypatch, tmp_path):
+    from checker import updates
+
+    client, home = signed_in(web)
+    _installed(monkeypatch, tmp_path)
+    started = []
+    monkeypatch.setattr(updates, "check_in_background", lambda base: started.append(base))
+    text = said(client.get("/"))
+    assert started == [home[0]], "no check yet: one is started in the background"
+    assert "of this tool is available" not in text
+    _found(home)
+    text = said(client.get("/"))
+    assert "Version 0.2.0 of this tool is available" in text and 'href="/manage/updates"' in text
+    assert len(started) == 1, "checked today: not again"
+    _found(home, security_fix=True)
+    assert "fixes a security problem" in said(client.get("/manage"))
+    viewer = person("viewer")
+    assert "of this tool" not in said(viewer.get("/"))
+    from checker.settings import change
+
+    change(home[0], "updates.check", "off")
+    (home[0] / "updates" / "check.json").unlink()
+    said(client.get("/"))
+    assert len(started) == 1, "turned off: no check is started"
+
+
+def test_checking_now_is_recorded_and_says_what_it_found(web, monkeypatch, tmp_path):
+    from checker import updates
+
+    client, home = signed_in(web)
+    _installed(monkeypatch, tmp_path)
+    answers = iter(
+        [
+            {"newest": {"version": "0.2.0", "published": "2026-11-20"}},
+            {"newest": None},
+            {"newest": None, "problem": "the network is down"},
+        ]
+    )
+    monkeypatch.setattr(updates, "check", lambda base: next(answers))
+    monkeypatch.setattr(updates, "check_in_background", lambda base: False)
+    for words, detail in (
+        ("Version 0.2.0 is available", "version 0.2.0 is available"),
+        ("No newer version was found", "nothing newer"),
+        ("the network is down", "couldn't tell: the network is down"),
+    ):
+        response = client.post("/manage/updates/check", {"a": "b"})
+        assert response.status_code == 200 and words in said(response)
+        assert records_of("asked whether a newer version exists")[-1].detail == detail
+
+
+def test_starting_an_update_needs_the_password_and_the_newest_known_version(
+    web, monkeypatch, tmp_path
+):
+    from checker import updates
+
+    client, home = signed_in(web)
+    _installed(monkeypatch, tmp_path)
+    _found(home)
+    prepared = []
+    monkeypatch.setattr(
+        updates, "prepare_in_background", lambda base, v: prepared.append(v) or True
+    )
+    refused = client.post("/manage/updates/start", {"version": "0.2.0", "confirm_password": "no"})
+    assert refused.status_code == 403 and prepared == []
+    wrong = client.post("/manage/updates/start", {"version": "0.9.0", "confirm_password": PASSWORD})
+    assert wrong.status_code == 400 and "isn't the newest" in said(wrong) and prepared == []
+    bad = client.post("/manage/updates/start", {"version": "../x", "confirm_password": PASSWORD})
+    assert bad.status_code == 400 and prepared == []
+    done = client.post("/manage/updates/start", {"version": "0.2.0", "confirm_password": PASSWORD})
+    assert done.status_code == 200 and "Getting version 0.2.0" in said(done)
+    assert prepared == ["0.2.0"]
+    record = records_of("started an update")[-1]
+    assert (record.who, record.target, record.outcome) == ("jo", "0.2.0", "done")
+    monkeypatch.setattr(updates, "prepare_in_background", lambda base, v: False)
+    busy = client.post("/manage/updates/start", {"version": "0.2.0", "confirm_password": PASSWORD})
+    assert busy.status_code == 400 and "already under way" in said(busy)
+
+
+def test_a_machine_not_set_up_by_the_installer_is_not_offered_the_button(
+    web, monkeypatch, tmp_path
+):
+    from checker import updates
+
+    client, home = signed_in(web)
+    monkeypatch.setattr(updates, "PROGRAM", tmp_path / "nowhere")
+    _found(home)
+    text = said(client.get("/manage/updates"))
+    assert "not installed by the installer" in text and "Update to" not in text
+    done = client.post("/manage/updates/start", {"version": "0.2.0", "confirm_password": PASSWORD})
+    assert done.status_code == 400 and "by hand" in said(done)
+
+
+def test_progress_and_outcome_are_shown_and_a_request_can_be_taken_back(web, monkeypatch, tmp_path):
+    client, home = signed_in(web)
+    _installed(monkeypatch, tmp_path)
+    _found(home)
+    folder = home[0] / "updates"
+    (folder / "progress.json").write_text(
+        json.dumps({"at": "x", "version": "0.2.0", "state": "dependencies", "words": ""})
+    )
+    text = said(client.get("/manage/updates"))
+    assert "Fetching version 0.2.0's dependencies" in text and "Update to" not in text
+    (folder / "progress.json").write_text(
+        json.dumps({"at": "x", "version": "0.2.0", "state": "handed over", "words": ""})
+    )
+    (folder / "request").write_text("0.2.0\n")
+    text = said(client.get("/manage/updates"))
+    assert "Waiting for the update service" in text and "Take the request back" in text
+    done = client.post("/manage/updates/cancel", {"a": "b"})
+    assert done.status_code == 200 and "taken back" in said(done)
+    assert not (folder / "request").exists()
+    assert records_of("took back an update request")[-1].outcome == "done"
+    again = client.post("/manage/updates/cancel", {"a": "b"})
+    assert again.status_code == 400
+    (folder / "outcome.json").write_text(
+        json.dumps(
+            {
+                "at": "2026-11-21T11:00:00+00:00",
+                "outcome": "rolled back",
+                "version": "0.2.0",
+                "from": "0.1.0",
+                "words": "version 0.2.0 didn't answer within 60 seconds",
+            }
+        )
+    )
+    text = said(client.get("/manage/updates"))
+    assert "went back to 0.1.0" in text and "didn't answer" in text
 
 
 def test_the_first_choices_are_confirmed_and_are_the_real_settings(web, inventory):

@@ -82,6 +82,23 @@ def machine_notices(request) -> list[str]:
     return machine_status.notices()
 
 
+def update_notice(request):
+    """A newer version, for people with full access, from what the last daily check wrote down.
+    Opening a page is also when a check that's due gets started, in the background."""
+    from checker import updates
+    from checker.inventory import home
+
+    if not fully_signed_in(request) or not full_access(request):
+        return None
+    try:
+        base = home()
+        if updates.due(base):
+            updates.check_in_background(base)
+        return updates.notice(base)
+    except Exception:  # noqa: BLE001 - a notice mustn't take the page down
+        return None
+
+
 def theme(request) -> str:
     """ "light" or "dark" when chosen in the top bar; empty to follow the browser."""
     from django.conf import settings
@@ -140,6 +157,7 @@ def environment(**options) -> Environment:
     env.globals["product_name"] = product_name
     env.globals["two_factor_nudge"] = two_factor_nudge
     env.globals["machine_notices"] = machine_notices
+    env.globals["update_notice"] = update_notice
     env.globals["theme"] = theme
     env.globals["page_back"] = page_back
     env.globals["initial"] = initial

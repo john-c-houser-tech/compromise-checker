@@ -26,7 +26,7 @@ signed release is being prepared.
 | | |
 | --- | --- |
 | **Servers to check** | Red Hat Enterprise Linux 9 or later (tested on Rocky Linux and AlmaLinux), or Ubuntu 22.04 or later. No software is installed on them. Each needs a login account that can use sudo: [how to set one up](docs/scanner-account.md). |
-| **A machine for the tool** | One of its own, since it holds keys that act as an administrator on every server it checks. x86, running Ubuntu 24.04 or 26.04 or Rocky Linux 9 or 10: [installing](docs/install.md). Developers can run it from source on any machine with Python 3.12 or later. |
+| **A machine for the tool** | One of its own, since it holds keys that act as an administrator on every server it checks. x86, running Ubuntu 24.04 or 26.04 or Rocky Linux 9 or 10: [installing](docs/install.md). Developers can run it from source on a Linux or macOS machine with Python 3.12 or later. |
 
 ## How a check works
 
@@ -127,13 +127,17 @@ flowchart LR
     F --> G["Stored encrypted;<br>shown in the report,<br>labelled as advice"]
 ```
 
-Account names, host names, email and IP addresses and SSH key fingerprints
-are replaced with placeholders before anything is sent, or you can send only
-counts and kinds of finding. A model on your own machine (Ollama, llama.cpp,
-vLLM) costs nothing and sends nothing anywhere, though its answers are
-weaker. Every answer is checked against the real case before it is shown,
-and the report labels it as advice, apart from the findings
-([the advisor](docs/advisor.md)).
+By default, account names, host names, email and IP addresses and SSH key
+fingerprints are replaced with placeholders before anything is sent. That
+is not everything: common system accounts, the OS version and names that
+appear only inside log lines still go, so the strict setting, which sends
+only counts and kinds of finding, is there for when nothing from a server
+may leave. A model on your own machine (Ollama, llama.cpp, vLLM) costs
+nothing and sends nothing anywhere, as long as the fallback for declined
+requests is off or local too, though its answers are weaker. Every answer is
+checked against the real case before it is shown, and the report labels it
+as advice, apart from the findings ([the advisor](docs/advisor.md), with
+[what redaction leaves](docs/advisor.md#redaction)).
 
 ## Getting started
 
@@ -148,7 +152,8 @@ needs a look ([scheduling](docs/scheduling.md)).
 
 **From the command line.** The tool isn't on PyPI, the public Python
 package index, so install it from a release's install page as above, or,
-until there is one, run it from this repository on a machine with Python 3.12 or later:
+until there is one, run it from this repository on a Linux or macOS machine with Python 3.12
+or later:
 
 ```
 git clone https://github.com/john-c-houser-tech/compromise-checker.git
@@ -207,7 +212,7 @@ The main commands and their options are described in
 
 ## Development
 
-Runs on Python 3.12 or later on the machine that does the checking.
+Runs on Python 3.12 or later, on Linux or macOS, on the machine that does the checking.
 
 ```
 python3 -m venv .venv && . .venv/bin/activate

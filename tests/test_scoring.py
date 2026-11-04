@@ -14,6 +14,7 @@ from checker.report import read_report, write_report
 from checker.scoring import (
     BAND_RATIOS,
     EXTRA,
+    SCORING_VERSION,
     logit,
     percent,
     probability_band,
@@ -192,7 +193,7 @@ def test_an_assessment_is_scored_and_stored_with_its_score(home):
     add_bundle(home, "b1", 0, host_records())
     add_bundle(home, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))))
     assessment = analyze(store, "web01", identity, config.recipients, prior=(0.05, "host"))
-    assert assessment["format"] == 2 and assessment["versions"]["scoring"] == 3
+    assert assessment["format"] == 2 and assessment["versions"]["scoring"] == SCORING_VERSION == 4
     scored = assessment["score"]
     assert scored["prior"] == 0.05 and scored["prior_source"] == "host"
     assert scored["contributors"][0]["check"] == "account.uid0"
@@ -376,3 +377,19 @@ def test_contributor_titles_are_escaped(home):
     report.assessment["score"]["contributors"][0]["title"] = "<script>alert(1)</script>"
     html = render([report], ("op", "ctl"))
     assert "<script>alert(1)" not in html and "&lt;script&gt;" in html
+
+
+def test_a_chains_account_is_shown_as_the_servers_in_the_report(home):
+    from checker.report import host_report, render
+
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, host_records())
+    add_bundle(home, "b2", 10, host_records(accounts=(("root", 0), ("jch", 1000), ("toor", 0))))
+    report = host_report(store, "web01", identity, config.recipients)
+    contributor = report.assessment["score"]["contributors"][0]
+    contributor["chain"] = {"account": "deploy) <b>reviewed</b> (", "findings": [], "events": []}
+    html = render([report], ("op", "ctl"))
+    assert (
+        '<span class="muted">for the account</span> <span class="mono">deploy) &lt;b&gt;reviewed'
+        in html
+    )

@@ -2080,6 +2080,20 @@ HEADINGS = {
 }
 
 
+def _print_contributors(contributors: list[dict], shown: int = 5) -> None:
+    """The largest contributors to the score. A chain's account is the server's to name, so it's
+    on a line of its own that says so, never in the title."""
+    for c in contributors[:shown]:
+        capped = f", capped ({c['capped']})" if c["capped"] else ""
+        title = visible(c["title"], 200)
+        print(f"           {percent(c['share']):>4}  {title} (×{c['ratio']:g}{capped})")
+        account = (c.get("chain") or {}).get("account")
+        if account:
+            print(f"                 the server's account name: {visible(account, 80)}")
+    if len(contributors) > shown:
+        print(f"           and {len(contributors) - shown} more")
+
+
 def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
     findings = assessment["findings"]
     print(f"Host       {assessment['host']}")
@@ -2096,12 +2110,7 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
             f"Score      {percent(scored['probability'])} probability of compromise:"
             f" {scored['band']} (prior {percent(scored['prior'])}, {scored['prior_source']})"
         )
-        for c in scored["contributors"][:5]:
-            capped = f", capped ({c['capped']})" if c["capped"] else ""
-            print(f"           {percent(c['share']):>4}  {c['title']} (×{c['ratio']:g}{capped})")
-        rest = len(scored["contributors"]) - 5
-        if rest > 0:
-            print(f"           and {rest} more")
+        _print_contributors(scored["contributors"])
         if scored.get("raised_prior") is not None:
             exposed = ", ".join(
                 f"{r['pack']} v{r['version']} ({round(r['share'] * 100)}% of its window)"
@@ -2145,10 +2154,10 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
             if f.get("maintenance"):
                 m = f["maintenance"]
                 marks += f" [maintenance {m['window']}, was {m['band']}]"
-            print(f"  {f['band'].upper():8} {f['title']}{marks}")
-            print(f"           {f['summary'][:200]}")
+            print(f"  {f['band'].upper():8} {visible(f['title'], 200)}{marks}")
+            print(f"           {visible(f['summary'], 200)}")
             if f["uncertain"]:
-                print(f"           uncertain: {f['uncertain'][:200]}")
+                print(f"           uncertain: {visible(f['uncertain'], 200)}")
     hidden = sum(f["band"] == "info" for f in findings)
     if hidden and not args.info:
         print(f"\n({hidden} informational findings: --info lists them)")
@@ -2156,8 +2165,8 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
         print("\nSuppressed by the whitelist:")
         for f in suppressed:
             rule = f["suppressed_by"]
-            print(f"  {f['band'].upper():8} {f['title']}")
-            print(f"           {f['summary'][:200]}")
+            print(f"  {f['band'].upper():8} {visible(f['title'], 200)}")
+            print(f"           {visible(f['summary'], 200)}")
             print(f"           by {rule['layer']} / {rule['rule']}: {rule['reason'][:150]}")
     coverage = assessment["coverage"]
     print("\nCoverage:")

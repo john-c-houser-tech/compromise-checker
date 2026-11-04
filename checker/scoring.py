@@ -18,7 +18,8 @@ import math
 from collections import defaultdict
 from typing import Any
 
-SCORING_VERSION = 3  # 2: chains; 3: threat packs' ratios (plan 4.5)
+SCORING_VERSION = 4  # 2: chains; 3: threat packs' ratios (plan 4.5); 4: no account in a
+# chain's title (the server names accounts: it's in the chain, shown as the server's)
 
 DEFAULT_PRIOR = 0.02  # DESIGN.md §11.2
 
@@ -143,7 +144,7 @@ def score(
         {
             "finding": None,
             "check": f"chain:{c['chain']}",
-            "title": f"{c['title']} ({c['account']})",
+            "title": c["title"],
             "ratio": c["ratio"],
             "contribution": round(b, 4),
             "share": round(b / total, 4) if total else 0.0,

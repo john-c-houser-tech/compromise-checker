@@ -3853,7 +3853,7 @@
     "finding": null,
     "ratio": 5.0,
     "share": 0.0174,
-    "title": "A new account or key, given privilege, then used to log in (ccadmin)"
+    "title": "A new account or key, given privilege, then used to log in"
    },
    {
     "capped": null,
@@ -3873,7 +3873,7 @@
     "finding": null,
     "ratio": 5.0,
     "share": 0.0174,
-    "title": "A script new since the baseline answered requests, then the web account started a shell or tool (apache)"
+    "title": "A script new since the baseline answered requests, then the web account started a shell or tool"
    },
    {
     "capped": null,
@@ -4388,7 +4388,7 @@
    }
   ],
   "raised_prior": 0.0926,
-  "version": 3
+  "version": 4
  },
  "whitelist": {
   "as_of": "2026-10-28",

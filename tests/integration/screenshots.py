@@ -19,7 +19,9 @@ import secrets
 import shutil
 import socket
 import sys
+import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from wsgiref.simple_server import WSGIRequestHandler, make_server
 
@@ -76,9 +78,11 @@ def scrubbing(wsgi, protect: list[str], pages: list[str]):
             text = body.decode()
             text = named(golden.scrub(text, protect), NAMES)
             golden.check_scrubbed(text, protect)
-            if text and "<main>" not in text:  # a redirect has no body to label
+            # In the page's padded column, under its band if it has one.
+            column = '<div class="main-in">'
+            if text and column not in text:  # a redirect has no body to label
                 raise ValueError("no place for the demo fleet's label")
-            text = text.replace("<main>", f"<main>\n{BANNER}", 1)
+            text = text.replace(column, f"{column}\n{BANNER}", 1)
             pages.append(environ["PATH_INFO"])
             body = text.encode()
             headers = [(k, v) for k, v in headers if k.lower() != "content-length"]
@@ -98,7 +102,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--name", default="Compromise Checker by NouriLoop")
+    parser.add_argument("--name", default="Compromise Checker")
     parser.add_argument("--chromium", default=os.environ.get("CHROMIUM", "/usr/bin/chromium"))
     args = parser.parse_args()
     home = args.home.resolve()
@@ -128,44 +132,53 @@ def main() -> int:
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_port}"
-    shutil.rmtree(args.out, ignore_errors=True)  # nothing left from a run that stopped
-    args.out.mkdir(parents=True)
-    with sync_playwright() as play:
-        browser = play.chromium.launch(executable_path=args.chromium, args=["--no-sandbox"])
-        for name, path, width, scheme, whole in PAGES:
-            context = browser.new_context(
-                viewport={"width": width, "height": 1400 if width > 500 else 844},
-                color_scheme=scheme,
-                device_scale_factor=2,
-            )
-            page = context.new_page()
-            problems: list[str] = []
-            page.on("pageerror", lambda e, out=problems: out.append(str(e)))
-            page.goto(f"{base}/login")
-            page.fill("input[name=username]", "demo")
-            page.fill("input[name=password]", password)
-            page.click("main button")
-            page.wait_for_load_state()
-            TOTPDevice.objects.filter(pk=device.pk).update(last_t=-1)  # the next code still counts
-            page.fill("input[name=code]", f"{totp(device.bin_key):06d}")
-            page.click("main button")
-            page.wait_for_load_state()
-            response = page.goto(base + path)
-            if response.status != 200:
-                sys.exit(f"{path}: {response.status}")
-            page.wait_for_timeout(400)
-            page.screenshot(path=str(args.out / f"{name}.png"), full_page=whole)
-            print(
-                name,
-                "overflow"
-                if page.evaluate("document.documentElement.scrollWidth > innerWidth")
-                else "ok",
-                problems,
-            )
-            context.close()
-        browser.close()
+    # Into a new folder first: the pictures there now are replaced only by a run that finishes.
+    out = Path(tempfile.mkdtemp(prefix=".shots-", dir=args.out.parent))
+    try:
+        with sync_playwright() as play:
+            browser = play.chromium.launch(executable_path=args.chromium, args=["--no-sandbox"])
+            for name, path, width, scheme, whole in PAGES:
+                context = browser.new_context(
+                    viewport={"width": width, "height": 1400 if width > 500 else 844},
+                    color_scheme=scheme,
+                    device_scale_factor=2,
+                )
+                page = context.new_page()
+                problems: list[str] = []
+                page.on("pageerror", lambda e, out=problems: out.append(str(e)))
+                page.goto(f"{base}/login")
+                page.fill("input[name=username]", "demo")
+                page.fill("input[name=password]", password)
+                page.click("main button")
+                page.wait_for_load_state()
+                # The next code still counts. On its own thread: Playwright's loop runs on
+                # this one, and Django won't touch the database from a thread with a loop.
+                with ThreadPoolExecutor(1) as one:
+                    one.submit(TOTPDevice.objects.filter(pk=device.pk).update, last_t=-1).result()
+                page.fill("input[name=code]", f"{totp(device.bin_key):06d}")
+                page.click("main button")
+                page.wait_for_load_state()
+                response = page.goto(base + path)
+                if response.status != 200:
+                    sys.exit(f"{path}: {response.status}")
+                page.wait_for_timeout(400)
+                page.screenshot(path=str(out / f"{name}.png"), full_page=whole)
+                print(
+                    name,
+                    "overflow"
+                    if page.evaluate("document.documentElement.scrollWidth > innerWidth")
+                    else "ok",
+                    problems,
+                )
+                context.close()
+            browser.close()
+    except BaseException:  # a run that stops leaves the pictures as they were
+        shutil.rmtree(out, ignore_errors=True)
+        raise
     server.shutdown()
     (home / "web.db").unlink(missing_ok=True)
+    shutil.rmtree(args.out, ignore_errors=True)
+    out.rename(args.out)
     print(f"{len(seen)} pages scrubbed and checked")
     return 0
 

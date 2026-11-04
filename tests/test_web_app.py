@@ -9538,7 +9538,9 @@ def test_each_finding_heading_names_its_severity(web):
         assert re.search(r'<h3><span class="visually-hidden">[^<]*, F-1: </span>', text)
 
 
-def test_at_a_glance_counts_the_findings_folded_away_too(web, monkeypatch):
+def test_at_a_glance_counts_the_cards_and_what_is_only_for_information(web, monkeypatch):
+    """Each section's count is its cards, as its heading says; the findings only for information
+    are counted on their own line, so a section with only those isn't a 0."""
     from checker.fleet import FleetHost
     from checker.web import wording
 
@@ -9558,8 +9560,13 @@ def test_at_a_glance_counts_the_findings_folded_away_too(web, monkeypatch):
     sections = wording.host_details(assessment)["sections"]
     assert any(s["minor"] and not s["findings"] for s in sections)  # one only for information
     for s in sections:
-        assert f"<dt>{html.escape(s['title'])}</dt><dd>1</dd>" in glance
-        assert f"{html.escape(s['title'])} <span>(1)</span></h2>" in page
+        title = html.escape(s["title"])
+        if s["findings"]:
+            assert f"<dt>{title}</dt><dd>1</dd>" in glance
+            assert f"{title} <span>(1)</span></h2>" in page
+        else:  # its heading counts its cards too: none
+            assert title not in glance and f"{title} <span>(0)</span></h2>" in page
+    assert "<dt>For information</dt><dd>1</dd>" in glance
 
 
 def test_the_server_notes_are_never_below_the_findings():

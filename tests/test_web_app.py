@@ -3142,6 +3142,9 @@ def test_new_recovery_codes_replace_the_old_and_need_the_code(web):
     response = client.post("/two-factor/new-codes", data)
     text = response.content.decode()
     assert response.status_code == 200 and old[0] not in text
+    # Changing the theme would leave the page, and the codes can't be shown again.
+    assert 'class="theme-switch"' not in text
+    assert 'class="theme-switch"' in client.get("/two-factor/manage").content.decode()
     assert len(re.findall(r"<code>(\w+)</code>", text)) == two_factor.RECOVERY_CODES
     manage = client.get("/two-factor/manage").content.decode()
     assert f"{two_factor.RECOVERY_CODES} recovery codes left" in manage
@@ -9367,6 +9370,10 @@ def test_the_top_bar_marks_where_you_are(web):
         'aria-current="page"><span class="visually-hidden">Sign-in security for jo</span>'
         in security
     )
+    # A page within Sign-in security is in it, and isn't the page the links go to.
+    within = client.get("/two-factor/setup").content.decode()
+    assert 'aria-current="page"' not in within.split("</header>")[0]
+    assert within.split("</header>")[0].count('aria-current="true"') == 2  # phone link, avatar
 
 
 def test_a_page_within_a_part_marks_the_part_not_the_page(web):
@@ -9701,3 +9708,43 @@ def test_the_sign_in_card_stays_centred_on_narrow_screens():
     ]
     assert narrow and all("margin" in props for _, _, props in narrow)
     assert ".auth .main-in { width: calc(100% - 2rem); margin: 1rem auto;" in css
+
+
+def test_at_a_glance_shows_with_only_accepted_findings_and_threats(web, monkeypatch):
+    """Everything accepted still has counts worth showing; a fixed threat isn't called open."""
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    assessment = {
+        "findings": [
+            {
+                "check": "account.uid0",
+                "category": "compromise indicator",
+                "band": "high",
+                "suppressed_by": "r1",
+            }
+        ]
+    }
+    host = FleetHost(
+        "web01",
+        state="analysed",
+        band="Low",
+        probability=0.02,
+        first=False,
+        exposed={"php2shell-2026-10": "fixed"},
+    )
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, assessment, {}, True)
+    )
+    page = _host_page(client)
+    glance = page.split('<dl class="glance">')[1].split("</dl>")[0]
+    assert "<dt>Hidden as accepted</dt><dd>1</dd>" in glance
+    assert "<dt>Known threats</dt><dd>1</dd>" in glance
+    assert "open" not in glance
+
+
+def test_a_long_group_name_wraps_in_the_server_band():
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    meta = css.split(".host-title .meta {")[1].split("}")[0]
+    assert "overflow-wrap: anywhere" in meta
+    assert ".host-title > div { min-width: 0; }" in css

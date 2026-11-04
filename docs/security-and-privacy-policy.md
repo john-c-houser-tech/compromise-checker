@@ -274,7 +274,7 @@ that may include access tokens, and sometimes secrets typed into commands.
   machine's SSH key, naming any key file the web server can read, and choosing
   which Python runs as administrator on a server. So someone with full access could use those keys to log in elsewhere,
   or send the next typed password to a machine they control. The same confirmation lets it change what is collected and how long evidence is
-  kept, delete stored evidence, show the evidence key, set or stop a daily check, turn the AI advisor on, choose how much is hidden from it, and stop threat
+  kept, delete stored evidence, show the evidence key, install a newer release, set or stop a daily check, turn the AI advisor on, choose how much is hidden from it, and stop threat
   packs or keep them off a server. Asking for the latest signed packs needs no
   confirmation. Apart from the daily check, which
   runs the tool's own fixed command and any notify command already set, anything
@@ -416,9 +416,15 @@ Nothing, unless you choose one of these:
   that name, to check it leads to the machine; if the name points somewhere else, that one request goes there,
   with nothing in it but a random path. The account it makes there gives `webmaster@`
   and the name as its contact, so nothing personal is sent, and nothing about your servers or evidence.
+- a request to GitHub once a day for the public list of this tool's releases, and for the newest one's signed
+  description, from the web interface when someone with full access opens a page. It carries nothing about your
+  machine or servers beyond what any download does: the address it comes from. The setting `updates.check`
+  turns it off; the Updates page can still ask when you choose. Installing an update then downloads that
+  release and its dependencies from GitHub and PyPI.
 
 The tool has no telemetry, usage reporting or licence check, and it never
-contacts NouriLoop LLC on its own. Threat packs (section 11) are downloaded
+contacts NouriLoop LLC on its own. The daily check for a newer version is the one thing it fetches without
+being asked each time, and it can be turned off. Threat packs (section 11) are downloaded
 only when someone runs `checker packs pull` or asks for them on a page of the
 web interface, over HTTPS, from NouriLoop's public repository on GitHub or from
 a mirror you name. That request carries
@@ -478,7 +484,14 @@ new release of the tool.
   how, and keeps nothing from it. It adds a small service that runs as root every hour and notes, for the web
   page, whether SSH still accepts passwords and whether an update is waiting for a restart. With a web address,
   it also installs Apache from the system's own packages, opens ports 80 and 443 in the firewall, adds an hourly
-  reload of Apache, and on Rocky lets Apache act as a proxy under SELinux. It says what it's doing at each step.
+  reload of Apache, and on Rocky lets Apache act as a proxy under SELinux. It also installs a small root service
+  that starts when the tool's account leaves a request to install a newer release. That service reads nothing
+  from the request: it copies the release into a folder only root can write, checking every file against the
+  description the release key signed, refuses anything not newer than the running version or signed by another
+  key, installs it beside the old version from those files alone, without contacting the network, and restarts
+  the web interface, going back to the old version if the new one doesn't answer. Asking for an update from a
+  page needs full access, the password again and a code if two-factor sign-in is on, and is recorded. It says
+  what it's doing at each step.
 - Text collected from a server is treated as hostile, since a compromised
   server can write anything into its logs. In reports and the web interface it
   is escaped and invisible characters are shown, and pages run no scripts except

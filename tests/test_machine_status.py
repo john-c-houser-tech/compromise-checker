@@ -132,7 +132,15 @@ def test_the_install_route_is_read_from_what_the_installer_left(tmp_path):
     assert machine_status.install_route(installed, web) is None
     installed.write_text("0.1.0\n")
     assert machine_status.install_route(installed, web) == "local"
-    web.write_text("{}\n")
+    web.write_text('{"name": "checker.example.org", "apache_before": false}\n')
     assert machine_status.install_route(installed, web) == "web"
+    # The installer leaves a nameless marker when a web address was taken down and a firewall
+    # opening couldn't be undone: that machine is used from itself.
+    web.write_text('{"port_label": "added"}\n')
+    assert machine_status.install_route(installed, web) == "local"
+    for odd in ("not json", "[1]", '{"name": ""}', '{"name": 3}'):
+        web.write_text(odd)
+        assert machine_status.install_route(installed, web) in ("local", None)
+    web.write_text('{"name": "checker.example.org"}\n')
     installed.unlink()  # a web address set up, but the installer never finished
     assert machine_status.install_route(installed, web) is None

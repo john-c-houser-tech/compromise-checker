@@ -148,9 +148,15 @@ def install_route(installed: Path | None = None, web_address: Path | None = None
     try:
         if not (installed or INSTALLED).is_file():
             return None
-        return "web" if (web_address or WEB_ADDRESS).is_file() else "local"
-    except OSError:
+        marker = json.loads((web_address or WEB_ADDRESS).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "local"
+    except (OSError, ValueError):
         return None
+    # The installer leaves the marker behind, without a name, when a web address was taken down
+    # and something couldn't be undone: that machine has no web address.
+    named = isinstance(marker, dict) and isinstance(marker.get("name"), str) and marker["name"]
+    return "web" if named else "local"
 
 
 def notices(path: Path | None = None) -> list[str]:

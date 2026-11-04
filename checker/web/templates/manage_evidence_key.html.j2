@@ -20,6 +20,7 @@
 {% if not key_saved %}
 <form method="post" action="{{ url('first_setup_key_saved') }}">
   {{ csrf_input }}
+  <input type="hidden" name="back" value="key">
   <button>I've backed it up</button>
 </form>
 {% endif %}

@@ -1341,19 +1341,27 @@ def first_setup_page(request) -> HttpResponse:
 
 
 def _evidence_key_named(request, **kwargs) -> str:
-    return first_setup.this_key(home())
+    """The key's public half, for the record. If the settings can't be read, the record says that
+    instead, and the action itself says why in words."""
+    try:
+        return first_setup.this_key(home())
+    except Exception:  # noqa: BLE001 - a name for the record, whatever stops the settings
+        return "(the settings can't be read)"
 
 
 @action(first_setup.KEY_SAVED, target=_evidence_key_named)
 def first_setup_key_saved(request) -> HttpResponse:
-    """No password: it changes nothing but the reminder, and says who said so."""
-    return HttpResponseRedirect(reverse("first_setup"))
+    """No password: it changes nothing but the reminder, and says who said so. Back to whichever
+    page it was said on."""
+    back = "manage_evidence_key" if request.POST.get("back") == "key" else "first_setup"
+    return HttpResponseRedirect(reverse(back))
 
 
-def _key_page(request, shown: str = "", status: int = 200) -> HttpResponse:
+def _key_page(request, shown: str = "", problem: str = "", status: int = 200) -> HttpResponse:
     context = {
         **first_setup.key_facts(home()),
         "shown": shown,
+        "problem": problem,
         "code_needed": two_factor.code_needed(request),
     }
     return render(request, "manage_evidence_key.html.j2", context, status=status)
@@ -1377,9 +1385,17 @@ def evidence_key_show(request) -> HttpResponse:
     paste into a password manager, and never offered as a file."""
     try:
         line = first_setup.evidence_key_line(home())
-    except (OSError, EvidenceError) as exc:
+    except Exception as exc:  # noqa: BLE001 - whatever stops it, the page says so in the tool's words
         print(f"checker web: the evidence key can't be read: {type(exc).__name__}", file=sys.stderr)
-        raise ActionFailed("The evidence key can't be read from this machine.") from None
+        words = (
+            "The evidence key can't be read from this machine. Its file may be missing or damaged,"
+            " or the settings may not name it: whoever looks after this machine should look."
+        )
+        try:
+            page = _key_page(request, problem=words, status=400)
+        except Exception:  # noqa: BLE001 - the words are what matter
+            page = None
+        raise ActionFailed(words, page=page) from None
     return _key_page(request, shown=line)
 
 

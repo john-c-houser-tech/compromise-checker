@@ -163,7 +163,7 @@ The notice goes within the hour.
 
 ## Backing up the evidence key
 
-Everything the tool stores is encrypted to one key, made on this machine when the web interface first starts.
+Everything the tool stores is encrypted to one key, made on this machine the first time the tool starts.
 Without it, nothing stored can be read, by anyone. Once the first account exists, First setup points to the
 key's page, under Manage: a person with full access confirms with their password, and a code if two-factor
 sign-in is on, and the key appears as one line to paste into a password manager. Each showing goes in the

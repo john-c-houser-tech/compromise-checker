@@ -603,10 +603,7 @@ def _settings(base: Path, identity_path: str | None = None) -> _Settings:
     path = identity_path or config.identity_file
     if not path:
         raise EvidenceError("no evidence key here")
-    try:
-        identity = load_identity(Path(path))
-    except pyrage.IdentityError as exc:
-        raise EvidenceError("the evidence key can't be read: it isn't a key") from exc
+    identity = load_identity(Path(path))  # a damaged key is an EvidenceError, in its own words
     inventory = load_inventory()
     found = in_force_read_only(base, config.packs.trusted_keys)
     return _Settings(

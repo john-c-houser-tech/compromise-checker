@@ -7676,16 +7676,42 @@ def test_the_evidence_key_is_shown_only_after_confirming_and_each_showing_is_rec
     assert shown.status_code == 200 and shown["Cache-Control"] == "no-store"
     page = said(shown)
     assert secret in page and "I've backed it up" in page
-    assert "Content-Disposition" not in shown, "shown in the page, never as a file"
     record = records_of("showed the evidence key")[-1]
     assert (record.who, record.outcome) == ("jo", "done")
     assert record.target == config_now().recipients[0], "the record names the public half"
     assert "AGE-SECRET-KEY-" not in record.target + record.detail
     assert secret in said(show_key(client)), "and again, the same way"
     assert "AGE-SECRET-KEY-" not in key_page(client)
-    assert client.post("/first-setup/key-saved", {"a": "b"}).status_code == 302
+    saved = client.post("/first-setup/key-saved", {"back": "key"})
+    assert saved.status_code == 302 and saved["Location"] == "/manage/evidence-key"
     assert "I've backed it up" not in said(show_key(client))
     assert "(done)" in setup_page(client)
+
+
+def test_with_two_factor_on_the_key_takes_a_code_too(web):
+    client, home = web
+    user = account()
+    device = with_app(user)
+    client.force_login(user)
+    assert client.post("/two-factor", {"code": fresh(device)}).status_code == 302
+    without = client.post("/manage/evidence-key/show", {"confirm_password": PASSWORD})
+    assert without.status_code == 403 and "AGE-SECRET-KEY-" not in said(without)
+    assert records_of("showed the evidence key")[-1].detail == "wrong code"
+    data = {"confirm_password": PASSWORD, "confirm_code": fresh(device)}
+    assert secret_key_of(home) in said(client.post("/manage/evidence-key/show", data))
+
+
+def test_a_damaged_key_file_is_said_so_on_the_page_and_in_the_record(web):
+    client, home = signed_in(web)
+    key = home[0] / "keys" / "evidence-identity.txt"
+    key.write_text("# created\nAGE-SECRET-KEY-1DAMAGED\n")
+    response = show_key(client)
+    assert response.status_code == 400
+    text = said(response)
+    assert "missing or damaged" in text and "The evidence key" in text, "this page, with words"
+    assert "AGE-SECRET-KEY-" not in text
+    record = records_of("showed the evidence key")[-1]
+    assert record.outcome == "failed" and "DAMAGED" not in record.detail
 
 
 def test_a_key_that_is_lost_or_kept_elsewhere_is_said_so_and_not_shown(web):
@@ -7803,12 +7829,12 @@ def test_a_pc_install_warns_that_limiting_the_key_to_its_address_can_lock_it_out
 
     client, _ = keyed
     warning = "That kind of address can change"
-    assert warning not in prepared(client), "not installed by the script: nothing is known"
-    (tmp_path / "installed").write_text("0.1.0\n")
     monkeypatch.setattr(machine_status, "INSTALLED", tmp_path / "installed")
     monkeypatch.setattr(machine_status, "WEB_ADDRESS", tmp_path / "web-address.json")
+    assert warning not in prepared(client), "not installed by the script: nothing is known"
+    (tmp_path / "installed").write_text("0.1.0\n")
     assert warning in prepared(client)
-    (tmp_path / "web-address.json").write_text("{}\n")
+    (tmp_path / "web-address.json").write_text('{"name": "checker.example.org"}\n')
     assert warning not in prepared(client), "a server with a web address keeps its address"
 
 

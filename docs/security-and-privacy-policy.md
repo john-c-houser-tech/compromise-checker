@@ -222,7 +222,17 @@ that may include access tokens, and sometimes secrets typed into commands.
 
 - **Encrypted.** Each collection is encrypted as it arrives, using the `age`
   encryption format, to a key created for your organization at setup. Keep
-  that key's backup safe: without it, stored evidence cannot be read.
+  that key's backup safe: without it, stored evidence cannot be read. A page of
+  the web interface shows the key, as one line to paste into a password manager,
+  to a person with full access who confirms with their password, and a code if
+  two-factor sign-in is on. Each showing is recorded, and the key is never
+  offered as a file.
+- **Not backed up.** The tool keeps no copy of the evidence, or of the key,
+  anywhere but on this machine. If the machine is lost, each server's history is
+  lost with it, and the tool starts again from what each server looks like when
+  it is next checked. A backup of the whole machine, such as a hosting
+  provider's, holds the key and the evidence together, so whoever can restore it
+  can read everything: protect it like the evidence.
 - **Index.** An index records each collection's identifiers, times, status,
   size and fingerprints — never its content. It is a file on this machine or, if
   you choose, a PostgreSQL database. Whoever runs that database can read the parts
@@ -264,7 +274,7 @@ that may include access tokens, and sometimes secrets typed into commands.
   machine's SSH key, naming any key file the web server can read, and choosing
   which Python runs as administrator on a server. So someone with full access could use those keys to log in elsewhere,
   or send the next typed password to a machine they control. The same confirmation lets it change what is collected and how long evidence is
-  kept, delete stored evidence, set or stop a daily check, turn the AI advisor on, choose how much is hidden from it, and stop threat
+  kept, delete stored evidence, show the evidence key, set or stop a daily check, turn the AI advisor on, choose how much is hidden from it, and stop threat
   packs or keep them off a server. Asking for the latest signed packs needs no
   confirmation. Apart from the daily check, which
   runs the tool's own fixed command and any notify command already set, anything

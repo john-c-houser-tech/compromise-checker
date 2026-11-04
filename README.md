@@ -1,210 +1,198 @@
 # Compromise Checker
 
-*Working title. A NouriLoop LLC project.*
+Checks your Linux servers for signs of a break-in, and tells you what it found
+in plain words.
 
-An agentless, read-only tool that checks Red Hat Enterprise Linux (and Rocky
-Linux and AlmaLinux) 9+ and Ubuntu 22.04+ servers for signs of compromise.
-It logs in over SSH, streams a small collector to the server's own Python,
-brings the evidence back, and analyses it on the operator's machine. Nothing
-is written to the server.
+![Your servers, in the order to deal with them: one plain answer at the top, then each server with what's new since the last check and its chance of a break-in](docs/screenshots/fleet.png)
 
-**Status: Phase 3 complete (2026-10-29).** The tool collects evidence,
-compares each host with its baseline, runs the checks, scores the host and
-writes the report; the optional AI advisor explains an analysis, proposes
-whitelist rules, suggests better coverage and advises on remediation
-([advisor](docs/advisor.md)); signed threat packs teach it about new threats
-without a release of the tool ([packs](docs/packs.md)). Phases 0 to 4 are
-complete (see [DESIGN.md §18](DESIGN.md)).
+*A demo fleet of throwaway servers, attacked on purpose. Real results from
+this tool, with addresses replaced.*
 
-What works today:
+Compromise Checker logs in to each server over SSH, reads the evidence (logs,
+accounts, scheduled jobs, running programs, network connections and more),
+brings it back to your own machine and works out how likely it is that the
+server has been broken into. **It writes nothing to the server.** Each server
+gets a plain answer, the evidence behind every finding, and what to do next.
 
-- `checker init` — sets up the evidence key, database and configuration;
-  `--home-text privileged|all` opts in to collecting the masked text of
-  start-up files and user units in home directories (policy §7);
-  `--web-access-logs` opts in to web servers' access logs, masked;
-  `--exec-records` chooses whose program starts are read from the audit
-  log (the web server's accounts by default). It also asks whether to turn
-  on the optional AI advisor (`--advisor on|off` for unattended setups,
-  which leave it off), and where its API key comes from
-  (`--advisor-key-source env|keyring|command:<command>`; never stored in
-  the configuration).
-- `checker advise HOST [--yes]` — asks the optional AI advisor to explain a
-  host's latest analysis (verdict, what matters most, innocent
-  explanations, what would settle it), after showing the likely cost and
-  the most it can cost, and asking when the likely cost is above
-  `advisor.max_cost_per_run`. The answer is checked
-  against the case (it must name only real findings and agree with the
-  band), its placeholders turned back into names, and it is stored
-  encrypted with exactly what was sent; the report shows it, labelled
-  with the models and redaction, separately from the findings.
-  `--role whitelist` asks instead for whitelist rules for findings that
-  are routine on the host: each is checked against the real findings (it
-  must hide exactly the findings it names, none critical or part of a
-  chain, on the host's stored analyses and, for a group rule, the
-  group's) and the accepted ones written to `proposals/` with
-  the owner left empty, for a person to review and copy in; nothing is
-  applied. `--role coverage` asks what would let the next collection see
-  more, picked only from the tool's collection settings (printed as the
-  `checker config set` line to run) and a fixed catalogue of host
-  configuration (auditd for web accounts, running the audit daemon, a
-  persistent journal, sshd `LogLevel VERBOSE`, a readable web log format,
-  log retention), each
-  citing the coverage gap or finding it helps with; nothing is changed.
-  `--role remediation` asks what to do, scaled to the band: evidence to
-  preserve first, then containment, eradication, recovery, and who to tell
-  (by role); it must agree with the band (no "now" for a Low host), keep
-  evidence before any step that destroys state (judged by what a step does,
-  not only by what it says), and cite only real findings. Commands are
-  shown as text; nothing runs. The model's safety checks may decline
-  security content now and then (the report says so, and a fallback model
-  answers when `advisor.fallback` is `anthropic`); organizations doing this
-  work regularly can apply to Anthropic's Cyber Verification Program, or
-  set `advisor.fallback` to `model` to send declined requests to a model
-  of their choosing (`advisor.fallback_model`). `advisor.api openai` with
-  `advisor.base_url` asks a local model (Ollama, llama.cpp, vLLM) or
-  another OpenAI-compatible server instead of Anthropic. A model on the
-  same machine (loopback) costs nothing and is reached directly, never
-  through a proxy, but its answers are weaker (the report says so), and
-  its context must hold the whole case (for Ollama, a model with
-  `num_ctx` of 32768 or more). A request the server read only in part is
-  reported as cut off, not answered (Ollama keeps about half its context
-  when it cuts); give the model more context than the case needs. With
-  `api_key_source env`, the key comes from `ANTHROPIC_API_KEY` for
-  Anthropic's own API, `OPENAI_API_KEY` for OpenAI's, and otherwise
-  `CHECKER_ADVISOR_API_KEY` (`CHECKER_FALLBACK_API_KEY` for the fallback
-  model), so one vendor's key never goes to another; `none` sends no key.
-  `checker advise --all [--role ROLE]` asks about every host with a
-  usable bundle: each host's estimate first, then one question for the
-  whole run. When `advisor.triage_model` is set (it ships empty; for
-  example `claude-haiku-5-5`), explanations of quiet hosts (Low, with no
-  chain and no finding at medium or worse in effect) go to that model,
-  through the same API and key, and everything else to `advisor.model`;
-  the output and the report name the model per host. Each host is sent
-  the bundle it was estimated on, and a host whose analysis, model or
-  estimate changed in between isn't sent. Haiku models have no
-  server-side fallback, so with `advisor.fallback anthropic` a declined
-  request to one isn't re-run (with `model`, it goes to the fallback
-  model as usual).
-  `--show [--redaction MODE]` prints exactly what would be sent,
-  after redaction, and sends nothing. Under *pseudonymize* (the default) people's
-  account names, host names, email addresses, IP addresses and SSH key
-  fingerprints become placeholders (USER-2-7f3a) made fresh for each run;
-  *strict* sends only the kinds of finding, counts, scores and kinds of
-  coverage gap.
-- `checker config show|set|history|check-key` — the settings in words;
-  change one after `init` (validated, and recorded with who, when, old and
-  new value; the file is written back whole, so hand-added comments go);
-  every change so far; read the advisor's API key from its source to check
-  it works, without sending anything. A key pasted into a `command:`
-  source is refused.
-- `checker packs pull|list|show|add|retire|check|keys|trust|index` — signed threat
-  packs ([packs](docs/packs.md)); nothing is downloaded unless you pull.
-- `checker hosts add|list|remove|packs` and `checker trust` — the inventory
-  (`--web-root DIR`, repeatable, sets a host's own web roots; `hosts packs
-  HOST [RULE]` shows or sets which threat packs apply to it), and
-  verified SSH host keys (no way to switch verification off).
-- `checker collect` — logs in (key, agent or password; sudo with or without a
-  password, or root), runs the collector read-only, and stores the result as
-  an `age`-encrypted, hashed bundle with a chain of custody. Collects host
-  facts, logs, persistence, the network, software, mail, web servers and
-  containers, with secrets masked before they leave the server (email
-  addresses' local parts are fingerprinted, the domain kept).
-- `checker mail-hash ADDRESS…` — shows how known email addresses appear in
-  the collected mail logs, so they can be looked for.
-- `checker bundle list|show|verify` — inspect and re-check stored evidence.
-- `checker events BUNDLE` — parse a bundle into events (logins, sudo, account
-  changes, kernel and systemd messages, login records), with the tool's own
-  session recognised and left out ([how](docs/events.md)).
-- `checker changes HOST` — what changed on a host since its previous bundle
-  and since its baseline: accounts, sudo rules, authorized keys, sshd
-  settings, persistence files, listening sockets, kernel modules and more.
-  The host's first analysis is its baseline; `checker baseline accept HOST
-  --reason …` moves it after a reviewed change ([how](docs/snapshots.md)).
-- `checker analyze HOST|--all` — runs the checks (kernel and system health,
-  reboots, accounts and authentication, persistence, system binary
-  integrity, files in unusual places, live processes, the network, logging
-  stopped or wiped, software changes, mail, web applications, containers),
-  links findings that tell an attack's story into chains, and lists the findings by
-  category and band, with what the collection couldn't see, and scores the
-  host: a probability of compromise with its band and what drove it, from
-  a prior set per host, group or configuration; each analysis is stored
-  encrypted ([checks](docs/checks.md), [scoring](docs/scoring.md)).
-- `checker report HOST|--all` — writes one self-contained, confidential HTML
-  report: findings with their evidence, a timeline, coverage, and the
-  collection's hashes and chain of custody, encrypted to the evidence key
-  (`--plain` for plain HTML to hand on); `checker report --open [FILE]`
-  shows one in the browser, served from memory on this machine, never
-  written in plain ([report](docs/report.md)).
-- `checker whitelist check [HOST]`, `test HOST --file F`, `stale` —
-  validate the whitelist files (global, per group, per host) and show a
-  host's merged rules; show what a proposed file would hide or reveal on
-  stored analyses before it is saved; list rules that matched nothing
-  lately or are expiring. Maintenance windows make planned reboots
-  informational. Shipped profiles (`base`, `web`, `database`, `mail`,
-  `build`) cover what such servers ordinarily do. A rule suppresses
-  a finding an operator has explained, with a reason, an owner and an
-  expiry; suppressed findings are kept and listed in the report's appendix,
-  and count for nothing in the score ([whitelists](docs/whitelists.md)).
-- `checker run --all [--unattended]` — collects, analyses, writes the
-  report and purges what has expired, in one pass, and says which hosts
-  need a look (band risen, a new high or critical finding, not collected);
-  `notify_command` hands that short summary to a command of yours (mail,
-  a webhook). `--unattended` asks nothing and leaves out, with a warning,
-  hosts that would need a prompt. `checker schedule install --at HH:MM` runs it every day (a
-  systemd user timer, or a launchd agent on macOS)
-  ([scheduling](docs/scheduling.md)).
-- `checker purge HOST | --before DATE | --expired` — deletes stored evidence,
-  reports included, and records what went by identifiers and counts only.
-  `--expired` keeps each host's current baseline until a newer one is
-  accepted ([retention](docs/retention.md)).
+It is built for small organizations that can't afford commercial security
+products, and it works from a web page: no command line needed. Open source
+under the AGPL, from NouriLoop LLC.
 
-**Read-only, proven:** on throwaway Ubuntu 22.04, 24.04 and 26.04, Rocky
-Linux 9 and 10, and AlmaLinux 9 and 10 servers, with auditd recording every
-write by the scanner's session, the collector wrote nothing at all, and
-every write by the system's own login machinery matched the traces
-disclosed in the policy
-([proof script](tests/integration/readonly_proof.py),
-results in the [Phase 1](plans/phase1-build-plan-2026-10-26.md) and
-[Phase 2](plans/phase2-build-plan-2026-10-28.md) plans).
+**Status:** in development. Everything described here works today; the first
+signed release is being prepared.
 
-**Detection, proven:** on throwaway Ubuntu 24.04 and Rocky Linux 9 servers,
-30 scripted compromise behaviours each produced their finding at its band
-or above: among them a second UID 0 account, a backdoor key for root,
-cron and systemd persistence, `/etc/ld.so.preload`, a reverse shell, an SSH
-tunnel, auditd stopped and login records emptied, an attack tool and a
-package repository added, a burst of mail from the web server's account, a
-web shell answering requests and running programs, and a privileged
-container mounting `/`. Both attack chains applied (a new account given
-sudo and used; a web shell answering, then starting a shell)
-([detection proof](tests/integration/detection_proof.py)).
+## What you need
 
-**Calibrated:** fresh servers on all seven images score Low (5.8%), with
-the proof's own setup whitelisted and the `base` profile; the compromised
-servers score Critical ([calibration](docs/scoring.md#calibration)).
+| | |
+| --- | --- |
+| **Servers to check** | Red Hat Enterprise Linux 9 or later (tested on Rocky Linux and AlmaLinux), or Ubuntu 22.04 or later. Nothing is installed on them. Each needs a login account that can use sudo: [how to set one up](docs/scanner-account.md). |
+| **A machine for the tool** | One of its own, since it holds keys that act as an administrator on every server it checks. x86, running Ubuntu 24.04 or 26.04 or Rocky Linux 9 or 10: [installing](docs/install.md). Developers can run it from source on any machine with Python 3.12 or later. |
 
-**RHEL itself hasn't been tested:** Rocky Linux and AlmaLinux, built from
-the same sources, stand in for it. Red Hat's own subscription and Insights
-services, which they lack, may raise findings no run has seen yet.
+## How a check works
 
-Set up a server for it with [docs/scanner-account.md](docs/scanner-account.md).
+```mermaid
+flowchart LR
+    subgraph you["Your machine"]
+        T["Compromise Checker"]
+        E[("Evidence,<br>encrypted")]
+        R["Report"]
+    end
+    subgraph srv["Your server (nothing is written here)"]
+        C["Collector<br>runs in memory, reads logs,<br>accounts, programs, network"]
+    end
+    T -- "1. logs in over SSH<br>and sends the collector" --> C
+    C -- "2. evidence comes back,<br>secrets masked" --> E
+    E -- "3. compared, checked,<br>scored" --> R
+```
 
-- [DESIGN.md](DESIGN.md) — architecture, security and privacy policy, checks,
-  scoring, and the decisions made so far.
-- [plans/](plans/) — build plans for each phase.
-- [The AI advisor](docs/advisor.md) — setup, redaction, roles, cost,
-  declines, local models, and how well it works.
-- [Security and privacy policy](docs/security-and-privacy-policy.md) — what the
-  tool does on your servers and with your data. [SECURITY.md](SECURITY.md) —
-  reporting a vulnerability.
+1. **Log in.** The tool connects over SSH, with a key, your SSH agent or a
+   password, and checks the server's identity against the key you approved.
+2. **Collect.** It streams a small program to the server's own Python, which
+   runs in memory, reads the evidence and sends it straight back. Nothing is
+   saved on the server. Passwords, keys and the private part of email
+   addresses are masked before anything leaves it.
+3. **Keep.** The evidence is stored on your machine, encrypted, with a record
+   of its fingerprints and of who handled it and when, so it can stand up
+   later.
+4. **Compare.** Each server is compared with its own past: the first check is
+   its baseline, and every check after that shows what changed, such as new
+   accounts, sudo rules, SSH keys, start-up jobs or open ports.
+5. **Decide.** The checks run, findings that tell one attack's story are
+   linked together, and the server gets a score and a report.
 
-![The list of servers: one plain answer at the top, then each server in the order to deal with it](docs/screenshots/fleet.png)
+## From evidence to an answer
 
-*A demo fleet: throwaway servers, attacked on purpose, with real results from this tool and
-addresses replaced. See [docs/web.md](docs/web.md).*
+```mermaid
+flowchart TD
+    A["Evidence from one check"] --> B["Compared with the server's baseline:<br>what changed?"]
+    B --> C["Checks run: findings"]
+    C --> D{"Routine on this server?<br>(a rule says so, with an owner and a reason)"}
+    D -- yes --> E["Kept in the report's appendix;<br>counts for nothing"]
+    D -- no --> F["Findings that tell one attack's story<br>are linked into a chain"]
+    F --> G["Score: the chance of a break-in<br>Low · Elevated · High · Critical"]
+    G --> H["Report in plain words,<br>with the evidence behind each finding<br>and what the check couldn't see"]
+```
+
+| The server scores | Which means |
+| --- | --- |
+| **Low** | No strong signs. A fresh server scores about 6%. |
+| **Elevated** | Something needs an explanation. |
+| **High** | Likely broken into. Look today. |
+| **Critical** | Strong signs of a break-in. Act on this now. |
+
+A clean result is an estimate, not proof: the report also lists what the
+check could not see, such as logs that were missing or audit records that
+were off, so you know how much to trust it.
+
+**What it looks for.** Changes to accounts and logins, a second root
+account, backdoor SSH keys, programs set to start by themselves (cron,
+systemd, shell start-up files, preloaded libraries), system programs that
+have been altered, files in odd places, suspicious running programs, reverse
+shells and tunnels, logging that stopped or was wiped, software and package
+sources that appeared, bursts of mail from a web server, web shells, and
+containers that reach the host. Signed **threat packs** teach it about new
+attacks without a new release of the tool ([checks](docs/checks.md),
+[packs](docs/packs.md)).
+
+**What's routine stays quiet.** A rule can mark a finding as normal on a
+server, with a reason, an owner and an expiry date. Profiles for web,
+database, mail and build servers cover what such servers ordinarily do, and
+a planned maintenance window makes a reboot informational
+([whitelists](docs/whitelists.md)).
+
+## The AI advisor (optional)
+
+Off unless you turn it on. When asked, it explains a server's result in
+plain language, says what would settle it, proposes rules for findings that
+are routine, suggests settings that would let the next check see more, and
+advises what to do about a break-in, in order: keep the evidence first, then
+contain, clean up and recover.
+
+**It only advises. Nothing it says runs**, and nothing is sent until you
+have seen the likely cost and said yes.
+
+```mermaid
+flowchart LR
+    A["A server's analysis"] --> B["Names replaced with placeholders<br>(USER-2-7f3a), fresh each run"]
+    B --> C{"Cost shown;<br>you say yes"}
+    C --> D["AI model: Anthropic's,<br>or one on your own machine"]
+    D --> E["Answer checked against<br>the real findings"]
+    E --> F["Placeholders turned<br>back into names"]
+    F --> G["Stored encrypted;<br>shown in the report,<br>labelled as advice"]
+```
+
+Account names, host names, email and IP addresses and SSH key fingerprints
+are replaced with placeholders before anything is sent, or you can send only
+counts and kinds of finding. A model on your own machine (Ollama, llama.cpp,
+vLLM) costs nothing and sends nothing anywhere, though its answers are
+weaker. Every answer is checked against the real case before it is shown,
+and the report labels it as advice, apart from the findings
+([the advisor](docs/advisor.md)).
+
+## Getting started
+
+**From a web page.** Install the tool on its own machine with the one line
+from a release's install page ([installing](docs/install.md)). It gives you
+a link to create your account. Add your servers, press **Check**, and the
+servers appear in the order to deal with them. Checks can run every day by
+themselves, and a short summary can go to mail or a webhook when a server
+needs a look ([the web interface](docs/web.md)).
+
+**From the command line.** The tool isn't on PyPI, the public Python
+package index, so install it from a release's install page as above, or run
+it from this repository on a machine with Python 3.12 or later:
+
+```
+git clone https://github.com/john-c-houser-tech/compromise-checker.git
+cd compromise-checker
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e ".[web]"
+checker init                    # makes the evidence key, database and settings
+checker hosts add web01 --address web01.example.org --user scanner --auth agent --sudo nopasswd
+checker run --all               # collect, analyse, report, in one pass
+checker report --open           # read the report in your browser
+checker schedule install --at 03:00   # the same, every day
+```
+
+Every command, with every option, is described in
+[docs/commands.md](docs/commands.md).
+
+## How we know it works
+
+- **It writes nothing.** On throwaway servers running seven Linux images
+  (Ubuntu 22.04, 24.04 and 26.04; Rocky Linux 9 and 10; AlmaLinux 9 and 10),
+  the audit system recorded every write made during the tool's session. The
+  collector made none, and the only writes were the system's own login
+  records, which the [policy](docs/security-and-privacy-policy.md)
+  discloses ([proof](tests/integration/readonly_proof.py)).
+- **It catches break-ins.** Thirty scripted compromises on Ubuntu 24.04 and
+  Rocky Linux 9, from a second root account and a backdoor key to a web shell
+  and a container that mounts the host's disk, each produced its finding, and
+  both attack chains were recognised
+  ([proof](tests/integration/detection_proof.py)).
+- **It stays calm on clean servers.** Fresh servers on all seven images score
+  Low; the compromised ones score Critical
+  ([calibration](docs/scoring.md#calibration)).
+- **One gap.** Red Hat Enterprise Linux itself hasn't been tested. Rocky
+  Linux and AlmaLinux, built from the same sources, stand in for it. Red
+  Hat's own subscription and Insights services may raise findings no run has
+  seen yet.
+
+## Learn more
+
+| | |
+| --- | --- |
+| [Security and privacy policy](docs/security-and-privacy-policy.md) | What the tool does on your servers and with your data. |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability. |
+| [Installing](docs/install.md) · [Setting up a server](docs/scanner-account.md) · [The web interface](docs/web.md) | Getting it running. |
+| [Commands](docs/commands.md) | Every command and option. |
+| [Checks](docs/checks.md) · [Scoring](docs/scoring.md) · [Whitelists](docs/whitelists.md) · [Threat packs](docs/packs.md) · [The AI advisor](docs/advisor.md) | How it decides. |
+| [Reports](docs/report.md) · [Scheduling](docs/scheduling.md) · [Retention](docs/retention.md) | Day to day. |
+| [DESIGN.md](DESIGN.md) · [plans/](plans/) | The architecture, the decisions made so far, and the build plan for each phase. |
 
 ## Development
 
-Runs on Python 3.12 or later on the controller.
+Runs on Python 3.12 or later on the machine that does the checking.
 
 ```
 python3 -m venv .venv && . .venv/bin/activate
@@ -213,11 +201,12 @@ ruff check . && ruff format --check . && pytest
 ```
 
 The collector (`checker/collector/collector.py`) must stay Python 3.9
-compatible and standard-library only; CI runs its tests with the system
-`python3` of each supported distribution.
+compatible and standard-library only, because it runs on the servers' own
+Python; CI runs its tests with the system `python3` of each supported
+distribution.
 
-Golden reports (`tests/golden/`) pin the findings and score of real
-analyses of throwaway servers; after a deliberate change to checks or scoring,
+Golden reports (`tests/golden/`) pin the findings and score of real analyses
+of throwaway servers. After a deliberate change to checks or scoring,
 `python scripts/update_golden.py` rewrites them and shows what moved
 ([scoring](docs/scoring.md#golden-reports)).
 

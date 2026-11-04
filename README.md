@@ -157,6 +157,8 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[web]"       # [web] adds the web page; plain "." for the terminal only
 checker init                    # makes the evidence key, database and settings
 checker hosts add web01 --address web01.example.org --user scanner --auth agent --sudo nopasswd
+checker trust web01             # shows the server's SSH key fingerprint; compare it with
+                                #   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub, run on the server
 checker run --all               # collect, analyse, report, in one pass
 checker report --open           # read the report in your browser
 checker schedule install --at 03:00   # the same, every day

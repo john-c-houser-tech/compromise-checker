@@ -6,7 +6,7 @@
 <h1 class="page-title">First setup</h1>
 {% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
 {% if not current %}<p><strong>Your first server is checked.</strong> <a href="{{ url('fleet') }}">See the results</a>.</p>{% endif %}
-<ol class="steps">
+<ol class="steps" role="list">
   <li>
     <h2>Back up the evidence key{{ state("backup") }}</h2>
     {% if evidence_key_lost %}

@@ -231,6 +231,7 @@ def django_settings(
         "LOGIN_URL": "/login",
         "SESSION_COOKIE_NAME": f"{prefix}checker_session",
         "CSRF_COOKIE_NAME": f"{prefix}checker_csrf",
+        "CHECKER_THEME_COOKIE": f"{prefix}checker_theme",  # light or dark, chosen in the top bar
         "CSRF_FAILURE_VIEW": "checker.web.views.csrf_failed",
         "SESSION_COOKIE_AGE": SESSION_SECONDS,
         "SESSION_EXPIRE_AT_BROWSER_CLOSE": True,

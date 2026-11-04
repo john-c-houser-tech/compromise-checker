@@ -1,8 +1,15 @@
 {% extends "base.html.j2" %}
+{% import "icons.html.j2" as draw %}
 {% import "parts.html.j2" as parts %}
 {% block nudge %}{% endblock %}
+{% block band %}
+<section class="band" aria-labelledby="page-title">
+  <div class="band-in page-band">
+    <h1 id="page-title" class="page-title">Sign-in security</h1>
+  </div>
+</section>
+{% endblock %}
 {% block main %}
-<h1>Sign-in security</h1>
 <h2>Your password</h2>
 {% if password_changed %}<p role="status">Your password is changed. Anywhere else you were signed in has been signed out.</p>{% endif %}
 {% for problem in password_problems %}<p class="error" role="alert">{{ problem }}</p>{% endfor %}

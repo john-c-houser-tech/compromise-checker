@@ -56,7 +56,7 @@ def qr_code(device: TOTPDevice) -> Markup:
 
     return Markup(  # noqa: S704 - segno's own output, from the tool's own secret
         segno.make(device.config_url, error="m").svg_inline(
-            scale=5, border=4, dark="#000", light="#fff"
+            scale=5, border=4, dark="#000", light="#fff", omitsize=True
         )
     )
 

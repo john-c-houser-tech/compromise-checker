@@ -113,6 +113,59 @@ def font(request, name: str) -> HttpResponse:
     return response
 
 
+ICONS = {"favicon.svg": "image/svg+xml", "favicon.ico": "image/x-icon"}  # NouriLoop's Coil
+THEMES = ("light", "dark")
+THEME_SECONDS = 365 * 24 * 3600
+
+
+@before_second_step
+@require_GET
+def icon(request, name: str) -> HttpResponse:
+    """Only these files, by exact name."""
+    if name not in ICONS:
+        return not_found(request)
+    response = HttpResponse((HERE / "static" / name).read_bytes(), content_type=ICONS[name])
+    response["Cache-Control"] = "max-age=86400"
+    return response
+
+
+def _safe_back(request) -> str:
+    """The page the theme was changed from: only a path on this site that exists."""
+    wanted = request.POST.get("back", "")
+    if wanted.startswith("/") and url_has_allowed_host_and_scheme(
+        wanted, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        try:
+            resolve(urlsplit(wanted).path)
+            return wanted
+        except Resolver404:
+            pass
+    return reverse("fleet")
+
+
+@for_viewers
+@before_second_step
+@require_POST
+def theme(request) -> HttpResponse:
+    """Light or dark, kept in a cookie of its own and nowhere else, so pages need no script. With
+    none chosen, the browser's own setting decides. Anyone may choose, signed in or not."""
+    response = HttpResponseRedirect(_safe_back(request))
+    chosen = request.POST.get("theme", "")
+    if chosen in THEMES:
+        response.set_cookie(
+            settings.CHECKER_THEME_COOKIE,
+            chosen,
+            max_age=THEME_SECONDS,
+            path="/",
+            secure=settings.SESSION_COOKIE_SECURE,
+            httponly=True,
+            samesite="Lax",  # only a look: kept when someone arrives from a link elsewhere
+        )
+    else:
+        response.delete_cookie(settings.CHECKER_THEME_COOKIE, path="/", samesite="Lax")
+    return response
+
+
 @before_second_step
 @require_GET
 def stylesheet(request) -> HttpResponse:
@@ -495,10 +548,18 @@ def fleet_page(request) -> HttpResponse:
         and (tone is None or r.tone == tone)
     ]
     title, title_tone = wording.headline(rows)
+    # Every server, whatever the filter, as the answer is: how many of each result.
+    tally = {t: sum(1 for r in rows if r.tone == t) for t in wording.TONE_NAMES}
+    counts = [(t, wording.count_name(t, n), n) for t, n in tally.items() if n]
     return render(
         request,
         "fleet.html.j2",
         {
+            "counts": counts,
+            # Only about servers still being checked: removed ones were removed on purpose.
+            "band_tag": wording.BAND_TAGS.get(title_tone)
+            if any(r.tone != "removed" for r in rows)
+            else None,
             "key_unsaved": key_unsaved,
             "headline": title,
             "headline_tone": title_tone,

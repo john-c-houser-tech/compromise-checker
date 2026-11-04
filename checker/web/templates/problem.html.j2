@@ -1,5 +1,9 @@
 {% extends "base.html.j2" %}
+{% import "icons.html.j2" as draw %}
+{% block body_class %}auth{% endblock %}
+{% block nudge %}{% endblock %}
 {% block main %}
+{{ draw.icon("unknown", "icon problem-icon") }}
 <h1>{{ title }}</h1>
 {% if detail %}<p>{{ detail }}</p>{% endif %}
 {% if sign_in_again %}<p><a href="{{ url('login') }}">Sign in again</a></p>{% endif %}

@@ -67,6 +67,9 @@ urlpatterns = [
     path("setup/<str:token>", views.setup_page, name="setup"),
     path("style.css", views.stylesheet, name="style"),
     path("fonts/<str:name>", views.font, name="font"),
+    path("favicon.svg", views.icon, {"name": "favicon.svg"}, name="favicon_svg"),
+    path("favicon.ico", views.icon, {"name": "favicon.ico"}, name="favicon_ico"),
+    path("theme", views.theme, name="theme"),
 ]
 
 handler400 = "checker.web.views.bad_request"

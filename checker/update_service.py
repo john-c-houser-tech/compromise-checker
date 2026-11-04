@@ -184,8 +184,14 @@ def copy_wheels(source: Pinned, target: Path) -> None:
 
 
 def base_python() -> str:
-    """The system Python this version was built on: the new one is built on the same."""
-    return str(Path(sys.base_prefix) / "bin" / "python3")
+    """The system Python this version was built on, by exact name: the new one is built on the
+    same. Not /usr/bin/python3, which on Rocky 9 is an older Python than the tool's, so wheels
+    fetched for the tool's wouldn't fit."""
+    found = getattr(sys, "_base_executable", None)
+    if found and Path(found).is_file():
+        return found
+    major, minor = sys.version_info[:2]
+    return str(Path(sys.base_prefix) / "bin" / f"python{major}.{minor}")
 
 
 def build(staged: Path, version: str, program: Path = PROGRAM) -> Path:

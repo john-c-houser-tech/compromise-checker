@@ -269,3 +269,19 @@ def test_the_running_version_comes_from_the_kept_manifest_or_the_link(tmp_path, 
     assert update_service.running_version(program) == "0.3.0"
     _release(program / "versions" / "0.3.0", "0.4.0")  # the manifest wins over the name
     assert update_service.running_version(program) == "0.4.0"
+
+
+def test_the_new_version_is_built_on_the_running_version_s_own_python():
+    """Rocky 9's /usr/bin/python3 is 3.9 while the tool runs on 3.12: the exact one, by name."""
+    import sys
+
+    python = Path(update_service.base_python())
+    assert python.is_file()
+    major, minor = sys.version_info[:2]
+    said = subprocess.run(  # noqa: S603
+        [str(python), "-c", "import sys; print(sys.version_info[:2])"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert said == str((major, minor))

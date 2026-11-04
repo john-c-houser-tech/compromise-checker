@@ -592,8 +592,12 @@ def test_no_folder_name_from_the_server_in_a_title():
         }
         for name in ("a", "b")
     }
-    for check in ("files.scratch", "files.backdated"):
-        (found,) = of(run([], snap(unusual_files=items)), check)
+    for check, section in (
+        ("files.scratch", "unusual_files"),
+        ("files.backdated", "unusual_files"),
+        ("files.backdated", "web_files"),
+    ):
+        (found,) = of(run([], snap(**{section: items})), check)
         assert found.title.endswith("(2 in one folder)") and "Ignore" not in found.title
         assert planted in found.summary
 

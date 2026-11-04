@@ -180,8 +180,9 @@ can restore it can read everything: protect it like the evidence.
 
 On a machine used only from itself, usually a PC on a home or office connection, the page that gives the
 commands for setting up a server warns against limiting this machine's key to its address: that kind of
-address can change, and when it does, every server limited to it refuses the key until the commands are run
-again there.
+address can change, and when it does, every server limited to it refuses the key until an administrator there
+changes the address in the key's line in the account's `authorized_keys` file, or takes the account away and
+sets it up again. The setup commands alone won't do it: they stop when the account already exists.
 
 ## The setup link
 

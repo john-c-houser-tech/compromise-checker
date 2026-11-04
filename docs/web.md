@@ -256,7 +256,9 @@ commands it gives you on that server, confirm its identity, and run a first chec
   points to [setting up a scanner account](scanner-account.md).
   They can limit the key to this machine's address. On a machine the installer set up for use from itself
   alone, usually a PC, the page warns that such an address can change, and that every server limited to it
-  then refuses the key until the commands are run there again.
+  then refuses the key until an administrator there changes the address in the key's line in the account's
+  `authorized_keys` file, or takes the account away and sets it up again; the setup commands alone stop
+  when the account already exists.
 
 `tests/integration/first_setup_proof.py` runs the whole path against a real sshd in a container.
 

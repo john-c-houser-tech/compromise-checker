@@ -102,12 +102,12 @@ def scratch(context: Context) -> list[Finding]:
         if item.get("place") in SCRATCH and item.get("type") == "-" and item.get("kind"):
             groups.setdefault((_group(item, path), item["kind"]), []).append(path)
     findings = []
-    for (group, kind), paths in sorted(groups.items()):
+    for (_folder, kind), paths in sorted(groups.items()):
         elf = kind == "elf"
         finding = _grouped(
             "files.scratch",
             ("A program in a scratch directory" if elf else "A script in a scratch directory")
-            + (f" ({len(paths)} in {group})" if len(paths) > 1 else ""),
+            + (f" ({len(paths)} in one folder)" if len(paths) > 1 else ""),
             COMPROMISE,
             "high" if elf else "medium",
             "unusual_files",
@@ -436,12 +436,12 @@ def backdated(context: Context) -> list[Finding]:
                 groups.setdefault(_group(item, path), []).append(path)
             elif item.get("time_out_of_range"):
                 odd.append(path)
-        for group, paths in sorted(groups.items()):
+        for _folder, paths in sorted(groups.items()):
             findings.append(
                 _grouped(
                     "files.backdated",
                     "A program or script whose modification time is long before its change time"
-                    + (f" ({len(paths)} in {group})" if len(paths) > 1 else ""),
+                    + (f" ({len(paths)} in one folder)" if len(paths) > 1 else ""),
                     COMPROMISE,
                     "low",
                     section,

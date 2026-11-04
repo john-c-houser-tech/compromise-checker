@@ -9589,3 +9589,43 @@ def test_every_page_file_is_in_an_installed_copy():
             if path.is_file():
                 name = path.relative_to(web).as_posix()
                 assert any(fnmatch(name, p) for p in patterns), name
+
+
+def test_at_a_glance_shows_with_only_accepted_findings_and_threats(web, monkeypatch):
+    """Everything accepted still has counts worth showing; a fixed threat isn't called open."""
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    assessment = {
+        "findings": [
+            {
+                "check": "account.uid0",
+                "category": "compromise indicator",
+                "band": "high",
+                "suppressed_by": "r1",
+            }
+        ]
+    }
+    host = FleetHost(
+        "web01",
+        state="analysed",
+        band="Low",
+        probability=0.02,
+        first=False,
+        exposed={"php2shell-2026-10": "fixed"},
+    )
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, assessment, {}, True)
+    )
+    page = _host_page(client)
+    glance = page.split('<dl class="glance">')[1].split("</dl>")[0]
+    assert "<dt>Hidden as accepted</dt><dd>1</dd>" in glance
+    assert "<dt>Known threats</dt><dd>1</dd>" in glance
+    assert "open" not in glance
+
+
+def test_a_long_group_name_wraps_in_the_server_band():
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    meta = css.split(".host-title .meta {")[1].split("}")[0]
+    assert "overflow-wrap: anywhere" in meta
+    assert ".host-title > div { min-width: 0; }" in css

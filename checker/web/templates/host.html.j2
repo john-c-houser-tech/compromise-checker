@@ -44,14 +44,14 @@
 {% block main %}
 <div class="host-layout">
 <div class="host-side">
-  {% if sections %}
+  {% if sections or suppressed or gaps or row.exposures %}
   <section class="side-card">
     <h2>At a glance</h2>
     <dl class="glance">
       {% for section in sections %}<dt>{{ section.title }}</dt><dd>{{ section.findings | length + section.minor | length }}</dd>{% endfor %}
       {% if suppressed %}<dt>Hidden as accepted</dt><dd>{{ suppressed | length }}</dd>{% endif %}
       {% if gaps %}<dt>Couldn't be checked</dt><dd>{{ gaps | length }}</dd>{% endif %}
-      {% if row.exposures %}<dt>Known threats open</dt><dd>{{ row.exposures | length }}</dd>{% endif %}
+      {% if row.exposures %}<dt>Known threats</dt><dd>{{ row.exposures | length }}</dd>{% endif %}
     </dl>
   </section>
   {% endif %}

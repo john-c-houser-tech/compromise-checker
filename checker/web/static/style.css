@@ -371,7 +371,8 @@ h1 { font-size: clamp(1.75rem, 1.2rem + 2.6vw, 2.5rem); line-height: 1.12; lette
 .host-title .badge { width: 3rem; height: 3rem; margin-top: 0.25rem; flex: none; }
 .host-title .verdict { font-size: 1.25rem; }
 .host-title .action { font-size: 1rem; }
-.host-title .meta { margin: 0.25rem 0 0; font-size: 0.875rem; color: var(--quiet); }
+.host-title > div { min-width: 0; }
+.host-title .meta { margin: 0.25rem 0 0; font-size: 0.875rem; color: var(--quiet); overflow-wrap: anywhere; }
 .host-chance { grid-column: 2; grid-row: 2 / span 2; }
 .host-chance p { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
 .host-chance strong { font-size: 2.75rem; margin: 0; }

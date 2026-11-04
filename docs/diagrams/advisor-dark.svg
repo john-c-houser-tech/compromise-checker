@@ -1,0 +1,78 @@
+<svg width="350pt" height="636pt"
+ viewBox="0.00 0.00 350.00 636.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(7.2 629.16)">
+<title>G</title>
+<g id="node1" class="node">
+<title>A</title>
+<path fill="#0c2d6b" stroke="#388bfd" d="M225.25,-621.96C225.25,-621.96 110.08,-621.96 110.08,-621.96 104.08,-621.96 98.08,-615.96 98.08,-609.96 98.08,-609.96 98.08,-597.96 98.08,-597.96 98.08,-591.96 104.08,-585.96 110.08,-585.96 110.08,-585.96 225.25,-585.96 225.25,-585.96 231.25,-585.96 237.25,-591.96 237.25,-597.96 237.25,-597.96 237.25,-609.96 237.25,-609.96 237.25,-615.96 231.25,-621.96 225.25,-621.96"/>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-598.16" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">A server&#39;s analysis</text>
+</g>
+<g id="node2" class="node">
+<title>B</title>
+<path fill="#0c2d6b" stroke="#388bfd" d="M272.13,-545.96C272.13,-545.96 63.21,-545.96 63.21,-545.96 57.21,-545.96 51.21,-539.96 51.21,-533.96 51.21,-533.96 51.21,-510.68 51.21,-510.68 51.21,-504.68 57.21,-498.68 63.21,-498.68 63.21,-498.68 272.13,-498.68 272.13,-498.68 278.13,-498.68 284.13,-504.68 284.13,-510.68 284.13,-510.68 284.13,-533.96 284.13,-533.96 284.13,-539.96 278.13,-545.96 272.13,-545.96"/>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-524.02" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">Names replaced with placeholders</text>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-509.02" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">(USER&#45;2&#45;7f3a), fresh each run</text>
+</g>
+<g id="edge1" class="edge">
+<title>A&#45;&gt;B</title>
+<path fill="none" stroke="#8b949e" stroke-width="1.2" d="M167.67,-585.68C167.67,-576.94 167.67,-566.05 167.67,-555.82"/>
+<polygon fill="#8b949e" stroke="#8b949e" stroke-width="1.2" points="170.47,-556.13 167.67,-548.13 164.87,-556.13 170.47,-556.13"/>
+</g>
+<g id="node3" class="node">
+<title>C</title>
+<polygon fill="#3b2300" stroke="#d29922" points="167.67,-458.68 0,-411.4 167.67,-364.12 335.34,-411.4 167.67,-458.68"/>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-413.1" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">Cost shown; it asks first</text>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-398.1" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">above your limit</text>
+</g>
+<g id="edge2" class="edge">
+<title>B&#45;&gt;C</title>
+<path fill="none" stroke="#8b949e" stroke-width="1.2" d="M167.67,-498.22C167.67,-489.42 167.67,-478.97 167.67,-468.44"/>
+<polygon fill="#8b949e" stroke="#8b949e" stroke-width="1.2" points="170.47,-468.61 167.67,-460.61 164.87,-468.61 170.47,-468.61"/>
+</g>
+<g id="node4" class="node">
+<title>D</title>
+<path fill="#0c2d6b" stroke="#388bfd" d="M254.13,-324.12C254.13,-324.12 81.21,-324.12 81.21,-324.12 75.21,-324.12 69.21,-318.12 69.21,-312.12 69.21,-312.12 69.21,-288.84 69.21,-288.84 69.21,-282.84 75.21,-276.84 81.21,-276.84 81.21,-276.84 254.13,-276.84 254.13,-276.84 260.13,-276.84 266.13,-282.84 266.13,-288.84 266.13,-288.84 266.13,-312.12 266.13,-312.12 266.13,-318.12 260.13,-324.12 254.13,-324.12"/>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-302.18" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">AI model: Anthropic&#39;s,</text>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-287.18" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">or one on your own machine</text>
+</g>
+<g id="edge3" class="edge">
+<title>C&#45;&gt;D</title>
+<path fill="none" stroke="#8b949e" stroke-width="1.2" d="M167.67,-363.89C167.67,-353.87 167.67,-343.48 167.67,-334.12"/>
+<polygon fill="#8b949e" stroke="#8b949e" stroke-width="1.2" points="170.47,-334.26 167.67,-326.26 164.87,-334.26 170.47,-334.26"/>
+</g>
+<g id="node5" class="node">
+<title>E</title>
+<path fill="#0c2d6b" stroke="#388bfd" d="M241.75,-236.84C241.75,-236.84 93.58,-236.84 93.58,-236.84 87.58,-236.84 81.58,-230.84 81.58,-224.84 81.58,-224.84 81.58,-201.56 81.58,-201.56 81.58,-195.56 87.58,-189.56 93.58,-189.56 93.58,-189.56 241.75,-189.56 241.75,-189.56 247.75,-189.56 253.75,-195.56 253.75,-201.56 253.75,-201.56 253.75,-224.84 253.75,-224.84 253.75,-230.84 247.75,-236.84 241.75,-236.84"/>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-214.9" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">Answer checked against</text>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-199.9" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">the real findings</text>
+</g>
+<g id="edge4" class="edge">
+<title>D&#45;&gt;E</title>
+<path fill="none" stroke="#8b949e" stroke-width="1.2" d="M167.67,-276.63C167.67,-267.45 167.67,-256.7 167.67,-246.74"/>
+<polygon fill="#8b949e" stroke="#8b949e" stroke-width="1.2" points="170.47,-246.93 167.67,-238.93 164.87,-246.93 170.47,-246.93"/>
+</g>
+<g id="node6" class="node">
+<title>F</title>
+<path fill="#0c2d6b" stroke="#388bfd" d="M228.63,-149.56C228.63,-149.56 106.71,-149.56 106.71,-149.56 100.71,-149.56 94.71,-143.56 94.71,-137.56 94.71,-137.56 94.71,-114.28 94.71,-114.28 94.71,-108.28 100.71,-102.28 106.71,-102.28 106.71,-102.28 228.63,-102.28 228.63,-102.28 234.63,-102.28 240.63,-108.28 240.63,-114.28 240.63,-114.28 240.63,-137.56 240.63,-137.56 240.63,-143.56 234.63,-149.56 228.63,-149.56"/>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-127.62" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">Placeholders turned</text>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-112.62" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">back into names</text>
+</g>
+<g id="edge5" class="edge">
+<title>E&#45;&gt;F</title>
+<path fill="none" stroke="#8b949e" stroke-width="1.2" d="M167.67,-189.35C167.67,-180.17 167.67,-169.42 167.67,-159.46"/>
+<polygon fill="#8b949e" stroke="#8b949e" stroke-width="1.2" points="170.47,-159.65 167.67,-151.65 164.87,-159.65 170.47,-159.65"/>
+</g>
+<g id="node7" class="node">
+<title>G</title>
+<path fill="#0c2d6b" stroke="#388bfd" d="M228.25,-62.28C228.25,-62.28 107.08,-62.28 107.08,-62.28 101.08,-62.28 95.08,-56.28 95.08,-50.28 95.08,-50.28 95.08,-12 95.08,-12 95.08,-6 101.08,0 107.08,0 107.08,0 228.25,0 228.25,0 234.25,0 240.25,-6 240.25,-12 240.25,-12 240.25,-50.28 240.25,-50.28 240.25,-56.28 234.25,-62.28 228.25,-62.28"/>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-40.34" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">Stored encrypted;</text>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-25.34" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">shown in the report,</text>
+<text xml:space="preserve" text-anchor="middle" x="167.67" y="-10.34" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#e6edf3">labelled as advice</text>
+</g>
+<g id="edge6" class="edge">
+<title>F&#45;&gt;G</title>
+<path fill="none" stroke="#8b949e" stroke-width="1.2" d="M167.67,-101.99C167.67,-92.96 167.67,-82.32 167.67,-72.11"/>
+<polygon fill="#8b949e" stroke="#8b949e" stroke-width="1.2" points="170.47,-72.33 167.67,-64.33 164.87,-72.33 170.47,-72.33"/>
+</g>
+</g>
+</svg>

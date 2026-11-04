@@ -172,9 +172,9 @@ def test_may_have_changed_is_only_said_when_time_explains_it():
 def test_a_removed_server_is_not_counted_as_fine_or_told_to_run_a_check():
     made = row(analysed("Low", removed=True, doubts=("collected more than 3 days ago",)), NOW)
     assert made.tone == "removed" and "check" not in made.action.lower()
-    assert headline([made]) == ("No servers being checked.", "unknown")
+    assert headline([made]) == ("No servers being checked", "unknown")
     fine = row(analysed("Low", first=False), NOW)
-    assert headline([made, fine])[0] == "No strong signs of a break-in on your server."
+    assert headline([made, fine])[0] == "No strong signs of a break-in on your server"
 
 
 def test_a_removed_server_with_a_bad_result_stays_loud():
@@ -359,12 +359,12 @@ def test_a_date_that_cannot_be_read_or_is_in_the_future_says_nothing():
 @pytest.mark.parametrize(
     ("bands", "words", "tone"),
     [
-        (["Critical", "Low", "Low"], "1 of your 3 servers needs attention now.", "critical"),
-        (["Critical", "High", "Low"], "2 of your 3 servers need attention now.", "critical"),
-        (["Critical"], "Your server needs attention now.", "critical"),
-        (["Elevated", "Low"], "1 of your 2 servers has some warning signs.", "elevated"),
-        (["Low", "Low"], "No strong signs of a break-in on your 2 servers.", "low"),
-        (["Low"], "No strong signs of a break-in on your server.", "low"),
+        (["Critical", "Low", "Low"], "1 of your 3 servers needs attention now", "critical"),
+        (["Critical", "High", "Low"], "2 of your 3 servers need attention now", "critical"),
+        (["Critical"], "Your server needs attention now", "critical"),
+        (["Elevated", "Low"], "1 of your 2 servers has some warning signs", "elevated"),
+        (["Low", "Low"], "No strong signs of a break-in on your 2 servers", "low"),
+        (["Low"], "No strong signs of a break-in on your server", "low"),
     ],
 )
 def test_the_answer_at_the_top(bands, words, tone):
@@ -373,7 +373,7 @@ def test_the_answer_at_the_top(bands, words, tone):
 
 def test_the_answer_never_reassures_past_a_server_nobody_can_vouch_for():
     rows = rows_for([analysed("Low"), FleetHost("x", state="no_evidence")], NOW)
-    assert headline(rows) == ("1 of your 2 servers needs a closer look.", "unknown")
+    assert headline(rows) == ("1 of your 2 servers needs a closer look", "unknown")
     doubted = rows_for([analysed("Low", doubts=("collected more than 3 days ago",))], NOW)
     assert headline(doubted)[1] == "unknown"
 
@@ -384,7 +384,7 @@ def test_a_serious_server_leads_even_with_others_unknown():
 
 
 def test_no_servers():
-    assert headline([]) == ("No servers yet.", "unknown")
+    assert headline([]) == ("No servers yet", "unknown")
 
 
 def test_trouble_making_a_row_is_loud_and_keeps_the_rest(monkeypatch):

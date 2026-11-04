@@ -37,7 +37,7 @@ def security_headers(get_response):
         if request.is_secure():
             response["Strict-Transport-Security"] = "max-age=31536000"
         # Evidence must not stay in a browser's or a proxy's cache.
-        if not request.path.startswith(("/style", "/fonts/")):
+        if not request.path.startswith(("/style", "/fonts/", "/favicon.")):
             response["Cache-Control"] = "no-store"
         return response
 

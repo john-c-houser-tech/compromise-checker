@@ -1004,6 +1004,13 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--tls-cert", help="certificate file, to serve https directly")
     web.add_argument("--tls-key", help="its private key file")
     web.set_defaults(handler=cmd_web)
+    web_setup_link = commands.add_parser(
+        "web-setup-link", help="make a new one-time link for the first web interface account"
+    )
+    web_setup_link.add_argument(
+        "--address", default="http://127.0.0.1:8088", help="the address people use for the page"
+    )
+    web_setup_link.set_defaults(handler=cmd_web_setup_link)
     web_password = commands.add_parser(
         "web-password", help="set a new password for a web interface account"
     )
@@ -1851,6 +1858,46 @@ def _web_has_run(base: Path) -> bool:
 
 
 @_plain_database_errors
+def cmd_web_setup_link(args: argparse.Namespace) -> int:
+    """A new link for the first account, for when the one from starting the server isn't to hand: on
+    a machine with nobody at it, that's in its log. Any link before it stops working."""
+    try:
+        from checker.web.app import AccountsProblem, configure
+    except ImportError:
+        print("checker: the web interface needs: pip install -e '.[web]'", file=sys.stderr)
+        return 2
+    base = home()
+    if not _web_has_run(base):  # a mistyped home mustn't gain a new database
+        print(
+            f"checker: no web interface has been run from {base}. Run this as the user who runs"
+            " it, with the same CHECKER_HOME.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        configure(base)
+    except ImportError as exc:
+        return _web_extra_missing(exc)
+    except AccountsProblem as exc:
+        print(f"checker: {exc}", file=sys.stderr)
+        return 1
+
+    from checker.web.accounts import setup_link  # needs Django set up
+
+    link = setup_link(args.address)
+    if link is None:
+        print(
+            "checker: there's already an account, so no setup link is needed. Sign in, or use"
+            " checker web-password if the password is lost.",
+            file=sys.stderr,
+        )
+        return 1
+    print("Open this link, once, within an hour, to create the first account:")
+    print(link)
+    return 0
+
+
+@_plain_database_errors
 def cmd_web_password(args: argparse.Namespace) -> int:
     """When a password is lost. Whoever owns the home can do this, and the record says so."""
     import getpass
@@ -2033,6 +2080,20 @@ HEADINGS = {
 }
 
 
+def _print_contributors(contributors: list[dict], shown: int = 5) -> None:
+    """The largest contributors to the score. A chain's account is the server's to name, so it's
+    on a line of its own that says so, never in the title."""
+    for c in contributors[:shown]:
+        capped = f", capped ({c['capped']})" if c["capped"] else ""
+        title = visible(c["title"], 200)
+        print(f"           {percent(c['share']):>4}  {title} (×{c['ratio']:g}{capped})")
+        account = (c.get("chain") or {}).get("account")
+        if account:
+            print(f"                 the server's account name: {visible(account, 80)}")
+    if len(contributors) > shown:
+        print(f"           and {len(contributors) - shown} more")
+
+
 def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
     findings = assessment["findings"]
     print(f"Host       {assessment['host']}")
@@ -2049,12 +2110,7 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
             f"Score      {percent(scored['probability'])} probability of compromise:"
             f" {scored['band']} (prior {percent(scored['prior'])}, {scored['prior_source']})"
         )
-        for c in scored["contributors"][:5]:
-            capped = f", capped ({c['capped']})" if c["capped"] else ""
-            print(f"           {percent(c['share']):>4}  {c['title']} (×{c['ratio']:g}{capped})")
-        rest = len(scored["contributors"]) - 5
-        if rest > 0:
-            print(f"           and {rest} more")
+        _print_contributors(scored["contributors"])
         if scored.get("raised_prior") is not None:
             exposed = ", ".join(
                 f"{r['pack']} v{r['version']} ({round(r['share'] * 100)}% of its window)"
@@ -2098,10 +2154,10 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
             if f.get("maintenance"):
                 m = f["maintenance"]
                 marks += f" [maintenance {m['window']}, was {m['band']}]"
-            print(f"  {f['band'].upper():8} {f['title']}{marks}")
-            print(f"           {f['summary'][:200]}")
+            print(f"  {f['band'].upper():8} {visible(f['title'], 200)}{marks}")
+            print(f"           {visible(f['summary'], 200)}")
             if f["uncertain"]:
-                print(f"           uncertain: {f['uncertain'][:200]}")
+                print(f"           uncertain: {visible(f['uncertain'], 200)}")
     hidden = sum(f["band"] == "info" for f in findings)
     if hidden and not args.info:
         print(f"\n({hidden} informational findings: --info lists them)")
@@ -2109,8 +2165,8 @@ def _print_assessment(assessment: dict, args: argparse.Namespace) -> None:
         print("\nSuppressed by the whitelist:")
         for f in suppressed:
             rule = f["suppressed_by"]
-            print(f"  {f['band'].upper():8} {f['title']}")
-            print(f"           {f['summary'][:200]}")
+            print(f"  {f['band'].upper():8} {visible(f['title'], 200)}")
+            print(f"           {visible(f['summary'], 200)}")
             print(f"           by {rule['layer']} / {rule['rule']}: {rule['reason'][:150]}")
     coverage = assessment["coverage"]
     print("\nCoverage:")

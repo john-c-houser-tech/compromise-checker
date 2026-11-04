@@ -41,8 +41,29 @@ TONE_NAMES = {
     "low": "No strong signs",
     "removed": "No longer checked",
 }
+# A count of one server says it in the singular: "1 Warning sign", "1 Needs a closer look".
+ONE_NAMES = {
+    "critical": "Strong sign",
+    "high": "Sign of a break-in",
+    "unknown": "Needs a closer look",
+    "elevated": "Warning sign",
+}
+
+
+def count_name(tone: str, n: int) -> str:
+    """What a count of n servers with this result is labelled."""
+    return ONE_NAMES.get(tone, TONE_NAMES[tone]) if n == 1 else TONE_NAMES[tone]
+
+
 MAX_CHANGES_SHOWN = 3
 FRESH_CHECK = "Run a fresh check."
+# What the band at the top of the Servers page says above the headline, by its tone.
+BAND_TAGS = {
+    "critical": "Act on this now",
+    "high": "Act on this now",
+    "elevated": "Look into this soon",
+    "unknown": "Find out why",
+}
 ASK_WHY = "Ask whoever runs this server why."
 SETTINGS_CHANGED = "Settings have changed since this result, so it may change at the next check."
 NEW_THREAT = (
@@ -333,11 +354,11 @@ def row(host: FleetHost, now: datetime | None = None) -> Row:
 def headline(rows: list[Row]) -> tuple[str, str]:
     """The answer the page opens with, from the most worrying thing on it, and its tone.
     Servers no longer on the list count only if they're alarming: they aren't "yours"
-    to reassure about."""
+    to reassure about. A headline has no full stop, even as a sentence (John, 2026-11-03)."""
     current = [r for r in rows if r.tone != "removed"]
     total = len(current)
     if not total:
-        return ("No servers being checked." if rows else "No servers yet."), "unknown"
+        return ("No servers being checked" if rows else "No servers yet"), "unknown"
 
     def count(*tones: str) -> int:
         return sum(1 for r in current if r.tone in tones)
@@ -350,15 +371,15 @@ def headline(rows: list[Row]) -> tuple[str, str]:
 
     urgent = count("critical", "high")
     if urgent:
-        return f"{of(urgent)} {verb(urgent, 'needs', 'need')} attention now.", "critical"
+        return f"{of(urgent)} {verb(urgent, 'needs', 'need')} attention now", "critical"
     unknown = count("unknown")
     if unknown:
-        return f"{of(unknown)} {verb(unknown, 'needs', 'need')} a closer look.", "unknown"
+        return f"{of(unknown)} {verb(unknown, 'needs', 'need')} a closer look", "unknown"
     elevated = count("elevated")
     if elevated:
-        return f"{of(elevated)} {verb(elevated, 'has', 'have')} some warning signs.", "elevated"
+        return f"{of(elevated)} {verb(elevated, 'has', 'have')} some warning signs", "elevated"
     where = "your server" if total == 1 else f"your {total} servers"
-    return f"No strong signs of a break-in on {where}.", "low"
+    return f"No strong signs of a break-in on {where}", "low"
 
 
 def rows_for(hosts: list[FleetHost], now: datetime | None = None) -> list[Row]:

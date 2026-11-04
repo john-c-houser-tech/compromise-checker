@@ -626,7 +626,7 @@ def test_the_page_shows_the_same_order_as_the_command(web):
     analysed(home, "a", 10, CLEAN, host="clean")
     analysed(home, "b", 10, ROOTED, host="rooted")
     text = client.get("/").content.decode()
-    assert text.index(">rooted</a></h2>") < text.index(">clean</a></h2>")
+    assert text.index(">rooted</a></h3>") < text.index(">clean</a></h3>")
     assert "not proof" in text
 
 
@@ -716,10 +716,10 @@ def test_filters_narrow_the_list_but_not_the_answer(web, monkeypatch):
     monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (hosts, []))
     text = client.get("/", {"group": "db"}).content.decode()
     assert "needs attention" in text or "need attention" in text
-    assert ">fine</a></h2>" in text and ">bad</a></h2>" not in text
-    assert ">gone</a></h2>" in text  # a removed host's bad result isn't filtered out of sight
+    assert ">fine</a></h3>" in text and ">bad</a></h3>" not in text
+    assert ">gone</a></h3>" in text  # a removed host's bad result isn't filtered out of sight
     text = client.get("/", {"show": "low"}).content.decode()
-    assert ">fine</a></h2>" in text and ">bad</a></h2>" not in text
+    assert ">fine</a></h3>" in text and ">bad</a></h3>" not in text
 
 
 def test_the_page_shows_what_it_worked_out(web, monkeypatch):
@@ -743,7 +743,7 @@ def test_the_page_shows_what_it_worked_out(web, monkeypatch):
     )
     text = client.get("/").content.decode()
     for words in (
-        "Your server needs attention now.",
+        "Your server needs attention now",
         "Signs of a break-in",
         "Look into this today.",
         "A shell was started",
@@ -751,7 +751,7 @@ def test_the_page_shows_what_it_worked_out(web, monkeypatch):
         "Open to a known threat now: p1.",
         "A threat update couldn't be used",
         "67%",
-        'x1="67.0"',
+        'class="meter-fill" x="0" y="0" width="67.0"',
     ):
         assert words in text, words
     assert "pack-file-detail" not in text
@@ -802,7 +802,7 @@ def test_one_hosts_odd_stored_data_never_takes_the_page_down(web, monkeypatch, f
     monkeypatch.setattr(fleet_module, "load_assessment", load)
     response = client.get("/")
     text = response.content.decode()
-    assert response.status_code == 200 and ">rooted</a></h2>" in text and ">odd</a></h2>" in text
+    assert response.status_code == 200 and ">rooted</a></h3>" in text and ">odd</a></h3>" in text
     assert "No strong signs of a break-in on" not in text
 
 
@@ -1757,6 +1757,7 @@ def route_problems(client):
         views.setup_page,
         views.join_page,
         views.two_factor_page,
+        views.theme,  # changes nothing here: only a cookie in the browser that chose it
     }
     problems = []
     for pattern in get_resolver("checker.web.urls").url_patterns:
@@ -2663,6 +2664,8 @@ def test_with_only_a_password_nothing_opens_but_the_second_step(web):
     assert BEFORE_SECOND_STEP == {
         views.font,
         views.stylesheet,
+        views.icon,
+        views.theme,
         views.setup_page,
         views.join_page,
         views.login_page,
@@ -2889,7 +2892,7 @@ def test_turning_it_on_needs_the_password_then_a_right_code(web):
     wrong = client.post("/two-factor/turn-on", {"code": "000000"})
     text = wrong.content.decode()
     assert wrong.status_code == 400 and 'name="code"' in text  # and the secret isn't sent again
-    assert "<svg" not in text and two_factor.secret_text(device) not in text
+    assert '<p class="qr">' not in text and two_factor.secret_text(device) not in text
     assert not two_factor.is_on(user)
     before = client.cookies["checker_session"].value
     response = client.post("/two-factor/turn-on", {"code": fresh(device)})
@@ -2927,17 +2930,17 @@ def test_the_secret_is_shown_only_in_answer_to_the_password(web):
     from checker.web import two_factor
 
     client, _ = signed_in(web)
-    assert "<svg" not in client.get("/two-factor/setup").content.decode()
+    assert '<p class="qr">' not in client.get("/two-factor/setup").content.decode()
     assert TOTPDevice.objects.count() == 0  # a GET changes nothing
     response = start_two_factor(client)
     device = TOTPDevice.objects.get()
     text = response.content.decode()
-    assert "<svg" in text and two_factor.secret_text(device) in text
+    assert '<p class="qr"><svg' in text and two_factor.secret_text(device) in text
     assert "<script" not in text and not re.search(r"<svg[^>]*style=", text)
     assert "unsafe-inline" not in response["Content-Security-Policy"]
     assert "no-store" in response["Cache-Control"]
     later = client.get("/two-factor/setup").content.decode()  # all a stolen session could do
-    assert "<svg" not in later and two_factor.secret_text(device) not in later
+    assert '<p class="qr">' not in later and two_factor.secret_text(device) not in later
 
 
 def test_a_thief_who_started_setup_cant_plant_their_secret(web, settings_override):
@@ -2952,7 +2955,7 @@ def test_a_thief_who_started_setup_cant_plant_their_secret(web, settings_overrid
     theirs = pending_device()
     owner = browser()
     past_the_password(owner)
-    assert "<svg" not in owner.get("/two-factor/setup").content.decode()
+    assert '<p class="qr">' not in owner.get("/two-factor/setup").content.decode()
     start_two_factor(owner)
     mine = pending_device()
     assert mine.key != theirs.key
@@ -3139,6 +3142,9 @@ def test_new_recovery_codes_replace_the_old_and_need_the_code(web):
     response = client.post("/two-factor/new-codes", data)
     text = response.content.decode()
     assert response.status_code == 200 and old[0] not in text
+    # Changing the theme would leave the page, and the codes can't be shown again.
+    assert 'class="theme-switch"' not in text
+    assert 'class="theme-switch"' in client.get("/two-factor/manage").content.decode()
     assert len(re.findall(r"<code>(\w+)</code>", text)) == two_factor.RECOVERY_CODES
     manage = client.get("/two-factor/manage").content.decode()
     assert f"{two_factor.RECOVERY_CODES} recovery codes left" in manage
@@ -3166,7 +3172,7 @@ def test_a_stolen_session_with_no_device_cant_get_a_secret(web):
 
     client, _ = signed_in(web)
     response = client.post("/two-factor/start", {"x": "1"})
-    assert response.status_code == 403 and "<svg" not in response.content.decode()
+    assert response.status_code == 403 and '<p class="qr">' not in response.content.decode()
     assert not two_factor.pending_devices_for(get_account("jo"))
 
 
@@ -3979,6 +3985,8 @@ def test_every_page_but_the_open_ones_asks_who_you_are(web):
     open_ones = {
         views.font,
         views.stylesheet,
+        views.icon,
+        views.theme,
         views.setup_page,
         views.join_page,
         views.login_page,
@@ -7993,6 +8001,9 @@ def invite(client, name="sam", access="view"):
 
 # Every page, by what someone who can only view may do with it. A new page has to be added here.
 VIEW_ONLY_MAY_USE = {
+    "favicon_svg",
+    "favicon_ico",
+    "theme",
     "fleet",
     "host",
     "evidence",
@@ -9299,3 +9310,448 @@ def test_a_failed_taking_away_adds_to_what_went_wrong_and_doesnt_replace_it(
     monkeypatch.setattr(postgres, "drop_ours", gone)
     moving.take_accounts_back()
     assert "empty that database" in capsys.readouterr().err
+
+
+def test_a_theme_is_chosen_without_a_script(web):
+    client, _ = signed_in(web)
+    page = client.get("/").content.decode()
+    assert 'action="/theme"' in page and 'value="dark"' in page and 'value="light"' in page
+    assert "<script" not in page and "data-theme" not in page.split("<head>")[0]
+    response = client.post("/theme", {"theme": "dark", "back": "/threats"})
+    assert response.status_code == 302 and response["Location"] == "/threats"
+    cookie = response.cookies[settings_value("CHECKER_THEME_COOKIE")]
+    assert cookie.value == "dark" and cookie["httponly"] and cookie["samesite"] == "Lax"
+    assert '<html lang="en" data-theme="dark">' in client.get("/").content.decode()
+    client.post("/theme", {"theme": "light", "back": "/"})
+    assert '<html lang="en" data-theme="light">' in client.get("/").content.decode()
+
+
+def test_a_theme_that_isnt_one_goes_back_to_the_browsers(web):
+    client, _ = signed_in(web)
+    client.post("/theme", {"theme": "dark", "back": "/"})
+    response = client.post("/theme", {"theme": '"><script>', "back": "/"})
+    assert response.cookies[settings_value("CHECKER_THEME_COOKIE")].value == ""
+    assert "data-theme" not in client.get("/").content.decode()
+
+
+def test_the_theme_only_ever_returns_to_this_site(web):
+    client, _ = signed_in(web)
+    for back in ("https://evil.example/", "//evil.example/", "/no-such-page", "javascript:x", ""):
+        response = client.post("/theme", {"theme": "dark", "back": back})
+        assert response["Location"] == "/", back
+
+
+def test_the_theme_can_be_chosen_before_signing_in(web):
+    client, _ = web
+    page = client.get("/login").content.decode()
+    assert 'action="/theme"' in page and "Sign out" not in page
+    response = client.post("/theme", {"theme": "dark", "back": "/login"})
+    assert response.status_code == 302 and response["Location"] == "/login"
+    assert '<html lang="en" data-theme="dark">' in client.get("/login").content.decode()
+
+
+def test_nouriloops_coil_is_the_icon(web):
+    client, _ = web
+    svg = client.get("/favicon.svg")
+    assert svg.status_code == 200 and svg["Content-Type"] == "image/svg+xml"
+    assert b"M28 30a4 4 0 0 1 8 0" in svg.content  # the Coil's rope
+    assert client.get("/favicon.ico")["Content-Type"] == "image/x-icon"
+    assert 'href="/favicon.svg"' in client.get("/login").content.decode()
+
+
+def test_the_top_bar_marks_where_you_are(web):
+    client, _ = signed_in(web)
+    page = client.get("/threats").content.decode()
+    nav = page.split('<nav class="bar-nav"')[1].split("</nav>")[0]
+    assert nav.count("aria-current") == 1 and 'href="/threats" aria-current="page"' in nav
+    security = client.get("/two-factor/manage").content.decode()
+    assert 'class="avatar" href="/two-factor/manage"' in security
+    assert (
+        'aria-current="page"><span class="visually-hidden">Sign-in security for jo</span>'
+        in security
+    )
+    # A page within Sign-in security is in it, and isn't the page the links go to.
+    within = client.get("/two-factor/setup").content.decode()
+    assert 'aria-current="page"' not in within.split("</header>")[0]
+    assert within.split("</header>")[0].count('aria-current="true"') == 2  # phone link, avatar
+
+
+def test_a_page_within_a_part_marks_the_part_not_the_page(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    nav = client.get("/hosts/web01").content.decode().split('<nav class="bar-nav"')[1]
+    nav = nav.split("</nav>")[0]
+    assert '<a href="/" aria-current="true">' in nav and 'aria-current="page"' not in nav
+
+
+def test_the_coil_doesnt_take_the_timelines_class(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, CLEAN)
+    page = client.get("/").content.decode()
+    assert '<svg class="coil"' in page and '<svg class="mark"' not in page
+    style = client.get("/style.css").content.decode()
+    assert ".coil {" in style and ".mark { width" not in style
+
+
+def test_view_only_and_half_signed_in_can_still_choose_a_theme(web):
+    from checker.web.models import ActionRecord
+
+    viewer = person("viewer")
+    before = ActionRecord.objects.count()
+    response = viewer.post("/theme", {"theme": "dark", "back": "/threats"})
+    assert response.status_code == 302 and response["Location"] == "/threats"
+    assert ActionRecord.objects.count() == before
+    client, _ = web
+    with_app(account())
+    past_the_password(client)  # the second step still to come
+    response = client.post("/theme", {"theme": "dark", "back": "/two-factor"})
+    assert response.status_code == 302 and response["Location"] == "/two-factor"
+    assert response.cookies[settings_value("CHECKER_THEME_COOKIE")].value == "dark"
+
+
+def settings_value(name):
+    from django.conf import settings
+
+    return getattr(settings, name)
+
+
+def test_the_band_answers_with_counts_and_no_full_stop(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    hosts = [
+        FleetHost("bad", "web", "analysed", "Critical", 0.99),
+        FleetHost("worse", "web", "analysed", "Critical", 0.995),
+        FleetHost("fine", "db", "analysed", "Low", 0.02),
+    ]
+    monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (hosts, []))
+    text = client.get("/?show=low").content.decode()
+    band = text.split('<section class="band"')[1].split("</section>")[0]
+    assert '<p class="tag">Act on this now</p>' in band
+    assert '<h1 id="answer">2 of your 3 servers need attention now</h1>' in band
+    counts = band.split('<ul class="counts"')[1].split("</ul>")[0]
+    # Every server, not just the ones the filter shows; each count is its own filter.
+    assert '<a href="?show=critical"><strong>2</strong>' in counts
+    assert '<a href="?show=low" aria-current="true"><strong>1</strong>' in counts
+    assert '<a href="?show=critical"><strong>2</strong>' in counts  # not the filter in use
+    # A count of one is in the singular, of more in the plural.
+    assert "<strong>2</strong> <span>Strong signs</span>" in counts
+    assert "<strong>1</strong> <span>No strong signs</span>" in counts
+
+
+def test_a_count_of_one_server_is_singular():
+    from checker.web import wording
+
+    assert wording.count_name("elevated", 1) == "Warning sign"
+    assert wording.count_name("elevated", 3) == "Warning signs"
+    assert wording.count_name("unknown", 1) == "Needs a closer look"
+    assert wording.count_name("high", 1) == "Sign of a break-in"
+    assert wording.count_name("critical", 1) == "Strong sign"
+    # These read the same either way.
+    assert wording.count_name("low", 1) == "No strong signs"
+    assert wording.count_name("removed", 1) == "No longer checked"
+
+
+def test_the_band_tag_follows_the_answer(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+
+    def band_for(*hosts):
+        monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (list(hosts), []))
+        text = client.get("/").content.decode()
+        return text.split('<section class="band"')[1].split("</section>")[0]
+
+    assert '<p class="tag">' not in band_for(FleetHost("fine", "web", "analysed", "Low", 0.02))
+    amber = band_for(FleetHost("meh", "web", "analysed", "Elevated", 0.3))
+    assert '<p class="tag">Look into this soon</p>' in amber
+    gone = band_for(FleetHost("gone", None, "analysed", "Low", 0.02, removed=True))
+    assert "No servers being checked" in gone and '<p class="tag">' not in gone
+
+
+def test_the_answer_is_in_the_main_content(web):
+    client, _ = signed_in(web)
+    text = client.get("/").content.decode()
+    assert text.index("<main>") < text.index('<section class="band"') < text.index("</main>")
+
+
+def test_no_servers_yet_points_to_first_setup(web):
+    client, _ = signed_in(web)
+    band = client.get("/").content.decode().split('<section class="band"')[1]
+    assert '<h1 id="answer">No servers yet</h1>' in band
+    assert 'class="button" href="/first-setup"' in band and '<ul class="counts"' not in band
+
+
+def test_view_only_gets_no_buttons_in_the_band(web, monkeypatch):
+    from checker.fleet import FleetHost
+
+    hosts = [FleetHost("bad", "web", "analysed", "Critical", 0.99)]
+    monkeypatch.setattr("checker.web.views.read_fleet", lambda *a, **k: (hosts, []))
+    band = person("viewer").get("/").content.decode().split('<section class="band"')[1]
+    band = band.split("</section>")[0]
+    assert 'class="actions"' not in band and "/checks/new" not in band
+
+
+def test_only_the_headline_band_is_a_band():
+    """Its class styles a whole section, so nothing else may carry it: a finding's severity
+    line is 'severity'."""
+    import re
+    from pathlib import Path
+
+    templates = Path(__file__).parent.parent / "checker" / "web" / "templates"
+    for template in templates.glob("*.j2"):
+        for tag in re.findall(r'<(\w+)[^>]*class="band"', template.read_text(encoding="utf-8")):
+            assert tag == "section", template.name
+
+
+def _host_page(client):
+    return client.get("/hosts/web01").content.decode()
+
+
+def test_the_server_page_says_what_server_text_is_before_showing_any(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    page = _host_page(client)
+    explained = page.index("comes from the server, and an intruder could have written it")
+    assert explained < page.index('<article class="finding')
+
+
+def test_no_server_text_in_the_band_or_a_severity_heading(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    page = _host_page(client)
+    band = page.split('<section class="band"')[1].split("</section>")[0]
+    assert "from-server" not in band
+    for strip in page.split('<p class="severity"')[1:]:
+        assert "from-server" not in strip.split("</p>")[0]
+    assert '<p class="meta"></p>' not in page and " · </p>" not in page
+
+
+def test_each_finding_heading_names_its_severity(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    page = _host_page(client)
+    assert '<h3><span class="visually-hidden">Very serious' in page
+    assert '<p class="severity" aria-hidden="true">' in page
+    # The F- number is hidden with the strip, so the heading says it: the advisor uses it.
+    for text in (page, client.get("/hosts/web01/evidence").content.decode()):
+        assert re.search(r'<h3><span class="visually-hidden">[^<]*, F-1: </span>', text)
+
+
+def test_at_a_glance_counts_the_cards_and_what_is_only_for_information(web, monkeypatch):
+    """Each section's count is its cards, as its heading says; the findings only for information
+    are counted on their own line, so a section with only those isn't a 0."""
+    from checker.fleet import FleetHost
+    from checker.web import wording
+
+    client, _ = signed_in(web)
+    assessment = {
+        "findings": [
+            {"check": "account.uid0", "category": "hygiene", "band": "info"},
+            {"check": "account.uid0", "category": "compromise indicator", "band": "high"},
+        ]
+    }
+    host = FleetHost("web01", state="analysed", band="High", probability=0.6, first=False)
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, assessment, {}, True)
+    )
+    page = _host_page(client)
+    glance = page.split('<dl class="glance">')[1].split("</dl>")[0]
+    sections = wording.host_details(assessment)["sections"]
+    assert any(s["minor"] and not s["findings"] for s in sections)  # one only for information
+    for s in sections:
+        title = html.escape(s["title"])
+        if s["findings"]:
+            assert f"<dt>{title}</dt><dd>1</dd>" in glance
+            assert f"{title} <span>(1)</span></h2>" in page
+        else:  # its heading counts its cards too: none
+            assert title not in glance and f"{title} <span>(0)</span></h2>" in page
+    assert "<dt>For information</dt><dd>1</dd>" in glance
+
+
+def test_the_server_notes_are_never_below_the_findings():
+    """Beside them in two columns or above them in one: the reorder comes with the columns."""
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    wide = css.split("@media (min-width: 52.01rem) {")[1].split("\n}")[0]
+    assert ".host-side { order: 2; }" in wide
+    assert "grid-template-columns: minmax(0, 1fr) 17rem" in wide
+    assert css.count(".host-side { order: 2; }") == 1
+    assert "flex-wrap" not in css.split(".host-layout")[1].split("}")[0]
+
+
+def test_the_evidence_link_once_for_each_kind_of_account(web):
+    client, home = signed_in(web)
+    analysed(home, "b1", 10, ROOTED)
+    full = _host_page(client)
+    assert full.count('href="/hosts/web01/evidence"') == 1
+    viewer = _host_page(person("viewer"))
+    assert viewer.count('href="/hosts/web01/evidence"') == 1
+    assert 'class="actions"' not in viewer and "/checks/analyze" not in viewer
+
+
+BANDED = ["/threats", "/checks", "/activity", "/manage", "/two-factor/manage"]
+
+
+@pytest.mark.parametrize("path", BANDED)
+def test_each_page_has_one_title_in_its_band_and_no_inline_style(web, path):
+    client, _ = signed_in(web)
+    text = client.get(path).content.decode()
+    assert text.count("<h1") == 1 and " style=" not in text
+    band = text.split('<section class="band"')[1].split("</section>")[0]
+    assert "<h1" in band and "from-server" not in band
+    assert text.index("<main>") < text.index('<section class="band"')
+
+
+def test_the_checks_band_has_its_button_for_full_access_only(web):
+    client, _ = signed_in(web)
+    assert 'class="button" href="/checks/new"' in client.get("/checks").content.decode()
+    assert "/checks/new" not in person("viewer").get("/checks").content.decode()
+
+
+def test_manage_offers_each_place_as_a_tile(web):
+    client, _ = signed_in(web)
+    tiles = client.get("/manage").content.decode().split('<ul class="tiles"')[1].split("</ul>")[0]
+    for words in (
+        "First setup",
+        "Add a server",
+        "Threat updates",
+        "Settings",
+        "Check every day",
+        "Delete stored evidence",
+        "People",
+    ):
+        assert words + "</a>" in tiles, words
+
+
+def test_the_sign_in_pages_are_a_card_and_others_carry_no_empty_class(web):
+    client, _ = web
+    assert '<body class="auth">' in client.get("/login").content.decode()
+    missing = client.get("/no-such-page").content.decode()
+    assert '<body class="auth">' in missing and 'class="nudge"' not in missing
+    signed, _ = signed_in(web)
+    assert "<body>" in signed.get("/").content.decode()
+
+
+def _css_rules(css: str):
+    """(media, selectors, properties) for each rule, in order. Enough of CSS for this file."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    rules, i = [], 0
+
+    def add(prelude, body, media):
+        props = {d.split(":", 1)[0].strip() for d in body.split(";") if ":" in d}
+        rules.append((media, {s.strip() for s in prelude.split(",")}, props))
+
+    while (at := css.find("{", i)) != -1:
+        prelude = css[i:at].strip()
+        body, i = _css_block(css, at)
+        if prelude.startswith("@media"):
+            j = 0
+            while (inner := body.find("{", j)) != -1:
+                inner_body, end = _css_block(body, inner)
+                add(body[j:inner].strip(), inner_body, prelude)
+                j = end
+        elif not prelude.startswith("@"):
+            add(prelude, body, None)
+    return rules
+
+
+def _css_block(text, at):
+    """The text between the brace at `at` and its partner, and where the block ends."""
+    depth, j = 0, at
+    while True:
+        depth += {"{": 1, "}": -1}.get(text[j], 0)
+        if depth == 0:
+            return text[at + 1 : j], j + 1
+        j += 1
+
+
+def test_no_narrow_screen_rule_is_undone_by_a_later_one():
+    """A rule for small screens only works if no later rule with the same selector sets the same
+    thing again: equal specificity, so the later one wins at every width."""
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    assert css.count("{") == css.count("}")  # or the rules below aren't the ones a browser sees
+    rules = _css_rules(css)
+    undone = []
+    for n, (media, selectors, props) in enumerate(rules):
+        if not media or "max-width" not in media:
+            continue
+        for later_media, later_selectors, later_props in rules[n + 1 :]:
+            if later_media is None and selectors & later_selectors and props & later_props:
+                undone.append(
+                    (media, sorted(selectors & later_selectors), sorted(props & later_props))
+                )
+    assert not undone
+
+
+def test_every_page_file_is_in_an_installed_copy():
+    """An installed copy has only what package data lists: a file left out is a 500 there."""
+    import tomllib
+    from fnmatch import fnmatch
+
+    root = Path(__file__).resolve().parent.parent
+    listed = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["setuptools"]
+    patterns = listed["package-data"]["checker.web"]
+    web = root / "checker" / "web"
+    for folder in ("static", "templates"):
+        for path in (web / folder).rglob("*"):
+            if path.is_file():
+                name = path.relative_to(web).as_posix()
+                assert any(fnmatch(name, p) for p in patterns), name
+
+
+def test_the_qr_code_scales_to_fit_a_narrow_card(web):
+    client, _ = signed_in(web)
+    text = start_two_factor(client).content.decode()
+    svg = re.search(r'<p class="qr">(<svg[^>]*>)', text).group(1)
+    assert "viewBox=" in svg and "width=" not in svg and "height=" not in svg
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    assert ".qr svg { display: block; width: 100%;" in css
+
+
+def test_the_sign_in_card_stays_centred_on_narrow_screens():
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    narrow = [
+        r for r in _css_rules(css) if r[0] and "max-width" in r[0] and ".auth .main-in" in r[1]
+    ]
+    assert narrow and all("margin" in props for _, _, props in narrow)
+    assert ".auth .main-in { width: calc(100% - 2rem); margin: 1rem auto;" in css
+
+
+def test_at_a_glance_shows_with_only_accepted_findings_and_threats(web, monkeypatch):
+    """Everything accepted still has counts worth showing; a fixed threat isn't called open."""
+    from checker.fleet import FleetHost
+
+    client, _ = signed_in(web)
+    assessment = {
+        "findings": [
+            {
+                "check": "account.uid0",
+                "category": "compromise indicator",
+                "band": "high",
+                "suppressed_by": "r1",
+            }
+        ]
+    }
+    host = FleetHost(
+        "web01",
+        state="analysed",
+        band="Low",
+        probability=0.02,
+        first=False,
+        exposed={"php2shell-2026-10": "fixed"},
+    )
+    monkeypatch.setattr(
+        "checker.web.views.read_host", lambda base, name: (host, assessment, {}, True)
+    )
+    page = _host_page(client)
+    glance = page.split('<dl class="glance">')[1].split("</dl>")[0]
+    assert "<dt>Hidden as accepted</dt><dd>1</dd>" in glance
+    assert "<dt>Known threats</dt><dd>1</dd>" in glance
+    assert "open" not in glance
+
+
+def test_a_long_group_name_wraps_in_the_server_band():
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    meta = css.split(".host-title .meta {")[1].split("}")[0]
+    assert "overflow-wrap: anywhere" in meta
+    assert ".host-title > div { min-width: 0; }" in css

@@ -1,9 +1,16 @@
 {% extends "base.html.j2" %}
+{% import "icons.html.j2" as draw %}
 {% block title %}Checks: {{ product_name() }}{% endblock %}
+{% block band %}
+<section class="band" aria-labelledby="page-title">
+  <div class="band-in page-band">
+    <h1 id="page-title" class="page-title">Checks</h1>
+    {% if full_access(request) %}<p class="actions"><a class="button" href="{{ url('check_new') }}">{{ draw.icon("checks") }}Check your servers now</a></p>{% endif %}
+  </div>
+</section>
+{% endblock %}
 {% block main %}
-<h1 class="page-title">Checks</h1>
-{% if full_access(request) %}<p><a href="{{ url('check_new') }}">Check your servers now</a></p>{% endif %}
-{% if not rows %}<p>No checks have been started from here yet.</p>{% else %}
+{% if not rows %}<div class="empty">{{ draw.buoy() }}<p>No checks have been started from here yet.</p></div>{% else %}
 <div class="record-wrap">
 <table class="record">
   <thead><tr><th>Started</th><th>What</th><th>Servers</th><th>Who</th><th>How it went</th></tr></thead>

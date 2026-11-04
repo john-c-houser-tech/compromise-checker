@@ -48,7 +48,9 @@ include = ["checker*"]
 # The collector is shipped as a data file and streamed to targets as text;
 # the controller never imports it (DESIGN.md §5.1).
 checker = ["collector/collector.py", "templates/*.html.j2", "profiles/*.yaml"]
-"checker.web" = ["templates/*.html.j2", "static/*.css", "static/fonts/*"]
+"checker.web" = [
+  "templates/*.html.j2", "static/*.css", "static/*.svg", "static/*.ico", "static/fonts/*",
+]
 # NouriLoop's key list, signed by the root key (plan 4.8).
 "checker.packs" = ["keys/keys.yaml", "keys/keys.yaml.minisig"]
 
@@ -60,7 +62,7 @@ asyncio_mode = "auto"
 line-length = 100
 target-version = "py312"
 # The collector runs on the targets' own python3: 3.9 on RHEL 9 is the floor.
-per-file-target-version = { "checker/collector/*.py" = "py39", "tests/collector/*.py" = "py39" }
+per-file-target-version = { "checker/collector/*.py" = "py39", "tests/collector/*.py" = "py39", "release/install.py" = "py39" }
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "S"]

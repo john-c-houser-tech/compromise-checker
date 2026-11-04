@@ -1,7 +1,10 @@
 {% extends "base.html.j2" %}
+{% import "icons.html.j2" as draw %}
+{% block body_class %}auth{% endblock %}
 {% import "parts.html.j2" as parts %}
 {% block nudge %}{% endblock %}
 {% block main %}
+{{ draw.coil("coil coil-large") }}
 <h1>Turn on two-factor sign-in</h1>
 {% if required %}<p>This server can be reached from other machines, so each account has to use two-factor sign-in before it can see anything.</p>{% endif %}
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}

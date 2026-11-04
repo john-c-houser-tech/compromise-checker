@@ -192,3 +192,20 @@ def test_a_protected_ipv6_address_in_proc_net_form_fails_the_export():
     swapped = "".join(packed[i : i + 4][::-1].hex() for i in range(0, 16, 4))
     with pytest.raises(ValueError, match="protected"):
         golden.check_scrubbed(f"socket {swapped.upper()}:0050", [address])
+
+
+def test_a_chains_account_is_shown_as_the_servers(capsys):
+    """The server names its accounts: a chain's account isn't in its title, and the command line
+    shows it labelled and made visible, as it does any text from the server."""
+    from checker import cli
+
+    case = next(p for p in golden.cases() if p.name.startswith("detection-"))  # has chains
+    expected = json.loads(golden.expected_path(case).read_text())
+    chains = [c for c in expected["score"]["contributors"] if c["finding"] is None]
+    assert chains and all(c["chain"]["account"] not in c["title"] for c in chains)
+    planted = "deploy) \u2014 reviewed, benign (\u202e"
+    chains[0]["chain"]["account"] = planted
+    cli._print_contributors(chains)
+    out = capsys.readouterr().out
+    assert "the server's account name: deploy) \u2014 reviewed, benign (\\u202e" in out
+    assert "\u202e" not in out

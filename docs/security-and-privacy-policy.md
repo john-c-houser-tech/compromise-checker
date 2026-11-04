@@ -400,6 +400,12 @@ Nothing, unless you choose one of these:
 - the tool's index, if you keep it in a PostgreSQL database on a server outside
   your organization (section 8 says what it can read).
 - the web interface's accounts, sessions, two-factor secrets and activity record, if the index is in a PostgreSQL database on a server outside your organization (section 8 says what that means).
+- your web address, if you give one when installing: Apache asks Let's Encrypt for a certificate for that name
+  and renews it before it runs out. Let's Encrypt checks that the name leads to the machine, and the name then
+  appears in public certificate logs, where anyone can see it. Before that, the installer asks for one page by
+  that name, to check it leads to the machine; if the name points somewhere else, that one request goes there,
+  with nothing in it but a random path. The account it makes there gives `webmaster@`
+  and the name as its contact, so nothing personal is sent, and nothing about your servers or evidence.
 
 The tool has no telemetry, usage reporting or licence check, and it never
 contacts NouriLoop LLC on its own. Threat packs (section 11) are downloaded
@@ -451,6 +457,11 @@ new release of the tool.
   anyone can inspect them.
 - Releases and threat packs are signed.
 - Dependencies are kept few and pinned.
+- **What installing changes on the machine.** The installer makes an account for the tool that nobody can log
+  in to, runs the tool's web interface as a service, and turns sleep off so a daily check isn't missed. With a
+  web address, it also installs Apache from the system's own packages, opens ports 80 and 443 if a firewall is
+  running, adds an hourly reload of Apache, and on Rocky lets Apache act as a proxy under SELinux. It says what
+  it's doing at each step.
 - Text collected from a server is treated as hostile, since a compromised
   server can write anything into its logs. In reports and the web interface it
   is escaped and invisible characters are shown, and pages run no scripts except

@@ -239,14 +239,26 @@ The First setup page then goes through what's next, working out where you are fr
 back up the evidence key, choose what's collected, make this machine's key, add a server, run the
 commands it gives you on that server, confirm its identity, and run a first check.
 
-- **The evidence key isn't offered as a download.** The page says where the file is. A copy in a browser's
-  downloads folder is a worse place for it than where it already is.
+- **The evidence key** has a page of its own, under Manage. A person with full access confirms with their
+  password, and a code if two-factor sign-in is on, and the key appears as one line to paste into a password
+  manager. Each showing goes in the activity record, naming the key by its public half, and the key can be
+  shown again the same way. It isn't offered as a download: a copy in a browser's downloads folder is a worse
+  place for it than where it already is. The page also says where the file is, for anyone who would rather
+  copy that, and what losing this machine means: the tool doesn't back up the evidence itself, so each
+  server's history goes with the machine, and the tool starts again from what each server looks like the day
+  it's next checked. A hosting provider's machine backups hold the key and the evidence together, so they
+  need protecting like the evidence.
 - **This machine's key** is made only when you ask, in `keys/scanner_ed25519`, readable only by the tool's
   account. It has no passphrase, so daily checks can use it, which makes that file a credential for
   acting as an administrator on every server that accepts it. It's never replaced by the page.
 - **The commands** are for a new, plainly named account logging in with a key file, using one sudo rule, and
   stop without changing anything if that account already exists. For anything else, the page says so and
   points to [setting up a scanner account](scanner-account.md).
+  They can limit the key to this machine's address. On a machine the installer set up for use from itself
+  alone, usually a PC, the page warns that such an address can change, and that every server limited to it
+  then refuses the key until an administrator there changes the address in the key's line in the account's
+  `authorized_keys` file, or takes the account away and sets it up again; the setup commands alone stop
+  when the account already exists.
 
 `tests/integration/first_setup_proof.py` runs the whole path against a real sshd in a container.
 

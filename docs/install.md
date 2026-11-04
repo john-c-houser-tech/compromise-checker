@@ -161,6 +161,29 @@ Check with `sudo sshd -t`, then `sudo systemctl try-reload-or-restart ssh` on Ub
 Keep the session you made the change from open, and check that a new key login still works before closing it.
 The notice goes within the hour.
 
+## Backing up the evidence key
+
+Everything the tool stores is encrypted to one key, made on this machine the first time the tool starts.
+Without it, nothing stored can be read, by anyone. Once the first account exists, First setup points to the
+key's page, under Manage: a person with full access confirms with their password, and a code if two-factor
+sign-in is on, and the key appears as one line to paste into a password manager. Each showing goes in the
+activity record. It's never offered as a download. The file is at
+`/var/lib/compromise-checker/data/keys/evidence-identity.txt`, readable only by the tool's account, for
+anyone who would rather copy that.
+
+The tool doesn't back up the evidence itself. If this machine is lost, or its disk fails, each server's history
+goes with it, and the tool starts again from what each server looks like the day it's next checked. A backed-up
+key lets you read a copy of the evidence you kept yourself; it doesn't bring the evidence back. If the machine
+is at a hosting provider, the provider's machine backups are the simplest protection, if your organization
+accepts that the provider then holds a copy. Such a backup holds the key and the evidence together, so whoever
+can restore it can read everything: protect it like the evidence.
+
+On a machine used only from itself, usually a PC on a home or office connection, the page that gives the
+commands for setting up a server warns against limiting this machine's key to its address: that kind of
+address can change, and when it does, every server limited to it refuses the key until an administrator there
+changes the address in the key's line in the account's `authorized_keys` file, or takes the account away and
+sets it up again. The setup commands alone won't do it: they stop when the account already exists.
+
 ## The setup link
 
     sudo /usr/local/sbin/compromise-checker-link
@@ -170,5 +193,5 @@ replaces the link, so use this command if yours stops working. Once there's an a
 
 ## What it doesn't do yet
 
-- It doesn't back up the evidence. If the machine is lost, so is each server's history, and the tool starts again
-  from what each server looks like that day.
+- It doesn't back up the evidence. [Backing up the evidence key](#backing-up-the-evidence-key) says what a lost
+  machine means.

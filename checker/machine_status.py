@@ -21,6 +21,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 STATUS = Path("/var/lib/compromise-checker-status/machine.json")
+# What the installer leaves behind (release/install.py): that it finished, and whether it set up a
+# web address. Without the second, the tool is on a machine people use from itself, often a PC.
+INSTALLED = Path("/opt/compromise-checker/installed")
+WEB_ADDRESS = Path("/opt/compromise-checker/web-address.json")
 REBOOT_REQUIRED = Path("/run/reboot-required")  # Ubuntu's note that an update needs a restart
 FACTS = ("ssh_passwords", "restart_needed")
 STALE = timedelta(hours=3)  # the service runs hourly: older than this, it has stopped
@@ -136,6 +140,23 @@ def read(path: Path | None = None, now: datetime | None = None) -> dict:
     if checked is None or checked.tzinfo is None or (now or datetime.now(UTC)) - checked > STALE:
         facts["stale"] = True
     return facts
+
+
+def install_route(installed: Path | None = None, web_address: Path | None = None) -> str | None:
+    """How the installer set this machine up: "web" with a web address, "local" for use from this
+    machine only, or None when the installer didn't set it up (or hasn't finished)."""
+    try:
+        if not (installed or INSTALLED).is_file():
+            return None
+        marker = json.loads((web_address or WEB_ADDRESS).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "local"
+    except (OSError, ValueError):
+        return None
+    # The installer leaves the marker behind, without a name, when a web address was taken down
+    # and something couldn't be undone: that machine has no web address.
+    named = isinstance(marker, dict) and isinstance(marker.get("name"), str) and marker["name"]
+    return "web" if named else "local"
 
 
 def notices(path: Path | None = None) -> list[str]:

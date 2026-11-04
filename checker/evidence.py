@@ -605,7 +605,10 @@ def load_identity(path: Path) -> x25519.Identity:
         raise EvidenceError(f"cannot read the evidence key {path}: {exc}") from exc
     for line in lines:
         if line.startswith("AGE-SECRET-KEY-"):
-            return x25519.Identity.from_str(line.strip())
+            try:
+                return x25519.Identity.from_str(line.strip())
+            except pyrage.IdentityError as exc:
+                raise EvidenceError(f"the evidence key can't be read: {path} isn't a key") from exc
     raise EvidenceError(f"no age private key in {path}")
 
 

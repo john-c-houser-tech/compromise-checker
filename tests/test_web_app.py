@@ -3142,6 +3142,9 @@ def test_new_recovery_codes_replace_the_old_and_need_the_code(web):
     response = client.post("/two-factor/new-codes", data)
     text = response.content.decode()
     assert response.status_code == 200 and old[0] not in text
+    # Changing the theme would leave the page, and the codes can't be shown again.
+    assert 'class="theme-switch"' not in text
+    assert 'class="theme-switch"' in client.get("/two-factor/manage").content.decode()
     assert len(re.findall(r"<code>(\w+)</code>", text)) == two_factor.RECOVERY_CODES
     manage = client.get("/two-factor/manage").content.decode()
     assert f"{two_factor.RECOVERY_CODES} recovery codes left" in manage
@@ -9367,6 +9370,10 @@ def test_the_top_bar_marks_where_you_are(web):
         'aria-current="page"><span class="visually-hidden">Sign-in security for jo</span>'
         in security
     )
+    # A page within Sign-in security is in it, and isn't the page the links go to.
+    within = client.get("/two-factor/setup").content.decode()
+    assert 'aria-current="page"' not in within.split("</header>")[0]
+    assert within.split("</header>")[0].count('aria-current="true"') == 2  # phone link, avatar
 
 
 def test_a_page_within_a_part_marks_the_part_not_the_page(web):

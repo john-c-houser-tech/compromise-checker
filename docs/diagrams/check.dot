@@ -1,0 +1,22 @@
+digraph G {
+  rankdir=TB; bgcolor=transparent; pad=0.1; nodesep=0.45; ranksep=0.55;
+  fontname="Helvetica,Arial,sans-serif"; fontsize=14; fontcolor="{text}";
+  node [shape=box, style="rounded,filled", fillcolor="{fill}", color="{stroke}", fontcolor="{text}",
+        fontname="Helvetica,Arial,sans-serif", fontsize=14, margin="0.18,0.12"];
+  edge [color="{edge}", fontcolor="{text}", fontname="Helvetica,Arial,sans-serif", fontsize=12,
+        arrowsize=0.8, penwidth=1.2];
+
+  newrank=true;
+  subgraph cluster_you { label="Your machine"; style="rounded,filled"; fillcolor="{cfill}"; color="{cstroke}"; margin=16;
+    T [label="Compromise Checker"];
+    E [label="Evidence,\nencrypted", shape=cylinder, style=filled];
+    R [label="Report"];
+  }
+  subgraph cluster_srv { label="Your server\n(nothing is written here)"; style="rounded,filled"; fillcolor="{cfill}"; color="{cstroke}"; margin=16;
+    C [label="Collector\nruns in memory, reads logs,\naccounts, programs, network"];
+  }
+  { rank=same; T; C; }
+  T -> C [label="1. logs in over SSH\nand sends the collector"];
+  C -> E [label="2. evidence comes back,\nsecrets masked"];
+  E -> R [label="3. compared, checked,\nscored"];
+}

@@ -30,20 +30,10 @@ signed release is being prepared.
 
 ## How a check works
 
-```mermaid
-flowchart LR
-    subgraph you["Your machine"]
-        T["Compromise Checker"]
-        E[("Evidence,<br>encrypted")]
-        R["Report"]
-    end
-    subgraph srv["Your server (nothing is written here)"]
-        C["Collector<br>runs in memory, reads logs,<br>accounts, programs, network"]
-    end
-    T -- "1. logs in over SSH<br>and sends the collector" --> C
-    C -- "2. evidence comes back,<br>secrets masked" --> E
-    E -- "3. compared, checked,<br>scored" --> R
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/check-dark.svg">
+  <img alt="Your machine runs Compromise Checker, which logs in to your server over SSH and sends the collector; the collector runs in memory and reads logs, accounts, programs and the network, and nothing is written on the server; the evidence comes back with secrets masked, is stored encrypted on your machine, and is compared, checked and scored into a report" src="docs/diagrams/check-light.svg">
+</picture>
 
 1. **Log in.** The tool connects over SSH, with a key, your SSH agent or a
    password, and checks the server's identity against the key you approved.
@@ -62,16 +52,10 @@ flowchart LR
 
 ## From evidence to an answer
 
-```mermaid
-flowchart TD
-    A["Evidence from one check"] --> B["Compared with the server's baseline:<br>what changed?"]
-    B --> C["Checks run: findings"]
-    C --> D{"Routine on this server?<br>(a rule says so, with an owner and a reason)"}
-    D -- yes --> E["Kept in the report's appendix;<br>counts for nothing"]
-    D -- no --> F["Findings that tell one attack's story<br>are linked into a chain"]
-    F --> G["Score: the chance of a break-in<br>Low · Elevated · High · Critical"]
-    G --> H["Report in plain words,<br>with the evidence behind each finding<br>and what the check couldn't see"]
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/answer-dark.svg">
+  <img alt="Evidence from one check is compared with the server's baseline, the checks run and produce findings, a finding that a rule says is routine on this server goes to the report's appendix and counts for nothing, the rest are linked into chains where they tell one attack's story, scored as a chance of a break-in (Low, Elevated, High or Critical) and written up in a report in plain words with the evidence behind each finding and what the check couldn't see" src="docs/diagrams/answer-light.svg">
+</picture>
 
 | The server scores | Which means |
 | --- | --- |
@@ -117,15 +101,10 @@ contain, clean up and recover.
 seen the likely cost, and it asks first when that cost is above a limit you
 set.
 
-```mermaid
-flowchart LR
-    A["A server's analysis"] --> B["Names replaced with placeholders<br>(USER-2-7f3a), fresh each run"]
-    B --> C{"Cost shown; it asks first<br>above your limit"}
-    C --> D["AI model: Anthropic's,<br>or one on your own machine"]
-    D --> E["Answer checked against<br>the real findings"]
-    E --> F["Placeholders turned<br>back into names"]
-    F --> G["Stored encrypted;<br>shown in the report,<br>labelled as advice"]
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/advisor-dark.svg">
+  <img alt="A server's analysis has its names replaced with placeholders, fresh each run; the cost is shown and the tool asks first above your limit; the request goes to an AI model, Anthropic's or one on your own machine; the answer is checked against the real findings, its placeholders turned back into names, and it is stored encrypted and shown in the report labelled as advice" src="docs/diagrams/advisor-light.svg">
+</picture>
 
 By default, account names, host names, email and IP addresses and SSH key
 fingerprints are replaced with placeholders before anything is sent. That
@@ -224,6 +203,10 @@ The collector (`checker/collector/collector.py`) must stay Python 3.9
 compatible and standard-library only, because it runs on the servers' own
 Python; CI runs its tests with the system `python3` of each supported
 distribution.
+
+The README's diagrams are Graphviz sources in `docs/diagrams/*.dot`;
+`python scripts/build_diagrams.py` draws them as SVG files, in light and dark.
+Edit the sources, not the SVG files.
 
 Golden reports (`tests/golden/`) pin the findings and score of real analyses
 of throwaway servers. After a deliberate change to checks or scoring,

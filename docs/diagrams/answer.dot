@@ -1,0 +1,21 @@
+digraph G {
+  rankdir=TB; bgcolor=transparent; pad=0.1; nodesep=0.45; ranksep=0.55;
+  fontname="Helvetica,Arial,sans-serif"; fontsize=14; fontcolor="{text}";
+  node [shape=box, style="rounded,filled", fillcolor="{fill}", color="{stroke}", fontcolor="{text}",
+        fontname="Helvetica,Arial,sans-serif", fontsize=14, margin="0.18,0.12"];
+  edge [color="{edge}", fontcolor="{text}", fontname="Helvetica,Arial,sans-serif", fontsize=12,
+        arrowsize=0.8, penwidth=1.2];
+
+  A [label="Evidence from one check"];
+  B [label="Compared with the server's baseline:\nwhat changed?"];
+  C [label="Checks run: findings"];
+  D [label="Routine on this server?\n(a rule says so)", shape=diamond, style=filled, fillcolor="{dfill}", color="{dstroke}"];
+  E [label="Kept in the report's appendix;\ncounts for nothing"];
+  F [label="Findings that tell one attack's story\nare linked into a chain"];
+  G [label="Score: the chance of a break-in\nLow · Elevated · High · Critical"];
+  H [label="Report in plain words,\nwith the evidence behind each finding\nand what the check couldn't see"];
+  A -> B -> C -> D;
+  D -> E [label=" yes"];
+  D -> F [label=" no"];
+  F -> G -> H;
+}

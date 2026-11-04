@@ -1,0 +1,62 @@
+<svg width="576pt" height="399pt"
+ viewBox="0.00 0.00 576.00 399.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(7.2 391.49)">
+<title>G</title>
+<g id="clust1" class="cluster">
+<title>cluster_you</title>
+<path fill="#f6f8fa" stroke="#d0d7de" d="M20,-8C20,-8 186,-8 186,-8 192,-8 198,-14 198,-20 198,-20 198,-336.15 198,-336.15 198,-342.15 192,-348.15 186,-348.15 186,-348.15 20,-348.15 20,-348.15 14,-348.15 8,-342.15 8,-336.15 8,-336.15 8,-20 8,-20 8,-14 14,-8 20,-8"/>
+<text xml:space="preserve" text-anchor="middle" x="103" y="-330.85" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#1f2328">Your machine</text>
+</g>
+<g id="clust2" class="cluster">
+<title>cluster_srv</title>
+<path fill="#f6f8fa" stroke="#d0d7de" d="M332,-244.01C332,-244.01 542,-244.01 542,-244.01 548,-244.01 554,-250.01 554,-256.01 554,-256.01 554,-364.29 554,-364.29 554,-370.29 548,-376.29 542,-376.29 542,-376.29 332,-376.29 332,-376.29 326,-376.29 320,-370.29 320,-364.29 320,-364.29 320,-256.01 320,-256.01 320,-250.01 326,-244.01 332,-244.01"/>
+<text xml:space="preserve" text-anchor="middle" x="437" y="-358.99" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#1f2328">Your server</text>
+<text xml:space="preserve" text-anchor="middle" x="437" y="-343.99" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#1f2328">(nothing is written here)</text>
+</g>
+<g id="node1" class="node">
+<title>T</title>
+<path fill="#ddf4ff" stroke="#54aeff" d="M169.96,-309.15C169.96,-309.15 36.04,-309.15 36.04,-309.15 30.04,-309.15 24.04,-303.15 24.04,-297.15 24.04,-297.15 24.04,-285.15 24.04,-285.15 24.04,-279.15 30.04,-273.15 36.04,-273.15 36.04,-273.15 169.96,-273.15 169.96,-273.15 175.96,-273.15 181.96,-279.15 181.96,-285.15 181.96,-285.15 181.96,-297.15 181.96,-297.15 181.96,-303.15 175.96,-309.15 169.96,-309.15"/>
+<text xml:space="preserve" text-anchor="middle" x="103" y="-285.35" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#1f2328">Compromise Checker</text>
+</g>
+<g id="node4" class="node">
+<title>C</title>
+<path fill="#ddf4ff" stroke="#54aeff" d="M525.71,-322.29C525.71,-322.29 348.29,-322.29 348.29,-322.29 342.29,-322.29 336.29,-316.29 336.29,-310.29 336.29,-310.29 336.29,-272.01 336.29,-272.01 336.29,-266.01 342.29,-260.01 348.29,-260.01 348.29,-260.01 525.71,-260.01 525.71,-260.01 531.71,-260.01 537.71,-266.01 537.71,-272.01 537.71,-272.01 537.71,-310.29 537.71,-310.29 537.71,-316.29 531.71,-322.29 525.71,-322.29"/>
+<text xml:space="preserve" text-anchor="middle" x="437" y="-300.35" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#1f2328">Collector</text>
+<text xml:space="preserve" text-anchor="middle" x="437" y="-285.35" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#1f2328">runs in memory, reads logs,</text>
+<text xml:space="preserve" text-anchor="middle" x="437" y="-270.35" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#1f2328">accounts, programs, network</text>
+</g>
+<g id="edge1" class="edge">
+<title>T&#45;&gt;C</title>
+<path fill="none" stroke="#57606a" stroke-width="1.2" d="M182.15,-291.15C225.2,-291.15 279.12,-291.15 326.27,-291.15"/>
+<polygon fill="#57606a" stroke="#57606a" stroke-width="1.2" points="326.1,-293.95 334.1,-291.15 326.1,-288.35 326.1,-293.95"/>
+<text xml:space="preserve" text-anchor="middle" x="259.12" y="-308.25" font-family="Helvetica,Arial,sans-serif" font-size="12.00" fill="#1f2328">1. logs in over SSH</text>
+<text xml:space="preserve" text-anchor="middle" x="259.12" y="-295.5" font-family="Helvetica,Arial,sans-serif" font-size="12.00" fill="#1f2328">and sends the collector</text>
+</g>
+<g id="node2" class="node">
+<title>E</title>
+<path fill="#ddf4ff" stroke="#54aeff" d="M145.96,-184.6C145.96,-187.86 126.7,-190.51 103,-190.51 79.3,-190.51 60.04,-187.86 60.04,-184.6 60.04,-184.6 60.04,-131.41 60.04,-131.41 60.04,-128.15 79.3,-125.5 103,-125.5 126.7,-125.5 145.96,-128.15 145.96,-131.41 145.96,-131.41 145.96,-184.6 145.96,-184.6"/>
+<path fill="none" stroke="#54aeff" d="M145.96,-184.6C145.96,-181.34 126.7,-178.69 103,-178.69 79.3,-178.69 60.04,-181.34 60.04,-184.6"/>
+<text xml:space="preserve" text-anchor="middle" x="103" y="-159.7" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#1f2328">Evidence,</text>
+<text xml:space="preserve" text-anchor="middle" x="103" y="-144.7" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#1f2328">encrypted</text>
+</g>
+<g id="node3" class="node">
+<title>R</title>
+<path fill="#ddf4ff" stroke="#54aeff" d="M83.59,-60C83.59,-60 40.41,-60 40.41,-60 34.41,-60 28.41,-54 28.41,-48 28.41,-48 28.41,-36 28.41,-36 28.41,-30 34.41,-24 40.41,-24 40.41,-24 83.59,-24 83.59,-24 89.59,-24 95.59,-30 95.59,-36 95.59,-36 95.59,-48 95.59,-48 95.59,-54 89.59,-60 83.59,-60"/>
+<text xml:space="preserve" text-anchor="middle" x="62" y="-36.2" font-family="Helvetica,Arial,sans-serif" font-size="14.00" fill="#1f2328">Report</text>
+</g>
+<g id="edge3" class="edge">
+<title>E&#45;&gt;R</title>
+<path fill="none" stroke="#57606a" stroke-width="1.2" d="M91.58,-125.25C85.28,-107.73 77.55,-86.24 71.57,-69.61"/>
+<polygon fill="#57606a" stroke="#57606a" stroke-width="1.2" points="74.23,-68.74 68.89,-62.16 68.96,-70.64 74.23,-68.74"/>
+<text xml:space="preserve" text-anchor="middle" x="143.73" y="-94.1" font-family="Helvetica,Arial,sans-serif" font-size="12.00" fill="#1f2328">3. compared, checked,</text>
+<text xml:space="preserve" text-anchor="middle" x="143.73" y="-81.35" font-family="Helvetica,Arial,sans-serif" font-size="12.00" fill="#1f2328">scored</text>
+</g>
+<g id="edge2" class="edge">
+<title>C&#45;&gt;E</title>
+<path fill="none" stroke="#57606a" stroke-width="1.2" d="M359.11,-259.57C296.3,-234.9 209.7,-200.9 155.03,-179.44"/>
+<polygon fill="#57606a" stroke="#57606a" stroke-width="1.2" points="156.37,-176.95 147.9,-176.64 154.32,-182.17 156.37,-176.95"/>
+<text xml:space="preserve" text-anchor="middle" x="355.62" y="-224.61" font-family="Helvetica,Arial,sans-serif" font-size="12.00" fill="#1f2328">2. evidence comes back,</text>
+<text xml:space="preserve" text-anchor="middle" x="355.62" y="-211.86" font-family="Helvetica,Arial,sans-serif" font-size="12.00" fill="#1f2328">secrets masked</text>
+</g>
+</g>
+</svg>

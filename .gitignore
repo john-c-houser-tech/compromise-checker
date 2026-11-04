@@ -12,3 +12,6 @@ dist/
 
 # Signing keys never belong in this public repository, even encrypted
 *.key
+
+# Previews from scripts/build_diagrams.py --preview
+docs/diagrams/*.png

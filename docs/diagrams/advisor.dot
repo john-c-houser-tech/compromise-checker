@@ -1,0 +1,17 @@
+digraph G {
+  rankdir=TB; bgcolor=transparent; pad=0.1; nodesep=0.45; ranksep=0.55;
+  fontname="Helvetica,Arial,sans-serif"; fontsize=14; fontcolor="{text}";
+  node [shape=box, style="rounded,filled", fillcolor="{fill}", color="{stroke}", fontcolor="{text}",
+        fontname="Helvetica,Arial,sans-serif", fontsize=14, margin="0.18,0.12"];
+  edge [color="{edge}", fontcolor="{text}", fontname="Helvetica,Arial,sans-serif", fontsize=12,
+        arrowsize=0.8, penwidth=1.2];
+
+  A [label="A server's analysis"];
+  B [label="Names replaced with placeholders\n(USER-2-7f3a), fresh each run"];
+  C [label="Cost shown; it asks first\nabove your limit", shape=diamond, style=filled, fillcolor="{dfill}", color="{dstroke}"];
+  D [label="AI model: Anthropic's,\nor one on your own machine"];
+  E [label="Answer checked against\nthe real findings"];
+  F [label="Placeholders turned\nback into names"];
+  G [label="Stored encrypted;\nshown in the report,\nlabelled as advice"];
+  A -> B -> C -> D -> E -> F -> G;
+}

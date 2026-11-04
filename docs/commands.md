@@ -1,13 +1,13 @@
 # Commands
 
-Every `checker` command, with what it does and its options. The [README](../README.md) gives
-the picture; this page gives the detail. `checker COMMAND --help` prints the same options at
-the terminal.
+The main `checker` commands, with what they do and their options. The [README](../README.md)
+gives the picture; this page gives the detail. `checker --help` lists every command, and
+`checker COMMAND --help` every option, including some not described here.
 
 ## `checker init`
 
 Sets up the evidence key, database and configuration; `--home-text privileged|all` opts in to
-collecting the masked text of start-up files and user units in home directories (policy §7);
+collecting the masked text of start-up files and user units in home directories ([policy §7](security-and-privacy-policy.md#7-what-is-collected));
 `--web-access-logs` opts in to web servers' access logs, masked; `--exec-records` chooses whose
 program starts are read from the audit log (the web server's accounts by default). It also asks
 whether to turn on the optional AI advisor (`--advisor on|off` for unattended setups, which leave
@@ -72,9 +72,9 @@ pasted into a `command:` source is refused.
 
 Signed threat packs ([packs](packs.md)); nothing is downloaded unless you pull.
 
-## `checker hosts add|list|remove|packs`
+## `checker hosts add|list|remove|packs` and `checker trust`
 
-And `checker trust` — the inventory (`--web-root DIR`, repeatable, sets a host's own web roots;
+The inventory (`--web-root DIR`, repeatable, sets a host's own web roots;
 `hosts packs HOST [RULE]` shows or sets which threat packs apply to it), and verified SSH host
 keys (no way to switch verification off).
 
@@ -123,9 +123,9 @@ coverage, and the collection's hashes and chain of custody, encrypted to the evi
 (`--plain` for plain HTML to hand on); `checker report --open [FILE]` shows one in the browser,
 served from memory on this machine, never written in plain ([report](report.md)).
 
-## `checker whitelist check [HOST]`
+## `checker whitelist check|test|stale`
 
-, `test HOST --file F`, `stale` — validate the whitelist files (global, per group, per host)
+`check [HOST]`, `test HOST --file F` and `stale` validate the whitelist files (global, per group, per host)
 and show a host's merged rules; show what a proposed file would hide or reveal on stored analyses
 before it is saved; list rules that matched nothing lately or are expiring. Maintenance windows
 make planned reboots informational. Shipped profiles (`base`, `web`, `database`, `mail`, `build`)

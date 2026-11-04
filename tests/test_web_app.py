@@ -9683,3 +9683,21 @@ def test_every_page_file_is_in_an_installed_copy():
             if path.is_file():
                 name = path.relative_to(web).as_posix()
                 assert any(fnmatch(name, p) for p in patterns), name
+
+
+def test_the_qr_code_scales_to_fit_a_narrow_card(web):
+    client, _ = signed_in(web)
+    text = start_two_factor(client).content.decode()
+    svg = re.search(r'<p class="qr">(<svg[^>]*>)', text).group(1)
+    assert "viewBox=" in svg and "width=" not in svg and "height=" not in svg
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    assert ".qr svg { display: block; width: 100%;" in css
+
+
+def test_the_sign_in_card_stays_centred_on_narrow_screens():
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    narrow = [
+        r for r in _css_rules(css) if r[0] and "max-width" in r[0] and ".auth .main-in" in r[1]
+    ]
+    assert narrow and all("margin" in props for _, _, props in narrow)
+    assert ".auth .main-in { width: calc(100% - 2rem); margin: 1rem auto;" in css

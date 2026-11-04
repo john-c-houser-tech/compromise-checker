@@ -528,7 +528,7 @@ code { font-size: 0.9em; overflow-wrap: anywhere; }
 
 .nudge { padding: 0.75rem 1rem; border-radius: 12px; max-width: 75ch; background: color-mix(in srgb, var(--critical) var(--wash), var(--sheet)); border: 1px solid color-mix(in srgb, var(--critical) 35%, transparent); }
 .nudge a { font-weight: 700; }
-.qr svg { display: block; }
+.qr svg { display: block; width: 100%; max-width: 18rem; height: auto; }
 .recovery-codes { columns: 2; max-width: 28rem; }
 
 /* Signing in, setting up, joining, two-factor and the problem page: one card in the middle. */
@@ -547,7 +547,7 @@ code { font-size: 0.9em; overflow-wrap: anywhere; }
 .coil-large { width: 52px; height: 52px; }
 .problem-icon { width: 44px; height: 44px; color: var(--quiet); }
 @media (max-width: 52rem) {
-  .auth .main-in { margin: 1rem; padding: 1.5rem; }
+  .auth .main-in { width: calc(100% - 2rem); margin: 1rem auto; padding: 1.5rem; }
 }
 
 /* A page's own band: its title and what it's for. */

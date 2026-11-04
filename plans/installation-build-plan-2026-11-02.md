@@ -76,6 +76,14 @@ running on a machine of their own and reach its first-setup page in a browser.
     If SSH isn't already running on a local PC, the script doesn't turn it on and these questions don't apply.
   - **Notices on the web page:** while SSH still accepts passwords, and when a kernel update needs a
     restart. The machine never restarts by itself.
+  - **Where the login-failure blocking comes from (John, 2026-11-03):** SSH's own where the system has
+    it, firewall rules where it doesn't. OpenSSH 9.8 and later has `PerSourcePenalties`, which holds off an
+    address that keeps failing to log in: Ubuntu 26.04 and Rocky 10 have it. Ubuntu 24.04 (OpenSSH 9.6) and
+    Rocky 9 (8.7) get a limit on new SSH connections from each address instead, through `ufw limit` and a
+    small table of nftables rules. (2026-11-03 real-machine proof: Rocky 9's OpenSSH has had
+    PerSourcePenalties added, so only Ubuntu 24.04 needs the firewall's limit; the nftables table stays for
+    firewalls the installer didn't set up.) fail2ban isn't used: it's only in Ubuntu's universe section and Rocky's
+    EPEL, outside the base packages the Apache choice kept to.
 - **I8. Backing up the evidence key. DECIDED (John, 2026-11-02):** a person with full access confirms with
   their password and code, and the one line of the key appears with a button to copy it, for pasting into a
   password manager. The action goes in the activity record, and it can be shown again the same way. First
@@ -167,6 +175,6 @@ running on a machine of their own and reach its first-setup page in a browser.
 
 - A newer release being withheld from a machine can't be detected from a signature alone. The signed
   `published` date lets the page show how old the newest release it can see is. Settled in I.6.
-- Where Caddy and the login-failure blocker come from on each distribution, and how far each source can be
-  pinned the way the tool's own dependencies are. Settled in I.3 and I.4.
+- ~~Where Caddy and the login-failure blocker come from.~~ Settled: Apache in I.3, and SSH's own blocking
+  or firewall limits in I.4, all from base packages.
 - The smallest machine that works, measured during I.8 so the install page can state it.

@@ -9312,6 +9312,49 @@ def test_a_failed_taking_away_adds_to_what_went_wrong_and_doesnt_replace_it(
     assert "empty that database" in capsys.readouterr().err
 
 
+def _machine(monkeypatch, tmp_path, **facts):
+    from datetime import UTC, datetime
+
+    from checker import machine_status
+
+    path = tmp_path / "machine.json"
+    facts.setdefault("checked", datetime.now(UTC).isoformat())
+    path.write_text(json.dumps(facts))
+    monkeypatch.setattr(machine_status, "STATUS", path)
+
+
+def test_the_machine_notices_are_shown_to_full_access(web, monkeypatch, tmp_path):
+    client, _ = signed_in(web)
+    assert "log in over SSH with a password" not in client.get("/").content.decode()
+    _machine(monkeypatch, tmp_path, ssh_passwords=True, restart_needed=True)
+    text = client.get("/").content.decode()
+    assert "log in over SSH with a password" in text
+    assert "waiting for a restart" in text
+    _machine(monkeypatch, tmp_path, ssh_passwords=False, restart_needed=False)
+    text = client.get("/").content.decode()
+    assert "log in over SSH with a password" not in text and "waiting for a restart" not in text
+
+
+def test_old_notes_about_the_machine_say_so(web, monkeypatch, tmp_path):
+    client, _ = signed_in(web)
+    _machine(monkeypatch, tmp_path, ssh_passwords=False, checked="2026-01-01T00:00:00+00:00")
+    assert "hasn't been brought up to date" in client.get("/").content.decode()
+
+
+def test_the_machine_notices_are_not_for_view_only(web, monkeypatch, tmp_path):
+    _machine(monkeypatch, tmp_path, ssh_passwords=True, restart_needed=True)
+    text = person("viewer").get("/").content.decode()
+    assert "log in over SSH with a password" not in text and "waiting for a restart" not in text
+
+
+def test_the_machine_notices_wait_for_full_sign_in(web, monkeypatch, tmp_path):
+    from checker.web import templating
+
+    _machine(monkeypatch, tmp_path, ssh_passwords=True)
+    monkeypatch.setattr(templating, "fully_signed_in", lambda request: False)
+    assert templating.machine_notices(request_for(account())) == []
+
+
 def test_a_theme_is_chosen_without_a_script(web):
     client, _ = signed_in(web)
     page = client.get("/").content.decode()

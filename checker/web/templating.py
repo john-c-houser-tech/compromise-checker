@@ -72,6 +72,16 @@ def two_factor_nudge(request) -> str | None:
         return None
 
 
+def machine_notices(request) -> list[str]:
+    """What the page should say about this machine, from what its root service wrote down: for
+    people with full access, who look after it, and only once they're fully signed in."""
+    from checker import machine_status
+
+    if not fully_signed_in(request) or not full_access(request):
+        return []
+    return machine_status.notices()
+
+
 def theme(request) -> str:
     """ "light" or "dark" when chosen in the top bar; empty to follow the browser."""
     from django.conf import settings
@@ -129,6 +139,7 @@ def environment(**options) -> Environment:
     env.globals["url"] = lambda view, **kwargs: reverse(view, kwargs=kwargs or None)
     env.globals["product_name"] = product_name
     env.globals["two_factor_nudge"] = two_factor_nudge
+    env.globals["machine_notices"] = machine_notices
     env.globals["theme"] = theme
     env.globals["page_back"] = page_back
     env.globals["initial"] = initial

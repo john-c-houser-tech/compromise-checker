@@ -18,22 +18,29 @@ out what's beside it as well. In order, it:
 1. **Checks the release's signature,** before running anything from it. The installer knows the version it's
    for and the release key, so it refuses any other release, or one signed by anyone else. A file that doesn't
    match what was signed is refused. It can't tell you a newer version exists, so use the current install page.
-2. **Looks for other use.** Programs that other computers can reach, and other people's login accounts, are
-   listed with why they matter. It stops unless you type a short sentence to go ahead. This is a nudge rather
+2. **Looks for other use.** Programs that other computers can reach, over TCP or UDP (a VPN such as WireGuard
+   among them, since the firewall would cut it off), and other people's login accounts, are listed with why
+   they matter. It stops unless you type a short sentence to go ahead. This is a nudge rather
    than a guarantee: it can't see everything. Nothing has been changed up to this point. If something else is
    using port 8088, it stops with no way past.
-3. **Installs what's needed** from the system's own packages: a Python the tool can run on, and the libraries
-   PDF reports use.
-4. **Makes an account** called `compromise-checker`, which nobody can log in to, with a private folder at
+3. **Asks about SSH,** after asking about [a web address](#a-web-address): whether to turn off password
+   logins, root logins, and to block addresses that keep trying to log in. Each is asked separately, and Enter
+   means no. [Locking the machine down](#locking-the-machine-down)
+   says what each does and when one isn't offered. Nothing is changed yet.
+4. **Installs what's needed** from the system's own packages: a Python the tool can run on, the libraries
+   PDF reports use, the firewall, and what installs security updates.
+5. **Turns on a firewall and automatic security updates,** saying as it does each one.
+6. **Makes an account** called `compromise-checker`, which nobody can log in to, with a private folder at
    `/var/lib/compromise-checker`. If an account by that name already exists and doesn't look like one the
    installer made, it stops, rather than hand that account the tool's keys.
-5. **Installs the tool** in `/opt/compromise-checker`, with exactly the dependency versions the release lists.
+7. **Installs the tool** in `/opt/compromise-checker`, with exactly the dependency versions the release lists.
    Each is checked against its hash, and none is built from source. The tool's account can't change these files.
-6. **Starts the web interface** as a service, as that account, answering only on this machine. It starts again
+8. **Starts the web interface** as a service, as that account, answering only on this machine. It starts again
    after a reboot. That account's own systemd stays running, for the daily check.
-7. **Turns sleep off,** so a daily check isn't missed. If the machine was off when a check was due, it runs when
+9. **Turns sleep off,** so a daily check isn't missed. If the machine was off when a check was due, it runs when
    the machine next starts, and the page says when a server hasn't been checked for a few days.
-8. **Gives you a link** for creating the first account. It works once, within an hour.
+10. **Makes the SSH changes you agreed to,** checking that SSH takes them first. Logins already open stay open.
+11. **Gives you a link** for creating the first account. It works once, within an hour.
 
 If it stops part way, run it again to carry on, whether or not an account has been made in the meantime. Once
 it has finished, running it again changes nothing.
@@ -60,7 +67,7 @@ It then sets up Apache, from the system's own packages, in front of the tool:
   the name appears in public certificate logs. The account it makes there gives `webmaster@` and the name as
   its contact, since `mod_md` needs one, so nothing personal is sent.
 - It answers on port 443, and port 80 only sends people to 443 and lets Let's Encrypt check the name. HTTP/2 is
-  off. If a firewall is running, ports 80 and 443 are opened in it.
+  off. Ports 80 and 443 are opened in the firewall.
 - The tool still listens only on this machine. Apache passes requests to it with a secret only they share, so
   nothing else on the machine can pass for Apache.
 - On Rocky, SELinux keeps Apache confined. The narrowest switch that lets it connect out at all is turned
@@ -80,6 +87,79 @@ is run again with the other answer, the installer takes down what it had set up 
 that: Apache is only stopped if it came with the installer, and only the firewall openings it made are closed.
 
 Without a terminal to ask in, `--web-address NAME` and `--allow "ADDRESSES"` give the answers instead.
+
+## Locking the machine down
+
+Done every time, and said as it's done:
+
+- **A firewall** that lets in only SSH, and ports 80 and 443 with a web address. Ubuntu's is `ufw` and Rocky's
+  is `firewalld`. Rocky runs `firewalld` from the start: while it's just as the system set it up, it's set up
+  like a new one. Before it starts, it lets in every port SSH is listening on, so the session you're
+  installing from isn't cut off. On Rocky, the opening for Cockpit, the system's own web console, is closed.
+  Where an interface or some source addresses have a firewalld zone of their own, SSH is let in there too.
+  Rules a stopped `ufw` saved from before come back with it, so any saved rule for SSH's port is replaced,
+  and SSH's own goes in front of the rest. If SSH isn't running, nothing is let in
+  for it, and you'd need to open its port if you turn SSH on later. If SSH is running but its port can't be
+  found, no firewall is turned on, and the installer says so.
+  If a firewall is already running, whether `ufw`, `firewalld`, or rules loaded by `nftables.service` or
+  `iptables`, its rules are kept as they are, and the installer lists what else `ufw` or `firewalld` lets in,
+  for you to close what this machine doesn't need.
+- **Automatic security updates,** with the system's own tools: `unattended-upgrades` on Ubuntu, and
+  `dnf-automatic` on Rocky, from its own settings file so the system's `automatic.conf` is left alone. If
+  updates already install by themselves, that's left as it is. The machine is never restarted for an update.
+  The page says when one is waiting for a restart, so you can choose the moment.
+
+Each only if you say yes, asked separately:
+
+- **SSH passwords off.** Then only someone holding a key can log in, and a key can't be guessed. It's only
+  offered if an administrator account has logged in here with a key that SSH would still let in today. An
+  administrator is root, or an account in the `sudo`, `admin` or `wheel` group that can run anything through
+  `sudo`. The login is taken from what SSH itself logged, which nobody else on the machine can write. It's
+  then checked against SSH's settings as they stand, for that account and the address it came from: root
+  shut out, keys turned off, `AllowUsers` and the like, `ForceCommand` or `ChrootDirectory`, which keep a
+  login from administering the machine, `AuthenticationMethods`, and `Match` sections. The very key that logged
+  in, by its fingerprint, has to still be where SSH looks for it, and not be one held to a single command
+  or set to expire, or limited to some addresses (`from=`), and the account mustn't have expired, and SSH mustn't want a one-time code after the key, which goes
+  with the passwords. If it isn't offered, the installer says why. If SSH's settings can't be read at all,
+  nothing about SSH is asked or changed.
+- **Root login over SSH off.** Administrators then log in as themselves and use `sudo`, which leaves a record of
+  who did what. It's only offered if another administrator account has logged in here in a way SSH would
+  still let in, with a key if passwords are going off, so root isn't the only way in.
+- **Blocking addresses that keep trying to log in.** Where SSH can do this itself (Ubuntu 26.04 and Rocky 10,
+  with OpenSSH 9.8 or later), it holds off an address that keeps failing to log in, for longer each time.
+  That's usually on already, and then the installer just says so. Rocky 9's SSH is older, but has had it
+  added. Ubuntu 24.04's hasn't, so the firewall does it instead: an address that opens SSH connections
+  quickly, about 6 in 30 seconds, has to wait. That could slow a tool that logs in to this machine many times in a row. With a `ufw` the installer
+  set up, that's `ufw limit`. Elsewhere, including a firewall that was already running, it's a small table of
+  `nftables` rules, `/etc/nftables/compromise-checker-ssh-limit.nft`, loaded by
+  `compromise-checker-ssh-limit.service`, which only ever holds connections back and never lets anything in.
+  The `nftables` rules count IPv6 addresses by the /64 they're in, and `ufw limit` counts each address. It
+  only limits connections to this machine, never the
+  tool's own connections to the servers it checks.
+
+The SSH changes go in `/etc/ssh/sshd_config.d/01-compromise-checker.conf`. SSH takes the first value it reads,
+so this file comes before the one a cloud image adds. The installer checks that SSH accepts the file and that
+the settings took, then reloads SSH. If any of that fails, it puts the file back as it was and says why. If a `Match` section in SSH's
+settings still lets an account seen in the log use a password, or root log in, it says that too. Without a terminal to ask in,
+`--ssh-passwords-off`, `--root-login-off` and `--block-login-failures` give the answers, with the same checks.
+
+A small service, `compromise-checker-status`, runs as root every hour and notes two things for the web page:
+whether SSH still accepts passwords, and whether an update is waiting for a restart. People with full access
+see a notice for each, and another if those notes are over three hours old. The note about passwords is SSH's
+setting for everyone; it doesn't see a `Match` section that turns passwords back on for some.
+
+### Turning SSH passwords off later
+
+Log in once with your key, as an administrator, so you know it works. Then, as root, add these two lines to
+`/etc/ssh/sshd_config.d/01-compromise-checker.conf`, making the file if it isn't there:
+
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+
+Check with `sudo sshd -t`, then `sudo systemctl try-reload-or-restart ssh` on Ubuntu or
+`sudo systemctl reload sshd` on Rocky.
+Keep the session you made the change from open, and check that a new key login still works before closing it.
+The notice goes within the hour.
 
 ## The setup link
 

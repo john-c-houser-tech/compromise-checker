@@ -9589,6 +9589,100 @@ def test_the_evidence_link_once_for_each_kind_of_account(web):
     assert 'class="actions"' not in viewer and "/checks/analyze" not in viewer
 
 
+BANDED = ["/threats", "/checks", "/activity", "/manage", "/two-factor/manage"]
+
+
+@pytest.mark.parametrize("path", BANDED)
+def test_each_page_has_one_title_in_its_band_and_no_inline_style(web, path):
+    client, _ = signed_in(web)
+    text = client.get(path).content.decode()
+    assert text.count("<h1") == 1 and " style=" not in text
+    band = text.split('<section class="band"')[1].split("</section>")[0]
+    assert "<h1" in band and "from-server" not in band
+    assert text.index("<main>") < text.index('<section class="band"')
+
+
+def test_the_checks_band_has_its_button_for_full_access_only(web):
+    client, _ = signed_in(web)
+    assert 'class="button" href="/checks/new"' in client.get("/checks").content.decode()
+    assert "/checks/new" not in person("viewer").get("/checks").content.decode()
+
+
+def test_manage_offers_each_place_as_a_tile(web):
+    client, _ = signed_in(web)
+    tiles = client.get("/manage").content.decode().split('<ul class="tiles"')[1].split("</ul>")[0]
+    for words in (
+        "First setup",
+        "Add a server",
+        "Threat updates",
+        "Settings",
+        "Check every day",
+        "Delete stored evidence",
+        "People",
+    ):
+        assert words + "</a>" in tiles, words
+
+
+def test_the_sign_in_pages_are_a_card_and_others_carry_no_empty_class(web):
+    client, _ = web
+    assert '<body class="auth">' in client.get("/login").content.decode()
+    missing = client.get("/no-such-page").content.decode()
+    assert '<body class="auth">' in missing and 'class="nudge"' not in missing
+    signed, _ = signed_in(web)
+    assert "<body>" in signed.get("/").content.decode()
+
+
+def _css_rules(css: str):
+    """(media, selectors, properties) for each rule, in order. Enough of CSS for this file."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    rules, i = [], 0
+
+    def add(prelude, body, media):
+        props = {d.split(":", 1)[0].strip() for d in body.split(";") if ":" in d}
+        rules.append((media, {s.strip() for s in prelude.split(",")}, props))
+
+    while (at := css.find("{", i)) != -1:
+        prelude = css[i:at].strip()
+        body, i = _css_block(css, at)
+        if prelude.startswith("@media"):
+            j = 0
+            while (inner := body.find("{", j)) != -1:
+                inner_body, end = _css_block(body, inner)
+                add(body[j:inner].strip(), inner_body, prelude)
+                j = end
+        elif not prelude.startswith("@"):
+            add(prelude, body, None)
+    return rules
+
+
+def _css_block(text, at):
+    """The text between the brace at `at` and its partner, and where the block ends."""
+    depth, j = 0, at
+    while True:
+        depth += {"{": 1, "}": -1}.get(text[j], 0)
+        if depth == 0:
+            return text[at + 1 : j], j + 1
+        j += 1
+
+
+def test_no_narrow_screen_rule_is_undone_by_a_later_one():
+    """A rule for small screens only works if no later rule with the same selector sets the same
+    thing again: equal specificity, so the later one wins at every width."""
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    assert css.count("{") == css.count("}")  # or the rules below aren't the ones a browser sees
+    rules = _css_rules(css)
+    undone = []
+    for n, (media, selectors, props) in enumerate(rules):
+        if not media or "max-width" not in media:
+            continue
+        for later_media, later_selectors, later_props in rules[n + 1 :]:
+            if later_media is None and selectors & later_selectors and props & later_props:
+                undone.append(
+                    (media, sorted(selectors & later_selectors), sorted(props & later_props))
+                )
+    assert not undone
+
+
 def test_every_page_file_is_in_an_installed_copy():
     """An installed copy has only what package data lists: a file left out is a 500 there."""
     import tomllib
@@ -9603,6 +9697,24 @@ def test_every_page_file_is_in_an_installed_copy():
             if path.is_file():
                 name = path.relative_to(web).as_posix()
                 assert any(fnmatch(name, p) for p in patterns), name
+
+
+def test_the_qr_code_scales_to_fit_a_narrow_card(web):
+    client, _ = signed_in(web)
+    text = start_two_factor(client).content.decode()
+    svg = re.search(r'<p class="qr">(<svg[^>]*>)', text).group(1)
+    assert "viewBox=" in svg and "width=" not in svg and "height=" not in svg
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    assert ".qr svg { display: block; width: 100%;" in css
+
+
+def test_the_sign_in_card_stays_centred_on_narrow_screens():
+    css = (Path(__file__).resolve().parent.parent / "checker/web/static/style.css").read_text()
+    narrow = [
+        r for r in _css_rules(css) if r[0] and "max-width" in r[0] and ".auth .main-in" in r[1]
+    ]
+    assert narrow and all("margin" in props for _, _, props in narrow)
+    assert ".auth .main-in { width: calc(100% - 2rem); margin: 1rem auto;" in css
 
 
 def test_at_a_glance_shows_with_only_accepted_findings_and_threats(web, monkeypatch):

@@ -1,5 +1,8 @@
 {% extends "base.html.j2" %}
+{% import "icons.html.j2" as draw %}
+{% block body_class %}auth{% endblock %}
 {% block main %}
+{{ draw.coil("coil coil-large") }}
 <h1>Choose your password</h1>
 <p>You've been invited as <strong>{{ name }}</strong>. These results describe weaknesses an attacker could use, so use a long password, at least 12 characters, that you don't use anywhere else.</p>
 {% for error in errors %}<p class="error" role="alert">{{ error }}</p>{% endfor %}

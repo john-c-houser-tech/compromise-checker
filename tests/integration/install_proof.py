@@ -872,17 +872,21 @@ def prove_update(node: "Node", checks, distro: str, newer: Path, broken: Path) -
     )
 
     # --- Refusals on the account's side, with nothing handed over -----------------------------
-    done = node.run(f"{as_account} update --from /root/release")
+    # The account reads the releases, so they go where it can: not under /root.
+    shared = "/srv/cc-proof"
+    node.run(f"mkdir -p {shared} && cp -r /root/release {shared}/release && chmod -R a+rX {shared}")
+    done = node.run(f"{as_account} update --from {shared}/release")
     checks(
         "the release that's running isn't newer, so it's refused",
         done.returncode == 1 and "isn't newer" in done.stderr,
         done.stdout + done.stderr,
     )
-    node.copy(newer, "/root/newer")
+    node.copy(newer, f"{shared}/newer")
     node.run(
-        "cp -r /root/newer /root/tampered && sed -i '1s/^./X/' /root/tampered/requirements.lock"
+        f"cp -r {shared}/newer {shared}/tampered"
+        f" && sed -i '1s/^./X/' {shared}/tampered/requirements.lock && chmod -R a+rX {shared}"
     )
-    done = node.run(f"{as_account} update --from /root/tampered")
+    done = node.run(f"{as_account} update --from {shared}/tampered")
     checks(
         "a changed file in a newer release is refused",
         done.returncode == 1 and "requirements.lock" in done.stderr,
@@ -905,7 +909,7 @@ def prove_update(node: "Node", checks, distro: str, newer: Path, broken: Path) -
 
     # --- The update ---------------------------------------------------------------------------
     started = time.monotonic()
-    done = node.run(f"{as_account} update --from /root/newer", timeout=1500)
+    done = node.run(f"{as_account} update --from {shared}/newer", timeout=1500)
     checks(
         "the account gets a newer release ready and hands it over",
         done.returncode == 0 and "ready" in done.stdout,
@@ -957,8 +961,9 @@ def prove_update(node: "Node", checks, distro: str, newer: Path, broken: Path) -
     checks("SELinux refused nothing", denials(node) == "", denials(node))
 
     # --- A version that doesn't answer is rolled back -----------------------------------------
-    node.copy(broken, "/root/broken")
-    done = node.run(f"{as_account} update --from /root/broken", timeout=1500)
+    node.copy(broken, f"{shared}/broken")
+    node.run(f"chmod -R a+rX {shared}")
+    done = node.run(f"{as_account} update --from {shared}/broken", timeout=1500)
     checks(
         "a broken release is got ready like any other",
         done.returncode == 0,

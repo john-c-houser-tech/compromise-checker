@@ -26,6 +26,7 @@ class Machine:
         self.program = tmp_path / "opt"
         self.updates = tmp_path / "data" / "updates"
         self.updates.mkdir(parents=True)
+        self.updates.chmod(0o700)
         self.state = tmp_path / "state"
         self.commands: list[list[str]] = []
         self.restarts = 0
@@ -80,7 +81,10 @@ class Machine:
     def offer(self, version: str, wheels=(("dep-1.0-py3-none-any.whl", b"dep"),), **flags):
         source = self.updates / "incoming" / version
         _release(source, version, **flags)
+        (self.updates / "incoming").chmod(0o700)
+        source.chmod(0o700)
         (source / "wheels").mkdir()
+        (source / "wheels").chmod(0o700)
         for name, content in wheels:
             (source / "wheels" / name).write_bytes(content)
         (self.updates / "request").write_text(f"{version}\n")
@@ -204,13 +208,35 @@ def test_a_request_that_cannot_be_removed_stops_the_watcher_instead_of_looping(
     assert machine.restarts == 0
 
 
-def test_the_account_s_folders_must_be_its_own(tmp_path, monkeypatch, trusted):
+@pytest.mark.parametrize("mode", [0o020, 0o002])
+def test_the_account_s_folders_must_be_its_own(tmp_path, monkeypatch, trusted, mode):
     machine = Machine(tmp_path, monkeypatch, answers_after=1)
     machine.offer("0.2.0")
-    (machine.updates / "incoming" / "0.2.0").chmod(0o707)  # anyone could swap things in it
+    (machine.updates / "incoming" / "0.2.0").chmod(0o700 | mode)
     assert machine.go() == 1
     assert "isn't the tool's own folder" in machine.outcome()["words"]
     assert machine.restarts == 0 and machine.current() == "0.1.0"
+
+
+def test_a_wheel_that_grows_while_copied_stays_within_the_size_cap(
+    tmp_path, monkeypatch, trusted
+):
+    machine = Machine(tmp_path, monkeypatch, answers_after=1)
+    source = machine.offer("0.2.0", wheels=(("dep-1.0-py3-none-any.whl", b"12345"),))
+    wheel = source / "wheels" / "dep-1.0-py3-none-any.whl"
+    monkeypatch.setattr(update_service, "MAX_WHEEL_BYTES", 3)
+    original_fstat = os.fstat
+
+    def report_smaller_file(fd):
+        found = original_fstat(fd)
+        if os.readlink(f"/proc/self/fd/{fd}") == str(wheel):
+            return os.stat_result((*found[:6], 1, *found[7:]))
+        return found
+
+    monkeypatch.setattr(os, "fstat", report_smaller_file)
+    assert machine.go() == 1
+    assert "larger than any release's" in machine.outcome()["words"]
+    assert not (machine.program / "versions" / "0.2.0").exists()
 
 
 def test_a_huge_or_odd_wheel_is_refused_or_left_behind(tmp_path, monkeypatch, trusted):

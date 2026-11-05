@@ -106,7 +106,7 @@ class Pinned:
         except OSError as exc:
             raise Failed(f"{path} can't be opened: {exc}") from None
         found = os.fstat(self.fd)
-        if found.st_uid != owner or found.st_mode & 0o002:
+        if found.st_uid != owner or found.st_mode & 0o022:
             os.close(self.fd)
             raise Failed(f"{path} isn't the tool's own folder")
         self.path = Path(f"/proc/self/fd/{self.fd}")
@@ -175,12 +175,17 @@ def copy_wheels(source: Pinned, target: Path) -> None:
         if not stat.S_ISREG(found.st_mode):
             os.close(descriptor)
             continue
-        total += found.st_size
-        if found.st_size > MAX_WHEEL_BYTES or total > MAX_WHEELS_BYTES:
+        if found.st_size > MAX_WHEEL_BYTES or total + found.st_size > MAX_WHEELS_BYTES:
             os.close(descriptor)
             raise Failed(f"the dependencies' files are larger than any release's: {name}")
         with os.fdopen(descriptor, "rb") as original, (target / name).open("xb") as copy:
-            shutil.copyfileobj(original, copy, 1024 * 1024)
+            copied = 0
+            while chunk := original.read(1024 * 1024):
+                copied += len(chunk)
+                total += len(chunk)
+                if copied > MAX_WHEEL_BYTES or total > MAX_WHEELS_BYTES:
+                    raise Failed(f"the dependencies' files are larger than any release's: {name}")
+                copy.write(chunk)
 
 
 def base_python() -> str:

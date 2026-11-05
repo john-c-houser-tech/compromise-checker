@@ -805,6 +805,84 @@ def wait_for(node: "Node", command: str, wanted: str, seconds: int = 420, every:
     return said
 
 
+RELEASES = "https://github.com/john-c-houser-tech/compromise-checker/releases/download"
+
+
+def prove_public(node: "Node", checks, distro: str, web: bool, public: dict) -> None:
+    """The published release, as the install page says to run it: downloaded from GitHub, its
+    hash checked, then the installer, which downloads and checks the rest. Nothing local."""
+    version = public["version"]
+    address = node.address
+    name = f"{address.replace('.', '-')}.sslip.io"
+
+    def line(sha256: str, flags: str) -> str:
+        return (
+            f"(d=$(mktemp -d) && trap 'rm -rf \"$d\"' EXIT && curl -fsSL"
+            f' {RELEASES}/v{version}/install.py -o "$d/install.py"'
+            f' && echo "{sha256}  $d/install.py" | sha256sum -c -'
+            f' && umask 077 && sudo python3 -I "$d/install.py"{flags})'
+        )
+
+    done = node.run(line("0" * 64, " --new-machine"))
+    checks(
+        "a wrong hash stops the line before the installer runs, with nothing changed",
+        done.returncode != 0 and "FAILED" in done.stdout + done.stderr and untouched(node),
+        done.stdout + done.stderr,
+    )
+    before = node.out("free -m | awk '/^Mem:/ {print $2, $3}'; df -BM --output=used / | tail -1")
+    flags = f" --web-address {name} --test-certificates" if web else " --new-machine" + LOCKDOWN
+    started = time.monotonic()
+    done = node.run(line(public["sha256"], flags), timeout=1800)
+    took = round(time.monotonic() - started)
+    print(f"[{distro}] public install took {took}s")
+    checks("it installs from the real download", done.returncode == 0, done.stdout + done.stderr)
+    if done.returncode:
+        print(node.out(f"journalctl -u {UNIT} -n 40 --no-pager"))
+        return
+    ran = node.out(
+        f"{PROGRAM}/current/bin/python -I -c 'import checker; print(checker.__version__)'"
+    )
+    checks(f"it is version {version}", ran == version, ran)
+    kept = f"{PROGRAM}/versions/{version}"
+    manifest = node.run(f"test -f {kept}/release.json && test -f {kept}/release.json.minisig")
+    checks("the release's signed manifest is kept with it", manifest.returncode == 0, kept)
+    checks(
+        "the service is running",
+        node.out(f"systemctl is-active {UNIT}") == "active",
+        node.out(f"systemctl status {UNIT} --no-pager"),
+    )
+    pid = node.out(f"systemctl show -p MainPID --value {UNIT}")
+    checks("as the tool's own account", node.out(f"ps -o user= -p {pid}") == ACCOUNT, pid)
+    bound = [line_.split()[3] for line_ in node.out("ss -Hltn | grep ':8088 '").splitlines()]
+    checks("only on this machine", bound == ["127.0.0.1:8088"], bound)
+    links = _LINK_LINE.findall(done.stdout)
+    checks("it hands over a link", len(links) == 1, done.stdout)
+    if links:
+        checks("the link opens", status_of(node, links[0]) == "200", links[0])
+    if web:
+        shown = wait_for_status(node, f"https://{name}/login", "-k", "200", 180)
+        checks("the page answers on its web address", shown == "200", shown)
+        issuer = served_certificate_issuer(name)
+        checks("the certificate is Let's Encrypt's test one", "STAGING" in issuer, issuer)
+    after = node.out("free -m | awk '/^Mem:/ {print $2, $3}'; df -BM --output=used / | tail -1")
+    print(f"[{distro}] measure before (RAM total/used MB; disk used): {before!r}")
+    print(f"[{distro}] measure after install: {after!r}; took {took}s")
+    checks("measured", True, after)
+    node.run("systemctl reboot")
+    node.close()
+    time.sleep(15)
+    node.wait()
+    back = wait_for_status(node, "http://127.0.0.1:8088/login", "", "200", 180)
+    checks("after a reboot the page is back", back == "200", back)
+    checks("the service came back", node.out(f"systemctl is-enabled {UNIT}") == "enabled")
+    again = _LINK_LINE.findall(node.out(LINK))
+    checks("a link can still be made", len(again) == 1 and status_of(node, again[0]) == "200")
+    selinux = node.out("getenforce 2>/dev/null") or "not on this system"
+    print(f"[{distro}] SELinux: {selinux}")
+    if distro.startswith("rocky"):
+        checks("SELinux is enforcing, so this means something", selinux == "Enforcing", selinux)
+
+
 def prove_update(node: "Node", checks, distro: str, newer: Path, broken: Path) -> None:
     """A newer release got ready by the tool's account and installed by the root service, a refused
     one, one that doesn't answer and is rolled back, and a request file that says nothing."""
@@ -1288,6 +1366,9 @@ def prove(
     try:
         node = Node(made["ipv4"][0], key, place / "known")
         node.wait()
+        if route in ("public-local", "public-web"):
+            prove_public(node, checks, distro, route == "public-web", more["public"])
+            return results
         node.copy(release, "/root/release")
         if route == "web":
             prove_web(node, checks, distro)
@@ -1532,10 +1613,13 @@ def main() -> int:
         "--route",
         nargs="+",
         default=["local", "web"],
-        choices=["local", "web", "update", "linode-form"],
+        choices=["local", "web", "update", "linode-form", "public-local", "public-web"],
         help="from this machine only, with a web address, updated to a newer release, or made from"
-        " Linode's form (needs a token that may write StackScripts)",
+        " Linode's form (needs a token that may write StackScripts); the public- routes install"
+        " the published release from GitHub (needs --public-version and --installer-sha256)",
     )
+    parser.add_argument("--public-version", help="the published release the public- routes install")
+    parser.add_argument("--installer-sha256", help="the hash the install page gives for install.py")
     parser.add_argument(
         "--keep-minutes", type=float, default=0, help="keep each server this long, to look at it"
     )
@@ -1556,10 +1640,17 @@ def main() -> int:
             release = build_release(Path(work), key=key)
             sign_release(release, key)
             more = {}
+            if any(route.startswith("public-") for route in arguments.route):
+                if not (arguments.public_version and arguments.installer_sha256):
+                    parser.error("the public- routes need --public-version and --installer-sha256")
+                more["public"] = {
+                    "version": arguments.public_version,
+                    "sha256": arguments.installer_sha256,
+                }
             if "update" in arguments.route:
                 more["newer"] = build_release(Path(work), "9.9.10", key)
                 more["broken"] = build_release(Path(work), "9.9.11", key, broken=True)
-                for built in more.values():
+                for built in (more["newer"], more["broken"]):
                     sign_release(built, key)
             runs = [(system, route) for system in systems for route in arguments.route]
             with ThreadPoolExecutor(len(runs)) as pool:

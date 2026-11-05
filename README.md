@@ -18,15 +18,16 @@ It is built for small organizations that can't afford commercial security
 products, and it works from a web page: no command line needed. Open source
 under the AGPL, from NouriLoop LLC.
 
-**Status:** in development. Everything described here works today; the first
-signed release is being prepared.
+**Status:** a pre-release. Version 0.1.0 is out and everything described here
+works today, but it is the first release anyone can install, so expect rough
+edges. [How to install it](https://nouriloop.com/work/compromise-checker/install/).
 
 ## What you need
 
 | | |
 | --- | --- |
 | **Servers to check** | Red Hat Enterprise Linux 9 or later (tested on Rocky Linux and AlmaLinux), or Ubuntu 22.04 or later. No software is installed on them. Each needs a login account that can use sudo: [how to set one up](docs/scanner-account.md). |
-| **A machine for the tool** | One of its own, since it holds keys that act as an administrator on every server it checks. x86, running Ubuntu 24.04 or 26.04 or Rocky Linux 9 or 10: [installing](docs/install.md). Developers can run it from source on a Linux or macOS machine with Python 3.12 or later. |
+| **A machine for the tool** | One of its own, since it holds keys that act as an administrator on every server it checks. x86, running Ubuntu 24.04 or 26.04 or Rocky Linux 9 or 10, with at least 1 GB of memory and 5 GB of free disk: the [install page](https://nouriloop.com/work/compromise-checker/install/) has the line to paste, and [installing](docs/install.md) says what it does. Developers can run it from source on a Linux or macOS machine with Python 3.12 or later. |
 
 ## How a check works
 
@@ -120,19 +121,19 @@ as advice, apart from the findings ([the advisor](docs/advisor.md), with
 
 ## Getting started
 
-**From a web page.** Once the first release is out, install the tool on its
-own machine with the one line from the release's install page
-([installing](docs/install.md)). It gives you
-a link to create your account. Add your servers, press **Check**, and the
-servers appear in the order to deal with them. Checks can run every day by
-themselves ([the web interface](docs/web.md)). One thing is set up once at
-the command line: a short summary can go to mail or a webhook when a server
-needs a look ([scheduling](docs/scheduling.md)).
+**From a web page.** Install the tool on its own machine with the one line
+from the [install page](https://nouriloop.com/work/compromise-checker/install/) ([installing](docs/install.md) says what it
+does). It gives you a link to create your account. Add your servers, press
+**Check**, and the servers appear in the order to deal with them. Checks can
+run every day by themselves ([the web interface](docs/web.md)). A newer signed
+release is found once a day and installed from the Updates page
+([updating](docs/install.md#updating)). One thing is set up once at the
+command line: a short summary can go to mail or a webhook when a server needs
+a look ([scheduling](docs/scheduling.md)).
 
 **From the command line.** The tool isn't on PyPI, the public Python
-package index, so install it from a release's install page as above, or,
-until there is one, run it from this repository on a Linux or macOS machine with Python 3.12
-or later:
+package index, so install it from the install page as above, or run it from
+this repository on a Linux or macOS machine with Python 3.12 or later:
 
 ```
 git clone https://github.com/john-c-houser-tech/compromise-checker.git
@@ -162,7 +163,7 @@ The main commands and their options are described in
   ([proof](tests/integration/readonly_proof.py); results in the
   [Phase 1](plans/phase1-build-plan-2026-10-26.md) and
   [Phase 2](plans/phase2-build-plan-2026-10-28.md) plans).
-- **It catches break-ins.** Thirty scripted compromises on Ubuntu 24.04 and
+- **It catches break-ins.** Thirty-two scripted compromises on Ubuntu 24.04 and
   Rocky Linux 9, from a second root account and a backdoor key to a web shell
   and a container that mounts the host's disk, each produced its finding at
   its band or above. Both attack chains were recognised: a new account given
@@ -172,6 +173,12 @@ The main commands and their options are described in
   Low (5.8%), with the proof's own setup whitelisted and the `base` profile;
   the compromised ones score Critical
   ([calibration](docs/scoring.md#calibration)).
+- **It installs.** The published 0.1.0 was installed from its real download on
+  new servers of all four supported systems, with and without a web address,
+  and each came back after a restart. An installer whose hash is wrong is
+  refused before it runs. An update to a newer release was installed by the
+  root service, and one that wouldn't start was rolled back
+  ([proof](tests/integration/install_proof.py)).
 - **One gap.** Red Hat Enterprise Linux itself hasn't been tested. Rocky
   Linux and AlmaLinux, built from the same sources, stand in for it. Red
   Hat's own subscription and Insights services may raise findings no run has
@@ -190,6 +197,9 @@ The main commands and their options are described in
 | [DESIGN.md](DESIGN.md) · [plans/](plans/) | The architecture, the decisions made so far, and the build plan for each phase. |
 
 ## Development
+
+Releases are signed by hand with an offline key, and each is checked as a new
+machine would check it ([releasing](docs/releasing.md)).
 
 Runs on Python 3.12 or later, on Linux or macOS, on the machine that does the checking.
 

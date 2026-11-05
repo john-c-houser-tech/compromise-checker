@@ -1101,8 +1101,7 @@ def prove_linode_form(
             for command in (
                 "cloud-init status --long 2>&1",
                 "tail -n 60 /var/log/cloud-init-output.log 2>&1",
-                "wc -c /var/lib/cloud/instance/user-data.txt /var/lib/cloud/instance/vendor-data*.txt"
-                " 2>&1",
+                "cd /var/lib/cloud/instance && wc -c user-data.txt vendor-data*.txt 2>&1",
                 "ls -la /var/log/compromise-checker-install.log /root 2>&1",
                 "journalctl -b --no-pager -o cat -u cloud-final -u cloud-config 2>&1 | tail -n 40",
                 f"journalctl -u {UNIT} -n 20 --no-pager 2>&1",

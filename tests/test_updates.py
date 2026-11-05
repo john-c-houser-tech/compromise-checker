@@ -141,11 +141,18 @@ def test_pre_releases_are_only_for_a_machine_on_one(tmp_path, trusted):
     assert updates.newest(final, fetcher(served))["version"] == "0.2.0"
 
 
-def test_only_a_few_manifests_are_looked_at(tmp_path, trusted):
-    served = {REPO_LIST: listing(*((f"v0.{n}.0", False, False) for n in range(9, 1, -1)))}
+def test_a_search_that_stops_short_says_so_rather_than_nothing_newer(tmp_path, trusted):
+    served = {REPO_LIST: listing(*((f"v0.{n}.0", False, False) for n in range(19, 1, -1)))}
     asked = []
-    assert updates.newest({"version": "0.1.0", "prerelease": False}, fetcher(served, asked)) is None
+    with pytest.raises(updates.UpdateError, match="more than"):
+        updates.newest({"version": "0.1.0", "prerelease": False}, fetcher(served, asked))
     assert len([url for url in asked if url.endswith("release.json")]) == updates.MAX_CANDIDATES
+    # Pre-releases above a final one don't hide it, within the bound.
+    versions = ["0.5.0", "0.4.0", "0.3.0", "0.2.0"]
+    served = published(tmp_path, *versions, **{v: {"prerelease": True} for v in versions[:3]})
+    served[REPO_LIST] = listing(*((f"v{v}", False, False) for v in versions))
+    final = {"version": "0.1.0", "prerelease": False}
+    assert updates.newest(final, fetcher(served))["version"] == "0.2.0"
 
 
 def test_no_list_or_a_huge_one_is_said_so(tmp_path, trusted):
@@ -393,3 +400,35 @@ def test_a_wheelhouse_copied_with_the_release_means_nothing_is_fetched(base, tmp
     wheels = base / "updates" / "incoming" / "0.2.0" / "wheels"
     assert sorted(p.name for p in wheels.iterdir()) == ["dep-1.0-py3-none-any.whl"]
     assert (base / "updates" / "request").exists()
+
+
+def test_one_check_or_preparation_at_a_time_on_the_machine(base, tmp_path, trusted):
+    """The page's thread and `checker update` in a terminal share the folder: a file lock."""
+    from checker.files import locked
+
+    program = tmp_path / "opt"
+    installed_at(program, "0.1.0")
+    served = published(tmp_path, "0.2.0")
+    served[REPO_LIST] = listing(("v0.2.0", False, False))
+    assert updates.nobody_working(base)
+    with locked(base / "updates" / "work", wait=0):
+        assert not updates.nobody_working(base)
+        with pytest.raises(updates.UpdateError, match="under way"):
+            updates.prepare(base, "0.2.0", fetch=fetcher(served), program=program, run=no_pip)
+        with pytest.raises(updates.UpdateError, match="under way"):
+            updates.check(base, fetcher(served), program)
+        with pytest.raises(updates.UpdateError, match="under way"):
+            updates.check_now(base)
+    assert updates.nobody_working(base), "released with the lock"
+
+
+def test_a_preparation_the_web_process_abandoned_is_shown_as_failed(base, tmp_path, trusted):
+    program = tmp_path / "opt"
+    installed_at(program, "0.1.0")
+    updates._progress(base, "0.2.0", "dependencies")
+    found = updates.status(base, program)["progress"]
+    assert found["state"] == "failed" and "stopped while" in found["words"]
+    from checker.files import locked
+
+    with locked(base / "updates" / "work", wait=0):  # someone is working on it: as it says
+        assert updates.status(base, program)["progress"]["state"] == "dependencies"

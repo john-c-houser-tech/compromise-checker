@@ -1351,7 +1351,9 @@ def update_check(request) -> HttpResponse:
     pages. No password: it fetches a public list and a signed description, and a stolen session
     gets nothing from it."""
     try:
-        found = updates.check(home())
+        found = updates.check_now(home())
+    except updates.UpdateError as exc:
+        raise ActionFailed(f"{exc}.".capitalize()) from None
     except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
         print(f"checker web: the check for updates failed: {type(exc).__name__}", file=sys.stderr)
         raise ActionFailed("The check couldn't be made.") from None

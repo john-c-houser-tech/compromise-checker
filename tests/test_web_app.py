@@ -7845,7 +7845,7 @@ def test_checking_now_is_recorded_and_says_what_it_found(web, monkeypatch, tmp_p
             {"newest": None, "problem": "the network is down"},
         ]
     )
-    monkeypatch.setattr(updates, "check", lambda base: next(answers))
+    monkeypatch.setattr(updates, "check_now", lambda base: next(answers))
     monkeypatch.setattr(updates, "check_in_background", lambda base: False)
     for words, detail in (
         ("Version 0.2.0 is available", "version 0.2.0 is available"),
@@ -7924,8 +7924,13 @@ def test_progress_and_outcome_are_shown_and_a_request_can_be_taken_back(web, mon
             }
         )
     )
-    text = said(client.get("/manage/updates"))
+    from checker.files import locked
+
+    with locked(folder / "work", wait=0):  # someone is working on it, as the file says
+        text = said(client.get("/manage/updates"))
     assert "Fetching version 0.2.0's dependencies" in text and "Update to" not in text
+    text = said(client.get("/manage/updates"))  # nobody is: the web process must have stopped
+    assert "stopped while this was under way" in text and "Update to 0.2.0" in text
     (folder / "progress.json").write_text(
         json.dumps(
             {

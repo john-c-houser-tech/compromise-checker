@@ -34,7 +34,7 @@ from typing import Any
 
 from checker import __version__, releases
 from checker.evidence import load_config
-from checker.files import atomic_write
+from checker.files import LockBusy, atomic_write, locked
 from checker.packs.pull import PullError, fetch
 
 REPOSITORY = "john-c-houser-tech/compromise-checker"
@@ -43,7 +43,7 @@ DOWNLOADS = f"https://github.com/{REPOSITORY}/releases/download"
 PROGRAM = Path("/opt/compromise-checker")  # where the installer puts the tool (release/install.py)
 CHECK_EVERY = timedelta(hours=24)
 MAX_LIST_BYTES = 2 * 1024 * 1024
-MAX_CANDIDATES = 3  # manifests fetched before giving up on finding one that's acceptable
+MAX_CANDIDATES = 6  # manifests looked at before saying the check couldn't be completed
 WHEELS = "wheels"
 REQUEST = "request"
 CHECKED = "check.json"
@@ -134,8 +134,11 @@ def newest(
     for version in versions_listed(listing):
         if releases.version_key(version) <= mine:
             break
-        if looked == MAX_CANDIDATES:
-            break
+        if looked == MAX_CANDIDATES:  # not "nothing newer": the search stopped short
+            raise UpdateError(
+                f"more than {MAX_CANDIDATES} newer releases are listed, which is more than one"
+                " check looks at"
+            )
         looked += 1
         manifest = _manifest_of(version, fetch)
         if manifest is None:
@@ -170,17 +173,52 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+BUSY = "another check or update is under way"
+ACTIVE = ("getting", "checking", "dependencies")
+
+
+@contextlib.contextmanager
+def _working(base: Path):
+    """One check or preparation at a time on this machine, across processes: the page's thread and
+    `checker update` in a terminal share the folder. Raises UpdateError at once if busy."""
+    try:
+        with locked(_made(updates_folder(base)) / "work", wait=0):
+            yield
+    except LockBusy:
+        raise UpdateError(BUSY) from None
+
+
+def nobody_working(base: Path) -> bool:
+    try:
+        with locked(_made(updates_folder(base)) / "work", wait=0):
+            return True
+    except LockBusy:
+        return False
+
+
 def check(base: Path, fetch: Fetch = fetch, program: Path | None = None) -> dict[str, Any]:
     """Look now, and write down what was found, or why nothing could be: the page reads that."""
-    running = installed(program)
-    found: dict[str, Any] = {"checked": _now(), "installed": running["version"]}
-    try:
-        found["newest"] = newest(running, fetch)
-    except (PullError, releases.ReleaseError, UpdateError) as exc:
-        found["newest"] = None
-        found["problem"] = _plain(str(exc))
-    _write(updates_folder(base) / CHECKED, found)
+    with _working(base):
+        running = installed(program)
+        found: dict[str, Any] = {"checked": _now(), "installed": running["version"]}
+        try:
+            found["newest"] = newest(running, fetch)
+        except (PullError, releases.ReleaseError, UpdateError) as exc:
+            found["newest"] = None
+            found["problem"] = _plain(str(exc))
+        _write(updates_folder(base) / CHECKED, found)
     return found
+
+
+def check_now(base: Path) -> dict[str, Any]:
+    """For the page's button: claimed before any network is touched, so a row of clicks can't
+    each start a download. Raises UpdateError if a check or preparation is already running."""
+    if not _lock.acquire(blocking=False):
+        raise UpdateError(BUSY)
+    try:
+        return check(base)
+    finally:
+        _lock.release()
 
 
 def _plain(words: str) -> str:
@@ -268,6 +306,13 @@ def status(
     elif not _newer(newest_found["version"], running["version"]):
         newest_found = None  # found before an update that has since been installed
     progress = _read(folder / PROGRESS)
+    if progress.get("state") in ACTIVE and nobody_working(base):
+        # Left by a web process that stopped part way: nothing is still working on it.
+        progress = {
+            **progress,
+            "state": "failed",
+            "words": "the web interface stopped while this was under way. Try again.",
+        }
     outcome = _read(outcome_file or OUTCOME_FILE)
     # An outcome from before the release now being got ready is about an earlier update.
     if str(outcome.get("at", "")) < str(progress.get("at", "")):
@@ -360,7 +405,14 @@ def prepare(
     if version is None and source is None:
         raise UpdateError("say which version, or where the release is")
     shown = version or "the release"
-    _progress(base, shown, "getting")
+    with _working(base):
+        _progress(base, shown, "getting")
+        manifest = _prepare(base, version, source, fetch, running, folder, incoming, python, run)
+    return manifest
+
+
+def _prepare(base, version, source, fetch, running, folder, incoming, python, run):
+    shown = version or "the release"
     try:
         with tempfile.TemporaryDirectory(prefix=".incoming-", dir=_made(folder)) as work:
             fetched = Path(work)

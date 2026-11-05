@@ -335,3 +335,25 @@ def test_the_status_units_name_root_s_own_copy_of_the_script():
     units = installer.status_units()
     service = units[Path("/etc/systemd/system/compromise-checker-status.service")]
     assert "-I -S /opt/compromise-checker/machine_status.py" in service
+
+
+def test_the_console_note_carries_the_link_and_is_replaced_not_repeated(tmp_path):
+    from checker import machine_status
+
+    issue = tmp_path / "issue"
+    issue.write_text("Rocky Linux 9\nKernel \\r on an \\m\n")
+    installer.write_console_notice("https://checker.example.org/setup/first", issue)
+    text = issue.read_text()
+    assert text.startswith(installer.NOTICE_START) and "setup/first" in text
+    assert text.endswith("Rocky Linux 9\nKernel \\r on an \\m\n")
+    assert issue.stat().st_mode & 0o777 == 0o644
+    installer.write_console_notice("https://checker.example.org/setup/second", issue)
+    text = issue.read_text()
+    assert text.count(installer.NOTICE_START) == 1 and "setup/first" not in text
+    assert "setup/second" in text
+    # The status service's marks are the same ones, so it can take the note off again.
+    assert (installer.NOTICE_START, installer.NOTICE_END) == (
+        machine_status.NOTICE_START,
+        machine_status.NOTICE_END,
+    )
+    assert machine_status.without_notice(text) == "Rocky Linux 9\nKernel \\r on an \\m\n"

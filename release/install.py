@@ -810,6 +810,39 @@ def plain_text(text: str) -> str:
     return "".join(c for c in text if c == "\n" or (c.isprintable() and c.isascii()))
 
 
+ISSUE = Path("/etc/issue")  # shown above the console's login prompt
+# The same marks as checker/machine_status.py, which takes the note off once an account exists.
+NOTICE_START = "# --- Compromise Checker ---"
+NOTICE_END = "# --- end of the Compromise Checker note ---"
+
+
+def console_notice(link: str, before: str) -> str:
+    """The console's text with the first-setup link above whatever it showed: for a machine set up
+    with no terminal, from Linode's form, where the console is the one place the link can appear.
+    It goes once the first account exists. Any earlier note of ours is replaced."""
+    start, end = before.find(NOTICE_START), before.find(NOTICE_END)
+    if 0 <= start <= end:
+        end += len(NOTICE_END)
+        before = before[:start] + before[end:].lstrip("\n")
+    note = (
+        f"{NOTICE_START}\n"
+        f"Compromise Checker is installed. To create the first account, open this link in a\n"
+        f"browser. It works once, within an hour of being made:\n\n  {link}\n\n"
+        f"If it has run out, log in and run: sudo {LINK_COMMAND}\n"
+        f"This note goes once the first account exists.\n"
+        f"{NOTICE_END}\n"
+    )
+    return note + before
+
+
+def write_console_notice(link: str, issue: Path = ISSUE) -> None:
+    try:
+        before = issue.read_text(encoding="utf-8")
+    except OSError:
+        before = ""
+    _write_file(issue, console_notice(link, before), 0o644)
+
+
 def new_link(address: str = ADDRESS) -> Optional[str]:
     """A new link, or None if there's already an account and so nothing to set up. Only something
     that's exactly a link to the tool's own address is passed on."""
@@ -2924,9 +2957,12 @@ def install(
     ask: bool = False,
     dns_minutes: float = DNS_WAIT_MINUTES,
     lockdown: Optional[Choices] = None,
+    console_notice: bool = False,
 ) -> int:
     """`lockdown` holds the answers to the three questions about SSH, when they aren't to be asked.
-    With neither those nor a terminal, nothing about SSH is changed."""
+    With neither those nor a terminal, nothing about SSH is changed. `console_notice` puts the
+    first-setup link above the console's login prompt as well, for a machine nobody has a terminal
+    on, such as one set up from Linode's form."""
     os.umask(0o022)  # what's installed has to be readable by the tool's account, and no more
     if os.geteuid() != 0:
         raise Stop("This has to be run as an administrator: sudo python3 -I install.py")
@@ -3073,6 +3109,8 @@ def install(
                 " hour after it arrives. The usual cause is a firewall at the hosting provider that"
                 " blocks port 80 or 443: let both in."
             )
+    if console_notice and link is not None:
+        write_console_notice(link)
     if link is None:
         say(f"\nThere's already an account, so sign in at {address}/login")
     else:
@@ -3130,6 +3168,12 @@ def main(argv: Optional[list] = None) -> int:
         action="store_true",
         help="hold off addresses that keep trying to log in over SSH, instead of asking",
     )
+    parser.add_argument(
+        "--console-notice",
+        action="store_true",
+        help="show the first-setup link above the console's login prompt too, for a machine set up"
+        " with no terminal, such as from Linode's form",
+    )
     parser.add_argument("--test-certificates", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--dns-wait-minutes", type=float, default=DNS_WAIT_MINUTES, help=argparse.SUPPRESS
@@ -3160,6 +3204,7 @@ def main(argv: Optional[list] = None) -> int:
             ask,
             arguments.dns_wait_minutes,
             wanted if any(wanted) else None,
+            arguments.console_notice,
         )
     except Stop as exc:
         print(f"\n{exc}", file=sys.stderr)

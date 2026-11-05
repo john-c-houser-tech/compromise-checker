@@ -144,3 +144,48 @@ def test_the_install_route_is_read_from_what_the_installer_left(tmp_path):
     web.write_text('{"name": "checker.example.org"}\n')
     installed.unlink()  # a web address set up, but the installer never finished
     assert machine_status.install_route(installed, web) is None
+
+
+def _web_db(path, accounts: int):
+    import sqlite3
+
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE auth_user (id INTEGER PRIMARY KEY, username TEXT)")
+    for n in range(accounts):
+        connection.execute("INSERT INTO auth_user (username) VALUES (?)", (f"person{n}",))
+    connection.commit()
+    connection.close()
+
+
+def test_the_console_note_comes_off_once_the_first_account_exists(tmp_path):
+    issue = tmp_path / "issue"
+    original = "Ubuntu 24.04 LTS \\n \\l\n\n"
+    note = (
+        f"{machine_status.NOTICE_START}\nOpen https://checker.example.org/setup/abc to make the"
+        f" first account.\n{machine_status.NOTICE_END}\n"
+    )
+    issue.write_text(note + original)
+    web_db = tmp_path / "web.db"
+    assert machine_status.has_an_account(web_db) is None, "no file yet"
+    assert not machine_status.clear_console_notice(issue, web_db)
+    _web_db(web_db, 0)
+    assert machine_status.has_an_account(web_db) is False
+    assert not machine_status.clear_console_notice(issue, web_db)
+    assert issue.read_text() == note + original
+    _web_db(tmp_path / "with.db", 1)
+    assert machine_status.has_an_account(tmp_path / "with.db") is True
+    assert machine_status.clear_console_notice(issue, tmp_path / "with.db")
+    assert issue.read_text() == original, "only the note goes"
+    assert issue.stat().st_mode & 0o777 == 0o644
+    assert not machine_status.clear_console_notice(issue, tmp_path / "with.db"), "nothing left"
+    (tmp_path / "odd.db").write_text("not a database")
+    assert machine_status.has_an_account(tmp_path / "odd.db") is None
+
+
+def test_without_notice_leaves_other_text_alone():
+    assert machine_status.without_notice("plain\n") == "plain\n"
+    text = f"a\n{machine_status.NOTICE_START}\nx\n{machine_status.NOTICE_END}\nb\n"
+    assert machine_status.without_notice(text) == "a\nb\n"
+    assert machine_status.without_notice(
+        f"{machine_status.NOTICE_END}\n{machine_status.NOTICE_START}"
+    ) == (f"{machine_status.NOTICE_END}\n{machine_status.NOTICE_START}")

@@ -170,21 +170,44 @@ class Linode:
             ) from exc
         return json.loads(text) if text else {}
 
-    def create(self, label: str, image: str, region: str, public_key: str) -> dict:
+    def create(
+        self,
+        label: str,
+        image: str,
+        region: str,
+        public_key: str,
+        stackscript_id: int | None = None,
+        stackscript_data: dict | None = None,
+    ) -> dict:
+        body = {
+            "label": label,
+            "type": NANODE,
+            "region": region,
+            "image": image,
+            "root_pass": secrets.token_urlsafe(32),  # required; never used (key login only)
+            "authorized_keys": [public_key],
+            "tags": [TAG],
+            "booted": True,
+        }
+        if stackscript_id is not None:
+            body["stackscript_id"] = stackscript_id
+            body["stackscript_data"] = stackscript_data or {}
+        return self.call("POST", "/linode/instances", body)
+
+    def create_stackscript(self, label: str, image: str, script: str) -> dict:
+        """A private StackScript of this run's, for Linode's form route. Needs a token that may
+        write StackScripts."""
         return self.call(
             "POST",
-            "/linode/instances",
-            {
-                "label": label,
-                "type": NANODE,
-                "region": region,
-                "image": image,
-                "root_pass": secrets.token_urlsafe(32),  # required; never used (key login only)
-                "authorized_keys": [public_key],
-                "tags": [TAG],
-                "booted": True,
-            },
+            "/linode/stackscripts",
+            {"label": label, "images": [image], "script": script, "is_public": False},
         )
+
+    def delete_stackscript(self, stackscript_id: int) -> None:
+        self.call("DELETE", f"/linode/stackscripts/{stackscript_id}")
+
+    def stackscripts(self) -> list:
+        return self.call("GET", "/linode/stackscripts?page_size=100").get("data", [])
 
     def get(self, linode_id: int) -> dict:
         return self.call("GET", f"/linode/instances/{linode_id}")
@@ -224,8 +247,8 @@ def run_label(distro: str) -> str:
 
 def sweep_run(api: Linode) -> None:
     """At the end of a run, delete any of its servers still there (one
-    whose creation answer was lost, a run cut short). One failed delete
-    doesn't stop the others."""
+    whose creation answer was lost, a run cut short), and any StackScript
+    it made. One failed delete doesn't stop the others."""
     for node in api.tagged():
         if node["label"].startswith(f"{LABEL_PREFIX}{RUN}-"):
             print(f"sweep: deleting {node['label']}, left by this run")
@@ -233,6 +256,17 @@ def sweep_run(api: Linode) -> None:
                 api.delete(node["id"])
             except Exception as exc:  # already gone, or the API is down: say so
                 print(f"sweep: could not delete {node['label']}: {exc}")
+    try:
+        scripts = api.stackscripts()
+    except Exception:  # noqa: BLE001 - a token without that scope: nothing of ours is there
+        return
+    for script in scripts:
+        if script.get("mine") and str(script.get("label", "")).startswith(f"{LABEL_PREFIX}{RUN}-"):
+            print(f"sweep: deleting StackScript {script['label']}, left by this run")
+            try:
+                api.delete_stackscript(script["id"])
+            except Exception as exc:  # noqa: BLE001
+                print(f"sweep: could not delete StackScript {script['label']}: {exc}")
 
 
 # --- One distribution -------------------------------------------------------------------

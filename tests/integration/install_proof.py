@@ -991,6 +991,207 @@ def prove_update(node: "Node", checks, distro: str, newer: Path, broken: Path) -
     checks("the page says it went back", "went back to 9.9.10" in page, page[-1500:])
 
 
+HELPER_PORT = 8123
+
+
+def stackscript_text(release: Path, downloads: str) -> str:
+    """Linode's form for the proof's release, as scripts/release.py makes it, pointed at where the
+    proof serves the release, with Let's Encrypt's staging asked for."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("release_script", ROOT / "scripts" / "release.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    from checker import releases
+
+    data = (release / "release.json").read_bytes()
+    manifest = releases.Manifest.model_validate(json.loads(data))
+    return module.stackscript_for(
+        manifest,
+        manifest.files["install.py"].sha256,
+        downloads=downloads,
+        extra_flags="flags+=(--test-certificates)",
+    )
+
+
+def prove_linode_form(api, distro: str, region: str, release: Path, place: Path, checks) -> None:
+    """A Linode made from the form, with no terminal: the StackScript downloads the release from a
+    helper server standing in for GitHub, runs the installer with the form's answers, and the link
+    appears above the console's login prompt until the first account exists."""
+    key = place / "key"
+    subprocess.run(  # noqa: S603
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],  # noqa: S607
+        check=True,
+    )
+    public = key.with_suffix(".pub").read_text().strip()
+    helper_label = proof.run_label(f"{distro}-helper")
+    helper = api.create(helper_label, proof.IMAGES["ubuntu24.04"], region, public)
+    script_id = None
+    made = None
+    try:
+        server = Node(helper["ipv4"][0], key, place / "known-helper")
+        server.wait()
+        server.run(f"mkdir -p /srv/v{VERSION}")
+        server.copy(release, "/tmp/release")
+        server.run(f"cp /tmp/release/* /srv/v{VERSION}/ && chmod -R a+rX /srv")
+        server.run(
+            f"cd /srv && nohup python3 -m http.server {HELPER_PORT} >/var/log/helper.log 2>&1 &"
+            " sleep 2"
+        )
+        downloads = f"http://{helper['ipv4'][0]}:{HELPER_PORT}"
+        served = local(
+            "curl",
+            "-fsS",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            f"{downloads}/v{VERSION}/install.py",
+        ).stdout
+        checks("the helper serves the release", served == "200", served)
+
+        script = api.create_stackscript(
+            proof.run_label(f"{distro}-form"),
+            proof.IMAGES[distro],
+            stackscript_text(release, downloads),
+        )
+        script_id = script["id"]
+        fields = {field["name"] for field in script.get("user_defined_fields", [])}
+        checks(
+            "Linode reads the five fields from the script",
+            fields
+            == {
+                "web_address",
+                "allowed",
+                "root_login_off",
+                "ssh_key_logins_only",
+                "block_login_failures",
+            },
+            sorted(fields),
+        )
+        answers = {
+            "web_address": "auto",
+            "allowed": "",
+            "root_login_off": "no",
+            "ssh_key_logins_only": "no",
+            "block_login_failures": "yes",
+        }
+        made = api.create(
+            proof.run_label(distro), proof.IMAGES[distro], region, public, script_id, answers
+        )
+        node = Node(made["ipv4"][0], key, place / "known")
+        node.wait()
+        address = made["ipv4"][0]
+        name = f"{address.replace('.', '-')}.sslip.io"
+        started = time.monotonic()
+        said = wait_for(
+            node, f"test -f {PROGRAM}/installed && echo installed", "installed", seconds=1500
+        )
+        took = round(time.monotonic() - started)
+        print(f"[{distro}] the form's install took {took}s after the machine answered")
+        log = node.out("cat /var/log/compromise-checker-install.log 2>/dev/null")
+        checks("the form's install finished", said == "installed", log[-2500:])
+        if said != "installed":
+            print(node.out(f"journalctl -u {UNIT} -n 30 --no-pager"))
+            return
+        checks(
+            "it logged what it did",
+            "Done at" in log and f"Using the trial name {name}" in log,
+            log[-1500:],
+        )
+        checks(
+            "the service runs as the tool's account",
+            node.out(f"systemctl is-active {UNIT}") == "active"
+            and node.out(f"ps -o user= -p $(systemctl show -p MainPID --value {UNIT})") == ACCOUNT,
+        )
+        issue = node.out("cat /etc/issue")
+        links = re.findall(rf"https://{re.escape(name)}/setup/\S+", issue)
+        checks("the link is above the console's login prompt", len(links) == 1, issue)
+        checks(
+            "and the distribution's own text is still there",
+            issue.rstrip().endswith("\\l") or "Kernel" in issue or "\\n" in issue,
+            issue,
+        )
+        checks(
+            "the page answers by the name, through Apache",
+            status_of_with(node, f"https://{name}/login", "-k") == "200",
+        )
+        if not links:
+            return
+        checks(
+            "the link opens from elsewhere",
+            local("curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", links[0]).stdout
+            == "200",
+        )
+        checks(
+            "the form's yes was applied: login failures are held off",
+            "LIMIT" in node.out("ufw status 2>/dev/null")
+            or "persourcepenalties yes"
+            in node.out("sshd -T 2>/dev/null | grep -i persourcepenalties"),
+            node.out("ufw status 2>/dev/null; sshd -T 2>/dev/null | grep -i persourcepenalties"),
+        )
+        checks(
+            "the form's no was kept: root can still log in",
+            node.out("sshd -T | grep -i permitrootlogin") != "permitrootlogin no",
+        )
+        # Someone elsewhere makes the first account; the note comes off the console within the hour.
+        jar = Path(tempfile.mkdtemp()) / "jar"
+        page = local("curl", "-k", "-s", "-c", str(jar), "-b", str(jar), links[0]).stdout
+        found = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', page)
+        password = "proof-password-" + os.urandom(8).hex()
+        words = [
+            "curl",
+            "-k",
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "-c",
+            str(jar),
+            "-b",
+            str(jar),
+        ]
+        words += [
+            "-H",
+            f"Referer: https://{name}/",
+            "--data-urlencode",
+            f"csrfmiddlewaretoken={found.group(1) if found else ''}",
+        ]
+        words += [
+            "-d",
+            "username=proofadmin",
+            "--data-urlencode",
+            f"password={password}",
+            "--data-urlencode",
+            f"password2={password}",
+        ]
+        checks(
+            "the first account can be made from the link", local(*words, links[0]).stdout == "302"
+        )
+        node.run(f"systemctl start {STATUS}.service")
+        issue = node.out("cat /etc/issue")
+        checks(
+            "the note is gone from the console once the account exists",
+            "Compromise Checker" not in issue,
+            issue,
+        )
+        checks("SELinux refused nothing", denials(node) == "", denials(node))
+        jar.unlink(missing_ok=True)
+    finally:
+        if script_id is not None:
+            try:
+                api.delete_stackscript(script_id)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[{distro}] could not delete the StackScript: {exc}")
+        for linode in (helper, made):
+            if linode is not None:
+                try:
+                    api.delete(linode["id"])
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[{distro}] could not delete {linode['label']}: {exc}")
+
+
 def status_of_with(node: "Node", url: str, extra: str) -> str:
     return node.out(f"curl -s -o /dev/null -w '%{{http_code}}' {extra} '{url}'")
 
@@ -1014,6 +1215,9 @@ def prove(
 
     place = work / f"{distro}-{route}"
     place.mkdir()
+    if route == "linode-form":
+        prove_linode_form(api, distro, region, release, place, checks)
+        return results
     key = place / "key"
     subprocess.run(  # noqa: S603
         ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],  # noqa: S607
@@ -1273,8 +1477,9 @@ def main() -> int:
         "--route",
         nargs="+",
         default=["local", "web"],
-        choices=["local", "web", "update"],
-        help="from this machine only, with a web address, or updated to a newer release",
+        choices=["local", "web", "update", "linode-form"],
+        help="from this machine only, with a web address, updated to a newer release, or made from"
+        " Linode's form (needs a token that may write StackScripts)",
     )
     parser.add_argument(
         "--keep-minutes", type=float, default=0, help="keep each server this long, to look at it"

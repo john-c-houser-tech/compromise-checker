@@ -464,6 +464,41 @@ def publish_command(directory: Path, manifest: Manifest) -> str:
     return f'gh release create v{version} --verify-tag{flag} --title "{version}" {files}'
 
 
+STACKSCRIPT_TEMPLATE = ROOT / "release" / "stackscript.sh"
+STACKSCRIPT_LABEL = "compromise-checker"
+
+
+def stackscript_for(
+    manifest: Manifest, installer_hash: str, downloads: str = DOWNLOADS, extra_flags: str = ""
+) -> str:
+    """Linode's form for this release (installation plan I.7): the template with the version, the
+    installer's hash and where the release is. It isn't one of the release's files, since the hash
+    in it is what protects the installer, so it's written beside the release folder and published
+    to Linode by hand."""
+    text = STACKSCRIPT_TEMPLATE.read_text(encoding="utf-8")
+    for placeholder, value in (
+        ("@VERSION@", manifest.version),
+        ("@INSTALLER_SHA256@", installer_hash),
+        ("@DOWNLOADS@", downloads),
+        ("@EXTRA_FLAGS@", extra_flags),
+    ):
+        if text.count(placeholder) < 1:
+            raise Refused(f"the StackScript template has no {placeholder}")
+        text = text.replace(placeholder, value)
+    left = re.findall(r"@[A-Z_0-9]+@", text)
+    if left:
+        raise Refused(f"the StackScript still has a placeholder: {left[0]}")
+    return text
+
+
+def stackscript_command(path: Path, manifest: Manifest) -> str:
+    script = shlex.quote(str(path))
+    return (
+        f'linode-cli stackscripts update STACKSCRIPT_ID --script "$(cat {script})"'
+        f' --rev_note "{manifest.version}"'
+    )
+
+
 def pasted_line(manifest: Manifest, installer_hash: str) -> str:
     """The line an install page gives people. The hash is what protects the installer, so the page
     has to be somewhere other than the release's own files. It works in a new private folder: in a
@@ -507,6 +542,13 @@ def verify(directory: Path, key_file: Path | None = None) -> None:
     print(f"    {publish_command(directory, manifest)}")
     print("The line for the install page, which must not live in the release's own files:")
     print(f"    {pasted_line(manifest, manifest.files[INSTALLER].sha256)}")
+    stackscript = directory.parent / f"stackscript-{manifest.version}.sh"
+    stackscript.write_text(
+        stackscript_for(manifest, manifest.files[INSTALLER].sha256), encoding="utf-8"
+    )
+    shown = stackscript.relative_to(ROOT) if stackscript.is_relative_to(ROOT) else stackscript
+    print(f"Linode's form for this release is in {shown}. To publish it:")
+    print(f"    {stackscript_command(stackscript, manifest)}")
 
 
 def main(argv: list[str] | None = None) -> int:

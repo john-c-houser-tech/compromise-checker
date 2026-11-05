@@ -7,8 +7,11 @@ installer sets up writes them down as root every hour:
 
 Run as a file, without -m and with -S, so nothing but the standard library is loaded as root.
 
-It uses only the standard library and reads nothing but SSH's settings and the system's own note
-of a restart. The page reads what it wrote, and shows nothing it can't make sense of."""
+It uses only the standard library and reads nothing but SSH's settings, the system's own note
+of a restart and, to know whether the first account exists, the count of accounts in the web
+interface's own file. The page reads what it wrote, and shows nothing it can't make sense of. On a
+machine set up from Linode's form, it also takes the installer's note with the first-setup link off
+the console once that account exists."""
 
 import contextlib
 import json
@@ -100,6 +103,69 @@ def restart_from(code: int, said: str) -> bool | None:
     return None
 
 
+ISSUE = Path("/etc/issue")  # what the console shows above the login prompt
+WEB_DB = Path("/var/lib/compromise-checker/data/web.db")
+NOTICE_START = "# --- Compromise Checker ---"
+NOTICE_END = "# --- end of the Compromise Checker note ---"
+
+
+def has_an_account(web_db: Path = WEB_DB) -> bool | None:
+    """Whether the web interface has its first account, read from its own file as root; None if
+    that can't be told (no file yet, or the accounts live in PostgreSQL)."""
+    import sqlite3
+
+    if not web_db.is_file():
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{web_db}?mode=ro", uri=True, timeout=5)
+        try:
+            (count,) = connection.execute("SELECT count(*) FROM auth_user").fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return None
+    return count > 0
+
+
+def without_notice(text: str) -> str:
+    """The console text with the installer's note taken out, if it's there."""
+    start = text.find(NOTICE_START)
+    end = text.find(NOTICE_END)
+    if start < 0 or end < start:
+        return text
+    end += len(NOTICE_END)
+    if end < len(text) and text[end] == "\n":
+        end += 1
+    return text[:start] + text[end:]
+
+
+def clear_console_notice(issue: Path = ISSUE, web_db: Path = WEB_DB) -> bool:
+    """The installer's note, with the first-setup link, comes off the console once the first account
+    exists (installation plan I6: "removed once used"). Whether it was removed now."""
+    try:
+        text = issue.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if NOTICE_START not in text or not has_an_account(web_db):
+        return False
+    with contextlib.suppress(OSError):
+        write_text(issue, without_notice(text))
+        return True
+    return False
+
+
+def write_text(path: Path, text: str) -> None:
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}-")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as out:
+            out.write(text)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
 def collect() -> dict:
     return {
         "checked": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -171,6 +237,8 @@ def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     path = Path(arguments[0]) if arguments else STATUS
     write(path, collect())
+    if not arguments:  # the real machine, not a test's path
+        clear_console_notice()
     return 0
 
 

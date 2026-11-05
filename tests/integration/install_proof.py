@@ -814,6 +814,7 @@ def prove_public(node: "Node", checks, distro: str, web: bool, public: dict) -> 
     version = public["version"]
     address = node.address
     name = f"{address.replace('.', '-')}.sslip.io"
+    host = f"-k -H 'Host: {name}'" if web else ""
 
     def line(sha256: str, flags: str) -> str:
         return (
@@ -855,10 +856,11 @@ def prove_public(node: "Node", checks, distro: str, web: bool, public: dict) -> 
     checks("as the tool's own account", node.out(f"ps -o user= -p {pid}") == ACCOUNT, pid)
     bound = [line_.split()[3] for line_ in node.out("ss -Hltn | grep ':8088 '").splitlines()]
     checks("only on this machine", bound == ["127.0.0.1:8088"], bound)
-    links = _LINK_LINE.findall(done.stdout)
+    pattern = re.compile(rf"https://{re.escape(name)}/setup/\S+") if web else _LINK_LINE
+    links = pattern.findall(done.stdout)
     checks("it hands over a link", len(links) == 1, done.stdout)
     if links:
-        checks("the link opens", status_of(node, links[0]) == "200", links[0])
+        checks("the link opens", status_of_with(node, links[0], host) == "200", links[0])
     if web:
         shown = wait_for_status(node, f"https://{name}/login", "-k", "200", 180)
         checks("the page answers on its web address", shown == "200", shown)
@@ -872,11 +874,15 @@ def prove_public(node: "Node", checks, distro: str, web: bool, public: dict) -> 
     node.close()
     time.sleep(15)
     node.wait()
-    back = wait_for_status(node, "http://127.0.0.1:8088/login", "", "200", 180)
+    back = wait_for_status(node, "http://127.0.0.1:8088/login", host.replace("-k ", ""), "200", 180)
     checks("after a reboot the page is back", back == "200", back)
     checks("the service came back", node.out(f"systemctl is-enabled {UNIT}") == "enabled")
-    again = _LINK_LINE.findall(node.out(LINK))
-    checks("a link can still be made", len(again) == 1 and status_of(node, again[0]) == "200")
+    again = pattern.findall(node.out(LINK))
+    checks(
+        "a link can still be made",
+        len(again) == 1 and status_of_with(node, again[0], host) == "200",
+        again,
+    )
     selinux = node.out("getenforce 2>/dev/null") or "not on this system"
     print(f"[{distro}] SELinux: {selinux}")
     if distro.startswith("rocky"):

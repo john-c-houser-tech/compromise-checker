@@ -207,7 +207,15 @@ class Linode:
         self.call("DELETE", f"/linode/stackscripts/{stackscript_id}")
 
     def stackscripts(self) -> list:
-        return self.call("GET", "/linode/stackscripts?page_size=100").get("data", [])
+        """Every StackScript the token can see, public ones included, page by page: a sweep
+        looking for this run's mustn't miss one on a later page."""
+        found, page, pages = [], 1, 1
+        while page <= pages:
+            answer = self.call("GET", f"/linode/stackscripts?page_size=500&page={page}")
+            found.extend(answer.get("data", []))
+            pages = int(answer.get("pages", 1) or 1)
+            page += 1
+        return found
 
     def get(self, linode_id: int) -> dict:
         return self.call("GET", f"/linode/instances/{linode_id}")

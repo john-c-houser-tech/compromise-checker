@@ -17,7 +17,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import signal
 import socket
 import ssl
@@ -144,7 +143,9 @@ class Node:
         self.address = address
         self.user = user
         self.key, self.known = key, known
-        self.master = key.parent / f"m-{user}"
+        # One master connection per machine and user: two machines proved from one folder would
+        # otherwise share a socket, and commands for the second would run on the first.
+        self.master = key.parent / f"m-{user}-{address.replace(':', '_')}"
         self.options = [
             "-F",
             "/dev/null",
@@ -1082,24 +1083,17 @@ def prove_linode_form(
             "ssh_key_logins_only": "no",
             "block_login_failures": "yes",
         }
-        # Linode's own injection of a StackScript into a Linode made through the API proved
-        # intermittent in this proof (the script appeared on one machine and not the next, with the
-        # same request), and is Linode's to prove: John deploys from Cloud Manager by hand. Here the
-        # script is run as Linode's runner runs it: as root, at first boot, from /root/StackScript,
-        # with each field in the environment in upper case.
-        made = api.create(proof.run_label(distro), proof.IMAGES[distro], region, public)
+        # Linode puts the script at /root/StackScript and runs it at first boot. A field left out
+        # of stackscript_data makes it skip the script without a word, so every field is sent.
+        made = api.create(
+            proof.run_label(distro), proof.IMAGES[distro], region, public, script_id, answers
+        )
+        counted = api.call("GET", f"/linode/stackscripts/{script_id}").get("deployments_total")
+        checks("Linode counts the deployment against the StackScript", counted == 1, counted)
         node = Node(made["ipv4"][0], key, place / "known")
         node.wait()
         address = made["ipv4"][0]
         name = f"{address.replace('.', '-')}.sslip.io"
-        script_file = place / "StackScript"
-        script_file.write_text(script["script"], encoding="utf-8")
-        node.copy(script_file, "/root/StackScript")
-        environment = " ".join(f"{k.upper()}={shlex.quote(v)}" for k, v in answers.items())
-        node.run(
-            f"chmod 700 /root/StackScript && setsid -f env {environment} bash /root/StackScript"
-            " > /dev/null 2>&1 < /dev/null"
-        )
         started = time.monotonic()
         # The form's "yes" to holding off login failures limits new SSH connections, so ask slowly.
         said = wait_for(

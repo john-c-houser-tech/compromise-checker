@@ -345,3 +345,51 @@ def test_an_outcome_from_before_the_current_preparation_is_not_shown(base, tmp_p
     assert updates.status(base, program, outcome)["outcome"] == {}
     outcome.write_text(json.dumps({"at": "2099-01-01T00:00:00+00:00", "outcome": "rolled back"}))
     assert updates.status(base, program, outcome)["outcome"]["outcome"] == "rolled back"
+
+
+def test_a_version_already_installed_is_no_longer_announced(base, tmp_path, trusted):
+    program = tmp_path / "opt"
+    installed_at(program, "0.1.0")
+    served = published(tmp_path, "0.2.0")
+    served[REPO_LIST] = listing(("v0.2.0", False, False))
+    updates.check(base, fetcher(served), program)
+    assert updates.notice(base, program)["version"] == "0.2.0"
+    import shutil
+
+    shutil.rmtree(program)
+    installed_at(program, "0.2.0")  # the update went through; the day's check still names it
+    assert updates.notice(base, program) is None
+    assert updates.status(base, program)["newest"] is None
+
+
+def test_pip_taking_too_long_is_a_failure_in_words(base, tmp_path, trusted):
+    program = tmp_path / "opt"
+    installed_at(program, "0.1.0")
+    served = published(tmp_path, "0.2.0")
+
+    def slow(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 0))
+
+    with pytest.raises(updates.UpdateError, match="within"):
+        updates.prepare(base, "0.2.0", fetch=fetcher(served), program=program, run=slow)
+    assert updates.status(base, program)["progress"]["state"] == "failed"
+    assert not (base / "updates" / "request").exists()
+
+
+def test_a_wheelhouse_copied_with_the_release_means_nothing_is_fetched(base, tmp_path, trusted):
+    program = tmp_path / "opt"
+    installed_at(program, "0.1.0")
+    source = tmp_path / "copied"
+    _release(source, "0.2.0")
+    (source / "wheels").mkdir()
+    (source / "wheels" / "dep-1.0-py3-none-any.whl").write_bytes(b"dep")
+    (source / "wheels" / "notes.txt").write_text("not a wheel")
+    (source / "wheels" / "link-1.0-py3-none-any.whl").symlink_to("/etc/hostname")
+
+    def never(command, **kwargs):
+        raise AssertionError("pip was run")
+
+    updates.prepare(base, source=source, program=program, run=never)
+    wheels = base / "updates" / "incoming" / "0.2.0" / "wheels"
+    assert sorted(p.name for p in wheels.iterdir()) == ["dep-1.0-py3-none-any.whl"]
+    assert (base / "updates" / "request").exists()

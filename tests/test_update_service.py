@@ -218,9 +218,7 @@ def test_the_account_s_folders_must_be_its_own(tmp_path, monkeypatch, trusted, m
     assert machine.restarts == 0 and machine.current() == "0.1.0"
 
 
-def test_a_wheel_that_grows_while_copied_stays_within_the_size_cap(
-    tmp_path, monkeypatch, trusted
-):
+def test_a_wheel_that_grows_while_copied_stays_within_the_size_cap(tmp_path, monkeypatch, trusted):
     machine = Machine(tmp_path, monkeypatch, answers_after=1)
     source = machine.offer("0.2.0", wheels=(("dep-1.0-py3-none-any.whl", b"12345"),))
     wheel = source / "wheels" / "dep-1.0-py3-none-any.whl"
@@ -311,3 +309,26 @@ def test_the_new_version_is_built_on_the_running_version_s_own_python():
         check=True,
     ).stdout.strip()
     assert said == str((major, minor))
+
+
+def test_a_request_taken_back_before_the_service_ran_installs_nothing(
+    tmp_path, monkeypatch, trusted
+):
+    """The page's "take the request back" removes the file; the service may already be starting."""
+    machine = Machine(tmp_path, monkeypatch, answers_after=1)
+    machine.offer("0.2.0")
+    (machine.updates / "request").unlink()
+    assert machine.go() == 0
+    assert machine.outcome()["outcome"] == "nothing"
+    assert machine.current() == "0.1.0" and not machine.commands
+
+
+def test_root_s_staging_is_cleared_when_the_wheels_are_refused(tmp_path, monkeypatch, trusted):
+    machine = Machine(tmp_path, monkeypatch, answers_after=1)
+    machine.offer("0.2.0", wheels=(("big-1.0-py3-none-any.whl", b""),))
+    big = machine.updates / "incoming" / "0.2.0" / "wheels" / "big-1.0-py3-none-any.whl"
+    with big.open("r+b") as out:
+        out.truncate(update_service.MAX_WHEEL_BYTES + 1)
+    assert machine.go() == 1
+    assert "larger than any release's" in machine.outcome()["words"]
+    assert not any((machine.program / "staged").iterdir())

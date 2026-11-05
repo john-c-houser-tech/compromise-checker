@@ -209,8 +209,10 @@ On a machine without internet, copy a release's files over and run, as the tool'
     sudo runuser -u compromise-checker -- env CHECKER_HOME=/var/lib/compromise-checker/data \
         /opt/compromise-checker/current/bin/checker update --from /path/to/the/release
 
-The same command without `--from` fetches the newest release from GitHub, and `--check` only says what the
-newest version is. The daily check set from the Check every day page keeps working across updates: the web
+If that folder also holds a `wheels` folder with the dependencies, as `pip download --require-hashes
+--only-binary :all: -r requirements.lock -d wheels` fetches them on a machine with internet and the same
+Python, nothing is fetched; without one, the dependencies are fetched from PyPI. The same command without
+`--from` fetches the newest release from GitHub, and `--check` only says what the newest version is. The daily check set from the Check every day page keeps working across updates: the web
 service runs through `/opt/compromise-checker/current`, so what it starts follows the link.
 
 ## The setup link

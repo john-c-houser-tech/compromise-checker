@@ -7777,7 +7777,10 @@ def _found(home, version="0.2.0", security_fix=False, problem=None):
             "prerelease": False,
             "security_fix": security_fix,
         }
-    found = {"checked": "2026-11-21T10:00:00+00:00", "installed": "0.1.0", "newest": newest}
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    found = {"checked": now, "installed": "0.1.0", "newest": newest}
     if problem:
         found["problem"] = problem
     (folder / "check.json").write_text(json.dumps(found))

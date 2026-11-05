@@ -1869,7 +1869,6 @@ def _web_has_run(base: Path) -> bool:
         return True
 
 
-@_plain_database_errors
 def cmd_update(args: argparse.Namespace) -> int:
     """The same path the Updates page takes, for a terminal, or for a release copied over by hand
     on a machine without internet. The root service does the installing, afterwards."""
@@ -1913,6 +1912,7 @@ def cmd_update(args: argparse.Namespace) -> int:
     return 0
 
 
+@_plain_database_errors
 def cmd_web_setup_link(args: argparse.Namespace) -> int:
     """A new link for the first account, for when the one from starting the server isn't to hand: on
     a machine with nobody at it, that's in its log. Any link before it stops working."""

@@ -118,17 +118,18 @@ class Pinned:
     def inside(self, name: str, owner: int) -> Pinned:
         return Pinned(self.shown / name, owner, dir_fd=self.fd, name=name)
 
-    def remove_request(self) -> bool:
-        """The request file, or an empty folder put there instead. Whether it's gone."""
+    def remove_request(self) -> str:
+        """Remove the request file, or an empty folder put there instead: "removed", or "absent"
+        if it was taken back meanwhile (then nothing is to be installed), or "stuck"."""
         for remove in (os.unlink, os.rmdir):
             try:
                 remove(REQUEST, dir_fd=self.fd)
-                return True
+                return "removed"
             except FileNotFoundError:
-                return True
+                return "absent"
             except OSError:
                 continue
-        return False
+        return "stuck"
 
 
 def running_version(program: Path = PROGRAM) -> str:
@@ -288,9 +289,10 @@ def install(
     program = program or PROGRAM
     owner = account_uid() if owner is None else owner
     folder = Pinned(updates, owner)
-    if not os.path.lexists(updates / REQUEST):
+    claimed = folder.remove_request()  # not read: what to install is worked out from what's there
+    if claimed == "absent":  # never there, or taken back from the page before this ran
         return {"outcome": "nothing", "words": "there was no request"}
-    if not folder.remove_request():  # not read: what to install is worked out from what's there
+    if claimed == "stuck":
         raise Stuck(f"{updates / REQUEST} couldn't be removed")
     before = running_version(program)
     if "incoming" not in folder.names():
@@ -302,8 +304,12 @@ def install(
     if staged.exists() or staged.is_symlink():
         shutil.rmtree(staged, ignore_errors=True)
     say(f"Checking version {version_offered} against what the release key signed.")
-    manifest = releases.stage_release(source.path, staged, newer_than=before)
-    copy_wheels(source.inside(WHEELS, owner), staged / WHEELS)
+    try:
+        manifest = releases.stage_release(source.path, staged, newer_than=before)
+        copy_wheels(source.inside(WHEELS, owner), staged / WHEELS)
+    except BaseException:
+        shutil.rmtree(staged, ignore_errors=True)  # nothing of a refused release stays with root
+        raise
     version = manifest.version
     say(f"Installing version {version} beside {before}.")
     previous = Path(os.readlink(program / "current"))

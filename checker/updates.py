@@ -153,6 +153,19 @@ def newest(
     return None
 
 
+def _newer(version: Any, than: str) -> bool:
+    """Whether a found version is newer than the running one. A running version that isn't a plain
+    one (a developer's checkout) can't be compared, so what was found stands."""
+    try:
+        mine = releases.version_key(than)
+    except releases.ReleaseError:
+        return True
+    try:
+        return releases.version_key(str(version)) > mine
+    except releases.ReleaseError:
+        return False
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -252,6 +265,8 @@ def status(
     newest_found = checked.get("newest")
     if not isinstance(newest_found, dict) or not newest_found.get("version"):
         newest_found = None
+    elif not _newer(newest_found["version"], running["version"]):
+        newest_found = None  # found before an update that has since been installed
     progress = _read(folder / PROGRESS)
     outcome = _read(outcome_file or OUTCOME_FILE)
     # An outcome from before the release now being got ready is about an earlier update.
@@ -303,9 +318,28 @@ def _wheels(python: str, requirements: Path, into: Path, run=subprocess.run) -> 
         "-d",
         str(into),
     ]
-    done = run(command, capture_output=True, text=True, errors="replace", timeout=PIP_SECONDS)
+    try:
+        done = run(command, capture_output=True, text=True, errors="replace", timeout=PIP_SECONDS)
+    except subprocess.TimeoutExpired:
+        raise UpdateError(
+            f"the dependencies couldn't be fetched within {PIP_SECONDS // 60} minutes"
+        ) from None
     if done.returncode:
         raise UpdateError(f"the dependencies couldn't be fetched: {done.stderr.strip()[-800:]}")
+
+
+def _wheels_from(source: Path, into: Path) -> None:
+    """A wheelhouse copied over with the release, for a machine without internet: plain files by
+    name. Root's pip checks each against the hash the signed list gives before installing."""
+    into.mkdir(mode=0o700)
+    for entry in sorted(source.iterdir()):
+        name = entry.name
+        if not (name.endswith(".whl") and releases._FILE_NAME.fullmatch(name)):
+            continue
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        with entry.open("rb") as original, (into / name).open("xb") as copy:
+            shutil.copyfileobj(original, copy)
 
 
 def prepare(
@@ -350,7 +384,10 @@ def prepare(
                     f"{manifest.version} is a pre-release, and this machine is on a final version"
                 )
             _progress(base, manifest.version, "dependencies")
-            _wheels(python, target / releases.REQUIREMENTS, target / WHEELS, run)
+            if source is not None and (source / WHEELS).is_dir():
+                _wheels_from(source / WHEELS, target / WHEELS)
+            else:
+                _wheels(python, target / releases.REQUIREMENTS, target / WHEELS, run)
     except (PullError, releases.ReleaseError, OSError) as exc:
         _progress(base, shown, "failed", str(exc))
         raise UpdateError(_plain(str(exc))) from None

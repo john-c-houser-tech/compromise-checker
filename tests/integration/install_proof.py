@@ -5,10 +5,17 @@ installer is told to trust, and installs it from a folder on a new Linode per sy
 refusals first, then the install, then that what it set up survives a reboot. Every server is
 deleted, and leftovers are swept up next time.
 
+The `public-local` and `public-web` routes instead install the PUBLISHED release from GitHub, as
+the install page's pasted line does (--public-version and --installer-sha256 from `release.py
+verify`), and ignore the release built here.
+
 Run by hand, not in CI: it spends money (a Nanode is $0.0075 an hour) and needs a Linode API token.
 It works from what's committed, so commit first.
 
     LINODE_TOKEN=... python tests/integration/install_proof.py [--distro ubuntu24.04 rocky9 | all]
+        [--route local web update linode-form]
+    LINODE_TOKEN=... python tests/integration/install_proof.py --route public-local public-web \\
+        --public-version 0.1.0 --installer-sha256 HASH
 """
 
 import argparse
@@ -810,7 +817,9 @@ RELEASES = "https://github.com/john-c-houser-tech/compromise-checker/releases/do
 
 def prove_public(node: "Node", checks, distro: str, web: bool, public: dict) -> None:
     """The published release, as the install page says to run it: downloaded from GitHub, its
-    hash checked, then the installer, which downloads and checks the rest. Nothing local."""
+    hash checked, then the installer, which downloads and checks the rest. Nothing local, and the
+    release built here is not used. The line differs from the page's only in a strict umask (as
+    the other routes use) and the flags that stop the installer asking questions."""
     version = public["version"]
     address = node.address
     name = f"{address.replace('.', '-')}.sslip.io"
@@ -870,12 +879,17 @@ def prove_public(node: "Node", checks, distro: str, web: bool, public: dict) -> 
     print(f"[{distro}] measure before (RAM total/used MB; disk used): {before!r}")
     print(f"[{distro}] measure after install: {after!r}; took {took}s")
     checks("measured", True, after)
+    booted = node.out("cat /proc/sys/kernel/random/boot_id")
     node.run("systemctl reboot")
     node.close()
     time.sleep(15)
     node.wait()
     # on the web route only the proxy holds the secret, so the page is asked for at its address
     asked = (f"https://{name}/login", "-k") if web else ("http://127.0.0.1:8088/login", "")
+    checks(
+        "the machine really restarted",
+        node.out("cat /proc/sys/kernel/random/boot_id") not in ("", booted),
+    )
     back = wait_for_status(node, *asked, "200", 180)
     checks("after a reboot the page is back", back == "200", back)
     checks("the service came back", node.out(f"systemctl is-enabled {UNIT}") == "enabled")
@@ -1624,7 +1638,8 @@ def main() -> int:
         choices=["local", "web", "update", "linode-form", "public-local", "public-web"],
         help="from this machine only, with a web address, updated to a newer release, or made from"
         " Linode's form (needs a token that may write StackScripts); the public- routes install"
-        " the published release from GitHub (needs --public-version and --installer-sha256)",
+        " the published release from GitHub, ignoring the one built here (need --public-version and"
+        " --installer-sha256)",
     )
     parser.add_argument("--public-version", help="the published release the public- routes install")
     parser.add_argument("--installer-sha256", help="the hash the install page gives for install.py")
@@ -1633,6 +1648,13 @@ def main() -> int:
     )
     parser.add_argument("--work", type=Path, help="a folder to keep the servers' keys in")
     arguments = parser.parse_args()
+    if any(route.startswith("public-") for route in arguments.route):
+        if not (arguments.public_version and arguments.installer_sha256):
+            parser.error("the public- routes need --public-version and --installer-sha256")
+        if not re.fullmatch(r"\d+\.\d+\.\d+", arguments.public_version):
+            parser.error("--public-version is a plain X.Y.Z")
+        if not re.fullmatch(r"[0-9a-f]{64}", arguments.installer_sha256):
+            parser.error("--installer-sha256 is the 64 hex digits from the install page")
 
     def stop(number, _frame):  # so the servers are still deleted when this is killed
         raise SystemExit(128 + number)
@@ -1649,8 +1671,6 @@ def main() -> int:
             sign_release(release, key)
             more = {}
             if any(route.startswith("public-") for route in arguments.route):
-                if not (arguments.public_version and arguments.installer_sha256):
-                    parser.error("the public- routes need --public-version and --installer-sha256")
                 more["public"] = {
                     "version": arguments.public_version,
                     "sha256": arguments.installer_sha256,

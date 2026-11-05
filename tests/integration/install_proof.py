@@ -1096,9 +1096,11 @@ def prove_linode_form(
         name = f"{address.replace('.', '-')}.sslip.io"
         started = time.monotonic()
         # The form's "yes" to holding off login failures limits new SSH connections, so ask slowly.
+        # The script's own last line: the marker comes before the console note and the prompt.
         said = wait_for(
             node,
-            f"test -f {PROGRAM}/installed && echo installed",
+            f"test -f {PROGRAM}/installed"
+            " && grep -q 'Done at' /var/log/compromise-checker-install.log && echo installed",
             "installed",
             seconds=1200,
             every=30,
@@ -1118,9 +1120,6 @@ def prove_linode_form(
                 f"journalctl -u {UNIT} -n 20 --no-pager 2>&1",
             ):
                 print(f"[{distro}] $ {command}\n{node.out(command)}")
-            if keep_minutes:
-                print(f"[{distro}] kept for {keep_minutes} minutes: ssh -i {key} root@{address}")
-                time.sleep(keep_minutes * 60)
             return
         checks(
             "it logged what it did, with the trial name",
@@ -1209,6 +1208,11 @@ def prove_linode_form(
         jar.unlink(missing_ok=True)
         jar.parent.rmdir()
     finally:
+        if keep_minutes and made is not None:  # to look at it, passed or failed
+            print(
+                f"[{distro}] kept for {keep_minutes} minutes: ssh -i {key} root@{made['ipv4'][0]}"
+            )
+            time.sleep(keep_minutes * 60)
         if script_id is not None:
             try:
                 api.delete_stackscript(script_id)

@@ -157,7 +157,7 @@ def _web_db(path, accounts: int):
     connection.close()
 
 
-def test_the_console_note_comes_off_once_the_first_account_exists(tmp_path):
+def test_the_console_note_comes_off_once_the_first_account_exists(tmp_path, monkeypatch):
     issue = tmp_path / "issue"
     original = "Ubuntu 24.04 LTS \\n \\l\n\n"
     note = (
@@ -165,6 +165,9 @@ def test_the_console_note_comes_off_once_the_first_account_exists(tmp_path):
         f" first account.\n{machine_status.NOTICE_END}\n"
     )
     issue.write_text(note + original)
+    refreshed = []
+    monkeypatch.setattr(machine_status, "refresh_console_prompts", lambda: refreshed.append(True))
+    issue.chmod(0o600)  # as the installer leaves it while the link is in it
     web_db = tmp_path / "web.db"
     assert machine_status.has_an_account(web_db) is None, "no file yet"
     assert not machine_status.clear_console_notice(issue, web_db)
@@ -178,7 +181,8 @@ def test_the_console_note_comes_off_once_the_first_account_exists(tmp_path):
     assert machine_status.clear_console_notice(issue, tmp_path / "with.db")
     assert issue.read_text() == original, "only the note goes"
     assert issue.stat().st_ino == before, "written in place: the unit opens that file alone"
-    assert issue.stat().st_mode & 0o777 == 0o644
+    assert issue.stat().st_mode & 0o777 == 0o644, "ordinary again with the link gone"
+    assert refreshed == [True]
     assert not machine_status.clear_console_notice(issue, tmp_path / "with.db"), "nothing left"
     (tmp_path / "odd.db").write_text("not a database")
     assert machine_status.has_an_account(tmp_path / "odd.db") is None

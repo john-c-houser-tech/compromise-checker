@@ -153,6 +153,7 @@ def clear_console_notice(issue: Path = ISSUE, web_db: Path = WEB_DB) -> bool:
         return False
     with contextlib.suppress(OSError):
         write_text(issue, without_notice(text))
+        os.chmod(issue, 0o644)  # root's alone while the link was in it; ordinary again
         refresh_console_prompts()
         return True
     return False
@@ -161,13 +162,17 @@ def clear_console_notice(issue: Path = ISSUE, web_db: Path = WEB_DB) -> bool:
 CONSOLE_GETTYS = ("serial-getty@ttyS0.service", "getty@tty1.service")  # Lish, and the screen
 
 
-def idle_getty(unit: str) -> bool:
-    """A login prompt waiting, not someone's session: the prompt shows the old text until it's
-    drawn again, but a session mustn't be cut."""
+def idle_getty(unit: str) -> str | None:
+    """The main process of a login prompt that's waiting, or None when it isn't one: the prompt
+    shows the old text until it's drawn again, but a session mustn't be cut."""
     shown = _run("systemctl", "show", "-p", "MainPID", "--value", unit)
     pid = shown.stdout.strip() if shown is not None else ""
     if not pid.isdigit() or pid == "0":
-        return False
+        return None
+    return pid if is_agetty(pid) else None
+
+
+def is_agetty(pid: str) -> bool:
     try:
         return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip() == "agetty"
     except OSError:
@@ -175,10 +180,13 @@ def idle_getty(unit: str) -> bool:
 
 
 def refresh_console_prompts() -> list[str]:
-    """Draw the console's login prompt again where it's only a prompt, so the change shows now."""
+    """Draw the console's login prompt again where it's only a prompt, so the change shows now.
+    Looked at again the instant before, since agetty becomes login the moment someone types a
+    name; what's left is a window of microseconds."""
     refreshed = []
     for unit in CONSOLE_GETTYS:
-        if idle_getty(unit):
+        pid = idle_getty(unit)
+        if pid is not None and is_agetty(pid):
             _run("systemctl", "restart", unit)
             refreshed.append(unit)
     return refreshed

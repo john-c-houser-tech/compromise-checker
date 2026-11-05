@@ -341,16 +341,19 @@ def test_the_status_units_name_root_s_own_copy_of_the_script():
     assert "TimeoutStartSec=5min" in service
 
 
-def test_the_console_note_carries_the_link_and_is_replaced_not_repeated(tmp_path):
+def test_the_console_note_carries_the_link_and_is_replaced_not_repeated(tmp_path, monkeypatch):
     from checker import machine_status
 
+    refreshed = []
+    monkeypatch.setattr(installer, "refresh_console_prompts", lambda: refreshed.append(True))
     issue = tmp_path / "issue"
     issue.write_text("Rocky Linux 9\nKernel \\r on an \\m\n")
     installer.write_console_notice("https://checker.example.org/setup/first", issue)
     text = issue.read_text()
     assert text.startswith(installer.NOTICE_START) and "setup/first" in text
     assert text.endswith("Rocky Linux 9\nKernel \\r on an \\m\n")
-    assert issue.stat().st_mode & 0o777 == 0o644
+    assert issue.stat().st_mode & 0o777 == 0o600, "the link is in it: root's alone"
+    assert refreshed == [True], "the prompt is drawn again"
     installer.write_console_notice("https://checker.example.org/setup/second", issue)
     text = issue.read_text()
     assert text.count(installer.NOTICE_START) == 1 and "setup/first" not in text

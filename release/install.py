@@ -840,20 +840,27 @@ def write_console_notice(link: str, issue: Path = ISSUE) -> None:
         before = issue.read_text(encoding="utf-8")
     except OSError:
         before = ""
-    _write_file(issue, console_notice(link, before), 0o644)
+    # Root's alone while the link is in it: anyone who could read the file could make the first
+    # account. The login prompt runs as root and reads it fine; the status service restores 0644
+    # with the note gone.
+    _write_file(issue, console_notice(link, before), 0o600)
     refresh_console_prompts()
 
 
 CONSOLE_GETTYS = ("serial-getty@ttyS0.service", "getty@tty1.service")  # Lish, and the screen
 
 
-def idle_getty(unit: str, run=None) -> bool:
-    """Whether the unit is a login prompt waiting, and not someone's session: a prompt already
-    on screen shows the old text until it's drawn again, but a session mustn't be cut."""
+def idle_getty(unit: str, run=None) -> Optional[str]:
+    """The main process of a login prompt that's waiting, or None when it isn't one: a prompt
+    already on screen shows the old text until it's drawn again, but a session mustn't be cut."""
     run = run or _run
     pid = run("systemctl", "show", "-p", "MainPID", "--value", unit, check=False).stdout.strip()
     if not pid.isdigit() or pid == "0":
-        return False
+        return None
+    return pid if is_agetty(pid) else None
+
+
+def is_agetty(pid: str) -> bool:
     try:
         return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip() == "agetty"
     except OSError:
@@ -861,11 +868,15 @@ def idle_getty(unit: str, run=None) -> bool:
 
 
 def refresh_console_prompts(run=None) -> list:
-    """Draw the console's login prompt again where it's only a prompt, so the note shows now."""
+    """Draw the console's login prompt again where it's only a prompt, so the note shows now. The
+    prompt is looked at again the instant before, since agetty becomes login the moment someone
+    types a name; what's left is a window of microseconds, in which a name just typed would have
+    to be typed again."""
     run = run or _run
     refreshed = []
     for unit in CONSOLE_GETTYS:
-        if idle_getty(unit, run):
+        pid = idle_getty(unit, run)
+        if pid is not None and is_agetty(pid):
             run("systemctl", "restart", unit, check=False)
             refreshed.append(unit)
     return refreshed

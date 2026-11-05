@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import signal
 import socket
 import ssl
@@ -1074,22 +1075,31 @@ def prove_linode_form(
             },
             sorted(fields),
         )
-        answers = {  # every field, as Linode's own example does, an empty one included
+        answers = {  # every field, as Cloud Manager sends them, an empty one included
             "web_address": "auto",
             "allowed": "",
             "root_login_off": "no",
             "ssh_key_logins_only": "no",
             "block_login_failures": "yes",
         }
-        made = api.create(
-            proof.run_label(distro), proof.IMAGES[distro], region, public, script_id, answers
-        )
-        counted = api.call("GET", f"/linode/stackscripts/{script_id}").get("deployments_total")
-        checks("Linode counts the deployment against the StackScript", counted == 1, counted)
+        # Linode's own injection of a StackScript into a Linode made through the API proved
+        # intermittent in this proof (the script appeared on one machine and not the next, with the
+        # same request), and is Linode's to prove: John deploys from Cloud Manager by hand. Here the
+        # script is run as Linode's runner runs it: as root, at first boot, from /root/StackScript,
+        # with each field in the environment in upper case.
+        made = api.create(proof.run_label(distro), proof.IMAGES[distro], region, public)
         node = Node(made["ipv4"][0], key, place / "known")
         node.wait()
         address = made["ipv4"][0]
         name = f"{address.replace('.', '-')}.sslip.io"
+        script_file = place / "StackScript"
+        script_file.write_text(script["script"], encoding="utf-8")
+        node.copy(script_file, "/root/StackScript")
+        environment = " ".join(f"{k.upper()}={shlex.quote(v)}" for k, v in answers.items())
+        node.run(
+            f"chmod 700 /root/StackScript && setsid -f env {environment} bash /root/StackScript"
+            " > /dev/null 2>&1 < /dev/null"
+        )
         started = time.monotonic()
         # The form's "yes" to holding off login failures limits new SSH connections, so ask slowly.
         said = wait_for(

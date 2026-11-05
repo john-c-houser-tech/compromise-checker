@@ -4,6 +4,11 @@ Compromise Checker needs a machine of its own: it holds keys that act as an admi
 checks. It installs on x86 machines running Ubuntu 24.04 or 26.04, or Rocky Linux 9 or 10. Close relatives of
 those, such as Linux Mint, aren't supported yet, and the installer stops with a message.
 
+It needs at least 1 GB of memory and 5 GB of free disk. Measured on new 1 GB servers (the smallest Linode),
+right after install: the tool used about 100 to 200 MB of memory and added 430 to 600 MB of disk, and the install
+took 1 to 1.5 minutes on Ubuntu and Rocky 9, and about 3 minutes on Rocky 10. Checking servers and making PDF
+reports use more while they run. The installer doesn't enforce a minimum.
+
 The installer asks whether people will use the tool from other computers. If not, it answers only on the
 machine itself, for a browser there. If so, it needs [a web address](#a-web-address) of its own.
 

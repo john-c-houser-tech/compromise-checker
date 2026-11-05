@@ -184,6 +184,25 @@ address can change, and when it does, every server limited to it refuses the key
 changes the address in the key's line in the account's `authorized_keys` file, or takes the account away and
 sets it up again. The setup commands alone won't do it: they stop when the account already exists.
 
+## Linode's form
+
+On Linode, the same install can be done with no terminal, from a StackScript NouriLoop publishes under the
+name `compromise-checker`: in Cloud Manager, under StackScripts, Community StackScripts. Its form asks for a web
+address, which is needed because a Linode has no browser of its own, optionally the addresses allowed to open
+the page, and the three SSH questions as yes or no, all set to no. Nothing it asks is secret. For a trial, the
+web address `auto` makes a name at sslip.io from the Linode's address, which Let's Encrypt can give a
+certificate for. That name, and so the address in it, then appears in public certificate logs, and it depends
+on sslip.io's name service; for real use, give a name you own and point its DNS record at the Linode's address
+once that's known. The installer waits up to 30 minutes for the name to lead to the machine.
+
+The script downloads the release, checks the installer against the hash fixed in the script, and runs it with
+your answers. When it's done, the link for the first account appears above the login prompt in the Linode's
+Lish console, and in `/var/log/compromise-checker-install.log`, which only root can read. The note on the console goes once the first
+account exists. The question about SSH passwords is usually left for later on a new Linode: nobody has logged in
+with a key yet, so the installer leaves passwords on and the page says how to turn them off.
+
+This route isn't advertised until it has been tried by a few people outside NouriLoop.
+
 ## Updating
 
 The web interface asks GitHub once a day, when someone with full access opens a page, for the public list of

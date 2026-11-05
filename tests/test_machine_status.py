@@ -144,3 +144,87 @@ def test_the_install_route_is_read_from_what_the_installer_left(tmp_path):
     web.write_text('{"name": "checker.example.org"}\n')
     installed.unlink()  # a web address set up, but the installer never finished
     assert machine_status.install_route(installed, web) is None
+
+
+def _web_db(path, accounts: int):
+    import sqlite3
+
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE auth_user (id INTEGER PRIMARY KEY, username TEXT)")
+    for n in range(accounts):
+        connection.execute("INSERT INTO auth_user (username) VALUES (?)", (f"person{n}",))
+    connection.commit()
+    connection.close()
+
+
+def test_the_console_note_comes_off_once_the_first_account_exists(tmp_path, monkeypatch):
+    issue = tmp_path / "issue"
+    original = "Ubuntu 24.04 LTS \\n \\l\n\n"
+    note = (
+        f"{machine_status.NOTICE_START}\nOpen https://checker.example.org/setup/abc to make the"
+        f" first account.\n{machine_status.NOTICE_END}\n"
+    )
+    issue.write_text(note + original)
+    refreshed = []
+    monkeypatch.setattr(machine_status, "refresh_console_prompts", lambda: refreshed.append(True))
+    issue.chmod(0o600)  # as the installer leaves it while the link is in it
+    web_db = tmp_path / "web.db"
+    assert machine_status.has_an_account(web_db) is None, "no file yet"
+    assert not machine_status.clear_console_notice(issue, web_db)
+    _web_db(web_db, 0)
+    assert machine_status.has_an_account(web_db) is False
+    assert not machine_status.clear_console_notice(issue, web_db)
+    assert issue.read_text() == note + original
+    _web_db(tmp_path / "with.db", 1)
+    assert machine_status.has_an_account(tmp_path / "with.db") is True
+    before = issue.stat().st_ino
+    assert machine_status.clear_console_notice(issue, tmp_path / "with.db")
+    assert issue.read_text() == original, "only the note goes"
+    assert issue.stat().st_ino == before, "written in place: the unit opens that file alone"
+    assert issue.stat().st_mode & 0o777 == 0o644, "ordinary again with the link gone"
+    assert refreshed == [True]
+    assert not machine_status.clear_console_notice(issue, tmp_path / "with.db"), "nothing left"
+    (tmp_path / "odd.db").write_text("not a database")
+    assert machine_status.has_an_account(tmp_path / "odd.db") is None
+
+
+def test_without_notice_leaves_other_text_alone():
+    assert machine_status.without_notice("plain\n") == "plain\n"
+    text = f"a\n{machine_status.NOTICE_START}\nx\n{machine_status.NOTICE_END}\nb\n"
+    assert machine_status.without_notice(text) == "a\nb\n"
+    assert machine_status.without_notice(
+        f"{machine_status.NOTICE_END}\n{machine_status.NOTICE_START}"
+    ) == (f"{machine_status.NOTICE_END}\n{machine_status.NOTICE_START}")
+
+
+def test_the_service_clears_the_note_when_run_as_the_unit_runs_it(monkeypatch, tmp_path):
+    """The unit names the status file: that path, not an empty argument list, means the real
+    machine."""
+    cleared = []
+    monkeypatch.setattr(machine_status, "collect", lambda: {"checked": "2026-11-05T00:00:00Z"})
+    monkeypatch.setattr(machine_status, "clear_console_notice", lambda: cleared.append(True))
+    monkeypatch.setattr(machine_status, "STATUS", tmp_path / "status" / "machine.json")
+    assert machine_status.main([str(tmp_path / "status" / "machine.json")]) == 0
+    assert cleared == [True]
+    assert machine_status.main([str(tmp_path / "elsewhere.json")]) == 0
+    assert cleared == [True], "a test's path: left alone"
+
+
+def test_the_status_service_draws_an_idle_prompt_again_but_not_a_session(monkeypatch):
+    calls = []
+
+    def run(*command):
+        calls.append(command)
+        if command[:2] == ("systemctl", "show"):
+            pid = {"serial-getty@ttyS0.service": "601", "getty@tty1.service": "602"}[command[-1]]
+            return subprocess.CompletedProcess(list(command), 0, f"{pid}\n", "")
+        return subprocess.CompletedProcess(list(command), 0, "", "")
+
+    monkeypatch.setattr(machine_status, "_run", run)
+    comm = {"/proc/601/comm": "agetty\n", "/proc/602/comm": "login\n"}
+    monkeypatch.setattr(
+        machine_status.Path, "read_text", lambda self, encoding=None: comm[str(self)]
+    )
+    assert machine_status.refresh_console_prompts() == ["serial-getty@ttyS0.service"]
+    assert ("systemctl", "restart", "serial-getty@ttyS0.service") in calls
+    assert all(c != ("systemctl", "restart", "getty@tty1.service") for c in calls)

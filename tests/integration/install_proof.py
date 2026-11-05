@@ -143,7 +143,9 @@ class Node:
         self.address = address
         self.user = user
         self.key, self.known = key, known
-        self.master = key.parent / f"m-{user}"
+        # One master connection per machine and user: two machines proved from one folder would
+        # otherwise share a socket, and commands for the second would run on the first.
+        self.master = key.parent / f"m-{user}-{address.replace(':', '_')}"
         self.options = [
             "-F",
             "/dev/null",
@@ -781,15 +783,17 @@ def prove_web(node: "Node", checks, distro: str) -> None:
 UPDATE_SERVICE = "compromise-checker-update"
 
 
-def wait_for(node: "Node", command: str, wanted: str, seconds: int = 420) -> str:
-    """The command's output once it says `wanted`, or whatever it last said."""
+def wait_for(node: "Node", command: str, wanted: str, seconds: int = 420, every: float = 5) -> str:
+    """The command's output once it says `wanted`, or whatever it last said. `every`: on a machine
+    whose firewall holds off an address that opens SSH connections quickly (about 6 in 30 seconds),
+    ask no more often than that, since the shared connection may not survive the install."""
     deadline = time.monotonic() + seconds
     said = ""
     while time.monotonic() < deadline:
         said = node.out(command)
         if wanted in said:
             return said
-        time.sleep(5)
+        time.sleep(every)
     return said
 
 
@@ -991,8 +995,252 @@ def prove_update(node: "Node", checks, distro: str, newer: Path, broken: Path) -
     checks("the page says it went back", "went back to 9.9.10" in page, page[-1500:])
 
 
+HELPER_PORT = 8123
+
+
+def stackscript_text(release: Path, downloads: str) -> str:
+    """Linode's form for the proof's release, as scripts/release.py makes it, pointed at where the
+    proof serves the release, with Let's Encrypt's staging asked for."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("release_script", ROOT / "scripts" / "release.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    from checker import releases
+
+    data = (release / "release.json").read_bytes()
+    manifest = releases.Manifest.model_validate(json.loads(data))
+    return module.stackscript_for(
+        manifest,
+        manifest.files["install.py"].sha256,
+        downloads=downloads,
+        extra_flags="flags+=(--test-certificates)",
+    )
+
+
+def prove_linode_form(
+    api, distro: str, region: str, release: Path, place: Path, checks, keep_minutes: float = 0
+) -> None:
+    """A Linode made from the form, with no terminal: the StackScript downloads the release from a
+    helper server standing in for GitHub, runs the installer with the form's answers, and the link
+    appears above the console's login prompt until the first account exists."""
+    key = place / "key"
+    subprocess.run(  # noqa: S603
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],  # noqa: S607
+        check=True,
+    )
+    public = key.with_suffix(".pub").read_text().strip()
+    helper_label = proof.run_label(f"{distro}-helper")
+    helper = api.create(helper_label, proof.IMAGES["ubuntu24.04"], region, public)
+    script_id = None
+    made = None
+    try:
+        server = Node(helper["ipv4"][0], key, place / "known-helper")
+        server.wait()
+        server.run(f"mkdir -p /srv/v{VERSION}")
+        server.copy(release, "/tmp/release")
+        server.run(f"cp /tmp/release/* /srv/v{VERSION}/ && chmod -R a+rX /srv")
+        # Detached from the SSH session, or the session never ends.
+        server.run(
+            f"setsid -f python3 -m http.server {HELPER_PORT} --directory /srv"
+            " > /var/log/helper.log 2>&1 < /dev/null; sleep 2"
+        )
+        downloads = f"http://{helper['ipv4'][0]}:{HELPER_PORT}"
+        served = local(
+            "curl",
+            "-fsS",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            f"{downloads}/v{VERSION}/install.py",
+        ).stdout
+        checks("the helper serves the release", served == "200", served)
+
+        script = api.create_stackscript(
+            proof.run_label(f"{distro}-form"),
+            proof.IMAGES[distro],
+            stackscript_text(release, downloads),
+        )
+        script_id = script["id"]
+        fields = {field["name"] for field in script.get("user_defined_fields", [])}
+        checks(
+            "Linode reads the five fields from the script",
+            fields
+            == {
+                "web_address",
+                "allowed",
+                "root_login_off",
+                "ssh_key_logins_only",
+                "block_login_failures",
+            },
+            sorted(fields),
+        )
+        answers = {  # every field, as Cloud Manager sends them, an empty one included
+            "web_address": "auto",
+            "allowed": "",
+            "root_login_off": "no",
+            "ssh_key_logins_only": "no",
+            "block_login_failures": "yes",
+        }
+        # Linode puts the script at /root/StackScript and runs it at first boot. A field left out
+        # of stackscript_data makes it skip the script without a word, so every field is sent.
+        made = api.create(
+            proof.run_label(distro), proof.IMAGES[distro], region, public, script_id, answers
+        )
+        counted = api.call("GET", f"/linode/stackscripts/{script_id}").get("deployments_total")
+        checks("Linode counts the deployment against the StackScript", counted == 1, counted)
+        node = Node(made["ipv4"][0], key, place / "known")
+        node.wait()
+        address = made["ipv4"][0]
+        name = f"{address.replace('.', '-')}.sslip.io"
+        started = time.monotonic()
+        # The form's "yes" to holding off login failures limits new SSH connections, so ask slowly.
+        # The script's own last line: the marker comes before the console note and the prompt.
+        said = wait_for(
+            node,
+            f"test -f {PROGRAM}/installed"
+            " && grep -q 'Done at' /var/log/compromise-checker-install.log && echo installed",
+            "installed",
+            seconds=1200,
+            every=30,
+        )
+        took = round(time.monotonic() - started)
+        print(f"[{distro}] the form's install took {took}s after the machine answered")
+        log = node.out("cat /var/log/compromise-checker-install.log 2>/dev/null")
+        checks("the form's install finished", said == "installed", log[-2500:])
+        if said != "installed":
+            # Linode runs a StackScript through cloud-init: its records say whether it ran at all.
+            for command in (
+                "cloud-init status --long 2>&1",
+                "tail -n 60 /var/log/cloud-init-output.log 2>&1",
+                "cd /var/lib/cloud/instance && wc -c user-data.txt vendor-data*.txt 2>&1",
+                "ls -la /var/log/compromise-checker-install.log /root 2>&1",
+                "journalctl -b --no-pager -o cat -u cloud-final -u cloud-config 2>&1 | tail -n 40",
+                f"journalctl -u {UNIT} -n 20 --no-pager 2>&1",
+            ):
+                print(f"[{distro}] $ {command}\n{node.out(command)}")
+            return
+        checks(
+            "it logged what it did, with the trial name",
+            "Done at" in log and name in log,
+            f"expected {name}; log starts: {log[:700]!r}",
+        )
+        checks(
+            "the service runs as the tool's account",
+            node.out(f"systemctl is-active {UNIT}") == "active"
+            and node.out(f"ps -o user= -p $(systemctl show -p MainPID --value {UNIT})") == ACCOUNT,
+        )
+        issue = node.out("cat /etc/issue")
+        links = re.findall(rf"https://{re.escape(name)}/setup/\S+", issue)
+        checks("the link is above the console's login prompt", len(links) == 1, f"{name}: {issue}")
+        checks(
+            "and the distribution's own text is still there",
+            issue.rstrip().endswith("\\l") or "Kernel" in issue or "\\n" in issue,
+            issue,
+        )
+        # Apache answers for the name once its certificate has come: usually under a minute.
+        status = wait_for_status(node, f"https://{name}/login", "-k", "200", seconds=180)
+        checks("the page answers by the name, through Apache", status == "200", status)
+        if not links:
+            return
+        checks(
+            "the link opens from elsewhere",
+            local("curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", links[0]).stdout
+            == "200",
+        )
+        # ufw's limit on Ubuntu 24.04; SSH's own penalties elsewhere, which `sshd -T` shows with
+        # their values when on ("persourcepenalties crash:90 authfail:5 ...") and as "no" when off.
+        penalties = node.out("sshd -T 2>/dev/null | grep -i persourcepenalties")
+        checks(
+            "the form's yes was applied: login failures are held off",
+            "LIMIT" in node.out("ufw status 2>/dev/null")
+            or (penalties.startswith("persourcepenalties ") and "authfail:" in penalties),
+            node.out("ufw status 2>/dev/null") + "\n" + penalties,
+        )
+        checks(
+            "the form's no was kept: root can still log in",
+            node.out("sshd -T | grep -i permitrootlogin") != "permitrootlogin no",
+        )
+        # Someone elsewhere makes the first account; the note comes off the console within the hour.
+        jar = Path(tempfile.mkdtemp()) / "jar"
+        page = local("curl", "-k", "-s", "-c", str(jar), "-b", str(jar), links[0]).stdout
+        found = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', page)
+        password = "proof-password-" + os.urandom(8).hex()
+        words = [
+            "curl",
+            "-k",
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "-c",
+            str(jar),
+            "-b",
+            str(jar),
+        ]
+        words += [
+            "-H",
+            f"Referer: https://{name}/",
+            "--data-urlencode",
+            f"csrfmiddlewaretoken={found.group(1) if found else ''}",
+        ]
+        words += [
+            "-d",
+            "username=proofadmin",
+            "--data-urlencode",
+            f"password={password}",
+            "--data-urlencode",
+            f"password2={password}",
+        ]
+        checks(
+            "the first account can be made from the link", local(*words, links[0]).stdout == "302"
+        )
+        node.run(f"systemctl start {STATUS}.service")
+        issue = node.out("cat /etc/issue")
+        checks(
+            "the note is gone from the console once the account exists",
+            "Compromise Checker" not in issue,
+            issue,
+        )
+        checks("SELinux refused nothing", denials(node) == "", denials(node))
+        jar.unlink(missing_ok=True)
+        jar.parent.rmdir()
+    finally:
+        if keep_minutes and made is not None:  # to look at it, passed or failed
+            print(
+                f"[{distro}] kept for {keep_minutes} minutes: ssh -i {key} root@{made['ipv4'][0]}"
+            )
+            time.sleep(keep_minutes * 60)
+        if script_id is not None:
+            try:
+                api.delete_stackscript(script_id)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[{distro}] could not delete the StackScript: {exc}")
+        for linode in (helper, made):
+            if linode is not None:
+                try:
+                    api.delete(linode["id"])
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[{distro}] could not delete {linode['label']}: {exc}")
+
+
 def status_of_with(node: "Node", url: str, extra: str) -> str:
     return node.out(f"curl -s -o /dev/null -w '%{{http_code}}' {extra} '{url}'")
+
+
+def wait_for_status(node: "Node", url: str, extra: str, wanted: str, seconds: int = 120) -> str:
+    """The status once it's `wanted`, asking every 30 seconds (the firewall may limit new SSH
+    connections), or the last one seen."""
+    deadline = time.monotonic() + seconds
+    status = ""
+    while time.monotonic() < deadline:
+        status = status_of_with(node, url, extra)
+        if status == wanted:
+            return status
+        time.sleep(30)
+    return status
 
 
 def prove(
@@ -1014,6 +1262,9 @@ def prove(
 
     place = work / f"{distro}-{route}"
     place.mkdir()
+    if route == "linode-form":
+        prove_linode_form(api, distro, region, release, place, checks, keep_minutes)
+        return results
     key = place / "key"
     subprocess.run(  # noqa: S603
         ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],  # noqa: S607
@@ -1273,8 +1524,9 @@ def main() -> int:
         "--route",
         nargs="+",
         default=["local", "web"],
-        choices=["local", "web", "update"],
-        help="from this machine only, with a web address, or updated to a newer release",
+        choices=["local", "web", "update", "linode-form"],
+        help="from this machine only, with a web address, updated to a newer release, or made from"
+        " Linode's form (needs a token that may write StackScripts)",
     )
     parser.add_argument(
         "--keep-minutes", type=float, default=0, help="keep each server this long, to look at it"

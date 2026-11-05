@@ -1072,8 +1072,9 @@ def prove_linode_form(
             },
             sorted(fields),
         )
-        answers = {  # "allowed" left out: an empty field is its default
+        answers = {  # every field, as Linode's own example does, an empty one included
             "web_address": "auto",
+            "allowed": "",
             "root_login_off": "no",
             "ssh_key_logins_only": "no",
             "block_login_failures": "yes",
@@ -1081,6 +1082,8 @@ def prove_linode_form(
         made = api.create(
             proof.run_label(distro), proof.IMAGES[distro], region, public, script_id, answers
         )
+        counted = api.call("GET", f"/linode/stackscripts/{script_id}").get("deployments_total")
+        checks("Linode counts the deployment against the StackScript", counted == 1, counted)
         node = Node(made["ipv4"][0], key, place / "known")
         node.wait()
         address = made["ipv4"][0]
@@ -1098,6 +1101,8 @@ def prove_linode_form(
             for command in (
                 "cloud-init status --long 2>&1",
                 "tail -n 60 /var/log/cloud-init-output.log 2>&1",
+                "wc -c /var/lib/cloud/instance/user-data.txt /var/lib/cloud/instance/vendor-data*.txt"
+                " 2>&1",
                 "ls -la /var/log/compromise-checker-install.log /root 2>&1",
                 "journalctl -b --no-pager -o cat -u cloud-final -u cloud-config 2>&1 | tail -n 40",
                 f"journalctl -u {UNIT} -n 20 --no-pager 2>&1",

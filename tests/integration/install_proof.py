@@ -1014,7 +1014,9 @@ def stackscript_text(release: Path, downloads: str) -> str:
     )
 
 
-def prove_linode_form(api, distro: str, region: str, release: Path, place: Path, checks) -> None:
+def prove_linode_form(
+    api, distro: str, region: str, release: Path, place: Path, checks, keep_minutes: float = 0
+) -> None:
     """A Linode made from the form, with no terminal: the StackScript downloads the release from a
     helper server standing in for GitHub, runs the installer with the form's answers, and the link
     appears above the console's login prompt until the first account exists."""
@@ -1085,14 +1087,25 @@ def prove_linode_form(api, distro: str, region: str, release: Path, place: Path,
         name = f"{address.replace('.', '-')}.sslip.io"
         started = time.monotonic()
         said = wait_for(
-            node, f"test -f {PROGRAM}/installed && echo installed", "installed", seconds=1500
+            node, f"test -f {PROGRAM}/installed && echo installed", "installed", seconds=1200
         )
         took = round(time.monotonic() - started)
         print(f"[{distro}] the form's install took {took}s after the machine answered")
         log = node.out("cat /var/log/compromise-checker-install.log 2>/dev/null")
         checks("the form's install finished", said == "installed", log[-2500:])
         if said != "installed":
-            print(node.out(f"journalctl -u {UNIT} -n 30 --no-pager"))
+            # Linode runs a StackScript through cloud-init: its records say whether it ran at all.
+            for command in (
+                "cloud-init status --long 2>&1",
+                "tail -n 60 /var/log/cloud-init-output.log 2>&1",
+                "ls -la /var/log/compromise-checker-install.log /root 2>&1",
+                "journalctl -b --no-pager -o cat -u cloud-final -u cloud-config 2>&1 | tail -n 40",
+                f"journalctl -u {UNIT} -n 20 --no-pager 2>&1",
+            ):
+                print(f"[{distro}] $ {command}\n{node.out(command)}")
+            if keep_minutes:
+                print(f"[{distro}] kept for {keep_minutes} minutes: ssh -i {key} root@{address}")
+                time.sleep(keep_minutes * 60)
             return
         checks(
             "it logged what it did",
@@ -1217,7 +1230,7 @@ def prove(
     place = work / f"{distro}-{route}"
     place.mkdir()
     if route == "linode-form":
-        prove_linode_form(api, distro, region, release, place, checks)
+        prove_linode_form(api, distro, region, release, place, checks, keep_minutes)
         return results
     key = place / "key"
     subprocess.run(  # noqa: S603

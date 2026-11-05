@@ -4,12 +4,19 @@ Compromise Checker needs a machine of its own: it holds keys that act as an admi
 checks. It installs on x86 machines running Ubuntu 24.04 or 26.04, or Rocky Linux 9 or 10. Close relatives of
 those, such as Linux Mint, aren't supported yet, and the installer stops with a message.
 
+It needs at least 1 GB of memory and 5 GB of free disk. Measured on new 1 GB servers (the smallest Linode),
+right after install: 285 to 485 MB of the memory was in use on the whole machine, 65 to 180 MB more than before,
+and 430 to 600 MB of disk had been added. The install took 1 to 1.5 minutes on Ubuntu and Rocky 9, and about
+3 minutes on Rocky 10. Checking servers and making PDF
+reports use more while they run. The installer doesn't enforce a minimum.
+
 The installer asks whether people will use the tool from other computers. If not, it answers only on the
 machine itself, for a browser there. If so, it needs [a web address](#a-web-address) of its own.
 
 ## What the installer does
 
-A release's install page gives one line to paste. In a new private folder, it downloads `install.py`, checks it
+A release's install page gives one line to paste. For 0.1.0 it is at
+<https://nouriloop.com/work/compromise-checker/install/>. In a new private folder, it downloads `install.py`, checks it
 against a hash on the page, and runs it with `sudo python3 -I`, removing the folder afterwards. That hash is what protects the installer, since the file
 comes from the same place as the rest of the release. So the line has to be copied from the install page, not
 from anywhere else. `-I` keeps Python from running code from the folder you're in, and the installer shuts

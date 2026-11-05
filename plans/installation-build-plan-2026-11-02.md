@@ -177,4 +177,8 @@ running on a machine of their own and reach its first-setup page in a browser.
   `published` date lets the page show how old the newest release it can see is. Settled in I.6.
 - ~~Where Caddy and the login-failure blocker come from.~~ Settled: Apache in I.3, and SSH's own blocking
   or firewall limits in I.4, all from base packages.
-- The smallest machine that works, measured during I.8 so the install page can state it.
+- ~~The smallest machine that works.~~ Settled in I.8 (2026-11-05): a new 1 GB Linode (the smallest) runs it. Right after
+  install 285 to 485 MB of memory was in use on the whole machine (65 to 180 MB more than before) and 430 to 600 MB
+  of disk had been added; the install takes 1 to 1.5
+  minutes on Ubuntu and Rocky 9, about 3 on Rocky 10. The page and docs/install.md say "at least 1 GB of memory and
+  5 GB of free disk". Measured by `install_proof.py --route public-local public-web`.

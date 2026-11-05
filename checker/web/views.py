@@ -1353,7 +1353,8 @@ def update_check(request) -> HttpResponse:
     try:
         found = updates.check_now(home())
     except updates.UpdateError as exc:
-        raise ActionFailed(f"{exc}.".capitalize()) from None
+        words = str(exc)
+        raise ActionFailed(f"{words[:1].upper()}{words[1:]}.") from None
     except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
         print(f"checker web: the check for updates failed: {type(exc).__name__}", file=sys.stderr)
         raise ActionFailed("The check couldn't be made.") from None

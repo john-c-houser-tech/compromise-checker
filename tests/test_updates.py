@@ -390,15 +390,18 @@ def test_a_wheelhouse_copied_with_the_release_means_nothing_is_fetched(base, tmp
     _release(source, "0.2.0")
     (source / "wheels").mkdir()
     (source / "wheels" / "dep-1.0-py3-none-any.whl").write_bytes(b"dep")
-    (source / "wheels" / "notes.txt").write_text("not a wheel")
-    (source / "wheels" / "link-1.0-py3-none-any.whl").symlink_to("/etc/hostname")
 
-    def never(command, **kwargs):
-        raise AssertionError("pip was run")
+    commands = []
 
-    updates.prepare(base, source=source, program=program, run=never)
-    wheels = base / "updates" / "incoming" / "0.2.0" / "wheels"
-    assert sorted(p.name for p in wheels.iterdir()) == ["dep-1.0-py3-none-any.whl"]
+    def offline_pip(command, **kwargs):
+        commands.append(command)
+        return no_pip(command)
+
+    updates.prepare(base, source=source, program=program, run=offline_pip)
+    (command,) = commands
+    assert "--no-index" in command and command[command.index("--find-links") + 1] == str(
+        source / "wheels"
+    ), "pip takes them from the wheelhouse, by hash, and fetches nothing"
     assert (base / "updates" / "request").exists()
 
 
@@ -427,8 +430,23 @@ def test_a_preparation_the_web_process_abandoned_is_shown_as_failed(base, tmp_pa
     installed_at(program, "0.1.0")
     updates._progress(base, "0.2.0", "dependencies")
     found = updates.status(base, program)["progress"]
-    assert found["state"] == "failed" and "stopped while" in found["words"]
+    assert found["state"] == "failed" and "stopped part way" in found["words"]
     from checker.files import locked
 
     with locked(base / "updates" / "work", wait=0):  # someone is working on it: as it says
         assert updates.status(base, program)["progress"]["state"] == "dependencies"
+
+
+def test_a_background_start_is_refused_while_a_terminal_holds_the_lock(base, tmp_path, trusted):
+    """`checker update` in a terminal holds the file lock for minutes: the page is told, and nothing
+    is written over the running preparation's files."""
+    from checker.files import locked
+
+    folder = base / "updates"
+    before = sorted(p.name for p in folder.iterdir()) if folder.exists() else []
+    with locked(folder / "work", wait=0):
+        assert not updates.prepare_in_background(base, "0.2.0")
+        assert not updates.check_in_background(base)
+    after = sorted(p.name for p in folder.iterdir())
+    assert "progress.json" not in after and "check.json" not in after, (before, after)
+    assert not updates._lock.locked(), "released again"

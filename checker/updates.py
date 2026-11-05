@@ -189,6 +189,8 @@ def _working(base: Path):
 
 
 def nobody_working(base: Path) -> bool:
+    """Whether the lock is free. It's taken for an instant to find out, so a check or preparation
+    starting in that instant is told it's busy and tries again later: narrow, and harmless."""
     try:
         with locked(_made(updates_folder(base)) / "work", wait=0):
             return True
@@ -258,13 +260,19 @@ def due(base: Path, now: datetime | None = None) -> bool:
 
 
 def check_in_background(base: Path) -> bool:
-    """Start a check unless one is running; the page shows what the last one found."""
+    """Start a check unless one is running, here or in a terminal; the page shows what the last one
+    found."""
     if not _lock.acquire(blocking=False):
+        return False
+    if not nobody_working(base):
+        _lock.release()
         return False
 
     def work() -> None:
         try:
             check(base)
+        except UpdateError:  # busy after all: nothing written, so the next page tries again
+            return
         except Exception as exc:  # noqa: BLE001 - a thread's error has nowhere else to go
             print(
                 f"checker web: the check for updates failed: {type(exc).__name__}",
@@ -311,7 +319,8 @@ def status(
         progress = {
             **progress,
             "state": "failed",
-            "words": "the web interface stopped while this was under way. Try again.",
+            "words": "whatever was getting it stopped part way: the web interface restarted, or"
+            " a terminal command was interrupted. Try again.",
         }
     outcome = _read(outcome_file or OUTCOME_FILE)
     # An outcome from before the release now being got ready is about an earlier update.
@@ -340,10 +349,15 @@ def _progress(base: Path, version: str, state: str, words: str = "") -> None:
     _write(updates_folder(base) / PROGRESS, data)
 
 
-def _wheels(python: str, requirements: Path, into: Path, run=subprocess.run) -> None:
+def _wheels(
+    python: str, requirements: Path, into: Path, run=subprocess.run, wheelhouse: Path | None = None
+) -> None:
     """The dependencies' wheels, each checked by pip against the hash the signed list gives, so
-    root installs from this machine and never from the network."""
+    root installs from this machine and never from the network. With a wheelhouse copied over
+    beside the release, for a machine without internet, pip takes them from there instead, still
+    by hash and only the names the signed list has."""
     into.mkdir(mode=0o700)
+    offline = ["--no-index", "--find-links", str(wheelhouse)] if wheelhouse else []
     command = [
         python,
         "-I",
@@ -358,6 +372,7 @@ def _wheels(python: str, requirements: Path, into: Path, run=subprocess.run) -> 
         "--require-hashes",
         "--only-binary",
         ":all:",
+        *offline,
         "-r",
         str(requirements),
         "-d",
@@ -371,20 +386,6 @@ def _wheels(python: str, requirements: Path, into: Path, run=subprocess.run) -> 
         ) from None
     if done.returncode:
         raise UpdateError(f"the dependencies couldn't be fetched: {done.stderr.strip()[-800:]}")
-
-
-def _wheels_from(source: Path, into: Path) -> None:
-    """A wheelhouse copied over with the release, for a machine without internet: plain files by
-    name. Root's pip checks each against the hash the signed list gives before installing."""
-    into.mkdir(mode=0o700)
-    for entry in sorted(source.iterdir()):
-        name = entry.name
-        if not (name.endswith(".whl") and releases._FILE_NAME.fullmatch(name)):
-            continue
-        if entry.is_symlink() or not entry.is_file():
-            continue
-        with entry.open("rb") as original, (into / name).open("xb") as copy:
-            shutil.copyfileobj(original, copy)
 
 
 def prepare(
@@ -436,10 +437,10 @@ def _prepare(base, version, source, fetch, running, folder, incoming, python, ru
                     f"{manifest.version} is a pre-release, and this machine is on a final version"
                 )
             _progress(base, manifest.version, "dependencies")
-            if source is not None and (source / WHEELS).is_dir():
-                _wheels_from(source / WHEELS, target / WHEELS)
-            else:
-                _wheels(python, target / releases.REQUIREMENTS, target / WHEELS, run)
+            wheelhouse = source / WHEELS if source is not None else None
+            if wheelhouse is not None and not wheelhouse.is_dir():
+                wheelhouse = None
+            _wheels(python, target / releases.REQUIREMENTS, target / WHEELS, run, wheelhouse)
     except (PullError, releases.ReleaseError, OSError) as exc:
         _progress(base, shown, "failed", str(exc))
         raise UpdateError(_plain(str(exc))) from None
@@ -453,15 +454,21 @@ def _prepare(base, version, source, fetch, running, folder, incoming, python, ru
 
 def prepare_in_background(base: Path, version: str) -> bool:
     """For the page: getting a release and its dependencies takes minutes. The progress file says
-    how far it got, and the page reads that. False if a check or preparation is already running."""
+    how far it got, and the page reads that. False if a check or preparation is already running,
+    here or in a terminal."""
     if not _lock.acquire(blocking=False):
+        return False
+    if not nobody_working(base):
+        _lock.release()
         return False
 
     def work() -> None:
         try:
             prepare(base, version)
-        except UpdateError:
-            pass  # written down by prepare for the page
+        except UpdateError as exc:
+            # Written down by prepare for the page, unless it was busy after all: then nothing is
+            # written, since the file is the running preparation's.
+            print(f"checker web: the update wasn't prepared: {exc}", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001 - a thread's error has nowhere else to go
             print(
                 f"checker web: preparing the update failed: {type(exc).__name__}", file=sys.stderr

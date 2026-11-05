@@ -7930,7 +7930,7 @@ def test_progress_and_outcome_are_shown_and_a_request_can_be_taken_back(web, mon
         text = said(client.get("/manage/updates"))
     assert "Fetching version 0.2.0's dependencies" in text and "Update to" not in text
     text = said(client.get("/manage/updates"))  # nobody is: the web process must have stopped
-    assert "stopped while this was under way" in text and "Update to 0.2.0" in text
+    assert "stopped part way" in text and "Update to 0.2.0" in text
     (folder / "progress.json").write_text(
         json.dumps(
             {

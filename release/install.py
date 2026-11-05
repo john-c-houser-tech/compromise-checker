@@ -841,6 +841,34 @@ def write_console_notice(link: str, issue: Path = ISSUE) -> None:
     except OSError:
         before = ""
     _write_file(issue, console_notice(link, before), 0o644)
+    refresh_console_prompts()
+
+
+CONSOLE_GETTYS = ("serial-getty@ttyS0.service", "getty@tty1.service")  # Lish, and the screen
+
+
+def idle_getty(unit: str, run=None) -> bool:
+    """Whether the unit is a login prompt waiting, and not someone's session: a prompt already
+    on screen shows the old text until it's drawn again, but a session mustn't be cut."""
+    run = run or _run
+    pid = run("systemctl", "show", "-p", "MainPID", "--value", unit, check=False).stdout.strip()
+    if not pid.isdigit() or pid == "0":
+        return False
+    try:
+        return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip() == "agetty"
+    except OSError:
+        return False
+
+
+def refresh_console_prompts(run=None) -> list:
+    """Draw the console's login prompt again where it's only a prompt, so the note shows now."""
+    run = run or _run
+    refreshed = []
+    for unit in CONSOLE_GETTYS:
+        if idle_getty(unit, run):
+            run("systemctl", "restart", unit, check=False)
+            refreshed.append(unit)
+    return refreshed
 
 
 def new_link(address: str = ADDRESS) -> Optional[str]:

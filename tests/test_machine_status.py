@@ -204,3 +204,23 @@ def test_the_service_clears_the_note_when_run_as_the_unit_runs_it(monkeypatch, t
     assert cleared == [True]
     assert machine_status.main([str(tmp_path / "elsewhere.json")]) == 0
     assert cleared == [True], "a test's path: left alone"
+
+
+def test_the_status_service_draws_an_idle_prompt_again_but_not_a_session(monkeypatch):
+    calls = []
+
+    def run(*command):
+        calls.append(command)
+        if command[:2] == ("systemctl", "show"):
+            pid = {"serial-getty@ttyS0.service": "601", "getty@tty1.service": "602"}[command[-1]]
+            return subprocess.CompletedProcess(list(command), 0, f"{pid}\n", "")
+        return subprocess.CompletedProcess(list(command), 0, "", "")
+
+    monkeypatch.setattr(machine_status, "_run", run)
+    comm = {"/proc/601/comm": "agetty\n", "/proc/602/comm": "login\n"}
+    monkeypatch.setattr(
+        machine_status.Path, "read_text", lambda self, encoding=None: comm[str(self)]
+    )
+    assert machine_status.refresh_console_prompts() == ["serial-getty@ttyS0.service"]
+    assert ("systemctl", "restart", "serial-getty@ttyS0.service") in calls
+    assert all(c != ("systemctl", "restart", "getty@tty1.service") for c in calls)

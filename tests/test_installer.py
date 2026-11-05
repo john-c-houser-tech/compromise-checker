@@ -361,3 +361,27 @@ def test_the_console_note_carries_the_link_and_is_replaced_not_repeated(tmp_path
         machine_status.NOTICE_END,
     )
     assert machine_status.without_notice(text) == "Rocky Linux 9\nKernel \\r on an \\m\n"
+
+
+def test_only_an_idle_login_prompt_is_drawn_again(tmp_path, monkeypatch):
+    """A prompt waiting shows the old text until redrawn; someone's session mustn't be cut."""
+    comm = {}
+    calls = []
+
+    def run(*command, check=True, **_):
+        calls.append(command)
+        if command[:2] == ("systemctl", "show"):
+            unit = command[-1]
+            pid = {"serial-getty@ttyS0.service": "501", "getty@tty1.service": "502"}[unit]
+            return subprocess.CompletedProcess(command, 0, f"{pid}\n", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def read_text(self, encoding=None):
+        return comm[str(self)]
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    comm["/proc/501/comm"] = "agetty\n"  # Lish: a prompt waiting
+    comm["/proc/502/comm"] = "bash\n"  # the screen: someone logged in
+    assert installer.refresh_console_prompts(run) == ["serial-getty@ttyS0.service"]
+    assert ("systemctl", "restart", "serial-getty@ttyS0.service") in calls
+    assert ("systemctl", "restart", "getty@tty1.service") not in calls

@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     path = Path(arguments[0]) if arguments else STATUS
     write(path, collect())
-    if not arguments:  # the real machine, not a test's path
+    if path == STATUS:  # the real machine's file, which the unit names; a test's path isn't
         clear_console_notice()
     return 0
 

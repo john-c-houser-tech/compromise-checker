@@ -191,3 +191,16 @@ def test_without_notice_leaves_other_text_alone():
     assert machine_status.without_notice(
         f"{machine_status.NOTICE_END}\n{machine_status.NOTICE_START}"
     ) == (f"{machine_status.NOTICE_END}\n{machine_status.NOTICE_START}")
+
+
+def test_the_service_clears_the_note_when_run_as_the_unit_runs_it(monkeypatch, tmp_path):
+    """The unit names the status file: that path, not an empty argument list, means the real
+    machine."""
+    cleared = []
+    monkeypatch.setattr(machine_status, "collect", lambda: {"checked": "2026-11-05T00:00:00Z"})
+    monkeypatch.setattr(machine_status, "clear_console_notice", lambda: cleared.append(True))
+    monkeypatch.setattr(machine_status, "STATUS", tmp_path / "status" / "machine.json")
+    assert machine_status.main([str(tmp_path / "status" / "machine.json")]) == 0
+    assert cleared == [True]
+    assert machine_status.main([str(tmp_path / "elsewhere.json")]) == 0
+    assert cleared == [True], "a test's path: left alone"

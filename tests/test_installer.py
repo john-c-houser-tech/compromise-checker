@@ -335,6 +335,10 @@ def test_the_status_units_name_root_s_own_copy_of_the_script():
     units = installer.status_units()
     service = units[Path("/etc/systemd/system/compromise-checker-status.service")]
     assert "-I -S /opt/compromise-checker/machine_status.py" in service
+    # It takes the console note off, so it may write that one file under a read-only /etc, and a
+    # query made to spin can't hold it forever.
+    assert "ProtectSystem=full" in service and "ReadWritePaths=-/etc/issue" in service
+    assert "TimeoutStartSec=5min" in service
 
 
 def test_the_console_note_carries_the_link_and_is_replaced_not_repeated(tmp_path):

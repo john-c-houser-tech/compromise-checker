@@ -119,6 +119,9 @@ def has_an_account(web_db: Path = WEB_DB) -> bool | None:
     try:
         connection = sqlite3.connect(f"file:{web_db}?mode=ro", uri=True, timeout=5)
         try:
+            # The file is the account's: a query made to spin would hold root here, so it's cut
+            # short.
+            connection.set_progress_handler(lambda: 1, 100_000)
             (count,) = connection.execute("SELECT count(*) FROM auth_user").fetchone()
         finally:
             connection.close()
@@ -155,15 +158,11 @@ def clear_console_notice(issue: Path = ISSUE, web_db: Path = WEB_DB) -> bool:
 
 
 def write_text(path: Path, text: str) -> None:
-    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}-")
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as out:
-            out.write(text)
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
+    """In place: the service's unit opens /etc/issue alone to writing, not /etc, so a new file
+    couldn't be moved over it. It's a few lines read at the next login prompt."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as out:
+        out.write(text)
 
 
 def collect() -> dict:

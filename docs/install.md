@@ -191,12 +191,13 @@ name `compromise-checker`: in Cloud Manager, under StackScripts, Community Stack
 address, which is needed because a Linode has no browser of its own, optionally the addresses allowed to open
 the page, and the three SSH questions as yes or no, all set to no. Nothing it asks is secret. For a trial, the
 web address `auto` makes a name at sslip.io from the Linode's address, which Let's Encrypt can give a
-certificate for; for real use, give a name you own and point its DNS record at the Linode's address once
-that's known. The installer waits up to 30 minutes for the name to lead to the machine.
+certificate for. That name, and so the address in it, then appears in public certificate logs, and it depends
+on sslip.io's name service; for real use, give a name you own and point its DNS record at the Linode's address
+once that's known. The installer waits up to 30 minutes for the name to lead to the machine.
 
 The script downloads the release, checks the installer against the hash fixed in the script, and runs it with
 your answers. When it's done, the link for the first account appears above the login prompt in the Linode's
-Lish console, and in `/var/log/compromise-checker-install.log`. The note on the console goes once the first
+Lish console, and in `/var/log/compromise-checker-install.log`, which only root can read. The note on the console goes once the first
 account exists. The question about SSH passwords is usually left for later on a new Linode: nobody has logged in
 with a key yet, so the installer leaves passwords on and the page says how to turn them off.
 

@@ -1069,9 +1069,8 @@ def prove_linode_form(api, distro: str, region: str, release: Path, place: Path,
             },
             sorted(fields),
         )
-        answers = {
+        answers = {  # "allowed" left out: an empty field is its default
             "web_address": "auto",
-            "allowed": "",
             "root_login_off": "no",
             "ssh_key_logins_only": "no",
             "block_login_failures": "yes",
@@ -1178,6 +1177,7 @@ def prove_linode_form(api, distro: str, region: str, release: Path, place: Path,
         )
         checks("SELinux refused nothing", denials(node) == "", denials(node))
         jar.unlink(missing_ok=True)
+        jar.parent.rmdir()
     finally:
         if script_id is not None:
             try:

@@ -2651,9 +2651,11 @@ Type=oneshot
 ExecStart={PROGRAM}/current/bin/python -I -S {script} {STATUS_FILE}
 StateDirectory={STATUS}
 StateDirectoryMode=0755
+TimeoutStartSec=5min
 UMask=0022
 NoNewPrivileges=yes
 ProtectSystem=full
+ReadWritePaths=-/etc/issue
 ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes
@@ -3110,7 +3112,10 @@ def install(
                 " blocks port 80 or 443: let both in."
             )
     if console_notice and link is not None:
-        write_console_notice(link)
+        try:
+            write_console_notice(link)
+        except OSError as exc:  # installed all the same: the link is in the output and the log
+            say(f"\nThe link couldn't be put on the console ({exc}); it's below.")
     if link is None:
         say(f"\nThere's already an account, so sign in at {address}/login")
     else:

@@ -174,8 +174,10 @@ def test_the_console_note_comes_off_once_the_first_account_exists(tmp_path):
     assert issue.read_text() == note + original
     _web_db(tmp_path / "with.db", 1)
     assert machine_status.has_an_account(tmp_path / "with.db") is True
+    before = issue.stat().st_ino
     assert machine_status.clear_console_notice(issue, tmp_path / "with.db")
     assert issue.read_text() == original, "only the note goes"
+    assert issue.stat().st_ino == before, "written in place: the unit opens that file alone"
     assert issue.stat().st_mode & 0o777 == 0o644
     assert not machine_status.clear_console_notice(issue, tmp_path / "with.db"), "nothing left"
     (tmp_path / "odd.db").write_text("not a database")

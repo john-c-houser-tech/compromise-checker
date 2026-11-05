@@ -415,7 +415,10 @@ Nothing, unless you choose one of these:
   appears in public certificate logs, where anyone can see it. Before that, the installer asks for one page by
   that name, to check it leads to the machine; if the name points somewhere else, that one request goes there,
   with nothing in it but a random path. The account it makes there gives `webmaster@`
-  and the name as its contact, so nothing personal is sent, and nothing about your servers or evidence.
+  and the name as its contact, so nothing personal is sent, and nothing about your servers or evidence. If you
+  type `auto` as the web address in Linode's form, the name is made at sslip.io, a public service that turns
+  an address into a name, so the machine's address appears in public certificate logs and the name depends on
+  that service.
 - a request to GitHub once a day for the public list of this tool's releases, and for the newest one's signed
   description, from the web interface when someone with full access opens a page. It carries nothing about your
   machine or servers beyond what any download does: the address it comes from. The setting `updates.check`
@@ -482,7 +485,9 @@ new release of the tool.
   password, turns off SSH logins as root, and has SSH or the firewall hold off addresses that keep trying to log
   in. To decide whether those are safe, it reads SSH's log for which administrator accounts have logged in and
   how, and keeps nothing from it. It adds a small service that runs as root every hour and notes, for the web
-  page, whether SSH still accepts passwords and whether an update is waiting for a restart. With a web address,
+  page, whether SSH still accepts passwords and whether an update is waiting for a restart. On a machine set up
+  from Linode's form, that service also reads how many accounts the web interface has, from its own file, and
+  takes the installer's note with the first-setup link off the console once there is one. With a web address,
   it also installs Apache from the system's own packages, opens ports 80 and 443 in the firewall, adds an hourly
   reload of Apache, and on Rocky lets Apache act as a proxy under SELinux. It also installs a small root service
   that starts when the tool's account leaves a request to install a newer release. That service reads nothing

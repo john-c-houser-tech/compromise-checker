@@ -1355,7 +1355,7 @@ def prove(
     api,
     distro: str,
     region: str,
-    release: Path,
+    release: Path | None,
     work: Path,
     route: str = "local",
     keep_minutes: float = 0,
@@ -1667,8 +1667,10 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="cc-install-", dir=arguments.work) as work:
             key = ProofKey()
-            release = build_release(Path(work), key=key)
-            sign_release(release, key)
+            release = None  # the public routes use the published release, not one built here
+            if any(not route.startswith("public-") for route in arguments.route):
+                release = build_release(Path(work), key=key)
+                sign_release(release, key)
             more = {}
             if any(route.startswith("public-") for route in arguments.route):
                 more["public"] = {

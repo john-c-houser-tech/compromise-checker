@@ -42,12 +42,27 @@ PROGRAM = "/opt/compromise-checker"
 HOME = "/var/lib/compromise-checker"
 DATA = f"{HOME}/data"
 LINK = "/usr/local/sbin/compromise-checker-link"
+STATUS = "compromise-checker-status"
 _LINK_LINE = re.compile(r"http://127\.0\.0\.1:8088/setup/\S+")
 
 
-def build_release(work: Path) -> Path:
-    """A release as `scripts/release.py` builds one, of a copy of this commit at a final version."""
-    clone = work / "clone"
+class ProofKey:
+    """A throwaway release key: the releases built for a run trust it instead of NouriLoop's."""
+
+    def __init__(self) -> None:
+        self.secret = Ed25519PrivateKey.generate()
+        self.key_id = os.urandom(8)
+        public = self.secret.public_key().public_bytes_raw()
+        self.line = base64.b64encode(b"Ed" + self.key_id + public).decode()
+
+
+def build_release(
+    work: Path, version: str = VERSION, key: ProofKey | None = None, broken: bool = False
+) -> Path:
+    """A release as `scripts/release.py` builds one, of a copy of this commit at a final version.
+    With `key`, the tool inside trusts that key for releases, so an update signed with it is
+    accepted. `broken` makes a release whose web interface stops at once, to see it rolled back."""
+    clone = work / f"clone-{version}"
     subprocess.run(["git", "clone", "-q", str(ROOT), str(clone)], check=True)  # noqa: S603, S607
     head = subprocess.run(  # noqa: S603
         ["git", "rev-parse", "HEAD"],  # noqa: S607
@@ -59,7 +74,23 @@ def build_release(work: Path) -> Path:
     subprocess.run(["git", "checkout", "-q", head], cwd=clone, check=True)  # noqa: S603, S607
     for name in ("checker/__init__.py", "checker/collector/collector.py"):
         path = clone / name
-        path.write_text(path.read_text(encoding="utf-8").replace("0.1.0.dev0", VERSION), "utf-8")
+        path.write_text(path.read_text(encoding="utf-8").replace("0.1.0.dev0", version), "utf-8")
+    if key is not None:
+        path = clone / "checker" / "releases.py"
+        text, changed = re.subn(
+            r'RELEASE_KEYS: tuple\[str, \.\.\.\] = \("[^"]+",\)',
+            f'RELEASE_KEYS: tuple[str, ...] = ("{key.line}",)',
+            path.read_text(encoding="utf-8"),
+        )
+        assert changed == 1, "the tool's release key has its one place"
+        path.write_text(text, encoding="utf-8")
+    if broken:
+        path = clone / "checker" / "web" / "app.py"
+        path.write_text(
+            'import sys\nsys.exit("broken on purpose, for the proof")\n'
+            + path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
     subprocess.run(  # noqa: S603
         ["git", "-c", "user.name=proof", "-c", "user.email=proof@example.test"]  # noqa: S607
         + ["commit", "-qam", "proof version"],
@@ -71,15 +102,13 @@ def build_release(work: Path) -> Path:
         cwd=clone,
         check=True,
     )
-    return clone / "dist" / f"trial-{VERSION}"
+    return clone / "dist" / f"trial-{version}"
 
 
-def sign_release(directory: Path) -> None:
+def sign_release(directory: Path, key: ProofKey | None = None) -> None:
     """Trust a throwaway key instead, and sign with it, as minisign signs."""
-    secret = Ed25519PrivateKey.generate()
-    key_id = os.urandom(8)
-    public = secret.public_key().public_bytes_raw()
-    line = base64.b64encode(b"Ed" + key_id + public).decode()
+    key = key or ProofKey()
+    secret, key_id, line = key.secret, key.key_id, key.line
     installer = directory / "install.py"
     text = installer.read_text(encoding="utf-8")
     text, changed = re.subn(r'RELEASE_KEY = "[^"]+"', f'RELEASE_KEY = "{line}"', text)
@@ -107,8 +136,16 @@ def sign_release(directory: Path) -> None:
 
 
 class Node:
-    def __init__(self, address: str, key: Path, known: Path) -> None:
+    """Its commands share one SSH connection, so the limit the installer can put on new ones
+    doesn't hold the proof up."""
+
+    def __init__(self, address: str, key: Path, known: Path, user: str = "root") -> None:
         self.address = address
+        self.user = user
+        self.key, self.known = key, known
+        # One master connection per machine and user: two machines proved from one folder would
+        # otherwise share a socket, and commands for the second would run on the first.
+        self.master = key.parent / f"m-{user}-{address.replace(':', '_')}"
         self.options = [
             "-F",
             "/dev/null",
@@ -124,11 +161,63 @@ class Node:
             f"UserKnownHostsFile={known}",
             "-o",
             "ConnectTimeout=10",
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            f"ControlPath={self.master}",
+            "-o",
+            "ControlPersist=900",
+            "-o",
+            "ServerAliveInterval=5",  # a connection lost to a reboot is given up on quickly
+            "-o",
+            "ServerAliveCountMax=3",
         ]
+
+    def close(self) -> None:
+        subprocess.run(  # noqa: S603
+            ["ssh", *self.options, "-O", "exit", f"{self.user}@{self.address}"],  # noqa: S607
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+
+    def fresh_login(self, user: str, *more: str) -> subprocess.CompletedProcess:
+        """A new connection, not the shared one, as `user`."""
+        return subprocess.run(  # noqa: S603
+            [  # noqa: S607
+                "ssh",
+                "-F",
+                "/dev/null",
+                "-i",
+                str(self.key),
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                f"UserKnownHostsFile={self.known}",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ControlPath=none",
+                *more,
+                f"{user}@{self.address}",
+                "true",
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+            check=False,
+        )
 
     def run(self, command: str, timeout: int = 900) -> subprocess.CompletedProcess:
         return subprocess.run(  # noqa: S603
-            ["ssh", *self.options, f"root@{self.address}", command],  # noqa: S607
+            ["ssh", *self.options, f"{self.user}@{self.address}", command],  # noqa: S607
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
@@ -141,7 +230,7 @@ class Node:
 
     def copy(self, source: Path, target: str) -> None:
         subprocess.run(  # noqa: S603
-            ["scp", *self.options, "-q", "-r", str(source), f"root@{self.address}:{target}"],  # noqa: S607
+            ["scp", *self.options, "-q", "-r", str(source), f"{self.user}@{self.address}:{target}"],  # noqa: S607
             check=True,
             timeout=300,
         )
@@ -156,6 +245,208 @@ class Node:
                 pass
             time.sleep(5)
         raise RuntimeError(f"{self.address} never answered")
+
+
+STATUS_FILE = "/var/lib/compromise-checker-status/machine.json"
+LIMITED_WORDS = "makes an address that opens SSH connections quickly"
+
+
+def penalties_said(said: str) -> bool:
+    """Whether the installer found SSH's own blocking, which some older SSH has had added."""
+    return "already holds off an address" in said or "now holds off an address" in said
+
+
+def passwords_refused(refused: subprocess.CompletedProcess) -> bool:
+    """SSH lists the ways it would take: none of them a password. Rocky's lists gssapi too."""
+    found = re.search(r"Permission denied \(([^)]*)\)", refused.stderr)
+    ways = set(found.group(1).split(",")) if found else {"password"}
+    return refused.returncode != 0 and not ways & {"password", "keyboard-interactive"}
+
+
+LOCKDOWN = " --ssh-passwords-off --root-login-off --block-login-failures"
+
+
+def port_answers(address: str, port: int, seconds: float = 5) -> bool:
+    """From this machine, which plays someone elsewhere on the internet."""
+    try:
+        with socket.create_connection((address, port), timeout=seconds):
+            return True
+    except OSError:
+        return False
+
+
+def connections_let_in(address: str, tries: int = 12) -> int:
+    """New SSH connections opened one after another, each closed at once."""
+    return sum(port_answers(address, 22, 3) for _ in range(tries))
+
+
+def machine_status(node: "Node") -> dict:
+    try:
+        return json.loads(node.out(f"cat {STATUS_FILE}"))
+    except ValueError:
+        return {}
+
+
+def prove_lockdown(node: "Node", checks, distro: str, said: str) -> None:
+    """Right after an install asked for all three SSH changes, from a root key login only."""
+    ubuntu = distro.startswith("ubuntu")
+    checks("it says it's setting up the firewall", "Setting up the firewall" in said, said)
+    if ubuntu:
+        status = node.out("ufw status")
+        rules = [line.split()[0] for line in status.splitlines()[4:] if line.strip()]
+        checks(
+            "ufw is on, letting in SSH alone",
+            "Status: active" in status and set(rules) == {"22/tcp"},
+            status,
+        )
+        if not penalties_said(said):
+            checks("ufw limits SSH connections", "LIMIT" in status, status)
+    else:
+        services = set(node.out("firewall-cmd --list-services").split())
+        ports = node.out("firewall-cmd --list-ports")
+        checks(
+            "firewalld is on, letting in SSH alone",
+            services == {"ssh", "dhcpv6-client"} and not ports,
+            f"{services} {ports}",
+        )
+        checks(
+            "it comes back after a reboot", node.out("systemctl is-enabled firewalld") == "enabled"
+        )
+    for port in (111, 9090):
+        checks(f"port {port} can't be reached from outside", not port_answers(node.address, port))
+    # Updates
+    if ubuntu:
+        dump = node.out(
+            "apt-config dump | grep -E '^APT::Periodic::(Unattended-Upgrade|Update-Package-Lists) '"
+        )
+        checks("security updates install by themselves", dump.count('"1";') == 2, dump)
+        timers = node.out("systemctl is-enabled apt-daily.timer apt-daily-upgrade.timer")
+        checks("their timers are on", timers.split() == ["enabled", "enabled"], timers)
+        dry = node.run(
+            "unattended-upgrade --dry-run > /root/uu.log 2>&1; code=$?; tail -5 /root/uu.log;"
+            " exit $code",
+            timeout=900,
+        )
+        checks("unattended-upgrade runs", dry.returncode == 0, dry.stdout + dry.stderr)
+        reboot = node.out("apt-config dump Unattended-Upgrade::Automatic-Reboot")
+        checks("and never restarts the machine", '"true"' not in reboot, reboot)
+    else:
+        checks(
+            "security updates install by themselves",
+            node.out("systemctl is-enabled dnf-automatic-install.timer") == "enabled",
+        )
+        ran = node.run("systemctl start dnf-automatic-install.service", timeout=1500)
+        checks(
+            "and the update service runs, from its own settings",
+            ran.returncode == 0
+            and "automatic-compromise-checker.conf"
+            in node.out("systemctl cat dnf-automatic-install.service"),
+            ran.stdout
+            + ran.stderr
+            + node.out("journalctl -u dnf-automatic-install -n 20 --no-pager"),
+        )
+    # The three changes: root's key login allows passwords off, and nothing allows root off.
+    shown = node.out(
+        "sshd -T | grep -iE '^(passwordauthentication|kbdinteractiveauthentication"
+        "|permitrootlogin|persourcepenalties) '"
+    ).lower()
+    checks(
+        "SSH no longer accepts passwords",
+        "passwordauthentication no" in shown and "kbdinteractiveauthentication no" in shown,
+        shown,
+    )
+    refused = node.fresh_login(
+        "root",
+        "-o",
+        "PubkeyAuthentication=no",
+        "-o",
+        "PreferredAuthentications=password,keyboard-interactive",
+    )
+    checks("a password login isn't even offered", passwords_refused(refused), refused.stderr)
+    checks(
+        "root login stayed on, with nobody else to log in as",
+        "Root login over SSH stays on" in said and "permitrootlogin no" not in shown,
+        said,
+    )
+    checks("a key login still works", node.fresh_login("root").returncode == 0)
+    if penalties_said(said):
+        checks(
+            "SSH's own blocking is on",
+            "persourcepenalties" in shown and "persourcepenalties no" not in shown,
+            shown,
+        )
+    else:
+        checks("it says addresses are limited", LIMITED_WORDS in said, said)
+    notes = machine_status(node)
+    checks("the page is told SSH refuses passwords", notes.get("ssh_passwords") is False, notes)
+    checks("and whether a restart is waiting", isinstance(notes.get("restart_needed"), bool), notes)
+    found = denials(node)
+    checks("SELinux refused nothing in the lockdown", not found, found)
+
+
+INSTALLER = (
+    "import importlib.util, subprocess\n"
+    "s = importlib.util.spec_from_file_location('installer', '/root/release/install.py')\n"
+    "m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
+)
+
+
+def prove_limit(node: "Node", checks, distro: str, said: str) -> None:
+    """Last but one, since it holds this machine's address up for a minute. ufw's limit where the
+    install set it; on Rocky, the nftables table too, through the installer's own step, since no
+    system here goes without SSH's own blocking and without a ufw of the installer's."""
+    if distro.startswith("rocky"):
+        done = node.run(f"python3 -I - <<'EOF'\n{INSTALLER}m._limit_ssh_in_nftables(('22',))\nEOF")
+        table = node.out("nft list table inet compromise_checker_ssh")
+        checks(
+            "the nftables limit loads",
+            "recent4" in table and "dport 22" in table,
+            done.stdout + done.stderr + table,
+        )
+        node.run("systemctl restart firewalld")
+        table = node.out("nft list table inet compromise_checker_ssh")
+        checks("and survives firewalld restarting", "recent4" in table, table)
+        found = denials(node)
+        checks("SELinux refused nothing in the limit", not found, found)
+    elif LIMITED_WORDS not in said:
+        return
+    let_in = connections_let_in(node.address)
+    checks("an address opening SSH connections fast is held off", let_in < 12, let_in)
+    time.sleep(70)
+    checks("and let in again after a minute", node.fresh_login("root").returncode == 0)
+
+
+def prove_root_off(node: "Node", checks, distro: str) -> None:
+    """With another administrator who has logged in with a key, root login can go: the installer's
+    own steps, run again as a later run would, keep passwords off too."""
+    group = "sudo" if distro.startswith("ubuntu") else "wheel"
+    node.run(
+        f"useradd -m -G {group} -s /bin/bash proofops && install -d -m 700 -o proofops"
+        " -g proofops ~proofops/.ssh && install -m 600 -o proofops -g proofops"
+        " /root/.ssh/authorized_keys ~proofops/.ssh/authorized_keys"
+        " && echo 'proofops ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/proofops"
+    )
+    checks(
+        "another administrator can log in with a key", node.fresh_login("proofops").returncode == 0
+    )
+    script = INSTALLER + (
+        "ss = subprocess.run(['ss', '-Hltnp'], capture_output=True, text=True).stdout\n"
+        "state = m.ssh_state(ss)\n"
+        "kind = m.blocking_kind(state, m.running_firewall() or 'ufw')\n"
+        "wanted = m.Choices(True, True, False)\n"
+        "m.apply_lockdown(m.choose_lockdown(state, 'ufw', None, wanted), kind)\n"
+    )
+    done = node.run(f"python3 -I - <<'EOF'\n{script}EOF")
+    checks(
+        "root login is turned off",
+        "no longer lets anyone log in as root" in done.stdout,
+        done.stdout + done.stderr,
+    )
+    checks("a new root login is refused", node.fresh_login("root").returncode != 0)
+    checks("the other administrator still gets in", node.fresh_login("proofops").returncode == 0)
+    shown = node.out("sshd -T | grep -iE '^passwordauthentication '").lower()
+    checks("and passwords are still off", shown == "passwordauthentication no", shown)
+    checks("the open session is still open", node.run("true").returncode == 0)
 
 
 def status_of(node: Node, url: str) -> str:
@@ -238,11 +529,17 @@ def prove_web(node: "Node", checks, distro: str) -> None:
     done = node.run(f"{install} --web-address {name} --test-certificates{allow}", timeout=1500)
     print(f"[{distro}] install took {round(time.monotonic() - started)}s")
     checks("it installs with a web address", done.returncode == 0, done.stdout + done.stderr)
-    checks(
-        "and gets its certificate",
-        f"installed at https://{name}" in done.stdout and "hasn't given it" not in done.stdout,
-        done.stdout,
+    certified = (
+        f"installed at https://{name}" in done.stdout and "hasn't given it" not in done.stdout
     )
+    checks("and gets its certificate", certified, done.stdout)
+    if not certified:
+        print(
+            node.out(
+                "grep -hiE 'md|acme|challenge' /var/log/apache2/error.log /var/log/httpd/error_log"
+                " 2>/dev/null | tail -n 30"
+            )
+        )
     links = re.findall(rf"https://{re.escape(name)}/setup/\S+", done.stdout)
     checks("it hands over a link to the web address", len(links) == 1, done.stdout)
     if done.returncode or not links:
@@ -256,6 +553,16 @@ def prove_web(node: "Node", checks, distro: str) -> None:
     except OSError as exc:
         issuer = str(exc)
     checks("the certificate is Let's Encrypt's test one", "STAGING" in issuer, issuer)
+    if distro.startswith("ubuntu"):
+        status = node.out("ufw status")
+        rules = {line.split()[0] for line in status.splitlines()[4:] if line.strip()}
+        allowed = rules == {"22/tcp", "80/tcp", "443/tcp"}
+    else:
+        rules = set(node.out("firewall-cmd --list-services").split())
+        allowed = rules == {"ssh", "dhcpv6-client", "http", "https"}
+    checks("the firewall lets in SSH and the web address's ports, and no more", allowed, rules)
+    notes = machine_status(node)
+    checks("asked nothing about SSH, passwords stay on", notes.get("ssh_passwords") is True, notes)
     status = local(
         "curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"https://{name}/login"
     )
@@ -473,8 +780,467 @@ def prove_web(node: "Node", checks, distro: str) -> None:
         checks("the SELinux switch is off again", switch.endswith("off"), switch)
 
 
+UPDATE_SERVICE = "compromise-checker-update"
+
+
+def wait_for(node: "Node", command: str, wanted: str, seconds: int = 420, every: float = 5) -> str:
+    """The command's output once it says `wanted`, or whatever it last said. `every`: on a machine
+    whose firewall holds off an address that opens SSH connections quickly (about 6 in 30 seconds),
+    ask no more often than that, since the shared connection may not survive the install."""
+    deadline = time.monotonic() + seconds
+    said = ""
+    while time.monotonic() < deadline:
+        said = node.out(command)
+        if wanted in said:
+            return said
+        time.sleep(every)
+    return said
+
+
+def prove_update(node: "Node", checks, distro: str, newer: Path, broken: Path) -> None:
+    """A newer release got ready by the tool's account and installed by the root service, a refused
+    one, one that doesn't answer and is rolled back, and a request file that says nothing."""
+    as_account = f"runuser -u {ACCOUNT} -- env CHECKER_HOME={DATA} {PROGRAM}/current/bin/checker"
+    outcome = f"cat /var/lib/{UPDATE_SERVICE}/outcome.json 2>/dev/null"
+    current = f"readlink {PROGRAM}/current"
+    version = f"{PROGRAM}/current/bin/python -I -c 'import checker; print(checker.__version__)'"
+
+    done = node.run(
+        "cd /root/release && umask 077 && sudo python3 -I install.py --from /root/release"
+        " --new-machine"
+    )
+    checks("it installs", done.returncode == 0, done.stdout + done.stderr)
+    links = _LINK_LINE.findall(done.stdout)
+    if done.returncode or not links:
+        print(node.out(f"journalctl -u {UNIT} -n 40 --no-pager"))
+        return
+    unit = node.out(f"systemctl cat {UNIT}")
+    checks(
+        "the web interface runs through the link's own Python",
+        f"ExecStart={PROGRAM}/current/bin/python -P -m checker web" in unit,
+        unit,
+    )
+    checks(
+        "the update watcher is running",
+        node.out(f"systemctl is-active {UPDATE_SERVICE}.path") == "active",
+        node.out(f"systemctl status {UPDATE_SERVICE}.path --no-pager"),
+    )
+    checks(
+        "the signed description is kept beside the version",
+        node.out(
+            f"ls {PROGRAM}/versions/{VERSION}/release.json"
+            f" {PROGRAM}/versions/{VERSION}/release.json.minisig | wc -l"
+        )
+        == "2",
+    )
+    checks(
+        "root has its own copy of the status script, and the status service uses it",
+        node.out(
+            f"test -f {PROGRAM}/machine_status.py && systemctl cat {STATUS}.service"
+            " | grep -c 'machine_status.py'"
+        )
+        == "1",
+    )
+    checks(
+        "the status service runs from it",
+        node.run(f"systemctl start {STATUS}.service").returncode == 0,
+    )
+
+    # Someone makes the first account and signs in: the Updates page knows the version.
+    jar = "/root/jar"
+    form = (
+        f"curl -s -c {jar} -b {jar} '{{url}}' |"
+        ' sed -n \'s/.*name="csrfmiddlewaretoken" value="\\([^"]*\\)".*/\\1/p\' | head -1'
+    )
+    password = "proof-password-" + os.urandom(8).hex()
+    token = node.out(form.format(url=links[0]))
+    made = node.out(
+        f"curl -s -o /dev/null -w '%{{http_code}}' -c {jar} -b {jar} -H 'Referer: http://127.0.0.1:8088/'"
+        f" --data-urlencode csrfmiddlewaretoken={token} -d username=proofadmin"
+        f" --data-urlencode password={password} --data-urlencode password2={password} '{links[0]}'"
+    )
+    checks("the first account can be made", made == "302", made)
+    login = "http://127.0.0.1:8088/login"
+    token = node.out(form.format(url=login))
+    signed = node.out(
+        f"curl -s -o /dev/null -w '%{{http_code}}' -c {jar} -b {jar} -H 'Referer: http://127.0.0.1:8088/'"
+        f" --data-urlencode csrfmiddlewaretoken={token} -d username=proofadmin"
+        f" --data-urlencode password={password} '{login}'"
+    )
+    checks("and sign in", signed == "302", signed)
+    page = node.out(f"curl -s -b {jar} http://127.0.0.1:8088/manage/updates")
+    checks(
+        "the Updates page knows the version the installer kept",
+        f"<strong>{VERSION}</strong>" in page and "not installed by the installer" not in page,
+        page[-1500:],
+    )
+
+    # --- Refusals on the account's side, with nothing handed over -----------------------------
+    # The account reads the releases, so they go where it can: not under /root.
+    shared = "/srv/cc-proof"
+    node.run(f"mkdir -p {shared} && cp -r /root/release {shared}/release && chmod -R a+rX {shared}")
+    done = node.run(f"{as_account} update --from {shared}/release")
+    checks(
+        "the release that's running isn't newer, so it's refused",
+        done.returncode == 1 and "isn't newer" in done.stderr,
+        done.stdout + done.stderr,
+    )
+    node.copy(newer, f"{shared}/newer")
+    node.run(
+        f"cp -r {shared}/newer {shared}/tampered"
+        f" && sed -i '1s/^./X/' {shared}/tampered/requirements.lock && chmod -R a+rX {shared}"
+    )
+    done = node.run(f"{as_account} update --from {shared}/tampered")
+    checks(
+        "a changed file in a newer release is refused",
+        done.returncode == 1 and "requirements.lock" in done.stderr,
+        done.stdout + done.stderr,
+    )
+    checks("nothing was handed over", node.out(f"ls {DATA}/updates/request 2>/dev/null") == "")
+
+    # --- The root service takes nothing from the request file -------------------------------
+    node.run(
+        f"runuser -u {ACCOUNT} -- sh -c 'mkdir -p -m 700 {DATA}/updates &&"
+        f" echo /etc/shadow > {DATA}/updates/request'"
+    )
+    said = wait_for(node, outcome, '"outcome"', seconds=120)
+    checks(
+        "a request with nothing waiting installs nothing, and says so",
+        '"failed"' in said and "nothing is waiting" in said and node.out(current).endswith(VERSION),
+        said,
+    )
+    checks("the request file is gone", node.out(f"ls {DATA}/updates/request 2>/dev/null") == "")
+
+    # --- The update ---------------------------------------------------------------------------
+    started = time.monotonic()
+    done = node.run(f"{as_account} update --from {shared}/newer", timeout=1500)
+    checks(
+        "the account gets a newer release ready and hands it over",
+        done.returncode == 0 and "ready" in done.stdout,
+        done.stdout + done.stderr,
+    )
+    said = wait_for(node, outcome, '"installed"')
+    took = round(time.monotonic() - started)
+    print(f"[{distro}] update took {took}s")
+    checks("the root service installed it", '"installed"' in said, said)
+    if '"installed"' not in said:
+        print(node.out(f"journalctl -u {UPDATE_SERVICE} -n 60 --no-pager"))
+        return
+    checks("current points at the new version", node.out(current).endswith("/versions/9.9.10"))
+    checks("and that version runs", node.out(version) == "9.9.10", node.out(version))
+    checks(
+        "the web interface is back",
+        node.out(f"systemctl is-active {UNIT}") == "active"
+        and status_of(node, "http://127.0.0.1:8088/login") == "200",
+        node.out(f"systemctl status {UNIT} --no-pager"),
+    )
+    checks("the previous version is kept", node.out(f"ls -d {PROGRAM}/versions/{VERSION}") != "")
+    checks(
+        "root's working copy is cleared away",
+        node.out(f"ls {PROGRAM}/staged 2>/dev/null | wc -l") == "0",
+        node.out(f"ls -R {PROGRAM}/staged 2>/dev/null"),
+    )
+    checks(
+        "root wrote nothing in the account's folder",
+        node.out(f"find {DATA} -user root 2>/dev/null") == "",
+        node.out(f"find {DATA} -user root 2>/dev/null"),
+    )
+    checks(
+        "the tool still can't change its own program",
+        node.out(
+            f"cd / && runuser -u {ACCOUNT} -- find {PROGRAM}/ -writable -not -type l -print -quit"
+        )
+        == "",
+    )
+    checks(
+        "the status service still runs",
+        node.run(f"systemctl start {STATUS}.service").returncode == 0,
+    )
+    page = node.out(f"curl -s -b {jar} http://127.0.0.1:8088/manage/updates")
+    checks(
+        "the Updates page shows the outcome, to the same signed-in person",
+        "<strong>9.9.10</strong>" in page and "was installed" in page,
+        page[-1500:],
+    )
+    checks("SELinux refused nothing", denials(node) == "", denials(node))
+
+    # --- A version that doesn't answer is rolled back -----------------------------------------
+    node.copy(broken, f"{shared}/broken")
+    node.run(f"chmod -R a+rX {shared}")
+    done = node.run(f"{as_account} update --from {shared}/broken", timeout=1500)
+    checks(
+        "a broken release is got ready like any other",
+        done.returncode == 0,
+        done.stdout + done.stderr,
+    )
+    said = wait_for(node, outcome, '"rolled back"')
+    checks(
+        "the root service rolled it back", '"rolled back"' in said and "didn't answer" in said, said
+    )
+    if '"rolled back"' not in said:
+        print(node.out(f"journalctl -u {UPDATE_SERVICE} -n 60 --no-pager"))
+    checks(
+        "current points at the version before it", node.out(current).endswith("/versions/9.9.10")
+    )
+    checks(
+        "and the web interface answers again",
+        node.out(f"systemctl is-active {UNIT}") == "active"
+        and status_of(node, "http://127.0.0.1:8088/login") == "200",
+        node.out(f"journalctl -u {UNIT} -n 20 --no-pager"),
+    )
+    checks(
+        "the broken version is gone", node.out(f"ls -d {PROGRAM}/versions/9.9.11 2>/dev/null") == ""
+    )
+    page = node.out(f"curl -s -b {jar} http://127.0.0.1:8088/manage/updates")
+    checks("the page says it went back", "went back to 9.9.10" in page, page[-1500:])
+
+
+HELPER_PORT = 8123
+
+
+def stackscript_text(release: Path, downloads: str) -> str:
+    """Linode's form for the proof's release, as scripts/release.py makes it, pointed at where the
+    proof serves the release, with Let's Encrypt's staging asked for."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("release_script", ROOT / "scripts" / "release.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    from checker import releases
+
+    data = (release / "release.json").read_bytes()
+    manifest = releases.Manifest.model_validate(json.loads(data))
+    return module.stackscript_for(
+        manifest,
+        manifest.files["install.py"].sha256,
+        downloads=downloads,
+        extra_flags="flags+=(--test-certificates)",
+    )
+
+
+def prove_linode_form(
+    api, distro: str, region: str, release: Path, place: Path, checks, keep_minutes: float = 0
+) -> None:
+    """A Linode made from the form, with no terminal: the StackScript downloads the release from a
+    helper server standing in for GitHub, runs the installer with the form's answers, and the link
+    appears above the console's login prompt until the first account exists."""
+    key = place / "key"
+    subprocess.run(  # noqa: S603
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],  # noqa: S607
+        check=True,
+    )
+    public = key.with_suffix(".pub").read_text().strip()
+    helper_label = proof.run_label(f"{distro}-helper")
+    helper = api.create(helper_label, proof.IMAGES["ubuntu24.04"], region, public)
+    script_id = None
+    made = None
+    try:
+        server = Node(helper["ipv4"][0], key, place / "known-helper")
+        server.wait()
+        server.run(f"mkdir -p /srv/v{VERSION}")
+        server.copy(release, "/tmp/release")
+        server.run(f"cp /tmp/release/* /srv/v{VERSION}/ && chmod -R a+rX /srv")
+        # Detached from the SSH session, or the session never ends.
+        server.run(
+            f"setsid -f python3 -m http.server {HELPER_PORT} --directory /srv"
+            " > /var/log/helper.log 2>&1 < /dev/null; sleep 2"
+        )
+        downloads = f"http://{helper['ipv4'][0]}:{HELPER_PORT}"
+        served = local(
+            "curl",
+            "-fsS",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            f"{downloads}/v{VERSION}/install.py",
+        ).stdout
+        checks("the helper serves the release", served == "200", served)
+
+        script = api.create_stackscript(
+            proof.run_label(f"{distro}-form"),
+            proof.IMAGES[distro],
+            stackscript_text(release, downloads),
+        )
+        script_id = script["id"]
+        fields = {field["name"] for field in script.get("user_defined_fields", [])}
+        checks(
+            "Linode reads the five fields from the script",
+            fields
+            == {
+                "web_address",
+                "allowed",
+                "root_login_off",
+                "ssh_key_logins_only",
+                "block_login_failures",
+            },
+            sorted(fields),
+        )
+        answers = {  # every field, as Cloud Manager sends them, an empty one included
+            "web_address": "auto",
+            "allowed": "",
+            "root_login_off": "no",
+            "ssh_key_logins_only": "no",
+            "block_login_failures": "yes",
+        }
+        # Linode puts the script at /root/StackScript and runs it at first boot. A field left out
+        # of stackscript_data makes it skip the script without a word, so every field is sent.
+        made = api.create(
+            proof.run_label(distro), proof.IMAGES[distro], region, public, script_id, answers
+        )
+        counted = api.call("GET", f"/linode/stackscripts/{script_id}").get("deployments_total")
+        checks("Linode counts the deployment against the StackScript", counted == 1, counted)
+        node = Node(made["ipv4"][0], key, place / "known")
+        node.wait()
+        address = made["ipv4"][0]
+        name = f"{address.replace('.', '-')}.sslip.io"
+        started = time.monotonic()
+        # The form's "yes" to holding off login failures limits new SSH connections, so ask slowly.
+        # The script's own last line: the marker comes before the console note and the prompt.
+        said = wait_for(
+            node,
+            f"test -f {PROGRAM}/installed"
+            " && grep -q 'Done at' /var/log/compromise-checker-install.log && echo installed",
+            "installed",
+            seconds=1200,
+            every=30,
+        )
+        took = round(time.monotonic() - started)
+        print(f"[{distro}] the form's install took {took}s after the machine answered")
+        log = node.out("cat /var/log/compromise-checker-install.log 2>/dev/null")
+        checks("the form's install finished", said == "installed", log[-2500:])
+        if said != "installed":
+            # Linode runs a StackScript through cloud-init: its records say whether it ran at all.
+            for command in (
+                "cloud-init status --long 2>&1",
+                "tail -n 60 /var/log/cloud-init-output.log 2>&1",
+                "cd /var/lib/cloud/instance && wc -c user-data.txt vendor-data*.txt 2>&1",
+                "ls -la /var/log/compromise-checker-install.log /root 2>&1",
+                "journalctl -b --no-pager -o cat -u cloud-final -u cloud-config 2>&1 | tail -n 40",
+                f"journalctl -u {UNIT} -n 20 --no-pager 2>&1",
+            ):
+                print(f"[{distro}] $ {command}\n{node.out(command)}")
+            return
+        checks(
+            "it logged what it did, with the trial name",
+            "Done at" in log and name in log,
+            f"expected {name}; log starts: {log[:700]!r}",
+        )
+        checks(
+            "the service runs as the tool's account",
+            node.out(f"systemctl is-active {UNIT}") == "active"
+            and node.out(f"ps -o user= -p $(systemctl show -p MainPID --value {UNIT})") == ACCOUNT,
+        )
+        issue = node.out("cat /etc/issue")
+        links = re.findall(rf"https://{re.escape(name)}/setup/\S+", issue)
+        checks("the link is above the console's login prompt", len(links) == 1, f"{name}: {issue}")
+        checks(
+            "and the distribution's own text is still there",
+            issue.rstrip().endswith("\\l") or "Kernel" in issue or "\\n" in issue,
+            issue,
+        )
+        # Apache answers for the name once its certificate has come: usually under a minute.
+        status = wait_for_status(node, f"https://{name}/login", "-k", "200", seconds=180)
+        checks("the page answers by the name, through Apache", status == "200", status)
+        if not links:
+            return
+        checks(
+            "the link opens from elsewhere",
+            local("curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", links[0]).stdout
+            == "200",
+        )
+        # ufw's limit on Ubuntu 24.04; SSH's own penalties elsewhere, which `sshd -T` shows with
+        # their values when on ("persourcepenalties crash:90 authfail:5 ...") and as "no" when off.
+        penalties = node.out("sshd -T 2>/dev/null | grep -i persourcepenalties")
+        checks(
+            "the form's yes was applied: login failures are held off",
+            "LIMIT" in node.out("ufw status 2>/dev/null")
+            or (penalties.startswith("persourcepenalties ") and "authfail:" in penalties),
+            node.out("ufw status 2>/dev/null") + "\n" + penalties,
+        )
+        checks(
+            "the form's no was kept: root can still log in",
+            node.out("sshd -T | grep -i permitrootlogin") != "permitrootlogin no",
+        )
+        # Someone elsewhere makes the first account; the note comes off the console within the hour.
+        jar = Path(tempfile.mkdtemp()) / "jar"
+        page = local("curl", "-k", "-s", "-c", str(jar), "-b", str(jar), links[0]).stdout
+        found = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', page)
+        password = "proof-password-" + os.urandom(8).hex()
+        words = [
+            "curl",
+            "-k",
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "-c",
+            str(jar),
+            "-b",
+            str(jar),
+        ]
+        words += [
+            "-H",
+            f"Referer: https://{name}/",
+            "--data-urlencode",
+            f"csrfmiddlewaretoken={found.group(1) if found else ''}",
+        ]
+        words += [
+            "-d",
+            "username=proofadmin",
+            "--data-urlencode",
+            f"password={password}",
+            "--data-urlencode",
+            f"password2={password}",
+        ]
+        checks(
+            "the first account can be made from the link", local(*words, links[0]).stdout == "302"
+        )
+        node.run(f"systemctl start {STATUS}.service")
+        issue = node.out("cat /etc/issue")
+        checks(
+            "the note is gone from the console once the account exists",
+            "Compromise Checker" not in issue,
+            issue,
+        )
+        checks("SELinux refused nothing", denials(node) == "", denials(node))
+        jar.unlink(missing_ok=True)
+        jar.parent.rmdir()
+    finally:
+        if keep_minutes and made is not None:  # to look at it, passed or failed
+            print(
+                f"[{distro}] kept for {keep_minutes} minutes: ssh -i {key} root@{made['ipv4'][0]}"
+            )
+            time.sleep(keep_minutes * 60)
+        if script_id is not None:
+            try:
+                api.delete_stackscript(script_id)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[{distro}] could not delete the StackScript: {exc}")
+        for linode in (helper, made):
+            if linode is not None:
+                try:
+                    api.delete(linode["id"])
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[{distro}] could not delete {linode['label']}: {exc}")
+
+
 def status_of_with(node: "Node", url: str, extra: str) -> str:
     return node.out(f"curl -s -o /dev/null -w '%{{http_code}}' {extra} '{url}'")
+
+
+def wait_for_status(node: "Node", url: str, extra: str, wanted: str, seconds: int = 120) -> str:
+    """The status once it's `wanted`, asking every 30 seconds (the firewall may limit new SSH
+    connections), or the last one seen."""
+    deadline = time.monotonic() + seconds
+    status = ""
+    while time.monotonic() < deadline:
+        status = status_of_with(node, url, extra)
+        if status == wanted:
+            return status
+        time.sleep(30)
+    return status
 
 
 def prove(
@@ -485,6 +1251,7 @@ def prove(
     work: Path,
     route: str = "local",
     keep_minutes: float = 0,
+    more: dict | None = None,
 ) -> list:
     results = []
 
@@ -495,6 +1262,9 @@ def prove(
 
     place = work / f"{distro}-{route}"
     place.mkdir()
+    if route == "linode-form":
+        prove_linode_form(api, distro, region, release, place, checks, keep_minutes)
+        return results
     key = place / "key"
     subprocess.run(  # noqa: S603
         ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],  # noqa: S607
@@ -513,6 +1283,9 @@ def prove(
         node.copy(release, "/root/release")
         if route == "web":
             prove_web(node, checks, distro)
+            return results
+        if route == "update":
+            prove_update(node, checks, distro, more["newer"], more["broken"])
             return results
 
         # --- Refusals, each leaving the machine as it was ---------------------------------------
@@ -567,6 +1340,7 @@ def prove(
         started = time.monotonic()
         done = node.run(
             "cd /root/release && umask 077 && sudo python3 -I install.py --from /root/release"
+            + LOCKDOWN
         )
         took = round(time.monotonic() - started)
         print(f"[{distro}] install took {took}s")
@@ -610,6 +1384,8 @@ def prove(
             found.stdout + found.stderr,
         )
         checks("sleep is off", node.out("systemctl is-enabled suspend.target") == "masked")
+        installed_said = done.stdout
+        prove_lockdown(node, checks, distro, installed_said)
 
         # --- A new link -------------------------------------------------------------------------
         again = _LINK_LINE.findall(node.out(LINK))
@@ -652,6 +1428,7 @@ def prove(
             done.stdout + done.stderr,
         )
         node.run("systemctl reboot")
+        node.close()
         time.sleep(15)
         node.wait()
         deadline = time.monotonic() + 120
@@ -667,6 +1444,12 @@ def prove(
             "the service came back as itself", node.out(f"systemctl is-enabled {UNIT}") == "enabled"
         )
         checks("the timer came back", "compromise-checker" in node.out(timer), node.out(timer))
+        refused = node.fresh_login("root", "-o", "PubkeyAuthentication=no")
+        checks("passwords are still refused", passwords_refused(refused), refused.stderr)
+        checks(
+            "the machine's notes came back",
+            node.out("systemctl is-enabled compromise-checker-status.timer") == "enabled",
+        )
         after = _LINK_LINE.findall(node.out(LINK))
         checks("a link can still be made", len(after) == 1 and status_of(node, after[0]) == "200")
         selinux = node.out("getenforce 2>/dev/null") or "not on this system"
@@ -705,6 +1488,14 @@ def prove(
             f" -d password={password} http://127.0.0.1:8088/login"
         )
         checks("that account can sign in", signed_in == "302", signed_in)
+        page = "curl -s -c /root/jar -b /root/jar http://127.0.0.1:8088/"
+        text = node.out(page)
+        checks("no notice about SSH passwords, which are off", "with a password" not in text)
+        if distro.startswith("ubuntu"):
+            node.run(f"touch /run/reboot-required && systemctl start {STATUS}.service")
+            checks("a waiting restart is noted", machine_status(node).get("restart_needed") is True)
+            checks("and shown on the page", "waiting for a restart" in node.out(page))
+            node.run(f"rm -f /run/reboot-required && systemctl start {STATUS}.service")
         done = node.run(LINK)
         checks(
             "no link is made once there's an account",
@@ -712,6 +1503,8 @@ def prove(
             done.stdout + done.stderr,
         )
         checks("the spent link stops working", status_of(node, after[0]) != "200")
+        prove_limit(node, checks, distro, installed_said)
+        prove_root_off(node, checks, distro)
         found = denials(node)  # last, to cover all of the above
         checks("SELinux refused nothing", not found, found)
     finally:
@@ -731,8 +1524,9 @@ def main() -> int:
         "--route",
         nargs="+",
         default=["local", "web"],
-        choices=["local", "web"],
-        help="from this machine only, or with a web address",
+        choices=["local", "web", "update", "linode-form"],
+        help="from this machine only, with a web address, updated to a newer release, or made from"
+        " Linode's form (needs a token that may write StackScripts)",
     )
     parser.add_argument(
         "--keep-minutes", type=float, default=0, help="keep each server this long, to look at it"
@@ -750,8 +1544,15 @@ def main() -> int:
     proof.sweep(api)
     try:
         with tempfile.TemporaryDirectory(prefix="cc-install-", dir=arguments.work) as work:
-            release = build_release(Path(work))
-            sign_release(release)
+            key = ProofKey()
+            release = build_release(Path(work), key=key)
+            sign_release(release, key)
+            more = {}
+            if "update" in arguments.route:
+                more["newer"] = build_release(Path(work), "9.9.10", key)
+                more["broken"] = build_release(Path(work), "9.9.11", key, broken=True)
+                for built in more.values():
+                    sign_release(built, key)
             runs = [(system, route) for system in systems for route in arguments.route]
             with ThreadPoolExecutor(len(runs)) as pool:
                 futures = {
@@ -764,6 +1565,7 @@ def main() -> int:
                         Path(work),
                         route,
                         arguments.keep_minutes,
+                        more,
                     )
                     for system, route in runs
                 }

@@ -4268,6 +4268,16 @@ ROOTED_AND_CHANGED = host_records(
 
 
 @pytest.fixture(autouse=True)
+def _no_check_for_updates_reaches_out(request, monkeypatch):
+    """Opening a page starts the daily check for a newer version, which asks GitHub: not from a
+    test. A test of that check sets its own stand-in."""
+    if "web" in request.fixturenames:
+        from checker import updates
+
+        monkeypatch.setattr(updates, "check_in_background", lambda base: False)
+
+
+@pytest.fixture(autouse=True)
 def _decisions_look_back_far_enough(request, monkeypatch):
     """The test bundles have fixed dates."""
     if "web" in request.fixturenames:
@@ -7636,6 +7646,328 @@ def test_first_setup_goes_step_by_step_from_what_s_really_there(web, inventory):
     assert records_of("said the evidence key is backed up")[-1].who == "jo"
 
 
+def test_first_setup_points_to_the_key_page_and_says_what_a_lost_machine_means(web):
+    client, _ = signed_in(web)
+    text = setup_page(client)
+    assert text.count('href="/manage/evidence-key"') == 2
+    assert "doesn't back up the evidence itself" in text
+    assert "AGE-SECRET-KEY-" not in text
+
+
+# --- The evidence key ---------------------------------------------------------------------
+
+
+def key_page(client):
+    response = client.get("/manage/evidence-key")
+    assert response.status_code == 200
+    return said(response)
+
+
+def secret_key_of(home):
+    lines = (home[0] / "keys" / "evidence-identity.txt").read_text().splitlines()
+    return next(line for line in lines if line.startswith("AGE-SECRET-KEY-"))
+
+
+def show_key(client, password=PASSWORD):
+    return client.post("/manage/evidence-key/show", {"confirm_password": password})
+
+
+def test_the_evidence_key_is_shown_only_after_confirming_and_each_showing_is_recorded(web):
+    client, home = signed_in(web)
+    secret = secret_key_of(home)
+    text = key_page(client)
+    assert "Show the key" in text and "evidence-identity.txt" in text
+    assert "AGE-SECRET-KEY-" not in text, "looking at the page shows nothing"
+    assert "If this machine is lost" in text and "doesn't back up the evidence itself" in text
+    refused = show_key(client, "no")
+    assert refused.status_code == 403 and "AGE-SECRET-KEY-" not in said(refused)
+    assert records_of("showed the evidence key")[-1].outcome == "refused"
+    shown = show_key(client)
+    assert shown.status_code == 200 and shown["Cache-Control"] == "no-store"
+    page = said(shown)
+    assert secret in page and "I've backed it up" in page
+    record = records_of("showed the evidence key")[-1]
+    assert (record.who, record.outcome) == ("jo", "done")
+    assert record.target == config_now().recipients[0], "the record names the public half"
+    assert "AGE-SECRET-KEY-" not in record.target + record.detail
+    assert secret in said(show_key(client)), "and again, the same way"
+    assert "AGE-SECRET-KEY-" not in key_page(client)
+    saved = client.post("/first-setup/key-saved", {"back": "key"})
+    assert saved.status_code == 302 and saved["Location"] == "/manage/evidence-key"
+    assert "I've backed it up" not in said(show_key(client))
+    assert "(done)" in setup_page(client)
+
+
+def test_with_two_factor_on_the_key_takes_a_code_too(web):
+    client, home = web
+    user = account()
+    device = with_app(user)
+    client.force_login(user)
+    assert client.post("/two-factor", {"code": fresh(device)}).status_code == 302
+    without = client.post("/manage/evidence-key/show", {"confirm_password": PASSWORD})
+    assert without.status_code == 403 and "AGE-SECRET-KEY-" not in said(without)
+    assert records_of("showed the evidence key")[-1].detail == "wrong code"
+    data = {"confirm_password": PASSWORD, "confirm_code": fresh(device)}
+    assert secret_key_of(home) in said(client.post("/manage/evidence-key/show", data))
+
+
+def test_a_damaged_key_file_is_said_so_on_the_page_and_in_the_record(web):
+    client, home = signed_in(web)
+    key = home[0] / "keys" / "evidence-identity.txt"
+    key.write_text("# created\nAGE-SECRET-KEY-1DAMAGED\n")
+    response = show_key(client)
+    assert response.status_code == 400
+    text = said(response)
+    assert "missing or damaged" in text and "The evidence key" in text, "this page, with words"
+    assert "AGE-SECRET-KEY-" not in text
+    record = records_of("showed the evidence key")[-1]
+    assert record.outcome == "failed" and "DAMAGED" not in record.detail
+
+
+def test_a_key_that_is_lost_or_kept_elsewhere_is_said_so_and_not_shown(web):
+    client, home = signed_in(web)
+    key = home[0] / "keys" / "evidence-identity.txt"
+    key.rename(key.with_name("elsewhere"))
+    text = key_page(client)
+    assert "isn't where it should be" in text and "Show the key" not in text
+    response = show_key(client)
+    assert response.status_code == 400 and "can't be read" in said(response)
+    assert records_of("showed the evidence key")[-1].outcome == "failed"
+    key.with_name("elsewhere").rename(key)
+    import yaml
+
+    from checker.inventory import home as checker_home
+
+    path = checker_home() / "config.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["identity_file"] = None
+    path.write_text(yaml.safe_dump(data))
+    text = key_page(client)
+    assert "isn't kept on this machine" in text and "Show the key" not in text
+    assert show_key(client).status_code == 400
+    assert "AGE-SECRET-KEY-" not in said(show_key(client))
+
+
+# --- Updates ------------------------------------------------------------------------------------
+
+
+def _installed(monkeypatch, tmp_path, version="0.1.0", prerelease=False):
+    """A machine the installer set up, at `version`, from the kept manifest's point of view."""
+    from test_updates import KEY, _release
+
+    from checker import releases, updates
+
+    monkeypatch.setattr(releases, "RELEASE_KEYS", (KEY.line,))
+    program = tmp_path / "opt"
+    current = program / "versions" / version
+    _release(current, version, prerelease=prerelease)
+    (program / "current").symlink_to(current)
+    monkeypatch.setattr(updates, "PROGRAM", program)
+    return program
+
+
+def _found(home, version="0.2.0", security_fix=False, problem=None):
+    folder = home[0] / "updates"
+    folder.mkdir(exist_ok=True)
+    newest = None
+    if version:
+        newest = {
+            "version": version,
+            "published": "2026-11-20",
+            "prerelease": False,
+            "security_fix": security_fix,
+        }
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    found = {"checked": now, "installed": "0.1.0", "newest": newest}
+    if problem:
+        found["problem"] = problem
+    (folder / "check.json").write_text(json.dumps(found))
+
+
+def test_the_updates_page_shows_what_the_last_check_found(web, monkeypatch, tmp_path):
+    from checker import updates
+
+    client, home = signed_in(web)
+    _installed(monkeypatch, tmp_path)
+    monkeypatch.setattr(updates, "check_in_background", lambda base: False)
+    text = said(client.get("/manage/updates"))
+    assert "runs version <strong>0.1.0</strong>" in text and "no check has run" in text
+    assert "Update to" not in text and "Check now" in text
+    _found(home)
+    text = said(client.get("/manage/updates"))
+    assert "Version 0.2.0 is available" in text and "Update to 0.2.0" in text
+    assert "fixes a security problem" not in text
+    _found(home, security_fix=True)
+    text = said(client.get("/manage/updates"))
+    assert "fixes a security problem" in text
+    _found(home, version=None, problem="GitHub answered 503")
+    text = said(client.get("/manage/updates"))
+    assert "No newer version was found" in text and "GitHub answered 503" in text
+
+
+def test_the_notice_is_on_every_page_for_full_access_only(web, monkeypatch, tmp_path):
+    from checker import updates
+
+    client, home = signed_in(web)
+    _installed(monkeypatch, tmp_path)
+    started = []
+    monkeypatch.setattr(updates, "check_in_background", lambda base: started.append(base))
+    text = said(client.get("/"))
+    assert started == [home[0]], "no check yet: one is started in the background"
+    assert "of this tool is available" not in text
+    _found(home)
+    text = said(client.get("/"))
+    assert "Version 0.2.0 of this tool is available" in text and 'href="/manage/updates"' in text
+    assert len(started) == 1, "checked today: not again"
+    _found(home, security_fix=True)
+    assert "fixes a security problem" in said(client.get("/manage"))
+    viewer = person("viewer")
+    assert "of this tool" not in said(viewer.get("/"))
+    from checker.settings import change
+
+    change(home[0], "updates.check", "off")
+    (home[0] / "updates" / "check.json").unlink()
+    said(client.get("/"))
+    assert len(started) == 1, "turned off: no check is started"
+
+
+def test_checking_now_is_recorded_and_says_what_it_found(web, monkeypatch, tmp_path):
+    from checker import updates
+
+    client, home = signed_in(web)
+    _installed(monkeypatch, tmp_path)
+    answers = iter(
+        [
+            {"newest": {"version": "0.2.0", "published": "2026-11-20"}},
+            {"newest": None},
+            {"newest": None, "problem": "the network is down"},
+        ]
+    )
+    monkeypatch.setattr(updates, "check_now", lambda base: next(answers))
+    monkeypatch.setattr(updates, "check_in_background", lambda base: False)
+    for words, detail in (
+        ("Version 0.2.0 is available", "version 0.2.0 is available"),
+        ("No newer version was found", "nothing newer"),
+        ("the network is down", "couldn't tell: the network is down"),
+    ):
+        response = client.post("/manage/updates/check", {"a": "b"})
+        assert response.status_code == 200 and words in said(response)
+        assert records_of("asked whether a newer version exists")[-1].detail == detail
+    from datetime import UTC, datetime
+
+    folder = home[0] / "updates"
+    folder.mkdir(exist_ok=True)
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    (folder / "check.json").write_text(json.dumps({"checked": now, "newest": None}))
+    soon = client.post("/manage/updates/check", {"a": "b"})
+    assert soon.status_code == 400 and "less than a minute ago" in said(soon)
+
+
+def test_starting_an_update_needs_the_password_and_the_newest_known_version(
+    web, monkeypatch, tmp_path
+):
+    from checker import updates
+
+    client, home = signed_in(web)
+    _installed(monkeypatch, tmp_path)
+    _found(home)
+    prepared = []
+    monkeypatch.setattr(
+        updates, "prepare_in_background", lambda base, v: prepared.append(v) or True
+    )
+    refused = client.post("/manage/updates/start", {"version": "0.2.0", "confirm_password": "no"})
+    assert refused.status_code == 403 and prepared == []
+    wrong = client.post("/manage/updates/start", {"version": "0.9.0", "confirm_password": PASSWORD})
+    assert wrong.status_code == 400 and "isn't the newest" in said(wrong) and prepared == []
+    bad = client.post("/manage/updates/start", {"version": "../x", "confirm_password": PASSWORD})
+    assert bad.status_code == 400 and prepared == []
+    done = client.post("/manage/updates/start", {"version": "0.2.0", "confirm_password": PASSWORD})
+    assert done.status_code == 200 and "Getting version 0.2.0" in said(done)
+    assert prepared == ["0.2.0"]
+    record = records_of("started an update")[-1]
+    assert (record.who, record.target, record.outcome) == ("jo", "0.2.0", "done")
+    monkeypatch.setattr(updates, "prepare_in_background", lambda base, v: False)
+    busy = client.post("/manage/updates/start", {"version": "0.2.0", "confirm_password": PASSWORD})
+    assert busy.status_code == 400 and "already under way" in said(busy)
+
+
+def test_a_machine_not_set_up_by_the_installer_is_not_offered_the_button(
+    web, monkeypatch, tmp_path
+):
+    from checker import updates
+
+    client, home = signed_in(web)
+    monkeypatch.setattr(updates, "PROGRAM", tmp_path / "nowhere")
+    _found(home)
+    text = said(client.get("/manage/updates"))
+    assert "not installed by the installer" in text and "Update to" not in text
+    done = client.post("/manage/updates/start", {"version": "0.2.0", "confirm_password": PASSWORD})
+    assert done.status_code == 400 and "by hand" in said(done)
+
+
+def test_progress_and_outcome_are_shown_and_a_request_can_be_taken_back(web, monkeypatch, tmp_path):
+    from checker import updates
+
+    client, home = signed_in(web)
+    _installed(monkeypatch, tmp_path)
+    _found(home)
+    folder = home[0] / "updates"
+    (folder / "progress.json").write_text(
+        json.dumps(
+            {
+                "at": "2026-11-04T00:00:00+00:00",
+                "version": "0.2.0",
+                "state": "dependencies",
+                "words": "",
+            }
+        )
+    )
+    from checker.files import locked
+
+    with locked(folder / "work", wait=0):  # someone is working on it, as the file says
+        text = said(client.get("/manage/updates"))
+    assert "Fetching version 0.2.0's dependencies" in text and "Update to" not in text
+    text = said(client.get("/manage/updates"))  # nobody is: the web process must have stopped
+    assert "stopped part way" in text and "Update to 0.2.0" in text
+    (folder / "progress.json").write_text(
+        json.dumps(
+            {
+                "at": "2026-11-04T00:00:01+00:00",
+                "version": "0.2.0",
+                "state": "handed over",
+                "words": "",
+            }
+        )
+    )
+    (folder / "request").write_text("0.2.0\n")
+    text = said(client.get("/manage/updates"))
+    assert "Waiting for the update service" in text and "Take the request back" in text
+    done = client.post("/manage/updates/cancel", {"a": "b"})
+    assert done.status_code == 200 and "taken back" in said(done)
+    assert not (folder / "request").exists()
+    assert records_of("took back an update request")[-1].outcome == "done"
+    again = client.post("/manage/updates/cancel", {"a": "b"})
+    assert again.status_code == 400
+    outcome = tmp_path / "state" / "outcome.json"
+    outcome.parent.mkdir()
+    monkeypatch.setattr(updates, "OUTCOME_FILE", outcome)
+    outcome.write_text(
+        json.dumps(
+            {
+                "at": "2099-11-21T11:00:00+00:00",
+                "outcome": "rolled back",
+                "version": "0.2.0",
+                "from": "0.1.0",
+                "words": "version 0.2.0 didn't answer within 60 seconds",
+            }
+        )
+    )
+    text = said(client.get("/manage/updates"))
+    assert "went back to 0.1.0" in text and "didn't answer" in text
+
+
 def test_the_first_choices_are_confirmed_and_are_the_real_settings(web, inventory):
     client, _ = signed_in(web)
     reader = _FormReader("/first-setup/choices")
@@ -7718,6 +8050,22 @@ def keyed(web, unconfirmed):
         )
     )
     return client, home
+
+
+def test_a_pc_install_warns_that_limiting_the_key_to_its_address_can_lock_it_out(
+    keyed, monkeypatch, tmp_path
+):
+    from checker import machine_status
+
+    client, _ = keyed
+    warning = "That kind of address can change"
+    monkeypatch.setattr(machine_status, "INSTALLED", tmp_path / "installed")
+    monkeypatch.setattr(machine_status, "WEB_ADDRESS", tmp_path / "web-address.json")
+    assert warning not in prepared(client), "not installed by the script: nothing is known"
+    (tmp_path / "installed").write_text("0.1.0\n")
+    assert warning in prepared(client)
+    (tmp_path / "web-address.json").write_text('{"name": "checker.example.org"}\n')
+    assert warning not in prepared(client), "a server with a web address keeps its address"
 
 
 def test_the_commands_are_filled_in_with_the_real_key_and_nothing_private(keyed):
@@ -9310,6 +9658,49 @@ def test_a_failed_taking_away_adds_to_what_went_wrong_and_doesnt_replace_it(
     monkeypatch.setattr(postgres, "drop_ours", gone)
     moving.take_accounts_back()
     assert "empty that database" in capsys.readouterr().err
+
+
+def _machine(monkeypatch, tmp_path, **facts):
+    from datetime import UTC, datetime
+
+    from checker import machine_status
+
+    path = tmp_path / "machine.json"
+    facts.setdefault("checked", datetime.now(UTC).isoformat())
+    path.write_text(json.dumps(facts))
+    monkeypatch.setattr(machine_status, "STATUS", path)
+
+
+def test_the_machine_notices_are_shown_to_full_access(web, monkeypatch, tmp_path):
+    client, _ = signed_in(web)
+    assert "log in over SSH with a password" not in client.get("/").content.decode()
+    _machine(monkeypatch, tmp_path, ssh_passwords=True, restart_needed=True)
+    text = client.get("/").content.decode()
+    assert "log in over SSH with a password" in text
+    assert "waiting for a restart" in text
+    _machine(monkeypatch, tmp_path, ssh_passwords=False, restart_needed=False)
+    text = client.get("/").content.decode()
+    assert "log in over SSH with a password" not in text and "waiting for a restart" not in text
+
+
+def test_old_notes_about_the_machine_say_so(web, monkeypatch, tmp_path):
+    client, _ = signed_in(web)
+    _machine(monkeypatch, tmp_path, ssh_passwords=False, checked="2026-01-01T00:00:00+00:00")
+    assert "hasn't been brought up to date" in client.get("/").content.decode()
+
+
+def test_the_machine_notices_are_not_for_view_only(web, monkeypatch, tmp_path):
+    _machine(monkeypatch, tmp_path, ssh_passwords=True, restart_needed=True)
+    text = person("viewer").get("/").content.decode()
+    assert "log in over SSH with a password" not in text and "waiting for a restart" not in text
+
+
+def test_the_machine_notices_wait_for_full_sign_in(web, monkeypatch, tmp_path):
+    from checker.web import templating
+
+    _machine(monkeypatch, tmp_path, ssh_passwords=True)
+    monkeypatch.setattr(templating, "fully_signed_in", lambda request: False)
+    assert templating.machine_notices(request_for(account())) == []
 
 
 def test_a_theme_is_chosen_without_a_script(web):

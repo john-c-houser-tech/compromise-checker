@@ -10,7 +10,7 @@
 {% endblock %}
 {% block main %}
 <ul class="tiles" role="list">
-  {% for view, icon, words in [("first_setup", "forward", "First setup"), ("manage_add", "add", "Add a server"), ("manage_threats", "threats", "Threat updates"), ("manage_settings", "manage", "Settings"), ("manage_schedule", "checks", "Check every day"), ("manage_purge", "evidence", "Delete stored evidence"), ("manage_people", "security", "People")] %}
+  {% for view, icon, words in [("first_setup", "forward", "First setup"), ("manage_add", "add", "Add a server"), ("manage_threats", "threats", "Threat updates"), ("manage_settings", "manage", "Settings"), ("manage_schedule", "checks", "Check every day"), ("manage_purge", "evidence", "Delete stored evidence"), ("manage_evidence_key", "security", "Evidence key"), ("manage_updates", "checks", "Updates"), ("manage_people", "security", "People")] %}
   <li><a href="{{ url(view) }}"><span class="tile-icon">{{ draw.icon(icon) }}</span>{{ words }}</a></li>
   {% endfor %}
 </ul>

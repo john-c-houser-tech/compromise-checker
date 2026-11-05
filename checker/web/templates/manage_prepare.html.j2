@@ -16,6 +16,7 @@
 {% else %}
 <h2>This machine's address</h2>
 <p>With this, the key is refused from any other address, so it's far less use to anyone who copies it. Anything else sharing that address, such as other machines on the same internet connection, isn't kept out. Type the address your servers see this machine connecting from: on a home or office connection, a "what is my IP" site shows it from this machine. If it can change, leave it empty.</p>
+{% if local_pc %}<p class="error">This tool was installed for use from this machine alone, which usually means a PC on a home or office connection. That kind of address can change, and when it does, every server limited to it refuses this machine's key until an administrator there changes the address in the key's line in the account's authorized_keys file, or takes the account away, below, and sets it up again. Unless you know this machine's address is fixed, leave it empty.</p>{% endif %}
 {% if from_problem %}<p class="error" role="alert">{{ from_problem }}</p>{% endif %}
 <form method="get" action="{{ url('manage_prepare') }}">
   <input type="hidden" name="host" value="{{ host.name }}">

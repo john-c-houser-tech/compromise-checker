@@ -69,6 +69,15 @@ From the newest commit on `main`, after the change that sets the version has bee
        python scripts/release.py verify dist/release-VERSION
 
 7. Push the tag, and publish it with that command: `git push origin vVERSION`.
+8. Publish Linode's form. `verify` also writes `dist/stackscript-VERSION.sh`, the StackScript for this
+   release, with the installer's hash in it, and prints the `linode-cli stackscripts update` command. Run it with
+   the public StackScript's ID and a Linode token that may write StackScripts. The first time, create it instead:
+
+       linode-cli stackscripts create --label compromise-checker --is_public true \
+           --images linode/ubuntu24.04 --images linode/ubuntu26.04 --images linode/rocky9 --images linode/rocky10 \
+           --description "..." --script "$(cat dist/stackscript-VERSION.sh)"
+
+   A public StackScript can't be made private again. Its ID goes in this file once it exists.
 
 `build --trial` is for checking the build: it writes to `dist/trial-VERSION/`, and no machine reads what it
 makes, even if it's signed.
@@ -90,6 +99,10 @@ It says the release key signed these files once. It doesn't say they're the newe
   the exact version it wants. Both of those are checked by whoever calls `checker/releases.py`.
 - **A newer release can be withheld.** A machine can't tell from a signature that it isn't being shown one. It
   can only show how old the newest release it can see is. So a security fix also needs announcing.
+
+Installed machines find releases through GitHub's list of them (`checker/updates.py`), by tag `vVERSION`, and
+trust only the signed `release.json` published with each. `--security-fix` is what makes their notice loud, and
+`--prerelease` keeps a release from machines on a final version.
 
 ## Making the key
 

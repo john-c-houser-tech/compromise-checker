@@ -6,6 +6,7 @@ from __future__ import annotations
 import getpass
 import json
 import sys
+from datetime import timedelta
 from urllib.parse import urlencode, urlsplit
 
 import yaml
@@ -25,13 +26,14 @@ from django.db import DatabaseError, transaction
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.urls import Resolver404, resolve, reverse
+from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_otp import login as otp_login
 from markupsafe import escape
 from pydantic import ValidationError as InvalidSettings
 
-from checker import schedule
+from checker import machine_status, schedule, updates
 from checker.database import DATABASE_ERRORS
 from checker.evidence import EvidenceError, load_config
 from checker.fleet import read_evidence, read_fleet, read_host, read_threats
@@ -1313,6 +1315,94 @@ def purge_confirm(request) -> HttpResponse:
         return _unavailable(request, "The evidence was deleted, but this page can't be shown.")
 
 
+def _updates_page(request, problem: str = "", said: str = "", status: int = 200) -> HttpResponse:
+    found = updates.status(home())
+    context = {
+        **found,
+        "problem_found": found.pop("problem", None),
+        "problem": problem,
+        "said": said,
+        "progress_words": updates.words_for(found["progress"]),
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_updates.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def manage_updates(request) -> HttpResponse:
+    """From this machine's files alone: asking GitHub is its own action, and installing another."""
+    try:
+        return _updates_page(request)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't show the updates: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The settings can't be read.")
+
+
+def _not_just_checked(request) -> None:
+    checked = updates.status(home()).get("checked")
+    if checked is not None and (timezone.now() - checked) < timedelta(seconds=60):
+        raise ActionFailed("It was checked less than a minute ago. The page shows what was found.")
+
+
+@action("asked whether a newer version exists", check=_not_just_checked)
+def update_check(request) -> HttpResponse:
+    """A POST, since it makes this machine contact GitHub, and at most once a minute from these
+    pages. No password: it fetches a public list and a signed description, and a stolen session
+    gets nothing from it."""
+    try:
+        found = updates.check_now(home())
+    except updates.UpdateError as exc:
+        words = str(exc)
+        raise ActionFailed(f"{words[:1].upper()}{words[1:]}.") from None
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: the check for updates failed: {type(exc).__name__}", file=sys.stderr)
+        raise ActionFailed("The check couldn't be made.") from None
+    newest = found.get("newest")
+    if found.get("problem"):
+        request.action_detail = f"couldn't tell: {found['problem']}"
+        said = "The check didn't finish. " + found["problem"]
+    elif newest:
+        request.action_detail = f"version {newest['version']} is available"
+        said = f"Version {newest['version']} is available."
+    else:
+        request.action_detail = "nothing newer"
+        said = "No newer version was found."
+    return _updates_page(request, said=said)
+
+
+def _posted_version(request, **kwargs) -> str:
+    return request.POST.get("version", "")[:40]
+
+
+@action("started an update", consequential=True, target=_posted_version)
+def update_start(request) -> HttpResponse:
+    """Password again: this replaces the tool's code, through the root service."""
+    version = _posted_version(request)
+    try:
+        updates.releases.version_key(version)
+    except updates.releases.ReleaseError:
+        raise ActionFailed("That isn't a version.") from None
+    found = updates.status(home())
+    newest = found.get("newest") or {}
+    if newest.get("version") != version:
+        raise ActionFailed(
+            "That isn't the newest version this machine knows of. Check again, then try again."
+        )
+    if not found.get("by_installer"):
+        raise ActionFailed("This machine wasn't set up by the installer, so updates are by hand.")
+    if not updates.prepare_in_background(home(), version):
+        raise ActionFailed("A check or an update is already under way. Reload the page.")
+    return _updates_page(request, said=f"Getting version {version}. Reload this page to follow it.")
+
+
+@action("took back an update request")
+def update_cancel(request) -> HttpResponse:
+    if not updates.cancel(home()):
+        raise ActionFailed("There was no request waiting.")
+    return _updates_page(request, said="The request is taken back. Nothing was installed.")
+
+
 def _first_setup_page(request, problem="", status: int = 200) -> HttpResponse:
     context = {
         **first_setup.progress(home()),
@@ -1341,13 +1431,62 @@ def first_setup_page(request) -> HttpResponse:
 
 
 def _evidence_key_named(request, **kwargs) -> str:
-    return first_setup.this_key(home())
+    """The key's public half, for the record. If the settings can't be read, the record says that
+    instead, and the action itself says why in words."""
+    try:
+        return first_setup.this_key(home())
+    except Exception:  # noqa: BLE001 - a name for the record, whatever stops the settings
+        return "(the settings can't be read)"
 
 
 @action(first_setup.KEY_SAVED, target=_evidence_key_named)
 def first_setup_key_saved(request) -> HttpResponse:
-    """No password: it changes nothing but the reminder, and says who said so."""
-    return HttpResponseRedirect(reverse("first_setup"))
+    """No password: it changes nothing but the reminder, and says who said so. Back to whichever
+    page it was said on."""
+    back = "manage_evidence_key" if request.POST.get("back") == "key" else "first_setup"
+    return HttpResponseRedirect(reverse(back))
+
+
+def _key_page(request, shown: str = "", problem: str = "", status: int = 200) -> HttpResponse:
+    context = {
+        **first_setup.key_facts(home()),
+        "shown": shown,
+        "problem": problem,
+        "code_needed": two_factor.code_needed(request),
+    }
+    return render(request, "manage_evidence_key.html.j2", context, status=status)
+
+
+@login_required
+@require_GET
+def manage_evidence_key(request) -> HttpResponse:
+    """What the key is for and what losing it, or this machine, means. Never the key itself: that
+    takes the confirmation below."""
+    try:
+        return _key_page(request)
+    except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
+        print(f"checker web: can't read the key's settings: {type(exc).__name__}", file=sys.stderr)
+        return _unavailable(request, "The settings can't be read.")
+
+
+@action(first_setup.SHOWED_KEY, consequential=True, target=_evidence_key_named)
+def evidence_key_show(request) -> HttpResponse:
+    """Password again, and a code: this is the key to all the evidence. It's shown in the page, to
+    paste into a password manager, and never offered as a file."""
+    try:
+        line = first_setup.evidence_key_line(home())
+    except Exception as exc:  # noqa: BLE001 - whatever stops it, the page says so in the tool's words
+        print(f"checker web: the evidence key can't be read: {type(exc).__name__}", file=sys.stderr)
+        words = (
+            "The evidence key can't be read from this machine. Its file may be missing or damaged,"
+            " or the settings may not name it: whoever looks after this machine should look."
+        )
+        try:
+            page = _key_page(request, problem=words, status=400)
+        except Exception:  # noqa: BLE001 - the words are what matter
+            page = None
+        raise ActionFailed(words, page=page) from None
+    return _key_page(request, shown=line)
 
 
 @action(first_setup.CHOSE, consequential=True)
@@ -1393,7 +1532,10 @@ def manage_prepare(request) -> HttpResponse:
         context = first_setup.commands_for(home(), host, request.GET.get("from", ""))
     except Exception as exc:  # noqa: BLE001 - whatever it is, a plain page and not a stack trace
         return _unreadable_inventory(request, exc)
-    return render(request, "manage_prepare.html.j2", {"host": host, **context})
+    local_pc = machine_status.install_route() == "local"
+    return render(
+        request, "manage_prepare.html.j2", {"host": host, "local_pc": local_pc, **context}
+    )
 
 
 @for_viewers

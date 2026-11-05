@@ -14,7 +14,14 @@ import asyncssh
 from markupsafe import escape
 
 from checker.baseline import usable_bundles
-from checker.evidence import Store, database_file, load_config, store_exists
+from checker.evidence import (
+    EvidenceError,
+    Store,
+    database_file,
+    load_config,
+    load_identity,
+    store_exists,
+)
 from checker.files import atomic_write, locked
 from checker.inventory import Host, hosts_file, load_inventory
 from checker.transport import read_key_file, trusted_fingerprints
@@ -22,6 +29,7 @@ from checker.web import setting_forms
 from checker.web.models import ActionRecord
 
 KEY_SAVED = "said the evidence key is backed up"
+SHOWED_KEY = "showed the evidence key"
 CHOSE = "made the first setup choices"
 _PLAIN_ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 _PYTHON_NAME = re.compile(r"python3(\.[0-9]+)?")
@@ -88,6 +96,27 @@ def _evidence_key(base: Path) -> Path | None:
     """Where the settings say the private key is. None if it's kept away from this machine."""
     named = load_config(base).identity_file
     return Path(named) if named else None
+
+
+def key_facts(base: Path) -> dict[str, Any]:
+    """What the evidence key's page can say without the key: where it is, whether it's there, and
+    whether anyone has said it's backed up."""
+    named = _evidence_key(base)
+    lost = named is not None and not named.is_file()
+    return {
+        "evidence_key": str(named) if named else "",
+        "evidence_key_lost": lost,
+        "key_saved": named is None or (not lost and _said(KEY_SAVED, this_key(base))),
+    }
+
+
+def evidence_key_line(base: Path) -> str:
+    """The private key as the one line age wrote it, for pasting into a password manager, for a
+    person who has just confirmed who they are. Read from the file each time, never kept."""
+    named = _evidence_key(base)
+    if named is None:
+        raise EvidenceError("The evidence key isn't kept on this machine.")
+    return str(load_identity(named))
 
 
 def make_key(base: Path) -> str:

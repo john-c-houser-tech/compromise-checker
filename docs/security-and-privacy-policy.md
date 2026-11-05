@@ -222,7 +222,17 @@ that may include access tokens, and sometimes secrets typed into commands.
 
 - **Encrypted.** Each collection is encrypted as it arrives, using the `age`
   encryption format, to a key created for your organization at setup. Keep
-  that key's backup safe: without it, stored evidence cannot be read.
+  that key's backup safe: without it, stored evidence cannot be read. A page of
+  the web interface shows the key, as one line to paste into a password manager,
+  to a person with full access who confirms with their password, and a code if
+  two-factor sign-in is on. Each showing is recorded, and the key is never
+  offered as a file.
+- **Not backed up.** The tool keeps no copy of the evidence, or of the key,
+  anywhere but on this machine. If the machine is lost, each server's history is
+  lost with it, and the tool starts again from what each server looks like when
+  it is next checked. A backup of the whole machine, such as a hosting
+  provider's, holds the key and the evidence together, so whoever can restore it
+  can read everything: protect it like the evidence.
 - **Index.** An index records each collection's identifiers, times, status,
   size and fingerprints — never its content. It is a file on this machine or, if
   you choose, a PostgreSQL database. Whoever runs that database can read the parts
@@ -264,7 +274,7 @@ that may include access tokens, and sometimes secrets typed into commands.
   machine's SSH key, naming any key file the web server can read, and choosing
   which Python runs as administrator on a server. So someone with full access could use those keys to log in elsewhere,
   or send the next typed password to a machine they control. The same confirmation lets it change what is collected and how long evidence is
-  kept, delete stored evidence, set or stop a daily check, turn the AI advisor on, choose how much is hidden from it, and stop threat
+  kept, delete stored evidence, show the evidence key, install a newer release, set or stop a daily check, turn the AI advisor on, choose how much is hidden from it, and stop threat
   packs or keep them off a server. Asking for the latest signed packs needs no
   confirmation. Apart from the daily check, which
   runs the tool's own fixed command and any notify command already set, anything
@@ -405,10 +415,19 @@ Nothing, unless you choose one of these:
   appears in public certificate logs, where anyone can see it. Before that, the installer asks for one page by
   that name, to check it leads to the machine; if the name points somewhere else, that one request goes there,
   with nothing in it but a random path. The account it makes there gives `webmaster@`
-  and the name as its contact, so nothing personal is sent, and nothing about your servers or evidence.
+  and the name as its contact, so nothing personal is sent, and nothing about your servers or evidence. If you
+  type `auto` as the web address in Linode's form, the name is made at sslip.io, a public service that turns
+  an address into a name, so the machine's address appears in public certificate logs and the name depends on
+  that service.
+- a request to GitHub once a day for the public list of this tool's releases, and for the newest one's signed
+  description, from the web interface when someone with full access opens a page. It carries nothing about your
+  machine or servers beyond what any download does: the address it comes from. The setting `updates.check`
+  turns it off; the Updates page can still ask when you choose. Installing an update then downloads that
+  release and its dependencies from GitHub and PyPI.
 
 The tool has no telemetry, usage reporting or licence check, and it never
-contacts NouriLoop LLC on its own. Threat packs (section 11) are downloaded
+contacts NouriLoop LLC on its own. The daily check for a newer version is the one thing it fetches without
+being asked each time, and it can be turned off. Threat packs (section 11) are downloaded
 only when someone runs `checker packs pull` or asks for them on a page of the
 web interface, over HTTPS, from NouriLoop's public repository on GitHub or from
 a mirror you name. That request carries
@@ -457,11 +476,27 @@ new release of the tool.
   anyone can inspect them.
 - Releases and threat packs are signed.
 - Dependencies are kept few and pinned.
-- **What installing changes on the machine.** The installer makes an account for the tool that nobody can log
-  in to, runs the tool's web interface as a service, and turns sleep off so a daily check isn't missed. With a
-  web address, it also installs Apache from the system's own packages, opens ports 80 and 443 if a firewall is
-  running, adds an hourly reload of Apache, and on Rocky lets Apache act as a proxy under SELinux. It says what
-  it's doing at each step.
+- **What installing changes on the machine.** The installer makes an account for the tool that nobody can log in
+  to, runs the tool's web interface as a service, and turns sleep off so a daily check isn't missed. It turns on
+  a firewall that lets in only SSH, which closes what else a new system leaves open, and turns on the system's
+  own automatic security updates, which never restart the machine. A firewall that's already running keeps its
+  rules, unless it's still just as the system set it up, as Rocky's is from the start; that one is set up the
+  same way as a new one. Only if the person installing says yes to each, it turns off SSH logins with a
+  password, turns off SSH logins as root, and has SSH or the firewall hold off addresses that keep trying to log
+  in. To decide whether those are safe, it reads SSH's log for which administrator accounts have logged in and
+  how, and keeps nothing from it. It adds a small service that runs as root every hour and notes, for the web
+  page, whether SSH still accepts passwords and whether an update is waiting for a restart. On a machine set up
+  from Linode's form, that service also reads how many accounts the web interface has, from its own file, and
+  takes the installer's note with the first-setup link off the console once there is one. With a web address,
+  it also installs Apache from the system's own packages, opens ports 80 and 443 in the firewall, adds an hourly
+  reload of Apache, and on Rocky lets Apache act as a proxy under SELinux. It also installs a small root service
+  that starts when the tool's account leaves a request to install a newer release. That service reads nothing
+  from the request: it copies the release into a folder only root can write, checking every file against the
+  description the release key signed, refuses anything not newer than the running version or signed by another
+  key, installs it beside the old version from those files alone, without contacting the network, and restarts
+  the web interface, going back to the old version if the new one doesn't answer. Asking for an update from a
+  page needs full access, the password again and a code if two-factor sign-in is on, and is recorded. It says
+  what it's doing at each step.
 - Text collected from a server is treated as hostile, since a compromised
   server can write anything into its logs. In reports and the web interface it
   is escaped and invisible characters are shown, and pages run no scripts except

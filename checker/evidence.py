@@ -329,6 +329,15 @@ class Packs(BaseModel):
         return self
 
 
+class Updates(BaseModel):
+    """Newer releases of the tool (installation plan I.6; policy §10). The daily check asks GitHub
+    for the public list of releases, and can be turned off."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    check: bool = True
+
+
 class Config(BaseModel):
     # Hidden: an error mustn't repeat a value from the file, which could be a hand-typed password.
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -360,6 +369,7 @@ class Config(BaseModel):
     # The store's PostgreSQL address (checker.database), with no password. Empty: SQLite, a file
     # beside the evidence.
     database: str | None = None
+    updates: Updates = Field(default_factory=Updates)
 
     @field_validator("database")
     @classmethod
@@ -605,7 +615,10 @@ def load_identity(path: Path) -> x25519.Identity:
         raise EvidenceError(f"cannot read the evidence key {path}: {exc}") from exc
     for line in lines:
         if line.startswith("AGE-SECRET-KEY-"):
-            return x25519.Identity.from_str(line.strip())
+            try:
+                return x25519.Identity.from_str(line.strip())
+            except pyrage.IdentityError as exc:
+                raise EvidenceError(f"the evidence key can't be read: {path} isn't a key") from exc
     raise EvidenceError(f"no age private key in {path}")
 
 

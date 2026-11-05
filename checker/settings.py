@@ -137,6 +137,18 @@ def key_source_words(
 
 def describe(config: Config) -> list[str]:
     """Each choice in words: what is collected, and what may leave."""
+    return [*_describe(config), _updates_line(config)]
+
+
+def _updates_line(config: Config) -> str:
+    return "Newer versions: " + (
+        "the web interface asks GitHub once a day for the public list of releases"
+        if config.updates.check
+        else "not checked for (updates.check is off)"
+    )
+
+
+def _describe(config: Config) -> list[str]:
     lines = [
         "Text of start-up files and user units in home directories: " + HOME_TEXT[config.home_text],
         "Web access logs: "
@@ -312,6 +324,11 @@ SETTABLE: dict[str, Setting] = {
             ("notify_command",),
             _optional,
             "a command given a short summary when a scheduled run finds a host worse, or none",
+        ),
+        Setting(
+            ("updates", "check"),
+            _bool,
+            "on (default) or off: whether the web interface asks GitHub daily for a newer version",
         ),
         Setting(("advisor", "enabled"), _bool, "on or off"),
         Setting(("advisor", "model"), str, "the model's name (default claude-opus-5-5)"),

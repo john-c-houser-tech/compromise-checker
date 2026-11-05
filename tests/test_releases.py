@@ -778,3 +778,46 @@ def test_a_new_version_or_marker_is_a_change():
 
 def test_the_build_tool_comes_from_pyproject():
     assert "setuptools" in script._build_requirements()
+
+
+def test_the_stackscript_is_the_template_with_this_release_s_facts():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("release_script", ROOT / "scripts" / "release.py")
+    release_script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(release_script)
+    from checker.releases import Manifest
+
+    manifest = Manifest.model_validate(
+        {
+            "schema": 1,
+            "version": "0.1.0",
+            "commit": "a" * 40,
+            "published": "2026-11-20",
+            "prerelease": True,
+            "security_fix": False,
+            "files": {
+                "checker-0.1.0-py3-none-any.whl": {"sha256": "0" * 64, "size": 1},
+                "requirements.lock": {"sha256": "0" * 64, "size": 1},
+                "install.py": {"sha256": "f" * 64, "size": 1},
+            },
+        }
+    )
+    text = release_script.stackscript_for(manifest, "f" * 64)
+    assert text.startswith("#!/bin/bash\n")
+    assert 'VERSION="0.1.0"' in text and f'INSTALLER_SHA256="{"f" * 64}"' in text
+    assert f'DOWNLOADS="{release_script.DOWNLOADS}"' in text
+    assert re.findall(r"@[A-Z_0-9]+@", text) == [], "no placeholder left"
+    names = re.findall(r'<UDF name="([a-z_]+)"', text)
+    assert len(names) == 5 and not any("password" in name for name in names), (
+        "Linode masks a field whose name has 'password' in it, and nothing here is secret"
+    )
+    assert "--new-machine --console-notice --web-address" in text
+    assert "sha256sum -c" in text and "python3 -I" in text
+    trial = release_script.stackscript_for(
+        manifest, "f" * 64, downloads="http://198.51.100.9:8123", extra_flags="flags+=(--x)"
+    )
+    assert 'DOWNLOADS="http://198.51.100.9:8123"' in trial and "flags+=(--x)" in trial
+    command = release_script.stackscript_command(ROOT / "dist" / "stackscript-0.1.0.sh", manifest)
+    assert command.startswith("linode-cli stackscripts update STACKSCRIPT_ID --script")
+    assert '--rev_note "0.1.0"' in command

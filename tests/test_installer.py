@@ -223,6 +223,11 @@ def test_a_good_release_is_fetched(tmp_path):
     listed = _get(source, key, tmp_path / "into")
     assert set(listed) == {installer.wheel_name("1.2.3"), installer.REQUIREMENTS}
     assert (tmp_path / "into" / installer.REQUIREMENTS).read_bytes() == b"list"
+    # The checked manifest and its signature too: the installer keeps them beside the version.
+    assert (tmp_path / "into" / installer.MANIFEST).read_bytes() == (
+        source / installer.MANIFEST
+    ).read_bytes()
+    assert (tmp_path / "into" / installer.SIGNATURE).exists()
 
 
 def test_a_changed_file_is_refused_and_not_kept(tmp_path):
@@ -299,3 +304,87 @@ def test_the_setup_link_command(tmp_path):
     assert done.returncode == 1
     assert "already an account" in done.stderr
     assert "/setup/" not in done.stdout
+
+
+def test_the_web_service_runs_through_the_link_s_own_python():
+    """So what the running tool starts, such as the daily timer, follows the link after an
+    update."""
+    unit = installer.web_unit(1001)
+    assert "ExecStart=/opt/compromise-checker/current/bin/python -P -m checker web" in unit
+    assert "current/bin/checker" not in unit
+
+
+def test_the_update_units_watch_the_account_s_request_and_run_the_installed_code():
+    units = installer.update_units()
+    path = units[Path("/etc/systemd/system/compromise-checker-update.path")]
+    service = units[Path("/etc/systemd/system/compromise-checker-update.service")]
+    assert "PathExists=/var/lib/compromise-checker/data/updates/request" in path
+    assert "Unit=compromise-checker-update.service" in path
+    assert (
+        "ExecStart=/opt/compromise-checker/current/bin/python -I -P -m checker.update_service"
+        in service
+    )
+    assert "IPAddressDeny=any" in service and "IPAddressAllow=localhost" in service
+    assert "ProtectSystem=full" in service and "StateDirectoryMode=0755" in service
+    assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE" in service
+    assert "NoNewPrivileges=yes" in service and "ProtectHome=yes" in service
+    assert "User=" not in service, "root: it writes /opt and restarts the web service"
+
+
+def test_the_status_units_name_root_s_own_copy_of_the_script():
+    units = installer.status_units()
+    service = units[Path("/etc/systemd/system/compromise-checker-status.service")]
+    assert "-I -S /opt/compromise-checker/machine_status.py" in service
+    # It takes the console note off, so it may write that one file under a read-only /etc, and a
+    # query made to spin can't hold it forever.
+    assert "ProtectSystem=full" in service and "ReadWritePaths=-/etc/issue" in service
+    assert "TimeoutStartSec=5min" in service
+
+
+def test_the_console_note_carries_the_link_and_is_replaced_not_repeated(tmp_path, monkeypatch):
+    from checker import machine_status
+
+    refreshed = []
+    monkeypatch.setattr(installer, "refresh_console_prompts", lambda: refreshed.append(True))
+    issue = tmp_path / "issue"
+    issue.write_text("Rocky Linux 9\nKernel \\r on an \\m\n")
+    installer.write_console_notice("https://checker.example.org/setup/first", issue)
+    text = issue.read_text()
+    assert text.startswith(installer.NOTICE_START) and "setup/first" in text
+    assert text.endswith("Rocky Linux 9\nKernel \\r on an \\m\n")
+    assert issue.stat().st_mode & 0o777 == 0o600, "the link is in it: root's alone"
+    assert refreshed == [True], "the prompt is drawn again"
+    installer.write_console_notice("https://checker.example.org/setup/second", issue)
+    text = issue.read_text()
+    assert text.count(installer.NOTICE_START) == 1 and "setup/first" not in text
+    assert "setup/second" in text
+    # The status service's marks are the same ones, so it can take the note off again.
+    assert (installer.NOTICE_START, installer.NOTICE_END) == (
+        machine_status.NOTICE_START,
+        machine_status.NOTICE_END,
+    )
+    assert machine_status.without_notice(text) == "Rocky Linux 9\nKernel \\r on an \\m\n"
+
+
+def test_only_an_idle_login_prompt_is_drawn_again(tmp_path, monkeypatch):
+    """A prompt waiting shows the old text until redrawn; someone's session mustn't be cut."""
+    comm = {}
+    calls = []
+
+    def run(*command, check=True, **_):
+        calls.append(command)
+        if command[:2] == ("systemctl", "show"):
+            unit = command[-1]
+            pid = {"serial-getty@ttyS0.service": "501", "getty@tty1.service": "502"}[unit]
+            return subprocess.CompletedProcess(command, 0, f"{pid}\n", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def read_text(self, encoding=None):
+        return comm[str(self)]
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    comm["/proc/501/comm"] = "agetty\n"  # Lish: a prompt waiting
+    comm["/proc/502/comm"] = "bash\n"  # the screen: someone logged in
+    assert installer.refresh_console_prompts(run) == ["serial-getty@ttyS0.service"]
+    assert ("systemctl", "restart", "serial-getty@ttyS0.service") in calls
+    assert ("systemctl", "restart", "getty@tty1.service") not in calls

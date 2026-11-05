@@ -1,0 +1,60 @@
+{% extends "base.html.j2" %}
+{% import "parts.html.j2" as parts %}
+{% block title %}Updates: {{ product_name() }}{% endblock %}
+{% block main %}
+<p class="back"><a href="{{ url('manage') }}">Back to Manage</a></p>
+<h1 class="page-title">Updates</h1>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+{% if said %}<p role="status">{{ said }}</p>{% endif %}
+<p>This machine runs version <strong>{{ version }}</strong>{% if prerelease %}, a pre-release{% elif prerelease is none %}, not installed by the installer, so updates are done by hand{% endif %}.</p>
+{% if outcome and outcome.outcome %}
+<section role="status">
+  {% if outcome.outcome == "installed" %}
+  <p><strong>Version {{ outcome.version }} was installed</strong>{% if outcome.from %} in place of {{ outcome.from }}{% endif %}, {{ outcome.at | when }}. The previous version is kept on this machine.</p>
+  {% elif outcome.outcome == "rolled back" %}
+  <p class="error"><strong>Version {{ outcome.version }} was installed but didn't answer, so this machine went back to {{ outcome.from }}</strong>, {{ outcome.at | when }}. {{ outcome.words }}</p>
+  {% elif outcome.outcome == "refused" %}
+  <p class="error"><strong>The update service refused what it was given</strong>, {{ outcome.at | when }}: {{ outcome.words }}</p>
+  {% elif outcome.outcome == "failed" %}
+  <p class="error"><strong>The update didn't happen</strong>, {{ outcome.at | when }}: {{ outcome.words }} Whoever looks after this machine can read the details with <code>journalctl -u compromise-checker-update</code>.</p>
+  {% elif outcome.outcome == "nothing" %}
+  <p>The update service was asked, but found nothing to install, {{ outcome.at | when }}.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% if progress and progress.state and not outcome.outcome %}
+<p role="status">{{ progress_words }}{% if progress.state not in ("failed", "handed over") %} Reload this page to follow it.{% elif progress.state == "handed over" %} The update service installs it and restarts the web interface, which takes a few minutes; this page may not answer for a moment. Reload it to see the outcome.{% endif %}</p>
+{% endif %}
+<h2>The newest version</h2>
+{% if newest %}
+<p{% if newest.security_fix %} class="error"{% endif %}><strong>Version {{ newest.version }} is available</strong>, published {{ newest.published }}{% if newest.prerelease %} as a pre-release{% endif %}.{% if newest.security_fix %} <strong>It fixes a security problem</strong>, so install it soon.{% endif %}</p>
+{% if by_installer and not requested and (not progress.state or progress.state in ("failed", "handed over")) %}
+<form method="post" action="{{ url('update_start') }}">
+  {{ csrf_input }}
+  <input type="hidden" name="version" value="{{ newest.version }}">
+  <p class="note">This machine fetches version {{ newest.version }} and its dependencies, checks them against what the release key signed, and hands them to a small service that checks everything again and installs it beside the current version. The web interface restarts, so everyone is signed out for a moment. If the new version doesn't answer within a minute, the machine goes back to this one by itself. The daily check isn't interrupted. Nothing on this machine is sent anywhere.</p>
+  {{ parts.confirm(with_code=code_needed) }}
+  <button>Update to {{ newest.version }}</button>
+</form>
+{% endif %}
+{% elif checked %}
+<p>No newer version was found{% if problem_found %}, but the check didn't finish: {{ problem_found }}{% endif %}.</p>
+{% else %}
+<p>Nothing is known yet: no check has run.</p>
+{% endif %}
+<p class="note">Last checked: {% if checked %}{{ checked | when }}{% else %}never{% endif %}.{% if enabled %} The check runs once a day, when someone with full access opens a page, and can be turned off in <a href="{{ url('manage_settings') }}">Settings</a>.{% elif enabled is sameas false %} The daily check is off in <a href="{{ url('manage_settings') }}">Settings</a>; this button is the only check.{% endif %} A check asks GitHub for the public list of this tool's releases and downloads the newest one's signed description. Nothing about this machine or its servers is sent. It can't tell when a newer release is being kept from it, so a security fix is also announced on nouriloop.com.</p>
+<form method="post" action="{{ url('update_check') }}">
+  {{ csrf_input }}
+  <button class="quiet">Check now</button>
+</form>
+{% if requested %}
+<h2>Waiting for the update service</h2>
+<p>A release is ready and the update service has been asked to install it. If nothing has happened for some minutes, the service may not be running: whoever looks after this machine can look with <code>systemctl status compromise-checker-update.path</code>.</p>
+<form method="post" action="{{ url('update_cancel') }}">
+  {{ csrf_input }}
+  <button class="quiet">Take the request back</button>
+</form>
+{% endif %}
+<h2>How updating works</h2>
+<p>Each release is signed with NouriLoop's release key, which is apart from the keys that sign threat updates. Only a release that key signed, newer than the one running, can be installed. The service that installs it runs as the machine's administrator and takes no instructions from these pages: it reads only the release's files, checks every one against the signed description, and refuses anything else. A machine on a final version isn't offered pre-releases.</p>
+{% endblock %}

@@ -1150,12 +1150,14 @@ def prove_linode_form(
             local("curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", links[0]).stdout
             == "200",
         )
+        # ufw's limit on Ubuntu 24.04; SSH's own penalties elsewhere, which `sshd -T` shows with
+        # their values when on ("persourcepenalties crash:90 authfail:5 ...") and as "no" when off.
+        penalties = node.out("sshd -T 2>/dev/null | grep -i persourcepenalties")
         checks(
             "the form's yes was applied: login failures are held off",
             "LIMIT" in node.out("ufw status 2>/dev/null")
-            or "persourcepenalties yes"
-            in node.out("sshd -T 2>/dev/null | grep -i persourcepenalties"),
-            node.out("ufw status 2>/dev/null; sshd -T 2>/dev/null | grep -i persourcepenalties"),
+            or (penalties.startswith("persourcepenalties ") and "authfail:" in penalties),
+            node.out("ufw status 2>/dev/null") + "\n" + penalties,
         )
         checks(
             "the form's no was kept: root can still log in",

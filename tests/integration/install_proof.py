@@ -74,7 +74,15 @@ def build_release(
     subprocess.run(["git", "checkout", "-q", head], cwd=clone, check=True)  # noqa: S603, S607
     for name in ("checker/__init__.py", "checker/collector/collector.py"):
         path = clone / name
-        path.write_text(path.read_text(encoding="utf-8").replace("0.1.0.dev0", version), "utf-8")
+        text = path.read_text(encoding="utf-8")
+        text, changed = re.subn(
+            r'^(__version__|COLLECTOR_VERSION) = "[^"]+"$',
+            rf'\1 = "{version}"',
+            text,
+            flags=re.M,
+        )
+        assert changed == 1, "each file names its version once"
+        path.write_text(text, "utf-8")
     if key is not None:
         path = clone / "checker" / "releases.py"
         text, changed = re.subn(

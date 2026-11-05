@@ -79,6 +79,9 @@ From the newest commit on `main`, after the change that sets the version has bee
 
    A public StackScript can't be made private again. Its ID goes in this file once it exists.
 
+   Anything that deploys from the StackScript through Linode's API has to send every one of its fields in
+   `stackscript_data`, even the ones with a default: if one is left out, Linode silently skips the script.
+
 `build --trial` is for checking the build: it writes to `dist/trial-VERSION/`, and no machine reads what it
 makes, even if it's signed.
 

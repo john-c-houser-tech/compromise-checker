@@ -108,7 +108,7 @@ says so in the report.
 ### 3.1 `manifest`
 
 ```json
-{"type": "manifest", "protocol": 1, "collector_version": "0.1.0.dev0",
+{"type": "manifest", "protocol": 1, "collector_version": "0.1.0",
  "run_id": "6f1c…", "started_at": "2026-10-25T21:04:05.123456+00:00",
  "host": {"hostname": "web01", "os_id": "rocky", "os_version_id": "9.6",
           "os_pretty_name": "Rocky Linux 9.6 (Blue Onyx)", "kernel": "5.14.0-570.el9.x86_64",

@@ -115,7 +115,7 @@ running on a machine of their own and reach its first-setup page in a browser.
   machine running a final version.
 - **Machines (2026-11-02):** x86 only in the first release, since that's what the real-machine tests can
   run on. The dependency list has Arm's files too, so adding Arm later is a matter of testing it.
-- **The version number (2026-11-02):** stays `0.1.0.dev0` until I.8 sets `0.1.0`. A version has no beta form,
+- **The version number (2026-11-02):** stayed `0.1.0.dev0` until I.8 set `0.1.0` (#139, 2026-11-05). A version has no beta form,
   so the first final release after the `0.1.0` pre-release has to be `0.1.1` or later.
 - **Python (2026-11-02):** 3.12 to 3.14 in the first release, always installed with `--only-binary`, so a
   dependency is never built from source as root. 3.15 waits for a PyYAML wheel.

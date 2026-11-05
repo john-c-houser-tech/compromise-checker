@@ -874,7 +874,9 @@ def prove_public(node: "Node", checks, distro: str, web: bool, public: dict) -> 
     node.close()
     time.sleep(15)
     node.wait()
-    back = wait_for_status(node, "http://127.0.0.1:8088/login", host.replace("-k ", ""), "200", 180)
+    # on the web route only the proxy holds the secret, so the page is asked for at its address
+    asked = (f"https://{name}/login", "-k") if web else ("http://127.0.0.1:8088/login", "")
+    back = wait_for_status(node, *asked, "200", 180)
     checks("after a reboot the page is back", back == "200", back)
     checks("the service came back", node.out(f"systemctl is-enabled {UNIT}") == "enabled")
     again = pattern.findall(node.out(LINK))

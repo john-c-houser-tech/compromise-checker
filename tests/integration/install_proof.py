@@ -1146,7 +1146,7 @@ def prove_linode_form(
             issue.rstrip().endswith("\\l") or "Kernel" in issue or "\\n" in issue,
             issue,
         )
-        # Apache answers for the name once its certificate has come (staging, under a minute usually).
+        # Apache answers for the name once its certificate has come: usually under a minute.
         status = wait_for_status(node, f"https://{name}/login", "-k", "200", seconds=180)
         checks("the page answers by the name, through Apache", status == "200", status)
         if not links:

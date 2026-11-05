@@ -1034,9 +1034,10 @@ def prove_linode_form(api, distro: str, region: str, release: Path, place: Path,
         server.run(f"mkdir -p /srv/v{VERSION}")
         server.copy(release, "/tmp/release")
         server.run(f"cp /tmp/release/* /srv/v{VERSION}/ && chmod -R a+rX /srv")
+        # Detached from the SSH session, or the session never ends.
         server.run(
-            f"cd /srv && nohup python3 -m http.server {HELPER_PORT} >/var/log/helper.log 2>&1 &"
-            " sleep 2"
+            f"setsid -f python3 -m http.server {HELPER_PORT} --directory /srv"
+            " > /var/log/helper.log 2>&1 < /dev/null; sleep 2"
         )
         downloads = f"http://{helper['ipv4'][0]}:{HELPER_PORT}"
         served = local(

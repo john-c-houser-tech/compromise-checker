@@ -5,8 +5,9 @@ checks. It installs on x86 machines running Ubuntu 24.04 or 26.04, or Rocky Linu
 those, such as Linux Mint, aren't supported yet, and the installer stops with a message.
 
 It needs at least 1 GB of memory and 5 GB of free disk. Measured on new 1 GB servers (the smallest Linode),
-right after install: the tool used about 100 to 200 MB of memory and added 430 to 600 MB of disk, and the install
-took 1 to 1.5 minutes on Ubuntu and Rocky 9, and about 3 minutes on Rocky 10. Checking servers and making PDF
+right after install: 285 to 485 MB of the memory was in use on the whole machine, 65 to 180 MB more than before,
+and 430 to 600 MB of disk had been added. The install took 1 to 1.5 minutes on Ubuntu and Rocky 9, and about
+3 minutes on Rocky 10. Checking servers and making PDF
 reports use more while they run. The installer doesn't enforce a minimum.
 
 The installer asks whether people will use the tool from other computers. If not, it answers only on the

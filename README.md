@@ -126,8 +126,8 @@ from the [install page](https://nouriloop.com/work/compromise-checker/install/)
 ([installing](docs/install.md) says what it does). It gives you a link to create your account. Add your servers, press
 **Check**, and the servers appear in the order to deal with them. Checks can
 run every day by themselves ([the web interface](docs/web.md)). A newer signed
-release is looked for once a day, when someone opens a page, and installed from
-the Updates page ([updating](docs/install.md#updating)). One thing is set up once at the
+release is looked for once a day, when someone with full access opens a page, and
+installed from the Updates page ([updating](docs/install.md#updating)). One thing is set up once at the
 command line: a short summary can go to mail or a webhook when a server needs
 a look ([scheduling](docs/scheduling.md)).
 

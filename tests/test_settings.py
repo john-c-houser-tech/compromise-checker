@@ -180,6 +180,7 @@ def test_older_configuration_files_get_the_advisor_off(base):
         ("prior", "0.05", 0.05),
         ("packs.apply", "only:php2shell-2026-10 ,x-1", "only: php2shell-2026-10, x-1"),
         ("packs.source", "https://mirror.example.org/packs", "https://mirror.example.org/packs/"),
+        ("updates.check", "off", False),
         ("advisor.enabled", "on", True),
         ("advisor.model", "claude-sonnet-5-5", "claude-sonnet-5-5"),
         ("advisor.triage_model", "claude-haiku-5-5", "claude-haiku-5-5"),
@@ -215,7 +216,7 @@ def test_every_setting_round_trips(base, key, text, value):
 
 def test_the_table_lists_every_setting_tested():
     # advisor.api is tested with base_url, which it needs (test_advisor_endpoints).
-    assert len(SETTABLE) == 24
+    assert len(SETTABLE) == 25
 
 
 @pytest.mark.parametrize(

@@ -283,13 +283,17 @@ def get_release(
     """Into a private folder, nothing kept that hasn't been checked: first the signature, then each
     file against the hash in what was signed."""
     data = fetch(MANIFEST, MAX_MANIFEST_BYTES)
-    check_signature(data, fetch(SIGNATURE, MAX_SIGNATURE_BYTES), key_line)
+    signature = fetch(SIGNATURE, MAX_SIGNATURE_BYTES)
+    check_signature(data, signature, key_line)
     listed = read_manifest(data, version)
     for name, entry in listed.items():
         content = fetch(name, entry.size)
         if len(content) != entry.size or hashlib.sha256(content).hexdigest() != entry.sha256:
             raise Stop(f"{name} isn't the file that was signed. It wasn't installed.")
         (into / name).write_bytes(content)
+    # The signed manifest goes with the installed version, as the record of what it is.
+    (into / MANIFEST).write_bytes(data)
+    (into / SIGNATURE).write_bytes(signature)
     return listed
 
 
@@ -524,7 +528,10 @@ def web_unit(uid: int, public_address: Optional[str] = None) -> str:
     The running user manager is what its Check every day page sets the daily timer with. That's
     why people's homes are closed off by name: ProtectHome would hide /run/user too. With a public
     address it still listens only on this machine, and Apache stands in front of it."""
-    command = f"{PROGRAM}/current/bin/checker web"
+    # Through the link's own Python, not the `checker` script, whose first line names the version's
+    # Python: so what the running tool starts, such as the daily timer, follows the link to a newer
+    # version instead of staying with this one.
+    command = f"{PROGRAM}/current/bin/python -P -m checker web"
     if public_address:
         command += f" --public-url {public_address}"
     return f"""[Unit]
@@ -710,6 +717,11 @@ def _install_program(system: System, version: str, staged: Path) -> None:
         str(staged / REQUIREMENTS),
     )
     _run(*pip, "install", *quiet, "--no-deps", "--no-index", str(staged / wheel_name(version)))
+    # The signed manifest stays with the version: the only record of whether it's a pre-release,
+    # which decides which releases an update is offered (installation plan I.6).
+    for name in (MANIFEST, SIGNATURE):
+        shutil.copyfile(staged / name, target / name)
+        os.chmod(target / name, 0o644)
     link = PROGRAM / "current"
     fresh = PROGRAM / ".current.new"
     if fresh.is_symlink():
@@ -2590,10 +2602,13 @@ STATUS = "compromise-checker-status"
 STATUS_FILE = Path("/var/lib") / STATUS / "machine.json"
 
 
-def status_units(script: str) -> dict:
-    """`script` is checker/machine_status.py in the installed release. It's run as a file, without
-    the release's other packages (-S), since it only needs the standard library and runs as root.
-    The path names the release's Python version, so an update to another one sets this again."""
+STATUS_SCRIPT = PROGRAM / "machine_status.py"
+
+
+def status_units(script: str = str(STATUS_SCRIPT)) -> dict:
+    """`script` is root's copy of checker/machine_status.py from the installed release, which an
+    update replaces in place. It's run as a file, without the release's other packages (-S), since
+    it only needs the standard library and runs as root."""
     service = f"""[Unit]
 Description=Compromise Checker: what the web page says about this machine's SSH and restarts
 After=ssh.service sshd.service
@@ -2631,6 +2646,7 @@ WantedBy=timers.target
 
 
 def _status_script() -> str:
+    """Root's own copy of the installed version's script, at a place that doesn't change."""
     found = _run(
         f"{PROGRAM}/current/bin/python",
         "-I",
@@ -2640,7 +2656,74 @@ def _status_script() -> str:
     script = Path(found) / "checker" / "machine_status.py"
     if not script.is_file():
         raise Stop(f"{script} isn't there after installing the tool. Run this installer again.")
-    return str(script)
+    _write_file(STATUS_SCRIPT, script.read_text(encoding="utf-8"), 0o644)
+    return str(STATUS_SCRIPT)
+
+
+# --- Updates --------------------------------------------------------------------------------------
+# A newer release is got ready by the tool's own account (checker/updates.py) and installed by this
+# root service (checker/update_service.py), started by a path unit when a request file appears. The
+# service reads nothing from the request: it checks the release again from scratch. It never
+# contacts the network; the dependencies' wheels are fetched beforehand by the account. Its state
+# folder is readable by all: the outcome it writes there is what the Updates page shows.
+UPDATE = "compromise-checker-update"
+UPDATES_FOLDER = DATA / "updates"
+
+
+def update_units() -> dict:
+    service = f"""[Unit]
+Description=Compromise Checker: install a newer signed release that the tool's account got ready
+After={UNIT}
+
+[Service]
+Type=oneshot
+ExecStart={PROGRAM}/current/bin/python -I -P -m checker.update_service
+Environment=HOME=/var/lib/{UPDATE}
+Environment=PIP_NO_CACHE_DIR=1
+Environment=PIP_DISABLE_PIP_VERSION_CHECK=1
+StateDirectory={UPDATE}
+StateDirectoryMode=0755
+TimeoutStartSec=45min
+UMask=0022
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictRealtime=yes
+"""
+    path = f"""[Unit]
+Description=Compromise Checker: watch for a release got ready to install
+
+[Path]
+PathExists={UPDATES_FOLDER}/request
+Unit={UPDATE}.service
+
+[Install]
+WantedBy=multi-user.target
+"""
+    folder = Path("/etc/systemd/system")
+    return {folder / f"{UPDATE}.service": service, folder / f"{UPDATE}.path": path}
+
+
+def _watch_for_updates() -> None:
+    units = update_units()
+    for path, text in units.items():
+        _write_file(path, text, 0o644)
+    if shutil.which("restorecon"):
+        _run("restorecon", *(str(path) for path in units), check=False)
+    _run("systemctl", "daemon-reload")
+    _run("systemctl", "enable", "--now", f"{UPDATE}.path")
 
 
 def _note_the_machine() -> None:
@@ -2973,6 +3056,7 @@ def install(
     link = new_link(address)
     apply_lockdown(choices, kind, state.sources, ufw_limited, answered)
     _note_the_machine()
+    _watch_for_updates()
     _write_file(FINISHED, f"{version}\n", 0o644)
     if web is None:
         say("\nCompromise Checker is installed, and it only answers on this machine for now.")

@@ -141,6 +141,14 @@ that short summary to a command of yours (mail, a webhook). `--unattended` asks 
 out, with a warning, hosts that would need a prompt. `checker schedule install --at HH:MM` runs
 it every day (a systemd user timer, or a launchd agent on macOS) ([scheduling](scheduling.md)).
 
+## `checker update [VERSION] [--from DIR] [--check]`
+
+On a machine the installer set up, as the tool's account: get a newer release ready and ask the root update
+service to install it. Without arguments it fetches the newest release GitHub lists, whose signed description
+checks out; `--from DIR` takes a release copied over by hand instead, for a machine without internet; `--check`
+only says what the newest version is. Nothing not newer than the running version, or signed by any other key,
+is accepted. See [installing](install.md#updating).
+
 ## `checker purge HOST | --before DATE | --expired`
 
 Deletes stored evidence, reports included, and records what went by identifiers and

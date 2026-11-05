@@ -91,6 +91,10 @@ It says the release key signed these files once. It doesn't say they're the newe
 - **A newer release can be withheld.** A machine can't tell from a signature that it isn't being shown one. It
   can only show how old the newest release it can see is. So a security fix also needs announcing.
 
+Installed machines find releases through GitHub's list of them (`checker/updates.py`), by tag `vVERSION`, and
+trust only the signed `release.json` published with each. `--security-fix` is what makes their notice loud, and
+`--prerelease` keeps a release from machines on a final version.
+
 ## Making the key
 
     minisign -G -p release.pub -s release.key -c "Compromise Checker release key"

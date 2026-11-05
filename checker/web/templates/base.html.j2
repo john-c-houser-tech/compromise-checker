@@ -52,6 +52,9 @@
 {% elif nudge == "unsaved" %}
 <p class="nudge">Your recovery codes may not have been saved, and without them a lost phone locks you out. <a href="{{ url('two_factor_manage') }}">Make new ones in Sign-in security</a>.</p>
 {% endif %}
+{% set newer = update_notice(request) if request is defined else none %}{% if newer %}
+<p class="nudge{% if newer.security_fix %} error{% endif %}">{% if newer.security_fix %}<strong>Version {{ newer.version }} of this tool fixes a security problem.</strong> Install it soon:{% else %}Version {{ newer.version }} of this tool is available, published {{ newer.published }}.{% endif %} <a href="{{ url('manage_updates') }}">Updates</a>.</p>
+{% endif %}
 {% for notice in (machine_notices(request) if request is defined else []) %}
 {% if notice == "ssh_passwords" %}
 <p class="nudge">This machine still lets people log in over SSH with a password, which can be guessed. Once an administrator can log in with a key, turn passwords off: the install guide says how.</p>

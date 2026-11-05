@@ -184,6 +184,37 @@ address can change, and when it does, every server limited to it refuses the key
 changes the address in the key's line in the account's `authorized_keys` file, or takes the account away and
 sets it up again. The setup commands alone won't do it: they stop when the account already exists.
 
+## Updating
+
+The web interface asks GitHub once a day, when someone with full access opens a page, for the public list of
+this tool's releases, and downloads the newest one's signed description. Nothing about this machine or its
+servers is sent, and the check can be turned off in Settings. When a newer version exists, every page says so
+to people with full access, more loudly when the release is marked as a security fix. The check can't tell when
+a newer release is being kept from it, so a security fix is also announced on nouriloop.com.
+
+Manage → Updates installs it. A person with full access confirms with their password, and a code if two-factor
+sign-in is on, and the tool's own account fetches the release and its dependencies, checks them against what
+the release key signed, and leaves them in its folder with a request. A small root service,
+`compromise-checker-update`, is started by that request and takes nothing from it: it copies the release into a
+folder only root can write, checking every file against the signed description as it goes, refuses anything
+not newer than the running version or signed by any other key, installs the new version beside the old one
+from those files alone (it never contacts the network), and then moves the `current` link and restarts the web
+interface. If the new version doesn't answer within a minute, the link goes back, the old version is
+restarted, and the new one is removed. The previous version is kept on the machine, so a bad update can also
+be undone by hand: point `/opt/compromise-checker/current` back at it and restart
+`compromise-checker-web`. The outcome is on the Updates page and in `journalctl -u compromise-checker-update`.
+
+On a machine without internet, copy a release's files over and run, as the tool's account:
+
+    sudo runuser -u compromise-checker -- env CHECKER_HOME=/var/lib/compromise-checker/data \
+        /opt/compromise-checker/current/bin/checker update --from /path/to/the/release
+
+If that folder also holds a `wheels` folder with the dependencies, as `pip download --require-hashes
+--only-binary :all: -r requirements.lock -d wheels` fetches them on a machine with internet and the same
+Python, nothing is fetched; without one, the dependencies are fetched from PyPI. The same command without
+`--from` fetches the newest release from GitHub, and `--check` only says what the newest version is. The daily check set from the Check every day page keeps working across updates: the web
+service runs through `/opt/compromise-checker/current`, so what it starts follows the link.
+
 ## The setup link
 
     sudo /usr/local/sbin/compromise-checker-link

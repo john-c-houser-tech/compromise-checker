@@ -229,7 +229,8 @@ class Units(unittest.TestCase):
         self.assertIn("XDG_RUNTIME_DIR=/run/user/990", unit)
         self.assertIn("InaccessiblePaths=-/home -/root", unit)
         self.assertNotIn("ProtectHome", unit)  # would hide /run/user, and so the daily timer
-        self.assertIn("/current/bin/checker web\n", unit)
+        # Through the link's Python, so what the tool starts follows the link after an update.
+        self.assertIn("/current/bin/python -P -m checker web\n", unit)
         self.assertNotIn("--bind", unit)  # stays on this machine, the tool's own default
 
     def test_the_link_command_needs_an_administrator_and_uses_the_tools_account(self):

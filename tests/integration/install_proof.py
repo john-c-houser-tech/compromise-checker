@@ -75,7 +75,12 @@ def build_release(
     for name in ("checker/__init__.py", "checker/collector/collector.py"):
         path = clone / name
         text = path.read_text(encoding="utf-8")
-        text, changed = re.subn(r'^(__version__|COLLECTOR_VERSION) = "[^"]+"$', rf'\1 = "{version}"', text, flags=re.M)
+        text, changed = re.subn(
+            r'^(__version__|COLLECTOR_VERSION) = "[^"]+"$',
+            rf'\1 = "{version}"',
+            text,
+            flags=re.M,
+        )
         assert changed == 1, "each file names its version once"
         path.write_text(text, "utf-8")
     if key is not None:

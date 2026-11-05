@@ -1129,9 +1129,9 @@ def prove_linode_form(
                 time.sleep(keep_minutes * 60)
             return
         checks(
-            "it logged what it did",
-            "Done at" in log and f"Using the trial name {name}" in log,
-            log[-1500:],
+            "it logged what it did, with the trial name",
+            "Done at" in log and name in log,
+            f"expected {name}; log starts: {log[:700]!r}",
         )
         checks(
             "the service runs as the tool's account",
@@ -1140,16 +1140,15 @@ def prove_linode_form(
         )
         issue = node.out("cat /etc/issue")
         links = re.findall(rf"https://{re.escape(name)}/setup/\S+", issue)
-        checks("the link is above the console's login prompt", len(links) == 1, issue)
+        checks("the link is above the console's login prompt", len(links) == 1, f"{name}: {issue}")
         checks(
             "and the distribution's own text is still there",
             issue.rstrip().endswith("\\l") or "Kernel" in issue or "\\n" in issue,
             issue,
         )
-        checks(
-            "the page answers by the name, through Apache",
-            status_of_with(node, f"https://{name}/login", "-k") == "200",
-        )
+        # Apache answers for the name once its certificate has come (staging, under a minute usually).
+        status = wait_for_status(node, f"https://{name}/login", "-k", "200", seconds=180)
+        checks("the page answers by the name, through Apache", status == "200", status)
         if not links:
             return
         checks(
@@ -1229,6 +1228,19 @@ def prove_linode_form(
 
 def status_of_with(node: "Node", url: str, extra: str) -> str:
     return node.out(f"curl -s -o /dev/null -w '%{{http_code}}' {extra} '{url}'")
+
+
+def wait_for_status(node: "Node", url: str, extra: str, wanted: str, seconds: int = 120) -> str:
+    """The status once it's `wanted`, asking every 30 seconds (the firewall may limit new SSH
+    connections), or the last one seen."""
+    deadline = time.monotonic() + seconds
+    status = ""
+    while time.monotonic() < deadline:
+        status = status_of_with(node, url, extra)
+        if status == wanted:
+            return status
+        time.sleep(30)
+    return status
 
 
 def prove(

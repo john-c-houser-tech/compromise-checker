@@ -781,15 +781,17 @@ def prove_web(node: "Node", checks, distro: str) -> None:
 UPDATE_SERVICE = "compromise-checker-update"
 
 
-def wait_for(node: "Node", command: str, wanted: str, seconds: int = 420) -> str:
-    """The command's output once it says `wanted`, or whatever it last said."""
+def wait_for(node: "Node", command: str, wanted: str, seconds: int = 420, every: float = 5) -> str:
+    """The command's output once it says `wanted`, or whatever it last said. `every`: on a machine
+    whose firewall holds off an address that opens SSH connections quickly (about 6 in 30 seconds),
+    ask no more often than that, since the shared connection may not survive the install."""
     deadline = time.monotonic() + seconds
     said = ""
     while time.monotonic() < deadline:
         said = node.out(command)
         if wanted in said:
             return said
-        time.sleep(5)
+        time.sleep(every)
     return said
 
 
@@ -1089,8 +1091,13 @@ def prove_linode_form(
         address = made["ipv4"][0]
         name = f"{address.replace('.', '-')}.sslip.io"
         started = time.monotonic()
+        # The form's "yes" to holding off login failures limits new SSH connections, so ask slowly.
         said = wait_for(
-            node, f"test -f {PROGRAM}/installed && echo installed", "installed", seconds=1200
+            node,
+            f"test -f {PROGRAM}/installed && echo installed",
+            "installed",
+            seconds=1200,
+            every=30,
         )
         took = round(time.monotonic() - started)
         print(f"[{distro}] the form's install took {took}s after the machine answered")

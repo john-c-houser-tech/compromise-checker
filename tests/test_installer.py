@@ -388,3 +388,10 @@ def test_only_an_idle_login_prompt_is_drawn_again(tmp_path, monkeypatch):
     assert installer.refresh_console_prompts(run) == ["serial-getty@ttyS0.service"]
     assert ("systemctl", "restart", "serial-getty@ttyS0.service") in calls
     assert ("systemctl", "restart", "getty@tty1.service") not in calls
+
+
+def test_the_console_note_puts_the_link_on_a_line_of_its_own():
+    """A console wraps at 80 columns and a copy of a wrapped link loses its end."""
+    link = "https://172-232-170-46.ip.linodeusercontent.com/s/" + "A" * 22
+    note = installer.console_notice(link, "")
+    assert link in note.splitlines() and len(link) <= 80

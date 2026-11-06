@@ -3161,7 +3161,7 @@ def install(
     else:
         say(
             f"\nOpen this link {where} to create the first account. It works once, within an"
-            f" hour:\n\n  {link}\n"
+            f" hour:\n\n{link}\n"
             f"\nIf you lose it, or it runs out, this makes a new one: sudo {LINK_COMMAND}"
             "\n\nOnce you're signed in, First setup shows how to back up the evidence key. Without"
             " it, nothing stored can be read, and the tool doesn't back up the evidence itself:"

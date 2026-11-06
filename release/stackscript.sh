@@ -18,7 +18,7 @@ LOG=/var/log/compromise-checker-install.log
 [ -e "$LOG" ] || install -m 600 /dev/null "$LOG"  # it will hold the first-setup link: root only
 # Everything goes to the root-only log; what goes on to the console (and whatever Linode keeps of it)
 # has the first-setup link taken out, since the link makes the first account.
-exec > >(tee -a "$LOG" | sed -u 's#/setup/[A-Za-z0-9_-]*#/setup/(in the log and on the console)#g') 2>&1
+exec > >(tee -a "$LOG" | sed -u -E 's#(https?://[^ /]+)/s/[A-Za-z0-9_-]*#\1/s/(in the log and on the console)#g') 2>&1
 echo "Compromise Checker @VERSION@: starting the install at $(date -u +%FT%TZ)."
 finish() { sleep 1; exit "$1"; }  # a moment for tee to write the last lines
 

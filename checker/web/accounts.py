@@ -33,7 +33,7 @@ from checker.web.models import (
 SETUP_LIFETIME = timedelta(hours=1)
 # 128 random bits: plenty for a link that works once, within an hour. It is also short enough (22
 # characters, on a path of /s/) that the whole link fits one 80-column console line for an address
-# up to about 40 characters, so selecting and copying it from a console doesn't lose the end.
+# up to about 45 characters, so selecting and copying it from a console doesn't lose the end.
 SETUP_TOKEN_BYTES = 16
 INVITATION_LIFETIME = timedelta(hours=24)  # it crosses to someone else, who may be asleep
 THROTTLE_WINDOW = timedelta(minutes=15)

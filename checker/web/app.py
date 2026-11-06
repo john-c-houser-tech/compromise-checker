@@ -116,7 +116,7 @@ class _NoLinksInTheLog(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        hidden = re.sub(r"/(setup|join)/\S+", r"/\1/(hidden)", message)
+        hidden = re.sub(r"/(s|join)/\S+", r"/\1/(hidden)", message)
         if hidden != message:
             record.msg, record.args = hidden, ()
         return True

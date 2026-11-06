@@ -248,6 +248,9 @@ service runs through `/opt/compromise-checker/current`, so what it starts follow
 This makes a new link, and any link before it stops working. A restart of the machine or the web interface also
 replaces the link, so use this command if yours stops working. Once there's an account, no link is needed.
 
+The link is kept short so that it fits one line of the Linode console, which wraps at 80 columns. If your web
+address is long enough that the link still shows on two lines, copy both and join them without a space.
+
 ## What it doesn't do yet
 
 - It doesn't back up the evidence. [Backing up the evidence key](#backing-up-the-evidence-key) says what a lost

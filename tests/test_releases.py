@@ -821,3 +821,24 @@ def test_the_stackscript_is_the_template_with_this_release_s_facts():
     command = release_script.stackscript_command(ROOT / "dist" / "stackscript-0.1.0.sh", manifest)
     assert command.startswith("linode-cli stackscripts update STACKSCRIPT_ID --script")
     assert '--rev_note "0.1.0"' in command
+
+
+def test_the_stackscript_keeps_the_setup_link_off_the_console():
+    """The link makes the first account, and what Linode keeps of the console has no link in it."""
+    line = next(
+        row
+        for row in (ROOT / "release" / "stackscript.sh").read_text().splitlines()
+        if row.startswith("exec >")
+    )
+    script = re.search(r"sed -u -E '([^']*)'", line).group(1)
+    text = "Open https://h.example/s/AbC_-123xyz now\nand /usr/s/lib stays\n"
+    done = subprocess.run(
+        ["sed", "-E", script],  # noqa: S607
+        input=text,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "AbC_-123xyz" not in done.stdout
+    assert "https://h.example/s/(in the log and on the console) now" in done.stdout
+    assert "/usr/s/lib stays" in done.stdout

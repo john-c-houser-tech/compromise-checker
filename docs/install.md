@@ -15,7 +15,7 @@ machine itself, for a browser there. If so, it needs [a web address](#a-web-addr
 
 ## What the installer does
 
-A release's install page gives one line to paste. For 0.1.0 it is at
+A release's install page gives one line to paste. For 0.1.1 it is at
 <https://nouriloop.com/work/compromise-checker/install/>. In a new private folder, it downloads `install.py`, checks it
 against a hash on the page, and runs it with `sudo python3 -I`, removing the folder afterwards. That hash is what protects the installer, since the file
 comes from the same place as the rest of the release. So the line has to be copied from the install page, not

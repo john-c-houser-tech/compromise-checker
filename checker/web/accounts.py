@@ -31,6 +31,10 @@ from checker.web.models import (
 )
 
 SETUP_LIFETIME = timedelta(hours=1)
+# 128 random bits: plenty for a link that works once, within an hour. It is also short enough (22
+# characters, on a path of /s/) that the whole link fits one 80-column console line for an address
+# up to about 40 characters, so selecting and copying it from a console doesn't lose the end.
+SETUP_TOKEN_BYTES = 16
 INVITATION_LIFETIME = timedelta(hours=24)  # it crosses to someone else, who may be asleep
 THROTTLE_WINDOW = timedelta(minutes=15)
 THIS_MACHINE = "127.0.0.1"
@@ -55,13 +59,13 @@ def setup_link(address: str) -> str | None:
     if not no_accounts():
         SetupToken.objects.all().delete()
         return None
-    token = secrets.token_urlsafe(32)
+    token = secrets.token_urlsafe(SETUP_TOKEN_BYTES)
     with transaction.atomic():
         SetupToken.objects.all().delete()
         SetupToken.objects.create(
             token_hash=_hash(token), expires_at=timezone.now() + SETUP_LIFETIME
         )
-    return f"{address.rstrip('/')}/setup/{token}"
+    return f"{address.rstrip('/')}/s/{token}"
 
 
 def setup_token_valid(token: str) -> bool:

@@ -827,7 +827,8 @@ def console_notice(link: str, before: str) -> str:
     note = (
         f"{NOTICE_START}\n"
         f"Compromise Checker is installed. To create the first account, open this link in a\n"
-        f"browser. It works once, within an hour of being made:\n\n  {link}\n\n"
+        f"browser. It works once, within an hour of being made:\n\n{link}\n\n"
+        f"If the link shows on two lines, join them without a space.\n"
         f"If it has run out, log in and run: sudo {LINK_COMMAND}\n"
         f"This note goes once the first account exists.\n"
         f"{NOTICE_END}\n"
@@ -889,7 +890,7 @@ def new_link(address: str = ADDRESS) -> Optional[str]:
     said = done.stdout + done.stderr
     if done.returncode == 0:
         lines = done.stdout.strip().splitlines()
-        if lines and re.fullmatch(re.escape(address) + r"/setup/[A-Za-z0-9_-]+", lines[-1]):
+        if lines and re.fullmatch(re.escape(address) + r"/s/[A-Za-z0-9_-]+", lines[-1]):
             return lines[-1]
     elif "already an account" in said:
         return None

@@ -50,7 +50,7 @@ HOME = "/var/lib/compromise-checker"
 DATA = f"{HOME}/data"
 LINK = "/usr/local/sbin/compromise-checker-link"
 STATUS = "compromise-checker-status"
-_LINK_LINE = re.compile(r"http://127\.0\.0\.1:8088/setup/\S+")
+_LINK_LINE = re.compile(r"http://127\.0\.0\.1:8088/s/\S+")
 
 
 class ProofKey:
@@ -555,7 +555,7 @@ def prove_web(node: "Node", checks, distro: str) -> None:
                 " 2>/dev/null | tail -n 30"
             )
         )
-    links = re.findall(rf"https://{re.escape(name)}/setup/\S+", done.stdout)
+    links = re.findall(rf"https://{re.escape(name)}/s/\S+", done.stdout)
     checks("it hands over a link to the web address", len(links) == 1, done.stdout)
     if done.returncode or not links:
         print(node.out("journalctl -u compromise-checker-web -u apache2 -u httpd -n 80 --no-pager"))
@@ -735,7 +735,8 @@ def prove_web(node: "Node", checks, distro: str) -> None:
     )
     checks("and that account can sign in", signed == "302", signed)
     logged = node.out(
-        "grep -l '/setup/' /var/log/apache2/*access* /var/log/httpd/*access* 2>/dev/null || true"
+        "grep -lE '/s/[A-Za-z0-9_-]{22}' /var/log/apache2/*access* /var/log/httpd/*access*"
+        " 2>/dev/null || true"
     )
     checks("no setup link is in Apache's logs", logged == "", logged)
 
@@ -865,7 +866,7 @@ def prove_public(node: "Node", checks, distro: str, web: bool, public: dict) -> 
     checks("as the tool's own account", node.out(f"ps -o user= -p {pid}") == ACCOUNT, pid)
     bound = [line_.split()[3] for line_ in node.out("ss -Hltn | grep ':8088 '").splitlines()]
     checks("only on this machine", bound == ["127.0.0.1:8088"], bound)
-    pattern = re.compile(rf"https://{re.escape(name)}/setup/\S+") if web else _LINK_LINE
+    pattern = re.compile(rf"https://{re.escape(name)}/s/\S+") if web else _LINK_LINE
     links = pattern.findall(done.stdout)
     checks("it hands over a link", len(links) == 1, done.stdout)
     if links:
@@ -1240,7 +1241,7 @@ def prove_linode_form(
             and node.out(f"ps -o user= -p $(systemctl show -p MainPID --value {UNIT})") == ACCOUNT,
         )
         issue = node.out("cat /etc/issue")
-        links = re.findall(rf"https://{re.escape(name)}/setup/\S+", issue)
+        links = re.findall(rf"https://{re.escape(name)}/s/\S+", issue)
         checks("the link is above the console's login prompt", len(links) == 1, f"{name}: {issue}")
         checks(
             "and the distribution's own text is still there",

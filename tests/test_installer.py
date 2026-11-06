@@ -288,7 +288,7 @@ def test_the_setup_link_command(tmp_path):
     first = python("-m", "checker", "web-setup-link", *address)
     second = python("-m", "checker", "web-setup-link", *address)
     assert first.returncode == 0, first.stderr
-    assert "https://example.test/setup/" in first.stdout
+    assert "https://example.test/s/" in first.stdout
     assert first.stdout != second.stdout
 
     make_account = (
@@ -303,7 +303,7 @@ def test_the_setup_link_command(tmp_path):
     done = python("-m", "checker", "web-setup-link", *address)
     assert done.returncode == 1
     assert "already an account" in done.stderr
-    assert "/setup/" not in done.stdout
+    assert "/s/" not in done.stdout
 
 
 def test_the_web_service_runs_through_the_link_s_own_python():
@@ -348,16 +348,16 @@ def test_the_console_note_carries_the_link_and_is_replaced_not_repeated(tmp_path
     monkeypatch.setattr(installer, "refresh_console_prompts", lambda: refreshed.append(True))
     issue = tmp_path / "issue"
     issue.write_text("Rocky Linux 9\nKernel \\r on an \\m\n")
-    installer.write_console_notice("https://checker.example.org/setup/first", issue)
+    installer.write_console_notice("https://checker.example.org/s/first", issue)
     text = issue.read_text()
-    assert text.startswith(installer.NOTICE_START) and "setup/first" in text
+    assert text.startswith(installer.NOTICE_START) and "s/first" in text
     assert text.endswith("Rocky Linux 9\nKernel \\r on an \\m\n")
     assert issue.stat().st_mode & 0o777 == 0o600, "the link is in it: root's alone"
     assert refreshed == [True], "the prompt is drawn again"
-    installer.write_console_notice("https://checker.example.org/setup/second", issue)
+    installer.write_console_notice("https://checker.example.org/s/second", issue)
     text = issue.read_text()
-    assert text.count(installer.NOTICE_START) == 1 and "setup/first" not in text
-    assert "setup/second" in text
+    assert text.count(installer.NOTICE_START) == 1 and "s/first" not in text
+    assert "s/second" in text
     # The status service's marks are the same ones, so it can take the note off again.
     assert (installer.NOTICE_START, installer.NOTICE_END) == (
         machine_status.NOTICE_START,

@@ -65,7 +65,7 @@ def start_server(home: Path, env: dict) -> tuple[subprocess.Popen, str, list[str
     for _ in range(40):
         line = server.stdout.readline()
         said.append(line)
-        if "/setup/" in line:
+        if "/s/" in line:
             link = line.strip()
         if "is at" in line:
             break

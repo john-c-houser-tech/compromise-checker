@@ -116,7 +116,7 @@ def test_settings_reject_naive_times_and_unknown_fields():
 MANIFEST = {
     "type": "manifest",
     "protocol": 1,
-    "collector_version": "0.1.0",
+    "collector_version": "0.1.1",
     "run_id": "r",
     "started_at": "2026-10-25T00:00:00+00:00",
     "host": {

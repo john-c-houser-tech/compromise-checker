@@ -161,7 +161,7 @@ def test_the_console_note_comes_off_once_the_first_account_exists(tmp_path, monk
     issue = tmp_path / "issue"
     original = "Ubuntu 24.04 LTS \\n \\l\n\n"
     note = (
-        f"{machine_status.NOTICE_START}\nOpen https://checker.example.org/setup/abc to make the"
+        f"{machine_status.NOTICE_START}\nOpen https://checker.example.org/s/abc to make the"
         f" first account.\n{machine_status.NOTICE_END}\n"
     )
     issue.write_text(note + original)

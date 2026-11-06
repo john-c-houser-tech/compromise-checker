@@ -18,7 +18,7 @@ It is built for small organizations that can't afford commercial security
 products, and it works from a web page: no command line needed. Open source
 under the AGPL, from NouriLoop LLC.
 
-**Status:** a pre-release. Version 0.1.0 is out and everything described here
+**Status:** a pre-release. Version 0.1.1 is out and everything described here
 works today, but it is the first release anyone can install, so expect rough
 edges. [How to install it](https://nouriloop.com/work/compromise-checker/install/).
 
@@ -173,7 +173,7 @@ The main commands and their options are described in
   Low (5.8%), with the proof's own setup whitelisted and the `base` profile;
   the compromised ones score Critical
   ([calibration](docs/scoring.md#calibration)).
-- **It installs.** The published 0.1.0 was installed from its real download on
+- **It installs.** The published 0.1.1 was installed from its real download on
   new servers of all four supported systems, with and without a web address,
   and each came back after a restart. An installer whose hash is wrong is
   refused before it runs. Separately, an update to a newer test release was

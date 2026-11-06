@@ -267,12 +267,21 @@ def test_settings_are_strict(tmp_path):
 
 
 def link_token(link):
-    return link.rpartition("/setup/")[2]
+    return link.rpartition("/s/")[2]
 
 
 def setup_post(client, token, **extra):
     data = {"username": "jo", "password": PASSWORD, "password2": PASSWORD, **extra}
-    return client.post(f"/setup/{token}", data)
+    return client.post(f"/s/{token}", data)
+
+
+def test_the_setup_link_fits_one_console_line(web):
+    """A console wraps at 80 columns and a copy of a wrapped link loses its end. With a long machine
+    name (this one is a Linode's own), the link must stay inside one line."""
+    from checker.web.accounts import setup_link
+
+    link = setup_link("https://172-232-170-46.ip.linodeusercontent.com")
+    assert len(link_token(link)) == 22 and len(link) <= 80, (len(link), link)
 
 
 def test_the_setup_link_makes_one_account_and_only_once(web):
@@ -285,7 +294,7 @@ def test_the_setup_link_makes_one_account_and_only_once(web):
     link = setup_link("http://127.0.0.1:8088")
     token = link_token(link)
     assert token not in str(list(SetupToken.objects.values_list("token_hash", flat=True)))
-    assert client.get(f"/setup/{token}").status_code == 200
+    assert client.get(f"/s/{token}").status_code == 200
     response = setup_post(client, token)
     assert response.status_code == 302 and client.get("/").status_code == 200
     assert setup_post(client, token, username="second").status_code == 404
@@ -314,7 +323,7 @@ def test_a_new_link_replaces_the_old(web):
     client, _ = web
     old = link_token(setup_link("http://x"))
     setup_link("http://x")
-    assert client.get(f"/setup/{old}").status_code == 404
+    assert client.get(f"/s/{old}").status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -530,7 +539,7 @@ def test_a_browser_can_create_the_first_account_with_real_csrf_checks(web):
     from checker.web.accounts import setup_link
 
     client = browser(enforce_csrf_checks=True)
-    path = f"/setup/{link_token(setup_link('http://x'))}"
+    path = f"/s/{link_token(setup_link('http://x'))}"
     data = {
         "csrfmiddlewaretoken": token_from(client.get(path)),
         "username": "jo",
@@ -1846,7 +1855,7 @@ def test_the_route_walk_passes_a_real_action(web):
 
 def test_the_forms_before_the_gate_take_only_what_they_should(web):
     client, _ = web
-    for path in ("/login", "/logout", "/setup/x", "/two-factor"):
+    for path in ("/login", "/logout", "/s/x", "/two-factor"):
         for method in ("PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"):
             assert send(client, method, path).status_code == 405, (path, method)
 
@@ -9122,7 +9131,7 @@ def test_a_long_link_isnt_cut(web, settings_override):
     assert link.endswith(f"/join/{token}") and len(token) >= 40
 
 
-@pytest.mark.parametrize("kind", ["join", "setup"])
+@pytest.mark.parametrize("kind", ["join", "s"])
 def test_a_link_stays_out_of_the_log_when_it_fails(web, monkeypatch, caplog, kind):
     """It's still good afterwards, and a log is read by more people than the link was given to."""
     from checker.web import accounts

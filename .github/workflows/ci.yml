@@ -103,7 +103,7 @@ jobs:
           done
           curl --silent --show-error --fail http://127.0.0.1:8088/login | grep --quiet 'name="password"'
           curl --silent --show-error --fail --output /dev/null http://127.0.0.1:8088/style.css
-          grep --quiet '/setup/' /tmp/web.log
+          grep --quiet '/s/' /tmp/web.log
 
   collector:
     name: Collector on ${{ matrix.image }}

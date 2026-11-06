@@ -95,7 +95,7 @@ def drive(home: Path, password: str, env: dict, done: list) -> None:
         link = None
         for _ in range(40):
             line = server.stdout.readline()
-            if "/setup/" in line:
+            if "/s/" in line:
                 link = line.strip()
             if "is at" in line:
                 break

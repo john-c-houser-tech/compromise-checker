@@ -248,8 +248,8 @@ class Steps(unittest.TestCase):
         self.addCleanup(setattr, installer, "_run", real)
 
     def test_a_link_is_handed_over(self):
-        self._with_run(0, "Open this\nhttp://127.0.0.1:8088/setup/abc\n")
-        self.assertEqual(installer.new_link(), "http://127.0.0.1:8088/setup/abc")
+        self._with_run(0, "Open this\nhttp://127.0.0.1:8088/s/abc\n")
+        self.assertEqual(installer.new_link(), "http://127.0.0.1:8088/s/abc")
 
     def test_an_existing_account_finishes_the_install(self):
         self._with_run(1, "checker: there's already an account, so\n")
@@ -260,8 +260,8 @@ class Steps(unittest.TestCase):
             (0, "", ""),
             (0, "something else\n", ""),
             (1, "database is broken\n", ""),
-            (0, "http://example.test/setup/abc\n", ""),
-            (0, "http://127.0.0.1:8088/setup/abc\x1b[2J\n", ""),
+            (0, "http://example.test/s/abc\n", ""),
+            (0, "http://127.0.0.1:8088/s/abc\x1b[2J\n", ""),
         ):
             self._with_run(*result)
             with self.assertRaisesRegex(installer.Stop, "couldn't be made"):
@@ -857,7 +857,7 @@ class WebAddress(unittest.TestCase):
         )
 
     def test_only_a_link_to_the_web_address_is_passed_on(self):
-        good = "https://checker.example.org/setup/abc"
+        good = "https://checker.example.org/s/abc"
         done = subprocess.CompletedProcess([], 0, f"Open this\n{good}\n", "")
         real = installer._run
         installer._run = lambda *_, **__: done

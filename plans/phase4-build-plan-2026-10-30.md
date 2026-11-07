@@ -818,8 +818,9 @@ isn't compared; a set of 50 or fewer filled as it runs churns, as text always di
 John's idea (2026-10-30): a separate application, in its own repository (John, 2026-10-31; at first
 the packs repository) and entirely apart from Compromise Checker, that watches public sources for
 new threats, proposes packs, gets a person's approval through a web
-interface, and then uses AI to write them. It gets its own build plan,
-started after Phase 4. What that plan starts from (agreed in outline):
+interface, and then uses AI to write them. Its build plan lives in that repository,
+`compromise-checker-pack-drafter` (working name; private until the end of its Stage 1, then
+public under AGPL-3.0). Work started on 2026-11-07. What that plan started from (agreed in outline):
 
 - **Feeds, not scraping:** CISA's Known Exploited Vulnerabilities list,
   OSV, Ubuntu's and Red Hat's security data (OVAL/CSAF), the NVD API.
@@ -835,5 +836,7 @@ started after Phase 4. What that plan starts from (agreed in outline):
   changed, so a compromised web interface can't publish a pack.
 - **No customer evidence**, ever: it reads only public data.
 - **Its relation to the CVE response orchestrator** (a separate product
-  idea with the same core: watching advisories, triage, human approval)
-  to be settled in that plan.
+  idea with the same core: watching advisories, triage, human approval):
+  settled in that plan (John, 2026-11-07). The two share no code, so the
+  orchestrator stays independent; at most, a documented candidate format
+  either could read.

@@ -138,7 +138,10 @@ def test_offered_builds_the_pack_cant_judge_or_doesnt_cover_are_listed():
     assert choice.unjudged == ["libdemo1 1.1.0-1 is offered and reads can't judge"]
     assert choice.uncovered == []
     quiet = pp.choose(pack("not_affected"), group, offered)
-    assert quiet.uncovered == ["libdemo1 1.1.0-1 is offered but no entry covers it"]
+    assert quiet.uncovered == [
+        "libdemo1 1.1.0-1 is offered, no pattern matches it, and the pack reads that as"
+        " not affected (other_builds): check it isn't affected"
+    ]
     assert quiet.unjudged == []
 
 
@@ -249,3 +252,13 @@ def test_prove_creates_one_server_and_deletes_it_in_finally():
     assert source.count("for group in groups(") == 1
     tries = [n for n in ast.walk(tree) if isinstance(n, ast.Try) and n.finalbody]
     assert any("api.delete" in ast.unparse(t.finalbody) for t in tries)
+
+
+def test_the_groups_others_left_as_they_were_are_in_the_summary():
+    result = pp.Result("ubuntu:24.04")
+    state = seen("vulnerable", {"demo amd64": ("1.1.0-2ubuntu0.1", "fixed")})
+    state["rest"] = {"libdemo1 amd64": ("1.1.0-2build2", "vulnerable")}
+    pp.expect_stage(result, "s", state, "1.1.0-2ubuntu0.1", "fixed")
+    assert "s: the host reads fixed" in result.failed
+    saw = next(line for line in result.failed if line.startswith("s: saw"))
+    assert "left as they were {'libdemo1 amd64': ('1.1.0-2build2', 'vulnerable')}" in saw

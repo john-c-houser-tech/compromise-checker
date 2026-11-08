@@ -11,11 +11,12 @@ and analysis. It can't prove the fix version is the vendor's: the builds are
 picked by the pack's own reading, so that is checked against the vendor's
 pages by hand (docs/packs.md). What it can see of that is listed for a look:
 the pack's fix not among the offered builds, or builds between the two chosen
-that read neither. Every other offered build is judged too: one no entry
-covers (it would read not affected) is a failure, one that reads can't judge
-is listed for a look. RHEL module streams aren't proved yet (their builds are
-hidden until the stream is enabled), and Rocky and Alma offer only the
-current minor release's builds.
+that read neither. Every other offered build is judged too, and one that
+reads can't judge, or that no pattern matches (with other_builds:
+not_affected the pack reads it as not affected), is listed for a look.
+RHEL module streams aren't proved yet (their builds are hidden until the
+stream is enabled), and Rocky and Alma offer only the current minor
+release's builds.
 
 No exploit is run and nothing else is planted: a pack's detections need a
 proof of their own, like php2shell_proof.py. The pack is read as a file,
@@ -183,7 +184,7 @@ def parse_repoquery(text: str) -> dict[str, list[str]]:
 class Choice:
     vulnerable: str | None = None  # the newest build the pack calls vulnerable
     fixed: str | None = None  # the oldest build it calls fixed
-    uncovered: list[str] = field(default_factory=list)  # offered builds that read not affected
+    uncovered: list[str] = field(default_factory=list)  # offered builds no pattern matches
     unjudged: list[str] = field(default_factory=list)  # offered builds that read can't judge
     looks: list[str] = field(default_factory=list)  # the fix boundary, as far as it can be seen
 
@@ -204,7 +205,7 @@ def _sorted(manager: str, versions: list[str]) -> list[str]:
 def choose(pack, group: Group, offered: dict[str, list[str]]) -> Choice:
     """Which builds to install, from what the archive offers. The group's
     first name the archive has decides the version; every name it offers is
-    judged, and one no entry covers, or that reads can't judge, is listed.
+    judged, and one no pattern matches, or that reads can't judge, is listed.
     The builds are picked by the pack's own reading, so a fix set one build
     off would still pass: what can be seen of that is listed for a look."""
     manager = manager_of(group.release)
@@ -215,7 +216,10 @@ def choose(pack, group: Group, offered: dict[str, list[str]]) -> Choice:
         for version in offered.get(name, []):
             state = _state(name, version, entries, manager, other)
             if state == "absent":
-                choice.uncovered.append(f"{name} {version} is offered but no entry covers it")
+                choice.uncovered.append(
+                    f"{name} {version} is offered, no pattern matches it, and the pack reads"
+                    " that as not affected (other_builds): check it isn't affected"
+                )
             elif state not in (VULNERABLE, FIXED):
                 choice.unjudged.append(f"{name} {version} is offered and reads {state}")
     lead = next((n for n in group.names if offered.get(n)), None)
@@ -285,14 +289,19 @@ class Result:
     error: str | None = None
 
 
-def facts(assessment: dict, snapshot, pack, names: tuple[str, ...]) -> dict:
+def facts(assessment: dict, snapshot, pack, names: tuple[str, ...], group=()) -> dict:
     """The pack's exposure as the assessment has it, and each of these
     installed packages (by name and architecture) as the pack judges it."""
     exposure = next(e for e in assessment["exposures"] if e["pack"] == pack.id)
     packages = snapshot.sections["packages"].items
     found = judge(pack, snapshot.sections["host"].items, packages, [], datetime.now(UTC))
     judged = {p.key: (p.version, p.status) for p in found.packages if p.name in names}
-    return {"exposure": exposure, "judged": judged}
+    rest = {
+        p.key: (p.version, p.status)
+        for p in found.packages
+        if p.name in group and p.name not in names
+    }  # the group's others on the host, left as they were: they count in the verdict
+    return {"exposure": exposure, "judged": judged, "rest": rest}
 
 
 def expect_stage(result: Result, stage: str, seen: dict, version: str, wanted: str) -> None:
@@ -300,6 +309,8 @@ def expect_stage(result: Result, stage: str, seen: dict, version: str, wanted: s
     the host's exposure (to this group alone) `wanted` too."""
     judged = seen["judged"]
     summary = f"status {seen['exposure']['status']}, packages {judged}"
+    if seen.get("rest"):
+        summary += f", left as they were {seen['rest']}"
     print(f"{result.scenario}: {stage}: {summary}")
     claims = [
         (f"installed at {version}", bool(judged) and all(v == version for v, _ in judged.values()))
@@ -362,7 +373,7 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
                     raise RuntimeError(f"on the server: {done.stderr[-600:]}")
                 return done.stdout
 
-            async def look(alone, names: tuple[str, ...]) -> dict:
+            async def look(alone, names: tuple[str, ...], group: tuple[str, ...]) -> dict:
                 await detection.collect(home, config, scanner, known)
                 store = Store(database_file(home))
                 try:
@@ -374,7 +385,7 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
                     )  # fmt: skip
                     row = store.bundle(assessment["bundle_id"])
                     snapshot = snapshot_of(store, row, identity, recipients)
-                    return facts(assessment, snapshot, alone, names)
+                    return facts(assessment, snapshot, alone, names, group)
                 finally:
                     store.close()
 
@@ -385,7 +396,7 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
                     f"{what}: {n} isn't offered at {version}, left as it was" for n in left
                 ]
                 await shell(install(release, names, version))
-                seen = await look(alone, tuple(names))
+                seen = await look(alone, tuple(names), group.names)
                 expect_stage(result, f"{what} {version}", seen, version, wanted)
 
             for group in groups(pack, release):
@@ -403,7 +414,7 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
                         builds = ", ".join(offered.get(name, [])) or "none"
                         print(f"{release}: offered {name}: {builds}")
                     choice = choose(alone, group, offered)
-                    result.failed += [f"{what}: {line}" for line in choice.uncovered]
+                    result.unproved += [f"{what}: {line}" for line in choice.uncovered]
                     result.unproved += [f"{what}: {line}" for line in choice.unjudged]
                     result.unproved += [f"{what}: {line}" for line in choice.looks]
                     if not any(offered.get(n) for n in group.names):
@@ -425,6 +436,8 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
                         result.unproved.append(f"{what}: fixed not proved ({why})")
                     else:
                         await stage(alone, what, offered, group, choice.fixed, FIXED)
+                except (asyncssh.Error, OSError):
+                    raise  # the connection or a timeout: the release ends here
                 except Exception as exc:  # this group only: the next is judged apart
                     result.failed.append(f"{what}: {type(exc).__name__}: {exc}")
     except Exception as exc:

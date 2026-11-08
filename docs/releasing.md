@@ -77,7 +77,8 @@ From the newest commit on `main`, after the change that sets the version has bee
            --images linode/ubuntu24.04 --images linode/ubuntu26.04 --images linode/rocky9 --images linode/rocky10 \
            --description "..." --script "$(cat dist/stackscript-VERSION.sh)"
 
-   A public StackScript can't be made private again. Its ID goes in this file once it exists.
+   A public StackScript can't be made private again. The public one is ID 2285474, made by hand in Cloud
+   Manager from `dist/stackscript-0.1.1.sh` on 2026-11-06, so later releases update it.
 
    Anything that deploys from the StackScript through Linode's API has to send every one of its fields in
    `stackscript_data`, even the ones with a default: if one is left out, Linode silently skips the script.

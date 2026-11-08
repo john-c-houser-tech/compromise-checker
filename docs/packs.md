@@ -109,7 +109,8 @@ Releases are signed by hand; no key is held by CI or any server.
    server per release it installs the newest offered build the pack calls
    vulnerable, then the oldest it calls fixed, and checks each reads so through
    a real collection; every other offered build is judged too. Without `--go`
-   it only prints the plan; each run costs about a cent a server. It can't tell
+   it only prints the plan; each run costs about a cent a server. Exit status 2
+   means nothing failed but something needs a look (listed). It can't tell
    whether the fix version is the vendor's (step 1 does), and doesn't prove
    RHEL module streams yet. A pack's detections need a proof of their own:
    `tests/integration/php2shell_proof.py` is the model (it runs no exploit).

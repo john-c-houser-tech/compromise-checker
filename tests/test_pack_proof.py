@@ -237,3 +237,15 @@ def test_another_groups_vulnerable_package_doesnt_reach_this_groups_verdict():
     assert judge(whole, rocky, installed, [], now).status == "vulnerable"
     alone = pp.only(whole, pp.groups(whole, "rhel:9")[0])
     assert judge(alone, rocky, installed, [], now).status == "fixed"
+
+
+def test_prove_creates_one_server_and_deletes_it_in_finally():
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(pp.prove))
+    source = inspect.getsource(pp.prove)
+    assert source.count("_create_server(") == 1
+    assert source.count("for group in groups(") == 1
+    tries = [n for n in ast.walk(tree) if isinstance(n, ast.Try) and n.finalbody]
+    assert any("api.delete" in ast.unparse(t.finalbody) for t in tries)

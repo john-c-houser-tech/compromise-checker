@@ -819,8 +819,9 @@ John's idea (2026-10-30): a separate application, in its own repository (John, 2
 the packs repository) and entirely apart from Compromise Checker, that watches public sources for
 new threats, proposes packs, gets a person's approval through a web
 interface, and then uses AI to write them. Its build plan lives in that repository,
-`compromise-checker-pack-drafter` (working name; private until the end of its Stage 1, then
-public under AGPL-3.0). Work started on 2026-11-07. What that plan started from (agreed in outline):
+[`compromise-checker-pack-drafter`](https://github.com/john-c-houser-tech/compromise-checker-pack-drafter)
+(working name; public under AGPL-3.0 since the end of its Stage 1, 2026-11-07). Work started on
+2026-11-07. What that plan started from (agreed in outline):
 
 - **Feeds, not scraping:** CISA's Known Exploited Vulnerabilities list,
   OSV, Ubuntu's and Red Hat's security data (OVAL/CSAF), the NVD API.

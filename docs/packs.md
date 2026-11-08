@@ -105,12 +105,14 @@ Releases are signed by hand; no key is held by CI or any server.
 
 1. Validate it, and check every version and date against the vendor's own page.
 2. Prove it on throwaway servers. `tests/integration/pack_proof.py --pack PACK.yaml`
-   proves any pack's versions: on one server per release it installs the newest
-   build the archive still offers that the pack calls vulnerable, then the oldest
-   it calls fixed, and checks each reads so; every other offered build is judged
-   too (without `--go` it only prints the plan). A pack's detections need a proof
-   of their own: `tests/integration/php2shell_proof.py` is the model (it runs no
-   exploit).
+   checks a pack's package entries against the vendor's real builds: on one
+   server per release it installs the newest offered build the pack calls
+   vulnerable, then the oldest it calls fixed, and checks each reads so through
+   a real collection; every other offered build is judged too. Without `--go`
+   it only prints the plan; each run costs about a cent a server. It can't tell
+   whether the fix version is the vendor's (step 1 does), and doesn't prove
+   RHEL module streams yet. A pack's detections need a proof of their own:
+   `tests/integration/php2shell_proof.py` is the model (it runs no exploit).
 3. Sign the pack: `minisign -S -s pack.key -m PACK.yaml -t "ID version N"`.
 4. Write the index, in a clone of the packs repository: `checker packs index .`
    (it checks every pack's signature against `keys.yaml`, and refuses a changed

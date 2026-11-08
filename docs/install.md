@@ -204,9 +204,13 @@ once that's known. The installer waits up to 30 minutes for the name to lead to 
 
 The script downloads the release, checks the installer against the hash fixed in the script, and runs it with
 your answers. When it's done, the link for the first account appears above the login prompt in the Linode's
-Lish console, and in `/var/log/compromise-checker-install.log`, which only root can read. The note on the console goes once the first
+Lish console once the install has finished, and in `/var/log/compromise-checker-install.log`, which only root can read. The note on the console goes once the first
 account exists. The question about SSH passwords is usually left for later on a new Linode: nobody has logged in
 with a key yet, so the installer leaves passwords on and the page says how to turn them off.
+
+The note appears one to three minutes after the Linode starts. Opening Lish before then shows it mixed in with
+the boot messages, so give the machine a few minutes first. If the console looks broken, log in as root and run
+`/usr/local/sbin/compromise-checker-link`, which prints a fresh link on a line of its own.
 
 This route isn't advertised until it has been tried by a few people outside NouriLoop.
 

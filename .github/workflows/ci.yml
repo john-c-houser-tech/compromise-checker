@@ -1,6 +1,10 @@
 # CI: lint and tests for the controller, and the collector's tests run with
 # the targets' own python3 inside the target distributions' container images.
 # No network beyond package installs, no secrets, nothing spent.
+#
+# A change that touches only Markdown files skips the jobs that test code.
+# The ruleset on main requires the one "CI result" check, which passes when
+# every job before it passed or was skipped, so a skip never blocks a merge.
 name: CI
 
 on:
@@ -17,8 +21,39 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Anything besides Markdown?
+        id: diff
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # When in doubt (no diff, an empty diff), run everything.
+          if ! files=$(git diff --name-only --no-renames "$BASE...$HEAD"); then
+            echo "Couldn't diff $BASE...$HEAD, so everything runs"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s\n' "$files"
+          if [ -z "$files" ] || grep -qv '\.md$' <<< "$files"; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Only Markdown changed, so the code jobs are skipped"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   controller:
     name: Controller (Python ${{ matrix.python }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -66,6 +101,8 @@ jobs:
 
   release:
     name: Release build (Python ${{ matrix.python }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -107,6 +144,8 @@ jobs:
 
   collector:
     name: Collector on ${{ matrix.image }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ${{ matrix.image }}
     strategy:
@@ -127,3 +166,22 @@ jobs:
         run: |
           python3 --version
           python3 -m unittest discover -s tests/collector -v
+
+  # The one check main's ruleset requires.
+  result:
+    name: CI result
+    if: always()
+    needs: [changes, controller, release, collector]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed or was skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *) exit 1 ;;
+            esac
+          done

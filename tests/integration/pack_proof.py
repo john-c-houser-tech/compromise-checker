@@ -368,7 +368,7 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
             )  # fmt: skip
 
             async def shell(script: str) -> str:
-                done = await conn.run(f"bash -eu -c {shlex.quote(script)}", timeout=1800)
+                done = await conn.run(proof.strict(script), timeout=1800)
                 if done.exit_status != 0:
                     raise RuntimeError(f"on the server: {done.stderr[-600:]}")
                 return done.stdout

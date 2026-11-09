@@ -262,3 +262,18 @@ def test_the_groups_others_left_as_they_were_are_in_the_summary():
     assert "s: the host reads fixed" in result.failed
     saw = next(line for line in result.failed if line.startswith("s: saw"))
     assert "left as they were {'libdemo1 amd64': ('1.1.0-2build2', 'vulnerable')}" in saw
+
+
+def test_server_scripts_run_strict_without_start_up_files():
+    import shlex
+
+    command = pp.proof.strict("echo 'a b'; false")
+    assert shlex.split(command) == [
+        "bash",
+        "--norc",
+        "--noprofile",
+        "-eu",
+        "-c",
+        "echo 'a b'; false",
+    ]
+    assert command.startswith("bash --norc --noprofile -eu -c ")  # long options before -eu

@@ -331,12 +331,16 @@ def test_tidy_takes_away_what_was_added_and_keeps_a_kernel():
 
 def test_tidy_says_when_something_already_there_went():
     problems, _ = _tidy(["sshd\npython3\ndotnet-host\n", "sshd\n"])
-    assert problems == ["taking away what it added took what was there too: python3"]
+    assert problems == ["something already there is gone: python3"]
 
 
 def test_tidy_says_when_it_couldnt_or_left_some():
-    problems, _ = _tidy(["sshd\npython3\ndotnet-host\n"], fail_remove=True)
-    assert problems[0].startswith("couldn't take away what it added: on the server")
+    # a refused removal still gets the check after it (dpkg may have taken some)
+    problems, _ = _tidy(
+        ["sshd\npython3\ndotnet-host\n", "sshd\npython3\ndotnet-host\n"], fail_remove=True
+    )
+    assert problems[0].startswith("couldn't take away all it added: on the server")
+    assert problems[1] == "left behind (the next group may meet them): dotnet-host"
     problems, _ = _tidy(["sshd\npython3\ndotnet-host\n", "sshd\npython3\ndotnet-host\n"])
     assert problems == ["left behind (the next group may meet them): dotnet-host"]
 
@@ -348,3 +352,31 @@ def test_each_group_is_settled_and_tidied():
     assert (
         "await shell(settle(release))" in source and "await tidy(shell, release, before)" in source
     )
+
+
+def test_kernels_are_kept_and_nothing_else_by_mistake():
+    kept = ("linux-image-6.8.0-50-generic", "linux-modules-extra-6.8.0-50-generic",
+            "kernel", "kernel-core", "kernel-modules")  # fmt: skip
+    for name in kept:
+        assert pp._KEEP.match(name), name
+    for name in ("linux-libc-dev", "kernelshark", "dotnet-host", "linux-tools-common"):
+        assert not pp._KEEP.match(name), name
+
+
+def test_tidy_on_rhel_uses_rpm():
+    import asyncio
+
+    shell = FakeShell(["openssh\npython3\naspnetcore-runtime-8.0\n", "openssh\npython3\n"])
+    problems = asyncio.run(pp.tidy(shell, "rhel:9", "openssh\npython3\n"))
+    assert problems == [] and shell.removed == ["rpm -e aspnetcore-runtime-8.0\n"]
+
+
+def test_a_listing_that_fails_is_the_groups_failure():
+    import asyncio
+
+    class Broken(FakeShell):
+        async def __call__(self, script):
+            raise RuntimeError("on the server: dpkg-query: error")
+
+    problems = asyncio.run(pp.tidy(Broken([]), "ubuntu:22.04", "sshd\n"))
+    assert problems == ["couldn't list what it added: on the server: dpkg-query: error"]

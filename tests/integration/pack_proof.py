@@ -274,12 +274,13 @@ def installed(release: str) -> str:
 
 def settle(release: str) -> str:
     """Before the first listing: the image's own updates stopped, a run already going
-    included, so nothing they land counts as a group's."""
+    included (systemctl stop waits for it to end), so nothing they land counts as a
+    group's."""
     if manager_of(release) == "dpkg":
         return QUIET_APT + (
             "systemctl stop apt-daily.service apt-daily-upgrade.service"
             " unattended-upgrades.service || true\n"
-            "$APT update -q >/dev/null\n"  # waits for any dpkg lock to clear
+            "$APT update -q >/dev/null\n"
         )
     return QUIET_DNF + "systemctl stop dnf-makecache.service dnf-automatic.service || true\n"
 
@@ -311,16 +312,22 @@ async def tidy(shell, release: str, before: str) -> list[str]:
     problems = []
     try:
         brought = [n for n in added(before, await shell(installed(release))) if not _KEEP.match(n)]
-        if brought:
+    except RuntimeError as exc:
+        return [f"couldn't list what it added: {exc}"]
+    if brought:
+        try:
             await shell(remove(release, brought))
+        except RuntimeError as exc:  # dpkg may have taken some before refusing the rest
+            problems.append(f"couldn't take away all it added: {exc}")
+    try:
         now = await shell(installed(release))
     except RuntimeError as exc:
-        return [f"couldn't take away what it added: {exc}"]
+        return [*problems, f"couldn't list what is left: {exc}"]
     gone = sorted(set(before.split()) - set(now.split()))
     if gone:
-        problems.append(
-            f"taking away what it added took what was there too: {', '.join(gone[:10])}"
-        )
+        # dpkg --purge and rpm -e take only what they're named: the install took these
+        # (an obsoleted package, say).
+        problems.append(f"something already there is gone: {', '.join(gone[:10])}")
     left = [n for n in added(before, now) if not _KEEP.match(n)]
     if left:
         problems.append(f"left behind (the next group may meet them): {', '.join(left[:10])}")

@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import functools
+import re
 import shlex
 import sys
 import tempfile
@@ -259,6 +260,80 @@ def install(release: str, names: list[str], version: str) -> str:
     return QUIET_DNF + f"$DNF install {wanted}\n"
 
 
+def installed(release: str) -> str:
+    """The shell that names every package dpkg or rpm holds, one a line: any state but
+    gone (a failed install leaves half-installed or unpacked ones, which count). With
+    pipefail, a listing that fails fails the script, never comes back empty."""
+    if manager_of(release) == "dpkg":
+        return (
+            r"set -o pipefail; dpkg-query -W -f='${db:Status-Status} ${Package}\n'"
+            """ | awk '$1 != "not-installed" && $1 != "config-files" {print $2}'\n"""
+        )
+    return r"set -o pipefail; rpm -qa --qf '%{NAME}\n'" + "\n"
+
+
+def settle(release: str) -> str:
+    """Before the first listing: the image's own updates stopped, a run already going
+    included (systemctl stop waits for it to end), so nothing they land counts as a
+    group's."""
+    if manager_of(release) == "dpkg":
+        return QUIET_APT + (
+            "systemctl stop apt-daily.service apt-daily-upgrade.service"
+            " unattended-upgrades.service || true\n"
+            "$APT update -q >/dev/null\n"
+        )
+    return QUIET_DNF + "systemctl stop dnf-makecache.service dnf-automatic.service || true\n"
+
+
+def added(before: str, after: str) -> list[str]:
+    """What a group's installs added: packages that weren't there before it."""
+    was = set(before.split())
+    return sorted({n for n in after.split() if n not in was})
+
+
+# Never taken away, even if a group added them: a kernel (one may be running).
+_KEEP = re.compile(r"(linux-(image|modules|headers)|kernel)(-|$)")
+
+
+def remove(release: str, names: list[str]) -> str:
+    """The shell that takes away what a group added (two .NET versions' host packages
+    conflict on Ubuntu 22.04). dpkg --purge and rpm -e refuse rather than take a
+    package something else still needs, so nothing already there goes with them."""
+    quoted = " ".join(shlex.quote(n) for n in names)
+    if manager_of(release) == "dpkg":
+        return f"export DEBIAN_FRONTEND=noninteractive\ndpkg --purge {quoted}\n"
+    return f"rpm -e {quoted}\n"
+
+
+async def tidy(shell, release: str, before: str) -> list[str]:
+    """After a group: take away what it added, then check nothing already there went.
+    Returns what went wrong (a group's failure, not the release's); a lost connection
+    still ends the release."""
+    problems = []
+    try:
+        brought = [n for n in added(before, await shell(installed(release))) if not _KEEP.match(n)]
+    except RuntimeError as exc:
+        return [f"couldn't list what it added: {exc}"]
+    if brought:
+        try:
+            await shell(remove(release, brought))
+        except RuntimeError as exc:  # dpkg may have taken some before refusing the rest
+            problems.append(f"couldn't take away all it added: {exc}")
+    try:
+        now = await shell(installed(release))
+    except RuntimeError as exc:
+        return [*problems, f"couldn't list what is left: {exc}"]
+    gone = sorted(set(before.split()) - set(now.split()))
+    if gone:
+        # dpkg --purge and rpm -e take only what they're named: the install took these
+        # (an obsoleted package, say).
+        problems.append(f"something already there is gone: {', '.join(gone[:10])}")
+    left = [n for n in added(before, now) if not _KEEP.match(n)]
+    if left:
+        problems.append(f"left behind (the next group may meet them): {', '.join(left[:10])}")
+    return problems
+
+
 def listing(release: str, names: tuple[str, ...]) -> str:
     """The shell that lists every build the archive offers (repoquery lists
     every version on dnf 4 and 5 alike)."""
@@ -399,6 +474,7 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
                 seen = await look(alone, tuple(names), group.names)
                 expect_stage(result, f"{what} {version}", seen, version, wanted)
 
+            await shell(settle(release))
             for group in groups(pack, release):
                 what = "/".join(group.names)
                 if group.module:
@@ -406,6 +482,13 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
                         f"{what}: a module stream's entries, not proved here yet"
                         " (they need the stream enabled)"
                     )
+                    continue
+                try:
+                    before = await shell(installed(release))
+                    if not before.split():
+                        raise RuntimeError("the installed packages couldn't be listed")
+                except RuntimeError as exc:
+                    result.failed.append(f"{what}: {exc}")
                     continue
                 try:
                     alone = only(pack, group)
@@ -440,6 +523,9 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
                     raise  # the connection or a timeout: the release ends here
                 except Exception as exc:  # this group only: the next is judged apart
                     result.failed.append(f"{what}: {type(exc).__name__}: {exc}")
+                # What this group added goes, so the next doesn't meet it (one already
+                # there stays, at the version the group left).
+                result.failed += [f"{what}: {p}" for p in await tidy(shell, release, before)]
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
     finally:

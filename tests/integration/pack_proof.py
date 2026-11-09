@@ -368,7 +368,11 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
             )  # fmt: skip
 
             async def shell(script: str) -> str:
-                done = await conn.run(f"bash -eu -c {shlex.quote(script)}", timeout=1800)
+                # No start-up files: Ubuntu 22.04's /etc/bash.bashrc is read even over
+                # ssh -c, and reads $PS1, which -u refuses (the .NET proof, 2026-11-09).
+                done = await conn.run(
+                    f"bash --norc --noprofile -eu -c {shlex.quote(script)}", timeout=1800
+                )
                 if done.exit_status != 0:
                     raise RuntimeError(f"on the server: {done.stderr[-600:]}")
                 return done.stdout

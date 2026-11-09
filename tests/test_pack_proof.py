@@ -284,22 +284,67 @@ def test_a_groups_cleanup_takes_only_what_it_added():
     after = "openssh-server\nlibbrotli1\npython3\naspnetcore-runtime-6.0\ndotnet-host\n"
     assert pp.added(before, after) == ["aspnetcore-runtime-6.0", "dotnet-host"]
     assert pp.added(before, before) == []
-    apt = pp.remove("ubuntu:22.04", ["aspnetcore-runtime-6.0", "dotnet-host"])
-    assert apt.splitlines()[-1] == "$APT remove --purge aspnetcore-runtime-6.0 dotnet-host"
-    assert pp.remove("rhel:9", ["aspnetcore-runtime-8.0"]).splitlines()[-1] == (
-        "$DNF remove aspnetcore-runtime-8.0"
-    )
+    # dpkg --purge and rpm -e refuse to take a package something else needs
+    assert pp.remove("ubuntu:22.04", ["a", "b"]).splitlines()[-1] == "dpkg --purge a b"
+    assert pp.remove("rhel:9", ["aspnetcore-runtime-8.0"]) == "rpm -e aspnetcore-runtime-8.0\n"
 
 
-def test_installed_lists_only_installed_packages():
+def test_installed_lists_every_state_but_gone_and_fails_loudly():
     dpkg = pp.installed("ubuntu:24.04")
-    assert "${db:Status-Status} ${Package}\\n" in dpkg and '$1 == "installed"' in dpkg
-    assert pp.installed("rhel:10") == "rpm -qa --qf '%{NAME}\\n'\n"
+    assert dpkg.startswith("set -o pipefail;")
+    assert '$1 != "not-installed" && $1 != "config-files"' in dpkg
+    assert pp.installed("rhel:10").startswith("set -o pipefail; rpm -qa")
+    assert "apt-daily-upgrade.service" in pp.settle("ubuntu:22.04")
 
 
-def test_each_group_is_cleaned_up_before_the_next():
+class FakeShell:
+    """Answers the cleanup's scripts: installed listings in turn, and records removals."""
+
+    def __init__(self, listings, fail_remove=False):
+        self.listings, self.fail_remove, self.removed = list(listings), fail_remove, []
+
+    async def __call__(self, script):
+        if "dpkg --purge" in script or script.startswith("rpm -e"):
+            if self.fail_remove:
+                raise RuntimeError("on the server: dependency problems")
+            self.removed.append(script)
+            return ""
+        return self.listings.pop(0)
+
+
+def _tidy(listings, **kw):
+    import asyncio
+
+    shell = FakeShell(listings, **kw)
+    return asyncio.run(pp.tidy(shell, "ubuntu:22.04", "sshd\npython3\n")), shell
+
+
+def test_tidy_takes_away_what_was_added_and_keeps_a_kernel():
+    problems, shell = _tidy(
+        ["sshd\npython3\ndotnet-host\nlinux-image-6.8.0-50-generic\n",
+         "sshd\npython3\nlinux-image-6.8.0-50-generic\n"]
+    )  # fmt: skip
+    assert problems == [] and shell.removed == [
+        "export DEBIAN_FRONTEND=noninteractive\ndpkg --purge dotnet-host\n"
+    ]
+
+
+def test_tidy_says_when_something_already_there_went():
+    problems, _ = _tidy(["sshd\npython3\ndotnet-host\n", "sshd\n"])
+    assert problems == ["taking away what it added took what was there too: python3"]
+
+
+def test_tidy_says_when_it_couldnt_or_left_some():
+    problems, _ = _tidy(["sshd\npython3\ndotnet-host\n"], fail_remove=True)
+    assert problems[0].startswith("couldn't take away what it added: on the server")
+    problems, _ = _tidy(["sshd\npython3\ndotnet-host\n", "sshd\npython3\ndotnet-host\n"])
+    assert problems == ["left behind (the next group may meet them): dotnet-host"]
+
+
+def test_each_group_is_settled_and_tidied():
     import inspect
 
     source = inspect.getsource(pp.prove)
-    assert "before = await shell(installed(release))" in source
-    assert "added(before, await shell(installed(release)))" in source
+    assert (
+        "await shell(settle(release))" in source and "await tidy(shell, release, before)" in source
+    )

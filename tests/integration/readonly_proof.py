@@ -21,6 +21,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import signal
 import subprocess
 import sys
@@ -247,6 +248,13 @@ def sweep(api: Linode) -> None:
 # Every server a run makes carries this run's token in its label, so the
 # end-of-run sweep deletes its own and never another run's.
 RUN = secrets.token_hex(3)
+
+
+def strict(script: str) -> str:
+    """A server script as one remote command: strict (-eu), and with no start-up files.
+    Debian's bash reads /etc/bash.bashrc for a command run over ssh, and Ubuntu 22.04's
+    reads $PS1, which -u refuses (the .NET pack's proof, 2026-11-09)."""
+    return f"bash --norc --noprofile -eu -c {shlex.quote(script)}"
 
 
 def run_label(distro: str) -> str:

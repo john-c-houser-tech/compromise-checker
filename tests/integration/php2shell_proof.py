@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import shlex
 import sys
 import tempfile
 import time
@@ -256,7 +255,7 @@ async def prove(api, scenario: Scenario, pack, region: str, work: Path) -> Resul
             )  # fmt: skip
 
             async def shell(script: str) -> None:
-                done = await conn.run(f"bash -eu -c {shlex.quote(script)}", timeout=900)
+                done = await conn.run(proof.strict(script), timeout=900)
                 if done.exit_status != 0:
                     raise RuntimeError(f"on the server: {done.stderr[-600:]}")
 

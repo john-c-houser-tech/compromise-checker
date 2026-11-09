@@ -277,3 +277,29 @@ def test_server_scripts_run_strict_without_start_up_files():
         "echo 'a b'; false",
     ]
     assert command.startswith("bash --norc --noprofile -eu -c ")  # long options before -eu
+
+
+def test_a_groups_cleanup_takes_only_what_it_added():
+    before = "openssh-server\nlibbrotli1\npython3\n"
+    after = "openssh-server\nlibbrotli1\npython3\naspnetcore-runtime-6.0\ndotnet-host\n"
+    assert pp.added(before, after) == ["aspnetcore-runtime-6.0", "dotnet-host"]
+    assert pp.added(before, before) == []
+    apt = pp.remove("ubuntu:22.04", ["aspnetcore-runtime-6.0", "dotnet-host"])
+    assert apt.splitlines()[-1] == "$APT remove --purge aspnetcore-runtime-6.0 dotnet-host"
+    assert pp.remove("rhel:9", ["aspnetcore-runtime-8.0"]).splitlines()[-1] == (
+        "$DNF remove aspnetcore-runtime-8.0"
+    )
+
+
+def test_installed_lists_only_installed_packages():
+    dpkg = pp.installed("ubuntu:24.04")
+    assert "${db:Status-Status} ${Package}\\n" in dpkg and '$1 == "installed"' in dpkg
+    assert pp.installed("rhel:10") == "rpm -qa --qf '%{NAME}\\n'\n"
+
+
+def test_each_group_is_cleaned_up_before_the_next():
+    import inspect
+
+    source = inspect.getsource(pp.prove)
+    assert "before = await shell(installed(release))" in source
+    assert "added(before, await shell(installed(release)))" in source

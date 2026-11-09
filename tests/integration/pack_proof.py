@@ -259,6 +259,32 @@ def install(release: str, names: list[str], version: str) -> str:
     return QUIET_DNF + f"$DNF install {wanted}\n"
 
 
+def installed(release: str) -> str:
+    """The shell that names every installed package, one a line."""
+    if manager_of(release) == "dpkg":
+        return (
+            r"dpkg-query -W -f='${db:Status-Status} ${Package}\n'"
+            """ | awk '$1 == "installed" {print $2}'\n"""
+        )
+    return r"rpm -qa --qf '%{NAME}\n'" + "\n"
+
+
+def added(before: str, after: str) -> list[str]:
+    """What a group's installs added: packages that weren't there before it."""
+    was = set(before.split())
+    return sorted({n for n in after.split() if n not in was})
+
+
+def remove(release: str, names: list[str]) -> str:
+    """The shell that takes away what a group added, so the next group starts as the
+    image did (two .NET versions' host packages conflict on Ubuntu 22.04). Only
+    packages the proof itself brought: one already there stays, as the group left it."""
+    quoted = " ".join(shlex.quote(n) for n in names)
+    if manager_of(release) == "dpkg":
+        return QUIET_APT + f"$APT remove --purge {quoted}\n"
+    return QUIET_DNF + f"$DNF remove {quoted}\n"
+
+
 def listing(release: str, names: tuple[str, ...]) -> str:
     """The shell that lists every build the archive offers (repoquery lists
     every version on dnf 4 and 5 alike)."""
@@ -407,6 +433,7 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
                         " (they need the stream enabled)"
                     )
                     continue
+                before = await shell(installed(release))
                 try:
                     alone = only(pack, group)
                     offered = offered_from(release, await shell(listing(release, group.names)))
@@ -440,6 +467,13 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
                     raise  # the connection or a timeout: the release ends here
                 except Exception as exc:  # this group only: the next is judged apart
                     result.failed.append(f"{what}: {type(exc).__name__}: {exc}")
+                # What this group added goes, so the next starts as the image did.
+                brought = added(before, await shell(installed(release)))
+                if brought:
+                    try:
+                        await shell(remove(release, brought))
+                    except RuntimeError as exc:
+                        result.failed.append(f"{what}: couldn't take away what it added: {exc}")
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
     finally:

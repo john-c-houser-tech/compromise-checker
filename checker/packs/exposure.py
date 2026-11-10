@@ -440,14 +440,23 @@ def _judge_one(
 ) -> Judged:
     """One installed package against every entry it matches: vulnerable if
     any says so (an entry with no fix first); can't judge if its version
-    can't be read, if its epoch is one the fix doesn't write, or if it
-    sorts above a fix whose vendor's mark it doesn't carry."""
+    can't be read, if its epoch is one the fix doesn't write, if it sorts
+    above a fix whose vendor's mark it doesn't carry, or if the entry calls
+    the package native and this build has a revision (so the fix, with
+    none, can't be the version's own numbering: 8.3.6 against
+    8.3.6-0ubuntu0.24.04.5 would call every build of 8.3.6 fixed)."""
     when = installed.isoformat() if installed else None
     for entry in entries:
         if entry.fixed is None:
             return Judged(key, name, version, when, VULNERABLE, None, "no fix yet")
     decided, doubt = None, None
     for entry in entries:
+        if entry.native and "-" in _unepoched(version):
+            doubt = doubt or (
+                f"the pack calls {name} native, with versions that have no revision, but"
+                f" installed {version} has one: the fix {entry.fixed} can't judge it"
+            )
+            continue
         try:
             older = compare(manager, version, entry.fixed) < 0
         except VersionError as exc:
@@ -459,7 +468,10 @@ def _judge_one(
                 f"installed {version} has an epoch and the pack's fix {entry.fixed} doesn't:"
                 " they can't be compared as written"
             )
-        mark = _vendor_mark(entry.fixed) if entry.versions is None else None
+        # A native package's builds have no revision, so the vendor's mark doesn't
+        # tell its own builds from others: Ubuntu's carry ubuntuN, ~YY.MM, or
+        # neither when taken from Debian as they are.
+        mark = _vendor_mark(entry.fixed) if entry.versions is None and not entry.native else None
         if mark is not None and not mark.search(version):
             doubt = doubt or (
                 f"{version} isn't the vendor's own build (the fix {entry.fixed} is): a version"

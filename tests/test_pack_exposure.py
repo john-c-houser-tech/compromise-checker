@@ -447,3 +447,61 @@ def test_only_a_package_naming_another_version_is_left_out_of_a_programs_fix():
     assert _fix_time({"php-fpm8.3"}, remi) == at(late)
     # An unknown time among those that count: unknown.
     assert _fix_time({"php-fpm"}, [judged("php8.3-fpm", None), judged("php8.4-fpm", late)]) is None
+
+
+def test_a_native_package_is_judged_by_its_whole_version():
+    # ca-certificates on Ubuntu, as a real 24.04 server showed it (2026-11-10).
+    from test_pack_format import native
+
+    pack = read(native("20260816ubuntu0.24.04.1"))
+    certs = "ca-certificates all"
+    for installed, status in [
+        ("20240203", VULNERABLE),  # 24.04 as released
+        ("20260601~24.04.1", VULNERABLE),  # the image's, still trusting the root
+        ("20260816", VULNERABLE),  # Debian's, before Ubuntu's change
+        ("20260816ubuntu0.24.04.1", FIXED),
+        ("20260816ubuntu0.24.04.2", FIXED),
+    ]:
+        found = judge(pack, UBUNTU, dpkg(installed, name=certs), [], NOW)
+        assert (found.status, installed) == (status, installed)
+
+
+def test_a_native_entry_cant_judge_a_build_with_a_revision():
+    # The misuse the revision rule guards against, said native by mistake: 8.3.6
+    # alone would call every build of 8.3.6 fixed, backports and Sury's included.
+    from test_pack_format import changed
+
+    wrong = read(changed('fixed: "8.3.6-0ubuntu0.24.04.6"', 'fixed: "8.3.6"\n      native: true'))
+    for build in ["8.3.6-0ubuntu0.24.04.5", "8.3.6-1+ubuntu24.04.1+deb.sury.org+1", "1:8.3.7-1"]:
+        found = judge(wrong, UBUNTU, dpkg(build), [], NOW)
+        assert found.status == CANT_JUDGE, build
+        assert "native" in found.packages[0].why
+    assert judge(wrong, UBUNTU, dpkg("8.3.5"), [], NOW).status == VULNERABLE
+
+
+def test_a_native_fix_takes_any_later_build_without_a_revision_as_fixed():
+    # Ubuntu's native versions carry ubuntuN, ~YY.MM, or neither (taken from Debian).
+    from test_pack_format import native
+
+    pack = read(native("20260816ubuntu0.24.04.1"))
+    for later in ["20261201~24.04.1", "20260816+nmu1", "20270101"]:
+        found = judge(pack, UBUNTU, dpkg(later, name="ca-certificates all"), [], NOW)
+        assert (found.status, later) == (FIXED, later)
+
+
+def test_a_native_fix_is_dated_through_a_later_backport():
+    # Through the package history too: the upgrade from the image's build to a later
+    # ~24.04.1-style one is the fix's arrival, dated exactly.
+    from test_pack_format import native
+
+    pack = read(native("20260816ubuntu0.24.04.1"))
+    certs = "ca-certificates all"
+    upgrade = {"time": "2026-10-25T00:00:00+00:00", "type": "package.upgrade",
+               "fields": {"name": "ca-certificates", "version": "20261201~24.04.1",
+                          "previous": "20260601~24.04.1"}}  # fmt: skip
+    listing = dpkg("20261201~24.04.1", name=certs)
+    found = judge(pack, UBUNTU, listing, [], NOW, True, [upgrade], None, True)
+    (package,) = found.packages
+    assert (found.status, package.exact) == (FIXED, True)
+    assert package.fixed_since == "2026-10-25T00:00:00+00:00"
+    assert found.share == pytest.approx(0.5)

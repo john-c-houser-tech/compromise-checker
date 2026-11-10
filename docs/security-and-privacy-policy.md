@@ -435,8 +435,9 @@ what any web request does, such as your address, and none of your evidence.
 
 ## 11. Threat packs and trust
 
-Threat packs teach the tool about specific new threats: which package versions
-are vulnerable, which settings help, and which signs of attack to look for. A
+Threat packs teach the tool about specific attacks seen in the wild that leave
+signs on a server: which signs of attack to look for, when a server was open to
+the attack (which package versions are vulnerable), and which settings help. A
 pack is data, never code. It runs nothing on your servers and doesn't change
 what the collector reads; it is applied on your own machine, to evidence
 already collected.

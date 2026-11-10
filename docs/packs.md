@@ -73,7 +73,9 @@ coverage gap in that host's analysis.
   waives the rule for that entry alone. An installed build with a revision can't be
   judged against it (so `native` can't make `8.3.6` fix every 8.3.6 backport), and
   any later build without one is Ubuntu's own. Checker 0.1.1 and earlier refuse such a
-  pack, so one goes out only after a checker release that reads it.
+  pack: a pull there reports it as a problem every time (keeping the pack's earlier
+  version, and pulling the others) until the checker is upgraded. So one goes out
+  only after a checker release that reads it.
 - **Several repositories on one release** are told apart by a `versions` glob on
   the installed version. A package matching several entries is vulnerable if
   any says so.

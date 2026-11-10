@@ -427,6 +427,48 @@ def test_a_fixed_version_carries_the_vendors_part(fixed):
     assert read(changed('fixed: "8.3.15-1.el9_6"', 'fixed: "1:8.3.15-1.el9_6"'))
 
 
+NATIVE_UBUNTU = (
+    '- release: "ubuntu:24.04"\n'
+    "      binary_names: [php8.3-fpm, libapache2-mod-php8.3]\n"
+    '      fixed: "8.3.6-0ubuntu0.24.04.6"'
+)
+
+
+def native(fixed: str, release: str = "ubuntu:24.04", flag: str = "true") -> bytes:
+    return changed(
+        NATIVE_UBUNTU,
+        f'- release: "{release}"\n'
+        "      binary_names: [ca-certificates]\n"
+        f'      fixed: "{fixed}"\n'
+        f"      native: {flag}",
+    )
+
+
+def test_a_native_package_says_so_and_its_version_has_no_revision():
+    pack = read(native("20260816ubuntu0.24.04.1"))
+    entry = pack.exposure.packages[0]
+    assert (entry.native, entry.fixed) == (True, "20260816ubuntu0.24.04.1")
+    assert read(native("1:20260816ubuntu0.24.04.1")).exposure.packages[0].native
+    assert not read(GOOD.encode()).exposure.packages[0].native  # off unless said
+    with pytest.raises(PackError, match="revision or release.*native: true"):
+        read(native("20260816ubuntu0.24.04.1", flag="false"))
+
+
+def test_native_is_only_for_ubuntu_and_only_without_a_revision():
+    with pytest.raises(PackError, match="native is for Ubuntu"):
+        read(native("2026.2.92_v9.0.319-90.3.el9_8", release="rhel:9"))
+    with pytest.raises(PackError, match="native is for Ubuntu"):
+        read(native("2026.2.92", release="rhel:9"))
+    with pytest.raises(PackError, match="but the fixed version has one"):
+        read(native("8.3.6-0ubuntu0.24.04.6"))
+    with pytest.raises(PackError, match="not a boolean|valid boolean"):
+        read(native("20260816ubuntu0.24.04.1", flag='"yes please"'))
+    # A native entry with no fix yet says nothing wrong.
+    no_fix = '- release: "ubuntu:24.04"\n      binary_names: [tzdata]\n      fixed: null\n'
+    pack = read(changed(NATIVE_UBUNTU, no_fix + "      native: true"))
+    assert pack.exposure.packages[0].fixed is None
+
+
 @pytest.mark.parametrize(
     ("old", "new"),
     [

@@ -205,13 +205,17 @@ class Package(_Strict):
     """Affected binary packages on one distribution release, optionally only
     those whose installed version matches `versions`, and the first version
     the vendor fixed there, in its own numbering; `fixed: null` when there is
-    no fix yet, so every matching version is affected."""
+    no fix yet, so every matching version is affected. `native: true` marks
+    an Ubuntu package that is native (ca-certificates, tzdata): its version
+    has no revision, so the whole of it is the vendor's, and the rule that a
+    fixed version carries a revision is waived for this entry alone."""
 
     release: str  # "ubuntu:24.04", "rhel:9" (Rocky Linux and AlmaLinux as rhel)
     binary_names: list[str] = Field(min_length=1, max_length=50)
     versions: str | None = None  # a glob on the installed version
     fixed: str | None
     source: str  # the vendor's advisory the fixed version came from
+    native: bool = False  # a native Ubuntu package: versions with no revision
 
     @field_validator("release")
     @classmethod
@@ -242,11 +246,6 @@ class Package(_Strict):
     def _fixed(cls, value: str | None) -> str | None:
         if value is not None and not _VERSION.fullmatch(value):
             raise ValueError(f"not a package version: {value!r}")
-        if value is not None and not re.search(r"[^-]-[^-]+$", value.split(":", 1)[-1]):
-            raise ValueError(
-                f"a fixed version needs the vendor's revision or release, as installed"
-                f" (8.3.6-0ubuntu0.24.04.6, not 8.3.6): {value!r}"
-            )
         return value
 
     @field_validator("source")
@@ -256,10 +255,28 @@ class Package(_Strict):
 
     @model_validator(mode="after")
     def _family(self) -> Package:
-        """The fixed version as the release's own package manager reads it."""
+        """The fixed version carries the vendor's part (a native package's
+        has none), and reads as the release's own package manager reads it."""
         from checker.packs.versions import VersionError, compare
 
+        if self.native and not self.release.startswith("ubuntu:"):
+            raise ValueError(
+                f"{self.release}: native is for Ubuntu's native packages; an RPM version"
+                " always has a release"
+            )
         if self.fixed is not None:
+            vendors = re.search(r"[^-]-[^-]+$", self.fixed.split(":", 1)[-1])
+            if self.native and vendors:
+                raise ValueError(
+                    f"native: true says this package's versions have no revision, but the"
+                    f" fixed version has one: {self.fixed!r}"
+                )
+            if not self.native and not vendors:
+                raise ValueError(
+                    f"a fixed version needs the vendor's revision or release, as installed"
+                    f" (8.3.6-0ubuntu0.24.04.6, not 8.3.6), or, for a native Ubuntu package"
+                    f" whose versions have none, native: true: {self.fixed!r}"
+                )
             family = "dpkg" if self.release.startswith("ubuntu:") else "rpm"
             try:
                 compare(family, self.fixed, self.fixed)

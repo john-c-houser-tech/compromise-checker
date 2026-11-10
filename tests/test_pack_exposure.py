@@ -447,3 +447,20 @@ def test_only_a_package_naming_another_version_is_left_out_of_a_programs_fix():
     assert _fix_time({"php-fpm8.3"}, remi) == at(late)
     # An unknown time among those that count: unknown.
     assert _fix_time({"php-fpm"}, [judged("php8.3-fpm", None), judged("php8.4-fpm", late)]) is None
+
+
+def test_a_native_package_is_judged_by_its_whole_version():
+    # ca-certificates on Ubuntu, as a real 24.04 server showed it (2026-11-10).
+    from test_pack_format import native
+
+    pack = read(native("20260816ubuntu0.24.04.1"))
+    certs = "ca-certificates all"
+    for installed, status in [
+        ("20240203", VULNERABLE),  # 24.04 as released
+        ("20260601~24.04.1", VULNERABLE),  # the image's, still trusting the root
+        ("20260816", VULNERABLE),  # Debian's, before Ubuntu's change
+        ("20260816ubuntu0.24.04.1", FIXED),
+        ("20260816ubuntu0.24.04.2", FIXED),
+    ]:
+        found = judge(pack, UBUNTU, dpkg(installed, name=certs), [], NOW)
+        assert (found.status, installed) == (status, installed)

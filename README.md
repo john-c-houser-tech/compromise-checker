@@ -19,9 +19,8 @@ products or organizations that don't want to run a security agent such as the
 Tenable Nessus agent. It works from the command line or from a web page with no
 command line required. Open source under the AGPL, from NouriLoop LLC.
 
-**Status:** a pre-release. Version 0.1.1 is out and everything described here
-works today, but it is the first release anyone can install, so expect rough
-edges. [How to install it](https://nouriloop.com/work/compromise-checker/install/).
+**Status:** a pre-release. Version 0.1.2 is out and everything described here
+works today, but it is an early release, so expect rough edges. [How to install it](https://nouriloop.com/work/compromise-checker/install/).
 
 ## What you need
 

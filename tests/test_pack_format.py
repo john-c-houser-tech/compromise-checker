@@ -464,7 +464,7 @@ def test_native_is_only_for_ubuntu_and_only_without_a_revision():
     with pytest.raises(PackError, match="not a boolean|valid boolean"):
         read(native("20260816ubuntu0.24.04.1", flag='"yes please"'))
     # A native entry with no fix yet says nothing wrong.
-    no_fix = '- release: "ubuntu:24.04"\n      binary_names: [tzdata]\n      fixed: null\n'
+    no_fix = '- release: "ubuntu:24.04"\n      binary_names: [base-files]\n      fixed: null\n'
     pack = read(changed(NATIVE_UBUNTU, no_fix + "      native: true"))
     assert pack.exposure.packages[0].fixed is None
 

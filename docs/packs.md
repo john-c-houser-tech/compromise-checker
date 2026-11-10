@@ -68,9 +68,11 @@ coverage gap in that host's analysis.
 - **Versions** come from each vendor's own advisory, with the source in the
   entry. A fixed version carries the vendor's revision or release: `8.3.6` alone
   would count every build of 8.3.6 as fixed, backport or not. A native Ubuntu
-  package (`ca-certificates`, `tzdata`) has no revision: its whole version is
+  package (`ca-certificates`, `base-files`) has no revision: its whole version is
   Ubuntu's (`20260816ubuntu0.24.04.1`), so its entry says `native: true`, which
-  waives the rule for that entry alone. Checker 0.1.1 and earlier refuse such a
+  waives the rule for that entry alone. An installed build with a revision can't be
+  judged against it (so `native` can't make `8.3.6` fix every 8.3.6 backport), and
+  any later build without one is Ubuntu's own. Checker 0.1.1 and earlier refuse such a
   pack, so one goes out only after a checker release that reads it.
 - **Several repositories on one release** are told apart by a `versions` glob on
   the installed version. A package matching several entries is vulnerable if

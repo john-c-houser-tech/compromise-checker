@@ -2837,7 +2837,10 @@ def cmd_packs_show(args: argparse.Namespace) -> int:
     for entry in exposure.packages:
         which = f" (installed versions {entry.versions})" if entry.versions else ""
         fixed = entry.fixed or "no fix yet"
-        print(f"  {entry.release}: {', '.join(entry.binary_names)}{which}: fixed in {fixed}")
+        native = " (native: versions have no revision)" if entry.native else ""
+        print(
+            f"  {entry.release}: {', '.join(entry.binary_names)}{which}{native}: fixed in {fixed}"
+        )
     for mitigation in pack.mitigations:
         expect = visible(mitigation.expect, 100)
         print(f"  Mitigation {mitigation.id}: {mitigation.setting.name} = {expect}")

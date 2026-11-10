@@ -206,7 +206,7 @@ class Package(_Strict):
     those whose installed version matches `versions`, and the first version
     the vendor fixed there, in its own numbering; `fixed: null` when there is
     no fix yet, so every matching version is affected. `native: true` marks
-    an Ubuntu package that is native (ca-certificates, tzdata): its version
+    an Ubuntu package that is native (ca-certificates, base-files): its version
     has no revision, so the whole of it is the vendor's, and the rule that a
     fixed version carries a revision is waived for this entry alone."""
 

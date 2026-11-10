@@ -273,7 +273,12 @@ def test_a_report_is_shown_from_memory_and_only_at_its_address(home, tmp_path, m
     base, store, identity, config = home
     add_bundle(home, "b1", 0, host_records())
     path = write_report(store, ["web01"], identity, config.recipients, base / "reports")
-    before = {p for p in Path(tempfile.gettempdir()).iterdir()}
+    # A temp folder of this test's own: the system's is shared with every other
+    # process on the machine, whose files made this fail on CI (2026-11-09).
+    private = tmp_path / "temp"
+    private.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(private))
+    before = set(private.iterdir())
     threads = threading.active_count()
     seen = {}
 
@@ -295,7 +300,7 @@ def test_a_report_is_shown_from_memory_and_only_at_its_address(home, tmp_path, m
     assert "nothing is written in plain" in said[0]
     with pytest.raises(OSError):
         fetch(seen["url"])  # stopped with Enter
-    assert {p for p in Path(tempfile.gettempdir()).iterdir()} - before == set()
+    assert set(private.iterdir()) - before == set()  # nothing written in plain
     for _ in range(50):  # the server's thread ends with it
         if threading.active_count() == threads:
             break

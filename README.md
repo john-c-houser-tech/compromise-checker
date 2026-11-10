@@ -14,14 +14,16 @@ more. It brings that back to your own machine and works out how likely it is
 that the server has been broken into. **It writes nothing to the server.** Each server
 gets a plain answer, the evidence behind every finding, and what to do next.
 
+It answers one question: has this server been broken into? It isn't a
+vulnerability scanner or a patching tool.
+
 It is built for small organizations that can't afford commercial security
-products or organizations that don't want to run a security agent such as the
-Tenable Nessus agent. It works from the command line or from a web page with no
+products, and for organizations that don't want to install a security agent on
+their servers. It works from the command line or from a web page with no
 command line required. Open source under the AGPL, from NouriLoop LLC.
 
-**Status:** a pre-release. Version 0.1.1 is out and everything described here
-works today, but it is the first release anyone can install, so expect rough
-edges. [How to install it](https://nouriloop.com/work/compromise-checker/install/).
+**Status:** a pre-release. Version 0.1.2 is out and everything described here
+works today, but it is an early release, so expect rough edges. [How to install it](https://nouriloop.com/work/compromise-checker/install/).
 
 ## What you need
 
@@ -82,8 +84,9 @@ were off, so you know how much to trust it.
 - bursts of mail from a web server, web shells, and containers that reach
   the host.
 
-Signed **threat packs** teach it about new attacks without a new release of
-the tool ([packs](docs/packs.md)).
+Signed **threat packs** cover only attacks seen in the wild that leave signs on
+a server, so the checker knows when a server was open to one and what traces to
+look for, without a new release of the tool ([packs](docs/packs.md)).
 
 **What's routine stays quiet.** A rule can mark a finding as normal on a
 server, with a reason, an owner and an expiry date. Profiles for web,

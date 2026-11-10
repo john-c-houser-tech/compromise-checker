@@ -1,9 +1,14 @@
 # Threat packs
 
-A threat pack teaches the tool about one specific threat, without a new
-release of the tool: which package versions are vulnerable on each Linux
-release, which settings help, and which signs of attack to look for. A pack
-is data, never code. It runs nothing on your servers and doesn't change what
+A threat pack teaches the tool about one attack seen in the wild, without a
+new release of the tool, so it can judge whether a server was broken into that
+way: which signs of the attack to look for, when the server was open to it
+(which package versions were vulnerable on each Linux release, from the
+vendors' own advisories), and which settings help. The tool answers one
+question, whether a server has been broken into; it isn't a vulnerability
+scanner or a patching tool, so a pack is made only for a threat that is being
+exploited and leaves signs on a server ([which threats get a
+pack](#which-threats-get-a-pack)). A pack is data, never code. It runs nothing on your servers and doesn't change what
 the collector reads; it is applied on your own machine, to evidence already
 collected. The policy is [§11](security-and-privacy-policy.md#11-threat-packs-and-trust).
 The format is documented in full at the top of `checker/packs/format.py`.
@@ -60,6 +65,20 @@ coverage gap in that host's analysis.
 - **Mitigations.** A setting not in place is a finding. Being in place is a
   coverage note, because what an application changes as it runs isn't seen.
 - **Detections.** See below. Findings a whitelist suppresses stay suppressed.
+
+## Which threats get a pack
+
+Since 2026-11-10, a threat gets a pack only if both hold:
+
+- **It is being exploited:** on CISA's list of known exploited
+  vulnerabilities, rated active by CISA, or credibly reported as attacked.
+- **It leaves signs on a server that the tool can see:** something in the logs,
+  processes, files, accounts or network connections the collector reads, so the
+  pack carries detections.
+
+A flaw that fails either, however serious, gets no pack. A pack for it could
+only say "update", which is the vendor's updates' job and a vulnerability
+scanner's, not this tool's.
 
 ## Writing a pack
 

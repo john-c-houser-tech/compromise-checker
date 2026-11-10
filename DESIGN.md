@@ -629,9 +629,16 @@ diff for the operator to review.
 
 ### 10.1 What a pack is
 
+**Which threats get one** (decided 2026-11-10): only a threat being exploited in
+the wild that leaves signs the tool can see on a server, so that its exposure
+window and detections sharpen the judgement of compromise (section 1). A flaw
+with no attacks, or with nothing on the server to see, gets no pack: the tool
+isn't a vulnerability scanner or a patching tool. See `docs/packs.md`, "Which
+threats get a pack".
+
 A dated, versioned, signed bundle that teaches the tool about one specific
 threat, shipped separately from the core so it can be published within a day
-of an advisory. A pack contains:
+of attacks being reported. A pack contains:
 
 - **Exposure rules** — affected packages and fixed versions per distribution
   and release, taken from vendor advisory data.

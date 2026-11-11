@@ -209,8 +209,9 @@ happened:
   Which systems, and how it went. A "worked fine" counts.
 - **[Report a false alarm](https://github.com/john-c-houser-tech/compromise-checker/issues/new?template=false-alarm.yml).**
   A finding about something that was normal.
-- **[Report a missed detection](https://github.com/john-c-houser-tech/compromise-checker/issues/new?template=missed-detection.yml).**
-  Something done to a server that raised no finding.
+- **[Report a missed detection](SECURITY.md#reporting-a-missed-detection), privately.**
+  Something done to a server that raised no finding. A public report would
+  tell an intruder how to hide, so these go the same way as vulnerabilities.
 
 Issues are public, so never paste a report, a bundle or log lines into one.
 The check's id, the system and the tool's version are enough.

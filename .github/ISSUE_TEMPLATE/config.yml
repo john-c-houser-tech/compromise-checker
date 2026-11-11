@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Report a missed detection
+    url: https://github.com/john-c-houser-tech/compromise-checker/security/advisories/new
+    about: Something done to a server that raised no finding. Privately, please, since a public report would tell an intruder how to hide.
   - name: Report a vulnerability in the tool
     url: https://github.com/john-c-houser-tech/compromise-checker/security/advisories/new
     about: Privately, please. Never in a public issue.

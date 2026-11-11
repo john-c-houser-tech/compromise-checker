@@ -6,6 +6,23 @@ template and message in `checker/web/` against the staged behaviours the proofs 
 Nothing here has been run: where a result depends on something not yet checked on a real server,
 it says so, and D.2 and D.3 settle those first.
 
+## What the first real runs changed (D.2 and D.3, 2026-11-10)
+
+`tests/integration/demo_story.py` is the story as it is played; where it differs from the tables
+below, it is right and this list says why.
+
+- **`mail-1` is a Rocky 9 server.** A fresh Ubuntu 24.04 image is itself open to the brotli threat,
+  so no Ubuntu server reads "No strong signs" on its first day.
+- **`db-1`'s routine work scores as a break-in would** (a new account with full sudo, then a login
+  as it). Nothing on the server tells the two apart, so the story keeps it: the admin's acceptance
+  is the point of the step.
+- **`shop-web-1` starts on the older PHP too,** so its break-in falls inside PHP2Shell's window.
+- **`mail-1`'s backup job is added on day 3,** so day 4's rule has a finding to explain.
+- **One sitting ends on day 5,** with a threat update stopped by hand and no check after it, so
+  the "threat updates have changed since this result" note is there to see. Putting it back
+  (day 6) is left to the person at the pages: the checker has no command for it, only the button.
+- **Every fleet server's SSH is open to the checker's server only,** from before its first check.
+
 ## The fleet
 
 | Server | Group | System | Its part |

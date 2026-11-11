@@ -91,3 +91,10 @@ One script, `tests/integration/demo.py`, with four commands:
 - **D.5 The dataset.** `save`, browsing it on the laptop, the screenshot script moved onto it, and
   `demo_fleet.py` retired. The README's pictures taken again.
 - **D.6 The advisor and viewers,** as decided in 1 and 2.
+
+## Found in the pages while the demo was up (to fix later)
+
+- **After setting up two-factor, the first account lands on the Sign-in security form**
+  (John, 2026-11-10). It reads as one more step of making the account, but the account is done
+  and the rest of the interface is open. Fix: send the person on to the Servers page with a line
+  saying the account is ready, or say so plainly at the top of the form.

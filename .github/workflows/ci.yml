@@ -47,7 +47,8 @@ jobs:
           fi
           printf '%s\n' "$files"
           prose='\.md$|^\.github/ISSUE_TEMPLATE/|^\.github/FUNDING\.yml$'
-          if [ -z "$files" ] || grep -qvE "$prose" <<< "$files"; then
+          tested='^docs/report-json\.md$'  # a test holds this page to what the code writes
+          if [ -z "$files" ] || grep -qvE "$prose" <<< "$files" || grep -qE "$tested" <<< "$files"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "Only Markdown, issue forms or FUNDING.yml changed, so the code jobs are skipped"

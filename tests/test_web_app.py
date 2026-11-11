@@ -3703,7 +3703,7 @@ def test_a_dead_watcher_cant_block_every_later_check(web, inventory, child, agen
     assert not runs._running
 
 
-def test_output_keeps_counting_right_after_many_short_lines():
+def test_output_keeps_counting_right_after_many_short_lines(_django):
     from checker.web.runs import OUTPUT_KEPT_BYTES, _Output
 
     output = _Output()
@@ -4095,7 +4095,7 @@ def test_how_a_check_ended_in_words(web, kind, status, words):
     assert len(words) <= 32  # the record's limit
 
 
-def test_the_real_commands_are_what_gets_run():
+def test_the_real_commands_are_what_gets_run(_django):
     from checker.web.runs import _command
 
     assert _command("check", ["web01"])[1:] == [
@@ -4197,7 +4197,7 @@ def test_the_flag_needs_unattended_and_works_only_from_a_page(tmp_path):
     assert run.returncode == 2 and "goes with --unattended" in run.stderr
 
 
-def test_nothing_in_the_servers_folder_runs_as_the_checker(tmp_path):
+def test_nothing_in_the_servers_folder_runs_as_the_checker(_django, tmp_path):
     """-P: a planted checker/ or yaml.py where the server was started gets no passwords."""
     from checker.web.runs import _command
 
@@ -4239,7 +4239,7 @@ def test_a_failed_notify_says_so_on_the_page(tmp_path):
     assert "notify command failed" in output, output
 
 
-def test_relative_paths_mean_what_they_mean_on_the_command_line(tmp_path):
+def test_relative_paths_mean_what_they_mean_on_the_command_line(_django, tmp_path):
     """A check runs where the server was started, so a relative home or key file still works."""
     from checker.web.runs import _command
 
@@ -4918,7 +4918,7 @@ def test_the_advisor_is_only_offered_when_it_is_on_and_asking_takes_the_password
     assert decide is not None
 
 
-def test_asking_the_advisor_runs_its_real_command():
+def test_asking_the_advisor_runs_its_real_command(_django):
     from checker.web.runs import _command
 
     assert _command("advice", ["web01"])[3:] == [
@@ -4937,7 +4937,7 @@ def test_only_a_check_keeps_its_pipe_open(web, inventory, child, agent):
     assert "saw" in client.get(location).content.decode()
 
 
-def test_from_a_page_the_advisor_says_only_how_it_went(tmp_path):
+def test_from_a_page_the_advisor_says_only_how_it_went(_django, tmp_path):
     env = {**os.environ, "CHECKER_HOME": str(tmp_path)}
     subprocess.run([sys.executable, "-m", "checker", "init"], env=env, check=True,
                    capture_output=True)  # fmt: skip
@@ -5072,7 +5072,7 @@ def test_a_rule_that_went_in_is_done_whatever_stops_taking_it_out(two_checks, mo
     assert the_record()[-1][2] == "done"
 
 
-def test_from_a_page_a_key_in_a_settings_error_stays_off_it(tmp_path):
+def test_from_a_page_a_key_in_a_settings_error_stays_off_it(_django, tmp_path):
     env = {**os.environ, "CHECKER_HOME": str(tmp_path)}
     subprocess.run([sys.executable, "-m", "checker", "init"], env=env, check=True,
                    capture_output=True)  # fmt: skip
@@ -8165,7 +8165,7 @@ def test_the_prepare_page_is_for_listed_servers_and_contacts_nothing(keyed, monk
     assert client.get("/manage/server/prepare", {"host": "web01"}).status_code == 200
 
 
-def test_a_server_s_words_can_t_steer_what_a_failed_check_advises():
+def test_a_server_s_words_can_t_steer_what_a_failed_check_advises(_django):
     from checker.web.first_setup import what_to_try
 
     hostile = (

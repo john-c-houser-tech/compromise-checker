@@ -643,8 +643,10 @@ async def test_sealing_does_not_block_other_hosts(server, checker_home, monkeypa
         slow.append((started, time.monotonic()))
         return real_seal(self)
 
-    async def ticker():
-        for _ in range(60):
+    async def ticker():  # until the slow second is over, however long the collection took to start
+        for _ in range(2000):
+            if slow:
+                break
             await asyncio.sleep(0.03)
             ticks.append(time.monotonic())
 

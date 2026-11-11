@@ -230,12 +230,15 @@ class Node:
             check=False,
         )
 
-    def run(self, command: str, timeout: int = 900) -> subprocess.CompletedProcess:
+    def run(
+        self, command: str, timeout: int = 900, input: str | None = None
+    ) -> subprocess.CompletedProcess:
+        """`input`: text for the command's standard input (none by default)."""
         return subprocess.run(  # noqa: S603
             ["ssh", *self.options, f"{self.user}@{self.address}", command],  # noqa: S607
             capture_output=True,
             text=True,
-            stdin=subprocess.DEVNULL,
+            **({"stdin": subprocess.DEVNULL} if input is None else {"input": input}),
             timeout=timeout,
             check=False,
         )

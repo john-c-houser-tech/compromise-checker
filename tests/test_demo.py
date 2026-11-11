@@ -6,6 +6,7 @@ import json
 import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -196,3 +197,36 @@ def test_status_says_cost_end_date_and_what_is_gone(tmp_path, capsys):
     assert "Up for 2.0 hours, about $0.03 so far." in out and "Ends 2026-11-11" in out
     assert "running" in out and "GONE" in out
     assert json.loads((tmp_path / "state.json").read_text())["run"] == "abc123"
+
+
+def test_the_behaviours_go_in_on_standard_input(monkeypatch, tmp_path):
+    """Not as `bash -c <script>`: the script's pgrep checks would find its own shell."""
+    calls = []
+
+    class Fake:
+        known = tmp_path / "known"
+        via = None
+
+        def run(self, command, timeout=900, input=None):
+            calls.append((command, input))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    class Used:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, command, timeout=900, input=None):
+            calls.append((command, input))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        demo, "keypair", lambda folder, name: (tmp_path / name, f"ssh-ed25519 {name}")
+    )
+    monkeypatch.setattr(demo, "Through", Used)
+    server = demo.Server("shop-web-1", "attacked", "ubuntu24.04", "web", 1, "l", "192.0.2.5")
+    demo.behave(Fake(), server, tmp_path)
+    command, script = calls[0]
+    assert command == "bash -s"
+    assert "dev/tcp/127.0.0.1/4444" in script

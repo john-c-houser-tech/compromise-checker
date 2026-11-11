@@ -332,7 +332,15 @@ def prepare_member(checker: install.Node, node: Through, server: Server, scanner
     setup = proof.SETUP.replace("{controller}", checker.address).replace(
         "{scanner_key}", scanner_key
     )
-    must(node, proof.strict(setup), "setting the server up")
+    done = node.run(proof.strict(setup))
+    if done.returncode != 0:
+        raise DemoError(
+            f"setting the server up failed on {node.address}:\n"
+            f"{(done.stdout + done.stderr)[-2000:]}"
+        )
+    for line in done.stderr.splitlines():
+        if line.startswith("proof setup:"):  # a part it goes on without, e.g. no container
+            print(f"{server.name}: {line}")
     must(node, proof.strict(detection.WEB_SETUP), "its web server", timeout=300)
     if server.role == "vulnerable":
         must(node, proof.strict(php.SCENARIOS["ubuntu-own"].install), "the older PHP")
@@ -374,7 +382,9 @@ def behave(node: Through, server: Server, folder: Path) -> None:
     script = behaviour(server.role, root_key, admin_key)
     if script is None:
         return
-    done = node.run(f"bash -c {shlex.quote(script)}", timeout=900)
+    # On standard input, not as `bash -c <script>`: the script's own shell would carry every
+    # pattern its pgrep checks look for, and they would find it instead of what they staged.
+    done = node.run("bash -s", timeout=900, input=script)
     for line in done.stderr.splitlines():
         if line.startswith("ATTACK FAILED"):
             print(f"{server.name}: {line}")

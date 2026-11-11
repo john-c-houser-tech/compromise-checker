@@ -28,7 +28,7 @@ ways:
 
 One script, `tests/integration/demo.py`, with four commands:
 
-    # Built so far (D.3): up, status, down. --days is D.4, save is D.5, --build when it is needed.
+    # Built so far (D.4): up [--days N], status, down. save is D.5, --build when it is needed.
     demo.py up [--days N] [--build]   # make the checker's server and the fleet, play the story
     demo.py status                    # what is up, since when, what it has cost, when it ends
     demo.py save DIR                  # copy the checker's data down, as the demo dataset
@@ -110,3 +110,30 @@ One script, `tests/integration/demo.py`, with four commands:
 - **Docker needs a second try on every fresh Ubuntu server** (all three runs). The proofs' setup
   hides why the first fails; the demo's retry works and says nothing either. Harmless here, but
   the read-only proof's own container step may be quietly skipped the same way.
+
+## Keep-alive as built (D.4, 2026-11-10)
+
+`up --days N` (1 to 14). Day 0 is played from the laptop, as in one sitting. Each later day is one
+timer on the **checker's** server, 45 minutes before the checker's own daily check, which plays
+that day's steps as the laptop would: a root login to the fleet server from the checker's address
+and the step's script, or the admin's own commands. A day the story doesn't check (day 5, whose
+point is the note the next check clears) runs an hour after the daily check instead. Story day
+*d* is real day *d*; with fewer days than the story, `up` says which steps it left out.
+
+- **Not timers on the fleet servers, which the plan above proposed.** The checker reports a new
+  timer as a finding, so each server would have shown one that is no part of the story. Driven from
+  the checker's server, a fleet server's data is the same as in one sitting.
+- **What that costs:** for the length of the stay the checker's server holds, readable by root
+  only, a key that root on every fleet server accepts (from the checker's address only), and the
+  keys of the two accounts the story logs in as. Each account's key is deleted when used; the
+  root key when the last day has run. The fleet is throwaway, weakened on purpose, and closed to
+  everything but the checker's server, which already holds a key with sudo on each.
+- **The root key is put on each fleet server before its first check,** so it is part of what the
+  server starts with and never shows as a change.
+- `status` asks the checker's server how each day's steps went.
+- The admin's rule for `mail-1` lasts through day 5 (in one sitting: the day after `up`).
+- **The end date:** `up` says it and the cost first; `status` says OVERDUE; any proof's sweep and
+  the next `up` delete demo servers past their date. The session that starts a stay puts a
+  reminder in John's calendar for that day.
+- **The privacy proof** runs at the end of day 0. After John signs in from the laptop the web
+  interface holds his address by design; D.5's `save` leaves that out.

@@ -5,6 +5,7 @@ import importlib.util
 import json
 import re
 import signal
+import subprocess
 import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -445,7 +446,7 @@ def test_a_state_that_cant_be_read_doesnt_stop_down_or_status(tmp_path, capsys):
 def test_a_state_with_a_field_from_another_version_still_reads(tmp_path):
     demo.save_state(tmp_path, state(1, 2))
     data = json.loads((tmp_path / "state.json").read_text())
-    data["days"] = 7
+    data["weeks"] = 7
     data["servers"][0]["timer"] = "daily"
     (tmp_path / "state.json").write_text(json.dumps(data))
     assert demo.load_state(tmp_path) == state(1, 2)
@@ -614,6 +615,7 @@ class Checker(Node):
         self.answering = answering
         self.fails: dict[str, int] = {}  # a part of a command, and how it ends
         self.retired, self.still_open = "Retired: dotnet-2026-10 (kept).\n", False
+        self.results = ""
 
     def run(self, command, timeout=900, input=None):
         self.calls.append((command, input))
@@ -624,6 +626,12 @@ class Checker(Node):
             out = "".join(f"{name:20} complete     Low (5.0%)\n" for name in self.answering())
         if "date -d" in command:
             out = "14:00\n"
+        if "date +%Y" in command:
+            out = "2026-11-10T15:20\n"
+        if "ssh-keygen" in command:
+            out = "ssh-ed25519 STORY ops@checker\n"
+        if "/results" in command:
+            out = self.results
         if " packs retire " in command:
             out = self.retired
         if "/dev/tcp/" in command:  # a server that has shut the checker out refuses it
@@ -640,9 +648,12 @@ def world_of(tmp_path, monkeypatch, names=None):
             logins.append((address, user, key.name))
 
     monkeypatch.setattr(demo, "Through", Login)
-    monkeypatch.setattr(
-        demo, "keypair", lambda folder, name: (folder / name, f"ssh-ed25519 {name}")
-    )
+
+    def keypair(folder, name):
+        (folder / name).write_text(f"PRIVATE {name}\n")
+        return folder / name, f"ssh-ed25519 {name}"
+
+    monkeypatch.setattr(demo, "keypair", keypair)
     monkeypatch.setattr(demo.time, "sleep", lambda seconds: None)
     names = names or [m.name for m in story.FLEET]
     servers = [
@@ -815,3 +826,167 @@ def test_status_prints_what_is_left_to_the_person(tmp_path, capsys):
     )
     out = capsys.readouterr().out
     assert "Yours to do while it is up" in out and "put the stopped threat update back" in out
+
+
+# --- kept up for days ----------------------------------------------------------------------
+
+
+def test_each_days_steps_run_before_its_check_or_after_it_for_a_day_not_checked():
+    now = datetime(2026, 11, 10, 15, 20)
+    times = demo.step_times(now, "14:00", [1, 3, 5])
+    assert times[1] == datetime(2026, 11, 11, 13, 15)  # day 1's check is tomorrow's, at 14:00
+    assert times[3] == datetime(2026, 11, 13, 13, 15)
+    assert times[5] == datetime(2026, 11, 15, 15, 0)  # after day 5's: its note is the point
+    # A check later today is day 1's, unless its steps would already be late.
+    assert demo.step_times(now, "20:00", [1])[1] == datetime(2026, 11, 10, 19, 15)
+    assert demo.step_times(now, "16:00", [1])[1] == datetime(2026, 11, 11, 15, 15)
+
+
+def staged(tmp_path, monkeypatch, days):
+    world, _ = world_of(tmp_path, monkeypatch)
+    checker = Checker(world.checked)
+    world.at, world.expires_on = "14:00", date(2026, 11, 15)
+    plan, left_out = demo.stage(checker, world, days)
+    put = {c.rsplit("/", 1)[-1]: text for c, text in checker.calls if "cat > /" in c}
+    return world, checker, plan, left_out, put
+
+
+def test_the_later_days_are_put_on_the_checkers_server_a_timer_each(tmp_path, monkeypatch):
+    world, checker, plan, left_out, put = staged(tmp_path, monkeypatch, 5)
+    later = [s for s in story.STORY if s.day >= 1]
+    assert [(p["day"], p["where"], p["says"]) for p in plan] == [
+        (s.day, s.where, s.says) for s in later
+    ]
+    assert left_out == [] and plan[0] == {
+        "id": "d1-1",
+        "day": 1,
+        "where": "db-1",
+        "says": later[0].says,
+        "when": "2026-11-11T13:15",
+    }
+    # Each day's runner is a script bash takes, run by a timer for its day that survives a restart.
+    for day in (1, 2, 3, 4, 5):
+        runner = put[f"day{day}.sh"]
+        (tmp_path / "r.sh").write_text(runner)
+        assert subprocess.run(["bash", "-n", tmp_path / "r.sh"], check=False).returncode == 0  # noqa: S603, S607
+        assert (
+            f"ExecStart=/bin/bash /root/cc-story/day{day}.sh" in put[f"cc-story-day{day}.service"]
+        )
+    timer = next(text for c, text in checker.calls if "cc-story-day3.timer &&" in c)
+    assert "OnCalendar=2026-11-13 13:15:00" in timer and "Persistent=true" in timer
+    assert any("enable -q --now cc-story-day3.timer" in c for c, _ in checker.calls)
+    # A step on a server: its script as `play` would send it, a root login from the checker's.
+    day3 = put["day3.sh"]
+    assert "on_server d3-1 192.0.2.10\nlogin d3-1 svc-backup 192.0.2.10\n" in day3
+    assert "ssh-ed25519 planted-root" in put["d3-1.sh"]
+    assert (
+        "ssh-ed25519 planted-svc-backup" in put["d3-1.sh"]
+        and "{" + "admin_key}" not in put["d3-1.sh"]
+    )
+    assert put["account-svc-backup"] == "PRIVATE planted-svc-backup\n"
+    assert "ssh-ed25519 planted-deploy2" in put["d1-1.sh"]
+    assert put["d2-1.sh"].startswith("set -eu\n")  # the PHP step, strict as it is from here
+    # app-1's shut-out is confirmed, as it is from here
+    assert "on_server d3-4 192.0.2.14\nshut d3-4 192.0.2.14\n" in day3
+    assert all("umask 077" in c for c, _ in checker.calls if "cat > /root/cc-story/" in c)
+    # The admin's steps are the commands `by_admin` runs.
+    assert demo.as_checker("baseline", "accept", "db-1", "--reason")[:-1] in put["day2.sh"]
+    day4 = put["day4.sh"]
+    assert demo.as_checker("hosts", "remove", "staging-1") in day4
+    assert "whitelist/hosts/mail-1.yaml <<'RULE'" in day4 and "expires: 2026-11-15\nRULE\n" in day4
+    assert demo.as_checker("whitelist", "check") in day4
+    assert "packs retire dotnet-2026-10" in put["day5.sh"] and "grep -q Retired:" in put["day5.sh"]
+    # The keys go when the last day has used them, and not before.
+    assert "rm -f key key.pub account-*" in put["day5.sh"]
+    assert not any("rm -f key" in put[f"day{day}.sh"] for day in (1, 2, 3, 4))
+
+
+def test_a_shorter_stay_plays_the_days_it_has_and_says_what_it_left_out(tmp_path, monkeypatch):
+    _, _, plan, left_out, put = staged(tmp_path, monkeypatch, 2)
+    assert {p["day"] for p in plan} == {1, 2} and "rm -f key key.pub" in put["day2.sh"]
+    assert "day3.sh" not in put and "account-svc-backup" not in put
+    assert len(left_out) == len([s for s in story.STORY if s.day > 2])
+    assert left_out[0] == "day 3: shop-web-1: the break-in"
+    world, _ = world_of(tmp_path, monkeypatch)
+    with pytest.raises(demo.DemoError, match="daily check wasn't set"):
+        demo.stage(Checker(world.checked), world, 2)
+
+
+def test_the_storys_key_is_on_each_server_before_its_first_check(tmp_path, monkeypatch):
+    world, _ = world_of(tmp_path, monkeypatch)
+    checker = Checker(world.checked)
+    demo.story_key(checker, world.nodes)
+    made, *reached = [c for c, _ in checker.calls]
+    assert "umask 077" in made and "ssh-keygen" in made and "/root/cc-story" in made
+    for node in world.nodes.values():
+        (line,) = [c for c, _ in node.calls]
+        assert 'from="192.0.2.1" ssh-ed25519 STORY ops@checker' in line  # the checker's only
+        assert line.endswith(">> /root/.ssh/authorized_keys")
+    assert len(reached) == len(world.nodes) and all("accept-new" in c for c in reached)
+
+
+def test_status_says_how_each_of_the_days_went(tmp_path, monkeypatch, capsys):
+    _, checker, plan, _, _ = staged(tmp_path, monkeypatch, 3)
+    checker.results = (
+        "2026-11-11T13:15:40Z d1-1 ended 0 \n"
+        "2026-11-11T13:15:41Z d1-1-login ended 0\n"
+        "2026-11-13T13:16:02Z d3-1 ended 0 ATTACK FAILED: container;\n"
+        "2026-11-13T13:16:03Z d3-1-login ended 255\n"
+        "2026-11-13T13:16:30Z d3-4 ended 0 \n"
+        "2026-11-13T13:16:55Z d3-4-shut ended 1 it still lets the checker's server in\n"
+    )
+    lines = demo.story_so_far(checker, plan)
+    assert lines[0].endswith("and a package: done") and "day 1, 2026-11-11 13:15" in lines[0]
+    assert lines[1].endswith("isn't restarted: not yet")
+    assert lines[3].endswith(
+        "the break-in: d3-1 ended 0 ATTACK FAILED: container;; d3-1-login ended 255"
+    )
+    assert lines[6].endswith("d3-4-shut ended 1 it still lets the checker's server in")
+    # `status` asks the checker's server, with the demo's own key
+    asked = []
+
+    class Asked(Checker):
+        def __init__(self, address, key, known):
+            super().__init__(lambda: [])
+            self.results = checker.results
+            asked.append((address, key.name, self))
+
+    monkeypatch.setattr(demo.install, "Node", Asked)
+    kept = state(0, 1)
+    kept.days, kept.plan = 3, plan
+    demo.save_state(tmp_path, kept)
+    api = FakeApi([node(s.label, [demo.TAG], s.id) for s in kept.servers])
+    demo.status(api, tmp_path, datetime(2026, 11, 10, 14, tzinfo=UTC))
+    out = capsys.readouterr().out
+    assert "Kept up 3 days." in out and "and a package: done" in out
+    assert asked[0][:2] == ("192.0.2.0", "key") and asked[0][2].closed
+    assert demo.load_state(tmp_path).plan == plan  # and the plan reads back
+
+
+def test_up_takes_one_to_fourteen_days(tmp_path):
+    for days in (-1, 15):
+        with pytest.raises(demo.DemoError, match="--days is 1 to 14"):
+            demo.up(FakeApi(), tmp_path / "demo", "us-sea", TODAY, days)
+    assert not (tmp_path / "demo").exists()
+
+
+def test_any_proofs_sweep_takes_a_demo_server_past_its_date_and_no_other():
+    import readonly_proof as proof
+
+    now = datetime(2026, 11, 12, 9, tzinfo=UTC)
+    tag = demo.until_tag
+    nodes = [
+        node("cc-demo-a-s1", [demo.TAG, tag(date(2026, 11, 11))], 1),  # yesterday: past
+        node("cc-demo-a-s2", [demo.TAG, tag(date(2026, 11, 12))], 2),  # today is its last day
+        node("cc-demo-a-s3", [demo.TAG], 3),  # no date it can read: `demo.py`'s to deal with
+        node("cc-demo-a-s4", [demo.TAG, "cc-demo-until-soon"], 4),
+        node("cc-test-a-s5", [proof.TAG, tag(date(2026, 11, 1))], 5),  # not a demo's
+        node("web-1", [tag(date(2026, 11, 1))], 6),  # nor this
+        node("web-2", [demo.TAG, tag(date(2026, 11, 1))], 7),  # the tag without the label
+    ]
+    assert [n["id"] for n in proof.demo_past_its_date(nodes, now)] == [1]
+    assert (demo.TAG, demo.LABEL_PREFIX, demo.UNTIL) == (
+        proof.DEMO_TAG,
+        proof.DEMO_LABEL,
+        proof.DEMO_UNTIL,
+    )

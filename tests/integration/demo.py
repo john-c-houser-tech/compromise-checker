@@ -8,14 +8,18 @@ anything the checker stores is the laptop's: what it holds can be shown as it is
     LINODE_TOKEN=… python tests/integration/demo.py status   # what is up, its cost, when it ends
     LINODE_TOKEN=… python tests/integration/demo.py down     # delete every server
 
-`up` plays the story in demo_story.py in one sitting (D.3): each of its days is a few minutes, and
-ends with a check of every server, run from the checker's own server. Keeping it up for real days
-(D.4) and saving its data (D.5) come after.
+`up` plays the story in demo_story.py in one sitting: each of its days is a few minutes, and
+ends with a check of every server, run from the checker's own server.
+
+`up --days N` keeps it up N days (1 to 14) and plays the story on its real days. Day 0 is played
+from here; each later day is a timer on the checker's server, which plays that day's steps the way
+this script does, a little before the checker's own daily check. So this machine can be off, and
+the history has real dates. `status` says how each day went. Saving the data (D.5) comes after.
 
 Its servers carry their own tag, so the proofs' sweep of servers older than two hours leaves them
-alone. The end date in its tags is acted on only when no state is kept here: then `up` deletes any
-demo server past it. While a state is kept, `status` says when it is overdue (D.4 brings the sweep
-that needs no one to look).
+alone. Each also carries the last day it may be up: `status` says when that has passed, the next
+`up` deletes any demo server past it that no state here names, and so does any proof's sweep.
+Nothing else deletes a demo for its owner.
 
 Costs Linode time (seven Nanodes, about 5 cents an hour): run only with John's approval. What `up`
 makes stays up until `down`.
@@ -45,9 +49,9 @@ import detection_proof as detection  # noqa: E402
 import install_proof as install  # noqa: E402
 import readonly_proof as proof  # noqa: E402
 
-TAG = "compromise-checker-demo"
-LABEL_PREFIX = "cc-demo-"
-UNTIL = "cc-demo-until-"  # a tag: the last day a server may be up, as YYYYMMDD
+TAG = proof.DEMO_TAG
+LABEL_PREFIX = proof.DEMO_LABEL
+UNTIL = proof.DEMO_UNTIL  # a tag: the last day a server may be up, as YYYYMMDD
 STATE = Path.home() / ".local" / "share" / "compromise-checker-demo"
 # The published release, and its installer's SHA-256 as the install page gives it
 # (https://nouriloop.com/work/compromise-checker/install/). Both change with a release.
@@ -93,6 +97,8 @@ class State:
     until: str  # YYYY-MM-DD: the last day it may be up
     servers: list[Server]
     web_name: str = ""
+    days: int = 0  # kept up this many days, the story's later days played by timers (0: no)
+    plan: list[dict] = field(default_factory=list)  # those days' steps, and when each runs
 
     def checker(self) -> Server:
         return next(s for s in self.servers if s.role == "checker")
@@ -191,6 +197,9 @@ def past_their_date(nodes: list[dict], today: date) -> list[dict]:
 
 def cost(servers: int, hours: float) -> float:
     return servers * hours * NANODE_AN_HOUR
+
+
+MOST_DAYS = 14
 
 
 # --- commands, as text ---------------------------------------------------------------------
@@ -426,13 +435,19 @@ def check_all(checker: install.Node, which: str, names: list[str]) -> None:
         )
 
 
+def filled(step: story.Step, keys: dict[str, str]) -> str:
+    """A step's script as it is run: strict where the story says, its keys and addresses in."""
+    script = ("set -eu\n" if step.strict else "") + step.script
+    for name, value in keys.items():
+        script = script.replace("{" + name + "}", value)
+    return script
+
+
 def on_server(node: Through, step: story.Step, keys: dict[str, str], admin_file: Path) -> list[str]:
     """One of the story's steps on a fleet server: its script as root, then a login as the
     account it made, if the story has one. Returns what the script said had failed: the story
     goes on, and `up` says so at the end."""
-    script = ("set -eu\n" if step.strict else "") + step.script
-    for name, value in keys.items():
-        script = script.replace("{" + name + "}", value)
+    script = filled(step, keys)
     # On standard input, not as `bash -c <script>`: the script's own shell would carry every
     # pattern its pgrep checks look for, and they would find it instead of what they staged.
     done = node.run("bash --norc --noprofile -s", timeout=1800, input=script)
@@ -478,6 +493,7 @@ def by_admin(checker: install.Node, step: story.Step, world: World) -> None:
         at = must(checker, "date -d '1 hour ago' +%H:00", "reading its clock").strip()
         done = checker.run(as_checker("schedule", "install", "--at", at))
         said(done)
+        world.at = at if done.returncode == 0 else ""
         if done.returncode != 0:  # the pages still work without it: said at the end
             world.failed.append(
                 f"the daily check wasn't set (`schedule install` ended {done.returncode})"
@@ -491,7 +507,7 @@ def by_admin(checker: install.Node, step: story.Step, world: World) -> None:
         world.unlisted.add(host)
     elif verb == "rule":
         (host,) = words
-        rule = story.BACKUP_RULE.format(expires=(world.today + timedelta(days=1)).isoformat())
+        rule = story.BACKUP_RULE.format(expires=world.expires.isoformat())
         must(checker, whitelist_command(host, 'cat >> "$0"'), f"{host}'s rule", input=rule)
         print("    " + must(checker, as_checker("whitelist", "check"), "the rules").strip())
     elif verb == "retire":
@@ -516,6 +532,13 @@ class World:
     found: list[str] = field(default_factory=list)  # the proof's findings on a server since lost
     failed: list[str] = field(default_factory=list)  # steps that didn't do what the story says
     collected: int = 0  # how many collections the story's checks made
+    at: str = ""  # the daily check's time, once it is set (HH:MM, the checker's server's clock)
+    expires_on: date | None = None  # kept up for days: the admin's rule lasts to a day of the story
+
+    @property
+    def expires(self) -> date:
+        """The last day of the rule the admin writes: in one sitting, the day after it."""
+        return self.expires_on or self.today + timedelta(days=1)
 
     def checked(self) -> list[str]:
         return [name for name in self.nodes if name not in self.lost | self.unlisted]
@@ -565,6 +588,217 @@ def play(
             if day in checked:
                 check_all(checker, f"day {day}'s", world.checked())
                 world.collected += len(world.checked())
+
+
+# --- kept up for days: the later days, played from the checker's server ---------------------
+
+# The story's later days happen with this machine off. They are played from the checker's server,
+# by a timer a day, the way `play` does it from here: a root login to the fleet server from the
+# checker's address, the step's script on standard input. (A timer on the fleet server itself
+# would be a new timer there: a finding of its own, in a story that isn't about it.) So the
+# checker's server holds, for root alone, a key that root on every fleet server accepts from that
+# address only, and the keys of the accounts the story logs in as. Each is deleted when it has been
+# used for the last time.
+STORY_HOME = "/root/cc-story"
+_SSH = (
+    "-o UserKnownHostsFile=known_hosts -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=20"
+)
+RUNNER = r"""#!/bin/bash
+# The demo story's day {day} (tests/integration/demo.py), run once by cc-story-day{day}.timer.
+cd {home} || exit 1
+note() { echo "$(date -u +%FT%TZ) $*" >> results; }
+on_server() {  # a step's id, the server's address: its script, as root
+    ssh -i key {ssh} "root@$2" 'bash --norc --noprofile -s' < "$1.sh" > "$1.out" 2> "$1.err"
+    code=$?
+    note "$1 ended $code $(grep -E '^(ATTACK|STEP) FAILED' "$1.err" | tr '\n' ';')"
+    rm -f "$1.sh"
+}
+login() {  # a step's id, the account, the address: the new account is used, once
+    ssh -i "account-$2" {ssh} "$2@$3" true > /dev/null 2>> "$1.err"
+    note "$1-login ended $?"
+    rm -f "account-$2"
+}
+shut() {  # a step's id, the address: the server has stopped letting this one in
+    sleep 20
+    if timeout 5 bash -c "</dev/tcp/$2/22" 2> /dev/null; then
+        note "$1-shut ended 1 it still lets the checker's server in"
+    else
+        note "$1-shut ended 0"
+    fi
+}
+"""
+_UNIT = """\
+[Unit]
+Description=The demo story, day {day}
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash {home}/day{day}.sh
+"""
+_TIMER = """\
+[Unit]
+Description=The demo story, day {day}
+
+[Timer]
+OnCalendar={when}:00
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+BEFORE_THE_CHECK = timedelta(minutes=45)  # a day's steps, ahead of that day's check
+AFTER_THE_CHECK = timedelta(minutes=60)  # a day the story doesn't check: after the daily one
+
+
+def story_key(checker: install.Node, nodes: dict[str, Through]) -> None:
+    """The key the later days are played with. Made on the checker's server and put on each
+    fleet server before its first check, so it is part of what the server starts with."""
+    public = must(
+        checker,
+        f"umask 077 && mkdir -p {STORY_HOME} && cd {STORY_HOME}"
+        " && ssh-keygen -q -t ed25519 -N '' -C ops@checker -f key && cat key.pub",
+        "making the story's key",
+    ).strip()
+    line = shlex.quote(f'from="{checker.address}" {public}')
+    for name, node in nodes.items():
+        must(node, f"echo {line} >> /root/.ssh/authorized_keys", f"{name}: the story's key")
+        must(
+            checker,
+            f"cd {STORY_HOME} && ssh -i key {_SSH} -o StrictHostKeyChecking=accept-new"
+            f" root@{node.address} true",
+            f"reaching {name} with the story's key",
+        )
+
+
+def step_times(now: datetime, at: str, days: list[int], checked=story.CHECKED_DAYS) -> dict:
+    """When each later day's steps run, on the checker's server's clock: before that day's
+    check, or after it for a day the story doesn't check (its point is what the pages say until
+    the next one). Day 1's check is the first the daily timer makes."""
+    hour, minute = (int(part) for part in at.split(":"))
+    first = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if first <= now + BEFORE_THE_CHECK:
+        first += timedelta(days=1)
+    return {
+        day: first
+        + timedelta(days=day - 1)
+        + (AFTER_THE_CHECK if day not in checked else -BEFORE_THE_CHECK)
+        for day in days
+    }
+
+
+def admin_lines(step: story.Step, expires: date) -> str:
+    """One of the admin's steps as shell lines for the checker's server: what `by_admin` runs."""
+    verb, *words = step.admin
+    if verb == "accept":
+        host, reason = words
+        return as_checker("baseline", "accept", host, "--reason", reason) + " || true"
+    if verb == "remove":
+        return as_checker("hosts", "remove", words[0])
+    if verb == "rule":
+        rule = story.BACKUP_RULE.format(expires=expires.isoformat())
+        return (
+            whitelist_command(words[0], 'cat >> "$0"')
+            + f" <<'RULE'\n{rule}RULE\n"
+            + as_checker("whitelist", "check")
+        )
+    if verb == "retire":
+        pack, reason = words
+        return as_checker("packs", "retire", pack, "--reason", reason) + " | grep -q Retired:"
+    raise DemoError(f"the story asks for {verb!r}, which can't be left to a timer")
+
+
+def stage(
+    checker: install.Node, world: World, days: int, steps=story.STORY
+) -> tuple[list[dict], list[str]]:
+    """Put the story's days 1 to `days` on the checker's server, a timer each. Returns the plan
+    (each step, and when it runs) and the steps left out for being after the last day."""
+    if not world.at:
+        raise DemoError("the daily check wasn't set, so there is nothing for the days to wait for")
+    later = [s for s in steps if s.day >= 1]
+    left_out = [f"day {s.day}: {s.where}: {s.says}" for s in later if s.day > days]
+    later = [s for s in later if s.day <= days]
+    now = datetime.fromisoformat(must(checker, "date +%Y-%m-%dT%H:%M", "its clock").strip())
+    times = step_times(now, world.at, sorted({s.day for s in later}))
+    plan = []
+
+    def put(name: str, text: str) -> None:
+        must(checker, f"umask 077 && cat > {STORY_HOME}/{name}", f"staging {name}", input=text)
+
+    with tempfile.TemporaryDirectory(prefix="cc-demo-planted-") as made:
+        _, root_key = keypair(Path(made), "planted-root")
+        keys = {"root_key": root_key, "checker": checker.address}
+        for day, when in times.items():
+            runner = RUNNER.replace("{day}", str(day)).replace("{home}", STORY_HOME)
+            runner = runner.replace("{ssh}", _SSH)
+            for number, step in enumerate((s for s in later if s.day == day), 1):
+                name = f"d{day}-{number}"
+                plan.append(
+                    {"id": name, "day": day, "where": step.where, "says": step.says}
+                    | {"when": when.isoformat(timespec="minutes")}
+                )
+                runner += f"\n# {step.where}: {step.says}\n"
+                if step.admin:
+                    lines = admin_lines(step, world.expires)
+                    runner += (
+                        f"(\nset -e\n{lines}\n) > {name}.out 2> {name}.err\n"
+                        f'note "{name} ended $?"\n'
+                    )
+                    continue
+                address = world.nodes[step.where].address
+                if step.login:
+                    private, public = keypair(Path(made), f"planted-{step.login}")
+                    put(f"account-{step.login}", private.read_text(encoding="utf-8"))
+                    keys["admin_key"] = public
+                put(f"{name}.sh", filled(step, keys))
+                runner += f"on_server {name} {address}\n"
+                if step.login:
+                    runner += f"login {name} {step.login} {address}\n"
+                if step.lost:
+                    runner += f"shut {name} {address}\n"
+            if day == max(times):  # nothing is left to do with them: no way in is kept
+                runner += "\nrm -f key key.pub account-*\n"
+            put(f"day{day}.sh", runner)
+            unit = f"/etc/systemd/system/cc-story-day{day}"
+            must(
+                checker,
+                f"cat > {unit}.service",
+                "its unit",
+                input=_UNIT.format(day=day, home=STORY_HOME),
+            )
+            must(
+                checker,
+                f"cat > {unit}.timer && systemctl daemon-reload"
+                f" && systemctl enable -q --now cc-story-day{day}.timer",
+                f"day {day}'s timer",
+                input=_TIMER.format(day=day, when=when.strftime("%Y-%m-%d %H:%M")),
+            )
+    return plan, left_out
+
+
+def story_so_far(checker: install.Node, plan: list[dict]) -> list[str]:
+    """Each of the later days' steps, and how it went, from what its day's timer wrote down."""
+    done = checker.run(f"cat {STORY_HOME}/results 2>/dev/null")
+    if done.returncode == 255:
+        return [f"  The checker's server couldn't be asked ({done.stderr.strip()[-200:]})"]
+    ended: dict[str, list[str]] = {}
+    for line in done.stdout.splitlines():
+        words = line.split(" ", 4)
+        if len(words) < 4:
+            continue
+        name, code, more = words[1], words[3], " ".join(words[4:]).strip()
+        ended.setdefault(name.split("-login")[0].split("-shut")[0], []).append(
+            "" if code == "0" and not more else f"{name} ended {code} {more}".strip()
+        )
+    lines = []
+    for step in plan:
+        went = ended.get(step["id"])
+        how = "not yet" if went is None else ("; ".join(w for w in went if w) or "done")
+        lines.append(
+            f"  day {step['day']}, {step['when'].replace('T', ' ')}  {step['where']}:"
+            f" {step['says']}: {how}"
+        )
+    return lines
 
 
 # The address goes in on standard input and is kept in a file for root alone while grep runs: on
@@ -757,7 +991,11 @@ def nothing_stops_it(folder: Path):
             signal.signal(number, handler)
 
 
-def up(api, folder: Path, region: str, today: date) -> int:
+def up(api, folder: Path, region: str, today: date, days: int = 0) -> int:
+    """`days`: keep it up that many days, the story's later days on their own days (0: the whole
+    story now, minutes apart)."""
+    if not 0 <= days <= MOST_DAYS:
+        raise DemoError(f"--days is 1 to {MOST_DAYS}")
     try:
         if load_state(folder) is not None:
             raise DemoError(f"a demo is up already ({folder}/state.json): `down` first")
@@ -766,8 +1004,14 @@ def up(api, folder: Path, region: str, today: date) -> int:
     claim(folder)
     count = len(FLEET) + 1
     print(f"{count} servers, about {cost(count, 1) * 100:.1f} cents an hour, until `demo.py down`.")
+    until = today + timedelta(days=days or 1)
+    if days:
+        print(
+            f"Kept up {days} days: about ${cost(count, 24 * days):.2f}. Nothing deletes it for"
+            f" you: run `demo.py down` on {until.isoformat()}."
+        )
     run = proof.RUN
-    state = State(run, datetime.now(UTC).isoformat(), (today + timedelta(days=1)).isoformat(), [])
+    state = State(run, datetime.now(UTC).isoformat(), until.isoformat(), [], days=days)
     save_state(folder, state)
     known = folder / "known_hosts"
     nodes: dict[str, Through] = {}
@@ -797,7 +1041,20 @@ def up(api, folder: Path, region: str, today: date) -> int:
         name, address = story.UNREACHABLE
         must(checker, hosts_add(Member(name, "", ""), address), f"adding {name}")
         world = World(nodes, today)
-        play(checker, world)
+        if days:
+            # The rule lasts through day 5 (the plan's day 6 shows it run out).
+            world.expires_on = today + timedelta(days=5)
+            story_key(checker, nodes)  # before the first check: part of what a server starts with
+            play(checker, world, [s for s in story.STORY if s.day == 0], (0,))
+            state.plan, left_out = stage(checker, world, days)
+            save_state(folder, state)
+            print("\nThe days to come, by the checker's server's clock:")
+            for line in story_so_far(checker, state.plan):
+                print(line)
+            for line in left_out:
+                print(f"  left out, after day {days}: {line}")
+        else:
+            play(checker, world)
         print(must(checker, as_checker("fleet"), "the fleet's results"))
         answering = {name: node for name, node in nodes.items() if name not in world.lost}
         leaks = never_seen_from_here(checker, answering, tuple(world.found), world.collected)
@@ -816,6 +1073,8 @@ def up(api, folder: Path, region: str, today: date) -> int:
         print(f"\nThe checker: https://{state.web_name}/ (a test certificate: the browser warns)")
         print(f"Make the first account, within the hour: {link}")
         print(f"Up until `demo.py down`; its tags end on {state.until}.")
+        if days:
+            print(f"`demo.py status` says how the days went. Run `demo.py down` on {state.until}.")
         hands_on()
         return 1 if leaks or world.failed else 0
     except BaseException:
@@ -867,6 +1126,14 @@ def status(api, folder: Path, now: datetime) -> int:
     for server in state.servers:
         node = alive.get(server.id)
         print(f"  {server.name:<12} {server.address:<16} {node['status'] if node else 'GONE'}")
+    if state.plan:
+        print(f"Kept up {state.days} days. The story's days, by the checker's server's clock:")
+        checker = install.Node(state.checker().address, folder / "key", folder / "known_hosts")
+        try:
+            for line in story_so_far(checker, state.plan):
+                print(line)
+        finally:
+            checker.close()
     wants_down = False
     if date.fromisoformat(state.until) < now.date():
         print(f"OVERDUE: its end date was {state.until}. Run `down`.")
@@ -946,6 +1213,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["up", "status", "down"])
     parser.add_argument("--state", type=Path, default=STATE, help="where what is up is kept")
     parser.add_argument("--region", default="us-sea")
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=0,
+        help=f"up: keep it up this many days (1 to {MOST_DAYS}), the story a day at a time",
+    )
     args = parser.parse_args(argv)
     api = Api(proof.linode_token())
 
@@ -956,7 +1229,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "up":
             signal.signal(signal.SIGTERM, stop)
             signal.signal(signal.SIGHUP, stop)
-            return up(api, args.state, args.region, datetime.now(UTC).date())
+            return up(api, args.state, args.region, datetime.now(UTC).date(), args.days)
         if args.command == "status":
             return status(api, args.state, datetime.now(UTC))
         return down(api, args.state)

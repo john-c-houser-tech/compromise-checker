@@ -24,6 +24,7 @@ import plistlib
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -913,18 +914,34 @@ class InstallFailed(Exception):
 TIMER_COMMAND_SECONDS = 60  # a hung systemctl mustn't hold a page, or the command, for ever
 
 
+def _own_folder(path: str | Path | None) -> bool:
+    if not path:
+        return False
+    try:
+        found = os.stat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(found.st_mode) and found.st_uid == os.getuid()
+
+
 def session_environment(
     env: Mapping[str, str] | None = None, runtime: Path | None = None
 ) -> dict[str, str]:
     """The environment for `systemctl --user`, which finds the account's own systemd through
-    XDG_RUNTIME_DIR. A login sets it; `runuser` and `sudo -u` (how docs/install.md runs this tool
-    as its account) don't, and systemctl then says only "Failed to connect to bus". Where it is
-    missing and the account's systemd is running, its folder is the standard one."""
+    XDG_RUNTIME_DIR. A login sets it. Run as its account by `runuser` or `sudo -u` (how
+    docs/install.md does it) this tool has none, or has the caller's: a root shell hands down
+    /run/user/0, and systemctl then says only "Failed to connect to bus: Permission denied".
+    So a value that isn't a folder of this account's is not kept. The account's own is at the
+    standard place while its systemd runs; where it isn't there either, the variable is left out
+    and systemctl says so. The caller's session bus goes with the caller's folder."""
     found = dict(os.environ if env is None else env)
-    if sys.platform != "darwin" and not found.get("XDG_RUNTIME_DIR"):
-        folder = Path(f"/run/user/{os.getuid()}") if runtime is None else runtime
-        if folder.is_dir():
-            found["XDG_RUNTIME_DIR"] = str(folder)
+    if sys.platform == "darwin" or _own_folder(found.get("XDG_RUNTIME_DIR")):
+        return found
+    found.pop("XDG_RUNTIME_DIR", None)
+    found.pop("DBUS_SESSION_BUS_ADDRESS", None)
+    folder = Path(f"/run/user/{os.getuid()}") if runtime is None else runtime
+    if _own_folder(folder):
+        found["XDG_RUNTIME_DIR"] = str(folder)
     return found
 
 

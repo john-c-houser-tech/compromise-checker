@@ -3249,6 +3249,12 @@ def cmd_schedule_install(
         where = schedule.install(base, at, hosts, say=print, pause=pause)
     except schedule.InstallFailed as exc:
         print(f"checker: {exc}", file=sys.stderr)
+        if any(sign in str(exc) for sign in ("connect to", "XDG_RUNTIME_DIR")):
+            print(
+                "This account's own systemd isn't running, or can't be found. To keep it running"
+                f" with no one logged in: sudo loginctl enable-linger {getpass.getuser()}",
+                file=sys.stderr,
+            )
         return 1
     print(
         f"`checker run --all --unattended` will run every day at {args.at} (this machine's time)."

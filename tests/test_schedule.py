@@ -2,6 +2,7 @@
 Collection is faked (a bundle added as a collection would add it), and no
 timer is really installed: systemctl and launchctl are recorded, not run."""
 
+import os
 import plistlib
 import shlex
 import sys
@@ -602,14 +603,48 @@ def test_the_timer_counts_being_stopped_as_clean():
 
 
 def test_the_accounts_own_systemd_is_found_without_a_login_session(tmp_path, monkeypatch):
-    """`runuser -u compromise-checker -- checker schedule install` (docs/install.md's form) has no
-    XDG_RUNTIME_DIR, and `systemctl --user` then can't connect (the demo's first run)."""
+    """`runuser -u compromise-checker -- checker schedule install` from a root shell hands down
+    root's XDG_RUNTIME_DIR, and `sudo -u` hands down none: either way `systemctl --user` couldn't
+    connect (the demo's first run, 2026-11-10)."""
     monkeypatch.setattr(schedule.sys, "platform", "linux")
-    found = schedule.session_environment({"HOME": "/h"}, tmp_path)
-    assert found == {"HOME": "/h", "XDG_RUNTIME_DIR": str(tmp_path)}
-    # A login's own value stands, and a folder that isn't there (no user manager) isn't claimed.
-    kept = schedule.session_environment({"XDG_RUNTIME_DIR": "/run/user/7"}, tmp_path)
-    assert kept == {"XDG_RUNTIME_DIR": "/run/user/7"}
-    assert schedule.session_environment({}, tmp_path / "none") == {}
+    ours, theirs = tmp_path / "ours", tmp_path / "theirs"
+    ours.mkdir()
+    theirs.mkdir()
+    bus = {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/0/bus"}
+    # None, or an empty one: the account's own, at the standard place.
+    for had in ({}, {"XDG_RUNTIME_DIR": ""}):
+        found = schedule.session_environment({"HOME": "/h", **had}, ours)
+        assert found == {"HOME": "/h", "XDG_RUNTIME_DIR": str(ours)}
+    # A login's own value stands, its session bus with it.
+    kept = schedule.session_environment({"XDG_RUNTIME_DIR": str(theirs), **bus}, ours)
+    assert kept == {"XDG_RUNTIME_DIR": str(theirs), **bus}
+    # Someone else's (the caller's), a file, or one that isn't there: replaced, their bus dropped.
+    (tmp_path / "file").write_text("")
+    real = os.getuid()
+    for other in (str(tmp_path / "none"), str(tmp_path / "file")):
+        found = schedule.session_environment({"XDG_RUNTIME_DIR": other, **bus}, ours)
+        assert found == {"XDG_RUNTIME_DIR": str(ours)}
+    monkeypatch.setattr(schedule.os, "getuid", lambda: real + 1)  # now neither folder is ours
+    found = schedule.session_environment({"XDG_RUNTIME_DIR": str(theirs), **bus, "A": "b"}, ours)
+    assert found == {"A": "b"}  # no user manager to find: systemctl says so itself
+    monkeypatch.setattr(schedule.os, "getuid", lambda: real)
     monkeypatch.setattr(schedule.sys, "platform", "darwin")
-    assert schedule.session_environment({}, tmp_path) == {}
+    assert schedule.session_environment({"XDG_RUNTIME_DIR": "/x"}, ours) == {
+        "XDG_RUNTIME_DIR": "/x"
+    }
+
+
+def test_every_systemctl_user_call_is_given_that_environment(fleet, tmp_path, monkeypatch):
+    given = []
+    monkeypatch.setattr(
+        "subprocess.run", lambda command, **kw: given.append((command, kw.get("env"))) or Done()
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user" / ".config"))
+    monkeypatch.setattr(schedule, "session_environment", lambda: {"XDG_RUNTIME_DIR": "/ours"})
+    assert cli.main(["schedule", "install", "--at", "02:15"]) == 0
+    schedule.timer_running()
+    assert cli.main(["schedule", "remove"]) == 0
+    asked = [env for command, env in given if command[:2] == ["systemctl", "--user"]]
+    assert len(asked) >= 5 and all(env == {"XDG_RUNTIME_DIR": "/ours"} for env in asked)

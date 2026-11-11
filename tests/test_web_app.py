@@ -6898,7 +6898,7 @@ def test_a_timer_that_fails_to_start_leaves_nothing_saying_it_runs(web, inventor
     timer["fail"] = "Failed to connect to bus: No medium found"
     response = client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
     text = said(response)
-    assert response.status_code == 400 and "wasn't started from a logged-in session" in text
+    assert response.status_code == 400 and "own systemd isn't running" in text
     assert not timer["unit"].exists()
     assert "No daily check is set up" in said(client.get("/manage/schedule"))
 
@@ -7226,6 +7226,13 @@ def test_busy_isn_t_read_as_a_missing_session(web, inventory, timer):
     timer["fail"] = "Device or resource busy"
     response = client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
     assert "logged-in session" not in said(response) and "busy" in said(response)
+
+
+def test_newer_systemd_s_words_for_no_session_are_read_too(web, inventory, timer):
+    client, _ = signed_in(web)
+    timer["fail"] = "Failed to connect to user scope bus via local transport: No such file"
+    response = client.post("/manage/schedule/save", {"at": "02:15", "confirm_password": PASSWORD})
+    assert "own systemd isn't running" in said(response)
 
 
 def test_another_home_s_timer_offers_nothing_to_save(web, inventory, timer):

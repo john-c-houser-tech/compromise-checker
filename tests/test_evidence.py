@@ -634,19 +634,19 @@ async def test_refused_login_records_both_endpoints(server, checker_home):
 async def test_sealing_does_not_block_other_hosts(server, checker_home, monkeypatch):
     config, _ = initialise(checker_home)
     real_seal = collect_module.BundleWriter.seal
-    gaps = []
+    ticks = []
+    slow = []
 
     def slow_seal(self):
+        started = time.monotonic()
         time.sleep(1.0)  # a slow evidence disk
+        slow.append((started, time.monotonic()))
         return real_seal(self)
 
     async def ticker():
-        last = time.monotonic()
         for _ in range(60):
             await asyncio.sleep(0.03)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
+            ticks.append(time.monotonic())
 
     monkeypatch.setattr(collect_module.BundleWriter, "seal", slow_seal)
     await asyncio.gather(
@@ -660,9 +660,12 @@ async def test_sealing_does_not_block_other_hosts(server, checker_home, monkeypa
         ),
         ticker(),
     )
-    # The loop kept turning while the bundle was sealed: a blocked loop leaves a gap of the
-    # whole second. Well under that, but with room for a busy CI runner (0.34 s seen there).
-    assert max(gaps) < 0.6
+    # The loop kept turning while the bundle was sealed: about thirty ticks fit in the slow
+    # second, and a blocked loop fits none. Counting the ticks inside that second, not the
+    # longest gap anywhere, leaves a busy CI runner's pauses out of it (a gap of 1.07 s was
+    # seen there once, on code that passes every other time).
+    [(started, ended)] = slow
+    assert sum(started < tick < ended for tick in ticks) >= 5
 
 
 async def test_collect_sends_the_configured_home_text(server, checker_home, monkeypatch):

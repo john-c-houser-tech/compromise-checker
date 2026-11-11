@@ -237,8 +237,11 @@ Runs on Python 3.12 or later, on Linux or macOS, on the machine that does the ch
 ```
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-ruff check . && ruff format --check . && pytest
+ruff check . && ruff format --check . && pytest -n auto
 ```
+
+`-n auto` runs the tests on every core, as CI does; plain `pytest` runs them
+one at a time.
 
 The collector (`checker/collector/collector.py`) must stay Python 3.9
 compatible and standard-library only, because it runs on the servers' own

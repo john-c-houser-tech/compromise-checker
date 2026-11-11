@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability in the tool
+    url: https://github.com/john-c-houser-tech/compromise-checker/security/advisories/new
+    about: Privately, please. Never in a public issue.
+  - name: Ask a question or share an idea
+    url: https://github.com/john-c-houser-tech/compromise-checker/discussions
+    about: Discussions is the place for questions, ideas and how-do-I.

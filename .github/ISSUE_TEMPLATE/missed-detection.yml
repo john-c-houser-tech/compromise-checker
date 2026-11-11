@@ -1,0 +1,43 @@
+name: Missed detection
+description: Something was done to a server and the tool didn't raise it.
+labels: ["missed detection"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. This is how the checks get better.
+
+        **Issues are public. Describe the technique, not your incident.** Don't paste a report, a bundle, log lines, server names, addresses or account names.
+
+        If the miss could let an attacker hide from the tool on purpose, report it privately instead: **Security → Report a vulnerability**.
+  - type: textarea
+    id: what
+    attributes:
+      label: What was done to the server?
+      description: The technique in general terms, such as "a key added to an existing account's authorized keys through a symbolic link". Steps to repeat it on a test server are ideal.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: A finding from a check you can name, or just "some finding".
+  - type: input
+    id: system
+    attributes:
+      label: Server's system
+      description: Such as Ubuntu 24.04 or Rocky Linux 9.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Compromise Checker version
+      description: What `checker --version` prints.
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Whether the server had a baseline from before the change, and which optional collection was on.

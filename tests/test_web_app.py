@@ -73,6 +73,12 @@ def _django():
             admin.execute(f"DROP SCHEMA {schema} CASCADE")
 
 
+@pytest.fixture(autouse=True)
+def _django_for_every_test_here(_django):
+    """Every test in this file may use Django, whichever runs first in its process: with the
+    tests spread over workers, none can count on an earlier one having set it up."""
+
+
 @pytest.fixture
 def settings_override(_django):
     from django.conf import settings

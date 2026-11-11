@@ -1,0 +1,48 @@
+name: False alarm
+description: The tool raised a finding about something that was normal.
+labels: ["false alarm"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. False alarms are the most useful thing you can report.
+
+        **Issues are public. Don't paste a report, a bundle, log lines, server names, addresses or account names.** The check's id and a description in your own words are enough.
+  - type: input
+    id: check
+    attributes:
+      label: Check
+      description: The check's id as the finding shows it, such as `account.uid0`.
+    validations:
+      required: true
+  - type: input
+    id: band
+    attributes:
+      label: Band
+      description: Critical, high, medium, low or info.
+  - type: input
+    id: system
+    attributes:
+      label: Server's system
+      description: Such as Ubuntu 24.04 or Rocky Linux 9.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Compromise Checker version
+      description: What `checker --version` prints.
+    validations:
+      required: true
+  - type: textarea
+    id: normal
+    attributes:
+      label: What was it really?
+      description: In general terms, what the finding was about and why it is normal. For example, "a monitoring agent's package created a system account".
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Whether it happens on every check, which profile the server uses, whether a whitelist rule quietened it.

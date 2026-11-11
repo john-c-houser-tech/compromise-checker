@@ -200,6 +200,27 @@ The main commands and their options are described in
 | [Reports](docs/report.md) · [Scheduling](docs/scheduling.md) · [Retention](docs/retention.md) | Day to day. |
 | [DESIGN.md](DESIGN.md) · [plans/](plans/) | The architecture, the decisions made so far, and the build plan for each phase. |
 
+## How to help
+
+The tool is new. What it needs most is people running it and saying what
+happened:
+
+- **[Say you ran it](https://github.com/john-c-houser-tech/compromise-checker/issues/new?template=field-report.yml).**
+  Which systems, and how it went. A "worked fine" counts.
+- **[Report a false alarm](https://github.com/john-c-houser-tech/compromise-checker/issues/new?template=false-alarm.yml).**
+  A finding about something that was normal.
+- **[Report a missed detection](SECURITY.md#reporting-a-missed-detection), privately.**
+  Something done to a server that raised no finding. A public report would
+  tell an intruder how to hide, so these go the same way as vulnerabilities.
+
+Issues are public, so never paste a report, a bundle or log lines into one.
+The check's id, the system and the tool's version are enough.
+
+Questions and ideas go in
+[Discussions](https://github.com/john-c-houser-tech/compromise-checker/discussions).
+A vulnerability in the tool itself goes through [SECURITY.md](SECURITY.md),
+privately.
+
 ## Development
 
 Each release is signed by hand with a key kept offline, and checked the way a

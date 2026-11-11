@@ -637,12 +637,12 @@ async def test_sealing_does_not_block_other_hosts(server, checker_home, monkeypa
     gaps = []
 
     def slow_seal(self):
-        time.sleep(0.5)  # a slow evidence disk
+        time.sleep(1.0)  # a slow evidence disk
         return real_seal(self)
 
     async def ticker():
         last = time.monotonic()
-        for _ in range(40):
+        for _ in range(60):
             await asyncio.sleep(0.03)
             now = time.monotonic()
             gaps.append(now - last)
@@ -660,7 +660,9 @@ async def test_sealing_does_not_block_other_hosts(server, checker_home, monkeypa
         ),
         ticker(),
     )
-    assert max(gaps) < 0.3  # the loop kept turning while the bundle was sealed
+    # The loop kept turning while the bundle was sealed: a blocked loop leaves a gap of the
+    # whole second. Well under that, but with room for a busy CI runner (0.34 s seen there).
+    assert max(gaps) < 0.6
 
 
 async def test_collect_sends_the_configured_home_text(server, checker_home, monkeypatch):

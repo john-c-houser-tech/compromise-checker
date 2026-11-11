@@ -56,7 +56,6 @@ fix the problem before it is made public.
 
 ## Supported versions
 
-Nothing has been released yet. Once releases begin, security fixes go into
-the latest release.
+Security fixes go into the latest release. Earlier releases are not patched.
 
 See also [the security and privacy policy](docs/security-and-privacy-policy.md).

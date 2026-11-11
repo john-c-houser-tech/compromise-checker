@@ -100,3 +100,13 @@ One script, `tests/integration/demo.py`, with four commands:
   (John, 2026-11-10). It reads as one more step of making the account, but the account is done
   and the rest of the interface is open. Fix: send the person on to the Servers page with a line
   saying the account is ready, or say so plainly at the top of the form.
+- **The log command `schedule install` prints doesn't work for the installed checker's account**
+  (seen on the demo's third run, 2026-11-10). `journalctl --user -u compromise-checker.service`,
+  run as the service account, answers "No journal files were opened due to insufficient
+  permissions": a system account has no journal of its own, so its timer's output is in the
+  system journal. Fix: print a command that works there (to be tried on a server:
+  `sudo journalctl _SYSTEMD_USER_UNIT=compromise-checker.service`), in `checker/schedule.py`
+  and `docs/scheduling.md`.
+- **Docker needs a second try on every fresh Ubuntu server** (all three runs). The proofs' setup
+  hides why the first fails; the demo's retry works and says nothing either. Harmless here, but
+  the read-only proof's own container step may be quietly skipped the same way.

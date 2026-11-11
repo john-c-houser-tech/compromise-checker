@@ -214,9 +214,12 @@ def install_line(version: str, sha256: str, name: str) -> str:
 def as_checker(*words: str) -> str:
     """A checker command on its own server, run as the tool's account (docs/install.md)."""
     said = " ".join(shlex.quote(w) for w in words)
+    # XDG_RUNTIME_DIR: `schedule install` talks to the account's own systemd, which the installer
+    # keeps running. runuser gives no login session, so without it there is no way to find it.
     return (
         f"runuser -u {install.ACCOUNT} -- env CHECKER_HOME={install.DATA}"
-        f" HOME={install.HOME} {CHECKER} {said}"
+        f" HOME={install.HOME} XDG_RUNTIME_DIR=/run/user/$(id -u {install.ACCOUNT})"
+        f" {CHECKER} {said}"
     )
 
 
@@ -344,6 +347,14 @@ def prepare_member(
     for line in done.stderr.splitlines():
         if line.startswith("proof setup:"):  # a part it goes on without, e.g. no container
             print(f"{server.name}: {line}")
+    if "Docker not started" in done.stderr:
+        # The break-in's container step needs it. Once more, this time saying why.
+        again = node.run("bash --norc --noprofile -s", timeout=600, input=story.CONTAINER)
+        if again.returncode == 0:
+            print(f"{server.name}: Docker started at the second try")
+        else:
+            said = (again.stdout + again.stderr).strip()[-1500:]
+            print(f"{server.name}: Docker still not started:\n{said}")
     firewall = story.FIREWALL.replace("{checker}", checker.address)
     must(
         node,

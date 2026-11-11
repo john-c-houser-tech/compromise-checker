@@ -104,6 +104,8 @@ def test_checker_commands_run_as_its_account_with_every_word_quoted():
     said = demo.as_checker("hosts", "add", "a b; rm -rf /")
     assert said.startswith("runuser -u compromise-checker -- env CHECKER_HOME=")
     assert said.endswith("/current/bin/checker hosts add 'a b; rm -rf /'")
+    # `schedule install` finds the account's own systemd by this.
+    assert " XDG_RUNTIME_DIR=/run/user/$(id -u compromise-checker) " in said
     added = demo.hosts_add(demo.FLEET[0], "192.0.2.7")
     assert "--address 192.0.2.7 --user scanner --auth key --key" in added
     assert added.endswith("--sudo nopasswd --group web")
@@ -522,6 +524,22 @@ def test_ssh_is_closed_to_all_but_the_checker_before_anything_else_is_put_on_a_s
     added, asked, trusted, listed = checker.calls
     assert "hosts add shop-web-1" in added[0] and "--expect SHA256:" in trusted[0]
     assert "whitelist/hosts/shop-web-1.yaml" in listed[0] and "account: webdev" in listed[1]
+
+
+def test_a_container_that_did_not_start_is_tried_again_before_the_firewall(capsys):
+    key = (0, "256 SHA256:" + "a" * 43 + " root@x (ED25519)\n", "")
+    for second, expected in ((0, "started at the second try"), (1, "still not started:\nno space")):
+        checker = Ran((0, "", ""), (0, "SHA256:" + "a" * 43 + "\n", ""), (0, "", ""), (0, "", ""))
+        server = Ran(
+            (0, "", "proof setup: Docker not started\n"), (second, "no space", ""), *[key] * 4
+        )
+        server.wait = lambda seconds: None
+        member = story.Member("staging-1", "", "ubuntu24.04")
+        made = demo.Server("staging-1", "fleet", "ubuntu24.04", "", 1, "l", "192.0.2.5")
+        demo.prepare_member(checker, server, made, member, "ssh-ed25519 SCANNER")
+        _, again, firewall = server.calls[:3]
+        assert "docker run -d --name web-cache" in again[1] and "ufw delete" in firewall[1]
+        assert expected in capsys.readouterr().out
 
 
 class Node(Ran):

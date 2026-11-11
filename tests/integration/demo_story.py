@@ -106,6 +106,18 @@ else
 fi
 """
 
+# When a server's setup couldn't start Docker (it hides why): the same three steps again, with
+# what they say. Before FIREWALL, since Docker writes firewall rules of its own.
+CONTAINER = r"""
+set -u
+export DEBIAN_FRONTEND=noninteractive
+apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io 2>&1 | tail -5
+systemctl enable --now docker 2>&1 | tail -5
+docker rm -f web-cache >/dev/null 2>&1
+docker run -d --name web-cache docker.io/library/nginx:alpine 2>&1 | tail -5
+docker ps --format '{{.Names}}' | grep -qx web-cache
+"""
+
 # Day 1, db-1: an admin's ordinary afternoon. A deploy account with full sudo, a nightly job, a
 # package. The login as the new account follows (demo.py), as the admin trying it out.
 ROUTINE_WORK = r"""

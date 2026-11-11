@@ -24,12 +24,13 @@ import plistlib
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
@@ -913,10 +914,46 @@ class InstallFailed(Exception):
 TIMER_COMMAND_SECONDS = 60  # a hung systemctl mustn't hold a page, or the command, for ever
 
 
+def _own_folder(path: str | Path | None) -> bool:
+    if not path:
+        return False
+    try:
+        found = os.stat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(found.st_mode) and found.st_uid == os.getuid()
+
+
+def session_environment(
+    env: Mapping[str, str] | None = None, runtime: Path | None = None
+) -> dict[str, str]:
+    """The environment for `systemctl --user`, which finds the account's own systemd through
+    XDG_RUNTIME_DIR. A login sets it. Run as its account by `runuser` or `sudo -u` (how
+    docs/install.md does it) this tool has none, or has the caller's: a root shell hands down
+    /run/user/0, and systemctl then says only "Failed to connect to bus: Permission denied".
+    So a value that isn't a folder of this account's is not kept. The account's own is at the
+    standard place while its systemd runs; where it isn't there either, the variable is left out
+    and systemctl says so. The caller's session bus goes with the caller's folder."""
+    found = dict(os.environ if env is None else env)
+    if sys.platform == "darwin" or _own_folder(found.get("XDG_RUNTIME_DIR")):
+        return found
+    found.pop("XDG_RUNTIME_DIR", None)
+    found.pop("DBUS_SESSION_BUS_ADDRESS", None)
+    folder = Path(f"/run/user/{os.getuid()}") if runtime is None else runtime
+    if _own_folder(folder):
+        found["XDG_RUNTIME_DIR"] = str(folder)
+    return found
+
+
 def _timer_command(command: list[str]) -> Any:
     try:
         return subprocess.run(  # noqa: S603
-            command, capture_output=True, text=True, check=False, timeout=TIMER_COMMAND_SECONDS
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=TIMER_COMMAND_SECONDS,
+            env=session_environment(),
         )
     except subprocess.TimeoutExpired:
         raise InstallFailed(f"`{' '.join(command)}` didn't finish") from None
@@ -1196,7 +1233,12 @@ def timer_running() -> bool | None:
     )
     try:
         done = subprocess.run(  # noqa: S603
-            command, capture_output=True, text=True, check=False, timeout=10
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+            env=session_environment(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

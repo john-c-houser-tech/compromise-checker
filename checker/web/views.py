@@ -1210,15 +1210,17 @@ ANOTHER_HOME = (
     " after this machine can use `checker schedule` there."
 )
 NO_SESSION = (
-    "This web server can't reach this machine's timers, usually because it wasn't started from a"
-    " logged-in session. Start it from one, or use `checker schedule install` there."
+    "This web server can't reach this machine's timers: its account's own systemd isn't running."
+    " Turn lingering on for the account (`sudo loginctl enable-linger ACCOUNT`), or start the web"
+    " server from a logged-in session, or use `checker schedule install` from one."
 )
 
 
 def _timer_failed(request, words) -> ActionFailed:
     """This machine's own command's words, on one line, for whoever looks after it."""
     text = " ".join(str(words).split())
-    if "connect to bus" in text or "D-Bus" in text or "XDG_RUNTIME_DIR" in text:
+    # "scope bus": newer systemd says "Failed to connect to user scope bus via local transport".
+    if any(sign in text for sign in ("connect to bus", "scope bus", "D-Bus", "XDG_RUNTIME_DIR")):
         text = f"{NO_SESSION} ({text})"
     said = visible(text, 800)
     try:

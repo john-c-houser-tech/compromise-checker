@@ -3,7 +3,9 @@
 # No network beyond package installs, no secrets, nothing spent.
 #
 # A change that touches only Markdown files, issue forms or the Sponsor
-# button's file skips the jobs that test code.
+# button's file skips the jobs that test code. The check for invisible
+# characters runs on every change all the same, since prose is where they
+# have slipped in.
 # The ruleset on main requires the one "CI result" check, which passes when
 # every job before it passed or was skipped, so a skip never blocks a merge.
 name: CI
@@ -51,6 +53,15 @@ jobs:
             echo "Only Markdown, issue forms or FUNDING.yml changed, so the code jobs are skipped"
             echo "code=false" >> "$GITHUB_OUTPUT"
           fi
+      # tests/test_repo_text.py, run without pytest: it needs only the
+      # standard library, and this job runs even when the test jobs don't.
+      - name: No invisible characters, whatever changed
+        run: |
+          python3 - <<'PY'
+          import runpy
+          tests = runpy.run_path("tests/test_repo_text.py")
+          tests["test_no_invisible_characters_in_the_repository"]()
+          PY
 
   controller:
     name: Controller (Python ${{ matrix.python }}${{ matrix.store == 'postgres' && ', store on PostgreSQL' || '' }})

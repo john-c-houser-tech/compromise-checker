@@ -21,7 +21,7 @@ server are ideal, and we don't need server names, addresses, account names or
 log lines.
 
 We acknowledge these within the same 3 business days. The fix is a new or
-better check in a later release, so the 90-day commitment below doesn't apply.
+better check in a later release, so the 30-day commitment below doesn't apply.
 
 ## What to expect
 
@@ -29,7 +29,7 @@ NouriLoop LLC is a small company, so these are commitments we can keep:
 
 - acknowledgement within **3 business days**;
 - an initial assessment within **10 business days**;
-- a fix, or a published mitigation, within **90 days** for confirmed issues,
+- a fix, or a published mitigation, within **30 days** for confirmed issues,
   sooner for serious ones, with a date for public disclosure agreed with you;
 - credit in the release notes, if you want it.
 

@@ -3,6 +3,7 @@ deletes (the servers are only in the real run)."""
 
 import importlib.util
 import json
+import os
 import re
 import signal
 import subprocess
@@ -615,7 +616,7 @@ class Checker(Node):
         self.answering = answering
         self.fails: dict[str, int] = {}  # a part of a command, and how it ends
         self.retired, self.still_open = "Retired: dotnet-2026-10 (kept).\n", False
-        self.results = ""
+        self.results, self.clock = "", "2026-11-10T15:25"
 
     def run(self, command, timeout=900, input=None):
         self.calls.append((command, input))
@@ -631,7 +632,7 @@ class Checker(Node):
         if "ssh-keygen" in command:
             out = "ssh-ed25519 STORY ops@checker\n"
         if "/results" in command:
-            out = self.results
+            out = f"{self.clock}\n{self.results}"
         if " packs retire " in command:
             out = self.retired
         if "/dev/tcp/" in command:  # a server that has shut the checker out refuses it
@@ -681,6 +682,7 @@ def test_the_story_plays_a_day_at_a_time_and_each_check_expects_who_still_answer
         return next(i for i, c in enumerate(said) if text in c)
 
     assert at("schedule install --at 14:00") < checks[0]  # the hour before its clock's
+    assert world.at == "14:00"  # which the later days are timed by, when it is kept up
     assert checks[1] < at("baseline accept db-1 --reason") < checks[2]
     assert checks[3] < at("hosts remove staging-1") < checks[4]
     assert checks[4] < at("packs retire dotnet-2026-10 --reason")  # and no check after it
@@ -845,8 +847,11 @@ def test_each_days_steps_run_before_its_check_or_after_it_for_a_day_not_checked(
 def staged(tmp_path, monkeypatch, days):
     world, _ = world_of(tmp_path, monkeypatch)
     checker = Checker(world.checked)
-    world.at, world.expires_on = "14:00", date(2026, 11, 15)
-    plan, left_out = demo.stage(checker, world, days)
+    world.at = "14:00"
+    plan, left_out, last = demo.stage(checker, world, days)
+    # day 1's check is tomorrow at 14:00, and the last day's a day later each
+    assert last == datetime(2026, 11, 10 + days, 14, 0)
+    assert world.expires_on == date(2026, 11, 15)  # through day 5's check, gone at day 6's
     put = {c.rsplit("/", 1)[-1]: text for c, text in checker.calls if "cat > /" in c}
     return world, checker, plan, left_out, put
 
@@ -890,20 +895,37 @@ def test_the_later_days_are_put_on_the_checkers_server_a_timer_each(tmp_path, mo
     assert "on_server d3-4 192.0.2.14\nshut d3-4 192.0.2.14\n" in day3
     assert all("umask 077" in c for c, _ in checker.calls if "cat > /root/cc-story/" in c)
     # The admin's steps are the commands `by_admin` runs.
-    assert demo.as_checker("baseline", "accept", "db-1", "--reason")[:-1] in put["day2.sh"]
+    accept = next(s for s in story.STORY if s.admin[:1] == ("accept",))
+    host, reason = accept.admin[1:]
+    assert demo.as_checker("baseline", "accept", host, "--reason", reason) in put["day2.sh"]
+    assert "|| true" not in put["day2.sh"]  # a refusal is noted, not passed over
     day4 = put["day4.sh"]
     assert demo.as_checker("hosts", "remove", "staging-1") in day4
     assert "whitelist/hosts/mail-1.yaml <<'RULE'" in day4 and "expires: 2026-11-15\nRULE\n" in day4
     assert demo.as_checker("whitelist", "check") in day4
     assert "packs retire dotnet-2026-10" in put["day5.sh"] and "grep -q Retired:" in put["day5.sh"]
-    # The keys go when the last day has used them, and not before.
-    assert "rm -f key key.pub account-*" in put["day5.sh"]
+    # The keys go when the last day ends, however it ends, and not before.
+    assert "trap 'rm -f key key.pub account-*' EXIT" in put["day5.sh"]
     assert not any("rm -f key" in put[f"day{day}.sh"] for day in (1, 2, 3, 4))
+    # Nothing waits for ever on a server that has stopped answering.
+    assert "timeout 1500 ssh -i key" in day3 and "ServerAliveInterval=15" in day3
+    assert "TimeoutStartSec=40min" in put["cc-story-day3.service"]
+    # A day off, what the break-in leaves running outlives the next check, and nothing else of
+    # the story's is changed by that but the PHP update, which fetches the lists first.
+    assert "/root/kworkerd 2000000" in put["d3-1.sh"] and "7200" not in put["d3-1.sh"]
+    assert "sleep 2000000 >/dev/null || fail container" in put["d3-1.sh"]
+    assert "$APT update >/dev/null\n$APT install" in put["d2-1.sh"]
+    changed = [
+        s.says
+        for s in story.STORY
+        if s.script and story.renamed(s.script, story.DAYS_APART) != s.script
+    ]
+    assert changed == ["PHP is updated; its service isn't restarted", "the break-in"]
 
 
 def test_a_shorter_stay_plays_the_days_it_has_and_says_what_it_left_out(tmp_path, monkeypatch):
     _, _, plan, left_out, put = staged(tmp_path, monkeypatch, 2)
-    assert {p["day"] for p in plan} == {1, 2} and "rm -f key key.pub" in put["day2.sh"]
+    assert {p["day"] for p in plan} == {1, 2} and "trap 'rm -f key key.pub" in put["day2.sh"]
     assert "day3.sh" not in put and "account-svc-backup" not in put
     assert len(left_out) == len([s for s in story.STORY if s.day > 2])
     assert left_out[0] == "day 3: shop-web-1: the break-in"
@@ -935,9 +957,25 @@ def test_status_says_how_each_of_the_days_went(tmp_path, monkeypatch, capsys):
         "2026-11-13T13:16:30Z d3-4 ended 0 \n"
         "2026-11-13T13:16:55Z d3-4-shut ended 1 it still lets the checker's server in\n"
     )
-    lines = demo.story_so_far(checker, plan)
+    checker.clock = "2026-11-13T14:20"  # an hour and five minutes after day 3's steps were due
+    lines, good = demo.story_so_far(checker, plan)
+    assert not good
     assert lines[0].endswith("and a package: done") and "day 1, 2026-11-11 13:15" in lines[0]
-    assert lines[1].endswith("isn't restarted: not yet")
+    assert lines[1].endswith("isn't restarted: LATE: it should have run by now, and hasn't said so")
+    assert lines[5].endswith(
+        "a backup job is added: LATE: it should have run by now, and hasn't said so"
+    )
+    checker.clock = "2026-11-12T12:00"  # the morning of day 2
+    early, _ = demo.story_so_far(checker, plan)
+    assert early[1].endswith("isn't restarted: not yet")
+    quiet = Checker(lambda: [])
+    quiet.results = "2026-11-11T13:15:40Z d1-1 ended 0 \n2026-11-11T13:15:41Z d1-1-login ended 0\n"
+    assert demo.story_so_far(quiet, plan[:1]) == ([lines[0]], True)
+    gone = Ran((255, "", "ssh: no route"))
+    assert demo.story_so_far(gone, plan) == (
+        ["  The checker's server couldn't be asked (ssh: no route)"],
+        False,
+    )
     assert lines[3].endswith(
         "the break-in: d3-1 ended 0 ATTACK FAILED: container;; d3-1-login ended 255"
     )
@@ -953,12 +991,20 @@ def test_status_says_how_each_of_the_days_went(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(demo.install, "Node", Asked)
     kept = state(0, 1)
-    kept.days, kept.plan = 3, plan
+    kept.days, kept.plan, kept.last_check = 3, plan, "2026-11-13T14:00"
     demo.save_state(tmp_path, kept)
     api = FakeApi([node(s.label, [demo.TAG], s.id) for s in kept.servers])
-    demo.status(api, tmp_path, datetime(2026, 11, 10, 14, tzinfo=UTC))
+    # a step that failed or is late wants a look: `status` ends 1
+    assert demo.status(api, tmp_path, datetime(2026, 11, 10, 14, tzinfo=UTC)) == 1
     out = capsys.readouterr().out
     assert "Kept up 3 days." in out and "and a package: done" in out
+    assert "Day 3 is checked at 2026-11-13 14:00." in out
+    # a checker's server Linode no longer lists isn't asked (whatever has its address now)
+    asked.clear()
+    demo.status(FakeApi(), tmp_path, datetime(2026, 11, 10, 14, tzinfo=UTC))
+    assert asked == [] and "GONE" in capsys.readouterr().out
+    asked.append(("192.0.2.0", "key", Asked("192.0.2.0", Path("key"), None)))
+    asked[0][2].closed = True
     assert asked[0][:2] == ("192.0.2.0", "key") and asked[0][2].closed
     assert demo.load_state(tmp_path).plan == plan  # and the plan reads back
 
@@ -990,3 +1036,82 @@ def test_any_proofs_sweep_takes_a_demo_server_past_its_date_and_no_other():
         proof.DEMO_LABEL,
         proof.DEMO_UNTIL,
     )
+
+
+def test_kept_up_day_0_is_played_from_here_and_the_rest_is_staged(tmp_path, monkeypatch, capsys):
+    world, _ = world_of(tmp_path, monkeypatch)
+    checker = Checker(world.checked)
+    kept = state(0, 1)
+    demo.play_days(checker, world, kept, tmp_path, 2)
+    said = [c for c, _ in checker.calls]
+
+    def at(text):
+        return next(i for i, c in enumerate(said) if text in c)
+
+    # the story's key is on every server before the first check, so it is never a change
+    assert at("ssh-keygen") < at(" run --all --unattended") < at("cat > /root/cc-story/")
+    # only day 0 is played from here: one check, and none of the later days' steps
+    assert len([c for c in said if " run --all --unattended" in c]) == 1
+    assert world.collected == 6 and not any(
+        "baseline accept" in c for c in said if "cat >" not in c
+    )
+    assert all(
+        not text or "useradd" not in text for n in world.nodes.values() for _, text in n.calls
+    )
+    # what is to come is kept, for `status`, and said
+    saved = demo.load_state(tmp_path)
+    assert saved.plan == kept.plan and {p["day"] for p in saved.plan} == {1, 2}
+    assert saved.last_check == "2026-11-12T14:00"
+    out = capsys.readouterr().out
+    assert "The days to come" in out and "db-1: an admin adds" in out and ": not yet" in out
+    assert "left out, after day 2: day 3: shop-web-1: the break-in" in out
+
+
+def test_a_days_runner_writes_down_what_status_reads(tmp_path, monkeypatch):
+    """The runner itself, with an `ssh` that stands in for the servers: what it notes is what
+    `story_so_far` takes."""
+    _, checker, plan, _, put = staged(tmp_path, monkeypatch, 3)
+    home, tools = tmp_path / "cc-story", tmp_path / "bin"
+    home.mkdir()
+    tools.mkdir()
+    for name, text in put.items():
+        if name.endswith(".sh") or name.startswith("account-"):
+            (home / name).write_text(text)
+    (home / "key").write_text("K")
+    # The break-in "fails" one part; the login as the new account is refused.
+    (tools / "ssh").write_text(
+        '#!/bin/bash\ncat > /dev/null\ncase "$*" in\n'
+        "  *svc-backup@*) exit 255 ;;\n"
+        "  *192.0.2.10*) echo 'ATTACK FAILED: container' >&2 ;;\nesac\n"
+    )
+    (tools / "sleep").write_text("#!/bin/bash\n")
+    (tools / "timeout").write_text('#!/bin/bash\nshift\n[ "$1" = bash ] && exit 1\nexec "$@"\n')
+    for tool in tools.iterdir():
+        tool.chmod(0o755)
+    runner = put["day3.sh"].replace("/root/cc-story", str(home))
+    done = subprocess.run(  # noqa: S603
+        ["bash", "-c", runner],  # noqa: S607
+        env={"PATH": f"{tools}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    checker.results, checker.clock = (home / "results").read_text(), "2026-11-13T13:30"
+    lines, good = demo.story_so_far(checker, [p for p in plan if p["day"] == 3])
+    assert not good
+    assert lines[0].endswith("d3-1 ended 0 ATTACK FAILED: container;; d3-1-login ended 255")
+    assert [line.rsplit(": ", 1)[1] for line in lines[1:]] == ["done", "done", "done"]
+    # the scripts and the account's key are gone once used; the last day takes the story's key
+    assert sorted(p.name for p in home.iterdir() if p.suffix == ".sh") == [
+        "d1-1.sh", "d2-1.sh", "day1.sh", "day2.sh", "day3.sh"
+    ]  # fmt: skip
+    assert not (home / "account-svc-backup").exists() and not (home / "key").exists()
+
+
+def test_days_goes_with_up_only(monkeypatch, capsys):
+    monkeypatch.setattr(demo.proof, "linode_token", lambda: pytest.fail("asked for the token"))
+    for words in (["status", "--days", "2"], ["up", "--days", "0"], ["up", "--days", "15"]):
+        with pytest.raises(SystemExit):
+            demo.main(words)
+    assert "--days goes with `up`, and is 1 to 14" in capsys.readouterr().err

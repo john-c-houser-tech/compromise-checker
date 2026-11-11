@@ -44,7 +44,8 @@ One script, `tests/integration/demo.py`, with four commands:
   change, approves a rule, leaves one undecided). Without `--days` it plays in one sitting, about
   half an hour, and the history's dates are minutes apart. With `--days N` the servers stay up, the
   checker's own daily schedule does the checking, and each step happens on its day, so the history
-  has real dates. The steps that happen on a fleet server are put there as timers when it is made,
+  has real dates. (As built, the later days are timers on the checker's server: see the last
+  section.) The steps that happen on a fleet server were to be put there as timers when it is made,
   so the laptop needn't be on.
 - **Shown as it is.** Nothing in the data comes from John's laptop or network except his sign-in to
   the web interface, which the script filters out of what it saves. Every page still says it is a
@@ -88,7 +89,7 @@ One script, `tests/integration/demo.py`, with four commands:
   throwaway. Proved by a run: the saved data holds no address but the demo's own.
 - **D.3 The story, in one sitting.** The player, the admin's decisions made through the checker's
   commands, the firewall rule. Proved by a run and a look through the pages against D.1's table.
-- **D.4 Keep-alive.** `--days`, timers on the servers, `status`, the end date and the sweep. Proved
+- **D.4 Keep-alive.** `--days`, timers (on the checker's server, as built), `status`, the end date and the sweep. Proved
   by a two-day run.
 - **D.5 The dataset.** `save`, browsing it on the laptop, the screenshot script moved onto it, and
   `demo_fleet.py` retired. The README's pictures taken again.
@@ -131,9 +132,19 @@ point is the note the next check clears) runs an hour after the daily check inst
 - **The root key is put on each fleet server before its first check,** so it is part of what the
   server starts with and never shows as a change.
 - `status` asks the checker's server how each day's steps went.
-- The admin's rule for `mail-1` lasts through day 5 (in one sitting: the day after `up`).
-- **The end date:** `up` says it and the cost first; `status` says OVERDUE; any proof's sweep and
-  the next `up` delete demo servers past their date. The session that starts a stay puts a
-  reminder in John's calendar for that day.
+- The admin's rule for `mail-1` lasts through the date of day 5's check, so day 6's shows it run
+  out (in one sitting: the day after `up`).
+- **Played a day apart, two scripts differ from one sitting's:** what the break-in leaves running
+  lasts weeks, not the proofs' hour or two, so it is still there at the next day's check and only
+  what the intruder removes goes; and the PHP update fetches the package lists first.
+- **Nothing waits for ever:** each step has a 25-minute limit and each day 40; the keys go when
+  the last day ends, however it ends.
+- `status` says of each step "done", what failed, "not yet", or LATE (its time passed an hour ago
+  and it has said nothing), and ends 1 for a failure or a late step.
+- **The end:** `up` says the cost first and, once the daily check is set, when the last day is
+  checked: `down` is for after that. The servers' tags end the day after `--days` days (dates in
+  UTC), since the last check can fall on it. `status` says OVERDUE; any proof's sweep and the next
+  `up` delete demo servers past their date. The session that starts a stay puts a reminder in
+  John's calendar for after the last check.
 - **The privacy proof** runs at the end of day 0. After John signs in from the laptop the web
   interface holds his address by design; D.5's `save` leaves that out.

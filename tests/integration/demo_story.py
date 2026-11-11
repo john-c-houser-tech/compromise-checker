@@ -142,7 +142,9 @@ if command -v ufw >/dev/null 2>&1; then
     echo "$state" | grep -q '^Default: deny (incoming)' || no "the firewall lets in by default"
     others=$(echo "$state" | awk '/ALLOW/ && $NF != "{checker}"')
     [ -z "$others" ] || no "open to more than the checker's server: $others"
-    echo "$state" | grep -Eq '^22/tcp +ALLOW IN +{checker}$' || no "the checker isn't let in"
+    # By fields: ufw pads its lines with spaces at the end.
+    echo "$state" | awk '$1 == "22/tcp" && $2 == "ALLOW" && $NF == "{checker}" {ok = 1}
+        END {exit !ok}' || no "the checker isn't let in"
 else
     command -v firewall-cmd >/dev/null 2>&1 || dnf install -y -q firewalld >/dev/null
     systemctl enable --now firewalld >/dev/null 2>&1

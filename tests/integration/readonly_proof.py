@@ -179,7 +179,10 @@ class Linode:
         public_key: str,
         stackscript_id: int | None = None,
         stackscript_data: dict | None = None,
+        tags: list[str] | None = None,
     ) -> dict:
+        """`tags`: instead of the proofs' own, for servers their sweep must leave alone (the
+        demo fleet's, which carry an end date of their own)."""
         body = {
             "label": label,
             "type": NANODE,
@@ -187,7 +190,7 @@ class Linode:
             "image": image,
             "root_pass": secrets.token_urlsafe(32),  # required; never used (key login only)
             "authorized_keys": [public_key],
-            "tags": [TAG],
+            "tags": [TAG] if tags is None else tags,
             "booted": True,
         }
         if stackscript_id is not None:

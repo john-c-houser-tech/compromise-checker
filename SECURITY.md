@@ -12,13 +12,24 @@ repository — or email **security@nouriloop.com**. Please include:
 
 Please do not open a public issue for a vulnerability.
 
+## Reporting a missed detection
+
+If something was done to a server and the tool raised no finding, report it
+the same private way. A public report would tell an intruder how to hide.
+Describe the technique, not your incident: steps to repeat it on a test
+server are ideal, and we don't need server names, addresses, account names or
+log lines.
+
+We acknowledge these within the same 3 business days. The fix is a new or
+better check in a later release, so the 30-day commitment below doesn't apply.
+
 ## What to expect
 
 NouriLoop LLC is a small company, so these are commitments we can keep:
 
 - acknowledgement within **3 business days**;
 - an initial assessment within **10 business days**;
-- a fix, or a published mitigation, within **90 days** for confirmed issues,
+- a fix, or a published mitigation, within **30 days** for confirmed issues,
   sooner for serious ones, with a date for public disclosure agreed with you;
 - credit in the release notes, if you want it.
 
@@ -45,7 +56,6 @@ fix the problem before it is made public.
 
 ## Supported versions
 
-Nothing has been released yet. Once releases begin, security fixes go into
-the latest release.
+Security fixes go into the latest release. Earlier releases are not patched.
 
 See also [the security and privacy policy](docs/security-and-privacy-policy.md).

@@ -1,0 +1,46 @@
+name: I ran it
+description: Tell us how it went, good or bad. A "worked fine" counts.
+labels: ["field report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Knowing where the tool has run, and how it went, shapes what gets tested next.
+
+        **Issues are public. Don't paste a report, a bundle, log lines, server names, addresses or account names.**
+  - type: input
+    id: servers
+    attributes:
+      label: Servers checked
+      description: The systems and roughly how many, such as "Ubuntu 22.04, about ten".
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Machine the tool ran on
+      description: Such as Ubuntu 24.04, installed with the installer, or macOS from source.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Compromise Checker version
+      description: What `checker --version` prints.
+    validations:
+      required: true
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: How did it go?
+      options:
+        - It worked
+        - It worked, with rough edges
+        - It didn't work
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: What happened
+      description: What was confusing, slow, noisy or broken, or what worked well. Error messages are welcome if they hold no names or addresses.

@@ -340,9 +340,9 @@ service hasn't acted on can be taken back from the page.
 Manage can set a check to run every day at a time you choose, and stop it. That's the same run as
 `checker schedule install`: it checks every server, works out results, writes a report, and deletes what's
 past its retention period. It uses a timer on this machine, under the account the web server runs as,
-and keeps running when the web server is stopped, until someone stops it. On Linux that needs a user
-session, so a web server started as a system service can't set it, and lingering to run with nobody
-logged in. On a Mac it runs only while someone is logged in there. The page says so, and lists servers
+and keeps running when the web server is stopped, until someone stops it. On Linux that needs the
+account's own systemd to be running: lingering keeps it running with nobody logged in (the installer
+turns it on), and without it a web server started as a system service can't set the timer. On a Mac it runs only while someone is logged in there. The page says so, and lists servers
 a daily check can't reach.
 
 Manage can also delete stored evidence, for one server, before a date, or past its retention period. It

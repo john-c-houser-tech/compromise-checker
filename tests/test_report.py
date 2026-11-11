@@ -4,6 +4,7 @@ whatever text a host sent."""
 import json
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -267,13 +268,47 @@ def fetch(url, host=None):
         return exc.code, {}, ""
 
 
+_WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+
+
+class _writes:
+    """Every file this process opens for writing while in the block, from any
+    thread (a Python audit hook: what other processes write can't reach it).
+    Python's own bytecode cache is left out. A hook can't be removed, so it
+    stops recording when the block ends; writes from C code aren't seen."""
+
+    def __enter__(self) -> list:
+        self.written, self.on = [], True
+
+        def hook(event, args):
+            if not self.on or event != "open" or args[0] is None:
+                return
+            name, mode, flags = args
+            writing = (isinstance(mode, str) and bool(set(mode) & set("wax+"))) or bool(
+                flags & _WRITE
+            )
+            if writing and "__pycache__" not in str(name):
+                self.written.append(str(name))
+
+        sys.addaudithook(hook)
+        return self.written
+
+    def __exit__(self, *_) -> None:
+        self.on = False
+
+
 def test_a_report_is_shown_from_memory_and_only_at_its_address(home, tmp_path, monkeypatch):
     from checker.report import CSP, view
 
     base, store, identity, config = home
     add_bundle(home, "b1", 0, host_records())
     path = write_report(store, ["web01"], identity, config.recipients, base / "reports")
-    before = {p for p in Path(tempfile.gettempdir()).iterdir()}
+    # A temp folder of this test's own: the system's is shared with every other
+    # process on the machine, whose files made this fail on CI (2026-11-09).
+    private = tmp_path / "temp"
+    private.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(private))
+    before = set(private.iterdir())
     threads = threading.active_count()
     seen = {}
 
@@ -286,7 +321,9 @@ def test_a_report_is_shown_from_memory_and_only_at_its_address(home, tmp_path, m
         return True
 
     said = []
-    view(path, identity, browser=browser, ask=lambda q: "", say=said.append, screen=True)
+    with _writes() as written:
+        view(path, identity, browser=browser, ask=lambda q: "", say=said.append, screen=True)
+    assert written == []  # nothing written in plain, anywhere: shown from memory
     status, headers, page = seen["page"]
     assert status == 200 and "web01" in page
     assert headers["Cache-Control"] == "no-store" and headers["Content-Security-Policy"] == CSP
@@ -295,7 +332,7 @@ def test_a_report_is_shown_from_memory_and_only_at_its_address(home, tmp_path, m
     assert "nothing is written in plain" in said[0]
     with pytest.raises(OSError):
         fetch(seen["url"])  # stopped with Enter
-    assert {p for p in Path(tempfile.gettempdir()).iterdir()} - before == set()
+    assert set(private.iterdir()) - before == set()  # nothing written in plain
     for _ in range(50):  # the server's thread ends with it
         if threading.active_count() == threads:
             break

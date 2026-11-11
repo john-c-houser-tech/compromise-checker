@@ -216,6 +216,10 @@ happened:
 Issues are public, so never paste a report, a bundle or log lines into one.
 The check's id, the system and the tool's version are enough.
 
+If the tool saved you time, you can also
+[buy me a coffee](https://buy.stripe.com/bJe6oz3Yp3nmcgwgcA2Ji00). It is a
+thank-you, paid to NouriLoop LLC; it buys no support or warranty.
+
 Questions and ideas go in
 [Discussions](https://github.com/john-c-houser-tech/compromise-checker/discussions).
 A vulnerability in the tool itself goes through [SECURITY.md](SECURITY.md),

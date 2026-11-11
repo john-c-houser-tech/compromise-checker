@@ -1089,7 +1089,9 @@ class JournalTests(FixtureRoot):
         self.assertIn("--output=json", argv)
         self.assertEqual(argv[-2:], ["SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10"])
         since = [a for a in argv if a.startswith("--since=@")][0]
-        self.assertAlmostEqual(int(since[len("--since=@") :]), NOW - DAY, delta=60)
+        # The clock now, not NOW: that was read when this file was loaded, which in a long or
+        # shuffled run can be more than a minute before this test.
+        self.assertAlmostEqual(int(since[len("--since=@") :]), time.time() - DAY, delta=60)
         self.assertIn("--all", argv)  # else fields over 4 KiB become null
         fields = [a for a in argv if a.startswith("--output-fields=")][0]
         self.assertNotIn("_CMDLINE", fields)

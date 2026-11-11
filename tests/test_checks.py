@@ -418,6 +418,10 @@ def test_a_broken_check_is_reported_not_fatal(monkeypatch):
     def broken(context):
         raise RuntimeError("bug")
 
+    # The real checks register themselves when first loaded, into whatever REGISTRY is then:
+    # load them before swapping it, or they land in this test's list and are gone for every
+    # later test in the process.
+    checks.load_checks()
     monkeypatch.setattr(checks, "REGISTRY", [checks.Check("x.broken", "x", False, broken)])
     findings, ran = run_checks(Context("h", "b", [], snap()))
     assert findings == [] and ran == [{"check": "x.broken", "status": "failed: RuntimeError: bug"}]

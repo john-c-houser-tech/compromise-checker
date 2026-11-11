@@ -42,8 +42,7 @@ UNREACHABLE = ("old-box", "192.0.2.10")  # a documentation address: nothing answ
 PHP = php.SCENARIOS["ubuntu-own"]
 
 # The proofs' names for what they stage, as a demo should show them. The first table is for what
-# a server is given before its first check (and the whitelist that explains it); the second for
-# the break-in.
+# a server is given before its first check; the second for the break-in.
 SETUP_NAMES = (
     ("proofuser", "webdev"),
     ("proofmail", "newsletter"),
@@ -60,19 +59,21 @@ SETUP_NAMES = (
     ("/usr/bin/true proof", "/usr/bin/true sync"),
     ("echo proof", "echo sync"),
     ("Subject: proof\\n\\nproof\\n", "Subject: report\\n\\nnothing to report\\n"),
-    ("compromise-checker proofs", "whoever set the server up"),
-    ("The proof ", "Setting the server up "),
-    ("- id: proof-", "- id: setup-"),
 )
 ATTACK_NAMES = (
     ("cc-toor", "sysmaint"),
     ("cc-proof-backdoor", "root@vps-4417"),
+    ("cc-proof-admin", "backup@ops-2"),
+    ("cc_tunnel", "id_ed25519_tun"),
     ("cc proof", "System update"),
     ("cc-proof", "sysupdate"),
-    ("ccadmin", "deploy2"),
+    ("ccadmin", "svc-backup"),
     ("cc-sleep", "kworkerd"),
     ("cc-", "sys-"),
 )
+
+
+INTRUDER = "svc-backup"  # the account the break-in makes: not db-1's admin's, nor its key
 
 
 def renamed(text: str, names: tuple[tuple[str, str], ...]) -> str:
@@ -81,18 +82,67 @@ def renamed(text: str, names: tuple[tuple[str, str], ...]) -> str:
     return text
 
 
+# What setting a server up leaves for the checker to find, explained, so a new server's first
+# result shows only what its image brings. The proofs' whitelist (readonly_proof.PROOF_WHITELIST)
+# in a demo's words, with one rule narrower: root logs in from the checker's server ({checker})
+# and nowhere else, so the break-in's own root login is not explained away.
+WHITELIST = """\
+profiles: [base]
+rules:
+  - id: setup-scanner-account
+    match: {check: account.log_changes, account: scanner}
+    reason: "The account the checker logs in as, made when the server was set up."
+    owner: demo admin
+    expires: never
+  - id: setup-webdev-account
+    match: {check: account.log_changes, account: webdev}
+    reason: "The web developers' account, made when the server was set up."
+    owner: demo admin
+    expires: never
+  - id: setup-root-login
+    match: {check: ssh.login, variant: root_login, account: root, address: {checker}}
+    reason: "Root logged in from the checker's server to set this one up."
+    owner: demo admin
+    expires: never
+  - id: setup-at-job-debian
+    match: {check: persistence.at_jobs, path: /var/spool/cron/atjobs/*}
+    reason: "A one-off job queued when the server was set up."
+    owner: demo admin
+    expires: never
+  - id: setup-at-job-redhat
+    match: {check: persistence.at_jobs, path: /var/spool/at/*}
+    reason: "A one-off job queued when the server was set up."
+    owner: demo admin
+    expires: never
+  - id: setup-docker-dnsmasq-account
+    match: {check: account.log_changes, variant: created, account: dnsmasq}
+    reason: "Docker was installed when the server was set up; it brings this account."
+    owner: demo admin
+    expires: never
+  - id: setup-docker-group
+    match: {check: account.log_changes, variant: group_created, group: docker}
+    reason: "Docker was installed when the server was set up; it makes this group."
+    owner: demo admin
+    expires: never
+"""
+
 # --- what happens on the servers -----------------------------------------------------------
 
 # Only the checker's server may log in, from before the first check: a server here is really
 # weakened later, and stays up. {checker} is its address.
 FIREWALL = r"""
 set -eu
+no() { echo "$1" >&2; exit 1; }
 if command -v ufw >/dev/null 2>&1; then
     ufw allow from {checker} to any port 22 proto tcp >/dev/null
     ufw delete allow 22/tcp >/dev/null
-    if ufw status | grep -Eq '^22/tcp +(\(v6\) +)?ALLOW +Anywhere'; then
-        echo "ssh is still open to everyone" >&2; exit 1
-    fi
+    ufw --force enable >/dev/null
+    state=$(ufw status verbose)
+    echo "$state" | grep -q '^Status: active' || no "the firewall is not on"
+    echo "$state" | grep -q '^Default: deny (incoming)' || no "the firewall lets in by default"
+    others=$(echo "$state" | awk '/ALLOW/ && $NF != "{checker}"')
+    [ -z "$others" ] || no "open to more than the checker's server: $others"
+    echo "$state" | grep -Eq '^22/tcp +ALLOW IN +{checker}$' || no "the checker isn't let in"
 else
     command -v firewall-cmd >/dev/null 2>&1 || dnf install -y -q firewalld >/dev/null
     systemctl enable --now firewalld >/dev/null 2>&1
@@ -100,9 +150,10 @@ else
         --add-rich-rule='rule family="ipv4" source address="{checker}" service name="ssh" accept'
     firewall-cmd -q --permanent --remove-service=ssh
     firewall-cmd -q --reload
-    if firewall-cmd --list-services | grep -qw ssh; then
-        echo "ssh is still open to everyone" >&2; exit 1
-    fi
+    [ "$(firewall-cmd --state 2>&1)" = running ] || no "the firewall is not on"
+    if firewall-cmd --list-services | grep -qw ssh; then no "ssh is still open to everyone"; fi
+    if firewall-cmd --list-ports | grep -Eq '(^| )22/'; then no "port 22 is open to everyone"; fi
+    firewall-cmd --list-rich-rules | grep -qF 'address="{checker}"' || no "the checker isn't let in"
 fi
 """
 
@@ -111,10 +162,10 @@ fi
 CONTAINER = r"""
 set -u
 export DEBIAN_FRONTEND=noninteractive
-apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io 2>&1 | tail -5
+apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io </dev/null 2>&1 | tail -5
 systemctl enable --now docker 2>&1 | tail -5
 docker rm -f web-cache >/dev/null 2>&1
-docker run -d --name web-cache docker.io/library/nginx:alpine 2>&1 | tail -5
+docker run -d --name web-cache docker.io/library/nginx:alpine </dev/null 2>&1 | tail -5
 docker ps --format '{{.Names}}' | grep -qx web-cache
 """
 
@@ -153,8 +204,9 @@ TIDY_UP = r"""
 set -u
 root=/usr/share/nginx/html
 [ -d /etc/nginx/sites-enabled ] && root=/var/www/html
-rm -f "$root/sys-shell.php" || echo "STEP FAILED: web shell" >&2
-rm -f /etc/cron.d/sysupdate || echo "STEP FAILED: cron job" >&2
+for left in "$root/sys-shell.php" /etc/cron.d/sysupdate; do
+    { [ -e "$left" ] && rm "$left"; } || echo "STEP FAILED: $left wasn't there to remove" >&2
+done
 """
 
 # Day 4: the rule the admin writes for mail-1's backup job. {expires} is a date.
@@ -179,10 +231,13 @@ class Step:
     login: str = ""  # then a login as this account, with the planted admin key
     admin: tuple[str, ...] = ()  # or what the person running the checker does (demo.py's verbs)
     lost: bool = False  # the server can't be checked from here on
+    strict: bool = False  # the script says nothing of its own failures: any failed line stops it
 
 
 STORY = (
-    Step(0, "admin", "sets the daily check", admin=("schedule", "03:00")),
+    # At the hour before now, so about 23 hours off: a daily check during the story would stop
+    # the story's own, and one soon after would clear day 5's note.
+    Step(0, "admin", "sets the daily check", admin=("schedule",)),
     Step(
         1,
         "db-1",
@@ -190,7 +245,13 @@ STORY = (
         script=ROUTINE_WORK,
         login="deploy2",
     ),  # fmt: skip
-    Step(2, "shop-web-2", "PHP is updated; its service isn't restarted", script=PHP.fix),
+    Step(
+        2,
+        "shop-web-2",
+        "PHP is updated; its service isn't restarted",
+        script=PHP.fix,
+        strict=True,
+    ),  # fmt: skip
     Step(
         2,
         "admin",
@@ -202,9 +263,15 @@ STORY = (
         "shop-web-1",
         "the break-in",
         script=renamed(detection.ATTACKS, ATTACK_NAMES),
-        login="deploy2",
+        login=INTRUDER,
     ),  # fmt: skip
-    Step(3, "shop-web-2", "the PHP service is restarted", script=PHP.restart_fixed),
+    Step(
+        3,
+        "shop-web-2",
+        "the PHP service is restarted",
+        script=PHP.restart_fixed,
+        strict=True,
+    ),  # fmt: skip
     Step(3, "mail-1", "a backup job is added", script=BACKUP_JOB),
     Step(3, "app-1", "its firewall stops letting the checker in", script=SHUT_OUT, lost=True),
     Step(4, "shop-web-1", "the intruder removes the web shell and the cron job", script=TIDY_UP),
@@ -229,13 +296,14 @@ CHECKED_DAYS = (0, 1, 2, 3, 4)
 HANDS_ON = (
     "Checks: start one from the page. Until you do, the list is empty (see the story's notes).",
     "Known threats, Manage: put the stopped threat update back (the story's day 6).",
+    "The daily check runs about 23 hours after `up` began, and clears day 5's note.",
     "Start a check; start a second while it runs; stop one.",
     "Check app-1 alone (the firewall refuses it): the list of what to look at.",
     "Ask a server for its key again; paste a wrong fingerprint.",
     "Invite a view-only person, sign in as them in a private window.",
     "Settings: each field's refusals. The daily check's page.",
     "Delete stored evidence: one server's, and before a date.",
-    "Add staging-1 back under its old name.",
+    "Add staging-1 back under its old name (its server is still up; `status` has its address).",
     "Sign-in security: change password, recovery codes, wrong codes.",
     "Light, dark, and a phone's width, on each page.",
 )

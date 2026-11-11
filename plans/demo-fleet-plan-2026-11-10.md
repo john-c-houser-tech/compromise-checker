@@ -28,6 +28,7 @@ ways:
 
 One script, `tests/integration/demo.py`, with four commands:
 
+    # Built so far (D.3): up, status, down. --days is D.4, save is D.5, --build when it is needed.
     demo.py up [--days N] [--build]   # make the checker's server and the fleet, play the story
     demo.py status                    # what is up, since when, what it has cost, when it ends
     demo.py save DIR                  # copy the checker's data down, as the demo dataset
@@ -60,7 +61,8 @@ One script, `tests/integration/demo.py`, with four commands:
   their private halves thrown away at once, as now.
 - **The checker's server** is public, as any install with a web address is: sign-in with two-factor,
   the installer's own lockdown.
-- **Cost:** six Nanodes are about $1.10 a day. One sitting is a few cents; a week is about $8.
+- **Cost:** seven Nanodes (the story needed one more) are about $1.30 a day. One sitting is a few
+  cents; a week is about $9.
   `up` says the cost before it starts and needs John's OK each time, as the proofs do. `--days` has
   a ceiling of 14.
 - **Nothing deletes the fleet by itself** (a server can't delete itself without holding the Linode

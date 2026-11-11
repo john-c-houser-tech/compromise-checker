@@ -34,6 +34,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -381,7 +382,7 @@ def prepare_member(
         checker,
         whitelist_command(server.name, 'mkdir -p "$(dirname "$0")" && cat > "$0"'),
         f"{server.name}'s whitelist",
-        input=story.renamed(proof.PROOF_WHITELIST.read_text(encoding="utf-8"), story.SETUP_NAMES),
+        input=story.WHITELIST.replace("{checker}", checker.address),
     )
     print(f"{server.name}: set up, closed to all but the checker, added and confirmed")
 
@@ -425,10 +426,11 @@ def check_all(checker: install.Node, which: str, names: list[str]) -> None:
         )
 
 
-def on_server(node: Through, step: story.Step, keys: dict[str, str], admin_file: Path) -> None:
+def on_server(node: Through, step: story.Step, keys: dict[str, str], admin_file: Path) -> list[str]:
     """One of the story's steps on a fleet server: its script as root, then a login as the
-    account it made, if the story has one."""
-    script = step.script
+    account it made, if the story has one. Returns what the script said had failed: the story
+    goes on, and `up` says so at the end."""
+    script = ("set -eu\n" if step.strict else "") + step.script
     for name, value in keys.items():
         script = script.replace("{" + name + "}", value)
     # On standard input, not as `bash -c <script>`: the script's own shell would carry every
@@ -436,11 +438,19 @@ def on_server(node: Through, step: story.Step, keys: dict[str, str], admin_file:
     done = node.run("bash --norc --noprofile -s", timeout=1800, input=script)
     if done.returncode == 255:
         raise DemoError(f"{step.where}: the step didn't run:\n{done.stderr[-1000:]}")
-    for line in done.stderr.splitlines():
-        if line.startswith(("ATTACK FAILED", "STEP FAILED")):
-            print(f"    {step.where}: {line}")
+    if step.strict and done.returncode != 0:
+        raise DemoError(f"{step.where}: {step.says}: it failed:\n{done.stderr[-1000:]}")
+    failed = [
+        f"{step.where}: {line}"
+        for line in done.stderr.splitlines()
+        if line.startswith(("ATTACK FAILED", "STEP FAILED"))
+    ]
     if done.returncode != 0:
-        print(f"    {step.where}: its script ended {done.returncode}: {done.stderr.strip()[-300:]}")
+        failed.append(
+            f"{step.where}: its script ended {done.returncode}: {done.stderr.strip()[-300:]}"
+        )
+    for line in failed:
+        print(f"    {line}")
     if step.login:
         used = Through(node.address, admin_file, node.known, node.via, user=step.login)
         try:
@@ -451,6 +461,7 @@ def on_server(node: Through, step: story.Step, keys: dict[str, str], admin_file:
             raise DemoError(
                 f"{step.where}: the login as {step.login} failed:\n{login.stderr[-500:]}"
             )
+    return failed
 
 
 def by_admin(checker: install.Node, step: story.Step, world: World) -> None:
@@ -464,49 +475,59 @@ def by_admin(checker: install.Node, step: story.Step, world: World) -> None:
             print(f"    {line}")
 
     if verb == "schedule":
-        said(checker.run(as_checker("schedule", "install", "--at", words[0])))
+        at = must(checker, "date -d '1 hour ago' +%H:00", "reading its clock").strip()
+        done = checker.run(as_checker("schedule", "install", "--at", at))
+        said(done)
+        if done.returncode != 0:  # the pages still work without it: said at the end
+            world.failed.append(
+                f"the daily check wasn't set (`schedule install` ended {done.returncode})"
+            )
     elif verb == "accept":
         host, reason = words
         said(checker.run(as_checker("baseline", "accept", host, "--reason", reason)))
     elif verb == "remove":
         (host,) = words
         must(checker, as_checker("hosts", "remove", host), f"taking {host} off the list")
-        world.forget(host)
+        world.unlisted.add(host)
     elif verb == "rule":
         (host,) = words
         rule = story.BACKUP_RULE.format(expires=(world.today + timedelta(days=1)).isoformat())
         must(checker, whitelist_command(host, 'cat >> "$0"'), f"{host}'s rule", input=rule)
-        said(checker.run(as_checker("whitelist", "check")))
+        print("    " + must(checker, as_checker("whitelist", "check"), "the rules").strip())
     elif verb == "retire":
         pack, reason = words
-        must(checker, as_checker("packs", "retire", pack, "--reason", reason), f"stopping {pack}")
+        told = must(
+            checker, as_checker("packs", "retire", pack, "--reason", reason), f"stopping {pack}"
+        )
+        if "Retired:" not in told:  # it ends 0 for an update that wasn't in use
+            raise DemoError(f"{pack} wasn't stopped: {told.strip()[-300:]}")
     else:
         raise DemoError(f"the story asks for {verb!r}, which isn't a thing the admin does here")
 
 
 @dataclass
 class World:
-    """What the story changes as it plays: the servers still reachable, and the state."""
+    """What the story changes as it plays."""
 
-    api: object
-    folder: Path
-    state: State
-    nodes: dict[str, Through]
+    nodes: dict[str, Through]  # every fleet server, for as long as the demo is up
     today: date
     lost: set[str] = field(default_factory=set)  # still listed, no longer answering
+    unlisted: set[str] = field(default_factory=set)  # taken off the checker's list, still up
     found: list[str] = field(default_factory=list)  # the proof's findings on a server since lost
-
-    def forget(self, name: str) -> None:
-        """A server taken off the checker's list: its Linode is deleted too."""
-        server = next(s for s in self.state.servers if s.name == name)
-        self.nodes.pop(name).close()
-        self.api.delete(server.id)
-        self.state.servers.remove(server)
-        save_state(self.folder, self.state)
-        print(f"    {name}: its server is deleted")
+    failed: list[str] = field(default_factory=list)  # steps that didn't do what the story says
+    collected: int = 0  # how many collections the story's checks made
 
     def checked(self) -> list[str]:
-        return [name for name in self.nodes if name not in self.lost]
+        return [name for name in self.nodes if name not in self.lost | self.unlisted]
+
+
+def shut_out(checker: install.Node, address: str, tries: int = 8, pause: float = 5) -> bool:
+    """Whether a server has stopped letting the checker's server in."""
+    for _ in range(tries):
+        time.sleep(pause)
+        if checker.run(f"timeout 5 bash -c '</dev/tcp/{address}/22'").returncode != 0:
+            return True
+    return False
 
 
 def play(
@@ -517,8 +538,7 @@ def play(
     keeps a way in to a weakened server."""
     with tempfile.TemporaryDirectory(prefix="cc-demo-planted-") as made:
         _, root_key = keypair(Path(made), "planted-root")
-        admin_file, admin_key = keypair(Path(made), "planted-admin")
-        keys = {"root_key": root_key, "admin_key": admin_key, "checker": checker.address}
+        keys = {"root_key": root_key, "checker": checker.address}
         for day in sorted({step.day for step in steps} | set(checked)):
             print(f"--- day {day}")
             for step in (s for s in steps if s.day == day):
@@ -532,25 +552,34 @@ def play(
                         world.found += (
                             in_logs(here, one) if here else [f"{step.where}: not looked at"]
                         )
-                    on_server(world.nodes[step.where], step, keys, admin_file)
+                    # Each account the story makes has a key of its own.
+                    admin_file, admin_key = keypair(Path(made), f"planted-{step.login or 'none'}")
+                    node = world.nodes[step.where]
+                    world.failed += on_server(
+                        node, step, {**keys, "admin_key": admin_key}, admin_file
+                    )
                     if step.lost:
+                        if not shut_out(checker, node.address):
+                            raise DemoError(f"{step.where} still lets the checker's server in")
                         world.lost.add(step.where)
-                        time.sleep(10)  # until the server has shut the checker out
             if day in checked:
                 check_all(checker, f"day {day}'s", world.checked())
+                world.collected += len(world.checked())
 
 
 # The address goes in on standard input and is kept in a file for root alone while grep runs: on
 # a command line it would be in the process list, which a check at that moment would collect.
 _COUNT_IN_LOGS = (
     'f=$(mktemp) && cat > "$f" || exit 3; '
-    "(journalctl --no-pager 2>/dev/null; cat /var/log/auth.log /var/log/secure"
+    '[ -n "$(journalctl -a --no-pager -n 1 2>/dev/null)" ] || [ -s /var/log/auth.log ]'
+    ' || [ -s /var/log/secure ] || { rm -f "$f"; echo "no log could be read" >&2; exit 4; }; '
+    "(journalctl -a --no-pager 2>/dev/null; cat /var/log/auth.log /var/log/secure"
     " /var/log/audit/audit.log /var/log/wtmp /var/log/btmp /var/log/lastlog 2>/dev/null)"
     ' | grep -acF -f "$f"; s=$?; rm -f "$f"; exit $s'
 )
 _FILES_NAMING = (
     'f=$(mktemp) && cat > "$f" || exit 3; '
-    f'grep -rlaF --devices=skip -f "$f" {install.DATA}; s=$?; rm -f "$f"; exit $s'
+    f'grep -rlaF --devices=skip -f "$f" {install.HOME}; s=$?; rm -f "$f"; exit $s'
 )
 
 # The evidence itself: each stored collection, opened with the evidence key on the checker's
@@ -617,7 +646,9 @@ for path in sorted((home / "evidence").glob("*/*.age")):
     with open(path, "rb") as source:
         pyrage.decrypt_io(source, look, [identity])
     look.line(look.partial)
-    looked += 1
+    # What the checker works out from a collection is kept beside it and read too; only the
+    # collections themselves are counted.
+    looked += not any(kind in path.name for kind in (".events-", ".snapshot-", ".assessment-"))
     if look.hit:
         print("HIT", path)
 print("LOOKED", looked)
@@ -663,13 +694,16 @@ def in_logs(here: str, nodes: dict[str, Through]) -> list[str]:
 
 
 def never_seen_from_here(
-    checker: install.Node, nodes: dict[str, Through], earlier: tuple[str, ...] = ()
+    checker: install.Node,
+    nodes: dict[str, Through],
+    earlier: tuple[str, ...] = (),
+    collected: int = 1,
 ) -> list[str]:
     """The proof that the demo can be shown as it is: what names this machine's address. The
     fleet's login records and logs; the files the checker keeps unencrypted; and the evidence it
     collected, which is encrypted as it arrives and so is opened to be read. A place that
     couldn't be looked at is a failure too, never a pass. `earlier`: what was found on a server
-    looked at before the story shut it off."""
+    looked at before the story shut it off. `collected`: how many collections must be there."""
     address = this_machine(checker)
     if address is None:
         return ["this machine's address, as the checker's server sees it, couldn't be read"]
@@ -678,7 +712,49 @@ def never_seen_from_here(
     if done.returncode not in (0, 1):
         found.append(f"the checker's files couldn't be looked at ({done.stderr.strip()[-200:]})")
     found += [f"the checker's own files: {line}" for line in done.stdout.splitlines()[:5]]
-    return found + in_evidence(checker, address, 2 * len(nodes))
+    return found + in_evidence(checker, address, collected)
+
+
+class Said:
+    """Somewhere to print that can't fail: when the terminal is gone (which is what a hang-up
+    means) every print raises, and that would end the deleting. What is said then goes to a file."""
+
+    def __init__(self, stream, instead: Path):
+        self.stream, self.instead = stream, instead
+
+    def write(self, text: str) -> int:
+        try:
+            self.stream.write(text)
+            self.stream.flush()
+        except (OSError, ValueError):
+            self.stream = open(self.instead, "a", encoding="utf-8")  # noqa: SIM115
+            self.stream.write(text)
+            self.stream.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+@contextmanager
+def nothing_stops_it(folder: Path):
+    """While a failed `up` deletes what it made: a second signal is ignored, and a terminal that
+    has gone doesn't stop it (what is said goes to a file beside the state folder instead)."""
+    held = {}
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            held[number] = signal.signal(number, signal.SIG_IGN)
+        except ValueError:  # not the main thread: there is no handler of ours to hold off
+            pass
+    out, err = sys.stdout, sys.stderr
+    log = folder.with_name(folder.name + "-up-failed.log")
+    sys.stdout, sys.stderr = Said(out, log), Said(err, log)
+    try:
+        yield
+    finally:
+        sys.stdout, sys.stderr = out, err
+        for number, handler in held.items():
+            signal.signal(number, handler)
 
 
 def up(api, folder: Path, region: str, today: date) -> int:
@@ -720,32 +796,38 @@ def up(api, folder: Path, region: str, today: date) -> int:
             )
         name, address = story.UNREACHABLE
         must(checker, hosts_add(Member(name, "", ""), address), f"adding {name}")
-        world = World(api, folder, state, nodes, today)
+        world = World(nodes, today)
         play(checker, world)
         print(must(checker, as_checker("fleet"), "the fleet's results"))
         answering = {name: node for name, node in nodes.items() if name not in world.lost}
-        leaks = never_seen_from_here(checker, answering, tuple(world.found))
+        leaks = never_seen_from_here(checker, answering, tuple(world.found), world.collected)
         for leak in leaks:
             print(f"FAIL {leak}")
         if not leaks:
             print(
-                "PASS nothing names this machine: not the fleet's logs, not the checker's"
-                " files, not the evidence it collected"
+                "PASS nothing names this machine so far: not the fleet's logs, not the checker's"
+                " files, not the evidence it collected. (Signing in to the pages from here puts"
+                " this address in the web interface's own records.)"
             )
+        if world.failed:
+            print("\nNOT AS THE STORY SAYS:")
+            for line in world.failed:
+                print(f"  {line}")
         print(f"\nThe checker: https://{state.web_name}/ (a test certificate: the browser warns)")
         print(f"Make the first account, within the hour: {link}")
         print(f"Up until `demo.py down`; its tags end on {state.until}.")
         hands_on()
-        return 1 if leaks else 0
+        return 1 if leaks or world.failed else 0
     except BaseException:
-        print("up failed: deleting what it made", file=sys.stderr)
-        try:
-            cleared = down(api, folder) == 0
-        except BaseException as exc:  # noqa: BLE001 - it must be said, whatever stopped it
-            print(f"deleting failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-            cleared = False
-        if not cleared:
-            print("SERVERS MAY STILL BE UP AND BILLING: run `demo.py down`.", file=sys.stderr)
+        with nothing_stops_it(folder):
+            print("up failed: deleting what it made", file=sys.stderr)
+            try:
+                cleared = down(api, folder) == 0
+            except BaseException as exc:  # noqa: BLE001 - it must be said, whatever stopped it
+                print(f"deleting failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                cleared = False
+            if not cleared:
+                print("SERVERS MAY STILL BE UP AND BILLING: run `demo.py down`.", file=sys.stderr)
         raise
     finally:
         for node in [*nodes.values(), checker]:

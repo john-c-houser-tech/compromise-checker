@@ -1,3 +1,6 @@
-# The repository's Sponsor button. One link for now: a coffee for the
-# developer, paid to NouriLoop LLC through Stripe.
-custom: ["https://buy.stripe.com/bJe6oz3Yp3nmcgwgcA2Ji00"]
+# The repository's Sponsor button: a coffee for the developer, paid to
+# NouriLoop LLC through Stripe, and the page on sponsoring a threat pack or a
+# distribution.
+custom:
+  - "https://buy.stripe.com/bJe6oz3Yp3nmcgwgcA2Ji00"
+  - "https://github.com/john-c-houser-tech/compromise-checker/blob/main/docs/sponsoring.md"

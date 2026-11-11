@@ -218,7 +218,9 @@ The check's id, the system and the tool's version are enough.
 
 If the tool saved you time, you can also
 [buy me a coffee](https://buy.stripe.com/bJe6oz3Yp3nmcgwgcA2Ji00). It is a
-thank-you, paid to NouriLoop LLC; it buys no support or warranty.
+thank-you, paid to NouriLoop LLC; it buys no support or warranty. An
+organization can sponsor a threat pack or support for another Linux
+distribution, each at a fixed price: [sponsoring](docs/sponsoring.md).
 
 Questions and ideas go in
 [Discussions](https://github.com/john-c-houser-tech/compromise-checker/discussions).

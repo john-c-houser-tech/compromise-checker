@@ -21,6 +21,11 @@ below, it is right and this list says why.
 - **One sitting ends on day 5,** with a threat update stopped by hand and no check after it, so
   the "threat updates have changed since this result" note is there to see. Putting it back
   (day 6) is left to the person at the pages: the checker has no command for it, only the button.
+- **The Checks page starts out empty.** D.1 had `up` start day 0's check "from the page's own
+  command". There is no such command: the web service makes the list's entry itself and holds the
+  running check in its own memory (`checker/web/runs.py`), and it needs a signed-in person, who
+  doesn't exist until John makes the first account. So the story's checks run by command, as the
+  daily schedule's do, and the first thing on the person's own list is to start one from the page.
 - **Every fleet server's SSH is open to the checker's server only,** from before its first check.
 
 ## The fleet

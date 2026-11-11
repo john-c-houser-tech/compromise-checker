@@ -599,3 +599,17 @@ def test_a_stop_after_finding_something_keeps_it_for_the_next_run(fleet, monkeyp
 def test_the_timer_counts_being_stopped_as_clean():
     units = schedule.systemd_units((3, 0), {})
     assert any("SuccessExitStatus=10 11 12 143" in text for text in units.values())
+
+
+def test_the_accounts_own_systemd_is_found_without_a_login_session(tmp_path, monkeypatch):
+    """`runuser -u compromise-checker -- checker schedule install` (docs/install.md's form) has no
+    XDG_RUNTIME_DIR, and `systemctl --user` then can't connect (the demo's first run)."""
+    monkeypatch.setattr(schedule.sys, "platform", "linux")
+    found = schedule.session_environment({"HOME": "/h"}, tmp_path)
+    assert found == {"HOME": "/h", "XDG_RUNTIME_DIR": str(tmp_path)}
+    # A login's own value stands, and a folder that isn't there (no user manager) isn't claimed.
+    kept = schedule.session_environment({"XDG_RUNTIME_DIR": "/run/user/7"}, tmp_path)
+    assert kept == {"XDG_RUNTIME_DIR": "/run/user/7"}
+    assert schedule.session_environment({}, tmp_path / "none") == {}
+    monkeypatch.setattr(schedule.sys, "platform", "darwin")
+    assert schedule.session_environment({}, tmp_path) == {}

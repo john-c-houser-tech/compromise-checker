@@ -29,7 +29,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
@@ -913,10 +913,30 @@ class InstallFailed(Exception):
 TIMER_COMMAND_SECONDS = 60  # a hung systemctl mustn't hold a page, or the command, for ever
 
 
+def session_environment(
+    env: Mapping[str, str] | None = None, runtime: Path | None = None
+) -> dict[str, str]:
+    """The environment for `systemctl --user`, which finds the account's own systemd through
+    XDG_RUNTIME_DIR. A login sets it; `runuser` and `sudo -u` (how docs/install.md runs this tool
+    as its account) don't, and systemctl then says only "Failed to connect to bus". Where it is
+    missing and the account's systemd is running, its folder is the standard one."""
+    found = dict(os.environ if env is None else env)
+    if sys.platform != "darwin" and not found.get("XDG_RUNTIME_DIR"):
+        folder = Path(f"/run/user/{os.getuid()}") if runtime is None else runtime
+        if folder.is_dir():
+            found["XDG_RUNTIME_DIR"] = str(folder)
+    return found
+
+
 def _timer_command(command: list[str]) -> Any:
     try:
         return subprocess.run(  # noqa: S603
-            command, capture_output=True, text=True, check=False, timeout=TIMER_COMMAND_SECONDS
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=TIMER_COMMAND_SECONDS,
+            env=session_environment(),
         )
     except subprocess.TimeoutExpired:
         raise InstallFailed(f"`{' '.join(command)}` didn't finish") from None
@@ -1196,7 +1216,12 @@ def timer_running() -> bool | None:
     )
     try:
         done = subprocess.run(  # noqa: S603
-            command, capture_output=True, text=True, check=False, timeout=10
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+            env=session_environment(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

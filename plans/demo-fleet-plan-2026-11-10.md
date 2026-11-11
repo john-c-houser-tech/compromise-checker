@@ -28,6 +28,7 @@ ways:
 
 One script, `tests/integration/demo.py`, with four commands:
 
+    # Built so far (D.3): up, status, down. --days is D.4, save is D.5, --build when it is needed.
     demo.py up [--days N] [--build]   # make the checker's server and the fleet, play the story
     demo.py status                    # what is up, since when, what it has cost, when it ends
     demo.py save DIR                  # copy the checker's data down, as the demo dataset
@@ -60,7 +61,8 @@ One script, `tests/integration/demo.py`, with four commands:
   their private halves thrown away at once, as now.
 - **The checker's server** is public, as any install with a web address is: sign-in with two-factor,
   the installer's own lockdown.
-- **Cost:** six Nanodes are about $1.10 a day. One sitting is a few cents; a week is about $8.
+- **Cost:** seven Nanodes (the story needed one more) are about $1.30 a day. One sitting is a few
+  cents; a week is about $9.
   `up` says the cost before it starts and needs John's OK each time, as the proofs do. `--days` has
   a ceiling of 14.
 - **Nothing deletes the fleet by itself** (a server can't delete itself without holding the Linode
@@ -91,3 +93,20 @@ One script, `tests/integration/demo.py`, with four commands:
 - **D.5 The dataset.** `save`, browsing it on the laptop, the screenshot script moved onto it, and
   `demo_fleet.py` retired. The README's pictures taken again.
 - **D.6 The advisor and viewers,** as decided in 1 and 2.
+
+## Found in the pages while the demo was up (to fix later)
+
+- **After setting up two-factor, the first account lands on the Sign-in security form**
+  (John, 2026-11-10). It reads as one more step of making the account, but the account is done
+  and the rest of the interface is open. Fix: send the person on to the Servers page with a line
+  saying the account is ready, or say so plainly at the top of the form.
+- **The log command `schedule install` prints doesn't work for the installed checker's account**
+  (seen on the demo's third run, 2026-11-10). `journalctl --user -u compromise-checker.service`,
+  run as the service account, answers "No journal files were opened due to insufficient
+  permissions": a system account has no journal of its own, so its timer's output is in the
+  system journal. Fix: print a command that works there (to be tried on a server:
+  `sudo journalctl _SYSTEMD_USER_UNIT=compromise-checker.service`), in `checker/schedule.py`
+  and `docs/scheduling.md`.
+- **Docker needs a second try on every fresh Ubuntu server** (all three runs). The proofs' setup
+  hides why the first fails; the demo's retry works and says nothing either. Harmless here, but
+  the read-only proof's own container step may be quietly skipped the same way.

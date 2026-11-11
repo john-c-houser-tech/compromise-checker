@@ -8,14 +8,16 @@ anything the checker stores is the laptop's: what it holds can be shown as it is
     LINODE_TOKEN=… python tests/integration/demo.py status   # what is up, its cost, when it ends
     LINODE_TOKEN=… python tests/integration/demo.py down     # delete every server
 
-This is step D.2: the fleet and behaviours of demo_fleet.py, two checks each, run from the
-checker's own server. The story (D.3), keeping it up for days (D.4) and saving its data (D.5) come
-after. Its servers carry their own tag, so the proofs' sweep of servers older than two hours leaves
-them alone. The end date in its tags is acted on only when no state is kept here: then `up`
-deletes any demo server past it. While a state is kept, `status` says when it is overdue (D.4
-brings the sweep that needs no one to look).
+`up` plays the story in demo_story.py in one sitting (D.3): each of its days is a few minutes, and
+ends with a check of every server, run from the checker's own server. Keeping it up for real days
+(D.4) and saving its data (D.5) come after.
 
-Costs Linode time (six Nanodes, about 5 cents an hour): run only with John's approval. What `up`
+Its servers carry their own tag, so the proofs' sweep of servers older than two hours leaves them
+alone. The end date in its tags is acted on only when no state is kept here: then `up` deletes any
+demo server past it. While a state is kept, `status` says when it is overdue (D.4 brings the sweep
+that needs no one to look).
+
+Costs Linode time (seven Nanodes, about 5 cents an hour): run only with John's approval. What `up`
 makes stays up until `down`.
 """
 
@@ -32,14 +34,15 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass, fields
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import demo_story as story  # noqa: E402
 import detection_proof as detection  # noqa: E402
 import install_proof as install  # noqa: E402
-import php2shell_proof as php  # noqa: E402
 import readonly_proof as proof  # noqa: E402
 
 TAG = "compromise-checker-demo"
@@ -53,27 +56,7 @@ INSTALLER_SHA256 = "8bc8989552356ef0aff29e0bcc291e5e53b53b7fbe919ff422857bccef02
 NANODE_AN_HOUR = 0.0075
 CHECKER = f"{install.PROGRAM}/current/bin/checker"
 MACHINE_KEY = f"{install.DATA}/keys/scanner_ed25519"  # where first setup makes it
-UNREACHABLE = ("old-box", "192.0.2.10")  # a documentation address: nothing answers there
 _FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
-
-# demo_fleet.py's names for the proofs' scaffolding, and its smaller behaviour.
-DEMO_NAMES = (
-    ("cc-toor", "sysmaint"),
-    ("cc-proof-backdoor", "root@vps-4417"),
-    ("cc-proof", "sysupdate"),
-    ("ccadmin", "deploy2"),
-    ("cc-sleep", "kworkerd"),
-    ("cc-", "sys-"),
-)
-SMALL_ATTACK = r"""
-set -u
-useradd -m -s /bin/bash deploy2
-install -d -m 700 -o deploy2 -g deploy2 /home/deploy2/.ssh
-echo '{admin_key} deploy2@laptop' > /home/deploy2/.ssh/authorized_keys
-chown deploy2:deploy2 /home/deploy2/.ssh/authorized_keys
-echo 'deploy2 ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/deploy2
-echo '*/10 * * * * root /usr/bin/true sysupdate' > /etc/cron.d/sysupdate
-"""
 
 
 class DemoError(Exception):
@@ -84,22 +67,9 @@ class Unreadable(DemoError):
     """A state file that is there but can't be read: empty, damaged, or another version's."""
 
 
-@dataclass(frozen=True)
-class Member:
-    name: str
-    group: str
-    distro: str
-    role: str  # attacked, small, vulnerable or clean
-
-
-FLEET = (
-    Member("shop-web-1", "web", "ubuntu24.04", "attacked"),
-    Member("shop-web-2", "web", "ubuntu24.04", "vulnerable"),
-    Member("db-1", "database", "rocky9", "small"),
-    Member("mail-1", "mail", "ubuntu24.04", "clean"),
-    Member("app-1", "web", "rocky9", "clean"),
-)
-CONTROLLER = Member("checker", "", "ubuntu24.04", "checker")
+Member = story.Member
+FLEET = story.FLEET
+CONTROLLER = Member("checker", "", "ubuntu24.04")
 
 
 # --- what is up, kept between commands ---------------------------------------------------
@@ -108,7 +78,7 @@ CONTROLLER = Member("checker", "", "ubuntu24.04", "checker")
 @dataclass
 class Server:
     name: str
-    role: str
+    role: str  # checker or fleet
     distro: str
     group: str
     id: int
@@ -245,9 +215,12 @@ def install_line(version: str, sha256: str, name: str) -> str:
 def as_checker(*words: str) -> str:
     """A checker command on its own server, run as the tool's account (docs/install.md)."""
     said = " ".join(shlex.quote(w) for w in words)
+    # XDG_RUNTIME_DIR: `schedule install` talks to the account's own systemd, which the installer
+    # keeps running. runuser gives no login session, so without it there is no way to find it.
     return (
         f"runuser -u {install.ACCOUNT} -- env CHECKER_HOME={install.DATA}"
-        f" HOME={install.HOME} {CHECKER} {said}"
+        f" HOME={install.HOME} XDG_RUNTIME_DIR=/run/user/$(id -u {install.ACCOUNT})"
+        f" {CHECKER} {said}"
     )
 
 
@@ -263,23 +236,6 @@ def offered(output: str) -> str | None:
     """The fingerprint `checker trust` says a server offers: the first in what it prints."""
     found = _FINGERPRINT.search(output)
     return found.group(0) if found else None
-
-
-def demo_names(script: str) -> str:
-    for old, new in DEMO_NAMES:
-        script = script.replace(old, new)
-    return script
-
-
-def behaviour(role: str, root_key: str, admin_key: str) -> str | None:
-    """What happens on a server between its two checks, as a script for root, or None."""
-    if role == "attacked":
-        script = demo_names(detection.ATTACKS)
-    elif role == "small":
-        script = SMALL_ATTACK
-    else:
-        return None
-    return script.replace("{root_key}", root_key).replace("{admin_key}", admin_key)
 
 
 # --- reaching the servers --------------------------------------------------------------------
@@ -299,8 +255,10 @@ class Through(install.Node):
         raise NotImplementedError("it would connect from here, not through the checker's server")
 
 
-def must(node: install.Node, command: str, what: str, timeout: int = 900) -> str:
-    done = node.run(command, timeout=timeout)
+def must(
+    node: install.Node, command: str, what: str, timeout: int = 900, input: str | None = None
+) -> str:
+    done = node.run(command, timeout=timeout, input=input)
     if done.returncode != 0:
         raise DemoError(f"{what} failed on {node.address}:\n{(done.stdout + done.stderr)[-2000:]}")
     return done.stdout
@@ -334,9 +292,9 @@ def make_servers(api, folder: Path, state: State, public_key: str, region: str) 
             made = api.find_demo(label) or api.create(
                 label, proof.IMAGES[member.distro], region, public_key, tags=tags
             )
+        role = "checker" if member is CONTROLLER else "fleet"
         return Server(
-            member.name, member.role, member.distro, member.group, made["id"], label,
-            made["ipv4"][0],
+            member.name, role, member.distro, member.group, made["id"], label, made["ipv4"][0]
         )  # fmt: skip
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -372,13 +330,15 @@ def install_checker(node: install.Node, state: State, folder: Path) -> str:
     return links[0]
 
 
-def prepare_member(checker: install.Node, node: Through, server: Server, scanner_key: str) -> None:
-    """A fleet server as the proofs set one up, with the scanner account open to the checker's
-    server only; then added to the checker and its identity confirmed against its own word."""
+def prepare_member(
+    checker: install.Node, node: Through, server: Server, member: Member, scanner_key: str
+) -> None:
+    """A fleet server as the proofs set one up, under the demo's names, with the scanner account
+    and then all of SSH open to the checker's server only; then added to the checker and its
+    identity confirmed against its own word."""
     node.wait(600)
-    setup = proof.SETUP.replace("{controller}", checker.address).replace(
-        "{scanner_key}", scanner_key
-    )
+    setup = story.renamed(proof.SETUP, story.SETUP_NAMES)
+    setup = setup.replace("{controller}", checker.address).replace("{scanner_key}", scanner_key)
     done = node.run(proof.strict(setup))
     if done.returncode != 0:
         raise DemoError(
@@ -388,9 +348,24 @@ def prepare_member(checker: install.Node, node: Through, server: Server, scanner
     for line in done.stderr.splitlines():
         if line.startswith("proof setup:"):  # a part it goes on without, e.g. no container
             print(f"{server.name}: {line}")
+    if "Docker not started" in done.stderr:
+        # The break-in's container step needs it. Once more, this time saying why.
+        again = node.run("bash --norc --noprofile -s", timeout=600, input=story.CONTAINER)
+        if again.returncode == 0:
+            print(f"{server.name}: Docker started at the second try")
+        else:
+            said = (again.stdout + again.stderr).strip()[-1500:]
+            print(f"{server.name}: Docker still not started:\n{said}")
+    firewall = story.FIREWALL.replace("{checker}", checker.address)
+    must(
+        node,
+        "bash --norc --noprofile -s",
+        "closing SSH to all but the checker's server",
+        input=firewall,
+    )
     must(node, proof.strict(detection.WEB_SETUP), "its web server", timeout=300)
-    if server.role == "vulnerable":
-        must(node, proof.strict(php.SCENARIOS["ubuntu-own"].install), "the older PHP")
+    if member.old_php:
+        must(node, proof.strict(story.PHP.install), "the older PHP")
     must(checker, hosts_add(server, server.address), f"adding {server.name}")
     its_own = set(
         _FINGERPRINT.findall(
@@ -403,15 +378,22 @@ def prepare_member(checker: install.Node, node: Through, server: Server, scanner
     if fingerprint is None or fingerprint not in its_own:
         raise DemoError(f"{server.name} offered {fingerprint}, which isn't one of its own keys")
     must(checker, as_checker("trust", server.name, "--expect", fingerprint), "confirming it")
-    whitelist = f"{install.DATA}/whitelist/hosts/{server.name}.yaml"
-    node_text = shlex.quote(proof.PROOF_WHITELIST.read_text(encoding="utf-8"))
     must(
         checker,
-        f"runuser -u {install.ACCOUNT} -- sh -c 'umask 077 && mkdir -p"
-        f" {install.DATA}/whitelist/hosts && cat > {whitelist}' <<< {node_text}",
+        whitelist_command(server.name, 'mkdir -p "$(dirname "$0")" && cat > "$0"'),
         f"{server.name}'s whitelist",
+        input=story.WHITELIST.replace("{checker}", checker.address),
     )
-    print(f"{server.name}: set up, added and confirmed")
+    print(f"{server.name}: set up, closed to all but the checker, added and confirmed")
+
+
+def whitelist_command(name: str, shell: str) -> str:
+    """A shell line run as the checker's account, with a server's whitelist file as its $0."""
+    path = f"{install.DATA}/whitelist/hosts/{name}.yaml"
+    return (
+        f"runuser -u {install.ACCOUNT} -- sh -c {shlex.quote('umask 077 && ' + shell)}"
+        f" {shlex.quote(path)}"
+    )
 
 
 BANDS = ("Low", "Elevated", "High", "Critical")
@@ -444,48 +426,160 @@ def check_all(checker: install.Node, which: str, names: list[str]) -> None:
         )
 
 
-def behave(node: Through, server: Server) -> None:
-    """What happens on a server between its two checks. The keys it plants are made in a
-    folder that is gone when this returns: no one keeps a way in to a weakened server."""
-    with tempfile.TemporaryDirectory(prefix="cc-demo-planted-") as made:
-        _, root_key = keypair(Path(made), "planted-root")
-        admin_file, admin_key = keypair(Path(made), "planted-admin")
-        script = behaviour(server.role, root_key, admin_key)
-        if script is None:
-            return
-        # On standard input, not as `bash -c <script>`: the script's own shell would carry every
-        # pattern its pgrep checks look for, and they would find it instead of what they staged.
-        done = node.run("bash -s", timeout=900, input=script)
-        if done.returncode == 255:
-            raise DemoError(f"{server.name}: the behaviours didn't run:\n{done.stderr[-1000:]}")
-        for line in done.stderr.splitlines():
-            if line.startswith("ATTACK FAILED"):
-                print(f"{server.name}: {line}")
-        if done.returncode != 0:
-            print(f"{server.name}: the behaviours' script ended {done.returncode}")
-        used = Through(server.address, admin_file, node.known, node.via, user="deploy2")
+def on_server(node: Through, step: story.Step, keys: dict[str, str], admin_file: Path) -> list[str]:
+    """One of the story's steps on a fleet server: its script as root, then a login as the
+    account it made, if the story has one. Returns what the script said had failed: the story
+    goes on, and `up` says so at the end."""
+    script = ("set -eu\n" if step.strict else "") + step.script
+    for name, value in keys.items():
+        script = script.replace("{" + name + "}", value)
+    # On standard input, not as `bash -c <script>`: the script's own shell would carry every
+    # pattern its pgrep checks look for, and they would find it instead of what they staged.
+    done = node.run("bash --norc --noprofile -s", timeout=1800, input=script)
+    if done.returncode == 255:
+        raise DemoError(f"{step.where}: the step didn't run:\n{done.stderr[-1000:]}")
+    if step.strict and done.returncode != 0:
+        raise DemoError(f"{step.where}: {step.says}: it failed:\n{done.stderr[-1000:]}")
+    failed = [
+        f"{step.where}: {line}"
+        for line in done.stderr.splitlines()
+        if line.startswith(("ATTACK FAILED", "STEP FAILED"))
+    ]
+    if done.returncode != 0:
+        failed.append(
+            f"{step.where}: its script ended {done.returncode}: {done.stderr.strip()[-300:]}"
+        )
+    for line in failed:
+        print(f"    {line}")
+    if step.login:
+        used = Through(node.address, admin_file, node.known, node.via, user=step.login)
         try:
-            login = used.run("true", timeout=60)  # the new account is used, as an intruder would
+            login = used.run("true", timeout=60)  # the new account is used
         finally:
             used.close()
         if login.returncode != 0:
             raise DemoError(
-                f"{server.name}: the new account's login failed:\n{login.stderr[-500:]}"
+                f"{step.where}: the login as {step.login} failed:\n{login.stderr[-500:]}"
             )
-    print(f"{server.name}: behaviours done")
+    return failed
+
+
+def by_admin(checker: install.Node, step: story.Step, world: World) -> None:
+    """One of the story's steps by the person running the checker, through its own commands.
+    Where the story wants to see what the checker answers (an acceptance it may refuse), the
+    answer is printed and the story goes on."""
+    verb, *words = step.admin
+
+    def said(done) -> None:
+        for line in (done.stdout + done.stderr).strip().splitlines()[-6:]:
+            print(f"    {line}")
+
+    if verb == "schedule":
+        at = must(checker, "date -d '1 hour ago' +%H:00", "reading its clock").strip()
+        done = checker.run(as_checker("schedule", "install", "--at", at))
+        said(done)
+        if done.returncode != 0:  # the pages still work without it: said at the end
+            world.failed.append(
+                f"the daily check wasn't set (`schedule install` ended {done.returncode})"
+            )
+    elif verb == "accept":
+        host, reason = words
+        said(checker.run(as_checker("baseline", "accept", host, "--reason", reason)))
+    elif verb == "remove":
+        (host,) = words
+        must(checker, as_checker("hosts", "remove", host), f"taking {host} off the list")
+        world.unlisted.add(host)
+    elif verb == "rule":
+        (host,) = words
+        rule = story.BACKUP_RULE.format(expires=(world.today + timedelta(days=1)).isoformat())
+        must(checker, whitelist_command(host, 'cat >> "$0"'), f"{host}'s rule", input=rule)
+        print("    " + must(checker, as_checker("whitelist", "check"), "the rules").strip())
+    elif verb == "retire":
+        pack, reason = words
+        told = must(
+            checker, as_checker("packs", "retire", pack, "--reason", reason), f"stopping {pack}"
+        )
+        if "Retired:" not in told:  # it ends 0 for an update that wasn't in use
+            raise DemoError(f"{pack} wasn't stopped: {told.strip()[-300:]}")
+    else:
+        raise DemoError(f"the story asks for {verb!r}, which isn't a thing the admin does here")
+
+
+@dataclass
+class World:
+    """What the story changes as it plays."""
+
+    nodes: dict[str, Through]  # every fleet server, for as long as the demo is up
+    today: date
+    lost: set[str] = field(default_factory=set)  # still listed, no longer answering
+    unlisted: set[str] = field(default_factory=set)  # taken off the checker's list, still up
+    found: list[str] = field(default_factory=list)  # the proof's findings on a server since lost
+    failed: list[str] = field(default_factory=list)  # steps that didn't do what the story says
+    collected: int = 0  # how many collections the story's checks made
+
+    def checked(self) -> list[str]:
+        return [name for name in self.nodes if name not in self.lost | self.unlisted]
+
+
+def shut_out(checker: install.Node, address: str, tries: int = 8, pause: float = 5) -> bool:
+    """Whether a server has stopped letting the checker's server in."""
+    for _ in range(tries):
+        time.sleep(pause)
+        if checker.run(f"timeout 5 bash -c '</dev/tcp/{address}/22'").returncode != 0:
+            return True
+    return False
+
+
+def play(
+    checker: install.Node, world: World, steps=story.STORY, checked=story.CHECKED_DAYS
+) -> None:
+    """The story, a day at a time: what happens on the servers, what the admin does, then the
+    day's check. The keys it plants are made in a folder that is gone when this returns: no one
+    keeps a way in to a weakened server."""
+    with tempfile.TemporaryDirectory(prefix="cc-demo-planted-") as made:
+        _, root_key = keypair(Path(made), "planted-root")
+        keys = {"root_key": root_key, "checker": checker.address}
+        for day in sorted({step.day for step in steps} | set(checked)):
+            print(f"--- day {day}")
+            for step in (s for s in steps if s.day == day):
+                print(f"  {step.where}: {step.says}")
+                if step.admin:
+                    by_admin(checker, step, world)
+                else:
+                    if step.lost:  # the proof looks at its logs now: it can't afterwards
+                        here = this_machine(checker)
+                        one = {step.where: world.nodes[step.where]}
+                        world.found += (
+                            in_logs(here, one) if here else [f"{step.where}: not looked at"]
+                        )
+                    # Each account the story makes has a key of its own.
+                    admin_file, admin_key = keypair(Path(made), f"planted-{step.login or 'none'}")
+                    node = world.nodes[step.where]
+                    world.failed += on_server(
+                        node, step, {**keys, "admin_key": admin_key}, admin_file
+                    )
+                    if step.lost:
+                        if not shut_out(checker, node.address):
+                            raise DemoError(f"{step.where} still lets the checker's server in")
+                        world.lost.add(step.where)
+            if day in checked:
+                check_all(checker, f"day {day}'s", world.checked())
+                world.collected += len(world.checked())
 
 
 # The address goes in on standard input and is kept in a file for root alone while grep runs: on
 # a command line it would be in the process list, which a check at that moment would collect.
 _COUNT_IN_LOGS = (
     'f=$(mktemp) && cat > "$f" || exit 3; '
-    "(journalctl --no-pager 2>/dev/null; cat /var/log/auth.log /var/log/secure"
+    '[ -n "$(journalctl -a --no-pager -n 1 2>/dev/null)" ] || [ -s /var/log/auth.log ]'
+    ' || [ -s /var/log/secure ] || { rm -f "$f"; echo "no log could be read" >&2; exit 4; }; '
+    "(journalctl -a --no-pager 2>/dev/null; cat /var/log/auth.log /var/log/secure"
     " /var/log/audit/audit.log /var/log/wtmp /var/log/btmp /var/log/lastlog 2>/dev/null)"
     ' | grep -acF -f "$f"; s=$?; rm -f "$f"; exit $s'
 )
 _FILES_NAMING = (
     'f=$(mktemp) && cat > "$f" || exit 3; '
-    f'grep -rlaF --devices=skip -f "$f" {install.DATA}; s=$?; rm -f "$f"; exit $s'
+    f'grep -rlaF --devices=skip -f "$f" {install.HOME}; s=$?; rm -f "$f"; exit $s'
 )
 
 # The evidence itself: each stored collection, opened with the evidence key on the checker's
@@ -552,7 +646,9 @@ for path in sorted((home / "evidence").glob("*/*.age")):
     with open(path, "rb") as source:
         pyrage.decrypt_io(source, look, [identity])
     look.line(look.partial)
-    looked += 1
+    # What the checker works out from a collection is kept beside it and read too; only the
+    # collections themselves are counted.
+    looked += not any(kind in path.name for kind in (".events-", ".snapshot-", ".assessment-"))
     if look.hit:
         print("HIT", path)
 print("LOOKED", looked)
@@ -578,29 +674,87 @@ def in_evidence(checker: install.Node, here: str, at_least: int) -> list[str]:
     return found
 
 
-def never_seen_from_here(checker: install.Node, nodes: dict[str, Through]) -> list[str]:
-    """D.2's proof: what names this machine's address. The fleet's login records and logs; the
-    files the checker keeps unencrypted; and the evidence it collected, which is encrypted as it
-    arrives and so is opened to be read (two collections a server by now). A place that couldn't
-    be looked at is a failure too, never a pass."""
+def this_machine(checker: install.Node) -> str | None:
+    """This machine's address, as the checker's server sees it."""
     said = checker.out("echo $SSH_CLIENT").split()
-    if not said or not re.fullmatch(r"[0-9a-fA-F.:]+", said[0]):
-        return ["this machine's address, as the checker's server sees it, couldn't be read"]
-    address = said[0]
-    here = address + "\n"
+    return said[0] if said and re.fullmatch(r"[0-9a-fA-F.:]+", said[0]) else None
+
+
+def in_logs(here: str, nodes: dict[str, Through]) -> list[str]:
+    """The fleet servers whose login records and logs name this address, or couldn't be read."""
     found = []
     for name, node in nodes.items():
-        done = node.run(_COUNT_IN_LOGS, input=here)
+        done = node.run(_COUNT_IN_LOGS, input=here + "\n")
         seen = done.stdout.strip()
         if done.returncode not in (0, 1) or not seen.isdigit():
             found.append(f"{name}: its logs couldn't be looked at ({done.stderr.strip()[-200:]})")
         elif seen != "0":
             found.append(f"{name}: its logs name this machine {seen} times")
-    done = checker.run(_FILES_NAMING, input=here)
+    return found
+
+
+def never_seen_from_here(
+    checker: install.Node,
+    nodes: dict[str, Through],
+    earlier: tuple[str, ...] = (),
+    collected: int = 1,
+) -> list[str]:
+    """The proof that the demo can be shown as it is: what names this machine's address. The
+    fleet's login records and logs; the files the checker keeps unencrypted; and the evidence it
+    collected, which is encrypted as it arrives and so is opened to be read. A place that
+    couldn't be looked at is a failure too, never a pass. `earlier`: what was found on a server
+    looked at before the story shut it off. `collected`: how many collections must be there."""
+    address = this_machine(checker)
+    if address is None:
+        return ["this machine's address, as the checker's server sees it, couldn't be read"]
+    found = [*earlier, *in_logs(address, nodes)]
+    done = checker.run(_FILES_NAMING, input=address + "\n")
     if done.returncode not in (0, 1):
         found.append(f"the checker's files couldn't be looked at ({done.stderr.strip()[-200:]})")
     found += [f"the checker's own files: {line}" for line in done.stdout.splitlines()[:5]]
-    return found + in_evidence(checker, address, 2 * len(nodes))
+    return found + in_evidence(checker, address, collected)
+
+
+class Said:
+    """Somewhere to print that can't fail: when the terminal is gone (which is what a hang-up
+    means) every print raises, and that would end the deleting. What is said then goes to a file."""
+
+    def __init__(self, stream, instead: Path):
+        self.stream, self.instead = stream, instead
+
+    def write(self, text: str) -> int:
+        try:
+            self.stream.write(text)
+            self.stream.flush()
+        except (OSError, ValueError):
+            self.stream = open(self.instead, "a", encoding="utf-8")  # noqa: SIM115
+            self.stream.write(text)
+            self.stream.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+@contextmanager
+def nothing_stops_it(folder: Path):
+    """While a failed `up` deletes what it made: a second signal is ignored, and a terminal that
+    has gone doesn't stop it (what is said goes to a file beside the state folder instead)."""
+    held = {}
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            held[number] = signal.signal(number, signal.SIG_IGN)
+        except ValueError:  # not the main thread: there is no handler of ours to hold off
+            pass
+    out, err = sys.stdout, sys.stderr
+    log = folder.with_name(folder.name + "-up-failed.log")
+    sys.stdout, sys.stderr = Said(out, log), Said(err, log)
+    try:
+        yield
+    finally:
+        sys.stdout, sys.stderr = out, err
+        for number, handler in held.items():
+            signal.signal(number, handler)
 
 
 def up(api, folder: Path, region: str, today: date) -> int:
@@ -630,40 +784,50 @@ def up(api, folder: Path, region: str, today: date) -> int:
         scanner_key = must(checker, f"cat {MACHINE_KEY}.pub", "reading the checker's key").strip()
         for server in state.fleet():
             nodes[server.name] = Through(server.address, key, known, checker)
+        members = {m.name: m for m in FLEET}
         with ThreadPoolExecutor(max_workers=len(nodes)) as pool:
             list(
                 pool.map(
-                    lambda s: prepare_member(checker, nodes[s.name], s, scanner_key), state.fleet()
+                    lambda s: prepare_member(
+                        checker, nodes[s.name], s, members[s.name], scanner_key
+                    ),
+                    state.fleet(),
                 )
             )
-        name, address = UNREACHABLE
-        must(checker, hosts_add(Member(name, "", "", "clean"), address), f"adding {name}")
-        check_all(checker, "first", list(nodes))
-        for server in state.fleet():
-            behave(nodes[server.name], server)
-        check_all(checker, "second", list(nodes))
+        name, address = story.UNREACHABLE
+        must(checker, hosts_add(Member(name, "", ""), address), f"adding {name}")
+        world = World(nodes, today)
+        play(checker, world)
         print(must(checker, as_checker("fleet"), "the fleet's results"))
-        leaks = never_seen_from_here(checker, nodes)
+        answering = {name: node for name, node in nodes.items() if name not in world.lost}
+        leaks = never_seen_from_here(checker, answering, tuple(world.found), world.collected)
         for leak in leaks:
             print(f"FAIL {leak}")
         if not leaks:
             print(
-                "PASS nothing names this machine: not the fleet's logs, not the checker's"
-                " files, not the evidence it collected"
+                "PASS nothing names this machine so far: not the fleet's logs, not the checker's"
+                " files, not the evidence it collected. (Signing in to the pages from here puts"
+                " this address in the web interface's own records.)"
             )
+        if world.failed:
+            print("\nNOT AS THE STORY SAYS:")
+            for line in world.failed:
+                print(f"  {line}")
         print(f"\nThe checker: https://{state.web_name}/ (a test certificate: the browser warns)")
         print(f"Make the first account, within the hour: {link}")
         print(f"Up until `demo.py down`; its tags end on {state.until}.")
-        return 1 if leaks else 0
+        hands_on()
+        return 1 if leaks or world.failed else 0
     except BaseException:
-        print("up failed: deleting what it made", file=sys.stderr)
-        try:
-            cleared = down(api, folder) == 0
-        except BaseException as exc:  # noqa: BLE001 - it must be said, whatever stopped it
-            print(f"deleting failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-            cleared = False
-        if not cleared:
-            print("SERVERS MAY STILL BE UP AND BILLING: run `demo.py down`.", file=sys.stderr)
+        with nothing_stops_it(folder):
+            print("up failed: deleting what it made", file=sys.stderr)
+            try:
+                cleared = down(api, folder) == 0
+            except BaseException as exc:  # noqa: BLE001 - it must be said, whatever stopped it
+                print(f"deleting failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                cleared = False
+            if not cleared:
+                print("SERVERS MAY STILL BE UP AND BILLING: run `demo.py down`.", file=sys.stderr)
         raise
     finally:
         for node in [*nodes.values(), checker]:
@@ -672,6 +836,12 @@ def up(api, folder: Path, region: str, today: date) -> int:
 
 
 # --- status and down ---------------------------------------------------------------------
+
+
+def hands_on() -> None:
+    print("\nYours to do while it is up (what only a person at the pages can produce):")
+    for line in story.HANDS_ON:
+        print(f"  - {line}")
 
 
 def status(api, folder: Path, now: datetime) -> int:
@@ -706,6 +876,7 @@ def status(api, folder: Path, now: datetime) -> int:
         if node["id"] not in ours:
             print(f"Not in the state: {node['label']} (id {node['id']}), also up and billing.")
             wants_down = True
+    hands_on()
     return 1 if wants_down else 0
 
 

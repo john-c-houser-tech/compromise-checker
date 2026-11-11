@@ -3,6 +3,8 @@ deletes (the servers are only in the real run)."""
 
 import importlib.util
 import json
+import re
+import signal
 import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -103,10 +105,12 @@ def test_checker_commands_run_as_its_account_with_every_word_quoted():
     said = demo.as_checker("hosts", "add", "a b; rm -rf /")
     assert said.startswith("runuser -u compromise-checker -- env CHECKER_HOME=")
     assert said.endswith("/current/bin/checker hosts add 'a b; rm -rf /'")
+    # `schedule install` finds the account's own systemd by this.
+    assert " XDG_RUNTIME_DIR=/run/user/$(id -u compromise-checker) " in said
     added = demo.hosts_add(demo.FLEET[0], "192.0.2.7")
     assert "--address 192.0.2.7 --user scanner --auth key --key" in added
     assert added.endswith("--sudo nopasswd --group web")
-    assert "--group" not in demo.hosts_add(demo.Member("old-box", "", "", "clean"), "192.0.2.10")
+    assert "--group" not in demo.hosts_add(demo.Member("old-box", "", ""), "192.0.2.10")
 
 
 def test_the_offered_fingerprint_is_read_from_what_trust_prints():
@@ -116,17 +120,6 @@ def test_the_offered_fingerprint_is_read_from_what_trust_prints():
     )
     assert demo.offered(printed) == "SHA256:" + "A" * 43
     assert demo.offered("checker: cannot connect") is None
-
-
-def test_behaviours_carry_the_demo_names_and_the_planted_keys():
-    attacked = demo.behaviour("attacked", "ssh-ed25519 ROOT", "ssh-ed25519 ADMIN")
-    assert "ssh-ed25519 ROOT" in attacked and "ssh-ed25519 ADMIN" in attacked
-    assert "{root_key}" not in attacked and "{admin_key}" not in attacked
-    assert "ccadmin" not in attacked and "cc-proof" not in attacked and "deploy2" in attacked
-    small = demo.behaviour("small", "r", "ssh-ed25519 ADMIN")
-    assert "useradd -m -s /bin/bash deploy2" in small and "ssh-ed25519 ADMIN" in small
-    assert demo.behaviour("clean", "r", "a") is None
-    assert demo.behaviour("vulnerable", "r", "a") is None
 
 
 def test_a_fleet_server_is_only_ever_reached_through_the_checkers(tmp_path):
@@ -206,40 +199,6 @@ def test_status_says_cost_end_date_and_what_is_gone(tmp_path, capsys):
     assert json.loads((tmp_path / "state.json").read_text())["run"] == "abc123"
 
 
-def test_the_behaviours_go_in_on_standard_input(monkeypatch, tmp_path):
-    """Not as `bash -c <script>`: the script's pgrep checks would find its own shell."""
-    calls = []
-
-    class Fake:
-        known = tmp_path / "known"
-        via = None
-
-        def run(self, command, timeout=900, input=None):
-            calls.append((command, input))
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    class Used:
-        def __init__(self, *a, **k):
-            pass
-
-        def run(self, command, timeout=900, input=None):
-            calls.append((command, input))
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(
-        demo, "keypair", lambda folder, name: (tmp_path / name, f"ssh-ed25519 {name}")
-    )
-    monkeypatch.setattr(demo, "Through", Used)
-    server = demo.Server("shop-web-1", "attacked", "ubuntu24.04", "web", 1, "l", "192.0.2.5")
-    demo.behave(Fake(), server)
-    command, script = calls[0]
-    assert command == "bash -s"
-    assert "dev/tcp/127.0.0.1/4444" in script
-
-
 class Ran:
     """A server that answers each command from a list of (returncode, stdout, stderr)."""
 
@@ -255,42 +214,6 @@ class Ran:
 
     def out(self, command):
         return self.run(command).stdout.strip()
-
-
-def test_a_failed_login_as_the_new_account_stops_the_run(monkeypatch, tmp_path):
-    class Refused:
-        def __init__(self, *a, **k):
-            pass
-
-        def run(self, command, timeout=900, input=None):
-            return SimpleNamespace(returncode=255, stdout="", stderr="Permission denied")
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(demo, "keypair", lambda folder, name: (tmp_path / name, "ssh-ed25519 K"))
-    monkeypatch.setattr(demo, "Through", Refused)
-    server = demo.Server("db-1", "small", "rocky9", "database", 1, "l", "192.0.2.5")
-    fake = Ran((0, "", ""))
-    fake.known, fake.via = tmp_path / "known", None
-    with pytest.raises(demo.DemoError, match="login failed"):
-        demo.behave(fake, server)
-    lost = Ran((255, "", "connection closed"))
-    with pytest.raises(demo.DemoError, match="didn't run"):
-        demo.behave(lost, server)
-
-
-def test_the_planted_keys_are_not_kept(monkeypatch, tmp_path):
-    made = []
-
-    def keypair(folder, name):
-        made.append(folder)
-        return folder / name, "ssh-ed25519 K"
-
-    monkeypatch.setattr(demo, "keypair", keypair)
-    server = demo.Server("mail-1", "clean", "ubuntu24.04", "mail", 1, "l", "192.0.2.5")
-    demo.behave(Ran(), server)
-    assert made and not any(folder.exists() for folder in made)
 
 
 RUN_OUTPUT = """\
@@ -314,7 +237,7 @@ def test_a_check_counts_only_if_every_fleet_server_was_judged(capsys):
 def test_the_proof_fails_for_what_it_couldnt_look_at():
     def proof_of(checker_files, evidence=(0, "LOOKED 9\n", ""), **fleet):
         checker = Ran((0, "203.0.113.9 51234 22\n", ""), checker_files, evidence)
-        return demo.never_seen_from_here(checker, fleet), checker, fleet
+        return demo.never_seen_from_here(checker, fleet, collected=2), checker, fleet
 
     found, checker, fleet = proof_of((1, "", ""), a=Ran((1, "0\n", "")))
     assert found == []
@@ -322,6 +245,8 @@ def test_the_proof_fails_for_what_it_couldnt_look_at():
     assert sent == "203.0.113.9\n" and "203.0.113.9" not in command  # never on a command line
     assert "203.0.113.9" not in checker.calls[1][0]
     assert "wtmp" in command and "lastlog" in command
+    assert "journalctl -a " in command and "exit 4" in command  # nothing readable isn't clean
+    assert '-f "$f" /var/lib/compromise-checker;' in checker.calls[1][0]  # its whole home
 
     found, _, _ = proof_of((1, "", ""), a=Ran((0, "3\n", "")), b=Ran((255, "", "no route")))
     assert found == [
@@ -428,28 +353,28 @@ def test_servers_are_made_with_the_demos_tags_and_a_lost_answer_isnt_made_twice(
     api = Making(lose="db-1")
     st = demo.State("abc123", "2026-11-10T12:00:00+00:00", "2026-11-11", [])
     demo.make_servers(api, tmp_path, st, "ssh-ed25519 K", "us-sea")
-    assert len(api.nodes) == 6 == len(st.servers)
+    assert len(api.nodes) == 7 == len(st.servers)
     assert all(n["tags"] == [demo.TAG, "cc-demo-until-20261111"] for n in api.nodes)
     assert api.asked.count("cc-demo-abc123-db-1") == 1  # found by its label, not made again
-    assert len(demo.load_state(tmp_path).servers) == 6
+    assert len(demo.load_state(tmp_path).servers) == 7
 
 
 def test_a_failed_up_deletes_what_it_made_and_its_own_files(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(demo.time, "sleep", lambda s: None)
     monkeypatch.setattr(demo, "keypair", lambda folder, name: (folder / name, "ssh-ed25519 K"))
     folder = tmp_path / "demo"
-    api = Making(fail="app-1")
+    api = Making(fail="staging-1")
     with pytest.raises(RuntimeError):
         demo.up(api, folder, "us-sea", TODAY)
-    assert api.nodes == [] and len(api.deleted) == 5  # the five that were made
+    assert api.nodes == [] and len(api.deleted) == 6  # the six that were made
     assert not folder.exists()
-    assert "6 servers, about 4.5 cents an hour" in capsys.readouterr().out
+    assert "7 servers, about 5.2 cents an hour" in capsys.readouterr().out
 
 
 def test_a_failed_up_says_so_when_it_couldnt_delete(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(demo.time, "sleep", lambda s: None)
     monkeypatch.setattr(demo, "keypair", lambda folder, name: (folder / name, "ssh-ed25519 K"))
-    api = Making(fail="app-1")
+    api = Making(fail="staging-1")
     api.refuse = set(range(100, 110))
     with pytest.raises(RuntimeError):
         demo.up(api, tmp_path / "demo", "us-sea", TODAY)
@@ -537,3 +462,356 @@ def test_status_says_overdue_and_names_servers_the_state_doesnt(tmp_path, capsys
     assert demo.status(api, tmp_path, datetime(2026, 11, 11, 23, tzinfo=UTC)) == 0
     assert demo.status(api, tmp_path, datetime(2026, 11, 12, 0, 5, tzinfo=UTC)) == 1
     assert "OVERDUE: its end date was 2026-11-11" in capsys.readouterr().out
+
+
+# --- the story (D.3) -----------------------------------------------------------------------
+
+story = demo.story
+
+
+def test_the_story_names_only_its_own_servers_and_shows_no_scaffolding():
+    import readonly_proof as proof
+
+    names = {m.name for m in story.FLEET}
+    for step in story.STORY:
+        assert step.where in names | {"admin"}, step
+        assert bool(step.script) != bool(step.admin), step  # one or the other
+        if step.admin and step.admin[0] in ("accept", "remove", "rule"):
+            assert step.admin[1] in names
+    assert max(story.CHECKED_DAYS) < max(s.day for s in story.STORY)  # day 5's note stays
+    setup = story.renamed(proof.SETUP, story.SETUP_NAMES)
+    whitelist = story.WHITELIST
+    attack = next(s.script for s in story.STORY if s.says == "the break-in")
+    for old, _ in story.SETUP_NAMES:
+        assert old in proof.SETUP, old  # no entry left over from a setup that has changed
+    for text in (setup, attack):
+        lines = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+        shown = "\n".join(lines).replace("proof setup:", "").replace("-k cc-w", "")
+        assert not re.search(r"proof|cc[-_ ](?!web-exec)|ccadmin", shown, re.IGNORECASE), (
+            re.findall(r".*(?:proof|cc[-_ ]|ccadmin).*", shown)
+        )
+    # the whitelist goes to the checker's server whole, comments and all
+    assert not re.search(r"proof|cc[-_ ]|persistence modules", whitelist, re.IGNORECASE)
+    assert (
+        "account: webdev" in whitelist and "useradd --create-home --shell /bin/bash webdev" in setup
+    )
+    # what the container retry waits for is still what the renamed setup says
+    assert 'echo "proof setup: Docker not started"' in setup
+    assert "--name web-cache " in setup and "--name web-cache " in story.CONTAINER
+    # the intruder's account isn't db-1's admin's
+    assert "{root_key}" in attack and "{admin_key}" in attack
+    assert f"useradd -m -s /bin/bash {story.INTRUDER}" in attack and "deploy2" not in attack
+    assert "useradd -m -s /bin/bash deploy2" in story.ROUTINE_WORK
+    # the rule the admin writes is for the job the story adds, on the server it adds it to
+    job = next(s for s in story.STORY if s.script == story.BACKUP_JOB)
+    rule = next(s for s in story.STORY if s.admin[:1] == ("rule",))
+    assert rule.admin[1] == job.where and rule.day > job.day
+    assert "path: /etc/cron.d/mail-backup}" in story.BACKUP_RULE
+    assert "> /etc/cron.d/mail-backup" in story.BACKUP_JOB
+    # a script that says nothing of its own failures is stopped by them
+    for step in story.STORY:
+        if step.script and "FAILED" not in step.script and "nohup" not in step.script:
+            assert step.strict or step.script == story.BACKUP_JOB, step.says
+    tidy = next(s.script for s in story.STORY if "removes the web shell" in s.says)
+    assert "sys-shell.php" in attack and "sys-shell.php" in tidy
+    assert "/etc/cron.d/sysupdate" in attack and "/etc/cron.d/sysupdate" in tidy
+
+
+def test_the_demos_whitelist_and_the_admins_rule_are_ones_the_checker_takes(tmp_path):
+    import readonly_proof as proof
+
+    from checker import whitelist
+
+    folder = tmp_path / "whitelist" / "hosts"
+    folder.mkdir(parents=True)
+    text = story.WHITELIST.replace("{checker}", "192.0.2.1")
+    text += story.BACKUP_RULE.format(expires="2026-11-12")
+    (folder / "mail-1.yaml").write_text(text)
+    loaded = whitelist.load(tmp_path, "mail-1", "mail")
+    ours = {
+        placed.rule.id: placed.rule.match.model_dump(exclude_none=True) for placed in loaded.rules
+    }
+    assert "mail-backup-job" in ours
+    # It explains what the proofs' own whitelist does, under the demo's names, and one thing
+    # less: a root login from anywhere but the checker's server (the break-in's tunnel is one).
+    (folder / "x.yaml").write_text(
+        story.renamed(proof.PROOF_WHITELIST.read_text(), story.SETUP_NAMES)
+    )
+    theirs = {
+        placed.rule.id.replace("proof-", "setup-").replace("proofuser", "webdev"): (
+            placed.rule.match.model_dump(exclude_none=True)
+        )
+        for placed in whitelist.load(tmp_path, "x", "").rules
+    }
+    assert ours.pop("setup-root-login") == {
+        **theirs.pop("setup-root-login"),
+        "address": "192.0.2.1",
+    }
+    for rule_id, match in theirs.items():
+        assert ours[rule_id] == match, rule_id
+
+
+def test_ssh_is_closed_to_all_but_the_checker_before_a_server_is_added_or_weakened(tmp_path):
+    checker = Ran(*[(0, "SHA256:" + "a" * 43 + "\n", "")] * 4)
+    server = Ran(*[(0, "256 SHA256:" + "a" * 43 + " root@x (ED25519)\n", "")] * 5)
+    server.wait = lambda seconds: None
+    member = story.Member("shop-web-1", "web", "ubuntu24.04", old_php=True)
+    made = demo.Server("shop-web-1", "fleet", "ubuntu24.04", "web", 1, "l", "192.0.2.5")
+    demo.prepare_member(checker, server, made, member, "ssh-ed25519 SCANNER")
+    setup, firewall, web, old_php, keys = server.calls
+    assert 'from="192.0.2.1"' in setup[0] and "ssh-ed25519 SCANNER" in setup[0]
+    assert "ufw allow from 192.0.2.1 to any port 22" in firewall[1]
+    assert "ufw delete allow 22/tcp" in firewall[1] and 'address="192.0.2.1"' in firewall[1]
+    # ...and it is what is on that is checked, not only that one open rule is gone
+    for proved in ("Status: active", "Default: deny (incoming)", '$NF != "192.0.2.1"', "--state"):
+        assert proved in firewall[1], proved
+    assert "nginx" in web[0] and "php8.3" in old_php[0]
+    added, asked, trusted, listed = checker.calls
+    assert "hosts add shop-web-1" in added[0] and "--expect SHA256:" in trusted[0]
+    assert "whitelist/hosts/shop-web-1.yaml" in listed[0] and "account: webdev" in listed[1]
+    assert "account: root, address: 192.0.2.1}" in listed[1]
+
+
+def test_a_container_that_did_not_start_is_tried_again_before_the_firewall(capsys):
+    key = (0, "256 SHA256:" + "a" * 43 + " root@x (ED25519)\n", "")
+    for second, expected in ((0, "started at the second try"), (1, "still not started:\nno space")):
+        checker = Ran((0, "", ""), (0, "SHA256:" + "a" * 43 + "\n", ""), (0, "", ""), (0, "", ""))
+        server = Ran(
+            (0, "", "proof setup: Docker not started\n"), (second, "no space", ""), *[key] * 4
+        )
+        server.wait = lambda seconds: None
+        member = story.Member("staging-1", "", "ubuntu24.04")
+        made = demo.Server("staging-1", "fleet", "ubuntu24.04", "", 1, "l", "192.0.2.5")
+        demo.prepare_member(checker, server, made, member, "ssh-ed25519 SCANNER")
+        _, again, firewall = server.calls[:3]
+        assert "docker run -d --name web-cache" in again[1] and "ufw delete" in firewall[1]
+        assert expected in capsys.readouterr().out
+
+
+class Node(Ran):
+    """A fleet server in the story: answers yes to everything, and remembers it."""
+
+    known, via, closed = Path("known"), None, False
+
+    def __init__(self, address="192.0.2.5"):
+        super().__init__()
+        self.address = address
+
+    def run(self, command, timeout=900, input=None):
+        self.calls.append((command, input))
+        out = "0\n" if "lastlog" in command else ""  # the proof's count of its log lines
+        return SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+    def close(self):
+        self.closed = True
+
+
+class Checker(Node):
+    """The checker's server: every check it runs judges whoever the test says still answers."""
+
+    def __init__(self, answering):
+        super().__init__("192.0.2.1")
+        self.answering = answering
+        self.fails: dict[str, int] = {}  # a part of a command, and how it ends
+        self.retired, self.still_open = "Retired: dotnet-2026-10 (kept).\n", False
+
+    def run(self, command, timeout=900, input=None):
+        self.calls.append((command, input))
+        out, code = "", self.fails.get(next((k for k in self.fails if k in command), ""), 0)
+        if "SSH_CLIENT" in command:
+            out = "203.0.113.9 51234 22\n"
+        if " run --all --unattended" in command:
+            out = "".join(f"{name:20} complete     Low (5.0%)\n" for name in self.answering())
+        if "date -d" in command:
+            out = "14:00\n"
+        if " packs retire " in command:
+            out = self.retired
+        if "/dev/tcp/" in command:  # a server that has shut the checker out refuses it
+            code = 0 if self.still_open else 1
+        return SimpleNamespace(returncode=code, stdout=out, stderr="said why")
+
+
+def world_of(tmp_path, monkeypatch, names=None):
+    logins = []
+
+    class Login(Node):
+        def __init__(self, address, key, known, via, user="root"):
+            super().__init__(address)
+            logins.append((address, user, key.name))
+
+    monkeypatch.setattr(demo, "Through", Login)
+    monkeypatch.setattr(
+        demo, "keypair", lambda folder, name: (folder / name, f"ssh-ed25519 {name}")
+    )
+    monkeypatch.setattr(demo.time, "sleep", lambda seconds: None)
+    names = names or [m.name for m in story.FLEET]
+    servers = [
+        demo.Server(
+            n, "fleet", "ubuntu24.04", "", 10 + i, f"cc-demo-abc123-{n}", f"192.0.2.{10 + i}"
+        )
+        for i, n in enumerate(names)
+    ]
+    world = demo.World({s.name: Node(s.address) for s in servers}, TODAY)
+    return world, logins
+
+
+def test_the_story_plays_a_day_at_a_time_and_each_check_expects_who_still_answers(
+    tmp_path, monkeypatch, capsys
+):
+    world, logins = world_of(tmp_path, monkeypatch)
+    all_nodes = dict(world.nodes)
+    checker = Checker(world.checked)
+    demo.play(checker, world)
+    said = [c for c, _ in checker.calls]
+    checks = [i for i, c in enumerate(said) if " run --all --unattended" in c]
+    assert len(checks) == len(story.CHECKED_DAYS)
+
+    def at(text):
+        return next(i for i, c in enumerate(said) if text in c)
+
+    assert at("schedule install --at 14:00") < checks[0]  # the hour before its clock's
+    assert checks[1] < at("baseline accept db-1 --reason") < checks[2]
+    assert checks[3] < at("hosts remove staging-1") < checks[4]
+    assert checks[4] < at("packs retire dotnet-2026-10 --reason")  # and no check after it
+    # staging-1: off the list and no longer expected in a check; its server stays, for the proof
+    # to look at and for the person to add back
+    assert world.unlisted == {"staging-1"} and "staging-1" not in world.checked()
+    assert "staging-1" in world.nodes and not all_nodes["staging-1"].closed
+    # every collection the checks made is one the proof will want to find
+    assert world.collected == 6 + 6 + 6 + 5 + 4 and world.failed == []
+    # app-1 no longer answers, and the checks after stop expecting it
+    assert world.lost == {"app-1"} and "app-1" not in world.checked()
+    # ...and its logs were looked at for this machine's address just before it shut the door
+    looked = [i for i, (c, _) in enumerate(all_nodes["app-1"].calls) if "lastlog" in c]
+    shut = next(
+        i
+        for i, (_, text) in enumerate(all_nodes["app-1"].calls)
+        if text and "remove-rich-rule" in text
+    )
+    assert looked and looked[0] < shut and world.found == []
+    # the scripts went in on standard input, the keys and the checker's address filled in
+    command, attack = next(c for c in all_nodes["shop-web-1"].calls if "useradd -o -u 0" in c[1])
+    assert command == "bash --norc --noprofile -s"
+    assert "ssh-ed25519 planted-root" in attack and "{" + "root_key}" not in attack
+    assert any('address="192.0.2.1"' in (text or "") for _, text in all_nodes["app-1"].calls)
+    assert "ssh-ed25519 planted-deploy2" in all_nodes["db-1"].calls[0][1]
+    assert "ssh-ed25519 planted-svc-backup" in attack
+    # each new account is used on the server that got it, with a key of its own
+    assert logins == [
+        ("192.0.2.12", "deploy2", "planted-deploy2"),
+        ("192.0.2.10", "svc-backup", "planted-svc-backup"),
+    ]
+    # the scripts that say nothing of their own failures are stopped by them
+    php = [text for _, text in all_nodes["shop-web-2"].calls if text]
+    assert len(php) == 2 and all(text.startswith("set -eu\n") for text in php)
+    # the rule went onto mail-1's whitelist, to expire tomorrow
+    rule = next(i for c, i in checker.calls if "whitelist/hosts/mail-1.yaml" in c)
+    assert "id: mail-backup-job" in rule and "expires: 2026-11-11" in rule
+    assert "--- day 5" in capsys.readouterr().out
+
+
+def test_what_didnt_go_as_the_story_says_is_kept_or_stops_it(tmp_path, monkeypatch):
+    # A break-in step that failed, a tidy-up with nothing to remove, a daily check that wasn't
+    # set: the story goes on, and `up` says so at its end and ends 1.
+    world, _ = world_of(tmp_path, monkeypatch)
+    step = story.Step(3, "shop-web-1", "x", script="true")
+    said = demo.on_server(Ran((0, "", "noise\nATTACK FAILED: container\n")), step, {}, tmp_path)
+    assert said == ["shop-web-1: ATTACK FAILED: container"]
+    assert "ended 2" in demo.on_server(Ran((2, "", "oops")), step, {}, tmp_path)[0]
+    checker = Checker(world.checked)
+    checker.fails = {" schedule install ": 1}
+    demo.by_admin(checker, story.STORY[0], world)
+    assert world.failed == ["the daily check wasn't set (`schedule install` ended 1)"]
+    # A PHP step that failed, rules the checker won't take, a threat update that wasn't in use,
+    # a server that still lets the checker in: each would make the pages tell another story.
+    strict = story.Step(2, "shop-web-2", "PHP is updated", script="true", strict=True)
+    with pytest.raises(demo.DemoError, match="PHP is updated: it failed"):
+        demo.on_server(Ran((100, "", "E: no package")), strict, {}, tmp_path)
+    checker.fails = {" whitelist check": 1}
+    with pytest.raises(demo.DemoError, match="the rules failed"):
+        demo.by_admin(checker, story.Step(4, "admin", "x", admin=("rule", "mail-1")), world)
+    checker.fails, checker.retired = {}, "Nothing to retire.\n"
+    retire = next(s for s in story.STORY if s.admin[:1] == ("retire",))
+    with pytest.raises(demo.DemoError, match="dotnet-2026-10 wasn't stopped"):
+        demo.by_admin(checker, retire, world)
+    checker.still_open = True
+    with pytest.raises(demo.DemoError, match="app-1 still lets the checker's server in"):
+        demo.play(checker, world)
+
+
+def test_a_failed_up_goes_on_deleting_when_the_terminal_is_gone(tmp_path):
+    """A hang-up: every print raises. The deleting must not stop for it."""
+
+    class Gone:
+        def write(self, text):
+            raise OSError(5, "Input/output error")
+
+        def flush(self):
+            pass
+
+    folder, done = tmp_path / "demo", []
+    was = sys.stdout, sys.stderr, signal.getsignal(signal.SIGHUP)
+    sys.stdout = sys.stderr = Gone()
+    try:
+        with demo.nothing_stops_it(folder):
+            assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN  # nor a second signal
+            for label in ("a", "b"):
+                print(f"deleted {label}")
+                done.append(label)
+            print("could not delete c", file=sys.stderr)
+    finally:
+        sys.stdout, sys.stderr = was[:2]
+    assert done == ["a", "b"] and signal.getsignal(signal.SIGHUP) is was[2]
+    log = (tmp_path / "demo-up-failed.log").read_text()
+    assert log == "deleted a\ndeleted b\ncould not delete c\n"
+
+
+def test_a_check_that_misses_a_server_stops_the_story(tmp_path, monkeypatch):
+    world, _ = world_of(tmp_path, monkeypatch)
+    checker = Checker(lambda: [n for n in world.checked() if n != "mail-1"])
+    with pytest.raises(demo.DemoError, match="day 0's check gave no result for mail-1"):
+        demo.play(checker, world)
+
+
+def test_a_step_that_didnt_run_or_a_login_that_failed_stops_the_story(tmp_path, monkeypatch):
+    world, _ = world_of(tmp_path, monkeypatch)
+    step = story.Step(1, "db-1", "x", script="true", login="deploy2")
+    lost = Ran((255, "", "connection closed"))
+    with pytest.raises(demo.DemoError, match="didn't run"):
+        demo.on_server(lost, step, {}, tmp_path / "k")
+
+    class Refused(Node):
+        def __init__(self, *a, **k):
+            super().__init__()
+
+        def run(self, command, timeout=900, input=None):
+            return SimpleNamespace(returncode=255, stdout="", stderr="Permission denied")
+
+    monkeypatch.setattr(demo, "Through", Refused)
+    with pytest.raises(demo.DemoError, match="login as deploy2 failed"):
+        demo.on_server(Node(), step, {}, tmp_path / "k")
+    with pytest.raises(demo.DemoError, match="isn't a thing the admin does"):
+        demo.by_admin(Node(), story.Step(1, "admin", "x", admin=("reboot",)), world)
+
+
+def test_the_planted_keys_are_not_kept(tmp_path, monkeypatch):
+    world, _ = world_of(tmp_path, monkeypatch)
+    made = []
+    monkeypatch.setattr(
+        demo,
+        "keypair",
+        lambda folder, name: (made.append(folder), (folder / name, "ssh-ed25519 K"))[1],
+    )
+    demo.play(Checker(world.checked), world)
+    assert made and not any(folder.exists() for folder in made)
+
+
+def test_status_prints_what_is_left_to_the_person(tmp_path, capsys):
+    demo.save_state(tmp_path, state(1))
+    demo.status(
+        FakeApi([node("cc-demo-abc123-s1", [demo.TAG], 1)]),
+        tmp_path,
+        datetime(2026, 11, 10, 14, tzinfo=UTC),
+    )
+    out = capsys.readouterr().out
+    assert "Yours to do while it is up" in out and "put the stopped threat update back" in out

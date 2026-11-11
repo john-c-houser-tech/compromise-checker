@@ -173,7 +173,10 @@ fi
 CONTAINER = r"""
 set -u
 export DEBIAN_FRONTEND=noninteractive
-apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io </dev/null 2>&1 | tail -5
+# Over IPv4: Linode's mirror has timed out over IPv6 from a new server, which is why the setup's
+# own try fails (the four-day run, 2026-11-10: "containerd ... Connection timed out [IP: 2600:").
+apt-get -o DPkg::Lock::Timeout=300 -o Acquire::ForceIPv4=true -o Acquire::Retries=3 \
+    install -y -qq docker.io </dev/null 2>&1 | tail -5
 systemctl enable --now docker 2>&1 | tail -5
 docker rm -f web-cache >/dev/null 2>&1
 docker run -d --name web-cache docker.io/library/nginx:alpine </dev/null 2>&1 | tail -5

@@ -111,6 +111,10 @@ One script, `tests/integration/demo.py`, with four commands:
 - **Docker needs a second try on every fresh Ubuntu server** (all three runs). The proofs' setup
   hides why the first fails; the demo's retry works and says nothing either. Harmless here, but
   the read-only proof's own container step may be quietly skipped the same way.
+  **Why, seen on the four-day run (2026-11-10):** fetching from `mirrors.linode.com` over IPv6
+  timed out ("containerd ... Connection timed out [IP: 2600:..."), and that time the retry failed
+  too, on all three. The demo's retry now asks over IPv4 with three tries; the proofs' setup
+  should do the same.
 
 ## Keep-alive as built (D.4, 2026-11-10)
 

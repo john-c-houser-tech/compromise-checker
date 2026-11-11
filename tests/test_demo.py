@@ -67,11 +67,18 @@ def test_the_end_date_is_a_tag_and_reads_back():
 def test_the_proofs_sweep_cant_see_a_demo_server_and_the_demo_cant_see_a_proofs():
     import readonly_proof as proof
 
-    assert demo.TAG != proof.TAG and not demo.LABEL_PREFIX.startswith(proof.LABEL_PREFIX)
-    proofs = node("cc-test-abc-ubuntu2404-1f2e", [proof.TAG])
-    ours = node("cc-demo-abc123-db-1", [demo.TAG, demo.until_tag(TODAY)], 2)
-    someone = node("cc-demo-lookalike", ["web"], 3)  # the label alone isn't enough
-    assert demo.demo_nodes([proofs, ours, someone]) == [ours]
+    nodes = [
+        node("cc-demo-abc123-checker", [demo.TAG, demo.until_tag(TODAY)], 1),
+        node("cc-test-abc123-ubuntu2404-1a2b", [proof.TAG], 2),
+    ]
+    api = proof.Linode("token")
+    api.call = lambda method, path, body=None: {"data": nodes}
+    assert [n["id"] for n in api.tagged()] == [2]  # what the proofs' sweeps delete from
+    demo_api = demo.Api("token")
+    demo_api.call = api.call
+    assert [n["id"] for n in demo_api.demo_tagged()] == [1]
+    assert demo_api.find_demo("cc-demo-abc123-checker")["id"] == 1
+    assert demo_api.find_demo("cc-test-abc123-ubuntu2404-1a2b") is None
 
 
 def test_only_demo_servers_past_their_date_or_without_one_are_swept():
@@ -217,6 +224,7 @@ def test_the_behaviours_go_in_on_standard_input(monkeypatch, tmp_path):
 
         def run(self, command, timeout=900, input=None):
             calls.append((command, input))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         def close(self):
             pass
@@ -226,7 +234,306 @@ def test_the_behaviours_go_in_on_standard_input(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(demo, "Through", Used)
     server = demo.Server("shop-web-1", "attacked", "ubuntu24.04", "web", 1, "l", "192.0.2.5")
-    demo.behave(Fake(), server, tmp_path)
+    demo.behave(Fake(), server)
     command, script = calls[0]
     assert command == "bash -s"
     assert "dev/tcp/127.0.0.1/4444" in script
+
+
+class Ran:
+    """A server that answers each command from a list of (returncode, stdout, stderr)."""
+
+    address = "192.0.2.1"
+
+    def __init__(self, *answers):
+        self.answers, self.calls = list(answers), []
+
+    def run(self, command, timeout=900, input=None):
+        self.calls.append((command, input))
+        code, out, err = self.answers.pop(0)
+        return SimpleNamespace(returncode=code, stdout=out, stderr=err)
+
+    def out(self, command):
+        return self.run(command).stdout.strip()
+
+
+def test_a_failed_login_as_the_new_account_stops_the_run(monkeypatch, tmp_path):
+    class Refused:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, command, timeout=900, input=None):
+            return SimpleNamespace(returncode=255, stdout="", stderr="Permission denied")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(demo, "keypair", lambda folder, name: (tmp_path / name, "ssh-ed25519 K"))
+    monkeypatch.setattr(demo, "Through", Refused)
+    server = demo.Server("db-1", "small", "rocky9", "database", 1, "l", "192.0.2.5")
+    fake = Ran((0, "", ""))
+    fake.known, fake.via = tmp_path / "known", None
+    with pytest.raises(demo.DemoError, match="login failed"):
+        demo.behave(fake, server)
+    lost = Ran((255, "", "connection closed"))
+    with pytest.raises(demo.DemoError, match="didn't run"):
+        demo.behave(lost, server)
+
+
+def test_the_planted_keys_are_not_kept(monkeypatch, tmp_path):
+    made = []
+
+    def keypair(folder, name):
+        made.append(folder)
+        return folder / name, "ssh-ed25519 K"
+
+    monkeypatch.setattr(demo, "keypair", keypair)
+    server = demo.Server("mail-1", "clean", "ubuntu24.04", "mail", 1, "l", "192.0.2.5")
+    demo.behave(Ran(), server)
+    assert made and not any(folder.exists() for folder in made)
+
+
+RUN_OUTPUT = """\
+shop-web-1           complete     Critical (100.0%)
+db-1                 complete     Low (5.8%)
+mail-1               failed       -
+old-box              empty        -
+"""
+
+
+def test_a_check_counts_only_if_every_fleet_server_was_judged(capsys):
+    assert demo.unjudged(RUN_OUTPUT, ["shop-web-1", "db-1"]) == []
+    assert demo.unjudged(RUN_OUTPUT, ["shop-web-1", "mail-1", "app-1"]) == ["mail-1", "app-1"]
+    demo.check_all(Ran((1, RUN_OUTPUT, "checker: old-box: not collected")), "first", ["db-1"])
+    with pytest.raises(demo.DemoError, match="no result for mail-1"):
+        demo.check_all(Ran((1, RUN_OUTPUT, "")), "first", ["db-1", "mail-1"])
+    with pytest.raises(demo.DemoError, match="no result for db-1"):  # busy, set-up, crashed
+        demo.check_all(Ran((3, "", "checker: another run holds the lock")), "second", ["db-1"])
+
+
+def test_the_proof_fails_for_what_it_couldnt_look_at():
+    def proof_of(checker_files, evidence=(0, "LOOKED 9\n", ""), **fleet):
+        checker = Ran((0, "203.0.113.9 51234 22\n", ""), checker_files, evidence)
+        return demo.never_seen_from_here(checker, fleet), checker, fleet
+
+    found, checker, fleet = proof_of((1, "", ""), a=Ran((1, "0\n", "")))
+    assert found == []
+    command, sent = fleet["a"].calls[0]
+    assert sent == "203.0.113.9\n" and "203.0.113.9" not in command  # never on a command line
+    assert "203.0.113.9" not in checker.calls[1][0]
+    assert "wtmp" in command and "lastlog" in command
+
+    found, _, _ = proof_of((1, "", ""), a=Ran((0, "3\n", "")), b=Ran((255, "", "no route")))
+    assert found == [
+        "a: its logs name this machine 3 times",
+        "b: its logs couldn't be looked at (no route)",
+    ]
+    found, _, _ = proof_of((0, "/var/lib/x/log\n", ""), a=Ran((1, "0\n", "")))
+    assert found == ["the checker's own files: /var/lib/x/log"]
+    found, _, _ = proof_of((2, "", "grep: denied"), a=Ran((1, "0\n", "")))
+    assert found == ["the checker's files couldn't be looked at (grep: denied)"]
+    assert "couldn't be read" in demo.never_seen_from_here(Ran((0, "\n", "")), {})[0]
+
+    one = {"a": Ran((1, "0\n", ""))}
+    found, checker, _ = proof_of((1, "", ""), (0, "HIT /e/a/b.age\nLOOKED 2\n", ""), **one)
+    assert found == ["the evidence names this machine: /e/a/b.age"]
+    command, script = checker.calls[2]
+    assert "203.0.113.9" not in command and 'b"203.0.113.9"' in script
+    assert command.startswith("runuser -u compromise-checker -- /opt/compromise-checker/current")
+    for answer in ((1, "", "no evidence key is kept here"), (0, "", ""), (0, "LOOKED 1\n", "")):
+        one = {"a": Ran((1, "0\n", ""))}
+        found, _, _ = proof_of((1, "", ""), answer, **one)
+        assert len(found) == 1 and ("couldn't be looked at" in found[0] or "only 1" in found[0])
+
+
+def test_the_evidence_is_opened_and_read_as_the_checker_reads_it(tmp_path):
+    """The script itself, on a real encrypted collection: text, bytes in base64, and an address
+    split across two chunks are all found; a clean collection isn't."""
+    import base64
+    import gzip
+    import subprocess
+
+    import pyrage
+    from pyrage import x25519
+
+    identity = x25519.Identity.generate()
+    (tmp_path / "keys").mkdir()
+    (tmp_path / "keys" / "id.txt").write_text(f"# made now\n{identity}\n")
+    (tmp_path / "config.yaml").write_text(f"identity_file: {tmp_path}/keys/id.txt\n")
+
+    def chunk(data, seq=0, encoding="utf-8"):
+        return {"type": "chunk", "source_id": 1, "seq": seq, "encoding": encoding, "data": data}
+
+    def stored(host, *records):
+        lines = b"".join(json.dumps(r).encode() + b"\n" for r in records)
+        (tmp_path / "evidence" / host).mkdir(parents=True)
+        (tmp_path / "evidence" / host / "b.age").write_bytes(
+            pyrage.encrypt(gzip.compress(lines), [identity.to_public()])
+        )
+
+    stored("clean", chunk("Accepted publickey for scanner from 198.51.100.7 port 4"))
+    stored("text", chunk("Accepted publickey for root from 203.0.113.9 port 51234"))
+    stored("bytes", chunk(base64.b64encode(b"\x00\x01 203.0.113.9 \xff").decode(), 0, "base64"))
+    stored("split", chunk("from 203.0."), chunk("113.9 port", 1))
+    stored("named", {"type": "source_start", "source_id": 1, "name": "/home/203.0.113.9"})
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, "-I", "-", str(tmp_path)],
+        input=demo._IN_EVIDENCE.replace("{needle}", "203.0.113.9"),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    hit = sorted(Path(line[4:]).parent.name for line in done.stdout.splitlines()[:-1])
+    assert hit == ["bytes", "named", "split", "text"]
+    assert done.stdout.splitlines()[-1] == "LOOKED 5"
+
+
+def test_a_fleet_server_cant_be_logged_in_to_from_here(tmp_path):
+    import install_proof as install
+
+    checker = install.Node("192.0.2.1", tmp_path / "key", tmp_path / "known")
+    through = demo.Through("192.0.2.7", tmp_path / "key", tmp_path / "known", checker)
+    with pytest.raises(NotImplementedError):
+        through.fresh_login("scanner")
+
+
+class Making(FakeApi):
+    """An API that makes servers too; `lose` names one whose first answer never arrives."""
+
+    def __init__(self, lose=None, fail=None):
+        super().__init__()
+        self.lose, self.fail, self.asked = lose, fail, []
+
+    def find_demo(self, label):
+        return next((n for n in self.demo_tagged() if n["label"] == label), None)
+
+    def create(self, label, image, region, public_key, tags=None):
+        self.asked.append(label)
+        if self.fail and label.endswith(self.fail):
+            raise RuntimeError("Linode API POST /linode/instances: 500 no")
+        made = node(label, tags, 100 + len(self.nodes)) | {"ipv4": [f"192.0.2.{len(self.nodes)}"]}
+        self.nodes.append(made)
+        if self.lose and label.endswith(self.lose):
+            self.lose = None
+            raise TimeoutError("the answer was lost")
+        return made
+
+
+def test_servers_are_made_with_the_demos_tags_and_a_lost_answer_isnt_made_twice(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(demo.time, "sleep", lambda s: None)
+    api = Making(lose="db-1")
+    st = demo.State("abc123", "2026-11-10T12:00:00+00:00", "2026-11-11", [])
+    demo.make_servers(api, tmp_path, st, "ssh-ed25519 K", "us-sea")
+    assert len(api.nodes) == 6 == len(st.servers)
+    assert all(n["tags"] == [demo.TAG, "cc-demo-until-20261111"] for n in api.nodes)
+    assert api.asked.count("cc-demo-abc123-db-1") == 1  # found by its label, not made again
+    assert len(demo.load_state(tmp_path).servers) == 6
+
+
+def test_a_failed_up_deletes_what_it_made_and_its_own_files(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(demo.time, "sleep", lambda s: None)
+    monkeypatch.setattr(demo, "keypair", lambda folder, name: (folder / name, "ssh-ed25519 K"))
+    folder = tmp_path / "demo"
+    api = Making(fail="app-1")
+    with pytest.raises(RuntimeError):
+        demo.up(api, folder, "us-sea", TODAY)
+    assert api.nodes == [] and len(api.deleted) == 5  # the five that were made
+    assert not folder.exists()
+    assert "6 servers, about 4.5 cents an hour" in capsys.readouterr().out
+
+
+def test_a_failed_up_says_so_when_it_couldnt_delete(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(demo.time, "sleep", lambda s: None)
+    monkeypatch.setattr(demo, "keypair", lambda folder, name: (folder / name, "ssh-ed25519 K"))
+    api = Making(fail="app-1")
+    api.refuse = set(range(100, 110))
+    with pytest.raises(RuntimeError):
+        demo.up(api, tmp_path / "demo", "us-sea", TODAY)
+    assert "SERVERS MAY STILL BE UP" in capsys.readouterr().err
+    assert demo.load_state(tmp_path / "demo") is not None  # kept, so `down` can try again
+
+
+def test_up_takes_only_a_new_or_empty_folder_and_one_up_at_a_time(tmp_path):
+    (tmp_path / "notes.txt").write_text("mine")
+    api = FakeApi()
+    with pytest.raises(demo.DemoError, match="isn't empty"):
+        demo.up(api, tmp_path, "us-sea", TODAY)
+    assert (tmp_path / "notes.txt").exists()
+    fresh = tmp_path / "fresh"
+    demo.claim(fresh)
+    with pytest.raises(demo.DemoError, match="isn't empty"):
+        demo.claim(fresh)
+    with pytest.raises(demo.DemoError, match="`down` first"):  # the claim reads as a state
+        demo.up(api, fresh, "us-sea", TODAY)
+
+
+def test_down_removes_only_the_demos_own_files(tmp_path, capsys):
+    demo.save_state(tmp_path, state(1))
+    for name in ("key", "key.pub", "known_hosts", "m-abc", "notes.txt"):
+        (tmp_path / name).write_text("x")
+    assert demo.down(FakeApi(), tmp_path) == 0
+    assert [p.name for p in tmp_path.iterdir()] == ["notes.txt"]
+    assert "aren't the demo's" in capsys.readouterr().err
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "thesis.txt").write_text("x")
+    assert demo.down(FakeApi(), other) == 0  # a folder that was never the demo's
+    assert (other / "thesis.txt").exists()
+
+
+def test_down_deletes_only_what_linode_lists_as_the_demos(tmp_path):
+    tags = [demo.TAG, demo.until_tag(TODAY)]
+    api = FakeApi([node("cc-demo-abc123-s1", tags, 1), node("web-1", ["prod"], 2)])
+    demo.save_state(tmp_path, state(1, 2))  # a damaged state naming someone else's server
+    assert demo.down(api, tmp_path) == 0
+    assert api.deleted == [1] and [n["id"] for n in api.nodes] == [2]
+
+
+def test_down_says_so_and_keeps_the_state_when_the_servers_cant_be_listed(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(demo.time, "sleep", lambda s: None)
+    api = FakeApi([node("cc-demo-abc123-s1", [demo.TAG], 1)])
+    api.demo_tagged = lambda: (_ for _ in ()).throw(TimeoutError("timed out"))
+    demo.save_state(tmp_path, state(1))
+    assert demo.down(api, tmp_path) == 1
+    assert api.deleted == [] and demo.load_state(tmp_path) is not None
+    assert "Nothing was deleted: run `down` again" in capsys.readouterr().err
+
+
+def test_a_state_that_cant_be_read_doesnt_stop_down_or_status(tmp_path, capsys):
+    tags = [demo.TAG, demo.until_tag(TODAY)]
+    api = FakeApi([node("cc-demo-abc123-s1", tags, 1)])
+    (tmp_path / "state.json").write_text("{ not json")
+    with pytest.raises(demo.Unreadable):
+        demo.load_state(tmp_path)
+    assert demo.status(api, tmp_path, datetime(2026, 11, 10, 14, tzinfo=UTC)) == 1
+    assert "cc-demo-abc123-s1 exists" in capsys.readouterr().out
+    assert demo.down(api, tmp_path) == 0
+    assert api.deleted == [1] and not tmp_path.exists()
+
+
+def test_a_state_with_a_field_from_another_version_still_reads(tmp_path):
+    demo.save_state(tmp_path, state(1, 2))
+    data = json.loads((tmp_path / "state.json").read_text())
+    data["days"] = 7
+    data["servers"][0]["timer"] = "daily"
+    (tmp_path / "state.json").write_text(json.dumps(data))
+    assert demo.load_state(tmp_path) == state(1, 2)
+
+
+def test_status_says_overdue_and_names_servers_the_state_doesnt(tmp_path, capsys):
+    tags = [demo.TAG, demo.until_tag(TODAY)]
+    api = FakeApi([node("cc-demo-abc123-s1", tags, 1), node("cc-demo-zzz999-s1", tags, 8)])
+    demo.save_state(tmp_path, state(1))
+    assert demo.status(api, tmp_path, datetime(2026, 11, 11, 23, tzinfo=UTC)) == 1  # last day
+    out = capsys.readouterr().out
+    assert "Not in the state: cc-demo-zzz999-s1" in out and "OVERDUE" not in out
+    api.nodes.pop()
+    assert demo.status(api, tmp_path, datetime(2026, 11, 11, 23, tzinfo=UTC)) == 0
+    assert demo.status(api, tmp_path, datetime(2026, 11, 12, 0, 5, tzinfo=UTC)) == 1
+    assert "OVERDUE: its end date was 2026-11-11" in capsys.readouterr().out

@@ -1858,6 +1858,13 @@ def a_record(folder, *statements):
     record.close()
 
 
+def a_run(hosts, who, started, number=1, ended=""):
+    return (
+        f"INSERT INTO web_checkrun VALUES ({number}, 'check', {hosts}, {who}, '(not kept)',"  # noqa: S608
+        f" '{started}', NULL, '{ended}')"
+    )
+
+
 RUNS = "CREATE TABLE web_checkrun (id INTEGER PRIMARY KEY, kind TEXT, hosts TEXT, who TEXT,"
 RUNS += " address TEXT, started_at TEXT, finished_at TEXT, ended TEXT)"
 
@@ -1885,28 +1892,28 @@ RUNS += " address TEXT, started_at TEXT, finished_at TEXT, ended TEXT)"
         (
             [
                 RUNS,
-                "INSERT INTO web_checkrun VALUES (1,'check','not json','x','(not kept)','2026-11-11',NULL,'')",
+                a_run("'not json'", "'x'", "2026-11-11"),
             ],
             "the pages couldn't show",
         ),
         (
             [
                 RUNS,
-                "INSERT INTO web_checkrun VALUES (1,'check','[]','x','(not kept)','not a date',NULL,'')",
+                a_run("'[]'", "'x'", "not a date"),
             ],
             "the pages couldn't show",
         ),
         (
             [
                 RUNS,
-                "INSERT INTO web_checkrun VALUES (1,'check','[]',x'00','(not kept)','2026-11-11',NULL,'')",
+                a_run("'[]'", "x'00'", "2026-11-11"),
             ],
             "the pages couldn't show",
         ),
         (
             [
                 RUNS,
-                "INSERT INTO web_checkrun VALUES (1,'check','[1]','x','(not kept)','2026-11-11',NULL,'')",
+                a_run("'[1]'", "'x'", "2026-11-11"),
             ],
             "the pages couldn't show",
         ),
@@ -1925,11 +1932,7 @@ def test_a_record_far_bigger_than_a_record_stops_the_save(tmp_path, monkeypatch)
     a_record(
         tmp_path,
         RUNS,
-        *(
-            f"INSERT INTO web_checkrun VALUES ({i},'check','[]','x','(not kept)','2026-11-11',NULL,"
-            f"'{'x' * 900}')"
-            for i in range(1, 8)
-        ),
+        *(a_run("'[]'", "'x'", "2026-11-11", i, "x" * 900) for i in range(1, 8)),
     )
     with pytest.raises(demo.DemoError, match="bigger than a record"):
         demo.record_here(tmp_path)

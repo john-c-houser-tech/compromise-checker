@@ -3354,6 +3354,40 @@ def test_codes_not_said_to_be_saved_are_flagged_until_they_are(web):
     assert "may not have been saved" in client.get("/").content.decode()
 
 
+def test_made_to_set_it_up_saving_the_codes_goes_on_to_the_servers(web, settings_override):
+    """The first account lands where the work is, told it's done, and not on a form that reads
+    as one more step."""
+    settings_override(CHECKER_TWO_FACTOR_REQUIRED=True)
+    client, _ = signed_in(web)
+    response, _ = turn_on_two_factor(client)
+    assert 'name="then" value="servers"' in response.content.decode()
+    response = client.post("/two-factor/codes-saved", {"then": "servers"})
+    assert response.status_code == 302 and response["Location"] == "/?ready=1"
+    text = client.get("/?ready=1").content.decode()
+    assert '<p role="status">Two-factor sign-in is on, and your account is ready.</p>' in text
+    assert "may not have been saved" not in text
+    assert "your account is ready" not in client.get("/").content.decode()
+
+
+def test_chosen_from_sign_in_security_saving_the_codes_goes_back_there(web):
+    client, _ = signed_in(web)
+    response, _ = turn_on_two_factor(client)
+    assert 'name="then"' not in response.content.decode()
+    response = client.post("/two-factor/codes-saved", {"x": "1"})
+    assert response.status_code == 302 and response["Location"] == "/two-factor/manage"
+    # New codes made later are saved from Sign-in security too, whatever the setting.
+    response = client.post("/two-factor/new-codes", {"confirm_password": PASSWORD})
+    assert 'name="then"' not in response.content.decode()
+    # And anywhere else a form might send someone isn't followed.
+    response = client.post("/two-factor/codes-saved", {"then": "https://elsewhere.example/"})
+    assert response["Location"] == "/two-factor/manage"
+
+
+def test_the_servers_page_says_ready_only_with_two_factor_on(web):
+    client, _ = signed_in(web)
+    assert "your account is ready" not in client.get("/?ready=1").content.decode()
+
+
 def test_making_new_codes_keeps_a_session_that_signed_in_with_a_recovery_code(web):
     from checker.web import two_factor
 

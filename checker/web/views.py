@@ -425,7 +425,10 @@ def two_factor_turn_on(request) -> HttpResponse:
         device, codes = done
         otp_login(request, device)
         request.session.cycle_key()
-        return render(request, "two_factor_codes.html.j2", {"codes": codes})
+        # Made to set it up before anything else opens: saving the codes is the last step, and
+        # the servers come next. Someone who chose to turn it on goes back to Sign-in security.
+        then = "servers" if settings.CHECKER_TWO_FACTOR_REQUIRED else ""
+        return render(request, "two_factor_codes.html.j2", {"codes": codes, "then": then})
     if two_factor.is_on(user):  # the same, when the two requests crossed
         return HttpResponseRedirect(reverse("two_factor_manage"))
     if not allowed or accounts.confirmations_used_up(session):
@@ -507,6 +510,8 @@ def two_factor_new_codes(request) -> HttpResponse:
 @action("said the recovery codes are saved")
 def two_factor_codes_saved(request) -> HttpResponse:
     two_factor.mark_codes_saved(request.user)
+    if request.POST.get("then") == "servers":
+        return HttpResponseRedirect(reverse("fleet") + "?ready=1")
     return HttpResponseRedirect(reverse("two_factor_manage"))
 
 
@@ -563,6 +568,8 @@ def fleet_page(request) -> HttpResponse:
             if any(r.tone != "removed" for r in rows)
             else None,
             "key_unsaved": key_unsaved,
+            # Said once, to someone sent here from saving their recovery codes.
+            "ready": "ready" in request.GET and two_factor.is_on(request.user),
             "headline": title,
             "headline_tone": title_tone,
             "rows": shown,

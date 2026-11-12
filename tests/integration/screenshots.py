@@ -108,6 +108,13 @@ def main() -> int:
     home = args.home.resolve()
     os.environ["CHECKER_HOME"] = str(home)
     os.environ["CHECKER_PRODUCT_NAME"] = args.name
+    if (home / "demo.json").exists():
+        # A dataset `demo.py save` made keeps the record of the pages' use in web.db, and with the
+        # servers gone it is the only copy. This script deletes web.db for its throwaway account.
+        sys.exit(
+            f"{home} is a saved demo dataset: this script would delete the Activity record and"
+            " the Checks list it holds (web.db). It isn't moved onto saved datasets yet (D.5)."
+        )
     protect = json.loads((home / "demo-protect.json").read_text())
     (home / "web.db").unlink(missing_ok=True)  # a throwaway account for this run
 

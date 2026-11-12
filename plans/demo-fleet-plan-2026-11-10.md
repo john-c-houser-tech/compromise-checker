@@ -28,11 +28,11 @@ ways:
 
 One script, `tests/integration/demo.py`, with four commands:
 
-    # Built so far (D.4): up [--days N], status, down. save is D.5, --build when it is needed.
+    # Built so far: up [--days N], status, save DIR (D.5), down. --build when it is needed.
     demo.py up [--days N] [--build]   # make the checker's server and the fleet, play the story
     demo.py status                    # what is up, since when, what it has cost, when it ends
     demo.py save DIR                  # copy the checker's data down, as the demo dataset
-    demo.py down                      # save, then delete every server
+    demo.py down                      # delete every server (it asks for a save first)
 
 - **The checker's server** is a new Linode with the published release installed by the install
   page's own line (the `public-web` route of the install proof already does this, with a name and
@@ -152,3 +152,48 @@ point is the note the next check clears) runs an hour after the daily check inst
   John's calendar for after the last check.
 - **The privacy proof** runs at the end of day 0. After John signs in from the laptop the web
   interface holds his address by design; D.5's `save` leaves that out.
+
+## Save as built (D.5, first part, 2026-11-12)
+
+`demo.py save DIR` copies the checker's data to a new folder outside any repository. It needs no
+Linode token and changes nothing on the servers, so it can be run during a stay and again at the
+end.
+
+- **What comes down:** the store, the stored evidence and the key it is read with, the settings,
+  the servers' list and their host keys, the threat updates, the whitelists, proposals and
+  reports. They are named in `demo.py`; a file the checker starts keeping later isn't copied until
+  it is added there.
+- **What stays on the server:** `web.db`, which holds the accounts, their sessions, the record of
+  who did what at the pages and the list of checks started from a page, each with the address it
+  came from. And every key but the evidence's: the one that logs in to the fleet, the web
+  interface's secrets, the mail key. So in the saved copy the Activity page and the Checks page's
+  list start empty; the results of those checks are in the store and are saved.
+- **The account's name is in the data.** The store's own record of each collection says who
+  started it, so a check or a decision made at the pages carries the name of the account that
+  made it.
+- **A whole copy.** The checker's lock is held while it copies, so no check or purge runs
+  meanwhile, and one under way stops the save instead. The store is read through SQLite's own
+  backup. During a stay, `save` refuses from an hour before the daily check to an hour and
+  three quarters after it, and for the first five minutes after the last day's (its timer may
+  fire a little late), so a day's check never finds the lock taken.
+- **Three things are changed in the copy, and `DIR/demo.json` says so.** The store names each
+  collection by its whole path, which was the server's: each becomes the saved file's, or no page
+  on the laptop could open one. The settings' path to the evidence key, likewise. And whatever in
+  the settings could run a command or send anything from the laptop is put back to what a new
+  checker starts with: the notification command, the advisor, where threat updates come from,
+  the check for new releases. So a saved folder names its own place and can't be moved.
+- **Nothing is taken on trust from the server:** only ordinary files, only the names asked for,
+  each once, no more than 2 GB and no longer than an hour; a store that names a file outside the
+  saved ones, or a list of servers with a login that isn't the demo's key, stops the save.
+- **The proof.** The folder is put together as `DIR.part` and becomes `DIR` only when every
+  collection, sealed file and sealed value in it opens with the saved key and none holds this
+  machine's address: the files, the store row by row, the evidence. Otherwise it stays as
+  `DIR.part` and says what was found. The address is the one the checker's server sees the
+  laptop come from at that moment, in the ways it can be written; one the laptop had on another
+  day or network isn't looked for.
+- **`down` waits for it:** with a checker up whose data was never saved, was saved before the
+  last day's check left a collection, or is no longer where it was saved, `down` says so and
+  stops. `down --unsaved` deletes anyway. A failed `up` still deletes what it made without asking.
+
+Still to do in D.5, after the first save from real servers: browse it on the laptop, move the
+screenshot script onto it, retire `demo_fleet.py`, take the README's pictures again.

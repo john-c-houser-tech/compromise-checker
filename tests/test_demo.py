@@ -1115,3 +1115,562 @@ def test_days_goes_with_up_only(monkeypatch, capsys):
         with pytest.raises(SystemExit):
             demo.main(words)
     assert "--days goes with `up`, and is 1 to 14" in capsys.readouterr().err
+
+
+# --- save (D.5) ------------------------------------------------------------------------------
+
+
+def a_home(base, address="198.51.100.7"):
+    """A checker's home as the installer leaves it, with one collection that names `address`."""
+    import gzip
+    import sqlite3
+
+    import pyrage
+    from pyrage import x25519
+
+    identity = x25519.Identity.generate()
+    (base / "keys").mkdir(parents=True)
+    (base / "keys" / "evidence-identity.txt").write_text(f"# made now\n{identity}\n")
+    for secret in ("scanner_ed25519", "web-secret.txt", "web-proxy-secret.txt", "mail-key.txt"):
+        (base / "keys" / secret).write_text("SECRET\n")
+    (base / "config.yaml").write_text(
+        f"recipients: [{identity.to_public()}]\n"
+        "identity_file: /var/lib/compromise-checker/data/keys/evidence-identity.txt\n"
+        "database: null\n"
+    )
+    (base / "hosts.yaml").write_text("hosts: []\n")
+    (base / "hosts.yaml.lock").write_text("")
+    (base / "known_hosts").write_text("192.0.2.5 ssh-ed25519 AAAA\n")
+    (base / "web.db").write_text("accounts, and who signed in from where\n")
+    (base / "run.lock").write_text("")
+    (base / "logs").mkdir()
+    (base / "logs" / "run.log").write_text("not asked for\n")
+    (base / "packs" / "active").mkdir(parents=True)
+    (base / "packs" / "active" / "brotli-2026-10.toml").write_text("pack\n")
+    (base / "packs" / "state.lock").write_text("")
+    (base / "whitelist" / "hosts").mkdir(parents=True)
+    (base / "whitelist" / "hosts" / "mail-1.yaml").write_text("rules: []\n")
+    (base / "whitelist" / ".global.yaml.x.tmp").write_text("half written\n")
+    (base / "evidence" / "db-1").mkdir(parents=True)
+    line = json.dumps(
+        {"type": "chunk", "source_id": 1, "encoding": "utf-8", "data": f"login from {address}"}
+    )
+    (base / "evidence" / "db-1" / "db-1-20261110T030000Z-abcd1234.age").write_bytes(
+        pyrage.encrypt(gzip.compress(line.encode() + b"\n"), [identity.to_public()])
+    )
+    (base / "evidence" / "db-1" / "link.age").symlink_to("/etc/passwd")
+    store = sqlite3.connect(base / "checker.db")
+    store.execute("PRAGMA journal_mode = WAL")
+    store.execute("CREATE TABLE custody (who TEXT, note BLOB)")
+    store.execute("INSERT INTO custody VALUES ('ops (web interface)', x'00ff')")
+    store.commit()
+    return store  # left open, as the checker's own would be
+
+
+def as_ssh(monkeypatch, base, instead=None):
+    """ssh to the checker's server, replaced by the same script run here on `base` (or by
+    `instead`, a command that stands for a server gone wrong)."""
+    import shlex
+
+    real = subprocess.Popen
+
+    def ssh(argv, **kwargs):
+        if argv[0] != "ssh":
+            return real(argv, **kwargs)
+        assert "runuser -u compromise-checker -- " in argv[-1]
+        assert "/opt/compromise-checker/current/bin/python -I - " in argv[-1]
+        # The last word is the list of what to send, as the server's shell would read it.
+        here = [sys.executable, "-I", "-", str(base), shlex.split(argv[-1])[-1]]
+        return real(instead or here, **kwargs)
+
+    monkeypatch.setattr(demo.subprocess, "Popen", ssh)
+
+
+class Home:
+    """The checker's server for `save`: the real script, run here on a folder."""
+
+    address, user, options = "192.0.2.1", "root", []
+
+    def __init__(self, base, here="203.0.113.9"):
+        self.base, self.here, self.closed = base, here, False
+
+    def run(self, command, timeout=900, input=None):
+        return SimpleNamespace(returncode=0, stdout=f"{self.here} 51234 22\n", stderr="")
+
+    def out(self, command):
+        return self.run(command).stdout.strip()
+
+    def close(self):
+        self.closed = True
+
+
+def saving(tmp_path, monkeypatch, here="203.0.113.9", **more):
+    """A demo that is up, its checker's home in a folder, and ssh replaced by this machine."""
+    base = tmp_path / "server"
+    store = a_home(base, **more)
+    folder = tmp_path / "state"
+    up = state(1, 2)
+    demo.save_state(folder, up)
+    home = Home(base, here)
+    monkeypatch.setattr(demo.install, "Node", lambda *a, **k: home)
+    as_ssh(monkeypatch, base)
+    return folder, base, store
+
+
+NOON = datetime(2026, 11, 12, 20, 0, tzinfo=UTC)
+
+
+def test_save_brings_down_the_data_and_leaves_the_accounts_and_the_keys(
+    tmp_path, monkeypatch, capsys
+):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    target = tmp_path / "out" / "dataset"
+    assert demo.save(folder, target, NOON) == 0
+    store.close()
+    got = sorted(str(p.relative_to(target)) for p in target.rglob("*") if p.is_file())
+    assert got == [
+        "checker.db",
+        "config.yaml",
+        "demo.json",
+        "evidence/db-1/db-1-20261110T030000Z-abcd1234.age",
+        "hosts.yaml",
+        "keys/evidence-identity.txt",
+        "known_hosts",
+        "packs/active/brotli-2026-10.toml",
+        "whitelist/hosts/mail-1.yaml",
+    ]
+    assert all(p.stat().st_mode & 0o077 == 0 for p in [target, *target.rglob("*")])
+    # The settings name the saved key, so the checker here can open the evidence.
+    import yaml
+
+    config = yaml.safe_load((target / "config.yaml").read_text())
+    assert config["identity_file"] == str(target / "keys" / "evidence-identity.txt")
+    about = json.loads((target / "demo.json").read_text())
+    assert about["run"] == "abc123" and about["servers"][0]["address"] == "192.0.2.1"
+    assert not (tmp_path / "out" / "dataset.part").exists()
+    assert not list((tmp_path / "out").glob("*.tar"))
+    said = capsys.readouterr().out
+    assert "PASS 8 files, 1 of them stored evidence" in said
+    assert "none of them holds 203.0.113.9" in said and "NOTE" not in said
+    assert not list((tmp_path / "out").glob(".dataset.*"))  # the tar's own folder is gone
+    assert f"CHECKER_HOME={target} checker web" in said
+    kept = demo.load_state(folder)
+    assert kept.saved == str(target) and kept.saved_at == "2026-11-12T20:00:00+00:00"
+    assert kept.saved_whole  # one sitting: there is no last day to wait for
+
+
+def test_the_saved_store_is_whole_though_the_checker_had_it_open(tmp_path, monkeypatch):
+    """Rows still in the write-ahead log, not yet in the file, are in the copy."""
+    import sqlite3
+
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.execute("INSERT INTO custody VALUES ('written just now', NULL)")
+    store.commit()
+    assert (base / "checker.db-wal").stat().st_size > 0
+    assert demo.save(folder, tmp_path / "dataset", NOON) == 0
+    saved = sqlite3.connect(tmp_path / "dataset" / "checker.db")
+    assert saved.execute("SELECT count(*) FROM custody").fetchone() == (2,)
+    saved.close()
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["evidence", "store", "store-bytes", "file"],
+)
+def test_data_that_names_this_machine_is_kept_aside_and_not_called_the_dataset(
+    tmp_path, monkeypatch, capsys, where
+):
+    here = "203.0.113.9"
+    folder, base, store = saving(
+        tmp_path, monkeypatch, **({"address": here} if where == "evidence" else {})
+    )
+    if where == "store":
+        store.execute("INSERT INTO custody VALUES (?, NULL)", (f"from {here}",))
+    if where == "store-bytes":
+        store.execute("INSERT INTO custody VALUES ('x', ?)", (f"from {here}".encode(),))
+    if where == "file":
+        (base / "known_hosts").write_text(f"{here} ssh-ed25519 AAAA\n")
+    store.commit()
+    target = tmp_path / "dataset"
+    assert demo.save(folder, target, NOON) == 1
+    store.close()
+    assert not target.exists() and (tmp_path / "dataset.part" / "checker.db").exists()
+    said = capsys.readouterr().out
+    assert "FAIL " in said and "Not fit to show as it is" in said
+    assert demo.load_state(folder).saved == ""
+    # And the next try says that one is in the way, not a second copy beside it.
+    with pytest.raises(demo.DemoError, match="left from a save that didn't finish"):
+        demo.save(folder, target, NOON)
+
+
+def test_evidence_the_saved_key_cant_open_fails_the_save(tmp_path, monkeypatch, capsys):
+    import pyrage
+    from pyrage import x25519
+
+    folder, base, store = saving(tmp_path, monkeypatch)
+    other = x25519.Identity.generate().to_public()
+    (base / "evidence" / "db-1" / "another.age").write_bytes(pyrage.encrypt(b"x", [other]))
+    assert demo.save(folder, tmp_path / "dataset", NOON) == 1
+    store.close()
+    assert "the saved evidence couldn't be opened" in capsys.readouterr().out
+
+
+def test_save_stops_for_a_check_under_way_and_changes_nothing_here(tmp_path, monkeypatch):
+    import fcntl
+
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    held = os.open(base / "run.lock", os.O_RDWR)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    try:
+        with pytest.raises(demo.DemoError, match="a check or a purge is running"):
+            demo.save(folder, tmp_path / "dataset", NOON)
+    finally:
+        os.close(held)
+    assert not (tmp_path / "dataset").exists() and not (tmp_path / "dataset.part").exists()
+
+
+def test_save_takes_only_a_new_folder_outside_the_repository(tmp_path, monkeypatch):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    (tmp_path / "there").mkdir()
+    with pytest.raises(demo.DemoError, match="exists"):
+        demo.save(folder, tmp_path / "there", NOON)
+    inside = Path(demo.__file__).resolve().parents[2] / "demo-data"
+    with pytest.raises(demo.DemoError, match="outside any repository"):
+        demo.save(folder, inside, NOON)
+    assert not inside.exists()
+    # Another checkout, or another repository altogether, is one too.
+    (tmp_path / "other" / ".git").mkdir(parents=True)
+    with pytest.raises(demo.DemoError, match="outside any repository"):
+        demo.save(folder, tmp_path / "other" / "deep" / "data", NOON)
+    (tmp_path / "worktree").mkdir()
+    (tmp_path / "worktree" / ".git").write_text("gitdir: elsewhere\n")
+    with pytest.raises(demo.DemoError, match="outside any repository"):
+        demo.save(folder, tmp_path / "worktree" / "data", NOON)
+    with pytest.raises(demo.DemoError, match="nothing to save"):
+        demo.save(tmp_path / "no-state", tmp_path / "dataset", NOON)
+
+
+def test_only_what_was_asked_for_is_taken_from_what_the_server_sends(tmp_path):
+    import io
+    import tarfile
+
+    def archive(*entries):
+        path = tmp_path / "sent.tar"
+        with tarfile.open(path, "w") as tar:
+            for entry in entries:
+                tar.addfile(entry, io.BytesIO(b"x" * entry.size))
+        return path
+
+    def a_file(name, size=1):
+        entry = tarfile.TarInfo(name)
+        entry.size = size
+        return entry
+
+    link = tarfile.TarInfo("evidence/db-1/a.age")
+    link.type, link.linkname = tarfile.SYMTYPE, "/etc/passwd"
+    for bad in (
+        a_file("web.db"),
+        a_file("keys/scanner_ed25519"),
+        a_file("../outside"),
+        a_file("/etc/cron.d/x"),
+        a_file("evidence/../../outside"),
+        a_file("evidence"),
+        link,
+    ):
+        (tmp_path / "into").mkdir(exist_ok=True)
+        with pytest.raises(demo.DemoError, match="wasn't asked for"):
+            demo.unpack(archive(bad), tmp_path / "into")
+        assert not list((tmp_path / "into").iterdir())
+    assert demo.unpack(archive(a_file("checker.db"), a_file("packs/state.json")), tmp_path / "into")
+
+
+def stay(last_check="2026-11-15T03:00"):
+    up = state(1, 2)
+    up.days, up.last_check = 4, last_check
+    return up
+
+
+def test_save_keeps_clear_of_the_days_steps_and_the_daily_check():
+    def at(text):
+        return demo.too_near_a_check(stay(), datetime.fromisoformat(text).replace(tzinfo=UTC))
+
+    assert at("2026-11-12T20:00") is None
+    assert at("2026-11-13T01:55") is None
+    assert "between 02:00 and 04:45 UTC" in at("2026-11-13T02:00")
+    assert at("2026-11-13T03:00") and at("2026-11-13T04:30")
+    assert at("2026-11-13T04:45") and at("2026-11-13T04:46") is None
+    # The last day's timer may fire a little late: a save in its first minutes would take the
+    # lock ahead of it, and that day's check would be lost. After that, only the lock holds it.
+    assert "the last day's check is starting" in at("2026-11-15T03:00:10")
+    assert at("2026-11-15T03:05") and at("2026-11-15T03:06") is None
+    assert demo.too_near_a_check(state(1), NOON) is None  # one sitting: no days to come
+    # A daily check a little after midnight: its window starts the evening before.
+    late = stay("2026-11-15T00:10")
+    assert demo.too_near_a_check(late, datetime(2026, 11, 12, 23, 30, tzinfo=UTC))
+
+
+def test_down_waits_for_a_save_and_for_one_made_after_the_last_check(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(demo.proof, "linode_token", lambda: pytest.fail("Linode was asked"))
+    folder = tmp_path / "state"
+    up = stay()
+    demo.save_state(folder, up)
+    assert "hasn't been saved" in demo.unsaved(folder)
+    assert demo.main(["down", "--state", str(folder)]) == 1
+    assert "`demo.py save DIR` first, or `down --unsaved`" in capsys.readouterr().err
+    up.saved, up.saved_at = str(tmp_path / "dataset"), "2026-11-15T03:40:00+00:00"
+    demo.save_state(folder, up)
+    assert "which isn't there now" in demo.unsaved(folder)
+    (tmp_path / "dataset").mkdir()
+    (tmp_path / "dataset" / "checker.db").write_text("")
+    assert "before the last day's check" in demo.unsaved(folder)  # whenever it was made
+    up.saved_whole = True
+    demo.save_state(folder, up)
+    assert demo.unsaved(folder) is None
+    # Nothing to save: no demo, a state that can't be read, or no checker installed yet.
+    assert demo.unsaved(tmp_path / "none") is None
+    (folder / "state.json").write_text("{")
+    assert demo.unsaved(folder) is None
+    bare = state(1)
+    bare.web_name = ""
+    demo.save_state(folder, bare)
+    assert demo.unsaved(folder) is None
+
+
+def test_down_unsaved_deletes_and_a_failed_up_never_waits(tmp_path, monkeypatch):
+    folder = tmp_path / "state"
+    demo.save_state(folder, stay())
+    api = FakeApi([node("cc-demo-abc123-s1", [demo.TAG], 1)])
+    monkeypatch.setattr(demo.proof, "linode_token", lambda: "token")
+    monkeypatch.setattr(demo, "Api", lambda token: api)
+    assert demo.main(["down", "--unsaved", "--state", str(folder)]) == 0
+    assert api.deleted == [1]
+
+
+def test_save_takes_a_folder_and_nothing_else_does(monkeypatch, capsys):
+    monkeypatch.setattr(demo.proof, "linode_token", lambda: pytest.fail("Linode was asked"))
+    for words in (
+        ["save"],
+        ["status", "somewhere"],
+        ["up", "--unsaved"],
+        ["save", "x", "--days", "2"],
+    ):
+        with pytest.raises(SystemExit):
+            demo.main(words)
+    capsys.readouterr()
+
+
+def test_a_saved_home_shows_its_servers_with_the_server_gone(home, tmp_path_factory, monkeypatch):
+    """A home the checker made, with a collection it analysed, saved, and then read by the
+    checker's own code with the original out of reach: the store names the saved files."""
+    from test_schedule import CLEAN
+    from test_snapshot import add_bundle
+
+    from checker.assess import analyze
+    from checker.evidence import Store, database_file, load_config
+    from checker.fleet import read_host
+
+    base, store, identity, config = home
+    (base / "evidence" / "web01").mkdir(parents=True)
+    add_bundle(home, "evidence/web01/b1", 10, CLEAN)
+    analyze(store, "web01", identity, config.recipients, "evidence/web01/b1")
+    assert read_host(base, "web01")[1] is not None
+    out = tmp_path_factory.mktemp("laptop")
+    folder = out / "state"
+    demo.save_state(folder, state(1, 2))
+    monkeypatch.setattr(demo.install, "Node", lambda *a, **k: Home(base))
+    monkeypatch.setattr(demo.install, "DATA", str(base))
+    as_ssh(monkeypatch, base)
+    target = out / "dataset"
+    assert demo.save(folder, target, NOON) == 0
+    (base / "evidence").rename(base / "gone")
+    assert read_host(base, "web01")[1] is None  # the original can't be read any more
+    monkeypatch.setenv("CHECKER_HOME", str(target))
+    item, assessment, _, advisor_on = read_host(target, "web01")
+    assert item.state == "analysed" and assessment is not None and not advisor_on
+    saved = Store(database_file(target), read_only=True)
+    paths = [row["path"] for row in saved.bundles("web01")]
+    saved.close()
+    assert paths == [str(target / "evidence" / "web01" / "b1.age")]
+    # Its guards are back: what a row says of a collection still can't be changed.
+    import sqlite3
+
+    direct = sqlite3.connect(target / "checker.db")
+    with pytest.raises(sqlite3.DatabaseError):
+        direct.execute("UPDATE bundles SET path = 'x'")
+    direct.close()
+    assert load_config(target).identity_file == str(target / "keys" / "evidence-identity.txt")
+    about = json.loads((target / "demo.json").read_text())
+    assert about["changed_here"].startswith(f"4 paths in the store, from {base} to this folder")
+    assert not (target / "keys" / "mail-key.txt").exists()
+
+
+def test_settings_that_could_run_or_send_anything_here_are_put_back(tmp_path, monkeypatch):
+    """A settings file comes from the server like any other file. The checker runs the commands
+    one names, and sends where it says."""
+    import yaml
+
+    from checker.evidence import load_config
+
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    config = yaml.safe_load((base / "config.yaml").read_text())
+    config |= {
+        "notify_command": "/usr/bin/touch /tmp/ran",
+        "advisor": {"enabled": True, "api_key_source": "command:/usr/bin/touch /tmp/ran"},
+        "packs": {"source": "https://elsewhere.example/", "apply": "all"},
+        "retention_days": 30,
+    }
+    (base / "config.yaml").write_text(yaml.safe_dump(config))
+    target = tmp_path / "dataset"
+    assert demo.save(folder, target, NOON) == 0
+    kept = load_config(target)
+    assert kept.notify_command is None and not kept.advisor.enabled
+    assert kept.advisor == type(kept.advisor)()  # as a new checker has it: off
+    assert "elsewhere" not in kept.packs.source and not kept.updates.check
+    assert kept.retention_days == 30 and kept.packs.apply == "all"  # what is harmless stays
+
+
+@pytest.mark.parametrize(
+    "hosts",
+    [
+        "hosts:\n- {name: a, address: 198.51.100.9, user: root, auth: agent}\n",
+        "hosts:\n- {name: a, address: 198.51.100.9, user: root}\n",
+        "hosts: [oops]\n",
+        "- not a list of servers\n",
+    ],
+)
+def test_a_list_of_servers_that_would_offer_this_machines_keys_stops_the_save(
+    tmp_path, monkeypatch, hosts
+):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    (base / "hosts.yaml").write_text(hosts)
+    with pytest.raises(demo.DemoError, match="list of servers|settings can't be read"):
+        demo.save(folder, tmp_path / "dataset", NOON)
+    assert not (tmp_path / "dataset.part").exists()
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/etc/passwd", "{data}/../../etc/passwd", "{data}/web.db", "{data}/evidence/db-1/gone.age"],
+)
+def test_a_store_that_names_a_file_that_isnt_a_saved_one_stops_the_save(
+    tmp_path, monkeypatch, path
+):
+    """The checker opens, writes beside and deletes the files its store names."""
+    folder, base, store = saving(tmp_path, monkeypatch)
+    monkeypatch.setattr(demo.install, "DATA", str(base))
+    store.execute("CREATE TABLE derived (path TEXT)")
+    store.execute("INSERT INTO derived VALUES (?)", (path.replace("{data}", str(base)),))
+    store.commit()
+    store.close()
+    with pytest.raises(demo.DemoError, match="names a file"):
+        demo.save(folder, tmp_path / "dataset", NOON)
+
+
+def test_a_second_name_for_a_file_comes_down_as_a_file(tmp_path, monkeypatch):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    (base / "reports").mkdir()
+    (base / "reports" / "report-a.html").write_text("a report\n")
+    os.link(base / "reports" / "report-a.html", base / "reports" / "report-b.html")
+    (base / "packs" / "keylists" / ".new-1").mkdir(parents=True)
+    (base / "packs" / "keylists" / ".new-1" / "half-made.pub").write_text("not yet\n")
+    target = tmp_path / "dataset"
+    assert demo.save(folder, target, NOON) == 0
+    assert (target / "reports" / "report-b.html").read_text() == "a report\n"
+    assert not (target / "packs" / "keylists").exists()
+
+
+@pytest.mark.parametrize(
+    ("instead", "says"),
+    [
+        (["sh", "-c", "echo 'not a tar'; echo SENT 1 0 0 >&2"], "couldn't be taken apart"),
+        (["sh", "-c", "printf '\\033[2Jgone wrong' >&2; exit 1"], r"couldn't be read:\n\?\[2Jgone"),
+        (["sh", "-c", "head -c 3000000 /dev/zero; echo SENT 1 0 0 >&2"], "sent more than"),
+        (["sh", "-c", "sleep 30"], "still sending after"),
+    ],
+)
+def test_a_server_gone_wrong_stops_the_save_and_leaves_nothing(
+    tmp_path, monkeypatch, instead, says
+):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    as_ssh(monkeypatch, base, instead)
+    monkeypatch.setattr(demo, "MOST_BYTES", 2_000_000)
+    if "sleep" in instead[-1]:
+        real = demo.threading.Timer
+        monkeypatch.setattr(demo.threading, "Timer", lambda seconds, then: real(0.3, then))
+    with pytest.raises(demo.DemoError, match=says):
+        demo.save(folder, tmp_path / "dataset", NOON)
+    assert [p.name for p in tmp_path.iterdir() if "dataset" in p.name] == []
+
+
+def test_a_sealed_value_or_file_is_opened_to_be_searched(tmp_path, monkeypatch, capsys):
+    """What the checker seals with the evidence key (a collection's session, the last run's
+    state, a report) is read too, and one that won't open isn't passed over."""
+    import gzip
+
+    import pyrage
+    from pyrage import x25519
+
+    from checker.evidence import load_identity
+
+    here = "203.0.113.9"
+    folder, base, store = saving(tmp_path, monkeypatch)
+    to = [load_identity(base / "keys" / "evidence-identity.txt").to_public()]
+    store.execute(
+        "INSERT INTO custody VALUES ('x', ?)", (pyrage.encrypt(f"from {here}".encode(), to),)
+    )
+    store.commit()
+    (base / "run-state.age").write_bytes(pyrage.encrypt(b'{"seen": "203-0-113-9.sslip.io"}', to))
+    (base / "reports").mkdir()
+    (base / "reports" / "report-x.html.age").write_bytes(
+        pyrage.encrypt(gzip.compress(b"<p>9.113.0.203.in-addr.arpa</p>"), to)
+    )
+    other = [x25519.Identity.generate().to_public()]
+    (base / "reports" / "report-y.html.age").write_bytes(pyrage.encrypt(b"x", other))
+    assert demo.save(folder, tmp_path / "dataset", NOON) == 1
+    store.close()
+    said = capsys.readouterr().out
+    assert "FAIL the store's table custody: names this machine" in said
+    assert "FAIL run-state.age: names this machine" in said
+    assert "FAIL reports/report-x.html.age: names this machine" in said
+    assert "FAIL reports/report-y.html.age: couldn't be opened with the saved key" in said
+
+
+def test_an_address_is_looked_for_in_each_way_it_is_written():
+    assert demo.forms_of("203.0.113.9") == [
+        "203.0.113.9",
+        "203-0-113-9",
+        "9.113.0.203.in-addr.arpa",
+        "9.113.0.203.IN-ADDR.ARPA",
+    ]
+    six = demo.forms_of("2001:db8:0:1::abcd")
+    assert "2001:0db8:0000:0001:0000:0000:0000:abcd" in six and "2001:db8:0:1::/64" in six
+    assert "2001:DB8:0:1::ABCD" in six
+    assert demo.forms_of("not an address") == ["not an address"]
+
+
+def test_a_save_before_the_last_days_collection_says_so_and_down_still_waits(
+    tmp_path, monkeypatch, capsys
+):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    up = stay("2026-11-15T03:00")
+    demo.save_state(folder, up)
+    collection = base / "evidence" / "db-1" / "db-1-20261110T030000Z-abcd1234.age"
+    before = datetime(2026, 11, 14, 3, 4, tzinfo=UTC).timestamp()
+    os.utime(collection, (before, before))
+    assert demo.save(folder, tmp_path / "early", datetime(2026, 11, 14, 20, 0, tzinfo=UTC)) == 0
+    assert "NOTE the last day's check has left no collection yet" in capsys.readouterr().out
+    assert "before the last day's check" in demo.unsaved(folder)
+    # After it, with that day's collection there, the save is whole and `down` goes ahead.
+    after = datetime(2026, 11, 15, 3, 4, tzinfo=UTC).timestamp()
+    os.utime(collection, (after, after))
+    assert demo.save(folder, tmp_path / "whole", datetime(2026, 11, 15, 3, 30, tzinfo=UTC)) == 0
+    assert "NOTE" not in capsys.readouterr().out and demo.unsaved(folder) is None
+    assert json.loads((tmp_path / "whole" / "demo.json").read_text())["last_day_in_it"] is True

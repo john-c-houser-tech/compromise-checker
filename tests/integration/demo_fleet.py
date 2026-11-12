@@ -114,7 +114,7 @@ async def member_run(
             setup = proof.SETUP.replace("{controller}", controller.split()[0]).replace(
                 "{scanner_key}", scanner_key.export_public_key().decode().strip()
             )
-            await conn.run(setup, check=True, timeout=600)
+            await proof.set_up(conn, setup, member.name)
             await conn.run(detection.WEB_SETUP, check=True, timeout=120)
             if member.role == "vulnerable":
                 await conn.run(php.SCENARIOS["ubuntu-own"].install, check=True, timeout=600)

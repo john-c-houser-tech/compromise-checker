@@ -269,7 +269,7 @@ def setup_notes(stderr: str | bytes | None) -> list[str]:
 async def set_up(conn, setup: str, name: str) -> None:
     """Run SETUP on a new server, and say what it went on without: a proof that needed that
     part then fails for a reason that was printed."""
-    done = await conn.run(setup, check=True, timeout=600)
+    done = await conn.run(setup, check=True, timeout=900)  # room for the fetch's three tries
     for line in setup_notes(done.stderr):
         print(f"{name}: {line}")
 
@@ -406,7 +406,7 @@ if command -v ufw >/dev/null 2>&1; then
     # Over IPv4, and tried again: Linode's mirror has timed out over IPv6 from a new server
     # (2026-11-10: "containerd ... Connection timed out [IP: 2600:"). What a failure said is
     # passed on, since the proof goes on without the container and would otherwise hide why.
-    said=$( (DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 \
+    said=$( (DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 \
                 -o Acquire::ForceIPv4=true -o Acquire::Retries=3 install -y -qq docker.io \
             && systemctl enable --now docker \
             && docker run -d --name cc-proof-web docker.io/library/nginx:alpine) \

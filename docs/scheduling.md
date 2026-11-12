@@ -168,8 +168,9 @@ timer and starts it:
   loginctl enable-linger USER`); `install` says so. Output: `journalctl
   --user -u compromise-checker.service`. An installed checker runs as a system account, which has
   no journal of its own, so there it is `sudo journalctl
-  _SYSTEMD_USER_UNIT=compromise-checker.service`; `install` prints whichever applies. A run missed
-  while the machine was off runs when it next starts.
+  _SYSTEMD_USER_UNIT=compromise-checker.service + USER_UNIT=compromise-checker.service`;
+  `install` prints whichever applies. A run missed while the machine was off runs when it next
+  starts.
 - **macOS**: a launchd agent, `~/Library/LaunchAgents/com.nouriloop.compromise-checker.plist`,
   which runs while you are logged in at the Mac. Output: `logs/run.log` in
   the checker's home.

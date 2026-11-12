@@ -110,7 +110,8 @@ One script, `tests/integration/demo.py`, with four commands:
   system journal. Fix: print a command that works there (to be tried on a server:
   `sudo journalctl _SYSTEMD_USER_UNIT=compromise-checker.service`), in `checker/schedule.py`
   and `docs/scheduling.md`.
-  **Fixed 2026-11-12:** a system account is told that command, an ordinary one the old one. The
+  **Fixed 2026-11-12:** a system account is told that command, with `+ USER_UNIT=` for what
+  systemd says of the unit; an ordinary one the old one. The
   match was tried on a laptop's own units; on an installed checker it is still to be tried.
 - **Docker needs a second try on every fresh Ubuntu server** (all three runs). The proofs' setup
   hides why the first fails; the demo's retry works and says nothing either. Harmless here, but

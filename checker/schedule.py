@@ -915,9 +915,11 @@ def journal_command(uid: int) -> str:
     """How to read the timer's output. An ordinary account has a journal of its own. A system
     account, which is what the installer makes, has none: what its units print goes to the
     system's journal, which takes root (or the systemd-journal group) to read, and is found there
-    by the unit's name."""
+    by the unit's name: what the unit printed, and what systemd said of starting and ending it,
+    which is all there is when a run fails before the checker says anything."""
     if uid <= SYSTEM_ACCOUNTS_END:
-        return f"sudo journalctl _SYSTEMD_USER_UNIT={UNIT}.service"
+        unit = f"{UNIT}.service"
+        return f"sudo journalctl _SYSTEMD_USER_UNIT={unit} + USER_UNIT={unit}"
     return f"journalctl --user -u {UNIT}.service"
 
 

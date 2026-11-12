@@ -476,6 +476,7 @@ def test_the_output_is_looked_for_where_the_account_s_units_write_it(tmp_path, m
     assert (
         schedule.journal_command(999)
         == "sudo journalctl _SYSTEMD_USER_UNIT=compromise-checker.service"
+        " + USER_UNIT=compromise-checker.service"
     )
     monkeypatch.setattr(os, "getuid", lambda: 988)
     where = schedule.placement("linux", (3, 5), {}, tmp_path, tmp_path / "home")

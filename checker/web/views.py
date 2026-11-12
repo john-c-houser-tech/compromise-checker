@@ -568,7 +568,7 @@ def fleet_page(request) -> HttpResponse:
             if any(r.tone != "removed" for r in rows)
             else None,
             "key_unsaved": key_unsaved,
-            # Said once, to someone sent here from saving their recovery codes.
+            # For someone sent here from saving their recovery codes.
             "ready": "ready" in request.GET and two_factor.is_on(request.user),
             "headline": title,
             "headline_tone": title_tone,

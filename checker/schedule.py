@@ -903,8 +903,22 @@ def placement(
             ["systemctl", "--user", "disable", "--now", f"{UNIT}.timer"],
             ["systemctl", "--user", "daemon-reload"],
         ],
-        f"journalctl --user -u {UNIT}.service",
+        journal_command(os.getuid()),
     )
+
+
+# The highest number a system account has, as systemd is built on the systems this runs on.
+SYSTEM_ACCOUNTS_END = 999
+
+
+def journal_command(uid: int) -> str:
+    """How to read the timer's output. An ordinary account has a journal of its own. A system
+    account, which is what the installer makes, has none: what its units print goes to the
+    system's journal, which takes root (or the systemd-journal group) to read, and is found there
+    by the unit's name."""
+    if uid <= SYSTEM_ACCOUNTS_END:
+        return f"sudo journalctl _SYSTEMD_USER_UNIT={UNIT}.service"
+    return f"journalctl --user -u {UNIT}.service"
 
 
 class InstallFailed(Exception):

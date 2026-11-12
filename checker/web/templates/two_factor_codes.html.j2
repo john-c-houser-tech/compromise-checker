@@ -11,6 +11,7 @@
 </ul>
 <form method="post" action="{{ url('two_factor_codes_saved') }}">
   {{ csrf_input }}
+  {% if then %}<input type="hidden" name="then" value="{{ then }}">{% endif %}
   <button>I've saved them</button>
 </form>
 {% endblock %}

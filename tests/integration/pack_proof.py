@@ -434,7 +434,7 @@ async def prove(api, release: str, image: str, pack, region: str, work: Path) ->
             setup = proof.SETUP.replace("{controller}", controller.split()[0]).replace(
                 "{scanner_key}", scanner_key.export_public_key().decode().strip()
             )
-            await conn.run(setup, check=True, timeout=600)
+            await proof.set_up(conn, setup, tag)
             home = work / f"{tag}-home"
             config, _ = initialise(home)
             scanner = Host(

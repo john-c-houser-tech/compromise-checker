@@ -100,6 +100,9 @@ One script, `tests/integration/demo.py`, with four commands:
   (John, 2026-11-10). It reads as one more step of making the account, but the account is done
   and the rest of the interface is open. Fix: send the person on to the Servers page with a line
   saying the account is ready, or say so plainly at the top of the form.
+  **Fixed 2026-11-12:** when two-factor is required, saving the recovery codes goes on to the
+  Servers page, which says "Two-factor sign-in is on, and your account is ready." Turned on by
+  choice from Sign-in security, it goes back there as before.
 - **The log command `schedule install` prints doesn't work for the installed checker's account**
   (seen on the demo's third run, 2026-11-10). `journalctl --user -u compromise-checker.service`,
   run as the service account, answers "No journal files were opened due to insufficient
@@ -107,6 +110,9 @@ One script, `tests/integration/demo.py`, with four commands:
   system journal. Fix: print a command that works there (to be tried on a server:
   `sudo journalctl _SYSTEMD_USER_UNIT=compromise-checker.service`), in `checker/schedule.py`
   and `docs/scheduling.md`.
+  **Fixed 2026-11-12:** a system account is told that command, with `+ USER_UNIT=` for what
+  systemd says of the unit; an ordinary one the old one. The
+  match was tried on a laptop's own units; on an installed checker it is still to be tried.
 - **Docker needs a second try on every fresh Ubuntu server** (all three runs). The proofs' setup
   hides why the first fails; the demo's retry works and says nothing either. Harmless here, but
   the read-only proof's own container step may be quietly skipped the same way.

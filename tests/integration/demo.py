@@ -6,16 +6,27 @@ anything the checker stores is the laptop's: what it holds can be shown as it is
 
     LINODE_TOKEN=… python tests/integration/demo.py up       # the checker's server and the fleet
     LINODE_TOKEN=… python tests/integration/demo.py status   # what is up, its cost, when it ends
+    python tests/integration/demo.py save DIR                # copy the checker's data down
     LINODE_TOKEN=… python tests/integration/demo.py down     # delete every server
 
-`up` plays the story in demo_story.py in one sitting (D.3): each of its days is a few minutes, and
-ends with a check of every server, run from the checker's own server. Keeping it up for real days
-(D.4) and saving its data (D.5) come after.
+`up` plays the story in demo_story.py in one sitting: each of its days is a few minutes, and
+ends with a check of every server, run from the checker's own server.
+
+`up --days N` keeps it up N days (1 to 14) and plays the story on its real days. Day 0 is played
+from here; each later day is a timer on the checker's server, which plays that day's steps the way
+this script does, a little before the checker's own daily check. So this machine can be off, and
+the history has real dates. `status` says how each day went.
+
+`save DIR` copies what the checker keeps to a new folder outside the repository: the demo dataset,
+which `CHECKER_HOME=DIR checker web` shows on this machine with no servers. The web accounts and
+the record of who did what at the pages stay behind (they hold this machine's address), and so
+does every key but the one the evidence is read with. It needs no Linode token and changes
+nothing on the servers. `down` asks for it first: `down --unsaved` deletes without.
 
 Its servers carry their own tag, so the proofs' sweep of servers older than two hours leaves them
-alone. The end date in its tags is acted on only when no state is kept here: then `up` deletes any
-demo server past it. While a state is kept, `status` says when it is overdue (D.4 brings the sweep
-that needs no one to look).
+alone. Each also carries the last day it may be up: `status` says when that has passed, the next
+`up` deletes any demo server past it that no state here names, and so does any proof's sweep.
+Nothing else deletes a demo for its owner.
 
 Costs Linode time (seven Nanodes, about 5 cents an hour): run only with John's approval. What `up`
 makes stays up until `down`.
@@ -28,11 +39,16 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
+import threading
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
@@ -45,9 +61,9 @@ import detection_proof as detection  # noqa: E402
 import install_proof as install  # noqa: E402
 import readonly_proof as proof  # noqa: E402
 
-TAG = "compromise-checker-demo"
-LABEL_PREFIX = "cc-demo-"
-UNTIL = "cc-demo-until-"  # a tag: the last day a server may be up, as YYYYMMDD
+TAG = proof.DEMO_TAG
+LABEL_PREFIX = proof.DEMO_LABEL
+UNTIL = proof.DEMO_UNTIL  # a tag: the last day a server may be up, as YYYYMMDD
 STATE = Path.home() / ".local" / "share" / "compromise-checker-demo"
 # The published release, and its installer's SHA-256 as the install page gives it
 # (https://nouriloop.com/work/compromise-checker/install/). Both change with a release.
@@ -93,6 +109,12 @@ class State:
     until: str  # YYYY-MM-DD: the last day it may be up
     servers: list[Server]
     web_name: str = ""
+    days: int = 0  # kept up this many days, the story's later days played by timers (0: no)
+    last_check: str = ""  # then: when the last of those days is checked, by the checker's clock
+    plan: list[dict] = field(default_factory=list)  # those days' steps, and when each runs
+    saved: str = ""  # where `save` last put its data
+    saved_at: str = ""  # and when (UTC, ISO)
+    saved_whole: bool = False  # and whether the last day of a stay was in it
 
     def checker(self) -> Server:
         return next(s for s in self.servers if s.role == "checker")
@@ -191,6 +213,9 @@ def past_their_date(nodes: list[dict], today: date) -> list[dict]:
 
 def cost(servers: int, hours: float) -> float:
     return servers * hours * NANODE_AN_HOUR
+
+
+MOST_DAYS = 14
 
 
 # --- commands, as text ---------------------------------------------------------------------
@@ -426,13 +451,19 @@ def check_all(checker: install.Node, which: str, names: list[str]) -> None:
         )
 
 
+def filled(step: story.Step, keys: dict[str, str]) -> str:
+    """A step's script as it is run: strict where the story says, its keys and addresses in."""
+    script = ("set -eu\n" if step.strict else "") + step.script
+    for name, value in keys.items():
+        script = script.replace("{" + name + "}", value)
+    return script
+
+
 def on_server(node: Through, step: story.Step, keys: dict[str, str], admin_file: Path) -> list[str]:
     """One of the story's steps on a fleet server: its script as root, then a login as the
     account it made, if the story has one. Returns what the script said had failed: the story
     goes on, and `up` says so at the end."""
-    script = ("set -eu\n" if step.strict else "") + step.script
-    for name, value in keys.items():
-        script = script.replace("{" + name + "}", value)
+    script = filled(step, keys)
     # On standard input, not as `bash -c <script>`: the script's own shell would carry every
     # pattern its pgrep checks look for, and they would find it instead of what they staged.
     done = node.run("bash --norc --noprofile -s", timeout=1800, input=script)
@@ -478,6 +509,7 @@ def by_admin(checker: install.Node, step: story.Step, world: World) -> None:
         at = must(checker, "date -d '1 hour ago' +%H:00", "reading its clock").strip()
         done = checker.run(as_checker("schedule", "install", "--at", at))
         said(done)
+        world.at = at if done.returncode == 0 else ""
         if done.returncode != 0:  # the pages still work without it: said at the end
             world.failed.append(
                 f"the daily check wasn't set (`schedule install` ended {done.returncode})"
@@ -491,7 +523,7 @@ def by_admin(checker: install.Node, step: story.Step, world: World) -> None:
         world.unlisted.add(host)
     elif verb == "rule":
         (host,) = words
-        rule = story.BACKUP_RULE.format(expires=(world.today + timedelta(days=1)).isoformat())
+        rule = story.BACKUP_RULE.format(expires=world.expires.isoformat())
         must(checker, whitelist_command(host, 'cat >> "$0"'), f"{host}'s rule", input=rule)
         print("    " + must(checker, as_checker("whitelist", "check"), "the rules").strip())
     elif verb == "retire":
@@ -516,6 +548,13 @@ class World:
     found: list[str] = field(default_factory=list)  # the proof's findings on a server since lost
     failed: list[str] = field(default_factory=list)  # steps that didn't do what the story says
     collected: int = 0  # how many collections the story's checks made
+    at: str = ""  # the daily check's time, once it is set (HH:MM, the checker's server's clock)
+    expires_on: date | None = None  # kept up for days: the admin's rule lasts to a day of the story
+
+    @property
+    def expires(self) -> date:
+        """The last day of the rule the admin writes: in one sitting, the day after it."""
+        return self.expires_on or self.today + timedelta(days=1)
 
     def checked(self) -> list[str]:
         return [name for name in self.nodes if name not in self.lost | self.unlisted]
@@ -565,6 +604,246 @@ def play(
             if day in checked:
                 check_all(checker, f"day {day}'s", world.checked())
                 world.collected += len(world.checked())
+
+
+# --- kept up for days: the later days, played from the checker's server ---------------------
+
+# The story's later days happen with this machine off. They are played from the checker's server,
+# by a timer a day, the way `play` does it from here: a root login to the fleet server from the
+# checker's address, the step's script on standard input. (A timer on the fleet server itself
+# would be a new timer there: a finding of its own, in a story that isn't about it.) So the
+# checker's server holds, for root alone, a key that root on every fleet server accepts from that
+# address only, and the keys of the accounts the story logs in as. Each is deleted when it has been
+# used for the last time.
+STORY_HOME = "/root/cc-story"
+_SSH = (
+    "-o UserKnownHostsFile=known_hosts -o BatchMode=yes -o IdentitiesOnly=yes"
+    " -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+)
+RUNNER = r"""#!/bin/bash
+# The demo story's day {day} (tests/integration/demo.py), run once by cc-story-day{day}.timer.
+cd {home} || exit 1
+note() { echo "$(date -u +%FT%TZ) $*" >> results; }
+on_server() {  # a step's id, the server's address: its script, as root
+    timeout 1500 ssh -i key {ssh} "root@$2" 'bash --norc --noprofile -s' \
+        < "$1.sh" > "$1.out" 2> "$1.err"
+    code=$?
+    note "$1 ended $code $(grep -E '^(ATTACK|STEP) FAILED' "$1.err" | tr '\n' ';')"
+    rm -f "$1.sh"
+}
+login() {  # a step's id, the account, the address: the new account is used, once
+    timeout 60 ssh -i "account-$2" {ssh} "$2@$3" true > /dev/null 2>> "$1.err"
+    note "$1-login ended $?"
+    rm -f "account-$2"
+}
+shut() {  # a step's id, the address: the server has stopped letting this one in
+    for _ in 1 2 3 4 5 6 7 8; do
+        sleep 5
+        if ! timeout 5 bash -c "</dev/tcp/$2/22" 2> /dev/null; then
+            note "$1-shut ended 0"
+            return
+        fi
+    done
+    note "$1-shut ended 1 it still lets the checker's server in"
+}
+"""
+_UNIT = """\
+[Unit]
+Description=The demo story, day {day}
+
+[Service]
+Type=oneshot
+TimeoutStartSec=40min
+ExecStart=/bin/bash {home}/day{day}.sh
+"""
+_TIMER = """\
+[Unit]
+Description=The demo story, day {day}
+
+[Timer]
+OnCalendar={when}:00
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+# A day's steps, ahead of that day's check. Long enough for the slowest day (the break-in, a few
+# minutes; 25 if it waits on a package lock), and inside the unit's 40-minute limit.
+BEFORE_THE_CHECK = timedelta(minutes=45)
+AFTER_THE_CHECK = timedelta(minutes=60)  # a day the story doesn't check: after the daily one
+
+
+def story_key(checker: install.Node, nodes: dict[str, Through]) -> None:
+    """The key the later days are played with. Made on the checker's server and put on each
+    fleet server before its first check, so it is part of what the server starts with."""
+    public = must(
+        checker,
+        f"umask 077 && mkdir -p {STORY_HOME} && cd {STORY_HOME}"
+        " && ssh-keygen -q -t ed25519 -N '' -C ops@checker -f key && cat key.pub",
+        "making the story's key",
+    ).strip()
+    line = shlex.quote(f'from="{checker.address}" {public}')
+    for name, node in nodes.items():
+        must(node, f"echo {line} >> /root/.ssh/authorized_keys", f"{name}: the story's key")
+        must(
+            checker,
+            f"cd {STORY_HOME} && ssh -i key {_SSH} -o StrictHostKeyChecking=accept-new"
+            f" root@{node.address} true",
+            f"reaching {name} with the story's key",
+        )
+
+
+def first_check(now: datetime, at: str) -> datetime:
+    """Day 1's check: the daily check's next time that leaves room for day 1's steps before it."""
+    hour, minute = (int(part) for part in at.split(":"))
+    first = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if first <= now + BEFORE_THE_CHECK:
+        first += timedelta(days=1)
+    return first
+
+
+def step_times(now: datetime, at: str, days: list[int], checked=story.CHECKED_DAYS) -> dict:
+    """When each later day's steps run, on the checker's server's clock: before that day's
+    check, or after it for a day the story doesn't check (its point is what the pages say until
+    the next one). Day 1's check is the first the daily timer makes."""
+    first = first_check(now, at)
+    return {
+        day: first
+        + timedelta(days=day - 1)
+        + (AFTER_THE_CHECK if day not in checked else -BEFORE_THE_CHECK)
+        for day in days
+    }
+
+
+def admin_lines(step: story.Step, expires: date) -> str:
+    """One of the admin's steps as shell lines for the checker's server: what `by_admin` runs."""
+    verb, *words = step.admin
+    if verb == "accept":
+        host, reason = words
+        return as_checker("baseline", "accept", host, "--reason", reason)
+    if verb == "remove":
+        return as_checker("hosts", "remove", words[0])
+    if verb == "rule":
+        rule = story.BACKUP_RULE.format(expires=expires.isoformat())
+        return (
+            whitelist_command(words[0], 'cat >> "$0"')
+            + f" <<'RULE'\n{rule}RULE\n"
+            + as_checker("whitelist", "check")
+        )
+    if verb == "retire":
+        pack, reason = words
+        return as_checker("packs", "retire", pack, "--reason", reason) + " | grep -q Retired:"
+    raise DemoError(f"the story asks for {verb!r}, which can't be left to a timer")
+
+
+def stage(
+    checker: install.Node, world: World, days: int, steps=story.STORY
+) -> tuple[list[dict], list[str], datetime]:
+    """Put the story's days 1 to `days` on the checker's server, a timer each. Returns the plan
+    (each step, and when it runs), the steps left out for being after the last day, and when the
+    last day is checked (the checker's server's clock)."""
+    if not world.at:
+        raise DemoError("the daily check wasn't set, so there is nothing for the days to wait for")
+    later = [s for s in steps if s.day >= 1]
+    left_out = [f"day {s.day}: {s.where}: {s.says}" for s in later if s.day > days]
+    later = [s for s in later if s.day <= days]
+    now = datetime.fromisoformat(must(checker, "date +%Y-%m-%dT%H:%M", "its clock").strip())
+    times = step_times(now, world.at, sorted({s.day for s in later}))
+    first = first_check(now, world.at)
+    # The admin's rule lasts through day 5's check, so day 6's shows it run out.
+    world.expires_on = (first + timedelta(days=4)).date()
+    plan = []
+
+    def put(name: str, text: str) -> None:
+        must(checker, f"umask 077 && cat > {STORY_HOME}/{name}", f"staging {name}", input=text)
+
+    with tempfile.TemporaryDirectory(prefix="cc-demo-planted-") as made:
+        _, root_key = keypair(Path(made), "planted-root")
+        keys = {"root_key": root_key, "checker": checker.address}
+        for day, when in times.items():
+            runner = RUNNER.replace("{day}", str(day)).replace("{home}", STORY_HOME)
+            runner = runner.replace("{ssh}", _SSH)
+            for number, step in enumerate((s for s in later if s.day == day), 1):
+                name = f"d{day}-{number}"
+                plan.append(
+                    {"id": name, "day": day, "where": step.where, "says": step.says}
+                    | {"when": when.isoformat(timespec="minutes")}
+                )
+                runner += f"\n# {step.where}: {step.says}\n"
+                if step.admin:
+                    lines = admin_lines(step, world.expires)
+                    runner += (
+                        f"(\nset -e\n{lines}\n) > {name}.out 2> {name}.err\n"
+                        f'note "{name} ended $?"\n'
+                    )
+                    continue
+                address = world.nodes[step.where].address
+                if step.login:
+                    private, public = keypair(Path(made), f"planted-{step.login}")
+                    put(f"account-{step.login}", private.read_text(encoding="utf-8"))
+                    keys["admin_key"] = public
+                put(f"{name}.sh", story.renamed(filled(step, keys), story.DAYS_APART))
+                runner += f"on_server {name} {address}\n"
+                if step.login:
+                    runner += f"login {name} {step.login} {address}\n"
+                if step.lost:
+                    runner += f"shut {name} {address}\n"
+            if day == max(times):  # nothing is left to do with them: no way in is kept
+                runner = runner.replace(
+                    "note() {", "trap 'rm -f key key.pub account-*' EXIT\nnote() {", 1
+                )
+            put(f"day{day}.sh", runner)
+            unit = f"/etc/systemd/system/cc-story-day{day}"
+            must(
+                checker,
+                f"cat > {unit}.service",
+                "its unit",
+                input=_UNIT.format(day=day, home=STORY_HOME),
+            )
+            must(
+                checker,
+                f"cat > {unit}.timer && systemctl daemon-reload"
+                f" && systemctl enable -q --now cc-story-day{day}.timer",
+                f"day {day}'s timer",
+                input=_TIMER.format(day=day, when=when.strftime("%Y-%m-%d %H:%M")),
+            )
+    return plan, left_out, first + timedelta(days=days - 1)
+
+
+def story_so_far(checker: install.Node, plan: list[dict]) -> tuple[list[str], bool]:
+    """Each of the later days' steps, and how it went, from what its day's timer wrote down; and
+    whether all is as it should be (nothing failed, nothing is late)."""
+    done = checker.run(f"date +%Y-%m-%dT%H:%M; cat {STORY_HOME}/results 2>/dev/null")
+    clock, _, results = done.stdout.partition("\n")
+    try:
+        now = datetime.fromisoformat(clock.strip())
+    except ValueError:
+        said = done.stderr.strip()[-200:]
+        return [f"  The checker's server couldn't be asked ({said})"], False
+    ended: dict[str, list[str]] = {}
+    for line in results.splitlines():
+        words = line.split(" ", 4)
+        if len(words) < 4:
+            continue
+        name, code, more = words[1], words[3], " ".join(words[4:]).strip()
+        ended.setdefault(name.split("-login")[0].split("-shut")[0], []).append(
+            "" if code == "0" and not more else f"{name} ended {code} {more}".strip()
+        )
+    lines, good = [], True
+    for step in plan:
+        went = ended.get(step["id"])
+        if went is None:  # the slowest day is done well inside the hour
+            late = now > datetime.fromisoformat(step["when"]) + timedelta(hours=1)
+            how = "LATE: it should have run by now, and hasn't said so" if late else "not yet"
+        else:
+            how = "; ".join(w for w in went if w) or "done"
+        good = good and how in ("not yet", "done")
+        lines.append(
+            f"  day {step['day']}, {step['when'].replace('T', ' ')}  {step['where']}:"
+            f" {step['says']}: {how}"
+        )
+    return lines, good
 
 
 # The address goes in on standard input and is kept in a file for root alone while grep runs: on
@@ -757,7 +1036,25 @@ def nothing_stops_it(folder: Path):
             signal.signal(number, handler)
 
 
-def up(api, folder: Path, region: str, today: date) -> int:
+def play_days(checker: install.Node, world: World, state: State, folder: Path, days: int) -> None:
+    """Kept up for days: day 0 from here, then each later day put on the checker's server."""
+    story_key(checker, world.nodes)  # before the first check: part of what a server starts with
+    play(checker, world, [s for s in story.STORY if s.day == 0], (0,))
+    state.plan, left_out, last = stage(checker, world, days)
+    state.last_check = last.isoformat(timespec="minutes")
+    save_state(folder, state)
+    print("\nThe days to come, by the checker's server's clock:")
+    for line in story_so_far(checker, state.plan)[0]:
+        print(line)
+    for line in left_out:
+        print(f"  left out, after day {days}: {line}")
+
+
+def up(api, folder: Path, region: str, today: date, days: int = 0) -> int:
+    """`days`: keep it up that many days, the story's later days on their own days (0: the whole
+    story now, minutes apart)."""
+    if not 0 <= days <= MOST_DAYS:
+        raise DemoError(f"--days is 1 to {MOST_DAYS}")
     try:
         if load_state(folder) is not None:
             raise DemoError(f"a demo is up already ({folder}/state.json): `down` first")
@@ -766,8 +1063,16 @@ def up(api, folder: Path, region: str, today: date) -> int:
     claim(folder)
     count = len(FLEET) + 1
     print(f"{count} servers, about {cost(count, 1) * 100:.1f} cents an hour, until `demo.py down`.")
+    # Kept up for days, the last of them is checked up to a day after `days` days have passed
+    # (and day 5's step comes after its check): its tags end the day after that.
+    until = today + timedelta(days=days + 1 if days else 1)
+    if days:
+        print(
+            f"Kept up {days} days: about ${cost(count, 24 * days):.2f}, and nothing deletes it"
+            " for you. `up` says when the last day is done, once the daily check is set."
+        )
     run = proof.RUN
-    state = State(run, datetime.now(UTC).isoformat(), (today + timedelta(days=1)).isoformat(), [])
+    state = State(run, datetime.now(UTC).isoformat(), until.isoformat(), [], days=days)
     save_state(folder, state)
     known = folder / "known_hosts"
     nodes: dict[str, Through] = {}
@@ -797,7 +1102,10 @@ def up(api, folder: Path, region: str, today: date) -> int:
         name, address = story.UNREACHABLE
         must(checker, hosts_add(Member(name, "", ""), address), f"adding {name}")
         world = World(nodes, today)
-        play(checker, world)
+        if days:
+            play_days(checker, world, state, folder, days)
+        else:
+            play(checker, world)
         print(must(checker, as_checker("fleet"), "the fleet's results"))
         answering = {name: node for name, node in nodes.items() if name not in world.lost}
         leaks = never_seen_from_here(checker, answering, tuple(world.found), world.collected)
@@ -816,6 +1124,12 @@ def up(api, folder: Path, region: str, today: date) -> int:
         print(f"\nThe checker: https://{state.web_name}/ (a test certificate: the browser warns)")
         print(f"Make the first account, within the hour: {link}")
         print(f"Up until `demo.py down`; its tags end on {state.until}.")
+        if days:
+            print(
+                "`demo.py status` says how the days went. Run `demo.py down` after"
+                f" {state.last_check.replace('T', ' ')} (the checker's server's clock, UTC),"
+                f" when day {days} has been checked, and by the end of {state.until}."
+            )
         hands_on()
         return 1 if leaks or world.failed else 0
     except BaseException:
@@ -833,6 +1147,548 @@ def up(api, folder: Path, region: str, today: date) -> int:
         for node in [*nodes.values(), checker]:
             if node is not None:
                 node.close()
+
+
+# --- save ----------------------------------------------------------------------------------
+
+# What of the checker's home is the demo's data: enough for `CHECKER_HOME=DIR checker web` to show
+# every page on a machine with no servers. Named here, so a file the checker starts keeping later
+# isn't copied until someone has said it should be. Left out on purpose: web.db (the accounts,
+# their sessions, and the record of who did what from which address, which is the one place this
+# machine's address is kept), and every key but the one the evidence is read with (the key that
+# logs in to the fleet, the web interface's secrets, the mail key).
+STORE = "checker.db"
+EVIDENCE_KEY = "keys/evidence-identity.txt"
+KEPT_FILES = ("config.yaml", "hosts.yaml", "known_hosts", "run-state.age", EVIDENCE_KEY)
+KEPT_FOLDERS = ("evidence", "packs", "whitelist", "proposals", "reports")
+ABOUT = "demo.json"  # what `save` writes beside them: which run this was, and its servers
+# The most `save` takes from a server, and the longest it waits: a week's stay is a few megabytes.
+MOST_BYTES = 2 * 1024**3
+MOST_SECONDS = 3600
+MOST_IN_A_VALUE = 64 * 1024**2  # of the saved store, or of a sealed file, read to be searched
+AFTER_THE_LAST_CHECK = timedelta(minutes=5)  # a timer may fire up to a minute late
+
+# On the checker's server, as the tool's account, by the checker's own Python: the home as a tar
+# on standard output, and nothing written there. No check or purge runs meanwhile (their lock is
+# held, and a check under way is a reason to stop, not to wait), and no threat update changes.
+# The store is read through SQLite's own backup, so the copy is whole whatever was being written.
+_SEND = r"""
+import fcntl, io, json, os, sqlite3, sys, tarfile, time
+from pathlib import Path
+
+home = Path(sys.argv[1])
+files, folders, store = json.loads(sys.argv[2])
+lock = os.open(home / "run.lock", os.O_RDWR | os.O_CREAT, 0o600)
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(3)
+if not (home / store).is_file():
+    sys.exit(4)
+if (home / "packs").is_dir():  # a threat update moves files between folders: wait for it
+    packs = os.open(home / "packs" / "state.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(packs, fcntl.LOCK_EX)
+source = sqlite3.connect(f"file:{home / store}?mode=ro", uri=True)
+whole = sqlite3.connect(":memory:")
+source.backup(whole)
+source.close()
+data = whole.serialize()
+sent, collections, newest = 1, 0, 0
+with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as out:
+    entry = tarfile.TarInfo(store)
+    entry.size, entry.mode, entry.mtime = len(data), 0o600, int(time.time())
+    out.addfile(entry, io.BytesIO(data))
+    paths = [home / name for name in files]
+    for name in folders:
+        paths += sorted((home / name).rglob("*"))
+    for path in paths:
+        name = path.relative_to(home)
+        # A lock, or anything half made under a temporary name, is no part of the data.
+        if path.is_symlink() or not path.is_file() or any(p.startswith(".") for p in name.parts):
+            continue
+        if path.name.endswith((".lock", ".tmp")):
+            continue
+        try:
+            with open(path, "rb") as content:
+                entry = out.gettarinfo(arcname=str(name), fileobj=content)
+                # A second name for a file already sent goes as a file too, not as a link to it.
+                entry.type, entry.linkname = tarfile.REGTYPE, ""
+                entry.size = os.fstat(content.fileno()).st_size
+                out.addfile(entry, content)
+        except FileNotFoundError:
+            continue
+        sent += 1
+        if name.parts[0] == "evidence" and len(name.parts) == 3 and path.suffix == ".age":
+            collections += 1
+            derived = any(k in path.name for k in (".events-", ".snapshot-", ".assessment-"))
+            if not derived:
+                newest = max(newest, int(entry.mtime))
+print("SENT", sent, collections, newest, file=sys.stderr)
+"""
+
+
+def shown(text: str) -> str:
+    """Text a server wrote, fit to print: nothing in it can move the cursor or clear the screen."""
+    return "".join(c if c.isprintable() or c == "\n" else "?" for c in text)
+
+
+def wanted(name: str) -> bool:
+    """Whether a path in what the checker's server sent is one `save` asked for."""
+    parts = Path(name).parts
+    if not parts or Path(name).is_absolute() or ".." in parts or not name.isprintable():
+        return False
+    if any(part.startswith(".") for part in parts):
+        return False
+    if parts[0] == "evidence":  # a server's folder, and its files in it: where they are read
+        return len(parts) == 3
+    return name in (STORE, *KEPT_FILES) or (len(parts) > 1 and parts[0] in KEPT_FOLDERS)
+
+
+def fetch(checker: install.Node, work: Path) -> tuple[Path, int, int, int]:
+    """The checker's data, as a tar in `work` (a folder for this account alone). Returns the tar,
+    how many files the server says it sent, how many of them are stored evidence, and when the
+    newest collection was written. A server that sends too much, or for too long, is cut off."""
+    command = (
+        f"runuser -u {install.ACCOUNT} -- {install.PROGRAM}/current/bin/python -I -"
+        f" {shlex.quote(install.DATA)}"
+        f" {shlex.quote(json.dumps([KEPT_FILES, KEPT_FOLDERS, STORE]))}"
+    )
+    archive, errors = work / "data.tar", work / "said"
+    with open(archive, "wb") as out, open(errors, "wb") as err:
+        sending = subprocess.Popen(  # noqa: S603
+            ["ssh", *checker.options, f"{checker.user}@{checker.address}", command],  # noqa: S607
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=err,
+        )
+        stop = threading.Timer(MOST_SECONDS, sending.kill)
+        stop.start()
+        try:
+            sending.stdin.write(_SEND.encode())
+            sending.stdin.close()
+            taken = 0
+            while block := sending.stdout.read(1 << 20):
+                taken += len(block)
+                if taken > MOST_BYTES:
+                    raise DemoError(
+                        f"the checker's server sent more than {MOST_BYTES >> 30} GB: stopped"
+                    )
+                out.write(block)
+            code = sending.wait()
+        finally:
+            late = not stop.is_alive()
+            stop.cancel()
+            sending.kill()
+            sending.wait()
+    with open(errors, "rb") as err:
+        err.seek(max(0, errors.stat().st_size - 4000))
+        said = shown(err.read().decode(errors="replace"))
+    if late:
+        raise DemoError(
+            f"the checker's server was still sending after {MOST_SECONDS // 60} minutes"
+        )
+    if code == 3:
+        raise DemoError("a check or a purge is running on the checker's server: save when it ends")
+    if code == 4:
+        raise DemoError(f"the checker's server keeps no store in {install.DATA}/{STORE}")
+    counts = [line.split() for line in said.splitlines() if line.startswith("SENT ")]
+    if code != 0 or len(counts) != 1 or not all(n.isdigit() for n in counts[0][1:]):
+        raise DemoError(f"the checker's data couldn't be read:\n{said.strip()[-1500:]}")
+    sent, collections, newest = (int(n) for n in counts[0][1:4])
+    return archive, sent, collections, newest
+
+
+def unpack(archive: Path, into: Path) -> int:
+    """Take the tar apart into `into`: only ordinary files, only the ones asked for, each once,
+    readable by this account alone. Returns how many. Anything else in it stops the save, since
+    what comes from a server is never taken on trust."""
+    try:
+        with tarfile.open(archive, "r:") as tar:
+            members = tar.getmembers()
+            seen = set()
+            for member in members:
+                ordinary = member.type == tarfile.REGTYPE and member.sparse is None
+                if not ordinary or not wanted(member.name) or member.name in seen:
+                    raise DemoError(
+                        f"the checker's server sent {member.name!r}, which wasn't asked for"
+                    )
+                seen.add(member.name)
+            tar.extractall(into, members=members, filter="data")  # noqa: S202 - each checked
+    except (tarfile.TarError, OSError) as exc:
+        raise DemoError(f"what the checker's server sent couldn't be taken apart ({exc})") from exc
+    for path in [into, *into.rglob("*")]:
+        path.chmod(0o700 if path.is_dir() else 0o600)
+    return len(members)
+
+
+def settings_here(folder: Path, where: Path) -> None:
+    """The saved settings, made safe to use on this machine. They name the evidence key by its
+    whole path, which was the server's: it becomes the saved key's, as it will be in `where`. And
+    whatever in them could run a command here or send anything anywhere is put back to what a new
+    checker starts with, since a settings file is taken from the server like any other: the
+    command for notifications, the advisor, where threat updates come from and whose signature
+    they need, and asking for new releases. The servers' list may only name key logins, so a check
+    started here by mistake offers nothing of this machine's."""
+    import yaml
+
+    if not (folder / EVIDENCE_KEY).is_file():
+        raise DemoError("no evidence key came with the data, so what was collected can't be read")
+    path = folder / "config.yaml"
+    try:
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+        hosts = (folder / "hosts.yaml").read_text(encoding="utf-8")
+        listed = (yaml.safe_load(hosts) or {}).get("hosts") or []
+    except FileNotFoundError:
+        listed = []
+    except (OSError, yaml.YAMLError, AttributeError) as exc:
+        raise DemoError(f"the saved settings can't be read ({exc})") from exc
+    if not isinstance(config, dict):
+        raise DemoError("the saved settings aren't the checker's")
+    if config.get("database"):
+        raise DemoError("the store is in a database of its own, which `save` doesn't copy")
+    if not all(isinstance(h, dict) and h.get("auth") == "key" for h in listed):
+        raise DemoError("the saved list of servers has one that doesn't log in with the demo's key")
+    for name in ("notify_command", "advisor"):
+        config.pop(name, None)
+    if isinstance(config.get("packs"), dict):
+        for name in ("source", "trusted_keys"):
+            config["packs"].pop(name, None)
+    else:
+        config.pop("packs", None)
+    config["updates"] = {"check": False}
+    config["identity_file"] = str(where / EVIDENCE_KEY)
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    path.chmod(0o600)
+
+
+def paths_here(folder: Path, was: str, where: Path) -> int:
+    """The store says where each collection and what was worked out from it is kept, by its whole
+    path, which was the server's (`was`). Each becomes the saved file's, as it will be in `where`:
+    without that no page here could open one. Those rows can't otherwise be changed, so their
+    guards are lifted for this and put back. A path that isn't a saved file's stops the save: the
+    checker opens, writes beside and deletes what these name. Returns how many were changed."""
+    changed = 0
+    store = sqlite3.connect(folder / STORE)
+    try:
+        store.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MOST_IN_A_VALUE)
+        guards = store.execute(
+            "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+        tables = [t for (t,) in store.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            columns = [row[1] for row in store.execute(f"PRAGMA table_info({quoted})")]
+            if "path" not in columns:
+                continue
+            mine = [(name, sql) for name, on, sql in guards if on == table]
+            for name, _ in mine:
+                store.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
+            rows = store.execute(f"SELECT rowid, path FROM {quoted}").fetchall()  # noqa: S608
+            for rowid, path in rows:
+                if not isinstance(path, str) or not path.startswith(was + "/"):
+                    raise DemoError(f"the saved store's {table} names a file outside {was}")
+                inside = path[len(was) + 1 :]
+                if not wanted(inside) or not (folder / inside).is_file():
+                    raise DemoError(f"the saved store's {table} names a file that wasn't saved")
+                store.execute(
+                    f"UPDATE {quoted} SET path = ? WHERE rowid = ?",  # noqa: S608
+                    (str(where / inside), rowid),
+                )
+                changed += 1
+            for _, sql in mine:
+                store.execute(sql)
+        store.commit()
+    except sqlite3.Error as exc:
+        raise DemoError(f"the saved store's paths couldn't be changed ({exc})") from exc
+    finally:
+        store.close()
+    return changed
+
+
+def forms_of(here: str) -> list[str]:
+    """The ways an address is written that are looked for: as it is, and as it appears in a name
+    made from it, in a reverse lookup, or (IPv6) written out in full or as its network."""
+    import ipaddress
+
+    forms = [here]
+    try:
+        address = ipaddress.ip_address(here.split("%")[0])
+    except ValueError:
+        return forms
+    if address.version == 4:
+        forms += [here.replace(".", "-"), address.reverse_pointer]
+    else:
+        network = ipaddress.ip_network(f"{address}/64", strict=False)
+        forms += [str(address), address.exploded, str(network.network_address), str(network)]
+    forms += [form.upper() for form in forms if form.upper() != form]
+    return list(dict.fromkeys(forms))
+
+
+SEALED = b"age-encryption.org/v1"
+
+
+def opened(blob: bytes, identity) -> bytes:
+    """A sealed value or file, opened with the saved key, and unpacked if it was packed."""
+    import pyrage
+
+    plain = pyrage.decrypt(blob, [identity])
+    if plain[:2] == b"\x1f\x8b":
+        unpacker = zlib.decompressobj(wbits=31)
+        plain = unpacker.decompress(plain, MOST_IN_A_VALUE)
+        if unpacker.unconsumed_tail:
+            raise ValueError("more is packed in it than is read to search it")
+    return plain
+
+
+def in_store(path: Path, needles: list[str], identity) -> list[str]:
+    """Where the saved store holds any of the texts, or couldn't be read: each table, row by row,
+    through SQLite (a value can lie across pages in the file, where a search of its bytes would
+    miss it), with every value the checker sealed opened first."""
+    found = []
+    wanted_bytes = [needle.encode() for needle in needles]
+    # immutable: nothing else has it open, and no file is made beside it for reading it.
+    store = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    try:
+        store.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MOST_IN_A_VALUE)
+        said = store.execute("PRAGMA integrity_check").fetchall()
+        if said != [("ok",)]:
+            raise DemoError(f"the saved store is damaged: {shown(str(said[:3]))}")
+        tables = store.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        for (table,) in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            said = set()
+            for row in store.execute(f"SELECT * FROM {quoted}"):  # noqa: S608 - its own table
+                for value in row:
+                    if isinstance(value, str):
+                        value = value.encode()
+                    if not isinstance(value, bytes):
+                        continue
+                    if value.startswith(SEALED):
+                        try:
+                            value = opened(value, identity)
+                        except Exception as exc:  # noqa: BLE001 - whatever stopped it, it's said
+                            said.add(f"a sealed value couldn't be opened ({type(exc).__name__})")
+                            continue
+                    if any(needle in value for needle in wanted_bytes):
+                        said.add("names this machine")
+            found += [f"the store's table {shown(table)}: {what}" for what in sorted(said)]
+    except sqlite3.Error as exc:
+        raise DemoError(f"the saved store can't be read ({exc})") from exc
+    finally:
+        store.close()
+    return found
+
+
+def _no_more_memory_than() -> None:
+    """For the evidence's reader, which unpacks what a server packed: a bound on what it may use."""
+    import resource
+
+    resource.setrlimit(resource.RLIMIT_AS, (4 * 1024**3, 4 * 1024**3))
+
+
+def names_this_machine(folder: Path, here: str, collections: int) -> list[str]:
+    """What in the saved data names this machine's address, or couldn't be looked at. The files
+    as they are and the store row by row, for the address in each way it is written; every sealed
+    file and value, opened with the saved key; and the evidence, opened and read the way the proof
+    reads it on the checker's server. So it also proves every collection can be read."""
+    from checker.evidence import load_identity
+
+    try:
+        identity = load_identity(folder / EVIDENCE_KEY)
+    except Exception as exc:  # noqa: BLE001 - a key that isn't one, however it fails
+        return [f"the saved evidence key can't be read ({type(exc).__name__})"]
+    needles = forms_of(here)
+    found = in_store(folder / STORE, needles, identity)
+    evidence = {p for p in (folder / "evidence").glob("*/*.age")}
+    for path in sorted(folder.rglob("*")):
+        if not path.is_file() or path in evidence:
+            continue
+        name = shown(str(path.relative_to(folder)))
+        if path.stat().st_size > MOST_IN_A_VALUE and path.name != STORE:
+            found.append(f"{name}: too big to be looked through")
+            continue
+        content = path.read_bytes()
+        if path.suffix == ".age" or content.startswith(SEALED):
+            try:
+                content = opened(content, identity)
+            except Exception as exc:  # noqa: BLE001 - whatever stopped it, it's said
+                found.append(
+                    f"{name}: couldn't be opened with the saved key ({type(exc).__name__})"
+                )
+                continue
+        if any(needle.encode() in content for needle in needles):
+            found.append(f"{name}: names this machine")
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, "-I", "-", str(folder)],
+        input=_IN_EVIDENCE.replace("{needle}", here),
+        capture_output=True,
+        text=True,
+        timeout=MOST_SECONDS,
+        check=False,
+        preexec_fn=_no_more_memory_than,  # noqa: PLW1509 - one thread here, and it only sets a limit
+    )
+    lines = done.stdout.splitlines()
+    looked = [line for line in lines if line.startswith("LOOKED ")]
+    if done.returncode != 0 or len(looked) != 1:
+        said = shown(done.stderr.strip()[-300:])
+        return [*found, f"the saved evidence couldn't be opened ({said})"]
+    found += [f"the evidence: {shown(line[4:])}" for line in lines if line[:4] == "HIT "]
+    if len(evidence) != collections:
+        found.append(f"{len(evidence)} evidence files were saved, of the {collections} sent")
+    return found
+
+
+def too_near_a_check(state: State, now: datetime) -> str | None:
+    """While a stay still has days to play: why not to save now, if the story's steps or the
+    daily check are about to run or running. `save` holds off checks while it copies, and a day's
+    check that found it doing so would be lost. The last day's too: its timer may fire a little
+    after its time, so a save holds off for the first minutes after it."""
+    if not state.last_check:
+        return None
+    last = datetime.fromisoformat(state.last_check)
+    clock = now.astimezone(UTC).replace(tzinfo=None)
+    if clock > last + AFTER_THE_LAST_CHECK:
+        return None  # the last day's check has started: if it is still going, the lock says so
+    if clock > last:
+        return (
+            f"the last day's check is starting ({last:%H:%M} UTC): save in"
+            f" {AFTER_THE_LAST_CHECK.seconds // 60} minutes, when it is under way or done"
+        )
+    check = clock.replace(hour=last.hour, minute=last.minute, second=0, microsecond=0)
+    for day in (-1, 0, 1):
+        start = check + timedelta(days=day) - BEFORE_THE_CHECK - timedelta(minutes=15)
+        # A day the story doesn't check plays its steps an hour after, for up to 40 minutes.
+        end = check + timedelta(days=day) + AFTER_THE_CHECK + timedelta(minutes=45)
+        if start <= clock <= end:
+            return (
+                f"the story's steps and the daily check run between {start:%H:%M} and"
+                f" {end:%H:%M} UTC, and it is {clock:%H:%M}: save after that"
+            )
+    return None
+
+
+def in_a_repository(target: Path) -> Path | None:
+    """The git repository `target` would be inside, whichever checkout of whichever it is."""
+    return next((p for p in (target, *target.parents) if (p / ".git").exists()), None)
+
+
+def save(folder: Path, target: Path, now: datetime) -> int:
+    """Copy the checker's data down as the demo dataset, to a new folder outside any repository.
+    It is put together beside `target` and takes that name only when nothing in it names this
+    machine and all of its evidence opens; otherwise it stays under its working name, and says
+    why. The servers aren't changed, and `save` can be run again."""
+    state = load_state(folder)
+    if state is None or not state.web_name:
+        raise DemoError("no demo with a checker installed is up: there is nothing to save")
+    target = target.expanduser().resolve()
+    if inside := in_a_repository(target):
+        raise DemoError(f"the dataset goes outside any repository ({inside} is one): it is data")
+    if target.exists():
+        raise DemoError(f"{target} exists: `save` makes a new folder")
+    if reason := too_near_a_check(state, now):
+        raise DemoError(reason)
+    part = target.with_name(target.name + ".part")
+    if part.exists() or part.is_symlink():
+        raise DemoError(f"{part} is left from a save that didn't finish: look at it, or delete it")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    checker = install.Node(state.checker().address, folder / "key", folder / "known_hosts")
+    # The tar holds the evidence and its key: in a folder of this account's own while it exists.
+    work = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=target.parent))
+    try:
+        here = this_machine(checker)
+        if here is None:
+            raise DemoError("this machine's address, as the checker's server sees it, wasn't read")
+        part.mkdir(mode=0o700)
+        try:
+            archive, sent, collections, newest = fetch(checker, work)
+            got = unpack(archive, part)
+            if got != sent:
+                raise DemoError(f"{got} files arrived, of the {sent} the checker's server sent")
+            settings_here(part, part)
+            moved = paths_here(part, install.DATA, part)
+        except BaseException:  # nothing whole came down: no working folder is left in the way
+            shutil.rmtree(part, ignore_errors=True)
+            raise
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise DemoError(f"the save stopped ({type(exc).__name__}: {exc})") from exc
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        checker.close()
+    # A stay's data is whole when its last day's check has left a collection.
+    last = (
+        datetime.fromisoformat(state.last_check).replace(tzinfo=UTC) if state.last_check else None
+    )
+    whole = last is None or newest >= last.timestamp()
+    about = {
+        "run": state.run,
+        "created": state.created,
+        "saved": now.astimezone(UTC).isoformat(timespec="seconds"),
+        "release": RELEASE,
+        "days": state.days,
+        "last_day_in_it": whole,
+        "web_name": state.web_name,
+        "servers": [
+            {"name": s.name, "role": s.role, "distro": s.distro, "address": s.address}
+            for s in state.servers
+        ],
+        "plan": state.plan,
+        "changed_here": (
+            f"{moved} paths in the store, from {install.DATA} to this folder; the settings'"
+            " evidence key path; notifications, the advisor, the threat updates' source and"
+            " release checks put back to off or as new"
+        ),
+    }
+    (part / ABOUT).write_text(json.dumps(about, indent=2) + "\n", encoding="utf-8")
+    (part / ABOUT).chmod(0o600)
+    leaks = names_this_machine(part, here, collections)
+    if leaks:
+        for leak in leaks:
+            print(f"FAIL {leak}")
+        print(f"Not fit to show as it is. Kept for a look, under its working name: {part}")
+        return 1
+    settings_here(part, target)
+    paths_here(part, str(part), target)
+    part.rename(target)
+    state.saved, state.saved_at, state.saved_whole = str(target), about["saved"], whole
+    save_state(folder, state)
+    print(
+        f"PASS {got} files, {collections} of them stored evidence. Every collection, sealed file"
+        f" and sealed value opened with the saved key, and none of them holds {here}, this"
+        " machine's address as the checker's server sees it now. The web accounts and the record"
+        " of who did what at the pages stayed on the server, and so did every key but the"
+        " evidence's."
+    )
+    if not whole:
+        print(
+            "NOTE the last day's check has left no collection yet"
+            f" ({state.last_check.replace('T', ' ')} UTC): `down` will ask for a save after it."
+        )
+    print(f"Saved to {target}. It names its own place, so it can't be moved: save again instead.")
+    print(f"To look through it here, with no servers: CHECKER_HOME={target} checker web")
+    return 0
+
+
+def unsaved(folder: Path) -> str | None:
+    """Why `down` should wait: a checker is up whose data was never saved, was saved before the
+    last day of its stay left a collection, or isn't where it was saved to. Deleting the servers
+    deletes the only copy."""
+    try:
+        state = load_state(folder)
+    except Unreadable:
+        return None  # nothing says where its checker is: there is nothing `save` could do
+    if state is None or not state.web_name:
+        return None
+    how = "`demo.py save DIR` first, or `down --unsaved` to delete it as it is"
+    if not state.saved:
+        return f"the checker's data hasn't been saved, and `down` deletes the only copy: {how}"
+    if not (Path(state.saved) / STORE).is_file():
+        return f"the data was saved to {state.saved}, which isn't there now: {how}"
+    if not state.saved_whole:
+        return (
+            f"the data was saved ({state.saved}) before the last day's check, at"
+            f" {state.last_check.replace('T', ' ')} UTC, had left a collection: {how}"
+        )
+    return None
 
 
 # --- status and down ---------------------------------------------------------------------
@@ -867,6 +1723,18 @@ def status(api, folder: Path, now: datetime) -> int:
     for server in state.servers:
         node = alive.get(server.id)
         print(f"  {server.name:<12} {server.address:<16} {node['status'] if node else 'GONE'}")
+    wants_look = False
+    if state.plan and state.checker().id in alive:  # a server that is gone isn't asked
+        print(f"Kept up {state.days} days. The story's days, by the checker's server's clock:")
+        checker = install.Node(state.checker().address, folder / "key", folder / "known_hosts")
+        try:
+            lines, good = story_so_far(checker, state.plan)
+        finally:
+            checker.close()
+        for line in lines:
+            print(line)
+        print(f"Day {state.days} is checked at {state.last_check.replace('T', ' ')}.")
+        wants_look = not good
     wants_down = False
     if date.fromisoformat(state.until) < now.date():
         print(f"OVERDUE: its end date was {state.until}. Run `down`.")
@@ -877,7 +1745,7 @@ def status(api, folder: Path, now: datetime) -> int:
             print(f"Not in the state: {node['label']} (id {node['id']}), also up and billing.")
             wants_down = True
     hands_on()
-    return 1 if wants_down else 0
+    return 1 if wants_down or wants_look else 0
 
 
 def listing(api, tries: int = 3, pause: float = 5) -> list[dict]:
@@ -943,10 +1811,33 @@ class Api(proof.Linode):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("command", choices=["up", "status", "down"])
+    parser.add_argument("command", choices=["up", "status", "save", "down"])
+    parser.add_argument("folder", nargs="?", type=Path, help="save: the new folder for the data")
     parser.add_argument("--state", type=Path, default=STATE, help="where what is up is kept")
     parser.add_argument("--region", default="us-sea")
+    parser.add_argument(
+        "--days",
+        type=int,
+        help=f"up: keep it up this many days (1 to {MOST_DAYS}), the story a day at a time",
+    )
+    parser.add_argument(
+        "--unsaved", action="store_true", help="down: delete though the data was never saved"
+    )
     args = parser.parse_args(argv)
+    if args.days is not None and (args.command != "up" or not 1 <= args.days <= MOST_DAYS):
+        parser.error(f"--days goes with `up`, and is 1 to {MOST_DAYS}")
+    if (args.folder is not None) != (args.command == "save"):
+        parser.error("`save` takes the new folder to save to, and nothing else does")
+    if args.unsaved and args.command != "down":
+        parser.error("--unsaved goes with `down`")
+    try:
+        if args.command == "save":  # the servers are asked, not Linode: no token
+            return save(args.state, args.folder, datetime.now(UTC))
+        if args.command == "down" and not args.unsaved and (reason := unsaved(args.state)):
+            raise DemoError(reason)
+    except DemoError as exc:
+        print(f"demo: {exc}", file=sys.stderr)
+        return 1
     api = Api(proof.linode_token())
 
     def stop(number, _frame):  # so a killed `up` still deletes what it made
@@ -956,7 +1847,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "up":
             signal.signal(signal.SIGTERM, stop)
             signal.signal(signal.SIGHUP, stop)
-            return up(api, args.state, args.region, datetime.now(UTC).date())
+            return up(api, args.state, args.region, datetime.now(UTC).date(), args.days or 0)
         if args.command == "status":
             return status(api, args.state, datetime.now(UTC))
         return down(api, args.state)

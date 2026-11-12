@@ -33,7 +33,8 @@ below, it is right and this list says why.
   `deploy2`, and the two shouldn't look like one person.
 - **The daily check is set for the hour before `up` began,** so it first runs about 23 hours on:
   during the story it would stop the story's own check, and soon after it would clear day 5's note.
-- **`mail-1`'s rule expires the day after `up`,** whatever day of the story that is.
+- **`mail-1`'s rule expires the day after `up`** in one sitting, whatever day of the story that
+  is; kept up for days, it lasts through day 5's check.
 
 ## The fleet
 
@@ -60,7 +61,7 @@ checker's commands on its server, as a person would through the pages.
 | 1 | `db-1`: an admin adds a deploy account with sudo rights and a nightly job, and installs a package | none | `db-1` "Strong signs of a break-in", new since the last check: nothing on the server tells this from one |
 | 2 | `shop-web-2`: PHP updated, its service not restarted | accepts `db-1`'s changes as its baseline, with a reason | `db-1` calm again, the acceptance on its evidence page and in Activity; `shop-web-2` "fix installed, but old code may still be running" |
 | 3 | `shop-web-1`: the break-in (the detection proof's behaviours: second root account, root key, web shell used, cron and timer, preload, reverse shell, tunnel, logging and audit turned down). `shop-web-2`: service restarted. `mail-1`: a backup job is added. `app-1`: its firewall starts refusing the checker | none | `shop-web-1` "Strong signs of a break-in", its findings, evidence and timeline; `shop-web-2` "was open while it was active, fixed now"; `app-1` "the last check didn't finish" |
-| 4 | `shop-web-1`: the web shell and the cron job are removed | takes `staging-1` off the list; writes a rule for `mail-1`'s backup job that expires the day after `up` | `shop-web-1` "serious warnings from before no longer found: someone removing what they left behind looks the same"; `staging-1` "no longer being checked"; a finding hidden by the list of accepted activity |
+| 4 | `shop-web-1`: the web shell and the cron job are removed | takes `staging-1` off the list; writes a rule for `mail-1`'s backup job that expires the day after `up` (kept up for days: after day 5's check) | `shop-web-1` "serious warnings from before no longer found: someone removing what they left behind looks the same"; `staging-1` "no longer being checked"; a finding hidden by the list of accepted activity |
 | 5 | none | stops using one threat update by hand, with a reason | every server "the threat updates have changed since this result"; the update under "Stopped by hand", with "Put it back" |
 | 6 | none | puts the threat update back | `app-1` "hasn't been checked recently"; `mail-1` "settings have changed since this result" (its rule expired) |
 | 7 | none | `down`: every server deleted (and, from D.5, the data saved first) | |

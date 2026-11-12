@@ -246,6 +246,30 @@ def sweep(api: Linode) -> None:
         if now - created > SWEEP_AFTER:
             print(f"sweep: deleting leftover {node['label']} (created {node['created']})")
             api.delete(node["id"])
+    for node in demo_past_its_date(api.call("GET", "/linode/instances?page_size=500")["data"], now):
+        print(f"sweep: deleting {node['label']}, a demo server past its end date")
+        api.delete(node["id"])
+
+
+# The demo fleet (demo.py) can be left up for days, and nothing deletes it for its owner. Each of
+# its servers carries the last day it may be up as a tag, and any proof's sweep takes those past
+# theirs. One with no date it can read is left alone here: `demo.py` deals with those.
+DEMO_TAG = "compromise-checker-demo"
+DEMO_LABEL = "cc-demo-"
+DEMO_UNTIL = "cc-demo-until-"
+
+
+def demo_past_its_date(nodes: list[dict], now: datetime) -> list[dict]:
+    past = []
+    for node in nodes:
+        if DEMO_TAG not in node["tags"] or not node["label"].startswith(DEMO_LABEL):
+            continue
+        for tag in node["tags"]:
+            day = tag.removeprefix(DEMO_UNTIL)
+            if tag != day and len(day) == 8 and day.isdigit() and day < now.strftime("%Y%m%d"):
+                past.append(node)
+                break
+    return past
 
 
 # Every server a run makes carries this run's token in its label, so the

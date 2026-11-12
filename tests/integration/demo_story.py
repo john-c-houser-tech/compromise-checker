@@ -73,6 +73,15 @@ ATTACK_NAMES = (
 )
 
 
+# Played on real days (demo.py's `--days`), a step's script meets what minutes apart never did:
+# the next check is a day off, so what the break-in leaves running must still be running then
+# (the proofs give it an hour or two), and the package lists are days old (a version they name
+# may be gone from the mirror).
+DAYS_APART = (
+    ("7200", "2000000"),
+    ("sleep 3600 >/dev/null", "sleep 2000000 >/dev/null"),
+    ("$APT install", "$APT update >/dev/null\n$APT install"),
+)
 INTRUDER = "svc-backup"  # the account the break-in makes: not db-1's admin's, nor its key
 
 
@@ -164,7 +173,10 @@ fi
 CONTAINER = r"""
 set -u
 export DEBIAN_FRONTEND=noninteractive
-apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io </dev/null 2>&1 | tail -5
+# Over IPv4: Linode's mirror has timed out over IPv6 from a new server, which is why the setup's
+# own try fails (the four-day run, 2026-11-10: "containerd ... Connection timed out [IP: 2600:").
+apt-get -o DPkg::Lock::Timeout=300 -o Acquire::ForceIPv4=true -o Acquire::Retries=3 \
+    install -y -qq docker.io </dev/null 2>&1 | tail -5
 systemctl enable --now docker 2>&1 | tail -5
 docker rm -f web-cache >/dev/null 2>&1
 docker run -d --name web-cache docker.io/library/nginx:alpine </dev/null 2>&1 | tail -5
@@ -298,7 +310,7 @@ CHECKED_DAYS = (0, 1, 2, 3, 4)
 HANDS_ON = (
     "Checks: start one from the page. Until you do, the list is empty (see the story's notes).",
     "Known threats, Manage: put the stopped threat update back (the story's day 6).",
-    "The daily check runs about 23 hours after `up` began, and clears day 5's note.",
+    "The next check after day 5's step clears its note: the daily one, or one you start.",
     "Start a check; start a second while it runs; stop one.",
     "Check app-1 alone (the firewall refuses it): the list of what to look at.",
     "Ask a server for its key again; paste a wrong fingerprint.",

@@ -163,11 +163,15 @@ end.
   the servers' list and their host keys, the threat updates, the whitelists, proposals and
   reports. They are named in `demo.py`; a file the checker starts keeping later isn't copied until
   it is added there.
-- **What stays on the server:** `web.db`, which holds the accounts, their sessions, the record of
-  who did what at the pages and the list of checks started from a page, each with the address it
-  came from. And every key but the evidence's: the one that logs in to the fleet, the web
-  interface's secrets, the mail key. So in the saved copy the Activity page and the Checks page's
-  list start empty; the results of those checks are in the store and are saved.
+- **What stays on the server:** the accounts, their sessions and failed sign-ins, and every key
+  but the evidence's: the one that logs in to the fleet, the web interface's secrets, the mail
+  key.
+- **The Activity page and the Checks page's list are kept, with the address replaced** (John,
+  2026-11-12). Both live in `web.db` with the address each row came from, which is the laptop's.
+  The server copies those two tables and no other, putting "(not kept)" where each address was,
+  before anything is sent. On the laptop the rows go into a new accounts database, made by the
+  checker's own code with no account in it. A row that still held an address would stop the
+  save, and the record is searched for the laptop's address like everything else.
 - **The account's name is in the data.** The store's own record of each collection says who
   started it, so a check or a decision made at the pages carries the name of the account that
   made it.

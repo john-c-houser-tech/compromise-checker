@@ -1141,7 +1141,6 @@ def a_home(base, address="198.51.100.7"):
     (base / "hosts.yaml").write_text("hosts: []\n")
     (base / "hosts.yaml.lock").write_text("")
     (base / "known_hosts").write_text("192.0.2.5 ssh-ed25519 AAAA\n")
-    (base / "web.db").write_text("accounts, and who signed in from where\n")
     (base / "run.lock").write_text("")
     (base / "logs").mkdir()
     (base / "logs" / "run.log").write_text("not asked for\n")
@@ -1184,6 +1183,47 @@ def as_ssh(monkeypatch, base, instead=None):
         return real(instead or here, **kwargs)
 
     monkeypatch.setattr(demo.subprocess, "Popen", ssh)
+
+
+def pages_used(base, here="203.0.113.9"):
+    """The web interface's own database on the server, as the checker makes it, after someone
+    signed in from `here`, started a check and looked at a server."""
+    made = subprocess.run(
+        [sys.executable, "-c", demo._NEW_ACCOUNTS, str(base)],
+        cwd=Path(demo.__file__).resolve().parents[2],
+        env={**os.environ, "CHECKER_HOME": str(base)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert made.returncode == 0, made.stderr
+    import sqlite3
+
+    web = sqlite3.connect(base / "web.db")
+    web.execute(
+        "INSERT INTO auth_user (password, is_superuser, username, first_name, last_name, email,"
+        " is_staff, is_active, date_joined)"
+        " VALUES ('hash', 0, 'ops', '', '', '', 0, 1, '2026-11-11')"
+    )
+    web.execute("INSERT INTO django_session VALUES ('key', 'session data', '2026-12-01 00:00:00')")
+    web.execute(
+        "INSERT INTO web_loginattempt (username, address, at) VALUES ('ops', ?, '2026-11-11')",
+        (here,),
+    )
+    web.execute(
+        "INSERT INTO web_actionrecord (at, who, address, action, target, outcome, detail)"
+        " VALUES ('2026-11-11 05:00:00', 'ops', ?, 'viewed a server''s results', 'db-1',"
+        " 'done', '')",
+        (here,),
+    )
+    web.execute(
+        "INSERT INTO web_checkrun (kind, hosts, who, address, started_at, finished_at, ended)"
+        " VALUES ('check', '[\"db-1\"]', 'ops', ?, '2026-11-11 05:01:00', '2026-11-11 05:03:00',"
+        " 'finished')",
+        (here,),
+    )
+    web.commit()
+    return web
 
 
 class Home:
@@ -1674,3 +1714,103 @@ def test_a_save_before_the_last_days_collection_says_so_and_down_still_waits(
     assert demo.save(folder, tmp_path / "whole", datetime(2026, 11, 15, 3, 30, tzinfo=UTC)) == 0
     assert "NOTE" not in capsys.readouterr().out and demo.unsaved(folder) is None
     assert json.loads((tmp_path / "whole" / "demo.json").read_text())["last_day_in_it"] is True
+
+
+READ_THE_RECORD = """
+from django.contrib.auth import get_user_model
+from checker.web.models import ActionRecord, CheckRun
+line, run = ActionRecord.objects.get(), CheckRun.objects.get()
+print(line.who, line.address, run.who, run.ended, get_user_model().objects.count())
+"""
+
+
+def test_the_pages_record_comes_down_with_no_address_and_no_account(tmp_path, monkeypatch, capsys):
+    """Who did what at the pages, and the checks started from one, are in the saved copy for the
+    Activity and Checks pages to show. The address in each row is replaced on the server, and
+    the accounts, sessions and sign-ins never leave it."""
+    import sqlite3
+
+    here = "203.0.113.9"
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    pages_used(base, here).close()
+    target = tmp_path / "dataset"
+    assert demo.save(folder, target, NOON) == 0
+    said = capsys.readouterr().out
+    assert "came down (2 rows), each address in it replaced by '(not kept)'" in said
+    assert not (target / "web-record.db").exists()
+    assert here.encode() not in (target / "web.db").read_bytes()
+    web = sqlite3.connect(target / "web.db")
+    assert web.execute("SELECT who, address, action, target FROM web_actionrecord").fetchall() == [
+        ("ops", "(not kept)", "viewed a server's results", "db-1")
+    ]
+    assert web.execute("SELECT who, address, hosts, ended FROM web_checkrun").fetchall() == [
+        ("ops", "(not kept)", '["db-1"]', "finished")
+    ]
+    for table in ("auth_user", "django_session", "web_loginattempt"):
+        assert web.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,), table  # noqa: S608
+    # The record is still one that can only be added to.
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        web.execute("DELETE FROM web_actionrecord")
+    web.close()
+    about = json.loads((target / "demo.json").read_text())
+    assert about["pages_record"].startswith("1 lines of who did what at the pages and 1 checks")
+    # And the checker's own code reads them, as its Activity and Checks pages do.
+    read = subprocess.run(
+        [sys.executable, "-c", demo._NEW_ACCOUNTS + READ_THE_RECORD, str(target)],
+        cwd=Path(demo.__file__).resolve().parents[2],
+        env={**os.environ, "CHECKER_HOME": str(target)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert read.returncode == 0, read.stderr
+    assert read.stdout.split() == ["ops", "(not", "kept)", "ops", "finished", "0"]
+    assert all(p.stat().st_mode & 0o077 == 0 for p in target.rglob("*"))
+
+
+def test_what_is_sent_of_the_pages_record_never_held_the_address(tmp_path, monkeypatch):
+    """Looked for in the tar itself, as it leaves the server."""
+    here = "203.0.113.9"
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    pages_used(base, here).close()
+    work = tmp_path / "work"
+    work.mkdir()
+    archive, sent, _, _ = demo.fetch(Home(base), work)
+    assert here.encode() not in archive.read_bytes() and b"session data" not in archive.read_bytes()
+    assert b"(not kept)" in archive.read_bytes() and sent == 9
+
+
+def test_a_pages_record_with_an_address_left_in_or_a_line_naming_it_stops_the_save(
+    tmp_path, monkeypatch, capsys
+):
+    import sqlite3
+
+    here = "203.0.113.9"
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    web = pages_used(base, here)
+    # A line whose own words hold the address: the server replaces the address column only.
+    web.execute(
+        "INSERT INTO web_actionrecord (at, who, address, action, target, outcome, detail)"
+        " VALUES ('2026-11-11 06:00:00', 'ops', 'x', 'signed in', '', 'done', ?)",
+        (f"from {here}",),
+    )
+    web.commit()
+    web.close()
+    assert demo.save(folder, tmp_path / "dataset", NOON) == 1
+    assert "FAIL the pages' record's table web_actionrecord: names this machine" in (
+        capsys.readouterr().out
+    )
+    # And a server that didn't replace one isn't believed.
+    came = tmp_path / "came"
+    came.mkdir()
+    (came / "keys").mkdir()
+    record = sqlite3.connect(came / "web-record.db")
+    record.execute("CREATE TABLE web_checkrun (id INTEGER PRIMARY KEY, kind TEXT, address TEXT)")
+    record.execute("INSERT INTO web_checkrun VALUES (1, 'check', ?)", (here,))
+    record.commit()
+    record.close()
+    with pytest.raises(demo.DemoError, match="with its address still in"):
+        demo.record_here(came)

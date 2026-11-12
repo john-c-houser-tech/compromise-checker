@@ -1780,6 +1780,17 @@ def test_what_is_sent_of_the_pages_record_never_held_the_address(tmp_path, monke
     archive, sent, _, _ = demo.fetch(Home(base), work)
     assert here.encode() not in archive.read_bytes() and b"session data" not in archive.read_bytes()
     assert b"(not kept)" in archive.read_bytes() and sent == 9
+    # Those two tables and no other: no account's name or password came with them.
+    import sqlite3
+    import tarfile
+
+    with tarfile.open(archive) as tar:
+        tar.extract("web-record.db", work, filter="data")
+    record = sqlite3.connect(work / "web-record.db")
+    names = {name for (name,) in record.execute("SELECT name FROM sqlite_master")}
+    record.close()
+    assert names - {"sqlite_sequence"} == {"web_actionrecord", "web_checkrun"}
+    assert b"hash" not in archive.read_bytes()
 
 
 def test_a_pages_record_with_an_address_left_in_or_a_line_naming_it_stops_the_save(
@@ -1832,3 +1843,93 @@ def test_the_screenshot_script_wont_delete_a_saved_datasets_record(tmp_path):
     )
     assert done.returncode == 1 and "is a saved demo dataset" in done.stderr
     assert (tmp_path / "web.db").read_text() == "the record" and not (tmp_path / "x").exists()
+
+
+def a_record(folder, *statements):
+    import sqlite3
+
+    (folder / "keys").mkdir(parents=True, exist_ok=True)
+    (folder / "web.db").unlink(missing_ok=True)
+    (folder / "web-record.db").unlink(missing_ok=True)
+    record = sqlite3.connect(folder / "web-record.db")
+    for statement in statements:
+        record.execute(statement)
+    record.commit()
+    record.close()
+
+
+RUNS = "CREATE TABLE web_checkrun (id INTEGER PRIMARY KEY, kind TEXT, hosts TEXT, who TEXT,"
+RUNS += " address TEXT, started_at TEXT, finished_at TEXT, ended TEXT)"
+
+
+@pytest.mark.parametrize(
+    ("statements", "says"),
+    [
+        # Another table: an account's, say.
+        (["CREATE TABLE auth_user (username TEXT, password TEXT)"], "a table that wasn't asked"),
+        # Rows made up as they are read, from a file of a few kilobytes.
+        (
+            [
+                "CREATE VIEW web_checkrun AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT"
+                " i + 1 FROM n) SELECT i AS id, 'check' AS kind, '[]' AS hosts, 'x' AS who,"
+                " '(not kept)' AS address, '2026-11-11' AS started_at, NULL AS finished_at,"
+                " hex(zeroblob(1000000)) AS ended FROM n"
+            ],
+            "a view that wasn't asked",
+        ),
+        (
+            [RUNS, "CREATE TRIGGER t AFTER INSERT ON web_checkrun BEGIN SELECT 1; END"],
+            "a trigger that wasn't asked",
+        ),
+        # Rows the pages would fail on, which SQLite holds without complaint.
+        (
+            [
+                RUNS,
+                "INSERT INTO web_checkrun VALUES (1,'check','not json','x','(not kept)','2026-11-11',NULL,'')",
+            ],
+            "the pages couldn't show",
+        ),
+        (
+            [
+                RUNS,
+                "INSERT INTO web_checkrun VALUES (1,'check','[]','x','(not kept)','not a date',NULL,'')",
+            ],
+            "the pages couldn't show",
+        ),
+        (
+            [
+                RUNS,
+                "INSERT INTO web_checkrun VALUES (1,'check','[]',x'00','(not kept)','2026-11-11',NULL,'')",
+            ],
+            "the pages couldn't show",
+        ),
+        (
+            [
+                RUNS,
+                "INSERT INTO web_checkrun VALUES (1,'check','[1]','x','(not kept)','2026-11-11',NULL,'')",
+            ],
+            "the pages couldn't show",
+        ),
+    ],
+)
+def test_a_record_that_isnt_two_tables_of_rows_the_pages_can_show_stops_the_save(
+    tmp_path, statements, says
+):
+    a_record(tmp_path, *statements)
+    with pytest.raises(demo.DemoError, match=says):
+        demo.record_here(tmp_path)
+
+
+def test_a_record_far_bigger_than_a_record_stops_the_save(tmp_path, monkeypatch):
+    monkeypatch.setattr(demo, "MOST_IN_A_VALUE", 5000)
+    a_record(
+        tmp_path,
+        RUNS,
+        *(
+            f"INSERT INTO web_checkrun VALUES ({i},'check','[]','x','(not kept)','2026-11-11',NULL,"
+            f"'{'x' * 900}')"
+            for i in range(1, 8)
+        ),
+    )
+    with pytest.raises(demo.DemoError, match="bigger than a record"):
+        demo.record_here(tmp_path)

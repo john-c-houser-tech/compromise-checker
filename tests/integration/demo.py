@@ -1446,6 +1446,22 @@ app.configure(Path(sys.argv[1]))
 """
 
 
+def as_the_pages_read(row: dict) -> bool:
+    """Whether a row of the record is of the shape the Activity and Checks pages read: text and
+    numbers only, its times times, and a check's servers a list of names. SQLite itself holds
+    whatever it is given."""
+    if not all(v is None or isinstance(v, str | int | float) for v in row.values()):
+        return False
+    try:
+        for name in ("at", "started_at", "finished_at"):
+            if row.get(name) is not None:
+                datetime.fromisoformat(row[name])
+        hosts = json.loads(row["hosts"]) if "hosts" in row else []
+    except (TypeError, ValueError):
+        return False
+    return isinstance(hosts, list) and all(isinstance(h, str) for h in hosts)
+
+
 def record_here(folder: Path) -> dict[str, int]:
     """The record of the pages' use, put where the pages read it: a new accounts database, made
     by the checker's own code as it makes one at its first start (so with no account in it), and
@@ -1470,6 +1486,14 @@ def record_here(folder: Path) -> dict[str, int]:
     target = sqlite3.connect(folder / ACCOUNTS)
     try:
         source.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MOST_IN_A_VALUE)
+        # Those two tables and nothing else: no other table (an account's, say), and nothing
+        # that makes rows up as it is read, which a view under one of their names would.
+        holds = source.execute("SELECT type, name FROM sqlite_master").fetchall()
+        for kind, name in holds:
+            plain = kind == "table" and name in (*RECORD_TABLES, "sqlite_sequence")
+            if not plain and not (kind == "index" and name.startswith("sqlite_autoindex_")):
+                raise DemoError(f"the record sent holds a {shown(kind)} that wasn't asked for")
+        taken = 0
         for table in RECORD_TABLES:
             sent = [row[1] for row in source.execute(f'PRAGMA table_info("{table}")')]
             here = [row[1] for row in target.execute(f'PRAGMA table_info("{table}")')]
@@ -1487,6 +1511,11 @@ def record_here(folder: Path) -> dict[str, int]:
                     raise DemoError(f"the server sent a row of {table} with its address still in")
                 if counts[table] >= MOST_ROWS:
                     raise DemoError(f"the server sent more than {MOST_ROWS} rows of {table}")
+                if not as_the_pages_read(dict(zip(columns, row, strict=True))):
+                    raise DemoError(f"the server sent a row of {table} the pages couldn't show")
+                taken += sum(len(v) for v in row if isinstance(v, str))
+                if taken > MOST_IN_A_VALUE:
+                    raise DemoError("the record sent is bigger than a record of the pages' use")
                 target.execute(f'INSERT INTO "{table}" ({names}) VALUES ({marks})', row)  # noqa: S608
                 counts[table] += 1
         target.commit()

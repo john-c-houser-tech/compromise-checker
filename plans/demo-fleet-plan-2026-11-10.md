@@ -155,7 +155,7 @@ point is the note the next check clears) runs an hour after the daily check inst
 
 ## Save as built (D.5, first part, 2026-11-12)
 
-`demo.py save DIR` copies the checker's data to a new folder outside the repository. It needs no
+`demo.py save DIR` copies the checker's data to a new folder outside any repository. It needs no
 Linode token and changes nothing on the servers, so it can be run during a stay and again at the
 end.
 
@@ -170,20 +170,30 @@ end.
   list start empty; the results of those checks are in the store and are saved.
 - **The account's name is in the data.** The store's own record of each collection says who
   started it, so a check or a decision made at the pages carries the name of the account that
-  made it. Not an address, but worth choosing the demo account's name with that in mind.
+  made it.
 - **A whole copy.** The checker's lock is held while it copies, so no check or purge runs
   meanwhile, and one under way stops the save instead. The store is read through SQLite's own
-  backup. During a stay, `save` refuses from an hour before the daily check to an hour and a half
-  after it, so a day's check never finds the lock taken.
-- **Nothing is taken on trust from the server:** only ordinary files, only the names asked for.
-- **The proof.** The folder is put together as `DIR.part` and becomes `DIR` only when nothing in
-  it names this machine's address (the files, the store row by row, the evidence opened with the
-  saved key) and every stored collection opens. Otherwise it stays as `DIR.part` and says what
-  was found.
-- **`down` waits for it:** with a checker up whose data was never saved, or was saved before the
-  last day's check, `down` says so and stops. `down --unsaved` deletes anyway. A failed `up`
-  still deletes what it made without asking.
-- `DIR/demo.json` says which run it was, its servers and their addresses, and the story's days.
+  backup. During a stay, `save` refuses from an hour before the daily check to an hour and
+  three quarters after it, and for the first five minutes after the last day's (its timer may
+  fire a little late), so a day's check never finds the lock taken.
+- **Three things are changed in the copy, and `DIR/demo.json` says so.** The store names each
+  collection by its whole path, which was the server's: each becomes the saved file's, or no page
+  on the laptop could open one. The settings' path to the evidence key, likewise. And whatever in
+  the settings could run a command or send anything from the laptop is put back to what a new
+  checker starts with: the notification command, the advisor, where threat updates come from,
+  the check for new releases. So a saved folder names its own place and can't be moved.
+- **Nothing is taken on trust from the server:** only ordinary files, only the names asked for,
+  each once, no more than 2 GB and no longer than an hour; a store that names a file outside the
+  saved ones, or a list of servers with a login that isn't the demo's key, stops the save.
+- **The proof.** The folder is put together as `DIR.part` and becomes `DIR` only when every
+  collection, sealed file and sealed value in it opens with the saved key and none holds this
+  machine's address: the files, the store row by row, the evidence. Otherwise it stays as
+  `DIR.part` and says what was found. The address is the one the checker's server sees the
+  laptop come from at that moment, in the ways it can be written; one the laptop had on another
+  day or network isn't looked for.
+- **`down` waits for it:** with a checker up whose data was never saved, was saved before the
+  last day's check left a collection, or is no longer where it was saved, `down` says so and
+  stops. `down --unsaved` deletes anyway. A failed `up` still deletes what it made without asking.
 
 Still to do in D.5, after the first save from real servers: browse it on the laptop, move the
 screenshot script onto it, retire `demo_fleet.py`, take the README's pictures again.

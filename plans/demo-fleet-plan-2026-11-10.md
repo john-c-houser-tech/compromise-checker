@@ -28,11 +28,11 @@ ways:
 
 One script, `tests/integration/demo.py`, with four commands:
 
-    # Built so far (D.4): up [--days N], status, down. save is D.5, --build when it is needed.
+    # Built so far: up [--days N], status, save DIR (D.5), down. --build when it is needed.
     demo.py up [--days N] [--build]   # make the checker's server and the fleet, play the story
     demo.py status                    # what is up, since when, what it has cost, when it ends
     demo.py save DIR                  # copy the checker's data down, as the demo dataset
-    demo.py down                      # save, then delete every server
+    demo.py down                      # delete every server (it asks for a save first)
 
 - **The checker's server** is a new Linode with the published release installed by the install
   page's own line (the `public-web` route of the install proof already does this, with a name and
@@ -152,3 +152,38 @@ point is the note the next check clears) runs an hour after the daily check inst
   John's calendar for after the last check.
 - **The privacy proof** runs at the end of day 0. After John signs in from the laptop the web
   interface holds his address by design; D.5's `save` leaves that out.
+
+## Save as built (D.5, first part, 2026-11-12)
+
+`demo.py save DIR` copies the checker's data to a new folder outside the repository. It needs no
+Linode token and changes nothing on the servers, so it can be run during a stay and again at the
+end.
+
+- **What comes down:** the store, the stored evidence and the key it is read with, the settings,
+  the servers' list and their host keys, the threat updates, the whitelists, proposals and
+  reports. They are named in `demo.py`; a file the checker starts keeping later isn't copied until
+  it is added there.
+- **What stays on the server:** `web.db`, which holds the accounts, their sessions, the record of
+  who did what at the pages and the list of checks started from a page, each with the address it
+  came from. And every key but the evidence's: the one that logs in to the fleet, the web
+  interface's secrets, the mail key. So in the saved copy the Activity page and the Checks page's
+  list start empty; the results of those checks are in the store and are saved.
+- **The account's name is in the data.** The store's own record of each collection says who
+  started it, so a check or a decision made at the pages carries the name of the account that
+  made it. Not an address, but worth choosing the demo account's name with that in mind.
+- **A whole copy.** The checker's lock is held while it copies, so no check or purge runs
+  meanwhile, and one under way stops the save instead. The store is read through SQLite's own
+  backup. During a stay, `save` refuses from an hour before the daily check to an hour and a half
+  after it, so a day's check never finds the lock taken.
+- **Nothing is taken on trust from the server:** only ordinary files, only the names asked for.
+- **The proof.** The folder is put together as `DIR.part` and becomes `DIR` only when nothing in
+  it names this machine's address (the files, the store row by row, the evidence opened with the
+  saved key) and every stored collection opens. Otherwise it stays as `DIR.part` and says what
+  was found.
+- **`down` waits for it:** with a checker up whose data was never saved, or was saved before the
+  last day's check, `down` says so and stops. `down --unsaved` deletes anyway. A failed `up`
+  still deletes what it made without asking.
+- `DIR/demo.json` says which run it was, its servers and their addresses, and the story's days.
+
+Still to do in D.5, after the first save from real servers: browse it on the laptop, move the
+screenshot script onto it, retire `demo_fleet.py`, take the README's pictures again.

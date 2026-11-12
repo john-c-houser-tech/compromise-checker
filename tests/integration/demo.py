@@ -6,6 +6,7 @@ anything the checker stores is the laptop's: what it holds can be shown as it is
 
     LINODE_TOKEN=… python tests/integration/demo.py up       # the checker's server and the fleet
     LINODE_TOKEN=… python tests/integration/demo.py status   # what is up, its cost, when it ends
+    python tests/integration/demo.py save DIR                # copy the checker's data down
     LINODE_TOKEN=… python tests/integration/demo.py down     # delete every server
 
 `up` plays the story in demo_story.py in one sitting: each of its days is a few minutes, and
@@ -14,7 +15,13 @@ ends with a check of every server, run from the checker's own server.
 `up --days N` keeps it up N days (1 to 14) and plays the story on its real days. Day 0 is played
 from here; each later day is a timer on the checker's server, which plays that day's steps the way
 this script does, a little before the checker's own daily check. So this machine can be off, and
-the history has real dates. `status` says how each day went. Saving the data (D.5) comes after.
+the history has real dates. `status` says how each day went.
+
+`save DIR` copies what the checker keeps to a new folder outside the repository: the demo dataset,
+which `CHECKER_HOME=DIR checker web` shows on this machine with no servers. The web accounts and
+the record of who did what at the pages stay behind (they hold this machine's address), and so
+does every key but the one the evidence is read with. It needs no Linode token and changes
+nothing on the servers. `down` asks for it first: `down --unsaved` deletes without.
 
 Its servers carry their own tag, so the proofs' sweep of servers older than two hours leaves them
 alone. Each also carries the last day it may be up: `status` says when that has passed, the next
@@ -32,9 +39,12 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -100,6 +110,8 @@ class State:
     days: int = 0  # kept up this many days, the story's later days played by timers (0: no)
     last_check: str = ""  # then: when the last of those days is checked, by the checker's clock
     plan: list[dict] = field(default_factory=list)  # those days' steps, and when each runs
+    saved: str = ""  # where `save` last put its data
+    saved_at: str = ""  # and when (UTC, ISO)
 
     def checker(self) -> Server:
         return next(s for s in self.servers if s.role == "checker")
@@ -1134,6 +1146,310 @@ def up(api, folder: Path, region: str, today: date, days: int = 0) -> int:
                 node.close()
 
 
+# --- save ----------------------------------------------------------------------------------
+
+# What of the checker's home is the demo's data: enough for `CHECKER_HOME=DIR checker web` to show
+# every page on a machine with no servers. Named here, so a file the checker starts keeping later
+# isn't copied until someone has said it should be. Left out on purpose: web.db (the accounts,
+# their sessions, and the record of who did what from which address, which is the one place this
+# machine's address is kept), and every key but the one the evidence is read with (the key that
+# logs in to the fleet, the web interface's secrets, the mail key).
+STORE = "checker.db"
+EVIDENCE_KEY = "keys/evidence-identity.txt"
+KEPT_FILES = ("config.yaml", "hosts.yaml", "known_hosts", "run-state.age", EVIDENCE_KEY)
+KEPT_FOLDERS = ("evidence", "packs", "whitelist", "proposals", "reports")
+ABOUT = "demo.json"  # what `save` writes beside them: which run this was, and its servers
+
+# On the checker's server, as the tool's account, by the checker's own Python: the home as a tar
+# on standard output, and nothing written there. No check or purge runs meanwhile (their lock is
+# held, and a check under way is a reason to stop, not to wait). The store is read through
+# SQLite's own backup, so the copy is whole whatever was being written at the time.
+_SEND = r"""
+import fcntl, io, json, os, sqlite3, sys, tarfile, time
+from pathlib import Path
+
+home = Path(sys.argv[1])
+files, folders, store = json.loads(sys.argv[2])
+lock = os.open(home / "run.lock", os.O_RDWR | os.O_CREAT, 0o600)
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(3)
+if not (home / store).is_file():
+    sys.exit(4)
+source = sqlite3.connect(f"file:{home / store}?mode=ro", uri=True)
+whole = sqlite3.connect(":memory:")
+source.backup(whole)
+source.close()
+data = whole.serialize()
+sent, collections = 1, 0
+with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as out:
+    entry = tarfile.TarInfo(store)
+    entry.size, entry.mode, entry.mtime = len(data), 0o600, int(time.time())
+    out.addfile(entry, io.BytesIO(data))
+    paths = [home / name for name in files]
+    for name in folders:
+        paths += sorted((home / name).rglob("*"))
+    for path in paths:
+        # A lock, or a file half written under its temporary name, is no part of the data.
+        if path.is_symlink() or not path.is_file() or path.name.startswith("."):
+            continue
+        if path.name.endswith((".lock", ".tmp")):
+            continue
+        try:
+            out.add(path, arcname=str(path.relative_to(home)), recursive=False)
+        except FileNotFoundError:
+            continue
+        sent += 1
+        collections += path.suffix == ".age" and path.parent.parent.name == "evidence"
+print("SENT", sent, collections, file=sys.stderr)
+"""
+
+
+def wanted(name: str) -> bool:
+    """Whether a path in what the checker's server sent is one `save` asked for."""
+    parts = Path(name).parts
+    if not parts or Path(name).is_absolute() or ".." in parts:
+        return False
+    return name in (STORE, *KEPT_FILES) or (len(parts) > 1 and parts[0] in KEPT_FOLDERS)
+
+
+def fetch(checker: install.Node, archive: Path) -> tuple[int, int]:
+    """The checker's data, as a tar in `archive`. Returns how many files the server says it sent,
+    and how many of them are stored evidence."""
+    command = (
+        f"runuser -u {install.ACCOUNT} -- {install.PROGRAM}/current/bin/python -I -"
+        f" {shlex.quote(install.DATA)}"
+        f" {shlex.quote(json.dumps([KEPT_FILES, KEPT_FOLDERS, STORE]))}"
+    )
+    with open(archive, "wb") as out:
+        done = subprocess.run(  # noqa: S603
+            ["ssh", *checker.options, f"{checker.user}@{checker.address}", command],  # noqa: S607
+            input=_SEND.encode(),
+            stdout=out,
+            stderr=subprocess.PIPE,
+            timeout=3600,
+            check=False,
+        )
+    said = done.stderr.decode(errors="replace")
+    if done.returncode == 3:
+        raise DemoError("a check or a purge is running on the checker's server: save when it ends")
+    if done.returncode == 4:
+        raise DemoError(f"the checker's server keeps no store in {install.DATA}/{STORE}")
+    counts = [line.split() for line in said.splitlines() if line.startswith("SENT ")]
+    if done.returncode != 0 or len(counts) != 1:
+        raise DemoError(f"the checker's data couldn't be read:\n{said.strip()[-1500:]}")
+    return int(counts[0][1]), int(counts[0][2])
+
+
+def unpack(archive: Path, into: Path) -> int:
+    """Take the tar apart into `into`: only ordinary files, only the ones asked for, readable by
+    this account alone. Returns how many. Anything else in it stops the save, since what comes
+    from a server is never taken on trust."""
+    with tarfile.open(archive, "r:") as tar:
+        members = tar.getmembers()
+        for member in members:
+            if not member.isreg() or not wanted(member.name):
+                raise DemoError(
+                    f"the checker's server sent {member.name!r}, which wasn't asked for"
+                )
+        tar.extractall(into, members=members, filter="data")  # noqa: S202 - each checked above
+    for path in [into, *into.rglob("*")]:
+        path.chmod(0o700 if path.is_dir() else 0o600)
+    return len(members)
+
+
+def key_at(folder: Path, where: Path) -> None:
+    """The saved settings name the evidence key by its whole path, which was the server's: make
+    it the saved key's, as it will be in `where`."""
+    import yaml
+
+    if not (folder / EVIDENCE_KEY).is_file():
+        raise DemoError("no evidence key came with the data, so what was collected can't be read")
+    path = folder / "config.yaml"
+    try:
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise DemoError(f"the saved settings can't be read ({exc})") from exc
+    if not isinstance(config, dict):
+        raise DemoError("the saved settings aren't the checker's")
+    if config.get("database"):
+        raise DemoError("the store is in a database of its own, which `save` doesn't copy")
+    config["identity_file"] = str(where / EVIDENCE_KEY)
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    path.chmod(0o600)
+
+
+def in_store(path: Path, needle: str) -> list[str]:
+    """The store's tables that hold the text in any row, read through SQLite (a value can lie
+    across pages in the file, where a search of its bytes would miss it)."""
+    found = []
+    # immutable: nothing else has it open, and no file is made beside it for reading it.
+    store = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    try:
+        said = store.execute("PRAGMA integrity_check").fetchall()
+        if said != [("ok",)]:
+            raise DemoError(f"the saved store is damaged: {said[:3]}")
+        tables = store.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        for (table,) in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            for row in store.execute(f"SELECT * FROM {quoted}"):  # noqa: S608 - its own table
+                texts = [v.decode(errors="replace") if isinstance(v, bytes) else v for v in row]
+                if any(needle in text for text in texts if isinstance(text, str)):
+                    found.append(table)
+                    break
+    except sqlite3.Error as exc:
+        raise DemoError(f"the saved store can't be read ({exc})") from exc
+    finally:
+        store.close()
+    return found
+
+
+def names_this_machine(folder: Path, here: str, collections: int) -> list[str]:
+    """What in the saved data names this machine's address, or couldn't be looked at: the files
+    as they are, the store row by row, and the evidence, opened with the saved key the way the
+    proof opens it on the checker's server. So it also proves every collection can be read."""
+    found = [f"the store's table {table}" for table in in_store(folder / STORE, here)]
+    for path in sorted(folder.rglob("*")):
+        if path.is_file() and path.suffix != ".age" and here.encode() in path.read_bytes():
+            found.append(str(path.relative_to(folder)))
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, "-I", "-", str(folder)],
+        input=_IN_EVIDENCE.replace("{needle}", here),
+        capture_output=True,
+        text=True,
+        timeout=3600,
+        check=False,
+    )
+    lines = done.stdout.splitlines()
+    looked = [line for line in lines if line.startswith("LOOKED ")]
+    if done.returncode != 0 or len(looked) != 1:
+        return [*found, f"the saved evidence couldn't be opened ({done.stderr.strip()[-300:]})"]
+    found += [f"the evidence: {line[4:]}" for line in lines if line[:4] == "HIT "]
+    there = len(list((folder / "evidence").glob("*/*.age")))
+    if there != collections:
+        found.append(f"{there} evidence files were saved, of the {collections} sent")
+    return found
+
+
+def too_near_a_check(state: State, now: datetime) -> str | None:
+    """While a stay still has days to play: why not to save now, if the story's steps or the
+    daily check are about to run or running. `save` holds off checks while it copies, and a day's
+    check that found it doing so would be lost."""
+    if not state.last_check:
+        return None
+    last = datetime.fromisoformat(state.last_check)
+    clock = now.astimezone(UTC).replace(tzinfo=None)
+    if clock > last:
+        return None  # the last day's check has started: if it is still going, the lock says so
+    check = clock.replace(hour=last.hour, minute=last.minute, second=0, microsecond=0)
+    for day in (-1, 0, 1):
+        start = check + timedelta(days=day) - BEFORE_THE_CHECK - timedelta(minutes=15)
+        end = check + timedelta(days=day) + AFTER_THE_CHECK + timedelta(minutes=30)
+        if start <= clock <= end:
+            return (
+                f"the story's steps and the daily check run between {start:%H:%M} and"
+                f" {end:%H:%M} UTC, and it is {clock:%H:%M}: save after that"
+            )
+    return None
+
+
+def save(folder: Path, target: Path, now: datetime) -> int:
+    """Copy the checker's data down as the demo dataset, to a new folder outside the repository.
+    It is put together beside `target` and takes that name only when nothing in it names this
+    machine and all of its evidence opens; otherwise it stays under its working name, and says
+    why. The servers aren't changed, and `save` can be run again."""
+    state = load_state(folder)
+    if state is None or not state.web_name:
+        raise DemoError("no demo with a checker installed is up: there is nothing to save")
+    target = target.expanduser().resolve()
+    if Path(__file__).resolve().parents[2] in (target, *target.parents):
+        raise DemoError("the dataset goes outside the repository, where it can't be committed")
+    if target.exists():
+        raise DemoError(f"{target} exists: `save` makes a new folder")
+    if reason := too_near_a_check(state, now):
+        raise DemoError(reason)
+    part = target.with_name(target.name + ".part")
+    if part.exists():
+        raise DemoError(f"{part} is left from a save that didn't finish: look at it, or delete it")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    checker = install.Node(state.checker().address, folder / "key", folder / "known_hosts")
+    try:
+        here = this_machine(checker)
+        if here is None:
+            raise DemoError("this machine's address, as the checker's server sees it, wasn't read")
+        part.mkdir(mode=0o700)
+        archive = part.with_name(part.name + ".tar")
+        try:
+            sent, collections = fetch(checker, archive)
+            got = unpack(archive, part)
+            if got != sent:
+                raise DemoError(f"{got} files arrived, of the {sent} the checker's server sent")
+            key_at(part, part)
+        except BaseException:  # nothing whole came down: no working folder is left in the way
+            shutil.rmtree(part, ignore_errors=True)
+            raise
+        finally:
+            archive.unlink(missing_ok=True)
+    finally:
+        checker.close()
+    about = {
+        "run": state.run,
+        "created": state.created,
+        "saved": now.astimezone(UTC).isoformat(timespec="seconds"),
+        "release": RELEASE,
+        "days": state.days,
+        "web_name": state.web_name,
+        "servers": [
+            {"name": s.name, "role": s.role, "distro": s.distro, "address": s.address}
+            for s in state.servers
+        ],
+        "plan": state.plan,
+    }
+    (part / ABOUT).write_text(json.dumps(about, indent=2) + "\n", encoding="utf-8")
+    (part / ABOUT).chmod(0o600)
+    leaks = names_this_machine(part, here, collections)
+    if leaks:
+        for leak in leaks:
+            print(f"FAIL {leak}")
+        print(f"Not fit to show as it is. Kept for a look, under its working name: {part}")
+        return 1
+    key_at(part, target)
+    part.rename(target)
+    state.saved, state.saved_at = str(target), about["saved"]
+    save_state(folder, state)
+    print(
+        f"PASS {got} files, {collections} of them stored evidence, every one opened with the saved"
+        " key; nothing in them names this machine. The web accounts and the record of who did"
+        " what at the pages stayed on the server, and so did every key but the evidence's."
+    )
+    print(f"Saved to {target}")
+    print(f"To look through it here, with no servers: CHECKER_HOME={target} checker web")
+    return 0
+
+
+def unsaved(folder: Path) -> str | None:
+    """Why `down` should wait: a checker is up whose data was never saved, or was saved before
+    the last day of its stay was checked. Deleting the servers deletes the only copy."""
+    try:
+        state = load_state(folder)
+    except Unreadable:
+        return None  # nothing says where its checker is: there is nothing `save` could do
+    if state is None or not state.web_name:
+        return None
+    how = "`demo.py save DIR` first, or `down --unsaved` to delete it as it is"
+    if not state.saved:
+        return f"the checker's data hasn't been saved, and `down` deletes the only copy: {how}"
+    if state.last_check and datetime.fromisoformat(state.saved_at) < datetime.fromisoformat(
+        state.last_check
+    ).replace(tzinfo=UTC):
+        return (
+            f"the data was saved ({state.saved}) before the last day was checked, at"
+            f" {state.last_check.replace('T', ' ')} UTC: {how}"
+        )
+    return None
+
+
 # --- status and down ---------------------------------------------------------------------
 
 
@@ -1254,7 +1570,8 @@ class Api(proof.Linode):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("command", choices=["up", "status", "down"])
+    parser.add_argument("command", choices=["up", "status", "save", "down"])
+    parser.add_argument("folder", nargs="?", type=Path, help="save: the new folder for the data")
     parser.add_argument("--state", type=Path, default=STATE, help="where what is up is kept")
     parser.add_argument("--region", default="us-sea")
     parser.add_argument(
@@ -1262,9 +1579,24 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         help=f"up: keep it up this many days (1 to {MOST_DAYS}), the story a day at a time",
     )
+    parser.add_argument(
+        "--unsaved", action="store_true", help="down: delete though the data was never saved"
+    )
     args = parser.parse_args(argv)
     if args.days is not None and (args.command != "up" or not 1 <= args.days <= MOST_DAYS):
         parser.error(f"--days goes with `up`, and is 1 to {MOST_DAYS}")
+    if (args.folder is not None) != (args.command == "save"):
+        parser.error("`save` takes the new folder to save to, and nothing else does")
+    if args.unsaved and args.command != "down":
+        parser.error("--unsaved goes with `down`")
+    try:
+        if args.command == "save":  # the servers are asked, not Linode: no token
+            return save(args.state, args.folder, datetime.now(UTC))
+        if args.command == "down" and not args.unsaved and (reason := unsaved(args.state)):
+            raise DemoError(reason)
+    except DemoError as exc:
+        print(f"demo: {exc}", file=sys.stderr)
+        return 1
     api = Api(proof.linode_token())
 
     def stop(number, _frame):  # so a killed `up` still deletes what it made

@@ -445,6 +445,36 @@ def test_a_container_that_couldnt_start_says_why_and_the_setup_goes_on(tmp_path,
     ]
 
 
+def test_a_podman_container_that_couldnt_start_says_why_too(tmp_path):
+    import re
+    import subprocess
+
+    part = re.search(r"^if ! command -v ufw .*?^fi$", proof.SETUP, re.DOTALL | re.MULTILINE).group(
+        0
+    )
+    import shutil
+
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    for name in ("tail", "sed"):  # what the step uses, and nothing else this machine has (ufw)
+        (tools / name).symlink_to(shutil.which(name))
+    (tools / "dnf").write_text("#!/bin/sh\necho 'Error: Failed to download metadata' >&2\nexit 1\n")
+    (tools / "dnf").chmod(0o755)
+    done = subprocess.run(  # noqa: S603
+        [shutil.which("bash"), "--norc", "--noprofile", "-eu", "-c", part],
+        env={"PATH": str(tools)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert done.returncode == 0
+    assert proof.setup_notes(done.stderr) == [
+        "proof setup: Podman container not started",
+        "proof setup:   Error: Failed to download metadata",
+    ]
+
+
 def test_the_setup_script_is_shell_that_parses():
     import subprocess
 

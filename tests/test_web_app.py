@@ -3383,6 +3383,17 @@ def test_chosen_from_sign_in_security_saving_the_codes_goes_back_there(web):
     assert response["Location"] == "/two-factor/manage"
 
 
+def test_new_codes_made_later_go_back_to_sign_in_security_though_it_is_required(
+    web, settings_override
+):
+    settings_override(CHECKER_TWO_FACTOR_REQUIRED=True)
+    client, _ = signed_in(web)
+    _, device = turn_on_two_factor(client)
+    confirmed = {"confirm_password": PASSWORD, "confirm_code": fresh(device)}
+    response = client.post("/two-factor/new-codes", confirmed)
+    assert response.status_code == 200 and 'name="then"' not in response.content.decode()
+
+
 def test_the_servers_page_says_ready_only_with_two_factor_on(web):
     client, _ = signed_in(web)
     assert "your account is ready" not in client.get("/?ready=1").content.decode()

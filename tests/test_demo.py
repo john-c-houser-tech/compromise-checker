@@ -1814,3 +1814,21 @@ def test_a_pages_record_with_an_address_left_in_or_a_line_naming_it_stops_the_sa
     record.close()
     with pytest.raises(demo.DemoError, match="with its address still in"):
         demo.record_here(came)
+
+
+def test_the_screenshot_script_wont_delete_a_saved_datasets_record(tmp_path):
+    """It deletes web.db for its own throwaway account; in a saved dataset that file is the only
+    copy of the record of the pages' use."""
+    pytest.importorskip("playwright")
+    (tmp_path / "demo.json").write_text("{}")
+    (tmp_path / "demo-protect.json").write_text("[]")
+    (tmp_path / "web.db").write_text("the record")
+    done = subprocess.run(
+        [sys.executable, str(HERE / "screenshots.py"), "--home", str(tmp_path), "--out", "x"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 1 and "is a saved demo dataset" in done.stderr
+    assert (tmp_path / "web.db").read_text() == "the record" and not (tmp_path / "x").exists()

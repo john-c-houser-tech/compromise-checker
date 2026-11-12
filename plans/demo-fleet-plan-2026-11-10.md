@@ -200,4 +200,7 @@ end.
   stops. `down --unsaved` deletes anyway. A failed `up` still deletes what it made without asking.
 
 Still to do in D.5, after the first save from real servers: browse it on the laptop, move the
-screenshot script onto it, retire `demo_fleet.py`, take the README's pictures again.
+screenshot script onto it, retire `demo_fleet.py`, take the README's pictures again. Until it is
+moved, `screenshots.py` refuses a saved dataset: it deletes `web.db` for its own throwaway
+account, and in a saved dataset that file is the only copy of the record of the pages' use. When
+it is moved, it works on a copy of that file or makes its account beside the record.

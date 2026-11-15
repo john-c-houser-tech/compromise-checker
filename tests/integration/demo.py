@@ -1,6 +1,6 @@
 """The demo fleet that can be shown and kept running (plans/demo-fleet-plan-2026-11-10.md).
 
-Unlike demo_fleet.py, the checker itself runs on a throwaway server too, installed by the install
+The checker itself runs on a throwaway server too, installed by the install
 page's own line, and every step on a fleet server is taken through that server. So no address in
 anything the checker stores is the laptop's: what it holds can be shown as it is.
 
@@ -1500,6 +1500,47 @@ def settings_here(folder: Path, where: Path) -> None:
     config["identity_file"] = str(where / EVIDENCE_KEY)
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     path.chmod(0o600)
+
+
+def working_copy(dataset: Path, into: Path) -> Path:
+    """A copy of a saved dataset to use and throw away (screenshots.py): a saved folder names its
+    own place in its store and settings, so it can't be moved, and the copy's are pointed at the
+    copy. The dataset itself is only read."""
+    dataset = dataset.resolve()
+    if not (dataset / "demo.json").is_file():
+        raise DemoError(f"{dataset} isn't a saved demo dataset (no demo.json)")
+    target = into.resolve() / dataset.name
+    shutil.copytree(dataset, target)
+    paths_here(target, str(dataset), target)
+    config = target / "config.yaml"
+    text = config.read_text(encoding="utf-8").replace(str(dataset), str(target))
+    config.write_text(text, encoding="utf-8")
+    store = sqlite3.connect(f"file:{target / STORE}?mode=ro", uri=True)
+    try:
+        rows = [
+            v
+            for (table,) in store.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            for row in store.execute(
+                "SELECT * FROM " + '"' + table.replace('"', '""') + '"'  # noqa: S608 - its own table names
+            )
+            for v in row
+            if isinstance(v, str) and str(dataset) in v
+        ]
+    finally:
+        store.close()
+    if rows or str(dataset) in text:
+        raise DemoError(f"the copy still names {dataset}: it would read or write there")
+    return target
+
+
+def addresses_of(dataset: Path) -> list[str]:
+    """Every address the demo's servers had, and the checker's web name: none may be in a
+    picture."""
+    about = json.loads((dataset / "demo.json").read_text(encoding="utf-8"))
+    found = {s["address"] for s in about.get("servers", []) if s.get("address")}
+    if about.get("web_name"):
+        found.add(about["web_name"])
+    return sorted(found)
 
 
 def paths_here(folder: Path, was: str, where: Path) -> int:

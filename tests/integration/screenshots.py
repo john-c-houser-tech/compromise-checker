@@ -1,18 +1,19 @@
-"""Screenshots for the README and marketing (plan 5.7), from a demo fleet's home
-(demo_fleet.py), through the real pages in a real browser.
+"""Screenshots for the README and marketing (plan 5.7), from a demo dataset that `demo.py save`
+made, through the real pages in a real browser.
 
-Every page passes through the golden tests' scrubber on its way to the browser, and the run
-stops if any public address, or any address the demo run noted (the controller's, the servers'),
-survives. Each page says it's a demo fleet. Needs the `shots` extra and a Chromium.
+The pages are served from a throwaway copy of the dataset, with an account made for this run in
+the copy: the dataset itself, whose record of the pages' use is the only one, is only read. Every
+page passes through the golden tests' scrubber on its way to the browser, and the run stops if any
+public address, or any address the demo's servers had, survives. Each page says it's a demo
+fleet. Needs the `shots` extra and a Chromium.
 
-    python tests/integration/screenshots.py --home DIR --out docs/screenshots
+    python tests/integration/screenshots.py --dataset ~/demo-saves/RUN --out docs/screenshots
 """
 
 from __future__ import annotations
 
 import argparse
 import getpass
-import json
 import os
 import re
 import secrets
@@ -25,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from wsgiref.simple_server import WSGIRequestHandler, make_server
 
+import demo
 import golden
 from playwright.sync_api import sync_playwright
 
@@ -100,23 +102,26 @@ class Quiet(WSGIRequestHandler):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--home", type=Path, required=True)
+    parser.add_argument("--dataset", type=Path, required=True, help="a folder `demo.py save` made")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--name", default="Compromise Checker")
     parser.add_argument("--chromium", default=os.environ.get("CHROMIUM", "/usr/bin/chromium"))
     args = parser.parse_args()
-    home = args.home.resolve()
+    dataset = args.dataset.resolve()
+    scratch = Path(tempfile.mkdtemp(prefix=".shots-data-", dir=dataset.parent))
+    try:
+        home = demo.working_copy(dataset, scratch)
+        return photograph(home, demo.addresses_of(dataset), args)
+    except demo.DemoError as exc:
+        sys.exit(f"screenshots: {exc}")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def photograph(home: Path, protect: list[str], args) -> int:
+    """The pages of the copy at `home`, signed in as an account made in the copy's web.db."""
     os.environ["CHECKER_HOME"] = str(home)
     os.environ["CHECKER_PRODUCT_NAME"] = args.name
-    if (home / "demo.json").exists():
-        # A dataset `demo.py save` made keeps the record of the pages' use in web.db, and with the
-        # servers gone it is the only copy. This script deletes web.db for its throwaway account.
-        sys.exit(
-            f"{home} is a saved demo dataset: this script would delete the Activity record and"
-            " the Checks list it holds (web.db). It isn't moved onto saved datasets yet (D.5)."
-        )
-    protect = json.loads((home / "demo-protect.json").read_text())
-    (home / "web.db").unlink(missing_ok=True)  # a throwaway account for this run
 
     from checker.web.app import configure
 
@@ -183,7 +188,6 @@ def main() -> int:
         shutil.rmtree(out, ignore_errors=True)
         raise
     server.shutdown()
-    (home / "web.db").unlink(missing_ok=True)
     shutil.rmtree(args.out, ignore_errors=True)
     out.rename(args.out)
     print(f"{len(seen)} pages scrubbed and checked")

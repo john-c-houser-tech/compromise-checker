@@ -92,7 +92,8 @@ One script, `tests/integration/demo.py`, with four commands:
 - **D.4 Keep-alive.** `--days`, timers (on the checker's server, as built), `status`, the end date and the sweep. Proved
   by a two-day run.
 - **D.5 The dataset.** `save`, browsing it on the laptop, the screenshot script moved onto it, and
-  `demo_fleet.py` retired. The README's pictures taken again.
+  `demo_fleet.py` retired (done 2026-11-14: `screenshots.py --dataset` works on a throwaway
+  copy of a saved dataset). The README's pictures taken again.
 - **D.6 The advisor and viewers,** as decided in 1 and 2.
 
 ## Found in the pages while the demo was up (to fix later)

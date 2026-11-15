@@ -1,6 +1,6 @@
 """The demo fleet that can be shown and kept running (plans/demo-fleet-plan-2026-11-10.md).
 
-Unlike demo_fleet.py, the checker itself runs on a throwaway server too, installed by the install
+The checker itself runs on a throwaway server too, installed by the install
 page's own line, and every step on a fleet server is taken through that server. So no address in
 anything the checker stores is the laptop's: what it holds can be shown as it is.
 
@@ -1502,6 +1502,91 @@ def settings_here(folder: Path, where: Path) -> None:
     path.chmod(0o600)
 
 
+def working_copy(dataset: Path, into: Path) -> Path:
+    """A copy of a saved dataset to use and throw away (screenshots.py): a saved folder names its
+    own place in its store and settings, so it can't be moved, and the copy's are pointed at the
+    copy. The dataset itself is only read."""
+    dataset = dataset.resolve()
+    if not (dataset / "demo.json").is_file():
+        raise DemoError(f"{dataset} isn't a saved demo dataset (no demo.json)")
+    target = into.resolve() / dataset.name
+    shutil.copytree(dataset, target)
+    paths_here(target, str(dataset), target)
+    config = target / "config.yaml"
+    text = config.read_text(encoding="utf-8").replace(str(dataset), str(target))
+    config.write_text(text, encoding="utf-8")
+    # Its databases by their rows (a rewritten row's old text stays in SQLite's free pages, which
+    # nothing reads), everything else but the sealed evidence by its bytes.
+    databases = {STORE, "web.db"}
+    named = [
+        str(p.relative_to(target))
+        for p in target.rglob("*")
+        if p.is_file()
+        and p.suffix != ".age"
+        and not p.name.startswith(tuple(databases))
+        and str(dataset).encode() in p.read_bytes()
+    ]
+    for database in sorted(databases):
+        if (target / database).is_file() and _rows_naming(target / database, str(dataset)):
+            named.append(database)
+    if named:
+        raise DemoError(
+            f"the copy still names {dataset} ({', '.join(named)}): it would read or write there"
+        )
+    return target
+
+
+def _rows_naming(database: Path, text: str) -> bool:
+    """Whether any text in any row of a database holds `text`."""
+    db = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+            quoted = '"' + table.replace('"', '""') + '"'
+            for row in db.execute(f"SELECT * FROM {quoted}"):  # noqa: S608 - its own tables
+                if any(isinstance(v, str) and text in v for v in row):
+                    return True
+    finally:
+        db.close()
+    return False
+
+
+# Accounts that aren't a person: their names are the tool's own, and common words in its pages.
+_NOT_A_PERSON = {"root", "compromise-checker", "scanner", "admin", "demo", "operator", "controller"}
+
+
+def names_of(dataset: Path) -> list[str]:
+    """Who used the demo, by the names its store and the pages' record keep (an operator, a web
+    account, a sign-in tried): none may be in a picture. "john (web interface)" is "john"."""
+    found: set[str] = set()
+    for database, columns in ((STORE, {"operator"}), ("web.db", {"who", "username"})):
+        if not (dataset / database).is_file():
+            continue
+        db = sqlite3.connect(f"file:{dataset / database}?mode=ro", uri=True)
+        try:
+            for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+                quoted = '"' + table.replace('"', '""') + '"'
+                have = {r[1] for r in db.execute(f"PRAGMA table_info({quoted})")}
+                for column in sorted(have & columns):
+                    query = f'SELECT DISTINCT "{column}" FROM {quoted}'  # noqa: S608 - its own
+                    found.update(str(v) for (v,) in db.execute(query) if v)
+        finally:
+            db.close()
+    names = {v.split(" (", 1)[0].split("@", 1)[0].strip() for v in found}
+    return sorted(
+        n for n in names if re.fullmatch(r"[\w.-]{2,64}", n) and n.lower() not in _NOT_A_PERSON
+    )
+
+
+def addresses_of(dataset: Path) -> list[str]:
+    """Every address the demo's servers had, and the checker's web name: none may be in a
+    picture."""
+    about = json.loads((dataset / "demo.json").read_text(encoding="utf-8"))
+    found = {s["address"] for s in about.get("servers", []) if s.get("address")}
+    if about.get("web_name"):
+        found.add(about["web_name"])
+    return sorted(found)
+
+
 def paths_here(folder: Path, was: str, where: Path) -> int:
     """The store says where each collection and what was worked out from it is kept, by its whole
     path, which was the server's (`was`). Each becomes the saved file's, as it will be in `where`:
@@ -1906,7 +1991,11 @@ def save(folder: Path, target: Path, now: datetime) -> int:
             f" ({state.last_check.replace('T', ' ')} UTC): `down` will ask for a save after it."
         )
     print(f"Saved to {target}. It names its own place, so it can't be moved: save again instead.")
-    print(f"To look through it here, with no servers: CHECKER_HOME={target} checker web")
+    print(
+        f"To look through it here, with no servers: CHECKER_HOME={target} checker web. That"
+        " writes into it (sessions, the account you make): browse the second save, and keep one"
+        " untouched for screenshots.py, which only reads it."
+    )
     return 0
 
 

@@ -2011,22 +2011,71 @@ def test_a_pages_record_with_an_address_left_in_or_a_line_naming_it_stops_the_sa
         demo.record_here(came)
 
 
-def test_the_screenshot_script_wont_delete_a_saved_datasets_record(tmp_path):
-    """It deletes web.db for its own throwaway account; in a saved dataset that file is the only
-    copy of the record of the pages' use."""
+def test_a_working_copy_of_a_dataset_points_at_itself_and_leaves_the_dataset_alone(
+    tmp_path, monkeypatch
+):
+    """screenshots.py works on one: a saved folder names its own place, so it can't be moved."""
+    import sqlite3
+
+    import yaml
+
+    folder, base, store = saving(tmp_path, monkeypatch)
+    dataset = tmp_path / "out" / "dataset"
+    assert demo.save(folder, dataset, NOON) == 0
+    store.close()
+    saved = sqlite3.connect(dataset / "checker.db")  # a row naming a saved file, as a real store's
+    evidence = dataset / "evidence" / "db-1" / "db-1-20261110T030000Z-abcd1234.age"
+    saved.execute("CREATE TABLE derived (path TEXT)")
+    saved.execute("INSERT INTO derived VALUES (?)", (str(evidence),))
+    saved.commit()
+    saved.close()
+    before = {p: p.read_bytes() for p in dataset.rglob("*") if p.is_file()}
+    copy = demo.working_copy(dataset, tmp_path / "scratch")
+    assert copy == (tmp_path / "scratch" / "dataset").resolve()
+    assert {p: p.read_bytes() for p in dataset.rglob("*") if p.is_file()} == before
+    config = yaml.safe_load((copy / "config.yaml").read_text())
+    assert config["identity_file"] == str(copy / "keys" / "evidence-identity.txt")
+    paths = [
+        path for (path,) in sqlite3.connect(copy / "checker.db").execute("SELECT path FROM derived")
+    ]
+    assert paths == [str(copy / "evidence" / "db-1" / "db-1-20261110T030000Z-abcd1234.age")]
+    with pytest.raises(demo.DemoError, match="isn't a saved demo dataset"):
+        demo.working_copy(tmp_path / "scratch", tmp_path / "again")
+
+
+def test_the_addresses_a_picture_must_not_hold_come_from_the_dataset(tmp_path):
+    (tmp_path / "demo.json").write_text(
+        json.dumps(
+            {
+                "web_name": "192-0-2-1.sslip.io",
+                "servers": [{"address": "192.0.2.1"}, {"address": "192.0.2.5"}, {"name": "x"}],
+            }
+        )
+    )
+    assert demo.addresses_of(tmp_path) == ["192-0-2-1.sslip.io", "192.0.2.1", "192.0.2.5"]
+
+
+def test_the_screenshot_script_takes_only_a_saved_dataset_and_leaves_nothing(tmp_path):
     pytest.importorskip("playwright")
-    (tmp_path / "demo.json").write_text("{}")
-    (tmp_path / "demo-protect.json").write_text("[]")
-    (tmp_path / "web.db").write_text("the record")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "web.db").write_text("an account")
     done = subprocess.run(
-        [sys.executable, str(HERE / "screenshots.py"), "--home", str(tmp_path), "--out", "x"],
+        [
+            sys.executable,
+            str(HERE / "screenshots.py"),
+            "--dataset",
+            str(tmp_path / "home"),
+            "--out",
+            "x",
+        ],
         cwd=tmp_path,
         capture_output=True,
         text=True,
         check=False,
     )
-    assert done.returncode == 1 and "is a saved demo dataset" in done.stderr
-    assert (tmp_path / "web.db").read_text() == "the record" and not (tmp_path / "x").exists()
+    assert done.returncode == 1 and "isn't a saved demo dataset" in done.stderr
+    assert (tmp_path / "home" / "web.db").read_text() == "an account"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["home"]  # no copy, no pictures
 
 
 def a_record(folder, *statements):
@@ -2154,3 +2203,56 @@ def test_the_kept_audit_rules_and_container_and_the_removed_web_stack():
     # What they name is what the setup made, under the demo's names for it.
     assert ("/var/www/proof", "/var/www/shop") in story.SETUP_NAMES
     assert ("cc-proof-pod", "metrics") in story.SETUP_NAMES
+
+
+def test_the_pictures_folder_can_never_be_the_dataset_or_hold_it(tmp_path):
+    """Seen in review: --out is replaced whole, and `--out DATASET` deleted the only copy."""
+    pytest.importorskip("playwright")
+    import screenshots
+
+    dataset = tmp_path / "saves" / "run"
+    dataset.mkdir(parents=True)
+    for out in (dataset, dataset / "pictures", tmp_path / "saves", tmp_path):
+        assert "replaced whole" in screenshots.refusal(dataset, out), out
+    other = tmp_path / "pictures"
+    assert screenshots.refusal(dataset, other) is None  # a new folder
+    other.mkdir()
+    (other / "fleet.png").write_bytes(b"png")
+    assert screenshots.refusal(dataset, other) is None  # a folder of pictures
+    (other / "notes.txt").write_text("mine")
+    assert "holds more than pictures" in screenshots.refusal(dataset, other)
+    (other / "notes.txt").unlink()
+    (tmp_path / "saves" / ".shots-data-x1").mkdir()  # an earlier run's copy, key and all
+    assert "an earlier run's copy" in screenshots.refusal(dataset, other)
+
+
+def test_the_people_who_used_the_demo_are_named_from_its_own_records(tmp_path):
+    """Seen in review: "john (web interface)" was in the evidence page's custody list."""
+    import sqlite3
+
+    store = sqlite3.connect(tmp_path / "checker.db")
+    store.execute("CREATE TABLE custody (operator TEXT)")
+    store.executemany(
+        "INSERT INTO custody VALUES (?)",
+        [("john (web interface)",), ("compromise-checker",), ("ops@checker",), (None,), ("x",)],
+    )
+    store.execute("CREATE TABLE baselines (operator TEXT)")
+    store.execute("INSERT INTO baselines VALUES ('root')")
+    store.commit()
+    web = sqlite3.connect(tmp_path / "web.db")
+    web.execute("CREATE TABLE web_actionrecord (who TEXT)")
+    web.execute("INSERT INTO web_actionrecord VALUES ('jane.doe')")
+    web.execute("CREATE TABLE auth_user (username TEXT)")
+    web.execute("INSERT INTO auth_user VALUES ('Admin')")
+    web.commit()
+    assert demo.names_of(tmp_path) == ["jane.doe", "john", "ops"]
+
+
+def test_a_working_copy_that_still_names_the_dataset_anywhere_is_refused(tmp_path, monkeypatch):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    dataset = tmp_path / "out" / "dataset"
+    assert demo.save(folder, dataset, NOON) == 0
+    store.close()
+    (dataset / "hosts.yaml").write_text(f"hosts: []\n# was in {dataset}\n")
+    with pytest.raises(demo.DemoError, match=r"still names .*\(hosts\.yaml\)"):
+        demo.working_copy(dataset, tmp_path / "scratch")

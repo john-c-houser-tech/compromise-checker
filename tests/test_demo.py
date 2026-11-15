@@ -1502,6 +1502,7 @@ def test_save_takes_a_folder_and_nothing_else_does(monkeypatch, capsys):
     capsys.readouterr()
 
 
+@pytest.mark.sqlite_only  # the save copies SQLite's file; a demo's checker keeps its store there
 def test_a_saved_home_shows_its_servers_with_the_server_gone(home, tmp_path_factory, monkeypatch):
     """A home the checker made, with a collection it analysed, saved, and then read by the
     checker's own code with the original out of reach: the store names the saved files."""

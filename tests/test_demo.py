@@ -2142,6 +2142,9 @@ def test_the_kept_audit_rules_and_container_and_the_removed_web_stack():
     assert "--restart=always" in story.KEEP and "sleep infinity" in story.KEEP
     assert "podman-restart.service" in story.KEEP
     assert "podman container exists metrics" in story.KEEP
+    assert "augenrules >/dev/null" in story.KEEP  # audit.rules rebuilt: any restart path loads them
+    assert '|| echo "keep: container not started"' in story.KEEP  # as the setup, never fatal
+    assert story.NOT_WEB.count("-o DPkg::Lock::Timeout=600") == 2  # Ubuntu's updates hold the lock
     for gone in (
         "purge -y -qq 'nginx*' 'php*'",
         "dnf remove -y -q nginx 'php*'",

@@ -48,10 +48,14 @@ FLEET = (
 #   them.
 KEEP = """set -eu
 auditctl -l | grep -E 'key=cc-' > /etc/audit/rules.d/50-demo.rules || true
+# audit.rules rebuilt from rules.d now, without loading anything: whichever way auditd's restart
+# loads its rules (augenrules, or audit.rules directly), these come back.
+augenrules >/dev/null 2>&1 || true
 if command -v podman >/dev/null 2>&1 && podman container exists metrics; then
     podman rm -f metrics >/dev/null
+    # The setup goes on without its container; so does this, saying so.
     podman run -d --name metrics --restart=always docker.io/library/alpine:latest \\
-        sleep infinity >/dev/null
+        sleep infinity >/dev/null || echo "keep: container not started" >&2
     systemctl enable podman-restart.service >/dev/null 2>&1 || true
 fi
 """
@@ -64,8 +68,10 @@ for unit in $(systemctl list-unit-files 'php*-fpm.service' --no-legend | awk '{p
     systemctl disable --now "$unit" >/dev/null 2>&1 || true
 done
 if command -v apt-get >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq 'nginx*' 'php*' >/dev/null
-    DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -qq >/dev/null
+    # Ubuntu's own updates may hold dpkg's lock: wait for it, as the setup's installs do.
+    export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
+    apt-get -o DPkg::Lock::Timeout=600 purge -y -qq 'nginx*' 'php*' >/dev/null
+    apt-get -o DPkg::Lock::Timeout=600 autoremove -y -qq >/dev/null
 else
     dnf remove -y -q nginx 'php*' >/dev/null
 fi

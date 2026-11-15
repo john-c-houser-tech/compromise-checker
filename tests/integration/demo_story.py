@@ -38,6 +38,45 @@ FLEET = (
     Member("app-1", "web", "rocky9"),
     Member("staging-1", "", "ubuntu24.04"),
 )
+# Run on every server right after the proofs' setup, before its first check, so none of it is a
+# change the story didn't write (the four-day run of 2026-11-11 showed both):
+# - the setup loads its audit rules with auditctl alone, so an update that restarts auditd drops
+#   them, and the next check rightly reports "audit rules were removed and not loaded again";
+#   kept in rules.d, auditd's restart loads them again, as on a server set up with care;
+# - on Rocky, its Podman container sleeps two hours and exits, and the container's firewall rules
+#   go with it ("firewall rules removed"); one that runs for good, and comes back at boot, keeps
+#   them.
+KEEP = """set -eu
+auditctl -l | grep -E 'key=cc-' > /etc/audit/rules.d/50-demo.rules || true
+# audit.rules rebuilt from rules.d now, without loading anything: whichever way auditd's restart
+# loads its rules (augenrules, or audit.rules directly), these come back.
+augenrules >/dev/null 2>&1 || true
+if command -v podman >/dev/null 2>&1 && podman container exists metrics; then
+    podman rm -f metrics >/dev/null
+    # The setup goes on without its container; so does this, saying so.
+    podman run -d --name metrics --restart=always docker.io/library/alpine:latest \\
+        sleep infinity >/dev/null || echo "keep: container not started" >&2
+    systemctl enable podman-restart.service >/dev/null 2>&1 || true
+fi
+"""
+# A server that isn't a web server has no web stack: the proofs' setup puts nginx, PHP-FPM and a
+# site with planted PHP settings on every server, which on mail-1 read as a web server open to a
+# PHP threat. Taken off before the first check, it is no part of the server's story.
+NOT_WEB = """set -eu
+systemctl disable --now nginx >/dev/null 2>&1 || true
+for unit in $(systemctl list-unit-files 'php*-fpm.service' --no-legend | awk '{print $1}'); do
+    systemctl disable --now "$unit" >/dev/null 2>&1 || true
+done
+if command -v apt-get >/dev/null 2>&1; then
+    # Ubuntu's own updates may hold dpkg's lock: wait for it, as the setup's installs do.
+    export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
+    apt-get -o DPkg::Lock::Timeout=600 purge -y -qq 'nginx*' 'php*' >/dev/null
+    apt-get -o DPkg::Lock::Timeout=600 autoremove -y -qq >/dev/null
+else
+    dnf remove -y -q nginx 'php*' >/dev/null
+fi
+rm -rf /var/www/shop
+"""
 UNREACHABLE = ("old-box", "192.0.2.10")  # a documentation address: nothing answers there
 PHP = php.SCENARIOS["ubuntu-own"]
 

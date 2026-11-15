@@ -467,6 +467,12 @@ def prepare_member(
         else:
             said = (again.stdout + again.stderr).strip()[-1500:]
             print(f"{server.name}: Docker still not started:\n{said}")
+    must(
+        node,
+        "bash --norc --noprofile -s",
+        "keeping its audit rules and container",
+        input=story.KEEP,
+    )
     firewall = story.FIREWALL.replace("{checker}", checker.address)
     must(
         node,
@@ -474,7 +480,16 @@ def prepare_member(
         "closing SSH to all but the checker's server",
         input=firewall,
     )
-    must(node, proof.strict(detection.WEB_SETUP), "its web server", timeout=300)
+    if member.group == "web":
+        must(node, proof.strict(detection.WEB_SETUP), "its web server", timeout=300)
+    else:
+        must(
+            node,
+            "bash --norc --noprofile -s",
+            "taking off the web stack",
+            timeout=600,
+            input=story.NOT_WEB,
+        )
     if member.old_php:
         must(node, proof.strict(story.PHP.install), "the older PHP")
     must(checker, hosts_add(server, server.address), f"adding {server.name}")

@@ -18,6 +18,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import socket
 import sys
 import tempfile
@@ -64,7 +65,7 @@ def named(text: str, names: dict[str, str]) -> str:
     return text
 
 
-def scrubbing(wsgi, protect: list[str], pages: list[str]):
+def scrubbing(wsgi, protect: list[str], pages: list[str], names: dict[str, str] = NAMES):
     """The pages as the browser gets them: scrubbed and checked, or not at all."""
 
     def application(environ, start_response):
@@ -78,7 +79,7 @@ def scrubbing(wsgi, protect: list[str], pages: list[str]):
         headers = held["headers"]
         if any(k.lower() == "content-type" and "text/html" in v for k, v in headers):
             text = body.decode()
-            text = named(golden.scrub(text, protect), NAMES)
+            text = named(golden.scrub(text, protect), names)
             golden.check_scrubbed(text, protect)
             # In the page's padded column, under its band if it has one.
             column = '<div class="main-in">'
@@ -108,17 +109,51 @@ def main() -> int:
     parser.add_argument("--chromium", default=os.environ.get("CHROMIUM", "/usr/bin/chromium"))
     args = parser.parse_args()
     dataset = args.dataset.resolve()
+    args.out = args.out.resolve()
+    if refused := refusal(dataset, args.out):
+        sys.exit(f"screenshots: {refused}")
+    # The copy holds the evidence key: a stop by signal (a closed terminal, kill) still deletes it.
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, lambda n, frame: sys.exit(128 + n))
     scratch = Path(tempfile.mkdtemp(prefix=".shots-data-", dir=dataset.parent))
     try:
         home = demo.working_copy(dataset, scratch)
-        return photograph(home, demo.addresses_of(dataset), args)
+        names = NAMES | {name: "admin" for name in demo.names_of(dataset)}
+        return photograph(home, demo.addresses_of(dataset), names, args)
     except demo.DemoError as exc:
         sys.exit(f"screenshots: {exc}")
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        try:
+            shutil.rmtree(scratch)
+        except OSError as exc:
+            print(
+                f"screenshots: the copy at {scratch} wasn't deleted ({exc}). Delete it: it holds"
+                " the evidence key.",
+                file=sys.stderr,
+            )
 
 
-def photograph(home: Path, protect: list[str], args) -> int:
+def refusal(dataset: Path, out: Path) -> str | None:
+    """Why a run mustn't start: the pictures' folder is replaced whole, so it can't be the
+    dataset, inside it, or hold it, nor anything but pictures; and an earlier run's copy, with the
+    evidence key in it, is dealt with first."""
+    if out == dataset or dataset in out.parents or out in dataset.parents:
+        return f"--out {out} is the dataset, is inside it or holds it, and it is replaced whole"
+    if out.exists() and (
+        not out.is_dir() or any(not p.is_file() or p.suffix != ".png" for p in out.iterdir())
+    ):
+        return f"--out {out} holds more than pictures, and it is replaced whole"
+    left = sorted(dataset.parent.glob(".shots-data-*"))
+    if left:
+        return (
+            "an earlier run's copy, with the evidence key in it, is still there: "
+            + ", ".join(map(str, left))
+            + ". Delete it, then run again."
+        )
+    return None
+
+
+def photograph(home: Path, protect: list[str], names: dict[str, str], args) -> int:
     """The pages of the copy at `home`, signed in as an account made in the copy's web.db."""
     os.environ["CHECKER_HOME"] = str(home)
     os.environ["CHECKER_PRODUCT_NAME"] = args.name
@@ -140,7 +175,7 @@ def photograph(home: Path, protect: list[str], args) -> int:
     device = TOTPDevice.objects.create(user=user, name="demo", confirmed=True)
     seen: list[str] = []
     server = make_server(
-        "127.0.0.1", 0, scrubbing(get_wsgi_application(), protect, seen), handler_class=Quiet
+        "127.0.0.1", 0, scrubbing(get_wsgi_application(), protect, seen, names), handler_class=Quiet
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_port}"
@@ -187,7 +222,8 @@ def photograph(home: Path, protect: list[str], args) -> int:
     except BaseException:  # a run that stops leaves the pictures as they were
         shutil.rmtree(out, ignore_errors=True)
         raise
-    server.shutdown()
+    finally:
+        server.shutdown()  # nothing writes into the copy while it is deleted
     shutil.rmtree(args.out, ignore_errors=True)
     out.rename(args.out)
     print(f"{len(seen)} pages scrubbed and checked")

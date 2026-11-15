@@ -1515,22 +1515,66 @@ def working_copy(dataset: Path, into: Path) -> Path:
     config = target / "config.yaml"
     text = config.read_text(encoding="utf-8").replace(str(dataset), str(target))
     config.write_text(text, encoding="utf-8")
-    store = sqlite3.connect(f"file:{target / STORE}?mode=ro", uri=True)
-    try:
-        rows = [
-            v
-            for (table,) in store.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            for row in store.execute(
-                "SELECT * FROM " + '"' + table.replace('"', '""') + '"'  # noqa: S608 - its own table names
-            )
-            for v in row
-            if isinstance(v, str) and str(dataset) in v
-        ]
-    finally:
-        store.close()
-    if rows or str(dataset) in text:
-        raise DemoError(f"the copy still names {dataset}: it would read or write there")
+    # Its databases by their rows (a rewritten row's old text stays in SQLite's free pages, which
+    # nothing reads), everything else but the sealed evidence by its bytes.
+    databases = {STORE, "web.db"}
+    named = [
+        str(p.relative_to(target))
+        for p in target.rglob("*")
+        if p.is_file()
+        and p.suffix != ".age"
+        and not p.name.startswith(tuple(databases))
+        and str(dataset).encode() in p.read_bytes()
+    ]
+    for database in sorted(databases):
+        if (target / database).is_file() and _rows_naming(target / database, str(dataset)):
+            named.append(database)
+    if named:
+        raise DemoError(
+            f"the copy still names {dataset} ({', '.join(named)}): it would read or write there"
+        )
     return target
+
+
+def _rows_naming(database: Path, text: str) -> bool:
+    """Whether any text in any row of a database holds `text`."""
+    db = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+            quoted = '"' + table.replace('"', '""') + '"'
+            for row in db.execute(f"SELECT * FROM {quoted}"):  # noqa: S608 - its own tables
+                if any(isinstance(v, str) and text in v for v in row):
+                    return True
+    finally:
+        db.close()
+    return False
+
+
+# Accounts that aren't a person: their names are the tool's own, and common words in its pages.
+_NOT_A_PERSON = {"root", "compromise-checker", "scanner", "admin", "demo", "operator", "controller"}
+
+
+def names_of(dataset: Path) -> list[str]:
+    """Who used the demo, by the names its store and the pages' record keep (an operator, a web
+    account, a sign-in tried): none may be in a picture. "john (web interface)" is "john"."""
+    found: set[str] = set()
+    for database, columns in ((STORE, {"operator"}), ("web.db", {"who", "username"})):
+        if not (dataset / database).is_file():
+            continue
+        db = sqlite3.connect(f"file:{dataset / database}?mode=ro", uri=True)
+        try:
+            for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+                quoted = '"' + table.replace('"', '""') + '"'
+                have = {r[1] for r in db.execute(f"PRAGMA table_info({quoted})")}
+                for column in sorted(have & columns):
+                    query = f'SELECT DISTINCT "{column}" FROM {quoted}'  # noqa: S608 - its own
+                    found.update(str(v) for (v,) in db.execute(query) if v)
+        finally:
+            db.close()
+    names = {v.split(" (", 1)[0].split("@", 1)[0].strip() for v in found}
+    return sorted(
+        n for n in names if re.fullmatch(r"[\w.-]{2,64}", n) and n.lower() not in _NOT_A_PERSON
+    )
 
 
 def addresses_of(dataset: Path) -> list[str]:
@@ -1947,7 +1991,11 @@ def save(folder: Path, target: Path, now: datetime) -> int:
             f" ({state.last_check.replace('T', ' ')} UTC): `down` will ask for a save after it."
         )
     print(f"Saved to {target}. It names its own place, so it can't be moved: save again instead.")
-    print(f"To look through it here, with no servers: CHECKER_HOME={target} checker web")
+    print(
+        f"To look through it here, with no servers: CHECKER_HOME={target} checker web. That"
+        " writes into it (sessions, the account you make): browse the second save, and keep one"
+        " untouched for screenshots.py, which only reads it."
+    )
     return 0
 
 

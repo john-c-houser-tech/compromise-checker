@@ -2203,3 +2203,56 @@ def test_the_kept_audit_rules_and_container_and_the_removed_web_stack():
     # What they name is what the setup made, under the demo's names for it.
     assert ("/var/www/proof", "/var/www/shop") in story.SETUP_NAMES
     assert ("cc-proof-pod", "metrics") in story.SETUP_NAMES
+
+
+def test_the_pictures_folder_can_never_be_the_dataset_or_hold_it(tmp_path):
+    """Seen in review: --out is replaced whole, and `--out DATASET` deleted the only copy."""
+    pytest.importorskip("playwright")
+    import screenshots
+
+    dataset = tmp_path / "saves" / "run"
+    dataset.mkdir(parents=True)
+    for out in (dataset, dataset / "pictures", tmp_path / "saves", tmp_path):
+        assert "replaced whole" in screenshots.refusal(dataset, out), out
+    other = tmp_path / "pictures"
+    assert screenshots.refusal(dataset, other) is None  # a new folder
+    other.mkdir()
+    (other / "fleet.png").write_bytes(b"png")
+    assert screenshots.refusal(dataset, other) is None  # a folder of pictures
+    (other / "notes.txt").write_text("mine")
+    assert "holds more than pictures" in screenshots.refusal(dataset, other)
+    (other / "notes.txt").unlink()
+    (tmp_path / "saves" / ".shots-data-x1").mkdir()  # an earlier run's copy, key and all
+    assert "an earlier run's copy" in screenshots.refusal(dataset, other)
+
+
+def test_the_people_who_used_the_demo_are_named_from_its_own_records(tmp_path):
+    """Seen in review: "john (web interface)" was in the evidence page's custody list."""
+    import sqlite3
+
+    store = sqlite3.connect(tmp_path / "checker.db")
+    store.execute("CREATE TABLE custody (operator TEXT)")
+    store.executemany(
+        "INSERT INTO custody VALUES (?)",
+        [("john (web interface)",), ("compromise-checker",), ("ops@checker",), (None,), ("x",)],
+    )
+    store.execute("CREATE TABLE baselines (operator TEXT)")
+    store.execute("INSERT INTO baselines VALUES ('root')")
+    store.commit()
+    web = sqlite3.connect(tmp_path / "web.db")
+    web.execute("CREATE TABLE web_actionrecord (who TEXT)")
+    web.execute("INSERT INTO web_actionrecord VALUES ('jane.doe')")
+    web.execute("CREATE TABLE auth_user (username TEXT)")
+    web.execute("INSERT INTO auth_user VALUES ('Admin')")
+    web.commit()
+    assert demo.names_of(tmp_path) == ["jane.doe", "john", "ops"]
+
+
+def test_a_working_copy_that_still_names_the_dataset_anywhere_is_refused(tmp_path, monkeypatch):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    dataset = tmp_path / "out" / "dataset"
+    assert demo.save(folder, dataset, NOON) == 0
+    store.close()
+    (dataset / "hosts.yaml").write_text(f"hosts: []\n# was in {dataset}\n")
+    with pytest.raises(demo.DemoError, match=r"still names .*\(hosts\.yaml\)"):
+        demo.working_copy(dataset, tmp_path / "scratch")

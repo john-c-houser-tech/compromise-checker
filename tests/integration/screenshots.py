@@ -164,14 +164,27 @@ def photograph(home: Path, protect: list[str], names: dict[str, str], args) -> i
 
     from django.contrib.auth import get_user_model
     from django.core.wsgi import get_wsgi_application
+    from django.utils import timezone
     from django_otp.oath import totp
     from django_otp.plugins.otp_totp.models import TOTPDevice
 
-    from checker.web.models import Access
+    from checker.web import first_setup
+    from checker.web.models import Access, ActionRecord
 
     password = secrets.token_urlsafe(24)
     user = get_user_model().objects.create_user("demo", password=password)
     Access.objects.create(user=user, full=True)
+    # The pictures show the pages in use, not the first-day reminder to back up the evidence key:
+    # in the copy, the account says it's backed up, the line a click on the reminder would add.
+    ActionRecord.objects.create(
+        at=timezone.now(),
+        who="demo",
+        address="",
+        action=first_setup.KEY_SAVED,
+        target=first_setup.this_key(home),
+        outcome="done",
+        detail="",
+    )
     device = TOTPDevice.objects.create(user=user, name="demo", confirmed=True)
     seen: list[str] = []
     server = make_server(

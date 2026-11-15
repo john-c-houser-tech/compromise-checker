@@ -115,6 +115,21 @@ One script, `tests/integration/demo.py`, with four commands:
   timed out ("containerd ... Connection timed out [IP: 2600:..."), and that time the retry failed
   too, on all three. The demo's retry now asks over IPv4 with three tries; the proofs' setup
   should do the same.
+- **Proven at the four-day run's end (2026-11-14):** the journal command #182 prints,
+  `sudo journalctl _SYSTEMD_USER_UNIT=compromise-checker.service + USER_UNIT=compromise-checker.service`,
+  showed the daily check's output on the checker's server.
+- **`status` offers a hands-on item the run never reached** (four-day run, 2026-11-14). Its list
+  says "Known threats, Manage: put the stopped threat update back (the story's day 6)", but a
+  stay shorter than the story never plays day 5, so nothing is stopped and there is no "Stopped by
+  hand" section. Fix: print each hands-on item only when the days it needs were played (or say
+  which day it needs).
+- **The demo checker's pages carry two red notes** (four-day run, 2026-11-14): "This machine still
+  lets people log in over SSH with a password" and "An update to this machine is waiting for a
+  restart". Both are true of a fresh Linode and both are on every page a demo shows. Fix in `up`:
+  turn password logins off on the checker's server and restart it after the install, before the
+  first check.
+- **`status` exits non-zero while a demo is up and fine** (2026-11-14). Fix: 0 when it could read
+  everything, non-zero only when it couldn't.
 
 ## Keep-alive as built (D.4, 2026-11-10)
 

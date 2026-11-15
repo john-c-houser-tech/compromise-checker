@@ -15,7 +15,6 @@ from checker.checks import (
     parse_time,
     span,
 )
-from checker.checks.software import updater_runs
 from checker.checks.web import WEB_USERS
 
 SYSTEM_UID_MAX = 999  # service accounts: 1-999 (login.defs SYS_UID_MAX)
@@ -843,60 +842,7 @@ def pam_module(line: str) -> str | None:
     return tokens[2].rsplit("/", 1)[-1]
 
 
-# A changed PAM module that a package upgrade explains (#185): an ordinary security update replaces
-# dozens of them at once. The module, the package manager's checksums and its database are all the
-# server's own, so an intruder with root could forge them together. Only a change that also falls
-# inside the automatic updater's run, as the journal records it, with an upgrade in that same run,
-# reads as routine (low); a hand-run upgrade near the change is half explained (medium). Anything
-# else, or any of that evidence not collected whole, stays high.
-UPGRADE_NEAR = timedelta(minutes=15)
-
-
-def _whole(context: Context, section: str) -> bool:
-    """Collected, completely: an absent section looks just like an empty one."""
-    found = context.snapshot.sections.get(section)
-    return found is not None and found.complete and context.uncertain(section) is None
-
-
-def _installed(value) -> datetime | None:
-    try:
-        return datetime.fromtimestamp(float(value), UTC) if value is not None else None
-    except (TypeError, ValueError, OverflowError):
-        return None
-
-
-def _pam_upgrade(context: Context, path: str) -> str | None:
-    """'automatic_update' or 'hand_upgrade' when a package upgrade explains a changed PAM module."""
-    if not all(_whole(context, s) for s in ("package_changes", "unowned_executables", "packages")):
-        return None
-    if path in context.items("package_changes") or path in context.items("unowned_executables"):
-        return None  # differs from its package, or no package owns it
-    when = parse_time((context.items("pam").get(path) or {}).get("ctime"))
-    diff = context.changes("packages")
-    if when is None or not diff:
-        return None
-    when = when if when.tzinfo else when.replace(tzinfo=UTC)
-    items = context.items("packages")
-    near = [
-        t
-        for key, fields in diff["changed"].items()
-        if "version" in fields
-        and (t := _installed((items.get(key) or {}).get("installed")))
-        and abs(t - when) <= UPGRADE_NEAR
-    ]
-    if not near:
-        return None
-    for start, end in updater_runs(context):
-        if start <= when <= end and any(start <= t <= end for t in near):
-            return "automatic_update"
-    return "hand_upgrade"
-
-
-@check(
-    "pam.changes",
-    "PAM: pam_exec lines, configuration changes, unknown modules",
-    variants=("automatic_update", "hand_upgrade"),
-)
+@check("pam.changes", "PAM: pam_exec lines, configuration changes, unknown modules")
 def pam_changes(context: Context) -> list[Finding]:
     findings = []
     rules = context.items("pam_rules")
@@ -952,14 +898,10 @@ def pam_changes(context: Context) -> list[Finding]:
                         uncertain=context.uncertain("pam"),
                     )
                 )
-        explained: dict[str, list[tuple[str, list[str]]]] = defaultdict(list)
         for path, fields in (context.changes("pam") or {}).get("changed", {}).items():
             if "/security/" in path and (
                 {"sha256", "content_sha256", "size", "inode"} & set(fields)
             ):
-                if how := _pam_upgrade(context, path):
-                    explained[how].append((path, fields))
-                    continue
                 findings.append(
                     Finding(
                         "pam.changes",
@@ -972,28 +914,6 @@ def pam_changes(context: Context) -> list[Finding]:
                         new=context.new_since_previous("pam", path),
                     )
                 )
-        for how, changed in sorted(explained.items()):
-            automatic = how == "automatic_update"
-            names = [path.rsplit("/", 1)[-1] for path, _ in changed]
-            shown = ", ".join(names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
-            findings.append(
-                Finding(
-                    "pam.changes",
-                    "PAM module files changed with "
-                    + ("an automatic update" if automatic else "a package upgrade run by hand"),
-                    COMPROMISE,
-                    "low" if automatic else "medium",
-                    f"{len(changed)}: {shown}. Each still matches its package's checksum, and an"
-                    " upgrade was recorded"
-                    + (" in the automatic updater's run" if automatic else " minutes from it")
-                    + ". The server's own records say so: an intruder with full control could"
-                    " forge them",
-                    [f"path:{path}" for path, _ in changed],
-                    [context.change_ref("pam", path, "changed") for path, _ in changed],
-                    new=any(context.new_since_previous("pam", path) for path, _ in changed),
-                    variant=how,
-                )
-            )
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

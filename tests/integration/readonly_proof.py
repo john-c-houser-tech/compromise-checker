@@ -246,6 +246,30 @@ def sweep(api: Linode) -> None:
         if now - created > SWEEP_AFTER:
             print(f"sweep: deleting leftover {node['label']} (created {node['created']})")
             api.delete(node["id"])
+    for node in demo_past_its_date(api.call("GET", "/linode/instances?page_size=500")["data"], now):
+        print(f"sweep: deleting {node['label']}, a demo server past its end date")
+        api.delete(node["id"])
+
+
+# The demo fleet (demo.py) can be left up for days, and nothing deletes it for its owner. Each of
+# its servers carries the last day it may be up as a tag, and any proof's sweep takes those past
+# theirs. One with no date it can read is left alone here: `demo.py` deals with those.
+DEMO_TAG = "compromise-checker-demo"
+DEMO_LABEL = "cc-demo-"
+DEMO_UNTIL = "cc-demo-until-"
+
+
+def demo_past_its_date(nodes: list[dict], now: datetime) -> list[dict]:
+    past = []
+    for node in nodes:
+        if DEMO_TAG not in node["tags"] or not node["label"].startswith(DEMO_LABEL):
+            continue
+        for tag in node["tags"]:
+            day = tag.removeprefix(DEMO_UNTIL)
+            if tag != day and len(day) == 8 and day.isdigit() and day < now.strftime("%Y%m%d"):
+                past.append(node)
+                break
+    return past
 
 
 # Every server a run makes carries this run's token in its label, so the
@@ -258,6 +282,20 @@ def strict(script: str) -> str:
     Debian's bash reads /etc/bash.bashrc for a command run over ssh, and Ubuntu 22.04's
     reads $PS1, which -u refuses (the .NET pack's proof, 2026-11-09)."""
     return f"bash --norc --noprofile -eu -c {shlex.quote(script)}"
+
+
+def setup_notes(stderr: str | bytes | None) -> list[str]:
+    """What SETUP said it went on without (a container that didn't start), and why."""
+    text = stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr or ""
+    return [line for line in text.splitlines() if line.startswith("proof setup:")]
+
+
+async def set_up(conn, setup: str, name: str) -> None:
+    """Run SETUP on a new server, and say what it went on without: a proof that needed that
+    part then fails for a reason that was printed."""
+    done = await conn.run(setup, check=True, timeout=900)  # room for the fetch's three tries
+    for line in setup_notes(done.stderr):
+        print(f"{name}: {line}")
 
 
 def run_label(distro: str) -> str:
@@ -389,17 +427,25 @@ systemctl enable --now auditd >/dev/null 2>&1 || service auditd start >/dev/null
 # firewalld is already on Rocky and Alma (native nftables).
 if command -v ufw >/dev/null 2>&1; then
     ufw allow 22/tcp >/dev/null && ufw --force enable >/dev/null
-    (apt-get install -y -qq docker.io >/dev/null 2>&1 \
-        && systemctl enable --now docker >/dev/null 2>&1 \
-        && docker run -d --name cc-proof-web docker.io/library/nginx:alpine >/dev/null 2>&1) \
-        || echo "proof setup: Docker not started" >&2
+    # Over IPv4, and tried again: Linode's mirror has timed out over IPv6 from a new server
+    # (2026-11-10: "containerd ... Connection timed out [IP: 2600:"). What a failure said is
+    # passed on, since the proof goes on without the container and would otherwise hide why.
+    said=$( (DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 \
+                -o Acquire::ForceIPv4=true -o Acquire::Retries=3 install -y -qq docker.io \
+            && systemctl enable --now docker \
+            && docker run -d --name cc-proof-web docker.io/library/nginx:alpine) \
+            2>&1 </dev/null) \
+        || { echo "proof setup: Docker not started" >&2
+             printf '%s\n' "$said" | tail -5 | sed 's/^/proof setup:   /' >&2; }
 fi
 # Containers for the containers module (plan 2.9): Docker's above on Ubuntu;
 # Podman with one running container on the RHEL family.
 if ! command -v ufw >/dev/null 2>&1; then
-    (dnf install -y -q podman >/dev/null \
-        && podman run -d --name cc-proof-pod docker.io/library/alpine:latest sleep 7200 \
-            >/dev/null) || echo "proof setup: Podman container not started" >&2
+    said=$( (dnf install -y -q podman \
+            && podman run -d --name cc-proof-pod docker.io/library/alpine:latest sleep 7200) \
+            2>&1 </dev/null) \
+        || { echo "proof setup: Podman container not started" >&2
+             printf '%s\n' "$said" | tail -5 | sed 's/^/proof setup:   /' >&2; }
 fi
 # The scanner account, exactly as docs/scanner-account.md sets it up.
 useradd --create-home --shell /bin/sh --comment "Compromise Checker" scanner
@@ -815,7 +861,7 @@ async def prove(api: Linode, distro: str, region: str, keep: bool, work: Path) -
             setup = SETUP.replace("{controller}", controller).replace(
                 "{scanner_key}", scanner_public
             )
-            await conn.run(setup, check=True, timeout=600)
+            await set_up(conn, setup, distro)
             print(f"{distro}: scanner account and audit rules in place")
 
             home = work / f"{distro}-home"

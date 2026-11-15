@@ -32,6 +32,7 @@
 </section>
 {% endblock %}
 {% block main %}
+{% if ready %}<p role="status">Two-factor sign-in is on, and your account is ready.</p>{% endif %}
 {% if key_unsaved and full_access(request) %}<p class="nudge">Your stored evidence can't be read without its key, so a lost key loses all of it. <a href="{{ url('first_setup') }}">Back it up</a>.</p>{% endif %}
 {% if threat_problem %}
 <p class="error" role="alert">A threat update couldn't be used, so a new threat may not be covered. Ask whoever runs this tool to look at its log.</p>

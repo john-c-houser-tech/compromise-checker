@@ -469,6 +469,20 @@ def test_the_systemd_units(tmp_path):
     assert "OnCalendar=*-*-* 03:05:00" in timer and "Persistent=true" in timer
 
 
+def test_the_output_is_looked_for_where_the_account_s_units_write_it(tmp_path, monkeypatch):
+    """A system account, as the installer makes, has no journal of its own: `--user` answers
+    "No journal files were opened due to insufficient permissions" there."""
+    assert schedule.journal_command(1000) == "journalctl --user -u compromise-checker.service"
+    assert (
+        schedule.journal_command(999)
+        == "sudo journalctl _SYSTEMD_USER_UNIT=compromise-checker.service"
+        " + USER_UNIT=compromise-checker.service"
+    )
+    monkeypatch.setattr(os, "getuid", lambda: 988)
+    where = schedule.placement("linux", (3, 5), {}, tmp_path, tmp_path / "home")
+    assert where.logs == schedule.journal_command(988)
+
+
 @pytest.mark.parametrize("path", ["/home/a$b", '/home/a"b', "/home/a\\b", "/home/a'b", "/a\nb"])
 def test_paths_a_systemd_unit_cant_hold_are_refused(path):
     assert schedule.systemd_unsafe({"CHECKER_HOME": path}) == [path]

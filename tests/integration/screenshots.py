@@ -1,22 +1,24 @@
-"""Screenshots for the README and marketing (plan 5.7), from a demo fleet's home
-(demo_fleet.py), through the real pages in a real browser.
+"""Screenshots for the README and marketing (plan 5.7), from a demo dataset that `demo.py save`
+made, through the real pages in a real browser.
 
-Every page passes through the golden tests' scrubber on its way to the browser, and the run
-stops if any public address, or any address the demo run noted (the controller's, the servers'),
-survives. Each page says it's a demo fleet. Needs the `shots` extra and a Chromium.
+The pages are served from a throwaway copy of the dataset, with an account made for this run in
+the copy: the dataset itself, whose record of the pages' use is the only one, is only read. Every
+page passes through the golden tests' scrubber on its way to the browser, and the run stops if any
+public address, or any address the demo's servers had, survives. Each page says it's a demo
+fleet. Needs the `shots` extra and a Chromium.
 
-    python tests/integration/screenshots.py --home DIR --out docs/screenshots
+    python tests/integration/screenshots.py --dataset ~/demo-saves/RUN --out docs/screenshots
 """
 
 from __future__ import annotations
 
 import argparse
 import getpass
-import json
 import os
 import re
 import secrets
 import shutil
+import signal
 import socket
 import sys
 import tempfile
@@ -25,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from wsgiref.simple_server import WSGIRequestHandler, make_server
 
+import demo
 import golden
 from playwright.sync_api import sync_playwright
 
@@ -62,7 +65,7 @@ def named(text: str, names: dict[str, str]) -> str:
     return text
 
 
-def scrubbing(wsgi, protect: list[str], pages: list[str]):
+def scrubbing(wsgi, protect: list[str], pages: list[str], names: dict[str, str] = NAMES):
     """The pages as the browser gets them: scrubbed and checked, or not at all."""
 
     def application(environ, start_response):
@@ -76,7 +79,7 @@ def scrubbing(wsgi, protect: list[str], pages: list[str]):
         headers = held["headers"]
         if any(k.lower() == "content-type" and "text/html" in v for k, v in headers):
             text = body.decode()
-            text = named(golden.scrub(text, protect), NAMES)
+            text = named(golden.scrub(text, protect), names)
             golden.check_scrubbed(text, protect)
             # In the page's padded column, under its band if it has one.
             column = '<div class="main-in">'
@@ -100,16 +103,60 @@ class Quiet(WSGIRequestHandler):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--home", type=Path, required=True)
+    parser.add_argument("--dataset", type=Path, required=True, help="a folder `demo.py save` made")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--name", default="Compromise Checker")
     parser.add_argument("--chromium", default=os.environ.get("CHROMIUM", "/usr/bin/chromium"))
     args = parser.parse_args()
-    home = args.home.resolve()
+    dataset = args.dataset.resolve()
+    args.out = args.out.resolve()
+    if refused := refusal(dataset, args.out):
+        sys.exit(f"screenshots: {refused}")
+    # The copy holds the evidence key: a stop by signal (a closed terminal, kill) still deletes it.
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, lambda n, frame: sys.exit(128 + n))
+    scratch = Path(tempfile.mkdtemp(prefix=".shots-data-", dir=dataset.parent))
+    try:
+        home = demo.working_copy(dataset, scratch)
+        names = NAMES | {name: "admin" for name in demo.names_of(dataset)}
+        return photograph(home, demo.addresses_of(dataset), names, args)
+    except demo.DemoError as exc:
+        sys.exit(f"screenshots: {exc}")
+    finally:
+        try:
+            shutil.rmtree(scratch)
+        except OSError as exc:
+            print(
+                f"screenshots: the copy at {scratch} wasn't deleted ({exc}). Delete it: it holds"
+                " the evidence key.",
+                file=sys.stderr,
+            )
+
+
+def refusal(dataset: Path, out: Path) -> str | None:
+    """Why a run mustn't start: the pictures' folder is replaced whole, so it can't be the
+    dataset, inside it, or hold it, nor anything but pictures; and an earlier run's copy, with the
+    evidence key in it, is dealt with first."""
+    if out == dataset or dataset in out.parents or out in dataset.parents:
+        return f"--out {out} is the dataset, is inside it or holds it, and it is replaced whole"
+    if out.exists() and (
+        not out.is_dir() or any(not p.is_file() or p.suffix != ".png" for p in out.iterdir())
+    ):
+        return f"--out {out} holds more than pictures, and it is replaced whole"
+    left = sorted(dataset.parent.glob(".shots-data-*"))
+    if left:
+        return (
+            "an earlier run's copy, with the evidence key in it, is still there: "
+            + ", ".join(map(str, left))
+            + ". Delete it, then run again."
+        )
+    return None
+
+
+def photograph(home: Path, protect: list[str], names: dict[str, str], args) -> int:
+    """The pages of the copy at `home`, signed in as an account made in the copy's web.db."""
     os.environ["CHECKER_HOME"] = str(home)
     os.environ["CHECKER_PRODUCT_NAME"] = args.name
-    protect = json.loads((home / "demo-protect.json").read_text())
-    (home / "web.db").unlink(missing_ok=True)  # a throwaway account for this run
 
     from checker.web.app import configure
 
@@ -128,7 +175,7 @@ def main() -> int:
     device = TOTPDevice.objects.create(user=user, name="demo", confirmed=True)
     seen: list[str] = []
     server = make_server(
-        "127.0.0.1", 0, scrubbing(get_wsgi_application(), protect, seen), handler_class=Quiet
+        "127.0.0.1", 0, scrubbing(get_wsgi_application(), protect, seen, names), handler_class=Quiet
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_port}"
@@ -175,8 +222,8 @@ def main() -> int:
     except BaseException:  # a run that stops leaves the pictures as they were
         shutil.rmtree(out, ignore_errors=True)
         raise
-    server.shutdown()
-    (home / "web.db").unlink(missing_ok=True)
+    finally:
+        server.shutdown()  # nothing writes into the copy while it is deleted
     shutil.rmtree(args.out, ignore_errors=True)
     out.rename(args.out)
     print(f"{len(seen)} pages scrubbed and checked")

@@ -3,8 +3,10 @@ deletes (the servers are only in the real run)."""
 
 import importlib.util
 import json
+import os
 import re
 import signal
+import subprocess
 import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -97,7 +99,9 @@ def test_the_install_line_is_the_pages_with_the_hash_checked_first():
     assert "/releases/download/v0.1.2/install.py" in line
     assert line.index("sha256sum -c -") < line.index("sudo python3 -I")
     assert f'echo "{"ab" * 32}  $d/install.py"' in line
-    assert line.endswith("--web-address 192-0-2-1.sslip.io --test-certificates)")
+    assert line.endswith(
+        "--web-address 192-0-2-1.sslip.io --test-certificates --ssh-passwords-off)"
+    )
     assert len(demo.INSTALLER_SHA256) == 64 and int(demo.INSTALLER_SHA256, 16)
 
 
@@ -445,7 +449,7 @@ def test_a_state_that_cant_be_read_doesnt_stop_down_or_status(tmp_path, capsys):
 def test_a_state_with_a_field_from_another_version_still_reads(tmp_path):
     demo.save_state(tmp_path, state(1, 2))
     data = json.loads((tmp_path / "state.json").read_text())
-    data["days"] = 7
+    data["weeks"] = 7
     data["servers"][0]["timer"] = "daily"
     (tmp_path / "state.json").write_text(json.dumps(data))
     assert demo.load_state(tmp_path) == state(1, 2)
@@ -461,7 +465,36 @@ def test_status_says_overdue_and_names_servers_the_state_doesnt(tmp_path, capsys
     api.nodes.pop()
     assert demo.status(api, tmp_path, datetime(2026, 11, 11, 23, tzinfo=UTC)) == 0
     assert demo.status(api, tmp_path, datetime(2026, 11, 12, 0, 5, tzinfo=UTC)) == 1
-    assert "OVERDUE: its end date was 2026-11-11" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "OVERDUE: its end date was 2026-11-11" in out and "Ends 1: run `down`." in out
+
+
+def test_status_says_why_it_ends_1_and_what_the_pages_now_warn(tmp_path, monkeypatch, capsys):
+    """Seen 2026-11-14: day 3's container step failed, and status ended 1 without saying why. The
+    restart note can come back during a stay (Ubuntu's updates go on): status says so."""
+    up = state(1)
+    up.plan = [{"id": "d3-1", "day": 3, "when": "2026-11-13T13:15", "where": "w", "says": "s"}]
+    up.days, up.last_check, up.until = 4, "2026-11-15T03:00", "2026-11-16"
+    demo.save_state(tmp_path, up)
+    warned = Ran(*[(0, '{"restart_needed": true, "ssh_passwords": false}', "")] * 3)
+    warned.close = lambda: None
+    monkeypatch.setattr(demo.install, "Node", lambda *a, **k: warned)
+    api = FakeApi([node("cc-demo-abc123-s1", [demo.TAG], 1)])
+    when = datetime(2026, 11, 13, 14, tzinfo=UTC)
+    for lines, why in [
+        (["  day 3, x  w: s: d3-1 ended 0 ATTACK FAILED: container;"], "a story step above"),
+        (["  day 3, x  w: s: LATE: it should have run by now"], "a day's step is late"),
+        (
+            ["  The checker's server couldn't be asked (gone)"],
+            "the checker's server couldn't be asked",
+        ),
+    ]:
+        monkeypatch.setattr(demo, "story_so_far", lambda checker, plan, lines=lines: (lines, False))
+        assert demo.status(api, tmp_path, when) == 1
+        out = capsys.readouterr().out
+        assert f"Ends 1: {why}" in out and "run `down`" not in out
+        reached = "couldn't be asked" not in lines[0]  # an unreachable server isn't asked again
+        assert ("The pages now warn: the pages say an update is waiting" in out) is reached
 
 
 # --- the story (D.3) -----------------------------------------------------------------------
@@ -553,12 +586,13 @@ def test_the_demos_whitelist_and_the_admins_rule_are_ones_the_checker_takes(tmp_
 
 def test_ssh_is_closed_to_all_but_the_checker_before_a_server_is_added_or_weakened(tmp_path):
     checker = Ran(*[(0, "SHA256:" + "a" * 43 + "\n", "")] * 4)
-    server = Ran(*[(0, "256 SHA256:" + "a" * 43 + " root@x (ED25519)\n", "")] * 5)
+    server = Ran(*[(0, "256 SHA256:" + "a" * 43 + " root@x (ED25519)\n", "")] * 6)
     server.wait = lambda seconds: None
     member = story.Member("shop-web-1", "web", "ubuntu24.04", old_php=True)
     made = demo.Server("shop-web-1", "fleet", "ubuntu24.04", "web", 1, "l", "192.0.2.5")
     demo.prepare_member(checker, server, made, member, "ssh-ed25519 SCANNER")
-    setup, firewall, web, old_php, keys = server.calls
+    setup, keep, firewall, web, old_php, keys = server.calls
+    assert keep[1] == story.KEEP  # before the firewall, and so before its first check
     assert 'from="192.0.2.1"' in setup[0] and "ssh-ed25519 SCANNER" in setup[0]
     assert "ufw allow from 192.0.2.1 to any port 22" in firewall[1]
     assert "ufw delete allow 22/tcp" in firewall[1] and 'address="192.0.2.1"' in firewall[1]
@@ -577,13 +611,13 @@ def test_a_container_that_did_not_start_is_tried_again_before_the_firewall(capsy
     for second, expected in ((0, "started at the second try"), (1, "still not started:\nno space")):
         checker = Ran((0, "", ""), (0, "SHA256:" + "a" * 43 + "\n", ""), (0, "", ""), (0, "", ""))
         server = Ran(
-            (0, "", "proof setup: Docker not started\n"), (second, "no space", ""), *[key] * 4
+            (0, "", "proof setup: Docker not started\n"), (second, "no space", ""), *[key] * 5
         )
         server.wait = lambda seconds: None
         member = story.Member("staging-1", "", "ubuntu24.04")
         made = demo.Server("staging-1", "fleet", "ubuntu24.04", "", 1, "l", "192.0.2.5")
         demo.prepare_member(checker, server, made, member, "ssh-ed25519 SCANNER")
-        _, again, firewall = server.calls[:3]
+        _, again, _, firewall = server.calls[:4]
         assert "docker run -d --name web-cache" in again[1] and "ufw delete" in firewall[1]
         assert expected in capsys.readouterr().out
 
@@ -614,6 +648,7 @@ class Checker(Node):
         self.answering = answering
         self.fails: dict[str, int] = {}  # a part of a command, and how it ends
         self.retired, self.still_open = "Retired: dotnet-2026-10 (kept).\n", False
+        self.results, self.clock = "", "2026-11-10T15:25"
 
     def run(self, command, timeout=900, input=None):
         self.calls.append((command, input))
@@ -624,6 +659,12 @@ class Checker(Node):
             out = "".join(f"{name:20} complete     Low (5.0%)\n" for name in self.answering())
         if "date -d" in command:
             out = "14:00\n"
+        if "date +%Y" in command:
+            out = "2026-11-10T15:20\n"
+        if "ssh-keygen" in command:
+            out = "ssh-ed25519 STORY ops@checker\n"
+        if "/results" in command:
+            out = f"{self.clock}\n{self.results}"
         if " packs retire " in command:
             out = self.retired
         if "/dev/tcp/" in command:  # a server that has shut the checker out refuses it
@@ -640,9 +681,12 @@ def world_of(tmp_path, monkeypatch, names=None):
             logins.append((address, user, key.name))
 
     monkeypatch.setattr(demo, "Through", Login)
-    monkeypatch.setattr(
-        demo, "keypair", lambda folder, name: (folder / name, f"ssh-ed25519 {name}")
-    )
+
+    def keypair(folder, name):
+        (folder / name).write_text(f"PRIVATE {name}\n")
+        return folder / name, f"ssh-ed25519 {name}"
+
+    monkeypatch.setattr(demo, "keypair", keypair)
     monkeypatch.setattr(demo.time, "sleep", lambda seconds: None)
     names = names or [m.name for m in story.FLEET]
     servers = [
@@ -670,6 +714,7 @@ def test_the_story_plays_a_day_at_a_time_and_each_check_expects_who_still_answer
         return next(i for i, c in enumerate(said) if text in c)
 
     assert at("schedule install --at 14:00") < checks[0]  # the hour before its clock's
+    assert world.at == "14:00"  # which the later days are timed by, when it is kept up
     assert checks[1] < at("baseline accept db-1 --reason") < checks[2]
     assert checks[3] < at("hosts remove staging-1") < checks[4]
     assert checks[4] < at("packs retire dotnet-2026-10 --reason")  # and no check after it
@@ -814,4 +859,1400 @@ def test_status_prints_what_is_left_to_the_person(tmp_path, capsys):
         datetime(2026, 11, 10, 14, tzinfo=UTC),
     )
     out = capsys.readouterr().out
-    assert "Yours to do while it is up" in out and "put the stopped threat update back" in out
+    assert "Yours to do while it is up" in out and "put back the one the admin stopped" in out
+
+
+def test_the_hands_on_list_holds_only_what_the_days_reached(capsys):
+    """Seen 2026-11-14: a four-day stay was told to put back a threat update day 5 stops."""
+
+    def parts(days, played=None):
+        demo.hands_on(days, played)
+        out = capsys.readouterr().out
+        now, _, rest = out.partition("Once the story has played their day:")
+        if not rest:
+            now, _, never = out.partition("Not on this demo")
+            return now, "", never
+        soon, _, never = rest.partition("Not on this demo")
+        return now, soon, never
+
+    now, soon, never = parts(4)  # four days, all played: as at the end of tonight's run
+    assert "staging-1 back" in now and "app-1 alone" in now and not soon
+    assert "put back the one the admin stopped" in never and "story to day 4" in never
+    assert '("Stopped by hand"). (needs day 5)' in never
+    now, soon, never = parts(3)  # the boundaries: app-1 is day 3, staging-1 day 4, the rest 5
+    assert "app-1 alone" in now and "staging-1 back" in never
+    now, soon, never = parts(5)
+    assert "put back the one the admin stopped" in now and not never
+    now, soon, never = parts(0)  # one sitting plays every day
+    assert "put back the one the admin stopped" in now and not soon and not never
+    now, soon, never = parts(4, played=0)  # just after `up --days 4`: only day 0 has run
+    assert "Start a check" in now and "app-1 alone" not in now
+    assert "from day 3: Check app-1 alone" in soon and "from day 4: Manage, Add a server" in soon
+    assert "put back the one the admin stopped" in never
+    assert demo.last_day(14) == demo.last_day(0) == max(s.day for s in demo.story.STORY)
+
+
+def test_the_days_played_are_the_days_whose_steps_time_has_come():
+    plan = [
+        {"day": 1, "when": "2026-11-12T02:15"},
+        {"day": 3, "when": "2026-11-14T02:15"},
+        {"day": 4, "when": "2026-11-15T02:15"},
+    ]
+    assert demo.days_played(plan, datetime(2026, 11, 11, 23, tzinfo=UTC)) == 0
+    assert demo.days_played(plan, datetime(2026, 11, 14, 2, 15, tzinfo=UTC)) == 3
+    assert demo.days_played(plan, datetime(2026, 11, 15, 9, tzinfo=UTC)) == 4
+
+
+class Settling:
+    """The checker's server as `settle` sees it: a restart note an update may leave, a boot id a
+    restart changes, and the note the pages read, written when the status service runs."""
+
+    address = "192.0.2.1"
+
+    def __init__(self, restarts_wanted=0, passwords=False, comes_back=True, drops=False):
+        self.wanted, self.passwords, self.comes_back, self.drops = (
+            restarts_wanted,
+            passwords,
+            comes_back,
+            drops,
+        )
+        self.boot, self.written, self.calls, self.closed = 1, None, [], 0
+
+    def run(self, command, timeout=900, input=None):
+        self.calls.append(command)
+        code, out = 0, ""
+        if command == "systemctl reboot":
+            if self.comes_back:
+                self.boot, self.wanted = self.boot + 1, max(0, self.wanted - 1)
+            if self.drops:
+                raise subprocess.TimeoutExpired(command, timeout)
+            return SimpleNamespace(returncode=255, stdout="", stderr="closed by remote host")
+        if "boot_id" in command:
+            out = f"boot-{self.boot}\n"
+        elif command == "test -e /run/reboot-required":
+            code = 0 if self.wanted else 1
+        elif "compromise-checker-status.service" in command:
+            self.written = {"ssh_passwords": self.passwords, "restart_needed": bool(self.wanted)}
+        elif "machine.json" in command:
+            out = json.dumps(self.written) if self.written is not None else ""
+        return SimpleNamespace(returncode=code, stdout=out, stderr="")
+
+    def out(self, command):
+        return self.run(command).stdout.strip()
+
+    def close(self):
+        self.closed += 1
+
+
+def test_settling_restarts_only_when_asked_and_knows_the_restart_happened(monkeypatch, capsys):
+    monkeypatch.setattr(demo.time, "sleep", lambda s: None)
+    quiet = Settling()
+    assert demo.settle(quiet) == []
+    assert "systemctl reboot" not in quiet.calls and quiet.written is not None
+    asked = Settling(restarts_wanted=1)
+    assert demo.settle(asked) == [] and asked.boot == 2 and asked.closed == 1
+    order = asked.calls
+    assert order.index("systemctl reboot") < order.index(
+        "systemctl start compromise-checker-status.service"
+    )
+    dropped = Settling(restarts_wanted=1, drops=True)  # the connection goes as it goes down
+    assert demo.settle(dropped) == [] and dropped.boot == 2
+    stubborn = Settling(restarts_wanted=5)  # an update that asks again: at most two restarts
+    warned = demo.settle(stubborn)
+    assert stubborn.calls.count("systemctl reboot") == 2
+    assert warned == ["the pages say an update is waiting for a restart"]
+    assert "WARN the checker's server: the pages say an update" in capsys.readouterr().out
+
+
+def test_a_note_left_on_the_pages_is_a_warning_and_not_the_end_of_the_demo(monkeypatch):
+    """A note on a page isn't worth the servers: `up` deletes everything it made when it fails."""
+    said = "Setting up...\nSSH passwords stay on: no administrator account has a key login here\n"
+    assert demo.settle(Settling(passwords=True), said) == [
+        "SSH passwords stay on: no administrator account has a key login here",
+        "the pages say SSH still takes passwords",
+    ]
+    unread = Settling()
+    unread.run = lambda c, timeout=900, input=None: SimpleNamespace(
+        returncode=1, stdout="", stderr=""
+    )
+    assert demo.settle(unread) == [  # a server that answers nothing as it should
+        "Ubuntu's updates were still running after 10 minutes",
+        "the note the pages read about the machine wasn't written",
+        "the note the pages read about the machine couldn't be read",
+    ]
+
+
+def test_a_checker_that_never_comes_back_from_its_restart_stops_up(monkeypatch):
+    monkeypatch.setattr(demo.time, "sleep", lambda s: None)
+    clock = iter(range(0, 10_000, 30))
+    monkeypatch.setattr(demo.time, "monotonic", lambda: next(clock))
+    with pytest.raises(demo.DemoError, match="didn't come back from its restart"):
+        demo.settle(Settling(restarts_wanted=1, comes_back=False))
+
+
+def test_the_install_hands_its_words_to_settle_and_up_gets_what_the_pages_will_say(
+    tmp_path, monkeypatch
+):
+    up = state(1)
+    up.web_name = "192-0-2-1.sslip.io"
+    said = f"Installed.\nhttps://{up.web_name}/s/abc\nSSH passwords stay on: why\n"
+    server = Ran((0, said, ""), (0, "", ""), (0, "4 packs\n", ""))
+    seen = []
+    monkeypatch.setattr(demo, "web_name", lambda address: up.web_name)
+    monkeypatch.setattr(demo, "settle", lambda node, words: seen.append(words) or ["noted"])
+    link, warned = demo.install_checker(server, up, tmp_path)
+    assert link == f"https://{up.web_name}/s/abc" and warned == ["noted"] and seen == [said]
+
+
+def test_up_ends_with_a_fresh_link_or_the_installs(tmp_path):
+    up = state(1)
+    up.web_name = "192-0-2-1.sslip.io"
+    made = Ran((0, f"Open this link, once, within an hour:\nhttps://{up.web_name}/s/new\n", ""))
+    assert demo.fresh_link(made, up) == f"https://{up.web_name}/s/new"
+    assert "web-setup-link --address https://192-0-2-1.sslip.io" in made.calls[0][0]
+    assert demo.fresh_link(Ran((1, "", "there's already an account")), up) is None
+
+
+# --- kept up for days ----------------------------------------------------------------------
+
+
+def test_each_days_steps_run_before_its_check_or_after_it_for_a_day_not_checked():
+    now = datetime(2026, 11, 10, 15, 20)
+    times = demo.step_times(now, "14:00", [1, 3, 5])
+    assert times[1] == datetime(2026, 11, 11, 13, 15)  # day 1's check is tomorrow's, at 14:00
+    assert times[3] == datetime(2026, 11, 13, 13, 15)
+    assert times[5] == datetime(2026, 11, 15, 15, 0)  # after day 5's: its note is the point
+    # A check later today is day 1's, unless its steps would already be late.
+    assert demo.step_times(now, "20:00", [1])[1] == datetime(2026, 11, 10, 19, 15)
+    assert demo.step_times(now, "16:00", [1])[1] == datetime(2026, 11, 11, 15, 15)
+
+
+def staged(tmp_path, monkeypatch, days):
+    world, _ = world_of(tmp_path, monkeypatch)
+    checker = Checker(world.checked)
+    world.at = "14:00"
+    plan, left_out, last = demo.stage(checker, world, days)
+    # day 1's check is tomorrow at 14:00, and the last day's a day later each
+    assert last == datetime(2026, 11, 10 + days, 14, 0)
+    assert world.expires_on == date(2026, 11, 15)  # through day 5's check, gone at day 6's
+    put = {c.rsplit("/", 1)[-1]: text for c, text in checker.calls if "cat > /" in c}
+    return world, checker, plan, left_out, put
+
+
+def test_the_later_days_are_put_on_the_checkers_server_a_timer_each(tmp_path, monkeypatch):
+    world, checker, plan, left_out, put = staged(tmp_path, monkeypatch, 5)
+    later = [s for s in story.STORY if s.day >= 1]
+    assert [(p["day"], p["where"], p["says"]) for p in plan] == [
+        (s.day, s.where, s.says) for s in later
+    ]
+    assert left_out == [] and plan[0] == {
+        "id": "d1-1",
+        "day": 1,
+        "where": "db-1",
+        "says": later[0].says,
+        "when": "2026-11-11T13:15",
+    }
+    # Each day's runner is a script bash takes, run by a timer for its day that survives a restart.
+    for day in (1, 2, 3, 4, 5):
+        runner = put[f"day{day}.sh"]
+        (tmp_path / "r.sh").write_text(runner)
+        assert subprocess.run(["bash", "-n", tmp_path / "r.sh"], check=False).returncode == 0  # noqa: S603, S607
+        assert (
+            f"ExecStart=/bin/bash /root/cc-story/day{day}.sh" in put[f"cc-story-day{day}.service"]
+        )
+    timer = next(text for c, text in checker.calls if "cc-story-day3.timer &&" in c)
+    assert "OnCalendar=2026-11-13 13:15:00" in timer and "Persistent=true" in timer
+    assert any("enable -q --now cc-story-day3.timer" in c for c, _ in checker.calls)
+    # A step on a server: its script as `play` would send it, a root login from the checker's.
+    day3 = put["day3.sh"]
+    assert "on_server d3-1 192.0.2.10\nlogin d3-1 svc-backup 192.0.2.10\n" in day3
+    assert "ssh-ed25519 planted-root" in put["d3-1.sh"]
+    assert (
+        "ssh-ed25519 planted-svc-backup" in put["d3-1.sh"]
+        and "{" + "admin_key}" not in put["d3-1.sh"]
+    )
+    assert put["account-svc-backup"] == "PRIVATE planted-svc-backup\n"
+    assert "ssh-ed25519 planted-deploy2" in put["d1-1.sh"]
+    assert put["d2-1.sh"].startswith("set -eu\n")  # the PHP step, strict as it is from here
+    # app-1's shut-out is confirmed, as it is from here
+    assert "on_server d3-4 192.0.2.14\nshut d3-4 192.0.2.14\n" in day3
+    assert all("umask 077" in c for c, _ in checker.calls if "cat > /root/cc-story/" in c)
+    # The admin's steps are the commands `by_admin` runs.
+    accept = next(s for s in story.STORY if s.admin[:1] == ("accept",))
+    host, reason = accept.admin[1:]
+    assert demo.as_checker("baseline", "accept", host, "--reason", reason) in put["day2.sh"]
+    assert "|| true" not in put["day2.sh"]  # a refusal is noted, not passed over
+    day4 = put["day4.sh"]
+    assert demo.as_checker("hosts", "remove", "staging-1") in day4
+    assert "whitelist/hosts/mail-1.yaml <<'RULE'" in day4 and "expires: 2026-11-15\nRULE\n" in day4
+    assert demo.as_checker("whitelist", "check") in day4
+    assert "packs retire dotnet-2026-10" in put["day5.sh"] and "grep -q Retired:" in put["day5.sh"]
+    # The keys go when the last day ends, however it ends, and not before.
+    assert "trap 'rm -f key key.pub account-*' EXIT" in put["day5.sh"]
+    assert not any("rm -f key" in put[f"day{day}.sh"] for day in (1, 2, 3, 4))
+    # Nothing waits for ever on a server that has stopped answering.
+    assert "timeout 1500 ssh -i key" in day3 and "ServerAliveInterval=15" in day3
+    assert "TimeoutStartSec=40min" in put["cc-story-day3.service"]
+    # A day off, what the break-in leaves running outlives the next check, and nothing else of
+    # the story's is changed by that but the PHP update, which fetches the lists first.
+    assert "/root/kworkerd 2000000" in put["d3-1.sh"] and "7200" not in put["d3-1.sh"]
+    assert "sleep 2000000 >/dev/null || fail container" in put["d3-1.sh"]
+    assert "$APT update >/dev/null\n$APT install" in put["d2-1.sh"]
+    changed = [
+        s.says
+        for s in story.STORY
+        if s.script and story.renamed(s.script, story.DAYS_APART) != s.script
+    ]
+    assert changed == ["PHP is updated; its service isn't restarted", "the break-in"]
+
+
+def test_a_shorter_stay_plays_the_days_it_has_and_says_what_it_left_out(tmp_path, monkeypatch):
+    _, _, plan, left_out, put = staged(tmp_path, monkeypatch, 2)
+    assert {p["day"] for p in plan} == {1, 2} and "trap 'rm -f key key.pub" in put["day2.sh"]
+    assert "day3.sh" not in put and "account-svc-backup" not in put
+    assert len(left_out) == len([s for s in story.STORY if s.day > 2])
+    assert left_out[0] == "day 3: shop-web-1: the break-in"
+    world, _ = world_of(tmp_path, monkeypatch)
+    with pytest.raises(demo.DemoError, match="daily check wasn't set"):
+        demo.stage(Checker(world.checked), world, 2)
+
+
+def test_the_storys_key_is_on_each_server_before_its_first_check(tmp_path, monkeypatch):
+    world, _ = world_of(tmp_path, monkeypatch)
+    checker = Checker(world.checked)
+    demo.story_key(checker, world.nodes)
+    made, *reached = [c for c, _ in checker.calls]
+    assert "umask 077" in made and "ssh-keygen" in made and "/root/cc-story" in made
+    for node in world.nodes.values():
+        (line,) = [c for c, _ in node.calls]
+        assert 'from="192.0.2.1" ssh-ed25519 STORY ops@checker' in line  # the checker's only
+        assert line.endswith(">> /root/.ssh/authorized_keys")
+    assert len(reached) == len(world.nodes) and all("accept-new" in c for c in reached)
+
+
+def test_status_says_how_each_of_the_days_went(tmp_path, monkeypatch, capsys):
+    _, checker, plan, _, _ = staged(tmp_path, monkeypatch, 3)
+    checker.results = (
+        "2026-11-11T13:15:40Z d1-1 ended 0 \n"
+        "2026-11-11T13:15:41Z d1-1-login ended 0\n"
+        "2026-11-13T13:16:02Z d3-1 ended 0 ATTACK FAILED: container;\n"
+        "2026-11-13T13:16:03Z d3-1-login ended 255\n"
+        "2026-11-13T13:16:30Z d3-4 ended 0 \n"
+        "2026-11-13T13:16:55Z d3-4-shut ended 1 it still lets the checker's server in\n"
+    )
+    checker.clock = "2026-11-13T14:20"  # an hour and five minutes after day 3's steps were due
+    lines, good = demo.story_so_far(checker, plan)
+    assert not good
+    assert lines[0].endswith("and a package: done") and "day 1, 2026-11-11 13:15" in lines[0]
+    assert lines[1].endswith("isn't restarted: LATE: it should have run by now, and hasn't said so")
+    assert lines[5].endswith(
+        "a backup job is added: LATE: it should have run by now, and hasn't said so"
+    )
+    checker.clock = "2026-11-12T12:00"  # the morning of day 2
+    early, _ = demo.story_so_far(checker, plan)
+    assert early[1].endswith("isn't restarted: not yet")
+    quiet = Checker(lambda: [])
+    quiet.results = "2026-11-11T13:15:40Z d1-1 ended 0 \n2026-11-11T13:15:41Z d1-1-login ended 0\n"
+    assert demo.story_so_far(quiet, plan[:1]) == ([lines[0]], True)
+    gone = Ran((255, "", "ssh: no route"))
+    assert demo.story_so_far(gone, plan) == (
+        ["  The checker's server couldn't be asked (ssh: no route)"],
+        False,
+    )
+    assert lines[3].endswith(
+        "the break-in: d3-1 ended 0 ATTACK FAILED: container;; d3-1-login ended 255"
+    )
+    assert lines[6].endswith("d3-4-shut ended 1 it still lets the checker's server in")
+    # `status` asks the checker's server, with the demo's own key
+    asked = []
+
+    class Asked(Checker):
+        def __init__(self, address, key, known):
+            super().__init__(lambda: [])
+            self.results = checker.results
+            asked.append((address, key.name, self))
+
+    monkeypatch.setattr(demo.install, "Node", Asked)
+    kept = state(0, 1)
+    kept.days, kept.plan, kept.last_check = 3, plan, "2026-11-13T14:00"
+    demo.save_state(tmp_path, kept)
+    api = FakeApi([node(s.label, [demo.TAG], s.id) for s in kept.servers])
+    # a step that failed or is late wants a look: `status` ends 1
+    assert demo.status(api, tmp_path, datetime(2026, 11, 10, 14, tzinfo=UTC)) == 1
+    out = capsys.readouterr().out
+    assert "Kept up 3 days." in out and "and a package: done" in out
+    assert "Day 3 is checked at 2026-11-13 14:00." in out
+    # a checker's server Linode no longer lists isn't asked (whatever has its address now)
+    asked.clear()
+    demo.status(FakeApi(), tmp_path, datetime(2026, 11, 10, 14, tzinfo=UTC))
+    assert asked == [] and "GONE" in capsys.readouterr().out
+    asked.append(("192.0.2.0", "key", Asked("192.0.2.0", Path("key"), None)))
+    asked[0][2].closed = True
+    assert asked[0][:2] == ("192.0.2.0", "key") and asked[0][2].closed
+    assert demo.load_state(tmp_path).plan == plan  # and the plan reads back
+
+
+def test_up_takes_one_to_fourteen_days(tmp_path):
+    for days in (-1, 15):
+        with pytest.raises(demo.DemoError, match="--days is 1 to 14"):
+            demo.up(FakeApi(), tmp_path / "demo", "us-sea", TODAY, days)
+    assert not (tmp_path / "demo").exists()
+
+
+def test_any_proofs_sweep_takes_a_demo_server_past_its_date_and_no_other():
+    import readonly_proof as proof
+
+    now = datetime(2026, 11, 12, 9, tzinfo=UTC)
+    tag = demo.until_tag
+    nodes = [
+        node("cc-demo-a-s1", [demo.TAG, tag(date(2026, 11, 11))], 1),  # yesterday: past
+        node("cc-demo-a-s2", [demo.TAG, tag(date(2026, 11, 12))], 2),  # today is its last day
+        node("cc-demo-a-s3", [demo.TAG], 3),  # no date it can read: `demo.py`'s to deal with
+        node("cc-demo-a-s4", [demo.TAG, "cc-demo-until-soon"], 4),
+        node("cc-test-a-s5", [proof.TAG, tag(date(2026, 11, 1))], 5),  # not a demo's
+        node("web-1", [tag(date(2026, 11, 1))], 6),  # nor this
+        node("web-2", [demo.TAG, tag(date(2026, 11, 1))], 7),  # the tag without the label
+    ]
+    assert [n["id"] for n in proof.demo_past_its_date(nodes, now)] == [1]
+    assert (demo.TAG, demo.LABEL_PREFIX, demo.UNTIL) == (
+        proof.DEMO_TAG,
+        proof.DEMO_LABEL,
+        proof.DEMO_UNTIL,
+    )
+
+
+def test_kept_up_day_0_is_played_from_here_and_the_rest_is_staged(tmp_path, monkeypatch, capsys):
+    world, _ = world_of(tmp_path, monkeypatch)
+    checker = Checker(world.checked)
+    kept = state(0, 1)
+    demo.play_days(checker, world, kept, tmp_path, 2)
+    said = [c for c, _ in checker.calls]
+
+    def at(text):
+        return next(i for i, c in enumerate(said) if text in c)
+
+    # the story's key is on every server before the first check, so it is never a change
+    assert at("ssh-keygen") < at(" run --all --unattended") < at("cat > /root/cc-story/")
+    # only day 0 is played from here: one check, and none of the later days' steps
+    assert len([c for c in said if " run --all --unattended" in c]) == 1
+    assert world.collected == 6 and not any(
+        "baseline accept" in c for c in said if "cat >" not in c
+    )
+    assert all(
+        not text or "useradd" not in text for n in world.nodes.values() for _, text in n.calls
+    )
+    # what is to come is kept, for `status`, and said
+    saved = demo.load_state(tmp_path)
+    assert saved.plan == kept.plan and {p["day"] for p in saved.plan} == {1, 2}
+    assert saved.last_check == "2026-11-12T14:00"
+    out = capsys.readouterr().out
+    assert "The days to come" in out and "db-1: an admin adds" in out and ": not yet" in out
+    assert "left out, after day 2: day 3: shop-web-1: the break-in" in out
+
+
+def test_a_days_runner_writes_down_what_status_reads(tmp_path, monkeypatch):
+    """The runner itself, with an `ssh` that stands in for the servers: what it notes is what
+    `story_so_far` takes."""
+    _, checker, plan, _, put = staged(tmp_path, monkeypatch, 3)
+    home, tools = tmp_path / "cc-story", tmp_path / "bin"
+    home.mkdir()
+    tools.mkdir()
+    for name, text in put.items():
+        if name.endswith(".sh") or name.startswith("account-"):
+            (home / name).write_text(text)
+    (home / "key").write_text("K")
+    # The break-in "fails" one part; the login as the new account is refused.
+    (tools / "ssh").write_text(
+        '#!/bin/bash\ncat > /dev/null\ncase "$*" in\n'
+        "  *svc-backup@*) exit 255 ;;\n"
+        "  *192.0.2.10*) echo 'ATTACK FAILED: container' >&2 ;;\nesac\n"
+    )
+    (tools / "sleep").write_text("#!/bin/bash\n")
+    (tools / "timeout").write_text('#!/bin/bash\nshift\n[ "$1" = bash ] && exit 1\nexec "$@"\n')
+    for tool in tools.iterdir():
+        tool.chmod(0o755)
+    runner = put["day3.sh"].replace("/root/cc-story", str(home))
+    done = subprocess.run(  # noqa: S603
+        ["bash", "-c", runner],  # noqa: S607
+        env={"PATH": f"{tools}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    checker.results, checker.clock = (home / "results").read_text(), "2026-11-13T13:30"
+    lines, good = demo.story_so_far(checker, [p for p in plan if p["day"] == 3])
+    assert not good
+    assert lines[0].endswith("d3-1 ended 0 ATTACK FAILED: container;; d3-1-login ended 255")
+    assert [line.rsplit(": ", 1)[1] for line in lines[1:]] == ["done", "done", "done"]
+    # the scripts and the account's key are gone once used; the last day takes the story's key
+    assert sorted(p.name for p in home.iterdir() if p.suffix == ".sh") == [
+        "d1-1.sh", "d2-1.sh", "day1.sh", "day2.sh", "day3.sh"
+    ]  # fmt: skip
+    assert not (home / "account-svc-backup").exists() and not (home / "key").exists()
+
+
+def test_days_goes_with_up_only(monkeypatch, capsys):
+    monkeypatch.setattr(demo.proof, "linode_token", lambda: pytest.fail("asked for the token"))
+    for words in (["status", "--days", "2"], ["up", "--days", "0"], ["up", "--days", "15"]):
+        with pytest.raises(SystemExit):
+            demo.main(words)
+    assert "--days goes with `up`, and is 1 to 14" in capsys.readouterr().err
+
+
+# --- save (D.5) ------------------------------------------------------------------------------
+
+
+def a_home(base, address="198.51.100.7"):
+    """A checker's home as the installer leaves it, with one collection that names `address`."""
+    import gzip
+    import sqlite3
+
+    import pyrage
+    from pyrage import x25519
+
+    identity = x25519.Identity.generate()
+    (base / "keys").mkdir(parents=True)
+    (base / "keys" / "evidence-identity.txt").write_text(f"# made now\n{identity}\n")
+    for secret in ("scanner_ed25519", "web-secret.txt", "web-proxy-secret.txt", "mail-key.txt"):
+        (base / "keys" / secret).write_text("SECRET\n")
+    (base / "config.yaml").write_text(
+        f"recipients: [{identity.to_public()}]\n"
+        "identity_file: /var/lib/compromise-checker/data/keys/evidence-identity.txt\n"
+        "database: null\n"
+    )
+    (base / "hosts.yaml").write_text("hosts: []\n")
+    (base / "hosts.yaml.lock").write_text("")
+    (base / "known_hosts").write_text("192.0.2.5 ssh-ed25519 AAAA\n")
+    (base / "run.lock").write_text("")
+    (base / "logs").mkdir()
+    (base / "logs" / "run.log").write_text("not asked for\n")
+    (base / "packs" / "active").mkdir(parents=True)
+    (base / "packs" / "active" / "brotli-2026-10.toml").write_text("pack\n")
+    (base / "packs" / "state.lock").write_text("")
+    (base / "whitelist" / "hosts").mkdir(parents=True)
+    (base / "whitelist" / "hosts" / "mail-1.yaml").write_text("rules: []\n")
+    (base / "whitelist" / ".global.yaml.x.tmp").write_text("half written\n")
+    (base / "evidence" / "db-1").mkdir(parents=True)
+    line = json.dumps(
+        {"type": "chunk", "source_id": 1, "encoding": "utf-8", "data": f"login from {address}"}
+    )
+    (base / "evidence" / "db-1" / "db-1-20261110T030000Z-abcd1234.age").write_bytes(
+        pyrage.encrypt(gzip.compress(line.encode() + b"\n"), [identity.to_public()])
+    )
+    (base / "evidence" / "db-1" / "link.age").symlink_to("/etc/passwd")
+    store = sqlite3.connect(base / "checker.db")
+    store.execute("PRAGMA journal_mode = WAL")
+    store.execute("CREATE TABLE custody (who TEXT, note BLOB)")
+    store.execute("INSERT INTO custody VALUES ('ops (web interface)', x'00ff')")
+    store.commit()
+    return store  # left open, as the checker's own would be
+
+
+def as_ssh(monkeypatch, base, instead=None):
+    """ssh to the checker's server, replaced by the same script run here on `base` (or by
+    `instead`, a command that stands for a server gone wrong)."""
+    import shlex
+
+    real = subprocess.Popen
+
+    def ssh(argv, **kwargs):
+        if argv[0] != "ssh":
+            return real(argv, **kwargs)
+        assert "runuser -u compromise-checker -- " in argv[-1]
+        assert "/opt/compromise-checker/current/bin/python -I - " in argv[-1]
+        # The last word is the list of what to send, as the server's shell would read it.
+        here = [sys.executable, "-I", "-", str(base), shlex.split(argv[-1])[-1]]
+        return real(instead or here, **kwargs)
+
+    monkeypatch.setattr(demo.subprocess, "Popen", ssh)
+
+
+def pages_used(base, here="203.0.113.9"):
+    """The web interface's own database on the server, as the checker makes it, after someone
+    signed in from `here`, started a check and looked at a server."""
+    made = subprocess.run(
+        [sys.executable, "-c", demo._NEW_ACCOUNTS, str(base)],
+        cwd=Path(demo.__file__).resolve().parents[2],
+        env={**os.environ, "CHECKER_HOME": str(base)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert made.returncode == 0, made.stderr
+    import sqlite3
+
+    web = sqlite3.connect(base / "web.db")
+    web.execute(
+        "INSERT INTO auth_user (password, is_superuser, username, first_name, last_name, email,"
+        " is_staff, is_active, date_joined)"
+        " VALUES ('hash', 0, 'ops', '', '', '', 0, 1, '2026-11-11')"
+    )
+    web.execute("INSERT INTO django_session VALUES ('key', 'session data', '2026-12-01 00:00:00')")
+    web.execute(
+        "INSERT INTO web_loginattempt (username, address, at) VALUES ('ops', ?, '2026-11-11')",
+        (here,),
+    )
+    web.execute(
+        "INSERT INTO web_actionrecord (at, who, address, action, target, outcome, detail)"
+        " VALUES ('2026-11-11 05:00:00', 'ops', ?, 'viewed a server''s results', 'db-1',"
+        " 'done', '')",
+        (here,),
+    )
+    web.execute(
+        "INSERT INTO web_checkrun (kind, hosts, who, address, started_at, finished_at, ended)"
+        " VALUES ('check', '[\"db-1\"]', 'ops', ?, '2026-11-11 05:01:00', '2026-11-11 05:03:00',"
+        " 'finished')",
+        (here,),
+    )
+    web.commit()
+    return web
+
+
+class Home:
+    """The checker's server for `save`: the real script, run here on a folder."""
+
+    address, user, options = "192.0.2.1", "root", []
+
+    def __init__(self, base, here="203.0.113.9"):
+        self.base, self.here, self.closed = base, here, False
+
+    def run(self, command, timeout=900, input=None):
+        return SimpleNamespace(returncode=0, stdout=f"{self.here} 51234 22\n", stderr="")
+
+    def out(self, command):
+        return self.run(command).stdout.strip()
+
+    def close(self):
+        self.closed = True
+
+
+def saving(tmp_path, monkeypatch, here="203.0.113.9", **more):
+    """A demo that is up, its checker's home in a folder, and ssh replaced by this machine."""
+    base = tmp_path / "server"
+    store = a_home(base, **more)
+    folder = tmp_path / "state"
+    up = state(1, 2)
+    demo.save_state(folder, up)
+    home = Home(base, here)
+    monkeypatch.setattr(demo.install, "Node", lambda *a, **k: home)
+    as_ssh(monkeypatch, base)
+    return folder, base, store
+
+
+NOON = datetime(2026, 11, 12, 20, 0, tzinfo=UTC)
+
+
+def test_save_brings_down_the_data_and_leaves_the_accounts_and_the_keys(
+    tmp_path, monkeypatch, capsys
+):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    target = tmp_path / "out" / "dataset"
+    assert demo.save(folder, target, NOON) == 0
+    store.close()
+    got = sorted(str(p.relative_to(target)) for p in target.rglob("*") if p.is_file())
+    assert got == [
+        "checker.db",
+        "config.yaml",
+        "demo.json",
+        "evidence/db-1/db-1-20261110T030000Z-abcd1234.age",
+        "hosts.yaml",
+        "keys/evidence-identity.txt",
+        "known_hosts",
+        "packs/active/brotli-2026-10.toml",
+        "whitelist/hosts/mail-1.yaml",
+    ]
+    assert all(p.stat().st_mode & 0o077 == 0 for p in [target, *target.rglob("*")])
+    # The settings name the saved key, so the checker here can open the evidence.
+    import yaml
+
+    config = yaml.safe_load((target / "config.yaml").read_text())
+    assert config["identity_file"] == str(target / "keys" / "evidence-identity.txt")
+    about = json.loads((target / "demo.json").read_text())
+    assert about["run"] == "abc123" and about["servers"][0]["address"] == "192.0.2.1"
+    assert not (tmp_path / "out" / "dataset.part").exists()
+    assert not list((tmp_path / "out").glob("*.tar"))
+    said = capsys.readouterr().out
+    assert "PASS 8 files, 1 of them stored evidence" in said
+    assert "none of them holds 203.0.113.9" in said and "NOTE" not in said
+    assert not list((tmp_path / "out").glob(".dataset.*"))  # the tar's own folder is gone
+    assert f"CHECKER_HOME={target} checker web" in said
+    kept = demo.load_state(folder)
+    assert kept.saved == str(target) and kept.saved_at == "2026-11-12T20:00:00+00:00"
+    assert kept.saved_whole  # one sitting: there is no last day to wait for
+
+
+def test_the_saved_store_is_whole_though_the_checker_had_it_open(tmp_path, monkeypatch):
+    """Rows still in the write-ahead log, not yet in the file, are in the copy."""
+    import sqlite3
+
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.execute("INSERT INTO custody VALUES ('written just now', NULL)")
+    store.commit()
+    assert (base / "checker.db-wal").stat().st_size > 0
+    assert demo.save(folder, tmp_path / "dataset", NOON) == 0
+    saved = sqlite3.connect(tmp_path / "dataset" / "checker.db")
+    assert saved.execute("SELECT count(*) FROM custody").fetchone() == (2,)
+    saved.close()
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["evidence", "store", "store-bytes", "file"],
+)
+def test_data_that_names_this_machine_is_kept_aside_and_not_called_the_dataset(
+    tmp_path, monkeypatch, capsys, where
+):
+    here = "203.0.113.9"
+    folder, base, store = saving(
+        tmp_path, monkeypatch, **({"address": here} if where == "evidence" else {})
+    )
+    if where == "store":
+        store.execute("INSERT INTO custody VALUES (?, NULL)", (f"from {here}",))
+    if where == "store-bytes":
+        store.execute("INSERT INTO custody VALUES ('x', ?)", (f"from {here}".encode(),))
+    if where == "file":
+        (base / "known_hosts").write_text(f"{here} ssh-ed25519 AAAA\n")
+    store.commit()
+    target = tmp_path / "dataset"
+    assert demo.save(folder, target, NOON) == 1
+    store.close()
+    assert not target.exists() and (tmp_path / "dataset.part" / "checker.db").exists()
+    said = capsys.readouterr().out
+    assert "FAIL " in said and "Not fit to show as it is" in said
+    assert demo.load_state(folder).saved == ""
+    # And the next try says that one is in the way, not a second copy beside it.
+    with pytest.raises(demo.DemoError, match="left from a save that didn't finish"):
+        demo.save(folder, target, NOON)
+
+
+def test_evidence_the_saved_key_cant_open_fails_the_save(tmp_path, monkeypatch, capsys):
+    import pyrage
+    from pyrage import x25519
+
+    folder, base, store = saving(tmp_path, monkeypatch)
+    other = x25519.Identity.generate().to_public()
+    (base / "evidence" / "db-1" / "another.age").write_bytes(pyrage.encrypt(b"x", [other]))
+    assert demo.save(folder, tmp_path / "dataset", NOON) == 1
+    store.close()
+    assert "the saved evidence couldn't be opened" in capsys.readouterr().out
+
+
+def test_save_stops_for_a_check_under_way_and_changes_nothing_here(tmp_path, monkeypatch):
+    import fcntl
+
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    held = os.open(base / "run.lock", os.O_RDWR)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    try:
+        with pytest.raises(demo.DemoError, match="a check or a purge is running"):
+            demo.save(folder, tmp_path / "dataset", NOON)
+    finally:
+        os.close(held)
+    assert not (tmp_path / "dataset").exists() and not (tmp_path / "dataset.part").exists()
+
+
+def test_save_takes_only_a_new_folder_outside_the_repository(tmp_path, monkeypatch):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    (tmp_path / "there").mkdir()
+    with pytest.raises(demo.DemoError, match="exists"):
+        demo.save(folder, tmp_path / "there", NOON)
+    inside = Path(demo.__file__).resolve().parents[2] / "demo-data"
+    with pytest.raises(demo.DemoError, match="outside any repository"):
+        demo.save(folder, inside, NOON)
+    assert not inside.exists()
+    # Another checkout, or another repository altogether, is one too.
+    (tmp_path / "other" / ".git").mkdir(parents=True)
+    with pytest.raises(demo.DemoError, match="outside any repository"):
+        demo.save(folder, tmp_path / "other" / "deep" / "data", NOON)
+    (tmp_path / "worktree").mkdir()
+    (tmp_path / "worktree" / ".git").write_text("gitdir: elsewhere\n")
+    with pytest.raises(demo.DemoError, match="outside any repository"):
+        demo.save(folder, tmp_path / "worktree" / "data", NOON)
+    with pytest.raises(demo.DemoError, match="nothing to save"):
+        demo.save(tmp_path / "no-state", tmp_path / "dataset", NOON)
+
+
+def test_only_what_was_asked_for_is_taken_from_what_the_server_sends(tmp_path):
+    import io
+    import tarfile
+
+    def archive(*entries):
+        path = tmp_path / "sent.tar"
+        with tarfile.open(path, "w") as tar:
+            for entry in entries:
+                tar.addfile(entry, io.BytesIO(b"x" * entry.size))
+        return path
+
+    def a_file(name, size=1):
+        entry = tarfile.TarInfo(name)
+        entry.size = size
+        return entry
+
+    link = tarfile.TarInfo("evidence/db-1/a.age")
+    link.type, link.linkname = tarfile.SYMTYPE, "/etc/passwd"
+    for bad in (
+        a_file("web.db"),
+        a_file("keys/scanner_ed25519"),
+        a_file("../outside"),
+        a_file("/etc/cron.d/x"),
+        a_file("evidence/../../outside"),
+        a_file("evidence"),
+        link,
+    ):
+        (tmp_path / "into").mkdir(exist_ok=True)
+        with pytest.raises(demo.DemoError, match="wasn't asked for"):
+            demo.unpack(archive(bad), tmp_path / "into")
+        assert not list((tmp_path / "into").iterdir())
+    assert demo.unpack(archive(a_file("checker.db"), a_file("packs/state.json")), tmp_path / "into")
+
+
+def stay(last_check="2026-11-15T03:00"):
+    up = state(1, 2)
+    up.days, up.last_check = 4, last_check
+    return up
+
+
+def test_save_keeps_clear_of_the_days_steps_and_the_daily_check():
+    def at(text):
+        return demo.too_near_a_check(stay(), datetime.fromisoformat(text).replace(tzinfo=UTC))
+
+    assert at("2026-11-12T20:00") is None
+    assert at("2026-11-13T01:55") is None
+    assert "between 02:00 and 04:45 UTC" in at("2026-11-13T02:00")
+    assert at("2026-11-13T03:00") and at("2026-11-13T04:30")
+    assert at("2026-11-13T04:45") and at("2026-11-13T04:46") is None
+    # The last day's timer may fire a little late: a save in its first minutes would take the
+    # lock ahead of it, and that day's check would be lost. After that, only the lock holds it.
+    assert "the last day's check is starting" in at("2026-11-15T03:00:10")
+    assert at("2026-11-15T03:05") and at("2026-11-15T03:06") is None
+    assert demo.too_near_a_check(state(1), NOON) is None  # one sitting: no days to come
+    # A daily check a little after midnight: its window starts the evening before.
+    late = stay("2026-11-15T00:10")
+    assert demo.too_near_a_check(late, datetime(2026, 11, 12, 23, 30, tzinfo=UTC))
+
+
+def test_down_waits_for_a_save_and_for_one_made_after_the_last_check(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(demo.proof, "linode_token", lambda: pytest.fail("Linode was asked"))
+    folder = tmp_path / "state"
+    up = stay()
+    demo.save_state(folder, up)
+    assert "hasn't been saved" in demo.unsaved(folder)
+    assert demo.main(["down", "--state", str(folder)]) == 1
+    assert "`demo.py save DIR` first, or `down --unsaved`" in capsys.readouterr().err
+    up.saved, up.saved_at = str(tmp_path / "dataset"), "2026-11-15T03:40:00+00:00"
+    demo.save_state(folder, up)
+    assert "which isn't there now" in demo.unsaved(folder)
+    (tmp_path / "dataset").mkdir()
+    (tmp_path / "dataset" / "checker.db").write_text("")
+    assert "before the last day's check" in demo.unsaved(folder)  # whenever it was made
+    up.saved_whole = True
+    demo.save_state(folder, up)
+    assert demo.unsaved(folder) is None
+    # Nothing to save: no demo, a state that can't be read, or no checker installed yet.
+    assert demo.unsaved(tmp_path / "none") is None
+    (folder / "state.json").write_text("{")
+    assert demo.unsaved(folder) is None
+    bare = state(1)
+    bare.web_name = ""
+    demo.save_state(folder, bare)
+    assert demo.unsaved(folder) is None
+
+
+def test_down_unsaved_deletes_and_a_failed_up_never_waits(tmp_path, monkeypatch):
+    folder = tmp_path / "state"
+    demo.save_state(folder, stay())
+    api = FakeApi([node("cc-demo-abc123-s1", [demo.TAG], 1)])
+    monkeypatch.setattr(demo.proof, "linode_token", lambda: "token")
+    monkeypatch.setattr(demo, "Api", lambda token: api)
+    assert demo.main(["down", "--unsaved", "--state", str(folder)]) == 0
+    assert api.deleted == [1]
+
+
+def test_save_takes_a_folder_and_nothing_else_does(monkeypatch, capsys):
+    monkeypatch.setattr(demo.proof, "linode_token", lambda: pytest.fail("Linode was asked"))
+    for words in (
+        ["save"],
+        ["status", "somewhere"],
+        ["up", "--unsaved"],
+        ["save", "x", "--days", "2"],
+    ):
+        with pytest.raises(SystemExit):
+            demo.main(words)
+    capsys.readouterr()
+
+
+@pytest.mark.sqlite_only  # the save copies SQLite's file; a demo's checker keeps its store there
+def test_a_saved_home_shows_its_servers_with_the_server_gone(home, tmp_path_factory, monkeypatch):
+    """A home the checker made, with a collection it analysed, saved, and then read by the
+    checker's own code with the original out of reach: the store names the saved files."""
+    from test_schedule import CLEAN
+    from test_snapshot import add_bundle
+
+    from checker.assess import analyze
+    from checker.evidence import Store, database_file, load_config
+    from checker.fleet import read_host
+
+    base, store, identity, config = home
+    (base / "evidence" / "web01").mkdir(parents=True)
+    add_bundle(home, "evidence/web01/b1", 10, CLEAN)
+    analyze(store, "web01", identity, config.recipients, "evidence/web01/b1")
+    assert read_host(base, "web01")[1] is not None
+    out = tmp_path_factory.mktemp("laptop")
+    folder = out / "state"
+    demo.save_state(folder, state(1, 2))
+    monkeypatch.setattr(demo.install, "Node", lambda *a, **k: Home(base))
+    monkeypatch.setattr(demo.install, "DATA", str(base))
+    as_ssh(monkeypatch, base)
+    target = out / "dataset"
+    assert demo.save(folder, target, NOON) == 0
+    (base / "evidence").rename(base / "gone")
+    assert read_host(base, "web01")[1] is None  # the original can't be read any more
+    monkeypatch.setenv("CHECKER_HOME", str(target))
+    item, assessment, _, advisor_on = read_host(target, "web01")
+    assert item.state == "analysed" and assessment is not None and not advisor_on
+    saved = Store(database_file(target), read_only=True)
+    paths = [row["path"] for row in saved.bundles("web01")]
+    saved.close()
+    assert paths == [str(target / "evidence" / "web01" / "b1.age")]
+    # Its guards are back: what a row says of a collection still can't be changed.
+    import sqlite3
+
+    direct = sqlite3.connect(target / "checker.db")
+    with pytest.raises(sqlite3.DatabaseError):
+        direct.execute("UPDATE bundles SET path = 'x'")
+    direct.close()
+    assert load_config(target).identity_file == str(target / "keys" / "evidence-identity.txt")
+    about = json.loads((target / "demo.json").read_text())
+    assert about["changed_here"].startswith(f"4 paths in the store, from {base} to this folder")
+    assert not (target / "keys" / "mail-key.txt").exists()
+
+
+def test_settings_that_could_run_or_send_anything_here_are_put_back(tmp_path, monkeypatch):
+    """A settings file comes from the server like any other file. The checker runs the commands
+    one names, and sends where it says."""
+    import yaml
+
+    from checker.evidence import load_config
+
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    config = yaml.safe_load((base / "config.yaml").read_text())
+    config |= {
+        "notify_command": "/usr/bin/touch /tmp/ran",
+        "advisor": {"enabled": True, "api_key_source": "command:/usr/bin/touch /tmp/ran"},
+        "packs": {"source": "https://elsewhere.example/", "apply": "all"},
+        "retention_days": 30,
+    }
+    (base / "config.yaml").write_text(yaml.safe_dump(config))
+    target = tmp_path / "dataset"
+    assert demo.save(folder, target, NOON) == 0
+    kept = load_config(target)
+    assert kept.notify_command is None and not kept.advisor.enabled
+    assert kept.advisor == type(kept.advisor)()  # as a new checker has it: off
+    assert "elsewhere" not in kept.packs.source and not kept.updates.check
+    assert kept.retention_days == 30 and kept.packs.apply == "all"  # what is harmless stays
+
+
+@pytest.mark.parametrize(
+    "hosts",
+    [
+        "hosts:\n- {name: a, address: 198.51.100.9, user: root, auth: agent}\n",
+        "hosts:\n- {name: a, address: 198.51.100.9, user: root}\n",
+        "hosts: [oops]\n",
+        "- not a list of servers\n",
+    ],
+)
+def test_a_list_of_servers_that_would_offer_this_machines_keys_stops_the_save(
+    tmp_path, monkeypatch, hosts
+):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    (base / "hosts.yaml").write_text(hosts)
+    with pytest.raises(demo.DemoError, match="list of servers|settings can't be read"):
+        demo.save(folder, tmp_path / "dataset", NOON)
+    assert not (tmp_path / "dataset.part").exists()
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/etc/passwd", "{data}/../../etc/passwd", "{data}/web.db", "{data}/evidence/db-1/gone.age"],
+)
+def test_a_store_that_names_a_file_that_isnt_a_saved_one_stops_the_save(
+    tmp_path, monkeypatch, path
+):
+    """The checker opens, writes beside and deletes the files its store names."""
+    folder, base, store = saving(tmp_path, monkeypatch)
+    monkeypatch.setattr(demo.install, "DATA", str(base))
+    store.execute("CREATE TABLE derived (path TEXT)")
+    store.execute("INSERT INTO derived VALUES (?)", (path.replace("{data}", str(base)),))
+    store.commit()
+    store.close()
+    with pytest.raises(demo.DemoError, match="names a file"):
+        demo.save(folder, tmp_path / "dataset", NOON)
+
+
+def test_a_second_name_for_a_file_comes_down_as_a_file(tmp_path, monkeypatch):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    (base / "reports").mkdir()
+    (base / "reports" / "report-a.html").write_text("a report\n")
+    os.link(base / "reports" / "report-a.html", base / "reports" / "report-b.html")
+    (base / "packs" / "keylists" / ".new-1").mkdir(parents=True)
+    (base / "packs" / "keylists" / ".new-1" / "half-made.pub").write_text("not yet\n")
+    target = tmp_path / "dataset"
+    assert demo.save(folder, target, NOON) == 0
+    assert (target / "reports" / "report-b.html").read_text() == "a report\n"
+    assert not (target / "packs" / "keylists").exists()
+
+
+@pytest.mark.parametrize(
+    ("instead", "says"),
+    [
+        (["sh", "-c", "echo 'not a tar'; echo SENT 1 0 0 >&2"], "couldn't be taken apart"),
+        (["sh", "-c", "printf '\\033[2Jgone wrong' >&2; exit 1"], r"couldn't be read:\n\?\[2Jgone"),
+        (["sh", "-c", "head -c 3000000 /dev/zero; echo SENT 1 0 0 >&2"], "sent more than"),
+        (["sh", "-c", "sleep 30"], "still sending after"),
+    ],
+)
+def test_a_server_gone_wrong_stops_the_save_and_leaves_nothing(
+    tmp_path, monkeypatch, instead, says
+):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    as_ssh(monkeypatch, base, instead)
+    monkeypatch.setattr(demo, "MOST_BYTES", 2_000_000)
+    if "sleep" in instead[-1]:
+        real = demo.threading.Timer
+        monkeypatch.setattr(demo.threading, "Timer", lambda seconds, then: real(0.3, then))
+    with pytest.raises(demo.DemoError, match=says):
+        demo.save(folder, tmp_path / "dataset", NOON)
+    assert [p.name for p in tmp_path.iterdir() if "dataset" in p.name] == []
+
+
+def test_a_sealed_value_or_file_is_opened_to_be_searched(tmp_path, monkeypatch, capsys):
+    """What the checker seals with the evidence key (a collection's session, the last run's
+    state, a report) is read too, and one that won't open isn't passed over."""
+    import gzip
+
+    import pyrage
+    from pyrage import x25519
+
+    from checker.evidence import load_identity
+
+    here = "203.0.113.9"
+    folder, base, store = saving(tmp_path, monkeypatch)
+    to = [load_identity(base / "keys" / "evidence-identity.txt").to_public()]
+    store.execute(
+        "INSERT INTO custody VALUES ('x', ?)", (pyrage.encrypt(f"from {here}".encode(), to),)
+    )
+    store.commit()
+    (base / "run-state.age").write_bytes(pyrage.encrypt(b'{"seen": "203-0-113-9.sslip.io"}', to))
+    (base / "reports").mkdir()
+    (base / "reports" / "report-x.html.age").write_bytes(
+        pyrage.encrypt(gzip.compress(b"<p>9.113.0.203.in-addr.arpa</p>"), to)
+    )
+    other = [x25519.Identity.generate().to_public()]
+    (base / "reports" / "report-y.html.age").write_bytes(pyrage.encrypt(b"x", other))
+    assert demo.save(folder, tmp_path / "dataset", NOON) == 1
+    store.close()
+    said = capsys.readouterr().out
+    assert "FAIL the store's table custody: names this machine" in said
+    assert "FAIL run-state.age: names this machine" in said
+    assert "FAIL reports/report-x.html.age: names this machine" in said
+    assert "FAIL reports/report-y.html.age: couldn't be opened with the saved key" in said
+
+
+def test_an_address_is_looked_for_in_each_way_it_is_written():
+    assert demo.forms_of("203.0.113.9") == [
+        "203.0.113.9",
+        "203-0-113-9",
+        "9.113.0.203.in-addr.arpa",
+        "9.113.0.203.IN-ADDR.ARPA",
+    ]
+    six = demo.forms_of("2001:db8:0:1::abcd")
+    assert "2001:0db8:0000:0001:0000:0000:0000:abcd" in six and "2001:db8:0:1::/64" in six
+    assert "2001:DB8:0:1::ABCD" in six
+    assert demo.forms_of("not an address") == ["not an address"]
+
+
+def test_a_save_before_the_last_days_collection_says_so_and_down_still_waits(
+    tmp_path, monkeypatch, capsys
+):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    up = stay("2026-11-15T03:00")
+    demo.save_state(folder, up)
+    collection = base / "evidence" / "db-1" / "db-1-20261110T030000Z-abcd1234.age"
+    before = datetime(2026, 11, 14, 3, 4, tzinfo=UTC).timestamp()
+    os.utime(collection, (before, before))
+    assert demo.save(folder, tmp_path / "early", datetime(2026, 11, 14, 20, 0, tzinfo=UTC)) == 0
+    assert "NOTE the last day's check has left no collection yet" in capsys.readouterr().out
+    assert "before the last day's check" in demo.unsaved(folder)
+    # After it, with that day's collection there, the save is whole and `down` goes ahead.
+    after = datetime(2026, 11, 15, 3, 4, tzinfo=UTC).timestamp()
+    os.utime(collection, (after, after))
+    assert demo.save(folder, tmp_path / "whole", datetime(2026, 11, 15, 3, 30, tzinfo=UTC)) == 0
+    assert "NOTE" not in capsys.readouterr().out and demo.unsaved(folder) is None
+    assert json.loads((tmp_path / "whole" / "demo.json").read_text())["last_day_in_it"] is True
+
+
+READ_THE_RECORD = """
+from django.contrib.auth import get_user_model
+from checker.web.models import ActionRecord, CheckRun
+line, run = ActionRecord.objects.get(), CheckRun.objects.get()
+print(line.who, line.address, run.who, run.ended, get_user_model().objects.count())
+"""
+
+
+def test_the_pages_record_comes_down_with_no_address_and_no_account(tmp_path, monkeypatch, capsys):
+    """Who did what at the pages, and the checks started from one, are in the saved copy for the
+    Activity and Checks pages to show. The address in each row is replaced on the server, and
+    the accounts, sessions and sign-ins never leave it."""
+    import sqlite3
+
+    here = "203.0.113.9"
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    pages_used(base, here).close()
+    target = tmp_path / "dataset"
+    assert demo.save(folder, target, NOON) == 0
+    said = capsys.readouterr().out
+    assert "came down (2 rows), each address in it replaced by '(not kept)'" in said
+    assert not (target / "web-record.db").exists()
+    assert here.encode() not in (target / "web.db").read_bytes()
+    web = sqlite3.connect(target / "web.db")
+    assert web.execute("SELECT who, address, action, target FROM web_actionrecord").fetchall() == [
+        ("ops", "(not kept)", "viewed a server's results", "db-1")
+    ]
+    assert web.execute("SELECT who, address, hosts, ended FROM web_checkrun").fetchall() == [
+        ("ops", "(not kept)", '["db-1"]', "finished")
+    ]
+    for table in ("auth_user", "django_session", "web_loginattempt"):
+        assert web.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,), table  # noqa: S608
+    # The record is still one that can only be added to.
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        web.execute("DELETE FROM web_actionrecord")
+    web.close()
+    about = json.loads((target / "demo.json").read_text())
+    assert about["pages_record"].startswith("1 lines of who did what at the pages and 1 checks")
+    # And the checker's own code reads them, as its Activity and Checks pages do.
+    read = subprocess.run(
+        [sys.executable, "-c", demo._NEW_ACCOUNTS + READ_THE_RECORD, str(target)],
+        cwd=Path(demo.__file__).resolve().parents[2],
+        env={**os.environ, "CHECKER_HOME": str(target)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert read.returncode == 0, read.stderr
+    assert read.stdout.split() == ["ops", "(not", "kept)", "ops", "finished", "0"]
+    assert all(p.stat().st_mode & 0o077 == 0 for p in target.rglob("*"))
+
+
+def test_what_is_sent_of_the_pages_record_never_held_the_address(tmp_path, monkeypatch):
+    """Looked for in the tar itself, as it leaves the server."""
+    here = "203.0.113.9"
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    pages_used(base, here).close()
+    work = tmp_path / "work"
+    work.mkdir()
+    archive, sent, _, _ = demo.fetch(Home(base), work)
+    assert here.encode() not in archive.read_bytes() and b"session data" not in archive.read_bytes()
+    assert b"(not kept)" in archive.read_bytes() and sent == 9
+    # Those two tables and no other: no account's name or password came with them.
+    import sqlite3
+    import tarfile
+
+    with tarfile.open(archive) as tar:
+        tar.extract("web-record.db", work, filter="data")
+    record = sqlite3.connect(work / "web-record.db")
+    names = {name for (name,) in record.execute("SELECT name FROM sqlite_master")}
+    record.close()
+    assert names - {"sqlite_sequence"} == {"web_actionrecord", "web_checkrun"}
+    assert b"hash" not in archive.read_bytes()
+
+
+def test_a_pages_record_with_an_address_left_in_or_a_line_naming_it_stops_the_save(
+    tmp_path, monkeypatch, capsys
+):
+    import sqlite3
+
+    here = "203.0.113.9"
+    folder, base, store = saving(tmp_path, monkeypatch)
+    store.close()
+    web = pages_used(base, here)
+    # A line whose own words hold the address: the server replaces the address column only.
+    web.execute(
+        "INSERT INTO web_actionrecord (at, who, address, action, target, outcome, detail)"
+        " VALUES ('2026-11-11 06:00:00', 'ops', 'x', 'signed in', '', 'done', ?)",
+        (f"from {here}",),
+    )
+    web.commit()
+    web.close()
+    assert demo.save(folder, tmp_path / "dataset", NOON) == 1
+    assert "FAIL the pages' record's table web_actionrecord: names this machine" in (
+        capsys.readouterr().out
+    )
+    # And a server that didn't replace one isn't believed.
+    came = tmp_path / "came"
+    came.mkdir()
+    (came / "keys").mkdir()
+    record = sqlite3.connect(came / "web-record.db")
+    record.execute("CREATE TABLE web_checkrun (id INTEGER PRIMARY KEY, kind TEXT, address TEXT)")
+    record.execute("INSERT INTO web_checkrun VALUES (1, 'check', ?)", (here,))
+    record.commit()
+    record.close()
+    with pytest.raises(demo.DemoError, match="with its address still in"):
+        demo.record_here(came)
+
+
+def test_a_working_copy_of_a_dataset_points_at_itself_and_leaves_the_dataset_alone(
+    tmp_path, monkeypatch
+):
+    """screenshots.py works on one: a saved folder names its own place, so it can't be moved."""
+    import sqlite3
+
+    import yaml
+
+    folder, base, store = saving(tmp_path, monkeypatch)
+    dataset = tmp_path / "out" / "dataset"
+    assert demo.save(folder, dataset, NOON) == 0
+    store.close()
+    saved = sqlite3.connect(dataset / "checker.db")  # a row naming a saved file, as a real store's
+    evidence = dataset / "evidence" / "db-1" / "db-1-20261110T030000Z-abcd1234.age"
+    saved.execute("CREATE TABLE derived (path TEXT)")
+    saved.execute("INSERT INTO derived VALUES (?)", (str(evidence),))
+    saved.commit()
+    saved.close()
+    before = {p: p.read_bytes() for p in dataset.rglob("*") if p.is_file()}
+    copy = demo.working_copy(dataset, tmp_path / "scratch")
+    assert copy == (tmp_path / "scratch" / "dataset").resolve()
+    assert {p: p.read_bytes() for p in dataset.rglob("*") if p.is_file()} == before
+    config = yaml.safe_load((copy / "config.yaml").read_text())
+    assert config["identity_file"] == str(copy / "keys" / "evidence-identity.txt")
+    paths = [
+        path for (path,) in sqlite3.connect(copy / "checker.db").execute("SELECT path FROM derived")
+    ]
+    assert paths == [str(copy / "evidence" / "db-1" / "db-1-20261110T030000Z-abcd1234.age")]
+    with pytest.raises(demo.DemoError, match="isn't a saved demo dataset"):
+        demo.working_copy(tmp_path / "scratch", tmp_path / "again")
+
+
+def test_the_addresses_a_picture_must_not_hold_come_from_the_dataset(tmp_path):
+    (tmp_path / "demo.json").write_text(
+        json.dumps(
+            {
+                "web_name": "192-0-2-1.sslip.io",
+                "servers": [{"address": "192.0.2.1"}, {"address": "192.0.2.5"}, {"name": "x"}],
+            }
+        )
+    )
+    assert demo.addresses_of(tmp_path) == ["192-0-2-1.sslip.io", "192.0.2.1", "192.0.2.5"]
+
+
+def test_the_screenshot_script_takes_only_a_saved_dataset_and_leaves_nothing(tmp_path):
+    pytest.importorskip("playwright")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "web.db").write_text("an account")
+    done = subprocess.run(
+        [
+            sys.executable,
+            str(HERE / "screenshots.py"),
+            "--dataset",
+            str(tmp_path / "home"),
+            "--out",
+            "x",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 1 and "isn't a saved demo dataset" in done.stderr
+    assert (tmp_path / "home" / "web.db").read_text() == "an account"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["home"]  # no copy, no pictures
+
+
+def a_record(folder, *statements):
+    import sqlite3
+
+    (folder / "keys").mkdir(parents=True, exist_ok=True)
+    (folder / "web.db").unlink(missing_ok=True)
+    (folder / "web-record.db").unlink(missing_ok=True)
+    record = sqlite3.connect(folder / "web-record.db")
+    for statement in statements:
+        record.execute(statement)
+    record.commit()
+    record.close()
+
+
+def a_run(hosts, who, started, number=1, ended=""):
+    return (
+        f"INSERT INTO web_checkrun VALUES ({number}, 'check', {hosts}, {who}, '(not kept)',"  # noqa: S608
+        f" '{started}', NULL, '{ended}')"
+    )
+
+
+RUNS = "CREATE TABLE web_checkrun (id INTEGER PRIMARY KEY, kind TEXT, hosts TEXT, who TEXT,"
+RUNS += " address TEXT, started_at TEXT, finished_at TEXT, ended TEXT)"
+
+
+@pytest.mark.parametrize(
+    ("statements", "says"),
+    [
+        # Another table: an account's, say.
+        (["CREATE TABLE auth_user (username TEXT, password TEXT)"], "a table that wasn't asked"),
+        # Rows made up as they are read, from a file of a few kilobytes.
+        (
+            [
+                "CREATE VIEW web_checkrun AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT"
+                " i + 1 FROM n) SELECT i AS id, 'check' AS kind, '[]' AS hosts, 'x' AS who,"
+                " '(not kept)' AS address, '2026-11-11' AS started_at, NULL AS finished_at,"
+                " hex(zeroblob(1000000)) AS ended FROM n"
+            ],
+            "a view that wasn't asked",
+        ),
+        (
+            [RUNS, "CREATE TRIGGER t AFTER INSERT ON web_checkrun BEGIN SELECT 1; END"],
+            "a trigger that wasn't asked",
+        ),
+        # Rows the pages would fail on, which SQLite holds without complaint.
+        (
+            [
+                RUNS,
+                a_run("'not json'", "'x'", "2026-11-11"),
+            ],
+            "the pages couldn't show",
+        ),
+        (
+            [
+                RUNS,
+                a_run("'[]'", "'x'", "not a date"),
+            ],
+            "the pages couldn't show",
+        ),
+        (
+            [
+                RUNS,
+                a_run("'[]'", "x'00'", "2026-11-11"),
+            ],
+            "the pages couldn't show",
+        ),
+        (
+            [
+                RUNS,
+                a_run("'[1]'", "'x'", "2026-11-11"),
+            ],
+            "the pages couldn't show",
+        ),
+    ],
+)
+def test_a_record_that_isnt_two_tables_of_rows_the_pages_can_show_stops_the_save(
+    tmp_path, statements, says
+):
+    a_record(tmp_path, *statements)
+    with pytest.raises(demo.DemoError, match=says):
+        demo.record_here(tmp_path)
+
+
+def test_a_record_far_bigger_than_a_record_stops_the_save(tmp_path, monkeypatch):
+    monkeypatch.setattr(demo, "MOST_IN_A_VALUE", 5000)
+    a_record(
+        tmp_path,
+        RUNS,
+        *(a_run("'[]'", "'x'", "2026-11-11", i, "x" * 900) for i in range(1, 8)),
+    )
+    with pytest.raises(demo.DemoError, match="bigger than a record"):
+        demo.record_here(tmp_path)
+
+
+def test_a_server_that_isnt_a_web_server_loses_the_setups_web_stack():
+    """Seen on mail-1, 2026-11-14: the proofs' PHP site read as a web server open to PHP2Shell."""
+    checker = Ran(*[(0, "SHA256:" + "a" * 43 + "\n", "")] * 4)
+    server = Ran(*[(0, "256 SHA256:" + "a" * 43 + " root@x (ED25519)\n", "")] * 5)
+    server.wait = lambda seconds: None
+    member = story.Member("mail-1", "mail", "rocky9")
+    made = demo.Server("mail-1", "fleet", "rocky9", "mail", 1, "l", "192.0.2.5")
+    demo.prepare_member(checker, server, made, member, "ssh-ed25519 SCANNER")
+    _, keep, _, not_web, _ = server.calls
+    assert keep[1] == story.KEEP and not_web[1] == story.NOT_WEB
+    assert not any("fastcgi_pass" in command for command, _ in server.calls)
+
+
+def test_the_kept_audit_rules_and_container_and_the_removed_web_stack():
+    """Read off the scripts: the rules go where auditd loads them at a restart; the container runs
+    for good and comes back at boot; the web stack and the planted site go."""
+    assert "auditctl -l | grep -E 'key=cc-' > /etc/audit/rules.d/50-demo.rules" in story.KEEP
+    assert "--restart=always" in story.KEEP and "sleep infinity" in story.KEEP
+    assert "podman-restart.service" in story.KEEP
+    assert "podman container exists metrics" in story.KEEP
+    assert "augenrules >/dev/null" in story.KEEP  # audit.rules rebuilt: any restart path loads them
+    assert '|| echo "keep: container not started"' in story.KEEP  # as the setup, never fatal
+    assert story.NOT_WEB.count("-o DPkg::Lock::Timeout=600") == 2  # Ubuntu's updates hold the lock
+    for gone in (
+        "purge -y -qq 'nginx*' 'php*'",
+        "dnf remove -y -q nginx 'php*'",
+        "rm -rf /var/www/shop",
+    ):
+        assert gone in story.NOT_WEB, gone
+    # What they name is what the setup made, under the demo's names for it.
+    assert ("/var/www/proof", "/var/www/shop") in story.SETUP_NAMES
+    assert ("cc-proof-pod", "metrics") in story.SETUP_NAMES
+
+
+def test_the_pictures_folder_can_never_be_the_dataset_or_hold_it(tmp_path):
+    """Seen in review: --out is replaced whole, and `--out DATASET` deleted the only copy."""
+    pytest.importorskip("playwright")
+    import screenshots
+
+    dataset = tmp_path / "saves" / "run"
+    dataset.mkdir(parents=True)
+    for out in (dataset, dataset / "pictures", tmp_path / "saves", tmp_path):
+        assert "replaced whole" in screenshots.refusal(dataset, out), out
+    other = tmp_path / "pictures"
+    assert screenshots.refusal(dataset, other) is None  # a new folder
+    other.mkdir()
+    (other / "fleet.png").write_bytes(b"png")
+    assert screenshots.refusal(dataset, other) is None  # a folder of pictures
+    (other / "notes.txt").write_text("mine")
+    assert "holds more than pictures" in screenshots.refusal(dataset, other)
+    (other / "notes.txt").unlink()
+    (tmp_path / "saves" / ".shots-data-x1").mkdir()  # an earlier run's copy, key and all
+    assert "an earlier run's copy" in screenshots.refusal(dataset, other)
+
+
+def test_the_people_who_used_the_demo_are_named_from_its_own_records(tmp_path):
+    """Seen in review: "john (web interface)" was in the evidence page's custody list."""
+    import sqlite3
+
+    store = sqlite3.connect(tmp_path / "checker.db")
+    store.execute("CREATE TABLE custody (operator TEXT)")
+    store.executemany(
+        "INSERT INTO custody VALUES (?)",
+        [("john (web interface)",), ("compromise-checker",), ("ops@checker",), (None,), ("x",)],
+    )
+    store.execute("CREATE TABLE baselines (operator TEXT)")
+    store.execute("INSERT INTO baselines VALUES ('root')")
+    store.commit()
+    web = sqlite3.connect(tmp_path / "web.db")
+    web.execute("CREATE TABLE web_actionrecord (who TEXT)")
+    web.execute("INSERT INTO web_actionrecord VALUES ('jane.doe')")
+    web.execute("CREATE TABLE auth_user (username TEXT)")
+    web.execute("INSERT INTO auth_user VALUES ('Admin')")
+    web.commit()
+    assert demo.names_of(tmp_path) == ["jane.doe", "john", "ops"]
+
+
+def test_a_working_copy_that_still_names_the_dataset_anywhere_is_refused(tmp_path, monkeypatch):
+    folder, base, store = saving(tmp_path, monkeypatch)
+    dataset = tmp_path / "out" / "dataset"
+    assert demo.save(folder, dataset, NOON) == 0
+    store.close()
+    (dataset / "hosts.yaml").write_text(f"hosts: []\n# was in {dataset}\n")
+    with pytest.raises(demo.DemoError, match=r"still names .*\(hosts\.yaml\)"):
+        demo.working_copy(dataset, tmp_path / "scratch")

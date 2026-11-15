@@ -382,3 +382,107 @@ def test_in_memory_comes_from_the_mount_table_not_the_device_number():
     # Without a mount table nothing is in memory: relative names aren't excused.
     tmpfs = event("systemd", SYSTEMD, "mknodat", ("chr", "CREATE", MEMORY), cwd="/")
     assert judge(tmpfs, set()).unexpected == ["systemd (/usr/lib/systemd/systemd) mknodat /chr"]
+
+
+# --- the setup's container, and what it says when it couldn't start one ---------------------
+
+
+def docker_step(tmp_path, apt_ends: int):
+    """SETUP's ufw-and-Docker part, run here with stand-ins for the commands it calls."""
+    import re
+    import subprocess
+
+    part = re.search(r"^if command -v ufw .*?^fi$", proof.SETUP, re.DOTALL | re.MULTILINE).group(0)
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    calls = tmp_path / "calls"
+    for name in ("ufw", "systemctl", "docker", "apt-get"):
+        ends = apt_ends if name == "apt-get" else 0
+        said = "E: containerd: Connection timed out [IP: 2600:3c01::f03c 80]" if ends else ""
+        (tools / name).write_text(
+            f'#!/bin/sh\necho "{name} $*" >> "{calls}"\n'
+            f'[ -z "{said}" ] || echo "{said}" >&2\nexit {ends}\n'
+        )
+        (tools / name).chmod(0o755)
+    done = subprocess.run(
+        ["bash", "--norc", "--noprofile", "-eu", "-c", part],  # noqa: S607
+        env={"PATH": f"{tools}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    return done, calls.read_text().splitlines()
+
+
+def test_the_setups_docker_is_fetched_over_ipv4_and_tried_again(tmp_path):
+    done, calls = docker_step(tmp_path, 0)
+    assert done.returncode == 0 and done.stderr == "" and done.stdout == ""
+    fetch = next(line for line in calls if line.startswith("apt-get"))
+    assert "-o Acquire::ForceIPv4=true -o Acquire::Retries=3 install -y -qq docker.io" in fetch
+    assert calls[-1] == "docker run -d --name cc-proof-web docker.io/library/nginx:alpine"
+
+
+def test_a_container_that_couldnt_start_says_why_and_the_setup_goes_on(tmp_path, capsys):
+    done, calls = docker_step(tmp_path, 100)
+    assert done.returncode == 0  # the proofs that don't need the container still run
+    assert not any(line.startswith(("systemctl", "docker")) for line in calls)
+    notes = proof.setup_notes(done.stderr)
+    assert notes == [
+        "proof setup: Docker not started",
+        "proof setup:   E: containerd: Connection timed out [IP: 2600:3c01::f03c 80]",
+    ]
+
+    class Conn:
+        async def run(self, script, check, timeout):
+            assert check and script == "the setup"
+            return type("Done", (), {"stderr": done.stderr})
+
+    asyncio.run(proof.set_up(Conn(), "the setup", "ubuntu24.04"))
+    assert capsys.readouterr().out.splitlines() == [f"ubuntu24.04: {note}" for note in notes]
+    assert proof.setup_notes(None) == [] and proof.setup_notes(b"proof setup: x\nother\n") == [
+        "proof setup: x"
+    ]
+
+
+def test_a_podman_container_that_couldnt_start_says_why_too(tmp_path):
+    import re
+    import subprocess
+
+    part = re.search(r"^if ! command -v ufw .*?^fi$", proof.SETUP, re.DOTALL | re.MULTILINE).group(
+        0
+    )
+    import shutil
+
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    for name in ("tail", "sed"):  # what the step uses, and nothing else this machine has (ufw)
+        (tools / name).symlink_to(shutil.which(name))
+    (tools / "dnf").write_text("#!/bin/sh\necho 'Error: Failed to download metadata' >&2\nexit 1\n")
+    (tools / "dnf").chmod(0o755)
+    done = subprocess.run(  # noqa: S603
+        [shutil.which("bash"), "--norc", "--noprofile", "-eu", "-c", part],
+        env={"PATH": str(tools)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert done.returncode == 0
+    assert proof.setup_notes(done.stderr) == [
+        "proof setup: Podman container not started",
+        "proof setup:   Error: Failed to download metadata",
+    ]
+
+
+def test_the_setup_script_is_shell_that_parses():
+    import subprocess
+
+    done = subprocess.run(
+        ["bash", "-n"],  # noqa: S607
+        input=proof.SETUP,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr

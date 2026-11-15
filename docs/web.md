@@ -44,9 +44,11 @@ purpose. These are real results from this tool, with addresses replaced:
 
 ![Known threats](screenshots/threats.png)
 
-To take them again: `tests/integration/demo_fleet.py` makes the fleet (about 3 cents of Linode time),
-and `tests/integration/screenshots.py` photographs it. Every page is scrubbed of public addresses on
-its way to the browser, and the run stops if any survive.
+To take them again: `tests/integration/demo.py up --days N` runs the demo fleet's story on
+throwaway servers, `demo.py save DIR` brings its data down, and `tests/integration/screenshots.py
+--dataset DIR` photographs it. It works on a throwaway copy, so the saved folder is only read.
+Every page is scrubbed of the demo's addresses and any public address on its way to the browser,
+and the run stops if any survive.
 
 ## Where it listens
 

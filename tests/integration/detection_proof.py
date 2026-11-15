@@ -431,7 +431,7 @@ async def detect(
             setup = proof.SETUP.replace("{controller}", controller.split()[0]).replace(
                 "{scanner_key}", scanner_key.export_public_key().decode().strip()
             )
-            await conn.run(setup, check=True, timeout=600)
+            await proof.set_up(conn, setup, distro)
             await conn.run(WEB_SETUP, check=True, timeout=120)
             home = work / f"{distro}-home"
             # Access logs too: the web checks read them (policy §7's opt-in).

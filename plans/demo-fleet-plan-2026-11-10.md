@@ -128,14 +128,23 @@ One script, `tests/integration/demo.py`, with four commands:
   says "Known threats, Manage: put the stopped threat update back (the story's day 6)", but a
   stay shorter than the story never plays day 5, so nothing is stopped and there is no "Stopped by
   hand" section. Fix: print each hands-on item only when the days it needs were played (or say
-  which day it needs).
+  which day it needs). **Fixed (D.5, #184):** each item carries the day it needs. The list holds
+  what the days played so far allow, then "from day N" for later days of this stay, then what this
+  stay never reaches.
 - **The demo checker's pages carry two red notes** (four-day run, 2026-11-14): "This machine still
   lets people log in over SSH with a password" and "An update to this machine is waiting for a
   restart". Both are true of a fresh Linode and both are on every page a demo shows. Fix in `up`:
   turn password logins off on the checker's server and restart it after the install, before the
-  first check.
-- **`status` exits non-zero while a demo is up and fine** (2026-11-14). Fix: 0 when it could read
-  everything, non-zero only when it couldn't.
+  first check. **Fixed (D.5, #184):** the install line adds `--ssh-passwords-off` (the
+  installer's own flag; root's key login counts). `settle` waits for Ubuntu's update runs,
+  restarts the server if an update asks (at most twice, the restart known by a new boot id), runs
+  the status service, and prints a WARN for whatever the pages will still say. It never stops
+  `up`: a note on a page isn't worth the servers. `up` then makes a fresh first-account link, since
+  the restart eats into the install's hour. During a stay of days, Ubuntu's updates go on and the
+  restart note can come back: `status` says so. Unproven on a server until the next `up`.
+- **`status` exits non-zero while a demo is up and fine** (2026-11-14). Not a fault: it ends 1
+  when a story step failed (day 3's container step had). **Fixed (D.5):** it now says which reason
+  it ends 1 for.
 
 ## Keep-alive as built (D.4, 2026-11-10)
 

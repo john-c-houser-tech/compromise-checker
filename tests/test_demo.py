@@ -99,7 +99,9 @@ def test_the_install_line_is_the_pages_with_the_hash_checked_first():
     assert "/releases/download/v0.1.2/install.py" in line
     assert line.index("sha256sum -c -") < line.index("sudo python3 -I")
     assert f'echo "{"ab" * 32}  $d/install.py"' in line
-    assert line.endswith("--web-address 192-0-2-1.sslip.io --test-certificates)")
+    assert line.endswith(
+        "--web-address 192-0-2-1.sslip.io --test-certificates --ssh-passwords-off)"
+    )
     assert len(demo.INSTALLER_SHA256) == 64 and int(demo.INSTALLER_SHA256, 16)
 
 
@@ -463,7 +465,36 @@ def test_status_says_overdue_and_names_servers_the_state_doesnt(tmp_path, capsys
     api.nodes.pop()
     assert demo.status(api, tmp_path, datetime(2026, 11, 11, 23, tzinfo=UTC)) == 0
     assert demo.status(api, tmp_path, datetime(2026, 11, 12, 0, 5, tzinfo=UTC)) == 1
-    assert "OVERDUE: its end date was 2026-11-11" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "OVERDUE: its end date was 2026-11-11" in out and "Ends 1: run `down`." in out
+
+
+def test_status_says_why_it_ends_1_and_what_the_pages_now_warn(tmp_path, monkeypatch, capsys):
+    """Seen 2026-11-14: day 3's container step failed, and status ended 1 without saying why. The
+    restart note can come back during a stay (Ubuntu's updates go on): status says so."""
+    up = state(1)
+    up.plan = [{"id": "d3-1", "day": 3, "when": "2026-11-13T13:15", "where": "w", "says": "s"}]
+    up.days, up.last_check, up.until = 4, "2026-11-15T03:00", "2026-11-16"
+    demo.save_state(tmp_path, up)
+    warned = Ran(*[(0, '{"restart_needed": true, "ssh_passwords": false}', "")] * 3)
+    warned.close = lambda: None
+    monkeypatch.setattr(demo.install, "Node", lambda *a, **k: warned)
+    api = FakeApi([node("cc-demo-abc123-s1", [demo.TAG], 1)])
+    when = datetime(2026, 11, 13, 14, tzinfo=UTC)
+    for lines, why in [
+        (["  day 3, x  w: s: d3-1 ended 0 ATTACK FAILED: container;"], "a story step above"),
+        (["  day 3, x  w: s: LATE: it should have run by now"], "a day's step is late"),
+        (
+            ["  The checker's server couldn't be asked (gone)"],
+            "the checker's server couldn't be asked",
+        ),
+    ]:
+        monkeypatch.setattr(demo, "story_so_far", lambda checker, plan, lines=lines: (lines, False))
+        assert demo.status(api, tmp_path, when) == 1
+        out = capsys.readouterr().out
+        assert f"Ends 1: {why}" in out and "run `down`" not in out
+        reached = "couldn't be asked" not in lines[0]  # an unreachable server isn't asked again
+        assert ("The pages now warn: the pages say an update is waiting" in out) is reached
 
 
 # --- the story (D.3) -----------------------------------------------------------------------
@@ -827,7 +858,158 @@ def test_status_prints_what_is_left_to_the_person(tmp_path, capsys):
         datetime(2026, 11, 10, 14, tzinfo=UTC),
     )
     out = capsys.readouterr().out
-    assert "Yours to do while it is up" in out and "put the stopped threat update back" in out
+    assert "Yours to do while it is up" in out and "put back the one the admin stopped" in out
+
+
+def test_the_hands_on_list_holds_only_what_the_days_reached(capsys):
+    """Seen 2026-11-14: a four-day stay was told to put back a threat update day 5 stops."""
+
+    def parts(days, played=None):
+        demo.hands_on(days, played)
+        out = capsys.readouterr().out
+        now, _, rest = out.partition("Once the story has played their day:")
+        if not rest:
+            now, _, never = out.partition("Not on this demo")
+            return now, "", never
+        soon, _, never = rest.partition("Not on this demo")
+        return now, soon, never
+
+    now, soon, never = parts(4)  # four days, all played: as at the end of tonight's run
+    assert "staging-1 back" in now and "app-1 alone" in now and not soon
+    assert "put back the one the admin stopped" in never and "story to day 4" in never
+    assert '("Stopped by hand"). (needs day 5)' in never
+    now, soon, never = parts(3)  # the boundaries: app-1 is day 3, staging-1 day 4, the rest 5
+    assert "app-1 alone" in now and "staging-1 back" in never
+    now, soon, never = parts(5)
+    assert "put back the one the admin stopped" in now and not never
+    now, soon, never = parts(0)  # one sitting plays every day
+    assert "put back the one the admin stopped" in now and not soon and not never
+    now, soon, never = parts(4, played=0)  # just after `up --days 4`: only day 0 has run
+    assert "Start a check" in now and "app-1 alone" not in now
+    assert "from day 3: Check app-1 alone" in soon and "from day 4: Manage, Add a server" in soon
+    assert "put back the one the admin stopped" in never
+    assert demo.last_day(14) == demo.last_day(0) == max(s.day for s in demo.story.STORY)
+
+
+def test_the_days_played_are_the_days_whose_steps_time_has_come():
+    plan = [
+        {"day": 1, "when": "2026-11-12T02:15"},
+        {"day": 3, "when": "2026-11-14T02:15"},
+        {"day": 4, "when": "2026-11-15T02:15"},
+    ]
+    assert demo.days_played(plan, datetime(2026, 11, 11, 23, tzinfo=UTC)) == 0
+    assert demo.days_played(plan, datetime(2026, 11, 14, 2, 15, tzinfo=UTC)) == 3
+    assert demo.days_played(plan, datetime(2026, 11, 15, 9, tzinfo=UTC)) == 4
+
+
+class Settling:
+    """The checker's server as `settle` sees it: a restart note an update may leave, a boot id a
+    restart changes, and the note the pages read, written when the status service runs."""
+
+    address = "192.0.2.1"
+
+    def __init__(self, restarts_wanted=0, passwords=False, comes_back=True, drops=False):
+        self.wanted, self.passwords, self.comes_back, self.drops = (
+            restarts_wanted,
+            passwords,
+            comes_back,
+            drops,
+        )
+        self.boot, self.written, self.calls, self.closed = 1, None, [], 0
+
+    def run(self, command, timeout=900, input=None):
+        self.calls.append(command)
+        code, out = 0, ""
+        if command == "systemctl reboot":
+            if self.comes_back:
+                self.boot, self.wanted = self.boot + 1, max(0, self.wanted - 1)
+            if self.drops:
+                raise subprocess.TimeoutExpired(command, timeout)
+            return SimpleNamespace(returncode=255, stdout="", stderr="closed by remote host")
+        if "boot_id" in command:
+            out = f"boot-{self.boot}\n"
+        elif command == "test -e /run/reboot-required":
+            code = 0 if self.wanted else 1
+        elif "compromise-checker-status.service" in command:
+            self.written = {"ssh_passwords": self.passwords, "restart_needed": bool(self.wanted)}
+        elif "machine.json" in command:
+            out = json.dumps(self.written) if self.written is not None else ""
+        return SimpleNamespace(returncode=code, stdout=out, stderr="")
+
+    def out(self, command):
+        return self.run(command).stdout.strip()
+
+    def close(self):
+        self.closed += 1
+
+
+def test_settling_restarts_only_when_asked_and_knows_the_restart_happened(monkeypatch, capsys):
+    monkeypatch.setattr(demo.time, "sleep", lambda s: None)
+    quiet = Settling()
+    assert demo.settle(quiet) == []
+    assert "systemctl reboot" not in quiet.calls and quiet.written is not None
+    asked = Settling(restarts_wanted=1)
+    assert demo.settle(asked) == [] and asked.boot == 2 and asked.closed == 1
+    order = asked.calls
+    assert order.index("systemctl reboot") < order.index(
+        "systemctl start compromise-checker-status.service"
+    )
+    dropped = Settling(restarts_wanted=1, drops=True)  # the connection goes as it goes down
+    assert demo.settle(dropped) == [] and dropped.boot == 2
+    stubborn = Settling(restarts_wanted=5)  # an update that asks again: at most two restarts
+    warned = demo.settle(stubborn)
+    assert stubborn.calls.count("systemctl reboot") == 2
+    assert warned == ["the pages say an update is waiting for a restart"]
+    assert "WARN the checker's server: the pages say an update" in capsys.readouterr().out
+
+
+def test_a_note_left_on_the_pages_is_a_warning_and_not_the_end_of_the_demo(monkeypatch):
+    """A note on a page isn't worth the servers: `up` deletes everything it made when it fails."""
+    said = "Setting up...\nSSH passwords stay on: no administrator account has a key login here\n"
+    assert demo.settle(Settling(passwords=True), said) == [
+        "SSH passwords stay on: no administrator account has a key login here",
+        "the pages say SSH still takes passwords",
+    ]
+    unread = Settling()
+    unread.run = lambda c, timeout=900, input=None: SimpleNamespace(
+        returncode=1, stdout="", stderr=""
+    )
+    assert demo.settle(unread) == [  # a server that answers nothing as it should
+        "Ubuntu's updates were still running after 10 minutes",
+        "the note the pages read about the machine wasn't written",
+        "the note the pages read about the machine couldn't be read",
+    ]
+
+
+def test_a_checker_that_never_comes_back_from_its_restart_stops_up(monkeypatch):
+    monkeypatch.setattr(demo.time, "sleep", lambda s: None)
+    clock = iter(range(0, 10_000, 30))
+    monkeypatch.setattr(demo.time, "monotonic", lambda: next(clock))
+    with pytest.raises(demo.DemoError, match="didn't come back from its restart"):
+        demo.settle(Settling(restarts_wanted=1, comes_back=False))
+
+
+def test_the_install_hands_its_words_to_settle_and_up_gets_what_the_pages_will_say(
+    tmp_path, monkeypatch
+):
+    up = state(1)
+    up.web_name = "192-0-2-1.sslip.io"
+    said = f"Installed.\nhttps://{up.web_name}/s/abc\nSSH passwords stay on: why\n"
+    server = Ran((0, said, ""), (0, "", ""), (0, "4 packs\n", ""))
+    seen = []
+    monkeypatch.setattr(demo, "web_name", lambda address: up.web_name)
+    monkeypatch.setattr(demo, "settle", lambda node, words: seen.append(words) or ["noted"])
+    link, warned = demo.install_checker(server, up, tmp_path)
+    assert link == f"https://{up.web_name}/s/abc" and warned == ["noted"] and seen == [said]
+
+
+def test_up_ends_with_a_fresh_link_or_the_installs(tmp_path):
+    up = state(1)
+    up.web_name = "192-0-2-1.sslip.io"
+    made = Ran((0, f"Open this link, once, within an hour:\nhttps://{up.web_name}/s/new\n", ""))
+    assert demo.fresh_link(made, up) == f"https://{up.web_name}/s/new"
+    assert "web-setup-link --address https://192-0-2-1.sslip.io" in made.calls[0][0]
+    assert demo.fresh_link(Ran((1, "", "there's already an account")), up) is None
 
 
 # --- kept up for days ----------------------------------------------------------------------

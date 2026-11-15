@@ -20,6 +20,7 @@ import secrets
 import shutil
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -118,6 +119,9 @@ def main() -> int:
     scratch = Path(tempfile.mkdtemp(prefix=".shots-data-", dir=dataset.parent))
     try:
         home = demo.working_copy(dataset, scratch)
+        # From here on, the checker's code reads this copy and never the laptop's own home.
+        os.environ["CHECKER_HOME"] = str(home)
+        score_again(home)
         names = NAMES | {name: "admin" for name in demo.names_of(dataset)}
         return photograph(home, demo.addresses_of(dataset), names, args)
     except demo.DemoError as exc:
@@ -131,6 +135,47 @@ def main() -> int:
                 " the evidence key.",
                 file=sys.stderr,
             )
+
+
+def score_again(home: Path) -> None:
+    """Each server's latest result worked out again in the copy, with the same evidence and the
+    same rules. A stored result names its whitelist by a digest that holds each rule file's full
+    path, and the copy's files are in another folder from the server's: without this, every
+    server would read "Settings have changed since this result". A rule's expiry counts from the
+    day this runs, not the day of the last check, so the run stops if any server's result moves:
+    the pictures must show what the checks said."""
+    before = results(home)
+    try:
+        done = subprocess.run(
+            [sys.executable, "-I", "-m", "checker", "analyze", "--all"],
+            env={**os.environ, "CHECKER_HOME": str(home)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1800,  # a hung run would keep the copy, and its evidence key, until killed
+        )
+    except subprocess.TimeoutExpired:
+        sys.exit("screenshots: scoring the copy again took over 30 minutes; stopped")
+    if done.returncode:
+        sys.exit(f"screenshots: scoring the copy again failed:\n{done.stderr.strip()[-2000:]}")
+    after = results(home)
+    if moved := sorted(h for h in before.keys() | after.keys() if before.get(h) != after.get(h)):
+        sys.exit(
+            "screenshots: scoring the copy again changed "
+            + ", ".join(f"{h} ({before.get(h)} -> {after.get(h)})" for h in moved)
+            + ". A whitelist rule may have expired since the last check: take the pictures"
+            " the day the data was saved."
+        )
+
+
+def results(home: Path) -> dict[str, tuple[str | None, float | None]]:
+    """Each server's band and chance as the pages show them."""
+    from checker.fleet import read_fleet
+
+    hosts, _ = read_fleet(home)
+    return {
+        h.host: (h.band, None if h.probability is None else round(h.probability, 4)) for h in hosts
+    }
 
 
 def refusal(dataset: Path, out: Path) -> str | None:
@@ -164,14 +209,27 @@ def photograph(home: Path, protect: list[str], names: dict[str, str], args) -> i
 
     from django.contrib.auth import get_user_model
     from django.core.wsgi import get_wsgi_application
+    from django.utils import timezone
     from django_otp.oath import totp
     from django_otp.plugins.otp_totp.models import TOTPDevice
 
-    from checker.web.models import Access
+    from checker.web import first_setup
+    from checker.web.models import Access, ActionRecord
 
     password = secrets.token_urlsafe(24)
     user = get_user_model().objects.create_user("demo", password=password)
     Access.objects.create(user=user, full=True)
+    # The pictures show the pages in use, not the first-day reminder to back up the evidence key:
+    # in the copy, the account says it's backed up, the line a click on the reminder would add.
+    ActionRecord.objects.create(
+        at=timezone.now(),
+        who="demo",
+        address="",
+        action=first_setup.KEY_SAVED,
+        target=first_setup.this_key(home),
+        outcome="done",
+        detail="",
+    )
     device = TOTPDevice.objects.create(user=user, name="demo", confirmed=True)
     seen: list[str] = []
     server = make_server(

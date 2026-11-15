@@ -414,11 +414,18 @@ class Whitelist:
     windows: list[Placed] = field(default_factory=list)  # maintenance
 
     def digest(self) -> str:
+        """What the set does, not where its files are: a home restored or moved to another
+        folder has the same set, so its stored results don't read as scored against another.
+        Each rule's layer stays in, as a rule from another layer is another set."""
+
+        def placed(p: Placed) -> dict[str, Any]:
+            return {k: v for k, v in p.as_dict().items() if k != "file"}
+
         canonical = json.dumps(
             {
-                "rules": [p.as_dict() for p in self.rules],
+                "rules": [placed(p) for p in self.rules],
                 "disabled": self.disabled,
-                "windows": [p.as_dict() for p in self.windows],
+                "windows": [placed(p) for p in self.windows],
             },
             sort_keys=True,
         )

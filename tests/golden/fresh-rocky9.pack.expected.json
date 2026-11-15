@@ -1231,7 +1231,7 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "8a2fbcf41e2c8722935e4677d3fce816173ae0763895a6b1471a0cee6d92aa67",
+  "hash": "f00a97f5e3473c4af6e6933203e668063a1b49fa41b054865302127c7f3ebd32",
   "maintenance": 0,
   "matched": {
    "host rocky9/proof-at-job-redhat": 1,

@@ -261,7 +261,7 @@ Taken from the five-day run that started 2026-11-14, the first with the setup le
 | `fleet.png` | `/`, whole page | README, top | the end of the story: shop-web-1 broken into, shop-web-2 fixed, db-1's routine work accepted, mail-1 clean, app-1 stale, old-box never answered |
 | `fleet-dark.png` | `/`, whole page, dark | nowhere yet | the same, for the site and talks |
 | `fleet-phone.png` | `/`, top, 390 wide | nowhere yet | the same at phone width, no sideways scroll |
-| `host.png` | `/hosts/shop-web-1`, top | docs/web.md | the break-in, in plain words |
+| `host.png` | `/hosts/shop-web-1`, top | docs/web.md | the break-in, as the page tells it |
 | `evidence.png` | `/hosts/shop-web-1/evidence`, top | docs/web.md | the excerpts behind it |
 | `threats.png` | `/threats`, whole page | docs/web.md | dotnet-2026-10 retired: day 5, which no earlier run reached |
 
@@ -274,8 +274,9 @@ folder on dev:
 
 1. `demo.py status`: every day played, no warnings on the pages.
 2. `demo.py save ~/demo-saves/run-<id>` and again to `~/demo-saves/run-<id>-backup`.
-3. `screenshots.py --dataset ~/demo-saves/run-<id>-backup --out docs/screenshots`: every page
-   `ok` with no overflow and no page errors.
+3. `screenshots.py --dataset ~/demo-saves/run-<id>-backup --out docs/screenshots`, the same
+   night: every page `ok` with no overflow and no page errors. It works each result out again
+   in its copy, with rule expiry counted from that day, and stops if any score moves.
 4. Look at all six before they go in: the demo banner on each; no evidence-key reminder (the
    script says the key is backed up, in its copy only); no red banner for password logins or a
    pending restart (#184); no "Settings have changed since this result" line (see below).

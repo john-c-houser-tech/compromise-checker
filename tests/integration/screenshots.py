@@ -139,7 +139,10 @@ def score_again(home: Path) -> None:
     """Each server's latest result worked out again in the copy, with the same evidence and the
     same rules. A stored result names its whitelist by a digest that holds each rule file's full
     path, and the copy's files are in another folder from the server's: without this, every
-    server would read "Settings have changed since this result"."""
+    server would read "Settings have changed since this result". A rule's expiry counts from the
+    day this runs, not the day of the last check, so the run stops if any server's result moves:
+    the pictures must show what the checks said."""
+    before = results(home)
     done = subprocess.run(
         [sys.executable, "-I", "-m", "checker", "analyze", "--all"],
         env={**os.environ, "CHECKER_HOME": str(home)},
@@ -149,6 +152,24 @@ def score_again(home: Path) -> None:
     )
     if done.returncode:
         sys.exit(f"screenshots: scoring the copy again failed:\n{done.stderr.strip()[-2000:]}")
+    after = results(home)
+    if moved := sorted(h for h in before.keys() | after.keys() if before.get(h) != after.get(h)):
+        sys.exit(
+            "screenshots: scoring the copy again changed "
+            + ", ".join(f"{h} ({before.get(h)} -> {after.get(h)})" for h in moved)
+            + ". A whitelist rule may have expired since the last check: take the pictures"
+            " the day the data was saved."
+        )
+
+
+def results(home: Path) -> dict[str, tuple[str | None, float | None]]:
+    """Each server's band and chance as the pages show them."""
+    from checker.fleet import read_fleet
+
+    hosts, _ = read_fleet(home)
+    return {
+        h.host: (h.band, None if h.probability is None else round(h.probability, 4)) for h in hosts
+    }
 
 
 def refusal(dataset: Path, out: Path) -> str | None:

@@ -281,9 +281,10 @@ folder on dev:
    pending restart (#184); no "Settings have changed since this result" line (see below).
 5. `demo.py down`, then `status` clean; the pictures go in as one PR.
 
-**Blocks step 4 (found 2026-11-15, on the four-day dataset):** every server reads "Settings have
-changed since this result". The whitelist's digest (`checker/whitelist.py`, `Placed.as_dict`)
-includes each rule file's full path, and the copy's files are in another folder from the
-server's, so every stored result looks scored against another whitelist. A checker home that is
-restored or moved anywhere else (`checker/web/moving.py`) would show the same. Needs a fix before
-Thursday.
+**Found 2026-11-15, on the four-day dataset:** every server read "Settings have changed since
+this result". The whitelist's digest (`checker/whitelist.py`, `Placed.as_dict`) held each rule
+file's full path, and the copy's files are in another folder from the server's, so every stored
+result looked scored against another whitelist. `screenshots.py` now runs `checker analyze --all`
+in its copy first: the same evidence and rules, worked out again, scores unchanged. The digest
+itself is fixed in its own PR, since a restored or moved checker home showed the same; the five-day
+run's server still stores the old form, so the script's step stays needed for its data.

@@ -20,6 +20,7 @@ import secrets
 import shutil
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -118,6 +119,7 @@ def main() -> int:
     scratch = Path(tempfile.mkdtemp(prefix=".shots-data-", dir=dataset.parent))
     try:
         home = demo.working_copy(dataset, scratch)
+        score_again(home)
         names = NAMES | {name: "admin" for name in demo.names_of(dataset)}
         return photograph(home, demo.addresses_of(dataset), names, args)
     except demo.DemoError as exc:
@@ -131,6 +133,22 @@ def main() -> int:
                 " the evidence key.",
                 file=sys.stderr,
             )
+
+
+def score_again(home: Path) -> None:
+    """Each server's latest result worked out again in the copy, with the same evidence and the
+    same rules. A stored result names its whitelist by a digest that holds each rule file's full
+    path, and the copy's files are in another folder from the server's: without this, every
+    server would read "Settings have changed since this result"."""
+    done = subprocess.run(
+        [sys.executable, "-I", "-m", "checker", "analyze", "--all"],
+        env={**os.environ, "CHECKER_HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if done.returncode:
+        sys.exit(f"screenshots: scoring the copy again failed:\n{done.stderr.strip()[-2000:]}")
 
 
 def refusal(dataset: Path, out: Path) -> str | None:

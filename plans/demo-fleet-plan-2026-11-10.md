@@ -246,8 +246,46 @@ end.
   last day's check left a collection, or is no longer where it was saved, `down` says so and
   stops. `down --unsaved` deletes anyway. A failed `up` still deletes what it made without asking.
 
-Still to do in D.5, after the first save from real servers: browse it on the laptop, move the
-screenshot script onto it, retire `demo_fleet.py`, take the README's pictures again. Until it is
-moved, `screenshots.py` refuses a saved dataset: it deletes `web.db` for its own throwaway
-account, and in a saved dataset that file is the only copy of the record of the pages' use. When
-it is moved, it works on a copy of that file or makes its account beside the record.
+Done since: the saved dataset browsed on the laptop (2026-11-14), `screenshots.py --dataset`
+working on a throwaway copy of it, and `demo_fleet.py` retired (#191). Left in D.5: the README's
+pictures, below.
+
+## The README's pictures (D.5, last part)
+
+Taken from the five-day run that started 2026-11-14, the first with the setup leftovers fixed
+(#190), so mail-1 and staging-1 read only what the story did to them. Its last check is Thursday
+2026-11-19 at 9 PM PST (2026-11-20 05:00 UTC).
+
+| Picture | Page | Used in | What it should show |
+|---|---|---|---|
+| `fleet.png` | `/`, whole page | README, top | the end of the story: shop-web-1 broken into, shop-web-2 fixed, db-1's routine work accepted, mail-1 clean, app-1 stale, old-box never answered |
+| `fleet-dark.png` | `/`, whole page, dark | nowhere yet | the same, for the site and talks |
+| `fleet-phone.png` | `/`, top, 390 wide | nowhere yet | the same at phone width, no sideways scroll |
+| `host.png` | `/hosts/shop-web-1`, top | docs/web.md | the break-in, as the page tells it |
+| `evidence.png` | `/hosts/shop-web-1/evidence`, top | docs/web.md | the excerpts behind it |
+| `threats.png` | `/threats`, whole page | docs/web.md | dotnet-2026-10 retired: day 5, which no earlier run reached |
+
+Whatever is done on the pages before the save shows in the pictures, so a hands-on item that
+changes the end (adding staging-1 back, putting the threat update back) goes before Thursday's
+last check or after the save, not in between.
+
+Thursday, from 9:05 PM PST (save holds off five minutes after the last check), in the usual
+folder on dev:
+
+1. `demo.py status`: every day played, no warnings on the pages.
+2. `demo.py save ~/demo-saves/run-<id>` and again to `~/demo-saves/run-<id>-backup`.
+3. `screenshots.py --dataset ~/demo-saves/run-<id>-backup --out docs/screenshots`, the same
+   night: every page `ok` with no overflow and no page errors. It works each result out again
+   in its copy, with rule expiry counted from that day, and stops if any score moves.
+4. Look at all six before they go in: the demo banner on each; no evidence-key reminder (the
+   script says the key is backed up, in its copy only); no red banner for password logins or a
+   pending restart (#184); no "Settings have changed since this result" line (see below).
+5. `demo.py down`, then `status` clean; the pictures go in as one PR.
+
+**Found 2026-11-15, on the four-day dataset:** every server read "Settings have changed since
+this result". The whitelist's digest (`checker/whitelist.py`, `Placed.as_dict`) held each rule
+file's full path, and the copy's files are in another folder from the server's, so every stored
+result looked scored against another whitelist. `screenshots.py` now runs `checker analyze --all`
+in its copy first: the same evidence and rules, worked out again, scores unchanged. The digest
+itself is fixed in its own PR, since a restored or moved checker home showed the same; the five-day
+run's server still stores the old form, so the script's step stays needed for its data.

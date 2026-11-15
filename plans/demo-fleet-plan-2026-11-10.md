@@ -128,14 +128,18 @@ One script, `tests/integration/demo.py`, with four commands:
   says "Known threats, Manage: put the stopped threat update back (the story's day 6)", but a
   stay shorter than the story never plays day 5, so nothing is stopped and there is no "Stopped by
   hand" section. Fix: print each hands-on item only when the days it needs were played (or say
-  which day it needs).
+  which day it needs). **Fixed (D.5):** each item carries the day it needs; later ones are listed
+  apart, with their day.
 - **The demo checker's pages carry two red notes** (four-day run, 2026-11-14): "This machine still
   lets people log in over SSH with a password" and "An update to this machine is waiting for a
   restart". Both are true of a fresh Linode and both are on every page a demo shows. Fix in `up`:
   turn password logins off on the checker's server and restart it after the install, before the
-  first check.
-- **`status` exits non-zero while a demo is up and fine** (2026-11-14). Fix: 0 when it could read
-  everything, non-zero only when it couldn't.
+  first check. **Fixed (D.5):** the install line adds `--ssh-passwords-off` (the installer's own
+  flag); `settle` restarts the server if an update asks, runs the status service, and stops `up`
+  if the note still warns. Unproven on a server until the next `up`.
+- **`status` exits non-zero while a demo is up and fine** (2026-11-14). Not a fault: it ends 1
+  when a story step failed (day 3's container step had). **Fixed (D.5):** it now says which reason
+  it ends 1 for.
 
 ## Keep-alive as built (D.4, 2026-11-10)
 

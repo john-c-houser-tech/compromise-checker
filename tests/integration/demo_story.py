@@ -307,17 +307,32 @@ CHECKED_DAYS = (0, 1, 2, 3, 4)
 # The first is there because the Checks page lists only checks started from a page: the web
 # service makes the entry itself and holds the running check, so no command can stand in for it,
 # and the story's own checks (run by command, as the daily schedule runs them) aren't listed.
-HANDS_ON = (
-    "Checks: start one from the page. Until you do, the list is empty (see the story's notes).",
-    "Known threats, Manage: put the stopped threat update back (the story's day 6).",
-    "The next check after day 5's step clears its note: the daily one, or one you start.",
-    "Start a check; start a second while it runs; stop one.",
-    "Check app-1 alone (the firewall refuses it): the list of what to look at.",
-    "Ask a server for its key again; paste a wrong fingerprint.",
-    "Invite a view-only person, sign in as them in a private window.",
-    "Settings: each field's refusals. The daily check's page.",
-    "Delete stored evidence: one server's, and before a date.",
-    "Add staging-1 back under its old name (its server is still up; `status` has its address).",
-    "Sign-in security: change password, recovery codes, wrong codes.",
-    "Light, dark, and a phone's width, on each page.",
+HANDS_ON = (  # (the story day it needs played, what to do)
+    (
+        0,
+        "Checks: start one from the page. Until you do, the list is empty (see the story's notes).",
+    ),
+    (0, "Start a check; start a second while it runs; stop one."),
+    (3, "Check app-1 alone (the firewall refuses it): the list of what to look at."),
+    (
+        0,
+        'Manage, a server: ask it for its key again ("nothing to do"). A wrong fingerprint'
+        " can't be pasted here: every server's key is already confirmed.",
+    ),
+    (
+        4,
+        'Manage, Add a server: staging-1 back under its old name, ticking "the same server"'
+        " (its server is still up; `status` has its address). Its key is still confirmed.",
+    ),
+    (5, "Manage, Threat updates: put the stopped threat update back (the story's day 6)."),
+    (5, "The next check after day 5's step clears its note: the daily one, or one you start."),
+    (0, "Invite a view-only person, sign in as them in a private window."),
+    (0, "Settings: each field's refusals. The daily check's page."),
+    (
+        0,
+        "Delete stored evidence (one server's, and before a date): after `save`, or what it"
+        " deletes isn't in the saved copy.",
+    ),
+    (0, "Sign-in security: change password, recovery codes, wrong codes."),
+    (0, "Light, dark, and a phone's width, on each page."),
 )

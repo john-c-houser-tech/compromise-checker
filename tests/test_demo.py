@@ -99,7 +99,9 @@ def test_the_install_line_is_the_pages_with_the_hash_checked_first():
     assert "/releases/download/v0.1.2/install.py" in line
     assert line.index("sha256sum -c -") < line.index("sudo python3 -I")
     assert f'echo "{"ab" * 32}  $d/install.py"' in line
-    assert line.endswith("--web-address 192-0-2-1.sslip.io --test-certificates)")
+    assert line.endswith(
+        "--web-address 192-0-2-1.sslip.io --test-certificates --ssh-passwords-off)"
+    )
     assert len(demo.INSTALLER_SHA256) == 64 and int(demo.INSTALLER_SHA256, 16)
 
 
@@ -463,7 +465,21 @@ def test_status_says_overdue_and_names_servers_the_state_doesnt(tmp_path, capsys
     api.nodes.pop()
     assert demo.status(api, tmp_path, datetime(2026, 11, 11, 23, tzinfo=UTC)) == 0
     assert demo.status(api, tmp_path, datetime(2026, 11, 12, 0, 5, tzinfo=UTC)) == 1
-    assert "OVERDUE: its end date was 2026-11-11" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "OVERDUE: its end date was 2026-11-11" in out and "Ends 1: run `down`." in out
+
+
+def test_status_says_a_story_step_is_why_it_ends_1(tmp_path, monkeypatch, capsys):
+    """Seen 2026-11-14: day 3's container step failed, and status ended 1 without saying why."""
+    up = state(1)
+    up.plan, up.days, up.last_check = [["x"]], 4, "2026-11-15T03:00"
+    demo.save_state(tmp_path, up)
+    monkeypatch.setattr(demo.install, "Node", lambda *a, **k: Node())
+    monkeypatch.setattr(demo, "story_so_far", lambda checker, plan: (["  day 3: failed"], False))
+    api = FakeApi([node("cc-demo-abc123-s1", [demo.TAG], 1)])
+    assert demo.status(api, tmp_path, datetime(2026, 11, 10, 14, tzinfo=UTC)) == 1
+    out = capsys.readouterr().out
+    assert "Ends 1: a story step above didn't go as written." in out and "run `down`" not in out
 
 
 # --- the story (D.3) -----------------------------------------------------------------------
@@ -828,6 +844,42 @@ def test_status_prints_what_is_left_to_the_person(tmp_path, capsys):
     )
     out = capsys.readouterr().out
     assert "Yours to do while it is up" in out and "put the stopped threat update back" in out
+
+
+def test_the_hands_on_list_holds_only_what_the_days_reached(capsys):
+    """Seen 2026-11-14: a four-day stay was told to put back a threat update day 5 stops."""
+    demo.hands_on(4)
+    shown, _, later = capsys.readouterr().out.partition("Not on this demo")
+    assert "staging-1 back" in shown and "app-1 alone" in shown
+    assert "put the stopped threat update back" not in shown
+    assert "plays the story to day 5" not in later and "story to day 4" in later
+    assert "put the stopped threat update back (the story's day 6). (needs day 5)" in later
+    demo.hands_on(0)  # one sitting plays every day
+    out = capsys.readouterr().out
+    assert "put the stopped threat update back" in out and "Not on this demo" not in out
+    demo.hands_on(2)
+    shown, _, later = capsys.readouterr().out.partition("Not on this demo")
+    assert "app-1 alone" in later and "staging-1 back" in later and "Start a check" in shown
+    assert demo.last_day(14) == demo.last_day(0) == max(s.day for s in demo.story.STORY)
+
+
+def test_settling_the_checker_restarts_it_only_when_asked_and_leaves_no_warning(monkeypatch):
+    monkeypatch.setattr(demo.time, "sleep", lambda s: None)
+    calm = '{"restart_needed": false, "ssh_passwords": false}'
+    asked = Ran((0, "", ""), (0, "", ""), (0, "", ""), (0, calm, ""))
+    asked.wait = lambda seconds: asked.calls.append(("wait", None))
+    demo.settle(asked)
+    assert [c for c, _ in asked.calls][:3] == [
+        "test -e /run/reboot-required",
+        "systemctl reboot",
+        "wait",
+    ]
+    quiet = Ran((1, "", ""), (0, "", ""), (0, calm, ""))
+    demo.settle(quiet)
+    assert not any("reboot" in c for c, _ in quiet.calls[1:])
+    for note in ('{"restart_needed": false, "ssh_passwords": true}', "{}", "not json"):
+        with pytest.raises(demo.DemoError, match="the pages would warn"):
+            demo.settle(Ran((1, "", ""), (0, "", ""), (0, note, "")))
 
 
 # --- kept up for days ----------------------------------------------------------------------

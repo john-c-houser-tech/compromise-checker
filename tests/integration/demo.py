@@ -228,13 +228,14 @@ def web_name(address: str) -> str:
 
 def install_line(version: str, sha256: str, name: str) -> str:
     """The install page's line, with the flags that stop the installer asking questions. The
-    certificate is Let's Encrypt's test one (D.2): a browser warns about it."""
+    certificate is Let's Encrypt's test one (D.2): a browser warns about it. SSH passwords go off
+    (the demo logs in with a key), or every page a demo shows says the machine still takes them."""
     return (
         f"(d=$(mktemp -d) && trap 'rm -rf \"$d\"' EXIT && curl -fsSL"
         f' {install.RELEASES}/v{version}/install.py -o "$d/install.py"'
         f' && echo "{sha256}  $d/install.py" | sha256sum -c -'
         f' && umask 077 && sudo python3 -I "$d/install.py"'
-        f" --web-address {shlex.quote(name)} --test-certificates)"
+        f" --web-address {shlex.quote(name)} --test-certificates --ssh-passwords-off)"
     )
 
 
@@ -353,7 +354,35 @@ def install_checker(node: install.Node, state: State, folder: Path) -> str:
         "making the checker's key for its servers",
     )
     print(must(node, as_checker("packs", "pull"), "getting the threat updates").strip())
+    settle(node)
     return links[0]
+
+
+MACHINE_NOTES = "/var/lib/compromise-checker-status/machine.json"
+
+
+def settle(node: install.Node) -> None:
+    """Nothing for the pages to warn about on the checker's own server, since the warnings show on
+    every page a demo shows: a restart if an update asks for one (a fresh Linode's updates often
+    do), then the hourly note the pages read is written now, not within the hour, and must say
+    neither passwords nor a waiting restart."""
+    if node.run("test -e /run/reboot-required").returncode == 0:
+        print("checker: an update asks for a restart; restarting")
+        node.run("systemctl reboot", timeout=60)
+        time.sleep(15)
+        node.wait(600)
+    must(
+        node,
+        "systemctl start compromise-checker-status.service",
+        "writing the machine's note for the pages",
+    )
+    try:
+        notes = json.loads(must(node, f"cat {MACHINE_NOTES}", "reading the machine's note"))
+    except ValueError:
+        notes = {}
+    warned = [fact for fact in ("ssh_passwords", "restart_needed") if notes.get(fact) is not False]
+    if warned:
+        raise DemoError(f"the pages would warn about the checker's server: {notes or 'no note'}")
 
 
 def prepare_member(
@@ -1131,7 +1160,7 @@ def up(api, folder: Path, region: str, today: date, days: int = 0) -> int:
                 f" {state.last_check.replace('T', ' ')} (the checker's server's clock, UTC),"
                 f" when day {days} has been checked, and by the end of {state.until}."
             )
-        hands_on()
+        hands_on(days)
         return 1 if leaks or world.failed else 0
     except BaseException:
         with nothing_stops_it(folder):
@@ -1833,15 +1862,30 @@ def unsaved(folder: Path) -> str | None:
 # --- status and down ---------------------------------------------------------------------
 
 
-def hands_on() -> None:
+def last_day(days: int) -> int:
+    """The last story day a demo plays: all of them in one sitting (0), else the days it stays."""
+    every = max(step.day for step in story.STORY)
+    return every if days == 0 else min(days, every)
+
+
+def hands_on(days: int) -> None:
+    """The list for the days this demo reaches; an item needing a later day is named as such."""
+    reached = last_day(days)
     print("\nYours to do while it is up (what only a person at the pages can produce):")
-    for line in story.HANDS_ON:
-        print(f"  - {line}")
+    for day, line in story.HANDS_ON:
+        if day <= reached:
+            print(f"  - {line}")
+    later = [(day, line) for day, line in story.HANDS_ON if day > reached]
+    if later:
+        print(f"Not on this demo, which plays the story to day {reached}:")
+        for day, line in later:
+            print(f"  - {line} (needs day {day})")
 
 
 def status(api, folder: Path, now: datetime) -> int:
-    """What is up. Ends 1 for anything that wants a `down`: a demo past its end date, a demo
-    server the state doesn't name, or a state that can't be read."""
+    """What is up. Ends 1 for anything that wants a `down` (a demo past its end date, a demo
+    server the state doesn't name, a state that can't be read) or a look (a story step that
+    didn't go as written), and says which."""
     listed = demo_nodes(api.demo_tagged())
     try:
         state = load_state(folder)
@@ -1883,7 +1927,11 @@ def status(api, folder: Path, now: datetime) -> int:
         if node["id"] not in ours:
             print(f"Not in the state: {node['label']} (id {node['id']}), also up and billing.")
             wants_down = True
-    hands_on()
+    hands_on(state.days)
+    if wants_look:
+        print("\nEnds 1: a story step above didn't go as written.")
+    if wants_down:
+        print("\nEnds 1: run `down`.")
     return 1 if wants_down or wants_look else 0
 
 

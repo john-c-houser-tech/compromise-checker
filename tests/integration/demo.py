@@ -1297,8 +1297,13 @@ def fetch(checker: install.Node, work: Path) -> tuple[Path, int, int, int]:
         stop = threading.Timer(MOST_SECONDS, sending.kill)
         stop.start()
         try:
-            sending.stdin.write(_SEND.encode())
-            sending.stdin.close()
+            try:
+                sending.stdin.write(_SEND.encode())
+                sending.stdin.close()
+            except BrokenPipeError:
+                # It stopped reading (ssh failed, or the far end ended early): what it said, read
+                # below, is the reason; a broken pipe would hide it.
+                pass
             taken = 0
             while block := sending.stdout.read(1 << 20):
                 taken += len(block)

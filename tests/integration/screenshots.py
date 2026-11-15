@@ -119,6 +119,8 @@ def main() -> int:
     scratch = Path(tempfile.mkdtemp(prefix=".shots-data-", dir=dataset.parent))
     try:
         home = demo.working_copy(dataset, scratch)
+        # From here on, the checker's code reads this copy and never the laptop's own home.
+        os.environ["CHECKER_HOME"] = str(home)
         score_again(home)
         names = NAMES | {name: "admin" for name in demo.names_of(dataset)}
         return photograph(home, demo.addresses_of(dataset), names, args)
@@ -143,13 +145,17 @@ def score_again(home: Path) -> None:
     day this runs, not the day of the last check, so the run stops if any server's result moves:
     the pictures must show what the checks said."""
     before = results(home)
-    done = subprocess.run(
-        [sys.executable, "-I", "-m", "checker", "analyze", "--all"],
-        env={**os.environ, "CHECKER_HOME": str(home)},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        done = subprocess.run(
+            [sys.executable, "-I", "-m", "checker", "analyze", "--all"],
+            env={**os.environ, "CHECKER_HOME": str(home)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1800,  # a hung run would keep the copy, and its evidence key, until killed
+        )
+    except subprocess.TimeoutExpired:
+        sys.exit("screenshots: scoring the copy again took over 30 minutes; stopped")
     if done.returncode:
         sys.exit(f"screenshots: scoring the copy again failed:\n{done.stderr.strip()[-2000:]}")
     after = results(home)

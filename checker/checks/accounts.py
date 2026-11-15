@@ -15,6 +15,7 @@ from checker.checks import (
     parse_time,
     span,
 )
+from checker.checks.software import RUN_LIMIT, UPDATERS
 from checker.checks.web import WEB_USERS
 
 SYSTEM_UID_MAX = 999  # service accounts: 1-999 (login.defs SYS_UID_MAX)
@@ -842,7 +843,173 @@ def pam_module(line: str) -> str | None:
     return tokens[2].rsplit("/", 1)[-1]
 
 
-@check("pam.changes", "PAM: pam_exec lines, configuration changes, unknown modules")
+# A changed PAM module that its own package's upgrade explains (#185): an ordinary security update
+# replaces dozens of them at once. The module, the package database, the checksum lists and the
+# journal are all the server's own, so the explanation asks for what an intruder can't cheaply
+# forge (two reviews of #186 showed what they can): the module's owner, from the collector (an
+# older collector gives none, and nothing is explained); that owner's own upgrade; on dpkg, the
+# owner's checksum list rewritten within minutes of the module, by its change time, which no one
+# can set back; on rpm, the install time inside the package database; no other checksum list
+# changed without its package's version changing; and, for low, a run of the automatic updater that
+# systemd itself logged as root, start and finish, around both. Times are the server's own clock
+# on both sides. A hand-run upgrade is medium; anything less stays high, file by file.
+UPGRADE_NEAR = timedelta(minutes=15)
+_DPKG_INFO = "/var/lib/dpkg/info/"
+_GROUP_SHOWN = 50  # paths named in a grouped finding; the count says how many
+
+
+def _whole(context: Context, section: str) -> bool:
+    """Collected, completely: an absent section looks just like an empty one."""
+    found = context.snapshot.sections.get(section)
+    return found is not None and found.complete and context.uncertain(section) is None
+
+
+def _host_time(value) -> datetime | None:
+    """An ISO time or an epoch, both the server's own clock, as UTC."""
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), UTC)
+        except (ValueError, OverflowError, OSError):
+            return None
+    when = parse_time(value) if isinstance(value, str) else None
+    return (when if when.tzinfo else when.replace(tzinfo=UTC)) if when else None
+
+
+def _canonical(path: str, links: dict) -> str:
+    """The collector's canonical form (/lib → /usr/lib on a merged system)."""
+    for directory, resolved in (links or {}).items():
+        if path == directory or path.startswith(directory + "/"):
+            return resolved + path[len(directory) :]
+    return path
+
+
+def _list_package(path: str) -> str | None:
+    """The package a dpkg checksum list belongs to: /var/lib/dpkg/info/<name>[:arch].md5sums."""
+    if not (path.startswith(_DPKG_INFO) and path.endswith(".md5sums")):
+        return None
+    return path[len(_DPKG_INFO) : -len(".md5sums")].split(":", 1)[0]
+
+
+def _systemd_runs(context: Context) -> list[tuple[datetime, datetime]]:
+    """Runs of the automatic updater that systemd itself (as root) logged starting and finishing,
+    by the journal's own fields, which a message can't give itself. A text log has no such fields,
+    and a run with no finish isn't a run here."""
+
+    def updater(event) -> bool:
+        what = str(event.fields.get("what") or "").lower()
+        trusted = (event.fields.get("journal_comm"), event.fields.get("journal_uid"))
+        return trusted == ("systemd", "0") and any(u.lower() in what for u in UPDATERS)
+
+    finishes = [
+        (str(e.fields.get("what")), t)
+        for _, e in context.of("unit.finished")
+        if updater(e) and (t := _host_time(e.time))
+    ]
+    runs = []
+    for _, event in context.of("unit.starting"):
+        start = _host_time(event.time)
+        if start is None or not updater(event):
+            continue
+        what = str(event.fields.get("what"))
+        end = min(
+            (t for w, t in finishes if w == what and start <= t <= start + RUN_LIMIT), default=None
+        )
+        if end is not None:
+            runs.append((start, end))
+    return runs
+
+
+def _pam_upgrade(context: Context, path: str) -> str | None:
+    """'automatic_update' or 'hand_upgrade' when the module's own package's upgrade explains its
+    change; None otherwise, and whenever the evidence for it wasn't collected whole."""
+    owners = context.snapshot.live.get("pam_owners") or {}
+    if owners.get("complete") is not True:
+        return None
+    if not all(_whole(context, s) for s in ("package_changes", "checksum_store", "packages")):
+        return None
+    links = (context.snapshot.live.get("system_files_summary") or {}).get("merged_dirs") or {}
+    here = _canonical(path, links)
+    owner = (owners.get("owners") or {}).get(here)
+    if not owner:
+        return None
+    if here in {_canonical(p, links) for p in context.items("package_changes")}:
+        return None  # it differs from its package
+    packages, store = context.changes("packages"), context.changes("checksum_store")
+    if not packages or not store:
+        return None
+    upgraded = {k.split(" ", 1)[0] for k, f in packages["changed"].items() if "version" in f}
+    accounted = upgraded | {
+        k.split(" ", 1)[0] for how in ("added", "removed") for k in packages[how]
+    }
+    for how in ("changed", "removed"):
+        for listed in store[how]:
+            name = _list_package(listed)
+            if name is not None and name not in accounted:
+                return None  # a checksum list rewritten with no version change: trust none
+    if owner not in upgraded:
+        return None
+    when = _host_time((context.items("pam").get(path) or {}).get("ctime"))
+    if when is None:
+        return None
+    current = context.items("packages")
+    managers = {
+        (current.get(k) or {}).get("manager") for k in current if k.split(" ", 1)[0] == owner
+    }
+    if managers == {"dpkg"}:
+        lists = [p for p in store["changed"] if _list_package(p) == owner]
+        stamps = [
+            _host_time((context.items("checksum_store").get(p) or {}).get("ctime")) for p in lists
+        ]
+    elif managers == {"rpm"}:
+        stamps = [
+            _host_time((current.get(k) or {}).get("installed"))
+            for k in current
+            if k.split(" ", 1)[0] == owner
+        ]
+    else:
+        return None
+    near = [s for s in stamps if s is not None and abs(s - when) <= UPGRADE_NEAR]
+    if not near:
+        return None
+    for start, end in _systemd_runs(context):
+        if start <= when <= end and any(start <= s <= end for s in near):
+            return "automatic_update"
+    return "hand_upgrade"
+
+
+def _upgraded_modules(context: Context, how: str, changed: list[str]) -> Finding:
+    automatic = how == "automatic_update"
+    names = [path.rsplit("/", 1)[-1] for path in changed]
+    shown = ", ".join(names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
+    return Finding(
+        "pam.changes",
+        "PAM module files changed with "
+        + (
+            "an automatic update of their package"
+            if automatic
+            else "a hand-run upgrade of their package"
+        ),
+        COMPROMISE,
+        "low" if automatic else "medium",
+        f"{len(changed)}: {shown}. Each still matches its own package, which was upgraded, and"
+        " that package's checksum list was rewritten within minutes"
+        + (", inside a run of the automatic updater" if automatic else "")
+        + ". All of this is the server's own record: an intruder acting during a real update"
+        " could hide here",
+        [f"path:{path}" for path in changed[:_GROUP_SHOWN]],
+        [context.change_ref("pam", path, "changed") for path in changed[:_GROUP_SHOWN]],
+        new=any(context.new_since_previous("pam", path) for path in changed),
+        uncertain=context.uncertain("pam"),
+        variant=how,
+        entities_complete=len(changed) <= _GROUP_SHOWN,
+    )
+
+
+@check(
+    "pam.changes",
+    "PAM: pam_exec lines, configuration changes, unknown modules",
+    variants=("automatic_update", "hand_upgrade"),
+)
 def pam_changes(context: Context) -> list[Finding]:
     findings = []
     rules = context.items("pam_rules")
@@ -898,10 +1065,14 @@ def pam_changes(context: Context) -> list[Finding]:
                         uncertain=context.uncertain("pam"),
                     )
                 )
+        explained: dict[str, list[str]] = defaultdict(list)
         for path, fields in (context.changes("pam") or {}).get("changed", {}).items():
             if "/security/" in path and (
                 {"sha256", "content_sha256", "size", "inode"} & set(fields)
             ):
+                if how := _pam_upgrade(context, path):
+                    explained[how].append(path)
+                    continue
                 findings.append(
                     Finding(
                         "pam.changes",
@@ -914,6 +1085,8 @@ def pam_changes(context: Context) -> list[Finding]:
                         new=context.new_since_previous("pam", path),
                     )
                 )
+        for how, changed in sorted(explained.items()):
+            findings.append(_upgraded_modules(context, how, changed))
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

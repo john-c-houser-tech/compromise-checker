@@ -5432,7 +5432,25 @@ def module_system_files(run):
             "truncated_reason": cut,
         },
     )
+    record_pam_owners(run, module, owners, owners_complete, links)
     run.check_time()
+
+
+def record_pam_owners(run, module, owners, complete, links):
+    """The package that owns each file in a PAM module directory (#185), so the analysis can tie
+    a changed module to its own package's upgrade and to nothing else. The summary always comes,
+    so "no owner recorded" is never mistaken for "owned by nothing"."""
+    patterns = sorted({canonical_path(p, links) + "/*" for p in PAM_MODULE_DIRS})
+    count = 0
+    for file, package in sorted((owners or {}).items()):
+        if package and any(fnmatch.fnmatchcase(file, p) for p in patterns):
+            run.stream.record(module, "pam_module_owner", {"path": file, "package": package})
+            count += 1
+    run.stream.record(
+        module,
+        "pam_owners_summary",
+        {"complete": bool(complete) and owners is not None, "count": count},
+    )
 
 
 # --- Files in unusual places (DESIGN.md §8.6) ---------------------------------------

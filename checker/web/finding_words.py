@@ -287,6 +287,14 @@ WORDS = {
 }
 # Where one kind of finding from a check means something different.
 BY_VARIANT = {
+    ("pam.changes", "automatic_update"): (
+        "Files in the part of the system that checks passwords were replaced by an automatic update of the package they belong to. That is normal, and the records of the update match.",
+        "Nothing to do unless this server shows other signs of a break-in: someone with full control during that same update could have hidden a change here.",
+    ),
+    ("pam.changes", "hand_upgrade"): (
+        "Files in the part of the system that checks passwords were replaced when the package they belong to was upgraded, but not by the automatic updater.",
+        "Check that someone you know upgraded this package at that time. If no one did, treat it as serious.",
+    ),
     ("process.injected", "replaced"): (
         "A running program is still using a file that an update has since replaced. This is normal after updates, but it keeps running the old code.",
         "Restart it when convenient, unless this page shows signs of a break-in. If it does, get advice first.",

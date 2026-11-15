@@ -23,8 +23,8 @@ from typing import Any
 from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Trailer
 
 # 12: PHP settings, package history; 13: sites' .user.ini, .htaccess; 14: nft blocks read
-# whole, fail2ban's banned addresses; 15: nft's JSON beside its text
-SNAPSHOT_VERSION = 15
+# whole, fail2ban's banned addresses; 15: nft's JSON beside its text; 16: PAM modules' owners
+SNAPSHOT_VERSION = 16
 # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers;
 # 11: the folders web servers serve
 
@@ -1266,6 +1266,14 @@ class SnapshotBuilder:
             self.section("unowned_executables").items[data["path"]] = _meta(data)
         elif name == "system_files_summary":
             self.live["system_files_summary"] = data
+        elif name == "pam_module_owner" and data.get("path"):
+            # Who owns each PAM module now (#185): a fact about this bundle, never compared. Only
+            # the collector's summary makes it known: an older one sends neither.
+            owners = self.live.setdefault("pam_owners", {"complete": False, "owners": {}})
+            owners["owners"][data["path"]] = data.get("package")
+        elif name == "pam_owners_summary":
+            owners = self.live.setdefault("pam_owners", {"complete": False, "owners": {}})
+            owners["complete"] = data.get("complete") is True
         if name == "system_files_summary" and data.get("truncated"):
             self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 

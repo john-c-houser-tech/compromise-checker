@@ -3339,6 +3339,41 @@ class SystemFilesTests(FixtureRoot):
         self.assertEqual(sources(records), {})
         self.assertEqual(records[-1]["modules"]["system_files"]["status"], "ok")
 
+    def test_each_pam_modules_owner_is_recorded_by_its_canonical_path(self):
+        """#185: the analysis ties a changed PAM module to its own package's upgrade."""
+        self.fixture()
+        os.symlink("usr/lib", Path(self.root, "lib"))  # a merged /lib, as on Ubuntu 22.04
+        self.write(
+            "var/lib/dpkg/info/libpam-modules:amd64.list",
+            b"/.\n/lib/x86_64-linux-gnu/security\n/lib/x86_64-linux-gnu/security/pam_unix.so\n",
+        )
+        self.write("usr/lib/x86_64-linux-gnu/security/pam_unix.so", b"\x7fELF pam").chmod(0o644)
+        records = self.run_with(caps={})
+        owners = {r["path"]: r["package"] for r in records_named(records, "pam_module_owner")}
+        self.assertEqual(
+            owners, {"/usr/lib/x86_64-linux-gnu/security/pam_unix.so": "libpam-modules"}
+        )
+        self.assertEqual(
+            records_named(records, "pam_owners_summary"), [{"complete": True, "count": 1}]
+        )
+
+    def test_owners_not_known_say_so(self):
+        self.fixture()
+        collector = load_collector(self.root)
+        out = []
+        collector.record_pam_owners(
+            type(
+                "Run",
+                (),
+                {"stream": type("S", (), {"record": lambda s, m, n, d: out.append((n, d))})()},
+            )(),
+            "system_files",
+            None,
+            False,
+            {},
+        )
+        self.assertEqual(out, [("pam_owners_summary", {"complete": False, "count": 0})])
+
     def test_each_kind_has_its_own_limit(self):
         self.fixture()
         records = self.run_with(caps={}, MAX_FILE_FINDINGS=1)

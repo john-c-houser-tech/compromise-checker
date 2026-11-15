@@ -115,6 +115,7 @@ reboots inside them informational ([whitelists](whitelists.md#maintenance-window
 | `pam.changes` | a `pam_exec` line (PAM running a program) | medium | no |
 | | PAM lines added or removed | high | yes |
 | | new or changed files in a PAM module directory | high | yes |
+| | changed module files that their own package's upgrade explains, grouped into one finding (#185): the collector names each module's owner (an older collector names none, and nothing is explained); package verification, the checksum lists and the package list were collected whole; the file doesn't differ from its package under either path form (`/lib` or `/usr/lib`); the owner itself was upgraded since the baseline; on dpkg, the owner's own checksum list was rewritten within 15 minutes of the module, by change time, and on rpm its install time is within 15 minutes; no other checksum list changed or disappeared without its package's version changing. Inside a run of the automatic updater that systemd itself logged as root (journal `_COMM`/`_UID`), Starting… and Finished…, around both times (`automatic_update`, low); otherwise (`hand_upgrade`, medium). Both on the server's own clock. All of it is the server's own record: an intruder acting during a real update of that package could hide here | low or medium | yes |
 | | a PAM module no package installed | high | no |
 
 Logins at unusual hours (DESIGN.md §8.3) need a per-host profile and come

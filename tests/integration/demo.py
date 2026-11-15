@@ -51,7 +51,7 @@ import threading
 import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -331,8 +331,9 @@ def make_servers(api, folder: Path, state: State, public_key: str, region: str) 
             print(f"{server.name}: created (id {server.id})")
 
 
-def install_checker(node: install.Node, state: State, folder: Path) -> str:
-    """The published release, by the install page's line. Returns the one-time setup link."""
+def install_checker(node: install.Node, state: State, folder: Path) -> tuple[str, list[str]]:
+    """The published release, by the install page's line. Returns the one-time setup link, and
+    what the pages will still warn about on the checker's server (see `settle`)."""
     state.web_name = web_name(node.address)
     save_state(folder, state)
     started = time.monotonic()
@@ -354,35 +355,90 @@ def install_checker(node: install.Node, state: State, folder: Path) -> str:
         "making the checker's key for its servers",
     )
     print(must(node, as_checker("packs", "pull"), "getting the threat updates").strip())
-    settle(node)
-    return links[0]
+    return links[0], settle(node, said)
 
 
-MACHINE_NOTES = "/var/lib/compromise-checker-status/machine.json"
+# What the installer says when it leaves SSH passwords on (release/install.py, choose_lockdown).
+_PASSWORDS_LEFT_ON = ("SSH passwords stay on", "SSH's settings were left as they were")
+_BOOT_ID = "cat /proc/sys/kernel/random/boot_id"
+# Ubuntu's own update runs, which can be what writes the restart note: waited for, ten minutes.
+_UPDATES_DONE = (
+    "for i in $(seq 120); do systemctl is-active --quiet apt-daily.service"
+    " apt-daily-upgrade.service || exit 0; sleep 5; done; exit 1"
+)
+_NOTES_SHOWN = {  # what the pages say for each fact that is true (checker/machine_status.py)
+    "ssh_passwords": "SSH still takes passwords",
+    "restart_needed": "an update is waiting for a restart",
+}
+_NO_NOTE = "the note the pages read about the machine couldn't be read"
 
 
-def settle(node: install.Node) -> None:
-    """Nothing for the pages to warn about on the checker's own server, since the warnings show on
-    every page a demo shows: a restart if an update asks for one (a fresh Linode's updates often
-    do), then the hourly note the pages read is written now, not within the hour, and must say
-    neither passwords nor a waiting restart."""
-    if node.run("test -e /run/reboot-required").returncode == 0:
-        print("checker: an update asks for a restart; restarting")
-        node.run("systemctl reboot", timeout=60)
-        time.sleep(15)
-        node.wait(600)
-    must(
-        node,
-        "systemctl start compromise-checker-status.service",
-        "writing the machine's note for the pages",
-    )
+def page_warnings(node: install.Node) -> list[str]:
+    """What the pages say about the checker's own server now, from the note they read."""
     try:
-        notes = json.loads(must(node, f"cat {MACHINE_NOTES}", "reading the machine's note"))
+        notes = json.loads(node.out(f"cat {install.STATUS_FILE}"))
     except ValueError:
-        notes = {}
-    warned = [fact for fact in ("ssh_passwords", "restart_needed") if notes.get(fact) is not False]
-    if warned:
-        raise DemoError(f"the pages would warn about the checker's server: {notes or 'no note'}")
+        return [_NO_NOTE]
+    if not isinstance(notes, dict):
+        return [_NO_NOTE]
+    return [
+        f"the pages say {words}" for fact, words in _NOTES_SHOWN.items() if notes.get(fact) is True
+    ]
+
+
+def restart(node: install.Node, seconds: int = 600) -> None:
+    """A restart that is known to have happened: the machine's boot id changes."""
+    before = node.out(_BOOT_ID)
+    with suppress(subprocess.TimeoutExpired):  # the connection drops as it goes down
+        node.run("systemctl reboot", timeout=60)
+    node.close()
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        time.sleep(10)
+        try:
+            now = node.run(_BOOT_ID, timeout=20)
+        except subprocess.TimeoutExpired:
+            continue
+        if now.returncode == 0 and now.stdout.strip() and now.stdout.strip() != before:
+            return
+    raise DemoError(
+        f"the checker's server didn't come back from its restart in {seconds // 60} min"
+    )
+
+
+def settle(node: install.Node, said: str = "") -> list[str]:
+    """What the pages show on every page about the checker's own server, made quiet where it can
+    be: SSH passwords are the installer's to turn off (`install_line`); an update that asks for a
+    restart gets one, after Ubuntu's own update runs end, at most twice. Then the hourly note the
+    pages read is written at once. Whatever the pages will still say is returned and printed, and
+    the demo goes on: a note on a page isn't worth the servers. During a stay of days, Ubuntu's
+    updates go on and the restart note can come back (`status` says so)."""
+    warned = [
+        line.strip() for line in said.splitlines() if line.strip().startswith(_PASSWORDS_LEFT_ON)
+    ]
+    for restarts in range(3):
+        if node.run(_UPDATES_DONE, timeout=700).returncode != 0:
+            warned.append("Ubuntu's updates were still running after 10 minutes")
+        if restarts == 2 or node.run("test -e /run/reboot-required").returncode != 0:
+            break
+        print("checker: an update asks for a restart; restarting")
+        restart(node)
+    if node.run("systemctl start compromise-checker-status.service").returncode != 0:
+        warned.append("the note the pages read about the machine wasn't written")
+    warned += page_warnings(node)
+    for line in warned:
+        print(f"WARN the checker's server: {line}")
+    return warned
+
+
+def fresh_link(node: install.Node, state: State) -> str | None:
+    """A new first-account link, an hour from now (the install's has been running down); the old
+    one stops working. None if none was made."""
+    done = node.run(
+        as_checker("web-setup-link", "--address", f"https://{state.web_name}"), timeout=120
+    )
+    links = re.findall(rf"https://{re.escape(state.web_name)}/s/\S+", done.stdout)
+    return links[0] if done.returncode == 0 and len(links) == 1 else None
 
 
 def prepare_member(
@@ -1115,7 +1171,7 @@ def up(api, folder: Path, region: str, today: date, days: int = 0) -> int:
         make_servers(api, folder, state, public, region)
         checker = install.Node(state.checker().address, key, known)
         checker.wait(600)
-        link = install_checker(checker, state, folder)
+        link, warned = install_checker(checker, state, folder)
         scanner_key = must(checker, f"cat {MACHINE_KEY}.pub", "reading the checker's key").strip()
         for server in state.fleet():
             nodes[server.name] = Through(server.address, key, known, checker)
@@ -1152,6 +1208,7 @@ def up(api, folder: Path, region: str, today: date, days: int = 0) -> int:
             for line in world.failed:
                 print(f"  {line}")
         print(f"\nThe checker: https://{state.web_name}/ (a test certificate: the browser warns)")
+        link = fresh_link(checker, state) or link
         print(f"Make the first account, within the hour: {link}")
         print(f"Up until `demo.py down`; its tags end on {state.until}.")
         if days:
@@ -1160,7 +1217,9 @@ def up(api, folder: Path, region: str, today: date, days: int = 0) -> int:
                 f" {state.last_check.replace('T', ' ')} (the checker's server's clock, UTC),"
                 f" when day {days} has been checked, and by the end of {state.until}."
             )
-        hands_on(days)
+        for line in warned:
+            print(f"WARN the checker's server: {line}")
+        hands_on(days, played=0 if days else None)
         return 1 if leaks or world.failed else 0
     except BaseException:
         with nothing_stops_it(folder):
@@ -1868,18 +1927,45 @@ def last_day(days: int) -> int:
     return every if days == 0 else min(days, every)
 
 
-def hands_on(days: int) -> None:
-    """The list for the days this demo reaches; an item needing a later day is named as such."""
+def hands_on(days: int, played: int | None = None) -> None:
+    """The list for what the story has played so far (`played`, all of it when None); what needs a
+    later day of this demo, with its day; and what this demo never reaches."""
     reached = last_day(days)
+    played = reached if played is None else min(played, reached)
     print("\nYours to do while it is up (what only a person at the pages can produce):")
     for day, line in story.HANDS_ON:
-        if day <= reached:
+        if day <= played:
             print(f"  - {line}")
+    soon = [(day, line) for day, line in story.HANDS_ON if played < day <= reached]
+    if soon:
+        print("Once the story has played their day:")
+        for day, line in soon:
+            print(f"  - from day {day}: {line}")
     later = [(day, line) for day, line in story.HANDS_ON if day > reached]
     if later:
         print(f"Not on this demo, which plays the story to day {reached}:")
         for day, line in later:
             print(f"  - {line} (needs day {day})")
+
+
+def days_played(plan: list[dict], now: datetime) -> int:
+    """The last day whose steps' time has come, by the checker's server's clock (UTC)."""
+    clock = now.astimezone(UTC).replace(tzinfo=None)
+    return max([0] + [s["day"] for s in plan if datetime.fromisoformat(s["when"]) <= clock])
+
+
+# What `story_so_far` says when the days aren't as they should be, and why `status` ends 1.
+_WHY_NOT_GOOD = (
+    ("couldn't be asked", "the checker's server couldn't be asked how the days went"),
+    (": LATE:", "a day's step is late"),
+)
+
+
+def why_not_good(lines: list[str]) -> str:
+    for mark, why in _WHY_NOT_GOOD:
+        if any(mark in line for line in lines):
+            return why
+    return "a story step above didn't go as written"
 
 
 def status(api, folder: Path, now: datetime) -> int:
@@ -1912,12 +1998,19 @@ def status(api, folder: Path, now: datetime) -> int:
         checker = install.Node(state.checker().address, folder / "key", folder / "known_hosts")
         try:
             lines, good = story_so_far(checker, state.plan)
+            warned = page_warnings(checker) if good or "couldn't be asked" not in lines[0] else []
         finally:
             checker.close()
         for line in lines:
             print(line)
         print(f"Day {state.days} is checked at {state.last_check.replace('T', ' ')}.")
+        for line in warned:  # Ubuntu's updates go on during a stay: the restart note comes back
+            print(
+                f"The pages now warn: {line}. Restart the checker's server (or turn passwords"
+                " off) when no check is running."
+            )
         wants_look = not good
+        why = why_not_good(lines)
     wants_down = False
     if date.fromisoformat(state.until) < now.date():
         print(f"OVERDUE: its end date was {state.until}. Run `down`.")
@@ -1927,9 +2020,9 @@ def status(api, folder: Path, now: datetime) -> int:
         if node["id"] not in ours:
             print(f"Not in the state: {node['label']} (id {node['id']}), also up and billing.")
             wants_down = True
-    hands_on(state.days)
+    hands_on(state.days, days_played(state.plan, now) if state.plan else None)
     if wants_look:
-        print("\nEnds 1: a story step above didn't go as written.")
+        print(f"\nEnds 1: {why}.")
     if wants_down:
         print("\nEnds 1: run `down`.")
     return 1 if wants_down or wants_look else 0

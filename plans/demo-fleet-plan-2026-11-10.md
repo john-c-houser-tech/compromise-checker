@@ -146,6 +146,22 @@ One script, `tests/integration/demo.py`, with four commands:
   when a story step failed (day 3's container step had). **Fixed (D.5):** it now says which reason
   it ends 1 for.
 
+- **Setup leftovers made two servers read worse than the story says** (browsing the saved four-day
+  dataset, 2026-11-14). (1) The proofs' audit rules are loaded with `auditctl` alone: Ubuntu's
+  automatic update restarted auditd on staging-1 and dropped them, so every later check reported
+  "audit rules were removed and not loaded again" (high). (2) On Rocky, the setup's Podman
+  container sleeps two hours and exits, taking its firewall rules with it: mail-1 read "firewall
+  rules removed" from day 1. (3) The setup puts nginx, PHP-FPM and a site with planted PHP settings
+  on every server, so mail-1 read as a web server open to PHP2Shell. **Fixed (D.5):** right after
+  the setup, before the first check, `story.KEEP` saves the rules in `/etc/audit/rules.d/` and
+  replaces the container with one that runs for good and comes back at boot; `story.NOT_WEB` takes
+  the web stack and the planted site off every server not in the web group. Unproven on a server
+  until the next `up`.
+- **staging-1 still reads high after an ordinary PAM update, and honestly** (#185): the checker
+  can't tell Ubuntu's update of PAM's modules from a swapped module using the server's own records
+  (#186 reverted, #188 closed; the fix is #189, off the server). Until then a demo's "clean" server
+  is mail-1 or db-1, not an Ubuntu server that took a PAM update.
+
 ## Keep-alive as built (D.4, 2026-11-10)
 
 `up --days N` (1 to 14). Day 0 is played from the laptop, as in one sitting. Each later day is one

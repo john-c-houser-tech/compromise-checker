@@ -586,12 +586,13 @@ def test_the_demos_whitelist_and_the_admins_rule_are_ones_the_checker_takes(tmp_
 
 def test_ssh_is_closed_to_all_but_the_checker_before_a_server_is_added_or_weakened(tmp_path):
     checker = Ran(*[(0, "SHA256:" + "a" * 43 + "\n", "")] * 4)
-    server = Ran(*[(0, "256 SHA256:" + "a" * 43 + " root@x (ED25519)\n", "")] * 5)
+    server = Ran(*[(0, "256 SHA256:" + "a" * 43 + " root@x (ED25519)\n", "")] * 6)
     server.wait = lambda seconds: None
     member = story.Member("shop-web-1", "web", "ubuntu24.04", old_php=True)
     made = demo.Server("shop-web-1", "fleet", "ubuntu24.04", "web", 1, "l", "192.0.2.5")
     demo.prepare_member(checker, server, made, member, "ssh-ed25519 SCANNER")
-    setup, firewall, web, old_php, keys = server.calls
+    setup, keep, firewall, web, old_php, keys = server.calls
+    assert keep[1] == story.KEEP  # before the firewall, and so before its first check
     assert 'from="192.0.2.1"' in setup[0] and "ssh-ed25519 SCANNER" in setup[0]
     assert "ufw allow from 192.0.2.1 to any port 22" in firewall[1]
     assert "ufw delete allow 22/tcp" in firewall[1] and 'address="192.0.2.1"' in firewall[1]
@@ -610,13 +611,13 @@ def test_a_container_that_did_not_start_is_tried_again_before_the_firewall(capsy
     for second, expected in ((0, "started at the second try"), (1, "still not started:\nno space")):
         checker = Ran((0, "", ""), (0, "SHA256:" + "a" * 43 + "\n", ""), (0, "", ""), (0, "", ""))
         server = Ran(
-            (0, "", "proof setup: Docker not started\n"), (second, "no space", ""), *[key] * 4
+            (0, "", "proof setup: Docker not started\n"), (second, "no space", ""), *[key] * 5
         )
         server.wait = lambda seconds: None
         member = story.Member("staging-1", "", "ubuntu24.04")
         made = demo.Server("staging-1", "fleet", "ubuntu24.04", "", 1, "l", "192.0.2.5")
         demo.prepare_member(checker, server, made, member, "ssh-ed25519 SCANNER")
-        _, again, firewall = server.calls[:3]
+        _, again, _, firewall = server.calls[:4]
         assert "docker run -d --name web-cache" in again[1] and "ufw delete" in firewall[1]
         assert expected in capsys.readouterr().out
 
@@ -2119,3 +2120,34 @@ def test_a_record_far_bigger_than_a_record_stops_the_save(tmp_path, monkeypatch)
     )
     with pytest.raises(demo.DemoError, match="bigger than a record"):
         demo.record_here(tmp_path)
+
+
+def test_a_server_that_isnt_a_web_server_loses_the_setups_web_stack():
+    """Seen on mail-1, 2026-11-14: the proofs' PHP site read as a web server open to PHP2Shell."""
+    checker = Ran(*[(0, "SHA256:" + "a" * 43 + "\n", "")] * 4)
+    server = Ran(*[(0, "256 SHA256:" + "a" * 43 + " root@x (ED25519)\n", "")] * 5)
+    server.wait = lambda seconds: None
+    member = story.Member("mail-1", "mail", "rocky9")
+    made = demo.Server("mail-1", "fleet", "rocky9", "mail", 1, "l", "192.0.2.5")
+    demo.prepare_member(checker, server, made, member, "ssh-ed25519 SCANNER")
+    _, keep, _, not_web, _ = server.calls
+    assert keep[1] == story.KEEP and not_web[1] == story.NOT_WEB
+    assert not any("fastcgi_pass" in command for command, _ in server.calls)
+
+
+def test_the_kept_audit_rules_and_container_and_the_removed_web_stack():
+    """Read off the scripts: the rules go where auditd loads them at a restart; the container runs
+    for good and comes back at boot; the web stack and the planted site go."""
+    assert "auditctl -l | grep -E 'key=cc-' > /etc/audit/rules.d/50-demo.rules" in story.KEEP
+    assert "--restart=always" in story.KEEP and "sleep infinity" in story.KEEP
+    assert "podman-restart.service" in story.KEEP
+    assert "podman container exists metrics" in story.KEEP
+    for gone in (
+        "purge -y -qq 'nginx*' 'php*'",
+        "dnf remove -y -q nginx 'php*'",
+        "rm -rf /var/www/shop",
+    ):
+        assert gone in story.NOT_WEB, gone
+    # What they name is what the setup made, under the demo's names for it.
+    assert ("/var/www/proof", "/var/www/shop") in story.SETUP_NAMES
+    assert ("cc-proof-pod", "metrics") in story.SETUP_NAMES

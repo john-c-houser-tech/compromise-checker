@@ -86,7 +86,7 @@ def _time(value) -> datetime | None:
         return None
 
 
-def updater_runs(context: Context) -> list[tuple[datetime, datetime]]:
+def _updater_runs(context: Context) -> list[tuple[datetime, datetime]]:
     """(start, end) of each automatic updater run: a Starting… of an
     updater's service, to its Finished… (or four hours, if none)."""
 
@@ -162,7 +162,7 @@ def _grouped(check_id, title, band, variant, names, refs, times, context, keys=(
 def packages(context: Context) -> list[Finding]:
     diff = context.changes("packages")
     findings = []
-    runs = updater_runs(context)
+    runs = _updater_runs(context)
     installed = [
         (k, _time(item.get("installed")))
         for k, item in sorted(diff["added"].items())

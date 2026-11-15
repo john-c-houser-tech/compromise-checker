@@ -1149,7 +1149,7 @@
   "as_of": "2026-10-28",
   "disabled": [],
   "expired": [],
-  "hash": "493363e2a1fe616a867da3e74d3d3a137933c95a909e74c1e2f3e4ec2d0e75a1",
+  "hash": "0057a8983d171dbff31f75493f5735144f9504b5cab5967b4b56577e37805b19",
   "maintenance": 0,
   "matched": {
    "host ubuntu24.04/proof-at-job-debian": 1,

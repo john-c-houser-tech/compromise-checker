@@ -210,6 +210,25 @@ def test_the_record_holds_the_rules_and_their_hash():
     assert applied["rules"][0]["id"] == "r1" and applied["matched"] == {"host h/r1": 1}
 
 
+def test_the_hash_is_the_same_wherever_the_home_is(tmp_path):
+    """A home restored or moved elsewhere holds the same set: its stored results stay current.
+    A changed rule, or the same rule in another layer, is another set."""
+    homes = []
+    for name in ("server", "laptop/copy"):
+        home = tmp_path / name
+        write(home, "global.yaml", rule(id="g1", match="{check: account.uid0, account: root}"))
+        write(home, "hosts/web01.yaml", rule())
+        homes.append(load(home, "web01", None))
+    assert homes[0].rules[0].file != homes[1].rules[0].file
+    assert homes[0].digest() == homes[1].digest()
+    write(tmp_path / "server", "hosts/web01.yaml", rule(expires="2027-01-01"))
+    assert load(tmp_path / "server", "web01", None).digest() != homes[1].digest()
+    moved = tmp_path / "moved"
+    write(moved, "global.yaml", rule(id="g1", match="{check: account.uid0, account: root}"))
+    write(moved, "groups/web.yaml", rule())
+    assert load(moved, "web01", "web").digest() != homes[1].digest()
+
+
 def read_layer_text(text):
     import yaml
 

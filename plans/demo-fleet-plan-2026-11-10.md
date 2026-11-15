@@ -115,6 +115,21 @@ One script, `tests/integration/demo.py`, with four commands:
   timed out ("containerd ... Connection timed out [IP: 2600:..."), and that time the retry failed
   too, on all three. The demo's retry now asks over IPv4 with three tries; the proofs' setup
   should do the same.
+- **Proven at the four-day run's end (2026-11-14):** the journal command #182 prints,
+  `sudo journalctl _SYSTEMD_USER_UNIT=compromise-checker.service + USER_UNIT=compromise-checker.service`,
+  showed the daily check's output on the checker's server.
+- **`status` offers a hands-on item the run never reached** (four-day run, 2026-11-14). Its list
+  says "Known threats, Manage: put the stopped threat update back (the story's day 6)", but a
+  stay shorter than the story never plays day 5, so nothing is stopped and there is no "Stopped by
+  hand" section. Fix: print each hands-on item only when the days it needs were played (or say
+  which day it needs).
+- **The demo checker's pages carry two red notes** (four-day run, 2026-11-14): "This machine still
+  lets people log in over SSH with a password" and "An update to this machine is waiting for a
+  restart". Both are true of a fresh Linode and both are on every page a demo shows. Fix in `up`:
+  turn password logins off on the checker's server and restart it after the install, before the
+  first check.
+- **`status` exits non-zero while a demo is up and fine** (2026-11-14). Fix: 0 when it could read
+  everything, non-zero only when it couldn't.
 
 ## Keep-alive as built (D.4, 2026-11-10)
 
@@ -163,11 +178,15 @@ end.
   the servers' list and their host keys, the threat updates, the whitelists, proposals and
   reports. They are named in `demo.py`; a file the checker starts keeping later isn't copied until
   it is added there.
-- **What stays on the server:** `web.db`, which holds the accounts, their sessions, the record of
-  who did what at the pages and the list of checks started from a page, each with the address it
-  came from. And every key but the evidence's: the one that logs in to the fleet, the web
-  interface's secrets, the mail key. So in the saved copy the Activity page and the Checks page's
-  list start empty; the results of those checks are in the store and are saved.
+- **What stays on the server:** the accounts, their sessions and failed sign-ins, and every key
+  but the evidence's: the one that logs in to the fleet, the web interface's secrets, the mail
+  key.
+- **The Activity page and the Checks page's list are kept, with the address replaced** (John,
+  2026-11-12). Both live in `web.db` with the address each row came from, which is the laptop's.
+  The server copies those two tables and no other, putting "(not kept)" where each address was,
+  before anything is sent. On the laptop the rows go into a new accounts database, made by the
+  checker's own code with no account in it. A row that still held an address would stop the
+  save, and the record is searched for the laptop's address like everything else.
 - **The account's name is in the data.** The store's own record of each collection says who
   started it, so a check or a decision made at the pages carries the name of the account that
   made it.
@@ -196,4 +215,7 @@ end.
   stops. `down --unsaved` deletes anyway. A failed `up` still deletes what it made without asking.
 
 Still to do in D.5, after the first save from real servers: browse it on the laptop, move the
-screenshot script onto it, retire `demo_fleet.py`, take the README's pictures again.
+screenshot script onto it, retire `demo_fleet.py`, take the README's pictures again. Until it is
+moved, `screenshots.py` refuses a saved dataset: it deletes `web.db` for its own throwaway
+account, and in a saved dataset that file is the only copy of the record of the pages' use. When
+it is moved, it works on a copy of that file or makes its account beside the record.

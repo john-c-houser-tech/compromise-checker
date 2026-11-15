@@ -129,6 +129,10 @@ The states that come from using the interface, not from a server. A list to work
 - **Damage:** a result that can't be read, a threat update that fails its signature, a lost
   evidence key, a full disk. Each needs something broken on purpose on the checker's server; left
   out, and proposable later one at a time.
+- **A wrong fingerprint pasted when confirming a server's key.** The paste box appears only for
+  a server whose key isn't confirmed or has changed. Every fleet server is confirmed at setup, and
+  `staging-1` keeps its confirmed key when it is taken off the list, so adding it back is already
+  confirmed (seen 2026-11-14). It needs a brand-new server, or one whose key was changed on purpose.
 - **A threat update withdrawn by its publisher,** or one whose signing key is retired.
 - **Checks no staged behaviour triggers** (about half of them: guessed passwords, logins at odd
   hours, miners, hidden processes, kernel faults, clock jumps and others). The story uses what the

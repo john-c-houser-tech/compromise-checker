@@ -18,10 +18,11 @@ this script does, a little before the checker's own daily check. So this machine
 the history has real dates. `status` says how each day went.
 
 `save DIR` copies what the checker keeps to a new folder outside the repository: the demo dataset,
-which `CHECKER_HOME=DIR checker web` shows on this machine with no servers. The web accounts and
-the record of who did what at the pages stay behind (they hold this machine's address), and so
-does every key but the one the evidence is read with. It needs no Linode token and changes
-nothing on the servers. `down` asks for it first: `down --unsaved` deletes without.
+which `CHECKER_HOME=DIR checker web` shows on this machine with no servers. The web accounts stay
+behind, and so does every key but the one the evidence is read with. The record of who did what
+at the pages comes down with each address in it replaced (they are this machine's). It needs no
+Linode token and changes nothing on the servers. `down` asks for it first: `down --unsaved`
+deletes without.
 
 Its servers carry their own tag, so the proofs' sweep of servers older than two hours leaves them
 alone. Each also carries the last day it may be up: `status` says when that has passed, the next
@@ -1153,15 +1154,22 @@ def up(api, folder: Path, region: str, today: date, days: int = 0) -> int:
 
 # What of the checker's home is the demo's data: enough for `CHECKER_HOME=DIR checker web` to show
 # every page on a machine with no servers. Named here, so a file the checker starts keeping later
-# isn't copied until someone has said it should be. Left out on purpose: web.db (the accounts,
-# their sessions, and the record of who did what from which address, which is the one place this
-# machine's address is kept), and every key but the one the evidence is read with (the key that
-# logs in to the fleet, the web interface's secrets, the mail key).
+# isn't copied until someone has said it should be. Left out on purpose: every key but the one the
+# evidence is read with (the key that logs in to the fleet, the web interface's secrets, the mail
+# key), and web.db, which holds the accounts, their sessions and failed sign-ins. Two of its
+# tables do come down, since two pages show nothing without them: the record of who did what at
+# the pages, and the checks started from one. Each row holds the address it came from, which is
+# the one place this machine's address is kept: the server puts NOT_KEPT there before it sends.
 STORE = "checker.db"
 EVIDENCE_KEY = "keys/evidence-identity.txt"
 KEPT_FILES = ("config.yaml", "hosts.yaml", "known_hosts", "run-state.age", EVIDENCE_KEY)
 KEPT_FOLDERS = ("evidence", "packs", "whitelist", "proposals", "reports")
 ABOUT = "demo.json"  # what `save` writes beside them: which run this was, and its servers
+ACCOUNTS = "web.db"
+RECORD = "web-record.db"  # the two tables, as they come down; put into a new web.db here
+RECORD_TABLES = ("web_actionrecord", "web_checkrun")
+NOT_KEPT = "(not kept)"
+MOST_ROWS = 200_000
 # The most `save` takes from a server, and the longest it waits: a week's stay is a few megabytes.
 MOST_BYTES = 2 * 1024**3
 MOST_SECONDS = 3600
@@ -1177,7 +1185,7 @@ import fcntl, io, json, os, sqlite3, sys, tarfile, time
 from pathlib import Path
 
 home = Path(sys.argv[1])
-files, folders, store = json.loads(sys.argv[2])
+files, folders, store, accounts, record, tables, not_kept = json.loads(sys.argv[2])
 lock = os.open(home / "run.lock", os.O_RDWR | os.O_CREAT, 0o600)
 try:
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1192,12 +1200,36 @@ source = sqlite3.connect(f"file:{home / store}?mode=ro", uri=True)
 whole = sqlite3.connect(":memory:")
 source.backup(whole)
 source.close()
-data = whole.serialize()
-sent, collections, newest = 1, 0, 0
+whole_files = {store: whole.serialize()}
+if (home / accounts).is_file() and (home / accounts).stat().st_size:
+    # The record of the pages' use, and no other table: made anew here, each row's address
+    # replaced as it is copied, so what is sent never held one.
+    source = sqlite3.connect(f"file:{home / accounts}?mode=ro", uri=True)
+    kept = sqlite3.connect(":memory:")
+    for table in tables:
+        made = source.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        ).fetchone()
+        if made is None:
+            continue
+        kept.execute(made[0])
+        columns = [row[1] for row in source.execute(f'PRAGMA table_info("{table}")')]
+        if "address" not in columns:
+            sys.exit(f"{table} has no address column: is this a newer checker?")
+        marks = ", ".join("?" for _ in columns)
+        for row in source.execute(f'SELECT * FROM "{table}"'):
+            row = [not_kept if c == "address" else v for c, v in zip(columns, row)]
+            kept.execute(f'INSERT INTO "{table}" VALUES ({marks})', row)
+    kept.commit()
+    source.close()
+    whole_files[record] = kept.serialize()
+sent, collections, newest = 0, 0, 0
 with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as out:
-    entry = tarfile.TarInfo(store)
-    entry.size, entry.mode, entry.mtime = len(data), 0o600, int(time.time())
-    out.addfile(entry, io.BytesIO(data))
+    for name, data in whole_files.items():
+        entry = tarfile.TarInfo(name)
+        entry.size, entry.mode, entry.mtime = len(data), 0o600, int(time.time())
+        out.addfile(entry, io.BytesIO(data))
+        sent += 1
     paths = [home / name for name in files]
     for name in folders:
         paths += sorted((home / name).rglob("*"))
@@ -1241,17 +1273,18 @@ def wanted(name: str) -> bool:
         return False
     if parts[0] == "evidence":  # a server's folder, and its files in it: where they are read
         return len(parts) == 3
-    return name in (STORE, *KEPT_FILES) or (len(parts) > 1 and parts[0] in KEPT_FOLDERS)
+    return name in (STORE, RECORD, *KEPT_FILES) or (len(parts) > 1 and parts[0] in KEPT_FOLDERS)
 
 
 def fetch(checker: install.Node, work: Path) -> tuple[Path, int, int, int]:
     """The checker's data, as a tar in `work` (a folder for this account alone). Returns the tar,
     how many files the server says it sent, how many of them are stored evidence, and when the
     newest collection was written. A server that sends too much, or for too long, is cut off."""
+    sent_for = [KEPT_FILES, KEPT_FOLDERS, STORE, ACCOUNTS, RECORD, RECORD_TABLES, NOT_KEPT]
     command = (
         f"runuser -u {install.ACCOUNT} -- {install.PROGRAM}/current/bin/python -I -"
         f" {shlex.quote(install.DATA)}"
-        f" {shlex.quote(json.dumps([KEPT_FILES, KEPT_FOLDERS, STORE]))}"
+        f" {shlex.quote(json.dumps(sent_for))}"
     )
     archive, errors = work / "data.tar", work / "said"
     with open(archive, "wb") as out, open(errors, "wb") as err:
@@ -1405,6 +1438,98 @@ def paths_here(folder: Path, was: str, where: Path) -> int:
     return changed
 
 
+_NEW_ACCOUNTS = """
+import sys
+from pathlib import Path
+from checker.web import app
+app.configure(Path(sys.argv[1]))
+"""
+
+
+def as_the_pages_read(row: dict) -> bool:
+    """Whether a row of the record is of the shape the Activity and Checks pages read: text and
+    numbers only, its times times, and a check's servers a list of names. SQLite itself holds
+    whatever it is given."""
+    if not all(v is None or isinstance(v, str | int | float) for v in row.values()):
+        return False
+    try:
+        for name in ("at", "started_at", "finished_at"):
+            if row.get(name) is not None:
+                datetime.fromisoformat(row[name])
+        hosts = json.loads(row["hosts"]) if "hosts" in row else []
+    except (TypeError, ValueError):
+        return False
+    return isinstance(hosts, list) and all(isinstance(h, str) for h in hosts)
+
+
+def record_here(folder: Path) -> dict[str, int]:
+    """The record of the pages' use, put where the pages read it: a new accounts database, made
+    by the checker's own code as it makes one at its first start (so with no account in it), and
+    the rows that came down added to it. Only the two tables, only columns this checker has, and
+    only rows whose address the server did replace. Returns how many rows of each."""
+    came = folder / RECORD
+    if not came.is_file():
+        return {}
+    made = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _NEW_ACCOUNTS, str(folder)],
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "CHECKER_HOME": str(folder)},
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    if made.returncode != 0:
+        raise DemoError(f"a new accounts database couldn't be made:\n{made.stderr.strip()[-800:]}")
+    counts = {}
+    source = sqlite3.connect(f"file:{came}?mode=ro&immutable=1", uri=True)
+    target = sqlite3.connect(folder / ACCOUNTS)
+    try:
+        source.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MOST_IN_A_VALUE)
+        # Those two tables and nothing else: no other table (an account's, say), and nothing
+        # that makes rows up as it is read, which a view under one of their names would.
+        holds = source.execute("SELECT type, name FROM sqlite_master").fetchall()
+        for kind, name in holds:
+            plain = kind == "table" and name in (*RECORD_TABLES, "sqlite_sequence")
+            if not plain and not (kind == "index" and name.startswith("sqlite_autoindex_")):
+                raise DemoError(f"the record sent holds a {shown(kind)} that wasn't asked for")
+        taken = 0
+        for table in RECORD_TABLES:
+            sent = [row[1] for row in source.execute(f'PRAGMA table_info("{table}")')]
+            here = [row[1] for row in target.execute(f'PRAGMA table_info("{table}")')]
+            columns = [name for name in sent if name in here]
+            if not sent:
+                continue
+            if "address" not in columns:
+                raise DemoError(f"the record's table {table} isn't one this checker keeps")
+            names = ", ".join(f'"{name}"' for name in columns)
+            marks = ", ".join("?" for _ in columns)
+            place = columns.index("address")
+            counts[table] = 0
+            for row in source.execute(f'SELECT {names} FROM "{table}"'):  # noqa: S608
+                if row[place] != NOT_KEPT:
+                    raise DemoError(f"the server sent a row of {table} with its address still in")
+                if counts[table] >= MOST_ROWS:
+                    raise DemoError(f"the server sent more than {MOST_ROWS} rows of {table}")
+                if not as_the_pages_read(dict(zip(columns, row, strict=True))):
+                    raise DemoError(f"the server sent a row of {table} the pages couldn't show")
+                taken += sum(len(v) for v in row if isinstance(v, str))
+                if taken > MOST_IN_A_VALUE:
+                    raise DemoError("the record sent is bigger than a record of the pages' use")
+                target.execute(f'INSERT INTO "{table}" ({names}) VALUES ({marks})', row)  # noqa: S608
+                counts[table] += 1
+        target.commit()
+    except sqlite3.Error as exc:
+        raise DemoError(f"the record of the pages' use couldn't be put in place ({exc})") from exc
+    finally:
+        source.close()
+        target.close()
+    came.unlink()
+    for path in folder.rglob("*"):  # what making the database left: this account's alone
+        path.chmod(0o700 if path.is_dir() else 0o600)
+    return counts
+
+
 def forms_of(here: str) -> list[str]:
     """The ways an address is written that are looked for: as it is, and as it appears in a name
     made from it, in a reverse lookup, or (IPv6) written out in full or as its network."""
@@ -1440,8 +1565,8 @@ def opened(blob: bytes, identity) -> bytes:
     return plain
 
 
-def in_store(path: Path, needles: list[str], identity) -> list[str]:
-    """Where the saved store holds any of the texts, or couldn't be read: each table, row by row,
+def in_store(path: Path, needles: list[str], identity, what: str = "the store") -> list[str]:
+    """Where a saved database holds any of the texts, or couldn't be read: each table, row by row,
     through SQLite (a value can lie across pages in the file, where a search of its bytes would
     miss it), with every value the checker sealed opened first."""
     found = []
@@ -1452,7 +1577,7 @@ def in_store(path: Path, needles: list[str], identity) -> list[str]:
         store.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MOST_IN_A_VALUE)
         said = store.execute("PRAGMA integrity_check").fetchall()
         if said != [("ok",)]:
-            raise DemoError(f"the saved store is damaged: {shown(str(said[:3]))}")
+            raise DemoError(f"the saved copy of {what} is damaged: {shown(str(said[:3]))}")
         tables = store.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         for (table,) in tables:
             quoted = '"' + table.replace('"', '""') + '"'
@@ -1471,9 +1596,9 @@ def in_store(path: Path, needles: list[str], identity) -> list[str]:
                             continue
                     if any(needle in value for needle in wanted_bytes):
                         said.add("names this machine")
-            found += [f"the store's table {shown(table)}: {what}" for what in sorted(said)]
+            found += [f"{what}'s table {shown(table)}: {why}" for why in sorted(said)]
     except sqlite3.Error as exc:
-        raise DemoError(f"the saved store can't be read ({exc})") from exc
+        raise DemoError(f"the saved copy of {what} can't be read ({exc})") from exc
     finally:
         store.close()
     return found
@@ -1499,6 +1624,8 @@ def names_this_machine(folder: Path, here: str, collections: int) -> list[str]:
         return [f"the saved evidence key can't be read ({type(exc).__name__})"]
     needles = forms_of(here)
     found = in_store(folder / STORE, needles, identity)
+    if (folder / ACCOUNTS).is_file():
+        found += in_store(folder / ACCOUNTS, needles, identity, "the pages' record")
     evidence = {p for p in (folder / "evidence").glob("*/*.age")}
     for path in sorted(folder.rglob("*")):
         if not path.is_file() or path in evidence:
@@ -1606,6 +1733,7 @@ def save(folder: Path, target: Path, now: datetime) -> int:
                 raise DemoError(f"{got} files arrived, of the {sent} the checker's server sent")
             settings_here(part, part)
             moved = paths_here(part, install.DATA, part)
+            record = record_here(part)
         except BaseException:  # nothing whole came down: no working folder is left in the way
             shutil.rmtree(part, ignore_errors=True)
             raise
@@ -1637,6 +1765,11 @@ def save(folder: Path, target: Path, now: datetime) -> int:
             " evidence key path; notifications, the advisor, the threat updates' source and"
             " release checks put back to off or as new"
         ),
+        "pages_record": (
+            f"{record.get('web_actionrecord', 0)} lines of who did what at the pages and"
+            f" {record.get('web_checkrun', 0)} checks started from one, each with the address it"
+            f" came from replaced by {NOT_KEPT!r}; no account, session or sign-in came down"
+        ),
     }
     (part / ABOUT).write_text(json.dumps(about, indent=2) + "\n", encoding="utf-8")
     (part / ABOUT).chmod(0o600)
@@ -1654,9 +1787,10 @@ def save(folder: Path, target: Path, now: datetime) -> int:
     print(
         f"PASS {got} files, {collections} of them stored evidence. Every collection, sealed file"
         f" and sealed value opened with the saved key, and none of them holds {here}, this"
-        " machine's address as the checker's server sees it now. The web accounts and the record"
-        " of who did what at the pages stayed on the server, and so did every key but the"
-        " evidence's."
+        " machine's address as the checker's server sees it now. The web accounts, their sessions"
+        " and sign-ins stayed on the server, and so did every key but the evidence's. The record"
+        f" of who did what at the pages came down ({sum(record.values())} rows), each address in"
+        f" it replaced by {NOT_KEPT!r} before it was sent."
     )
     if not whole:
         print(

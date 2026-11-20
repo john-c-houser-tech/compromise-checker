@@ -29,7 +29,7 @@ def snap(**sections):
     )
 
 
-def run(events=(), snapshot=None, baseline=None, previous=None, earlier=()):
+def run(events=(), snapshot=None, baseline=None, previous=None, earlier=(), baseline_time=None):
     snapshot = snapshot or snap()
     context = Context(
         host="web01",
@@ -40,6 +40,7 @@ def run(events=(), snapshot=None, baseline=None, previous=None, earlier=()):
         since_baseline=compare(baseline, snapshot) if baseline else None,
         since_previous=compare(previous, snapshot) if previous else None,
         earlier_events=lambda: [list(e) for e in earlier],
+        baseline_time=baseline_time,
     )
     findings, ran = run_checks(context)
     assert not [r for r in ran if r["status"].startswith("failed")], ran
@@ -234,6 +235,36 @@ def test_account_changes_in_the_logs():
     ]
     found = of(run(events), "account.log_changes")
     assert [f.band for f in found] == ["high", "medium", "medium"]
+
+
+def test_account_changes_logged_before_the_baseline_count_only_in_its_own_result():
+    # A server's setup makes accounts and groups a minute before its first check, which
+    # became the baseline: still in the logs at every later check, they were in the
+    # baseline's own result already. A privileged change keeps counting.
+    events = [
+        ev("group.created", minutes=-2, group="postfix"),
+        ev("account.created", minutes=-1, user="postfix", uid="110", shell="/usr/sbin/nologin"),
+        ev("group.member_added", minutes=-1, user="eve", group="sudo"),
+        ev("account.created", minutes=5, user="bob", uid="1001"),
+    ]
+    first = {f.entities[0]: f for f in of(run(events), "account.log_changes")}
+    later = of(run(events, baseline_time=T0.isoformat()), "account.log_changes")
+    later = {f.entities[0]: f for f in later}
+    # This bundle is the baseline: every change counts.
+    assert {k: f.band for k, f in first.items()} == {
+        "group:postfix": "low",
+        "account:postfix": "medium",
+        "account:eve": "high",
+        "account:bob": "medium",
+    }
+    assert {k: f.band for k, f in later.items()} == {
+        "group:postfix": "info",
+        "account:postfix": "info",
+        "account:eve": "high",
+        "account:bob": "medium",
+    }
+    assert "before the baseline" in later["account:postfix"].summary
+    assert "baseline" not in later["account:bob"].summary
 
 
 def test_new_sudo_rules():

@@ -326,6 +326,10 @@ def _package_account(context: Context, event, installs: list[datetime]) -> bool:
 def log_changes(context: Context) -> list[Finding]:
     findings = []
     installs = _package_installs(context)
+    # When the baseline was taken; None when this bundle is the baseline (or there is none).
+    taken = parse_time(context.baseline_time)
+    if taken is not None and taken.tzinfo is None:
+        taken = taken.replace(tzinfo=UTC)
     for index, event in context.of("account.", "group."):
         if event.type == "account.password_changed":
             continue  # account.password reports it
@@ -343,6 +347,15 @@ def log_changes(context: Context) -> list[Finding]:
             and not _package_account(context, event, installs)
             else "low"
         )
+        at = parse_time(event.corrected)
+        if at is not None and at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        # Logged before the baseline was taken: the baseline's own result showed it, and the
+        # accounts and groups it left are the baseline's to compare with. Still in the logs at
+        # every later check, it would count again each time. A privileged change still does.
+        before_baseline = taken is not None and at is not None and at < taken
+        if before_baseline and not privileged:
+            band = "info"
         who = f.get("user") or ""
         summary = (
             event.type.split(".", 1)[1].replace("_", " ")
@@ -357,6 +370,8 @@ def log_changes(context: Context) -> list[Finding]:
                 if v
             )
         )
+        if before_baseline and not privileged:
+            summary = summary.strip() + " (before the baseline)"
         findings.append(
             Finding(
                 "account.log_changes",

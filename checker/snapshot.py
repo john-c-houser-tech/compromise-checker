@@ -833,7 +833,8 @@ def _forget_boot_facts(path: str, item: dict[str, Any]) -> None:
     generators' output, systemd-resolved's stub-resolv.conf): its content, owner and mode
     matter, not its inode and times."""
     if path.startswith("/run/"):
-        for volatile in ("inode", "ctime", "mtime"):
+        # time_out_of_range: the collector's note that one of those times was unusual.
+        for volatile in ("inode", "ctime", "mtime", "time_out_of_range"):
             item.pop(volatile, None)
 
 

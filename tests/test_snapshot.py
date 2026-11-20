@@ -679,6 +679,8 @@ def test_a_run_file_read_for_its_content_ignores_its_boot_time_facts(tmp_path):
 
     def resolver(inode, text="nameserver 127.0.0.53\n"):
         facts = {"inode": inode, "mtime": str(inode), "ctime": str(inode), "mode": "0644"}
+        if inode > 2000:  # a clock that was wrong when systemd-resolved wrote it again
+            facts["time_out_of_range"] = {"mtime": inode, "ctime": inode}
         source = text_source(50, "network", path, text)
         source[0]["meta"] = {**source[0]["meta"], **facts}
         return [rec("network", "file", path=path, uid=0, size=len(text), **facts), *source]
@@ -686,7 +688,7 @@ def test_a_run_file_read_for_its_content_ignores_its_boot_time_facts(tmp_path):
     old = snapshot_of_records(host_records(extra=resolver(1001)), tmp_path)
     new = snapshot_of_records(host_records(extra=resolver(2958)), tmp_path)
     item = new.sections["network_files"].items[path]
-    assert not {"inode", "mtime", "ctime"} & item.keys()
+    assert not {"inode", "mtime", "ctime", "time_out_of_range"} & item.keys()
     assert "network_files" not in compare(old, new)
     # What it says still counts.
     other = snapshot_of_records(

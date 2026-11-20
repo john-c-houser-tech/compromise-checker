@@ -231,12 +231,20 @@ def _without_netns(key: str) -> str:
 # Linux's default range for ports a program asks for without naming one
 # (net.ipv4.ip_local_port_range).
 EPHEMERAL_PORTS = range(32768, 61000)
+# Programs known to listen on loopback at a random port each time they start, and the
+# packaged file each runs from (package verification watches that file): containerd's
+# streaming server for its CRI plugin.
+RANDOM_PORT_PROGRAMS = {"containerd": frozenset({"/usr/bin/containerd"})}
 
 
 def _random_local_port(key: str, item: dict[str, Any]) -> tuple[Any, ...] | None:
-    """For a listener on a loopback address and a random port: who holds it and where,
-    without the port, so the same program's listener after a restart matches. None for
-    any other listener."""
+    """For one of RANDOM_PORT_PROGRAMS listening on a loopback address at a random port:
+    who holds it and where, without the port, so its listener after a restart matches.
+    None for any other listener, and for one whose owner wasn't seen."""
+    programs = tuple(item.get("programs") or ())
+    uids = tuple(item.get("uids") or ())
+    if len(programs) != 1 or programs[0] not in RANDOM_PORT_PROGRAMS or not uids:
+        return None
     protocol, where = (_without_netns(key).split(" ", 1) + [""])[:2]
     address, _, port = where.rpartition(":")
     parsed = _address(address.strip("[]"))
@@ -244,7 +252,24 @@ def _random_local_port(key: str, item: dict[str, Any]) -> tuple[Any, ...] | None
         return None
     if int(port) not in EPHEMERAL_PORTS:
         return None
-    return (protocol, address, tuple(item.get("programs") or ()), tuple(item.get("uids") or ()))
+    return (protocol, address, programs, uids)
+
+
+def _runs_packaged(context: Context, key: str, program: str) -> bool:
+    """Whether every process seen holding this listener now runs the program's packaged
+    file: a process names itself, so the name alone could be anyone's."""
+    address, _, port = _without_netns(key).split(" ", 1)[-1].rpartition(":")
+    processes = _processes(context)
+    held = [
+        processes.get(pid)
+        for sock in context.snapshot.live.get("sockets", [])
+        if str(sock.get("state") or "").lower() == "listen"
+        and [str(x) for x in sock.get("local") or []] == [address, port]
+        for pid in sock.get("pids") or []
+    ]
+    return bool(held) and all(
+        p is not None and str(p.get("exe") or "") in RANDOM_PORT_PROGRAMS[program] for p in held
+    )
 
 
 @check("net.listener", "New listening ports", needs_baseline=True)
@@ -258,8 +283,13 @@ def listeners(context: Context) -> list[Finding]:
     # A program listening on loopback at a random port (containerd's streaming server)
     # takes another at each start: the old one gone and a new one held by the same
     # program and account, on the same address, is that listener, not a new one.
+    # Only a known program, seen running its packaged file, and each port gone stands for
+    # one new port (a port gone that reappears in another namespace stands for none).
     moved: dict[tuple[Any, ...], int] = {}
+    again = {_without_netns(k) for k in diff["added"]}
     for key, item in diff["removed"].items():
+        if _without_netns(key) in again:
+            continue
         if (holder := _random_local_port(key, item)) is not None:
             moved[holder] = moved.get(holder, 0) + 1
     findings = []
@@ -267,8 +297,8 @@ def listeners(context: Context) -> list[Finding]:
         if _without_netns(key) in gone:
             continue
         holder = _random_local_port(key, item)
-        if holder is not None and moved.get(holder):
-            moved[holder] -= 1  # each port gone stands for one new one
+        if holder is not None and moved.get(holder) and _runs_packaged(context, key, holder[2][0]):
+            moved[holder] -= 1
             continue
         where = _without_netns(key).split(" ", 1)[-1]
         local = where.rsplit(":", 1)[0] if ":" in where else where

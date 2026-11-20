@@ -182,26 +182,40 @@ def test_new_listeners_peers_and_tor():
     assert "address:198.51.100.0" in peers["python3"].entities
 
 
-def test_a_local_listener_given_a_new_random_port_at_restart_isnt_new():
+def test_containerds_new_random_local_port_at_a_restart_isnt_a_new_listener():
     # containerd's streaming server takes a random port on 127.0.0.1 at each start.
-    def ctrd(port, program="containerd", address="127.0.0.1", uids=(0,)):
-        item = {"programs": [program], "uids": list(uids), "sockets": 1}
-        return {f"tcp {address}:{port} netns=net:[1]": item}
+    def listening(port, program="containerd", address="127.0.0.1", uids=(0,), netns="1"):
+        item = {"programs": [program] if program else [], "uids": list(uids), "sockets": 1}
+        return {f"tcp {address}:{port} netns=net:[{netns}]": item}
 
-    before = snap(listeners={**ctrd(44551), **ctrd(38001, program="kubelet")}, accounts=accounts())
-    moved = snap(listeners={**ctrd(40127), **ctrd(38001, program="kubelet")}, accounts=accounts())
-    assert of(run([], moved, baseline=before), "net.listener") == []
-    for after in (
-        ctrd(40127, program="nc"),  # another program
-        ctrd(40127, uids=(1000,)),  # another account
-        ctrd(40127, address="0.0.0.0"),  # reachable from outside
-        ctrd(8080),  # a fixed port, not a random one
-        {**ctrd(44551), **ctrd(40127)},  # the old port still open: a second listener
+    def held(port, exe="/usr/bin/containerd", comm="containerd", address="127.0.0.1"):
+        processes = [proc(7, comm, exe=exe)] if exe else []
+        sockets = [sock([], [7] if exe else [], state="listen", local=(address, port))]
+        return live(processes, sockets)
+
+    def found_after(listeners, now):
+        later = snap(now, listeners=listeners, accounts=accounts())
+        return of(run([], later, baseline=before), "net.listener")
+
+    before = snap(listeners={**listening(44551), **listening(38001, program="kubelet")})
+    kubelet = listening(38001, program="kubelet")
+    assert found_after({**listening(40127), **kubelet}, held(40127)) == []
+    for listeners, now in (
+        # Only containerd, as /usr/bin/containerd: a backdoor that calls itself containerd...
+        ({**listening(40127), **kubelet}, held(40127, exe="/tmp/.x/containerd")),
+        ({**listening(40127), **kubelet}, held(40127, exe="/usr/bin/containerd (deleted)")),
+        # ...or kubelet doing the same, or no owner to be seen.
+        ({**listening(44551), **listening(40127, program="kubelet")}, held(40127)),
+        ({**listening(40127, program=None), **kubelet}, held(40127, exe=None)),
+        ({**listening(40127, uids=(1000,)), **kubelet}, held(40127)),  # another account
+        # Reachable from outside, a fixed port, or the old port still open.
+        ({**listening(40127, address="0.0.0.0"), **kubelet}, held(40127, address="0.0.0.0")),
+        ({**listening(8080), **kubelet}, held(8080)),
+        ({**listening(44551), **listening(40127), **kubelet}, held(40127)),
+        # The old port in a new namespace is the old listener: it can't excuse another.
+        ({**listening(44551, netns="2"), **listening(40127), **kubelet}, held(40127)),
     ):
-        got = of(
-            run([], snap(listeners=after, accounts=accounts()), baseline=before), "net.listener"
-        )
-        assert len(got) == 1, after
+        assert len(found_after(listeners, now)) == 1, (listeners, now)
 
 
 def test_resolver_and_firewall_changes_both_directions():

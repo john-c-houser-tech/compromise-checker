@@ -269,6 +269,7 @@ def run_case(case: dict[str, Any], packs: list[Any] = ()) -> dict[str, Any]:
         since_baseline=since_baseline,
         since_previous=since_previous,
         earlier_events=lambda: [events[i] for i in case["earlier"]],
+        baseline_events=lambda: events[baseline] if since_baseline is not None else [],
         previous_time=case["started"][previous] if previous else None,
         no_baseline=no_baseline,
         previous_snapshot=snapshots[previous] if previous else None,

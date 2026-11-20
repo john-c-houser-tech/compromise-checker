@@ -80,6 +80,8 @@ class Context:
     since_previous: dict[str, dict[str, Any]] | None = None
     # Earlier bundles' events, oldest first, loaded only if a check asks.
     earlier_events: Callable[[], list[list[Event]]] = lambda: []
+    # The baseline bundle's own events, loaded only if a check asks (none without one).
+    baseline_events: Callable[[], list[Event]] = lambda: []
     scanner: str | None = None  # the account the tool logs in as
     # When the previous bundle was collected (controller clock): an event
     # before it was in that bundle's analysis already.

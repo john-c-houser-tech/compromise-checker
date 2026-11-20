@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from checker.checks import (
     COMPROMISE,
@@ -318,6 +319,15 @@ def _package_account(context: Context, event, installs: list[datetime]) -> bool:
     return all(s and NO_LOGIN_SHELL.search(str(s)) for s in shells)
 
 
+_LOGGED = ("account.", "group.")
+
+
+def _logged(event) -> tuple[Any, ...]:
+    """An event as its log line has it, the same in every bundle that read that line (the
+    host's own time, not one corrected by that run's measured clock offset)."""
+    return (event.source, event.type, event.time, event.line)
+
+
 @check(
     "account.log_changes",
     "Account and group changes recorded in the logs",
@@ -326,10 +336,8 @@ def _package_account(context: Context, event, installs: list[datetime]) -> bool:
 def log_changes(context: Context) -> list[Finding]:
     findings = []
     installs = _package_installs(context)
-    # When the baseline was taken; None when this bundle is the baseline (or there is none).
-    taken = parse_time(context.baseline_time)
-    if taken is not None and taken.tzinfo is None:
-        taken = taken.replace(tzinfo=UTC)
+    # What the baseline's own result was given: an event it logged too was shown there.
+    shown = {_logged(e) for e in context.baseline_events() if e.type.startswith(_LOGGED)}
     for index, event in context.of("account.", "group."):
         if event.type == "account.password_changed":
             continue  # account.password reports it
@@ -347,13 +355,11 @@ def log_changes(context: Context) -> list[Finding]:
             and not _package_account(context, event, installs)
             else "low"
         )
-        at = parse_time(event.corrected)
-        if at is not None and at.tzinfo is None:
-            at = at.replace(tzinfo=UTC)
-        # Logged before the baseline was taken: the baseline's own result showed it, and the
-        # accounts and groups it left are the baseline's to compare with. Still in the logs at
-        # every later check, it would count again each time. A privileged change still does.
-        before_baseline = taken is not None and at is not None and at < taken
+        # In the baseline bundle's own logs too: its result showed it, and the accounts and
+        # groups it left are the baseline's to compare with. Still in the logs at every later
+        # check, it would count again each time. A privileged change still does. One the
+        # baseline didn't log (its log reading cut short, a source it lacked) still counts.
+        before_baseline = _logged(event) in shown
         if before_baseline and not privileged:
             band = "info"
         who = f.get("user") or ""

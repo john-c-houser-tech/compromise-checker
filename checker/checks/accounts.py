@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from checker.checks import (
     COMPROMISE,
@@ -318,6 +319,15 @@ def _package_account(context: Context, event, installs: list[datetime]) -> bool:
     return all(s and NO_LOGIN_SHELL.search(str(s)) for s in shells)
 
 
+_LOGGED = ("account.", "group.")
+
+
+def _logged(event) -> tuple[Any, ...]:
+    """An event as its log line has it, the same in every bundle that read that line (the
+    host's own time, not one corrected by that run's measured clock offset)."""
+    return (event.source, event.type, event.time, event.line)
+
+
 @check(
     "account.log_changes",
     "Account and group changes recorded in the logs",
@@ -326,6 +336,8 @@ def _package_account(context: Context, event, installs: list[datetime]) -> bool:
 def log_changes(context: Context) -> list[Finding]:
     findings = []
     installs = _package_installs(context)
+    # What the baseline's own result was given: an event it logged too was shown there.
+    shown = {_logged(e) for e in context.baseline_events() if e.type.startswith(_LOGGED)}
     for index, event in context.of("account.", "group."):
         if event.type == "account.password_changed":
             continue  # account.password reports it
@@ -343,6 +355,13 @@ def log_changes(context: Context) -> list[Finding]:
             and not _package_account(context, event, installs)
             else "low"
         )
+        # In the baseline bundle's own logs too: its result showed it, and the accounts and
+        # groups it left are the baseline's to compare with. Still in the logs at every later
+        # check, it would count again each time. A privileged change still does. One the
+        # baseline didn't log (its log reading cut short, a source it lacked) still counts.
+        before_baseline = _logged(event) in shown
+        if before_baseline and not privileged:
+            band = "info"
         who = f.get("user") or ""
         summary = (
             event.type.split(".", 1)[1].replace("_", " ")
@@ -357,6 +376,8 @@ def log_changes(context: Context) -> list[Finding]:
                 if v
             )
         )
+        if before_baseline and not privileged:
+            summary = summary.strip() + " (before the baseline)"
         findings.append(
             Finding(
                 "account.log_changes",

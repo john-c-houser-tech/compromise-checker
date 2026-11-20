@@ -1,7 +1,7 @@
 """Whitelists (PR 2.2a, DESIGN.md §9): layered rule files, strict
 validation, matching on typed fields only, suppression kept and shown."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 from test_snapshot import add_bundle, host_records
@@ -483,15 +483,18 @@ def test_the_report_stops_suppressing_once_a_rule_expires(home, monkeypatch):
 
     base, store, identity, config = home
     add_bundle(home, "b1", 0, host_records(accounts=UID0))
-    write(base, "hosts/web01.yaml", rule(expires="2026-11-15"))
+    # From today, not a fixed day: a fixed expiry date makes this fail once it has passed.
+    today = date.today()
+    write(base, "hosts/web01.yaml", rule(expires=(today + timedelta(days=30)).isoformat()))
     merged = load(base, "web01", None)
     first = analyze(store, "web01", identity, config.recipients, whitelist=merged)
     assert first["whitelist"]["suppressed"] == 1  # live when analysed
+    later = today + timedelta(days=60)
 
     class Later(wl.datetime):
         @classmethod
         def now(cls, tz=None):
-            return wl.datetime(2026, 11, 20, tzinfo=tz)
+            return wl.datetime(later.year, later.month, later.day, tzinfo=tz)
 
     monkeypatch.setattr(wl, "datetime", Later)
     write_report(

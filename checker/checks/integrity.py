@@ -227,7 +227,8 @@ def package_changed(context: Context) -> list[Finding]:
     if diff is not None and (diff["added"] or diff["changed"] or diff["removed"]):
         touched = [(how, k) for how in ("added", "changed", "removed") for k in diff[how]]
         updated = _packages_changed(context)
-        unexplained = [(how, k) for how, k in touched if not _list_explained(k, updated)]
+        installed = {_name_arch(k) for k in context.items("packages")}
+        unexplained = [(how, k) for how, k in touched if not _list_explained(k, updated, installed)]
         if unexplained:
             names = ", ".join(k.rsplit("/", 1)[-1] for _, k in unexplained[:3])
             more = f" and {len(unexplained) - 3} more" if len(unexplained) > 3 else ""
@@ -264,19 +265,36 @@ DPKG_INFO = "/var/lib/dpkg/info"
 DPKG_OWN = frozenset({DPKG_INFO, "/var/lib/dpkg/status"})
 
 
-def _packages_changed(context: Context) -> set[str]:
-    """The names of packages installed, updated or removed since the baseline."""
+def _name_arch(key: str) -> tuple[str, str]:
+    """A packages-section key ("name arch", or "name arch version" for kernels) as
+    (name, architecture)."""
+    parts = key.split(" ")
+    return parts[0], parts[1] if len(parts) > 1 else ""
+
+
+def _packages_changed(context: Context) -> set[tuple[str, str]]:
+    """(name, architecture) of each package updated since the baseline (its version
+    changed: a `touch` of its .list moves only its installed time), and of each one
+    installed or removed when both package listings were whole (one cut short makes
+    packages look removed)."""
     diff = context.changes("packages")
     if diff is None:
         return set()
-    return {k.split(" ", 1)[0] for how in ("added", "changed", "removed") for k in diff[how]}
+    keys = [k for k, fields in diff["changed"].items() if "version" in fields]
+    if diff.get("comparable", True):
+        keys += [*diff["added"], *diff["removed"]]
+    return {_name_arch(k) for k in keys}
 
 
-def _list_explained(path: str, updated: set[str]) -> bool:
-    """Whether a changed checksum list is one dpkg rewrites for a package changed since the
-    baseline: <package>[:arch].<kind> in its info directory, or (with any package changed)
-    the directory itself and its status file. rpm keeps one database for every package,
-    so a change there can't be put down to one."""
+def _list_explained(
+    path: str, updated: set[tuple[str, str]], installed: set[tuple[str, str]]
+) -> bool:
+    """Whether a changed checksum list is one dpkg rewrote for its own package's update:
+    <package>:<arch>.<kind> or <package>.<kind> in its info directory, matched by name and
+    architecture (a list without one belongs to a package installed for a single
+    architecture), or, with some package updated, the directory itself and its status
+    file. rpm keeps one database for every package, so a change there can't be put down
+    to one."""
     if not updated:
         return False
     if path in DPKG_OWN:
@@ -284,7 +302,12 @@ def _list_explained(path: str, updated: set[str]) -> bool:
     folder, _, name = path.rpartition("/")
     if folder != DPKG_INFO or "." not in name:
         return False
-    return name.rsplit(".", 1)[0].split(":", 1)[0] in updated
+    stem = name.rsplit(".", 1)[0]
+    if ":" in stem:
+        package, arch = stem.split(":", 1)
+        return (package, arch) in updated
+    archs = {a for n, a in installed | updated if n == stem}
+    return len(archs) == 1 and (stem, archs.pop()) in updated
 
 
 # Character devices (major, minor) that give no access to anything: null,

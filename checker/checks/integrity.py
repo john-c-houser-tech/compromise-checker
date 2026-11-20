@@ -225,25 +225,66 @@ def package_changed(context: Context) -> list[Finding]:
         )
     diff = context.changes("checksum_store")
     if diff is not None and (diff["added"] or diff["changed"] or diff["removed"]):
-        touched = len(diff["added"]) + len(diff["changed"]) + len(diff["removed"])
+        touched = [(how, k) for how in ("added", "changed", "removed") for k in diff[how]]
+        updated = _packages_changed(context)
+        unexplained = [(how, k) for how, k in touched if not _list_explained(k, updated)]
+        if unexplained:
+            names = ", ".join(k.rsplit("/", 1)[-1] for _, k in unexplained[:3])
+            more = f" and {len(unexplained) - 3} more" if len(unexplained) > 3 else ""
+            band = "low"
+            summary = (
+                f"{len(touched)} list file(s), {len(unexplained)} not put down to a package"
+                f" installed, updated or removed since the baseline ({names}{more}): expected"
+                " after package installs and updates; a rewrite to hide a replaced file would"
+                " show here too"
+            )
+        else:
+            band = "info"
+            summary = (
+                f"{len(touched)} list file(s), each for a package installed, updated or removed"
+                " since the baseline, or dpkg's own directory and status file"
+            )
+        shown = unexplained + [t for t in touched if t not in unexplained]
         findings.append(
             Finding(
                 "package.changed",
                 "The package managers' checksum lists changed since the baseline",
                 COMPROMISE,
-                "low",
-                f"{touched} list file(s): expected after package installs and updates; a rewrite"
-                " to hide a replaced file would show here too",
+                band,
+                summary,
                 [],
-                [
-                    context.change_ref("checksum_store", k, how)
-                    for how in ("added", "changed", "removed")
-                    for k in list(diff[how])[:20]
-                ],
+                [context.change_ref("checksum_store", k, how) for how, k in shown[:20]],
                 uncertain=context.uncertain("checksum_store"),
             )
         )
     return findings
+
+
+DPKG_INFO = "/var/lib/dpkg/info"
+DPKG_OWN = frozenset({DPKG_INFO, "/var/lib/dpkg/status"})
+
+
+def _packages_changed(context: Context) -> set[str]:
+    """The names of packages installed, updated or removed since the baseline."""
+    diff = context.changes("packages")
+    if diff is None:
+        return set()
+    return {k.split(" ", 1)[0] for how in ("added", "changed", "removed") for k in diff[how]}
+
+
+def _list_explained(path: str, updated: set[str]) -> bool:
+    """Whether a changed checksum list is one dpkg rewrites for a package changed since the
+    baseline: <package>[:arch].<kind> in its info directory, or (with any package changed)
+    the directory itself and its status file. rpm keeps one database for every package,
+    so a change there can't be put down to one."""
+    if not updated:
+        return False
+    if path in DPKG_OWN:
+        return True
+    folder, _, name = path.rpartition("/")
+    if folder != DPKG_INFO or "." not in name:
+        return False
+    return name.rsplit(".", 1)[0].split(":", 1)[0] in updated
 
 
 # Character devices (major, minor) that give no access to anything: null,

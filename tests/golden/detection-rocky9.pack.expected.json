@@ -3186,7 +3186,7 @@
    "new": false,
    "raised_by_pack": null,
    "ratio": 1.5,
-   "summary": "3 list file(s): expected after package installs and updates; a rewrite to hide a replaced file would show here too",
+   "summary": "3 list file(s), 3 not put down to a package installed, updated or removed since the baseline (rpmdb.sqlite, rpmdb.sqlite-shm, rpmdb.sqlite-wal): expected after package installs and updates; a rewrite to hide a replaced file would show here too",
    "title": "The package managers' checksum lists changed since the baseline",
    "uncertain": null,
    "variant": null

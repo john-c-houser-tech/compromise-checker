@@ -570,16 +570,6 @@
   },
   {
    "id": "F-68",
-   "check": "package.changed",
-   "variant": null,
-   "band": "low",
-   "category": "compromise indicator",
-   "new": false,
-   "contribution": 0.4055,
-   "suppressed": false
-  },
-  {
-   "id": "F-69",
    "check": "software.packages",
    "variant": "installed",
    "band": "low",
@@ -649,6 +639,16 @@
    "suppressed": false
   },
   {
+   "id": "F-69",
+   "check": "process.injected",
+   "variant": "replaced",
+   "band": "low",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
    "id": "F-70",
    "check": "process.injected",
    "variant": "replaced",
@@ -680,17 +680,17 @@
   },
   {
    "id": "F-73",
-   "check": "process.injected",
-   "variant": "replaced",
-   "band": "low",
-   "category": "hygiene",
+   "check": "files.unowned",
+   "variant": null,
+   "band": "info",
+   "category": "compromise indicator",
    "new": false,
    "contribution": 0.0,
    "suppressed": false
   },
   {
    "id": "F-74",
-   "check": "files.unowned",
+   "check": "package.changed",
    "variant": null,
    "band": "info",
    "category": "compromise indicator",

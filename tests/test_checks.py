@@ -29,7 +29,7 @@ def snap(**sections):
     )
 
 
-def run(events=(), snapshot=None, baseline=None, previous=None, earlier=()):
+def run(events=(), snapshot=None, baseline=None, previous=None, earlier=(), baseline_events=None):
     snapshot = snapshot or snap()
     context = Context(
         host="web01",
@@ -40,6 +40,7 @@ def run(events=(), snapshot=None, baseline=None, previous=None, earlier=()):
         since_baseline=compare(baseline, snapshot) if baseline else None,
         since_previous=compare(previous, snapshot) if previous else None,
         earlier_events=lambda: [list(e) for e in earlier],
+        baseline_events=lambda: list(baseline_events or []),
     )
     findings, ran = run_checks(context)
     assert not [r for r in ran if r["status"].startswith("failed")], ran
@@ -234,6 +235,50 @@ def test_account_changes_in_the_logs():
     ]
     found = of(run(events), "account.log_changes")
     assert [f.band for f in found] == ["high", "medium", "medium"]
+
+
+def test_account_changes_the_baseline_logged_count_only_in_its_own_result():
+    # A server's setup makes accounts and groups a minute before its first check, which
+    # became the baseline: still in the logs at every later check, they were in the
+    # baseline's own result already. A privileged change keeps counting.
+    setup = [
+        ev("group.created", -2, line="new group: name=postfix", group="postfix"),
+        ev(
+            "account.created",
+            -1,
+            line="new user: name=postfix",
+            user="postfix",
+            uid="110",
+            shell="/usr/sbin/nologin",
+        ),
+        ev("group.member_added", -1, line="add 'eve' to group 'sudo'", user="eve", group="sudo"),
+    ]
+    # Before the baseline too, but its log reading was cut short: it never showed this one.
+    unseen = ev("account.created", -1, line="new user: name=mallory", user="mallory", uid="1002")
+    events = [*setup, unseen, ev("account.created", minutes=5, user="bob", uid="1001")]
+
+    def bands(found):
+        return {f.entities[0]: f.band for f in found}
+
+    first = of(run(events), "account.log_changes")  # this bundle is the baseline
+    assert bands(first) == {
+        "group:postfix": "low",
+        "account:postfix": "medium",
+        "account:eve": "high",
+        "account:mallory": "medium",
+        "account:bob": "medium",
+    }
+    later = of(run(events, baseline_events=setup), "account.log_changes")
+    assert bands(later) == {
+        "group:postfix": "info",
+        "account:postfix": "info",
+        "account:eve": "high",
+        "account:mallory": "medium",
+        "account:bob": "medium",
+    }
+    summaries = {f.entities[0]: f.summary for f in later}
+    assert "before the baseline" in summaries["account:postfix"]
+    assert "baseline" not in summaries["account:mallory"] + summaries["account:bob"]
 
 
 def test_new_sudo_rules():

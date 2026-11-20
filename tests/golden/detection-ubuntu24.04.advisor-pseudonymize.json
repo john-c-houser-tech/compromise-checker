@@ -887,7 +887,7 @@
    }
   },
   {
-   "id": "F-35",
+   "id": "F-33",
    "check": "mail.domains",
    "variant": null,
    "band": "medium",
@@ -997,7 +997,7 @@
    }
   },
   {
-   "id": "F-36",
+   "id": "F-34",
    "check": "mail.volume",
    "variant": "deliveries",
    "band": "medium",
@@ -1048,7 +1048,7 @@
    }
   },
   {
-   "id": "F-37",
+   "id": "F-35",
    "check": "mail.web_user",
    "variant": null,
    "band": "medium",
@@ -1099,7 +1099,7 @@
    }
   },
   {
-   "id": "F-38",
+   "id": "F-36",
    "check": "net.config",
    "variant": "file",
    "band": "medium",
@@ -1126,7 +1126,7 @@
    }
   },
   {
-   "id": "F-40",
+   "id": "F-38",
    "check": "net.metadata",
    "variant": null,
    "band": "medium",
@@ -1157,7 +1157,7 @@
    }
   },
   {
-   "id": "F-41",
+   "id": "F-39",
    "check": "net.tunnel",
    "variant": null,
    "band": "medium",
@@ -1187,7 +1187,7 @@
    }
   },
   {
-   "id": "F-44",
+   "id": "F-42",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1214,7 +1214,7 @@
    }
   },
   {
-   "id": "F-50",
+   "id": "F-48",
    "check": "software.repository",
    "variant": "key",
    "band": "medium",
@@ -1241,7 +1241,7 @@
    }
   },
   {
-   "id": "F-52",
+   "id": "F-50",
    "check": "software.tools",
    "variant": "attack_tool",
    "band": "medium",
@@ -1268,7 +1268,7 @@
    }
   },
   {
-   "id": "F-53",
+   "id": "F-51",
    "check": "ssh.login",
    "variant": "new_address",
    "band": "medium",
@@ -1297,7 +1297,7 @@
    }
   },
   {
-   "id": "F-56",
+   "id": "F-54",
    "check": "web.exploit",
    "variant": "answered",
    "band": "medium",
@@ -1325,7 +1325,35 @@
    }
   },
   {
-   "id": "F-39",
+   "id": "F-32",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "medium",
+   "category": "compromise indicator",
+   "new": true,
+   "contribution": 0.6931,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: USER-2-0000 UID 1002",
+    "entities": [
+     "account:USER-2-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:51:42",
+      "where": "auth_journal",
+      "text": "new user: name=USER-2-0000, UID=1002, GID=1002, home=/home/USER-2-0000, shell=/bin/bash, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:51:42.370137+00:00",
+    "last_seen": "2026-10-29T15:51:42.370137+00:00"
+   }
+  },
+  {
+   "id": "F-37",
    "check": "net.config",
    "variant": "firewall",
    "band": "medium",
@@ -1350,7 +1378,7 @@
    }
   },
   {
-   "id": "F-42",
+   "id": "F-40",
    "check": "net.tunnel",
    "variant": null,
    "band": "medium",
@@ -1378,7 +1406,7 @@
    }
   },
   {
-   "id": "F-51",
+   "id": "F-49",
    "check": "software.repository",
    "variant": "repository",
    "band": "medium",
@@ -1459,35 +1487,7 @@
    }
   },
   {
-   "id": "F-32",
-   "check": "account.log_changes",
-   "variant": "created",
-   "band": "medium",
-   "category": "compromise indicator",
-   "new": true,
-   "contribution": 0.3194,
-   "suppressed_by": null,
-   "title": "An account or group was changed (from the logs)",
-   "from_host": {
-    "summary": "created: USER-2-0000 UID 1002",
-    "entities": [
-     "account:USER-2-0000"
-    ],
-    "entities_complete": true,
-    "excerpts": [
-     {
-      "when": "2026-10-29T15:51:42",
-      "where": "auth_journal",
-      "text": "new user: name=USER-2-0000, UID=1002, GID=1002, home=/home/USER-2-0000, shell=/bin/bash, from=none"
-     }
-    ],
-    "uncertain": null,
-    "first_seen": "2026-10-29T15:51:42.370137+00:00",
-    "last_seen": "2026-10-29T15:51:42.370137+00:00"
-   }
-  },
-  {
-   "id": "F-45",
+   "id": "F-43",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1514,7 +1514,7 @@
    }
   },
   {
-   "id": "F-46",
+   "id": "F-44",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1541,7 +1541,7 @@
    }
   },
   {
-   "id": "F-47",
+   "id": "F-45",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1568,7 +1568,7 @@
    }
   },
   {
-   "id": "F-48",
+   "id": "F-46",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1595,7 +1595,7 @@
    }
   },
   {
-   "id": "F-49",
+   "id": "F-47",
    "check": "persistence.changes",
    "variant": null,
    "band": "medium",
@@ -1622,7 +1622,7 @@
    }
   },
   {
-   "id": "F-63",
+   "id": "F-55",
    "check": "container.new",
    "variant": "new",
    "band": "low",
@@ -1650,7 +1650,7 @@
    }
   },
   {
-   "id": "F-64",
+   "id": "F-56",
    "check": "net.listener",
    "variant": null,
    "band": "low",
@@ -1679,7 +1679,7 @@
    }
   },
   {
-   "id": "F-67",
+   "id": "F-59",
    "check": "net.peer",
    "variant": "new_destination",
    "band": "low",
@@ -1707,7 +1707,7 @@
    }
   },
   {
-   "id": "F-68",
+   "id": "F-60",
    "check": "software.packages",
    "variant": "installed",
    "band": "low",
@@ -1758,7 +1758,7 @@
    }
   },
   {
-   "id": "F-65",
+   "id": "F-57",
    "check": "net.listener",
    "variant": null,
    "band": "low",
@@ -1787,7 +1787,7 @@
    }
   },
   {
-   "id": "F-66",
+   "id": "F-58",
    "check": "net.listener",
    "variant": null,
    "band": "low",
@@ -1816,119 +1816,7 @@
    }
   },
   {
-   "id": "F-59",
-   "check": "account.log_changes",
-   "variant": "group_created",
-   "band": "low",
-   "category": "compromise indicator",
-   "new": false,
-   "contribution": 0.0934,
-   "suppressed_by": null,
-   "title": "An account or group was changed (from the logs)",
-   "from_host": {
-    "summary": "created: group postdrop",
-    "entities": [
-     "group:postdrop"
-    ],
-    "entities_complete": true,
-    "excerpts": [
-     {
-      "when": "2026-10-29T15:48:58",
-      "where": "auth_journal",
-      "text": "new group: name=postdrop, GID=113"
-     }
-    ],
-    "uncertain": null,
-    "first_seen": "2026-10-29T15:48:58.565010+00:00",
-    "last_seen": "2026-10-29T15:48:58.565010+00:00"
-   }
-  },
-  {
-   "id": "F-60",
-   "check": "account.log_changes",
-   "variant": "group_created",
-   "band": "low",
-   "category": "compromise indicator",
-   "new": false,
-   "contribution": 0.0934,
-   "suppressed_by": null,
-   "title": "An account or group was changed (from the logs)",
-   "from_host": {
-    "summary": "created: group postfix",
-    "entities": [
-     "group:postfix"
-    ],
-    "entities_complete": true,
-    "excerpts": [
-     {
-      "when": "2026-10-29T15:48:58",
-      "where": "auth_journal",
-      "text": "new group: name=postfix, GID=112"
-     }
-    ],
-    "uncertain": null,
-    "first_seen": "2026-10-29T15:48:58.364098+00:00",
-    "last_seen": "2026-10-29T15:48:58.364098+00:00"
-   }
-  },
-  {
    "id": "F-61",
-   "check": "account.log_changes",
-   "variant": "group_created",
-   "band": "low",
-   "category": "compromise indicator",
-   "new": false,
-   "contribution": 0.0934,
-   "suppressed_by": null,
-   "title": "An account or group was changed (from the logs)",
-   "from_host": {
-    "summary": "created: group ssl-cert",
-    "entities": [
-     "group:ssl-cert"
-    ],
-    "entities_complete": true,
-    "excerpts": [
-     {
-      "when": "2026-10-29T15:48:56",
-      "where": "auth_journal",
-      "text": "new group: name=ssl-cert, GID=111"
-     }
-    ],
-    "uncertain": null,
-    "first_seen": "2026-10-29T15:48:56.083224+00:00",
-    "last_seen": "2026-10-29T15:48:56.083224+00:00"
-   }
-  },
-  {
-   "id": "F-62",
-   "check": "account.log_changes",
-   "variant": "created",
-   "band": "low",
-   "category": "compromise indicator",
-   "new": false,
-   "contribution": 0.0934,
-   "suppressed_by": null,
-   "title": "An account or group was changed (from the logs)",
-   "from_host": {
-    "summary": "created: postfix UID 110",
-    "entities": [
-     "account:postfix"
-    ],
-    "entities_complete": true,
-    "excerpts": [
-     {
-      "when": "2026-10-29T15:48:58",
-      "where": "auth_journal",
-      "text": "new user: name=postfix, UID=110, GID=112, home=/var/spool/postfix, shell=/usr/sbin/nologin, from=none"
-     }
-    ],
-    "uncertain": null,
-    "first_seen": "2026-10-29T15:48:58.435284+00:00",
-    "last_seen": "2026-10-29T15:48:58.435284+00:00"
-   }
-  },
-  {
-   "id": "F-69",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -1957,7 +1845,7 @@
    }
   },
   {
-   "id": "F-70",
+   "id": "F-62",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -1986,7 +1874,7 @@
    }
   },
   {
-   "id": "F-71",
+   "id": "F-63",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -2015,7 +1903,7 @@
    }
   },
   {
-   "id": "F-72",
+   "id": "F-64",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -2041,6 +1929,118 @@
     "uncertain": null,
     "first_seen": "2026-10-29T15:47:58.460000+00:00",
     "last_seen": "2026-10-29T15:47:58.460000+00:00"
+   }
+  },
+  {
+   "id": "F-67",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group postdrop (before the baseline)",
+    "entities": [
+     "group:postdrop"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:58",
+      "where": "auth_journal",
+      "text": "new group: name=postdrop, GID=113"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:58.565010+00:00",
+    "last_seen": "2026-10-29T15:48:58.565010+00:00"
+   }
+  },
+  {
+   "id": "F-68",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group postfix (before the baseline)",
+    "entities": [
+     "group:postfix"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:58",
+      "where": "auth_journal",
+      "text": "new group: name=postfix, GID=112"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:58.364098+00:00",
+    "last_seen": "2026-10-29T15:48:58.364098+00:00"
+   }
+  },
+  {
+   "id": "F-69",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: group ssl-cert (before the baseline)",
+    "entities": [
+     "group:ssl-cert"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:56",
+      "where": "auth_journal",
+      "text": "new group: name=ssl-cert, GID=111"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:56.083224+00:00",
+    "last_seen": "2026-10-29T15:48:56.083224+00:00"
+   }
+  },
+  {
+   "id": "F-70",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: postfix UID 110 (before the baseline)",
+    "entities": [
+     "account:postfix"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:58",
+      "where": "auth_journal",
+      "text": "new user: name=postfix, UID=110, GID=112, home=/var/spool/postfix, shell=/usr/sbin/nologin, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:58.435284+00:00",
+    "last_seen": "2026-10-29T15:48:58.435284+00:00"
    }
   },
   {
@@ -2338,63 +2338,7 @@
    }
   },
   {
-   "id": "F-33",
-   "check": "account.log_changes",
-   "variant": "created",
-   "band": "medium",
-   "category": "compromise indicator",
-   "new": false,
-   "contribution": 0.0,
-   "suppressed_by": "proof-USER-3-0000-account",
-   "title": "An account or group was changed (from the logs)",
-   "from_host": {
-    "summary": "created: USER-3-0000 UID 1001",
-    "entities": [
-     "account:USER-3-0000"
-    ],
-    "entities_complete": true,
-    "excerpts": [
-     {
-      "when": "2026-10-29T15:48:54",
-      "where": "auth_journal",
-      "text": "new user: name=USER-3-0000, UID=1001, GID=1001, home=/home/USER-3-0000, shell=/bin/bash, from=none"
-     }
-    ],
-    "uncertain": null,
-    "first_seen": "2026-10-29T15:48:54.065430+00:00",
-    "last_seen": "2026-10-29T15:48:54.065430+00:00"
-   }
-  },
-  {
-   "id": "F-34",
-   "check": "account.log_changes",
-   "variant": "created",
-   "band": "medium",
-   "category": "compromise indicator",
-   "new": false,
-   "contribution": 0.0,
-   "suppressed_by": "proof-USER-4-0000-account",
-   "title": "An account or group was changed (from the logs)",
-   "from_host": {
-    "summary": "created: USER-4-0000 UID 1000",
-    "entities": [
-     "account:USER-4-0000"
-    ],
-    "entities_complete": true,
-    "excerpts": [
-     {
-      "when": "2026-10-29T15:48:47",
-      "where": "auth_journal",
-      "text": "new user: name=USER-4-0000, UID=1000, GID=1000, home=/home/USER-4-0000, shell=/bin/sh, from=none"
-     }
-    ],
-    "uncertain": null,
-    "first_seen": "2026-10-29T15:48:47.415601+00:00",
-    "last_seen": "2026-10-29T15:48:47.415601+00:00"
-   }
-  },
-  {
-   "id": "F-43",
+   "id": "F-41",
    "check": "persistence.at_jobs",
    "variant": null,
    "band": "medium",
@@ -2421,7 +2365,7 @@
    }
   },
   {
-   "id": "F-54",
+   "id": "F-52",
    "check": "ssh.login",
    "variant": "root_login",
    "band": "medium",
@@ -2450,7 +2394,7 @@
    }
   },
   {
-   "id": "F-55",
+   "id": "F-53",
    "check": "ssh.login",
    "variant": "root_login",
    "band": "medium",
@@ -2479,17 +2423,17 @@
    }
   },
   {
-   "id": "F-57",
+   "id": "F-65",
    "check": "account.log_changes",
    "variant": "created",
-   "band": "low",
+   "band": "info",
    "category": "compromise indicator",
    "new": false,
    "contribution": 0.0,
    "suppressed_by": "proof-docker-dnsmasq-account",
    "title": "An account or group was changed (from the logs)",
    "from_host": {
-    "summary": "created: dnsmasq UID 999",
+    "summary": "created: dnsmasq UID 999 (before the baseline)",
     "entities": [
      "account:dnsmasq"
     ],
@@ -2507,17 +2451,17 @@
    }
   },
   {
-   "id": "F-58",
+   "id": "F-66",
    "check": "account.log_changes",
    "variant": "group_created",
-   "band": "low",
+   "band": "info",
    "category": "compromise indicator",
    "new": false,
    "contribution": 0.0,
    "suppressed_by": "proof-docker-group",
    "title": "An account or group was changed (from the logs)",
    "from_host": {
-    "summary": "created: group docker",
+    "summary": "created: group docker (before the baseline)",
     "entities": [
      "group:docker"
     ],
@@ -2532,6 +2476,62 @@
     "uncertain": null,
     "first_seen": "2026-10-29T15:48:40.005823+00:00",
     "last_seen": "2026-10-29T15:48:40.005823+00:00"
+   }
+  },
+  {
+   "id": "F-71",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": "proof-USER-3-0000-account",
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: USER-3-0000 UID 1001 (before the baseline)",
+    "entities": [
+     "account:USER-3-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:54",
+      "where": "auth_journal",
+      "text": "new user: name=USER-3-0000, UID=1001, GID=1001, home=/home/USER-3-0000, shell=/bin/bash, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:54.065430+00:00",
+    "last_seen": "2026-10-29T15:48:54.065430+00:00"
+   }
+  },
+  {
+   "id": "F-72",
+   "check": "account.log_changes",
+   "variant": "created",
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": "proof-USER-4-0000-account",
+   "title": "An account or group was changed (from the logs)",
+   "from_host": {
+    "summary": "created: USER-4-0000 UID 1000 (before the baseline)",
+    "entities": [
+     "account:USER-4-0000"
+    ],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "when": "2026-10-29T15:48:47",
+      "where": "auth_journal",
+      "text": "new user: name=USER-4-0000, UID=1000, GID=1000, home=/home/USER-4-0000, shell=/bin/sh, from=none"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": "2026-10-29T15:48:47.415601+00:00",
+    "last_seen": "2026-10-29T15:48:47.415601+00:00"
    }
   }
  ],

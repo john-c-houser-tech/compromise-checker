@@ -350,6 +350,19 @@ def analyze(
 
     loaded: list[list[Event]] = []
 
+    baseline_loaded: list[list[Event]] = []
+
+    def baseline_events() -> list[Event]:
+        """The baseline bundle's own events, loaded once if a check asks; none when this
+        bundle is compared with no baseline (or is it)."""
+        if baseline_time is None:
+            return []
+        if not baseline_loaded:
+            baseline_loaded.append(
+                events_of(store, store.bundle(found.baseline_id), identity, recipients)
+            )
+        return baseline_loaded[0]
+
     def earlier() -> list[list[Event]]:
         """Earlier bundles' events, loaded once however many checks ask."""
         if not loaded:
@@ -371,6 +384,7 @@ def analyze(
         since_baseline=since_baseline,
         since_previous=since_previous,
         earlier_events=earlier,
+        baseline_events=baseline_events,
         scanner=scanner,
         previous_time=previous_time,
         no_baseline=no_baseline,

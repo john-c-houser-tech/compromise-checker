@@ -228,6 +228,25 @@ def _without_netns(key: str) -> str:
     return key.rsplit(" netns=", 1)[0]
 
 
+# Linux's default range for ports a program asks for without naming one
+# (net.ipv4.ip_local_port_range).
+EPHEMERAL_PORTS = range(32768, 61000)
+
+
+def _random_local_port(key: str, item: dict[str, Any]) -> tuple[Any, ...] | None:
+    """For a listener on a loopback address and a random port: who holds it and where,
+    without the port, so the same program's listener after a restart matches. None for
+    any other listener."""
+    protocol, where = (_without_netns(key).split(" ", 1) + [""])[:2]
+    address, _, port = where.rpartition(":")
+    parsed = _address(address.strip("[]"))
+    if parsed is None or not parsed.is_loopback or not port.isdigit():
+        return None
+    if int(port) not in EPHEMERAL_PORTS:
+        return None
+    return (protocol, address, tuple(item.get("programs") or ()), tuple(item.get("uids") or ()))
+
+
 @check("net.listener", "New listening ports", needs_baseline=True)
 def listeners(context: Context) -> list[Finding]:
     diff = context.changes("listeners")
@@ -236,9 +255,20 @@ def listeners(context: Context) -> list[Finding]:
     # A container restarted has a new network namespace: the same port in
     # another namespace isn't a new listener.
     gone = {_without_netns(k) for k in diff["removed"]}
+    # A program listening on loopback at a random port (containerd's streaming server)
+    # takes another at each start: the old one gone and a new one held by the same
+    # program and account, on the same address, is that listener, not a new one.
+    moved: dict[tuple[Any, ...], int] = {}
+    for key, item in diff["removed"].items():
+        if (holder := _random_local_port(key, item)) is not None:
+            moved[holder] = moved.get(holder, 0) + 1
     findings = []
     for key, item in diff["added"].items():
         if _without_netns(key) in gone:
+            continue
+        holder = _random_local_port(key, item)
+        if holder is not None and moved.get(holder):
+            moved[holder] -= 1  # each port gone stands for one new one
             continue
         where = _without_netns(key).split(" ", 1)[-1]
         local = where.rsplit(":", 1)[0] if ":" in where else where

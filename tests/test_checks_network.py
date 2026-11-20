@@ -182,6 +182,28 @@ def test_new_listeners_peers_and_tor():
     assert "address:198.51.100.0" in peers["python3"].entities
 
 
+def test_a_local_listener_given_a_new_random_port_at_restart_isnt_new():
+    # containerd's streaming server takes a random port on 127.0.0.1 at each start.
+    def ctrd(port, program="containerd", address="127.0.0.1", uids=(0,)):
+        item = {"programs": [program], "uids": list(uids), "sockets": 1}
+        return {f"tcp {address}:{port} netns=net:[1]": item}
+
+    before = snap(listeners={**ctrd(44551), **ctrd(38001, program="kubelet")}, accounts=accounts())
+    moved = snap(listeners={**ctrd(40127), **ctrd(38001, program="kubelet")}, accounts=accounts())
+    assert of(run([], moved, baseline=before), "net.listener") == []
+    for after in (
+        ctrd(40127, program="nc"),  # another program
+        ctrd(40127, uids=(1000,)),  # another account
+        ctrd(40127, address="0.0.0.0"),  # reachable from outside
+        ctrd(8080),  # a fixed port, not a random one
+        {**ctrd(44551), **ctrd(40127)},  # the old port still open: a second listener
+    ):
+        got = of(
+            run([], snap(listeners=after, accounts=accounts()), baseline=before), "net.listener"
+        )
+        assert len(got) == 1, after
+
+
 def test_resolver_and_firewall_changes_both_directions():
     before = snap(
         network_files={"/etc/hosts": {"content_sha256": "a"}},
